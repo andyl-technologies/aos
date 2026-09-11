@@ -21,7 +21,7 @@ struct Fixture {
 
 impl Fixture {
     fn validate(&self) -> ValidatedIndex<'_> {
-        let media = MediaType::new(crate::INDEX_MEDIA_TYPE_V3)
+        let media = MediaType::new(crate::INDEX_MEDIA_TYPE)
             .unwrap_or_else(|error| panic!("media type failed: {error}"));
         let descriptor = descriptor_for_bytes(media, &self.bytes);
         validate_index(
@@ -52,9 +52,8 @@ fn fixture() -> Fixture {
     let link_metadata = FilesystemMetadata::new(0o777, 12, 22, 32, 42, Vec::new(), None)
         .unwrap_or_else(|error| panic!("link metadata failed: {error}"));
     let staging = IndexStaging::new(Cursor::new(Vec::new()), 64 * 1024, 4096);
-    let mut builder =
-        StructuralIndexBuilder::new_v3(staging, [7; 32], tree.clone(), root.clone(), 0)
-            .unwrap_or_else(|error| panic!("builder failed: {error}"));
+    let mut builder = StructuralIndexBuilder::new(staging, [7; 32], tree.clone(), root.clone(), 0)
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
     builder
         .push(&IndexRecord {
             parent: u64::MAX,

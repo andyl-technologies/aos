@@ -163,16 +163,15 @@ beneath the view root.
 
 ## Node-local structural index
 
-Portable tree objects compile into a replaceable node-local index. Format V1 is
-the original deterministic sequential structural format and remains accepted
-by its unchanged validation rules. Format V2 retains V1 record encoding and
-adds an architecture-neutral, fixed-width point-lookup section. Format V3
-retains both encodings and adds a fixed-width canonical directory section plus
-authenticated root and per-occurrence link counts. New compilation emits V3;
-every version has a distinct media type, and version and media type must agree.
-V1 and V2 golden bytes remain accepted without reinterpretation.
+Portable tree objects compile into a replaceable node-local index. Format V1
+uses a fixed 248-byte header, deterministic record encoding, an
+architecture-neutral fixed-width point-lookup section, and a fixed-width
+canonical directory section with authenticated root and per-occurrence link
+counts. Compilation emits only V1 under media type
+`application/vnd.aos.filesystem-view.index.v1`; validation rejects every other
+version or media type.
 
-V2 lookup entries are sorted canonically by parent record ID, a full
+Lookup entries are sorted canonically by parent record ID, a full
 domain-separated SHA-256 digest of the parent and byte-exact component, and
 record ID. Lookup uses binary search, then compares the parent and component
 bytes in every equal-digest candidate record. The digest is a performance
@@ -182,7 +181,7 @@ that every non-root record appears exactly once with no extra entry, forged
 offset, or alternative placement. Table lengths and bytes are covered by both
 the internal payload digest and the authenticated outer descriptor.
 
-V3 directory entries are sorted by parent record ID and the already-validated
+Directory entries are sorted by parent record ID and the already-validated
 canonical sibling ordinal, never by the lookup hash. Each fixed-width entry
 binds the exact record start, record ID, and portable `nlink`. Validation
 reconstructs the complete table byte for byte, derives directory counts as two
@@ -192,10 +191,10 @@ searches once, then supports allocation-free O(1) seek by sibling ordinal;
 exact `nlink` is one parent-range search plus one checked direct access. This
 prevents `READDIR` pagination and repeated attributes from becoming whole-tree
 scans. Cookies and target-ABI `nlink` narrowing remain worker policy rather
-than portable index fields. Every accepted format now exposes allocation-free
+than portable index fields. The format exposes allocation-free
 borrowed logical-size, symlink-target, whole/sparse content, extent, xattr,
 ACL, hard-link, and descriptor views. Each access reauthenticates its node
-handle against the format's exact root, lookup, or directory structure and
+handle against the exact root or directory structure and
 returns values whose lifetime remains bound to the immutable validation proof.
 An isolated harness-free allocator instrument enforces the zero-allocation
 access contract.
@@ -209,12 +208,10 @@ descriptor and cross-links once inside that callback, then may retain the
 resulting `ValidatedIndex` for its complete request loop; neither the byte slice
 nor a proof borrowing it can escape after unmap. The generic mapping boundary
 has no dependency on the filesystem-view object model. A backend-neutral table
-now lazily assigns connection-local node IDs after positive V2 or V3 lookup, while
+now lazily assigns connection-local node IDs after positive V1 lookup, while
 negative lookup retains no node state. The same backend-neutral table now owns
 file-open identity and lifetime transitions, but still owns no OS descriptor,
-FUSE request framing, directory handle, or kernel connection authority. V1
-remains validation-compatible but does not offer point lookup or inode-table
-creation; V2 offers lookup but not authenticated directory iteration.
+FUSE request framing, directory handle, or kernel connection authority.
 
 Immutable mapping proofs are distinct backend capabilities. A transient memfd
 is accepted only with `F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW |
@@ -268,7 +265,7 @@ The inode table pins root as node 1 and allocates monotonically increasing IDs
 that are never reused during a connection. A validated hard-link group shares
 one node ID; otherwise identity is the exact artifact-local record occurrence.
 The table retains the `ValidatedIndex` proof for its lifetime, so its private
-long-lived node views do not become detached validation authority. V2/V3 record
+long-lived node views do not become detached validation authority. V1 record
 IDs remain stable only within the exact derived artifact and compiler ABI; they
 are not portable inode numbers and are not stable across recompilation. A
 portable hard-link group digest is likewise not itself an `ino_t`.
@@ -336,7 +333,7 @@ not authority to serve or map another byte slice. Collection counts are checked
 against remaining record bytes and decoded-memory admission before allocation.
 The compiler's index and per-record limits are authoritative; a caller-provided
 private staging capability may narrow those limits but cannot widen them.
-V3 compilation pre-admits retained build entries and requested lookup,
+V1 compilation pre-admits retained build entries and requested lookup,
 directory, and hard-link sorting storage under both the index-output ceiling
 and the aggregate graph working-memory ceiling. The graph's external live
 charge crosses the builder API: after each fallible allocation, actual vector

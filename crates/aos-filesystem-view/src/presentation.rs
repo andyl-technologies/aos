@@ -207,9 +207,6 @@ impl PresentationLimits {
 /// Reports failure to prepare or use exact worker-facing presentation state.
 #[derive(Debug, thiserror::Error)]
 pub enum PresentationError {
-    /// Exact link counts are unavailable before structural-index V3.
-    #[error("prepared presentation requires structural-index V3")]
-    VersionUnsupported,
     /// Admission exceeded a caller-controlled record, ACL, or map ceiling.
     #[error("presentation exceeds its admitted {0} ceiling")]
     LimitExceeded(&'static str),
@@ -224,7 +221,7 @@ pub enum PresentationError {
     Index(#[from] IndexError),
 }
 
-/// Binds prevalidated presentation policy to one exact V3 index.
+/// Binds prevalidated presentation policy to one exact structural index.
 ///
 /// Construction scans every record without allocation. The cache identity
 /// includes the exact index descriptor, identity/ACL plan, controller
@@ -256,9 +253,9 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
     ///
     /// # Errors
     ///
-    /// Returns [`PresentationError`] for a non-V3 index, exceeded admission
-    /// limit, unmapped owner or ACL qualifier, unsupported or reordered ACL,
-    /// unrepresentable link count, or authenticated-index inconsistency.
+    /// Returns [`PresentationError`] for an exceeded admission limit, unmapped
+    /// owner or ACL qualifier, unsupported or reordered ACL, unrepresentable
+    /// link count, or authenticated-index inconsistency.
     pub fn prepare(
         index: &'index ValidatedIndex<'bytes>,
         plan: &'plan PresentationPlan,
@@ -266,9 +263,6 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
         policy_digest: [u8; 32],
         limits: PresentationLimits,
     ) -> Result<Self, PresentationError> {
-        if !index.supports_directory_iteration() {
-            return Err(PresentationError::VersionUnsupported);
-        }
         if index.summary().records > limits.maximum_records {
             return Err(PresentationError::LimitExceeded("record"));
         }

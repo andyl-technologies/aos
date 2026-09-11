@@ -16,12 +16,12 @@ mod worker;
 
 pub use graph::{CompileError, CompileSummary, TreeCompiler};
 pub use index::{
-    DirectoryEntries, DirectoryEntryView, DirectoryRange, INDEX_MEDIA_TYPE, INDEX_MEDIA_TYPE_V1,
-    INDEX_MEDIA_TYPE_V2, INDEX_MEDIA_TYPE_V3, IndexAclEntries, IndexAclRange, IndexContentView,
-    IndexCrosslinks, IndexError, IndexExpectation, IndexExtentRange, IndexExtentView, IndexExtents,
-    IndexFileView, IndexNodeBodyView, IndexNodeKind, IndexNodeSemantics, IndexNodeView,
-    IndexObjectDescriptorView, IndexRecords, IndexSparseContentView, IndexStaging, IndexSummary,
-    IndexXattrRange, IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
+    DirectoryEntries, DirectoryEntryView, DirectoryRange, INDEX_MEDIA_TYPE, IndexAclEntries,
+    IndexAclRange, IndexContentView, IndexCrosslinks, IndexError, IndexExpectation,
+    IndexExtentRange, IndexExtentView, IndexExtents, IndexFileView, IndexNodeBodyView,
+    IndexNodeKind, IndexNodeSemantics, IndexNodeView, IndexObjectDescriptorView, IndexRecords,
+    IndexSparseContentView, IndexStaging, IndexSummary, IndexXattrRange, IndexXattrView,
+    IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
 };
 pub use inode::{
     DirectoryCookie, DirectoryHandleId, DirectoryHandleLimits, DirectoryReadEntries,

@@ -54,12 +54,6 @@ pub enum IndexError {
     /// The candidate bytes do not match the authenticated publication descriptor.
     #[error("structural index does not match its authenticated descriptor")]
     DescriptorMismatch,
-    /// Point lookup was requested from a validation-only V1 artifact.
-    #[error("point lookup is unavailable for structural-index V1")]
-    PointLookupUnavailable,
-    /// Directory iteration or exact link counts were requested from V1/V2.
-    #[error("directory iteration is unavailable before structural-index V3")]
-    DirectoryIterationUnavailable,
     /// A lookup parent came from another artifact or was not a directory.
     #[error("lookup parent does not belong to this index or is not a directory")]
     ForeignNode,
@@ -129,8 +123,11 @@ pub fn validate_index<'a>(
     maximum_working_bytes: u64,
     expected: &IndexExpectation<'_>,
 ) -> Result<ValidatedIndex<'a>, IndexError> {
-    if bytes.len() < HEADER_BYTES_V1 || bytes.len() as u64 > maximum_bytes {
+    if bytes.len() as u64 > maximum_bytes {
         return Err(IndexError::LimitExceeded);
+    }
+    if bytes.len() < HEADER_BYTES {
+        return Err(IndexError::InvalidHeader);
     }
     let validation_reservation = (bytes.len() as u64)
         .checked_mul(64)
@@ -148,16 +145,10 @@ pub fn validate_index<'a>(
     }
     let version = cursor.u32()?;
     let header_bytes = cursor.u32()? as usize;
-    let (index_media_type, expected_header_bytes) = match version {
-        VERSION_V1 => (INDEX_MEDIA_TYPE_V1, HEADER_BYTES_V1),
-        VERSION_V2 => (INDEX_MEDIA_TYPE_V2, HEADER_BYTES_V2),
-        VERSION_V3 => (INDEX_MEDIA_TYPE_V3, HEADER_BYTES_V3),
-        _ => return Err(IndexError::InvalidHeader),
-    };
-    if header_bytes != expected_header_bytes || bytes.len() < header_bytes {
+    if version != VERSION || header_bytes != HEADER_BYTES {
         return Err(IndexError::InvalidHeader);
     }
-    let index_media = MediaType::new(index_media_type).map_err(|_| IndexError::InvalidHeader)?;
+    let index_media = MediaType::new(INDEX_MEDIA_TYPE).map_err(|_| IndexError::InvalidHeader)?;
     if expected.index.media_type() != &index_media
         || descriptor_for_bytes(index_media, bytes) != *expected.index
     {
@@ -178,52 +169,28 @@ pub fn validate_index<'a>(
     }
     let payload_bytes = cursor.u64()?;
     let expected_hash = cursor.array::<32>()?;
-    let (records_bytes, lookup_slots, directory_slots, root_nlink, layout) =
-        if version >= VERSION_V2 {
-            let records_bytes = cursor.u64()?;
-            let lookup_slots = cursor.u64()?;
-            if cursor.u32()? as usize != LOOKUP_SLOT_BYTES
-                || cursor.u32()? != LOOKUP_HASH_SHA256
-                || cursor.u64()? != 0
-            {
-                return Err(IndexError::InvalidHeader);
-            }
-            if version == VERSION_V3 {
-                let directory_slots = cursor.u64()?;
-                if cursor.u32()? as usize != DIRECTORY_SLOT_BYTES || cursor.u32()? != 0 {
-                    return Err(IndexError::InvalidHeader);
-                }
-                let root_nlink = cursor.u64()?;
-                if root_nlink < 2 || cursor.u64()? != 0 {
-                    return Err(IndexError::InvalidHeader);
-                }
-                (
-                    records_bytes,
-                    lookup_slots,
-                    directory_slots,
-                    root_nlink,
-                    IndexLayout::IterableV3 {
-                        records_bytes,
-                        lookup_slots,
-                        directory_slots,
-                        root_nlink,
-                    },
-                )
-            } else {
-                (
-                    records_bytes,
-                    lookup_slots,
-                    0,
-                    0,
-                    IndexLayout::PointLookupV2 {
-                        records_bytes,
-                        lookup_slots,
-                    },
-                )
-            }
-        } else {
-            (payload_bytes, 0, 0, 0, IndexLayout::SequentialV1)
-        };
+    let records_bytes = cursor.u64()?;
+    let lookup_slots = cursor.u64()?;
+    if cursor.u32()? as usize != LOOKUP_SLOT_BYTES
+        || cursor.u32()? != LOOKUP_HASH_SHA256
+        || cursor.u64()? != 0
+    {
+        return Err(IndexError::InvalidHeader);
+    }
+    let directory_slots = cursor.u64()?;
+    if cursor.u32()? as usize != DIRECTORY_SLOT_BYTES || cursor.u32()? != 0 {
+        return Err(IndexError::InvalidHeader);
+    }
+    let root_nlink = cursor.u64()?;
+    if root_nlink < 2 || cursor.u64()? != 0 {
+        return Err(IndexError::InvalidHeader);
+    }
+    let layout = IndexLayout {
+        records_bytes,
+        lookup_slots,
+        directory_slots,
+        root_nlink,
+    };
     if compiler_abi != expected.compiler_abi
         || tree_digest != expected.tree.digest()
         || tree_size != expected.tree.encoded_size()
@@ -248,12 +215,8 @@ pub fn validate_index<'a>(
     if records_len > payload.len() {
         return Err(IndexError::InvalidHeader);
     }
-    let table_slots = lookup_slot_count(records)?;
-    let lookup_bytes = if version >= VERSION_V2 {
-        lookup_allocation_bytes(table_slots)?
-    } else {
-        0
-    };
+    let canonical_slots = lookup_slot_count(records)?;
+    let lookup_bytes = lookup_allocation_bytes(canonical_slots)?;
     let lookup_len = usize::try_from(lookup_bytes).map_err(|_| IndexError::LimitExceeded)?;
     if records_len
         .checked_add(lookup_len)
@@ -265,35 +228,21 @@ pub fn validate_index<'a>(
     let records_payload = &payload[..records_len];
     let lookup_payload = &payload[records_len..records_len + lookup_len];
     let directory_payload = &payload[records_len + lookup_len..];
-    if version >= VERSION_V2 {
-        let canonical_slots = lookup_slot_count(records)?;
-        let table_bytes = lookup_allocation_bytes(canonical_slots)?;
-        let canonical_slots_u64 =
-            u64::try_from(canonical_slots).map_err(|_| IndexError::LimitExceeded)?;
-        if lookup_slots != canonical_slots_u64 || table_bytes != lookup_payload.len() as u64 {
-            return Err(IndexError::InvalidHeader);
-        }
-        let directory_bytes = if version == VERSION_V3 {
-            let bytes = directory_allocation_bytes(canonical_slots)?;
-            if directory_slots != canonical_slots_u64 || bytes != directory_payload.len() as u64 {
-                return Err(IndexError::InvalidHeader);
-            }
-            bytes
-        } else {
-            if !directory_payload.is_empty() {
-                return Err(IndexError::InvalidHeader);
-            }
-            0
-        };
-        if records_bytes
-            .checked_add(table_bytes)
-            .and_then(|bytes| bytes.checked_add(directory_bytes))
-            .ok_or(IndexError::LimitExceeded)?
-            != payload_bytes
-        {
-            return Err(IndexError::InvalidHeader);
-        }
-    } else if !lookup_payload.is_empty() || !directory_payload.is_empty() {
+    let canonical_slots_u64 =
+        u64::try_from(canonical_slots).map_err(|_| IndexError::LimitExceeded)?;
+    if lookup_slots != canonical_slots_u64 || lookup_bytes != lookup_payload.len() as u64 {
+        return Err(IndexError::InvalidHeader);
+    }
+    let directory_bytes = directory_allocation_bytes(canonical_slots)?;
+    if directory_slots != canonical_slots_u64 || directory_bytes != directory_payload.len() as u64 {
+        return Err(IndexError::InvalidHeader);
+    }
+    if records_bytes
+        .checked_add(lookup_bytes)
+        .and_then(|bytes| bytes.checked_add(directory_bytes))
+        .ok_or(IndexError::LimitExceeded)?
+        != payload_bytes
+    {
         return Err(IndexError::InvalidHeader);
     }
     let mut records_cursor = Cursor::new(records_payload);
@@ -384,12 +333,8 @@ pub fn validate_index<'a>(
         return Err(IndexError::LimitExceeded);
     }
     validate_index_hardlinks(&hardlinks, &nodes)?;
-    if version >= VERSION_V2 {
-        validate_lookup_table(lookup_payload, &nodes)?;
-    }
-    if version == VERSION_V3 {
-        validate_directory_table(directory_payload, root_nlink, &nodes, &hardlinks)?;
-    }
+    validate_lookup_table(lookup_payload, &nodes)?;
+    validate_directory_table(directory_payload, root_nlink, &nodes, &hardlinks)?;
     let hardlink_groups = u64::try_from(hardlinks.len()).map_err(|_| IndexError::LimitExceeded)?;
     let hardlink_members = hardlinks.values().try_fold(0_u64, |total, members| {
         let members = u64::try_from(members.len()).map_err(|_| IndexError::LimitExceeded)?;

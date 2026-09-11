@@ -9,7 +9,7 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use aos_filesystem_view::{
-    AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE_V3, IdMapExtent, IdentityMap,
+    AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
     IndexExpectation, IndexStaging, InodeTableLimits, ObjectSource, PreparedPresentation,
     PresentationLimits, PresentationPlan, ROOT_NODE_ID, TreeCompileLimits, TreeCompiler,
     WorkerLimits, validate_index,
@@ -138,7 +138,7 @@ fn with_file_size(
         .unwrap();
     let (writer, _) = staged.into_parts();
     let bytes = writer.into_inner();
-    let artifact = descriptor_for_bytes(MediaType::new(INDEX_MEDIA_TYPE_V3).unwrap(), &bytes);
+    let artifact = descriptor_for_bytes(MediaType::new(INDEX_MEDIA_TYPE).unwrap(), &bytes);
     let index = validate_index(
         &bytes,
         65536,

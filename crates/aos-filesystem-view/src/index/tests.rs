@@ -1,4 +1,4 @@
-//! Structural-index encoding, validation, compatibility, and limit tests.
+//! Structural-index encoding, validation, corruption, and limit tests.
 
 use super::builder::*;
 use super::semantic::*;
@@ -9,6 +9,13 @@ use super::*;
 use aos_sandbox_core::model::FilesystemMetadata;
 use aos_sandbox_core::{MediaType, ObjectDescriptor, descriptor_for_bytes};
 use std::io::Cursor as IoCursor;
+
+const PAYLOAD_DIGEST_OFFSET: usize = 152;
+const RECORDS_BYTES_OFFSET: usize = 184;
+const LOOKUP_SLOTS_OFFSET: usize = 192;
+const DIRECTORY_SLOTS_OFFSET: usize = 216;
+const DIRECTORY_SLOT_BYTES_OFFSET: usize = 224;
+const ROOT_NLINK_OFFSET: usize = 232;
 
 fn descriptor() -> ObjectDescriptor {
     ObjectDescriptor::new(
@@ -28,19 +35,8 @@ fn directory_descriptor() -> ObjectDescriptor {
     )
 }
 
-fn index_media_for(bytes: &[u8]) -> MediaType {
-    let version = u32::from_le_bytes(
-        bytes[8..12]
-            .try_into()
-            .unwrap_or_else(|_| panic!("index version missing")),
-    );
-    let media = match version {
-        VERSION_V1 => INDEX_MEDIA_TYPE_V1,
-        VERSION_V2 => INDEX_MEDIA_TYPE_V2,
-        VERSION_V3 => INDEX_MEDIA_TYPE_V3,
-        _ => panic!("unexpected index version"),
-    };
-    MediaType::new(media).unwrap_or_else(|error| panic!("media failed: {error}"))
+fn index_media() -> MediaType {
+    MediaType::new(INDEX_MEDIA_TYPE).unwrap_or_else(|error| panic!("media failed: {error}"))
 }
 
 fn root_index() -> (
@@ -75,70 +71,8 @@ fn root_index() -> (
     (writer.into_inner(), position, summary, tree, root)
 }
 
-fn root_index_v3() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
-    let tree = descriptor();
-    let root = directory_descriptor();
-    let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
-        .unwrap_or_else(|error| panic!("metadata failed: {error}"));
-    let mut builder = StructuralIndexBuilder::new_v3(
-        IndexStaging::new(IoCursor::new(Vec::new()), 4096, 4096),
-        [3; 32],
-        tree.clone(),
-        root.clone(),
-        0,
-    )
-    .unwrap_or_else(|error| panic!("builder failed: {error}"));
-    builder
-        .push(&IndexRecord {
-            parent: u64::MAX,
-            depth: 0,
-            sibling_ordinal: 0,
-            name: &[],
-            metadata: &metadata,
-            node: IndexNode::Directory { descriptor: &root },
-        })
-        .unwrap_or_else(|error| panic!("root push failed: {error}"));
-    let (writer, _) = builder
-        .finish()
-        .unwrap_or_else(|error| panic!("finish failed: {error}"))
-        .into_parts();
-    (writer.into_inner(), tree, root)
-}
-
-fn root_index_v1() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
-    let tree = descriptor();
-    let root = directory_descriptor();
-    let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
-        .unwrap_or_else(|error| panic!("metadata failed: {error}"));
-    let mut record = Vec::new();
-    encode_record(
-        &mut record,
-        &IndexRecord {
-            parent: u64::MAX,
-            depth: 0,
-            sibling_ordinal: 0,
-            name: &[],
-            metadata: &metadata,
-            node: IndexNode::Directory { descriptor: &root },
-        },
-    )
-    .unwrap_or_else(|error| panic!("record failed: {error}"));
-    let payload_digest: [u8; 32] = Sha256::digest(&record).into();
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(MAGIC);
-    put_u32(&mut bytes, VERSION_V1);
-    put_u32(&mut bytes, HEADER_BYTES_V1 as u32);
-    bytes.extend_from_slice(&[3; 32]);
-    bytes.extend_from_slice(tree.digest().as_bytes());
-    put_u64(&mut bytes, tree.encoded_size());
-    bytes.extend_from_slice(root.digest().as_bytes());
-    put_u64(&mut bytes, root.encoded_size());
-    put_u32(&mut bytes, 0);
-    put_u32(&mut bytes, 0);
-    put_u64(&mut bytes, 1);
-    put_u64(&mut bytes, record.len() as u64);
-    bytes.extend_from_slice(&payload_digest);
-    bytes.extend_from_slice(&record);
+fn root_index_bytes() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
+    let (bytes, _, _, tree, root) = root_index();
     (bytes, tree, root)
 }
 
@@ -183,64 +117,68 @@ fn staging_requires_a_fresh_empty_writer_and_finishes_at_exact_eof() {
     assert_eq!(position, summary.bytes);
     assert_eq!(bytes.len() as u64, summary.bytes);
     assert_eq!(summary.records, 1);
-    assert_eq!(summary.bytes, 365);
-    let media = index_media_for(&bytes);
+    assert_eq!(summary.bytes, 397);
+    let media = index_media();
     assert_eq!(
         descriptor_for_bytes(media, &bytes).digest().as_bytes(),
         &[
-            8, 145, 194, 237, 13, 115, 216, 207, 52, 172, 55, 126, 39, 45, 244, 26, 247, 98, 8, 7,
-            204, 223, 126, 153, 72, 150, 234, 51, 248, 250, 155, 123,
+            233, 101, 189, 196, 153, 113, 181, 183, 92, 95, 178, 152, 132, 255, 5, 133, 195, 78,
+            118, 194, 143, 198, 116, 6, 0, 187, 128, 46, 212, 49, 219, 78,
         ]
     );
 }
 
 #[test]
-fn v1_golden_vector_remains_valid_but_has_no_point_lookup() {
-    let (bytes, tree, root) = root_index_v1();
-    assert_eq!(bytes.len(), 333);
-    let media =
-        MediaType::new(INDEX_MEDIA_TYPE_V1).unwrap_or_else(|error| panic!("media failed: {error}"));
+fn rich_v1_round_trips_and_rejects_non_v1_or_short_headers() {
+    let (bytes, tree, root) = root_index_bytes();
     assert_eq!(
-        descriptor_for_bytes(media.clone(), &bytes)
-            .digest()
-            .as_bytes(),
-        &[
-            157, 145, 103, 153, 247, 240, 82, 185, 151, 121, 216, 129, 29, 146, 175, 2, 71, 156,
-            251, 40, 219, 210, 163, 199, 76, 130, 171, 169, 23, 104, 214, 50,
-        ]
+        u32::from_le_bytes(
+            bytes[8..12]
+                .try_into()
+                .unwrap_or_else(|_| panic!("version missing")),
+        ),
+        VERSION
     );
-    let index = descriptor_for_bytes(media, &bytes);
-    let validated = validate_index(
-        &bytes,
-        4096,
-        1_048_576,
-        &IndexExpectation {
-            index: &index,
-            compiler_abi: [3; 32],
-            tree: &tree,
-            root: &root,
-            tree_features: 0,
-        },
-    )
-    .unwrap_or_else(|error| panic!("V1 validation failed: {error}"));
+    assert_eq!(
+        u32::from_le_bytes(
+            bytes[12..16]
+                .try_into()
+                .unwrap_or_else(|_| panic!("header length missing")),
+        ) as usize,
+        HEADER_BYTES
+    );
+    let validated = validate_fresh(&bytes, &tree, &root)
+        .unwrap_or_else(|error| panic!("V1 validation failed: {error}"));
     let root_view = validated
         .root()
         .unwrap_or_else(|error| panic!("root decode failed: {error}"));
-    assert!(!validated.supports_point_lookup());
-    assert!(matches!(
-        crate::InodeTable::new(
-            &validated,
-            [0; 32],
-            crate::InodeTableLimits::new(1, 4096, 1, 1, 1),
-        ),
-        Err(crate::InodeError::Index(IndexError::PointLookupUnavailable))
-    ));
-    let name = PathName::new(b"child".to_vec())
-        .unwrap_or_else(|error| panic!("path name failed: {error}"));
-    assert!(matches!(
-        validated.lookup_child(&root_view, &name),
-        Err(IndexError::PointLookupUnavailable)
-    ));
+    assert!(
+        validated
+            .lookup_child_bytes(&root_view, b"child")
+            .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+            .is_none()
+    );
+    assert!(
+        validated
+            .directory_range(&root_view)
+            .unwrap_or_else(|error| panic!("directory range failed: {error}"))
+            .is_empty()
+    );
+
+    for rejected in [0_u32, 2, 3] {
+        let mut non_v1 = bytes.clone();
+        non_v1[8..12].copy_from_slice(&rejected.to_le_bytes());
+        assert!(matches!(
+            validate_fresh(&non_v1, &tree, &root),
+            Err(IndexError::InvalidHeader)
+        ));
+    }
+    for short in [184, 216, HEADER_BYTES - 1] {
+        assert!(matches!(
+            validate_fresh(&bytes[..short], &tree, &root),
+            Err(IndexError::InvalidHeader)
+        ));
+    }
 }
 
 fn validate_fresh<'a>(
@@ -257,7 +195,7 @@ fn validate_fresh_with_features<'a>(
     root: &ObjectDescriptor,
     tree_features: u32,
 ) -> Result<ValidatedIndex<'a>, IndexError> {
-    let media = index_media_for(bytes);
+    let media = index_media();
     let index = descriptor_for_bytes(media, bytes);
     validate_index(
         bytes,
@@ -361,7 +299,7 @@ fn iterable_index() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
         .collect::<Vec<_>>();
     let group = hardlink_group_digest(&paths, &metadata, &content)
         .unwrap_or_else(|error| panic!("hard-link group failed: {error}"));
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 32 * 1024, 8192),
         [3; 32],
         tree.clone(),
@@ -495,7 +433,7 @@ fn semantic_index() -> (Vec<u8>, ObjectDescriptor, ObjectDescriptor) {
     let empty_sparse = SparseContent::new(0, Vec::new())
         .unwrap_or_else(|error| panic!("empty sparse content failed: {error}"));
     let empty_content = ContentLayout::Sparse(empty_sparse);
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 64 * 1024, 16 * 1024),
         [3; 32],
         tree.clone(),
@@ -710,7 +648,7 @@ fn authenticated_semantic_views_borrow_every_record_body_without_allocation() {
 }
 
 #[test]
-fn semantic_records_are_shared_by_v1_v2_and_v3_and_reject_foreign_nodes() {
+fn semantic_records_are_borrowed_and_reject_foreign_nodes() {
     let (foreign_bytes, foreign_tree, foreign_root) = semantic_index();
     let foreign =
         validate_fresh_with_features(&foreign_bytes, &foreign_tree, &foreign_root, FEATURE_ACL)
@@ -718,33 +656,24 @@ fn semantic_records_are_shared_by_v1_v2_and_v3_and_reject_foreign_nodes() {
     let foreign_node = foreign
         .root()
         .unwrap_or_else(|error| panic!("foreign root failed: {error}"));
-    let indexes = [
-        root_index_v1(),
-        {
-            let (bytes, _, _, tree, root) = root_index();
-            (bytes, tree, root)
-        },
-        root_index_v3(),
-    ];
-    for (bytes, tree, root_descriptor) in &indexes {
-        let validated = validate_fresh(bytes, tree, root_descriptor)
-            .unwrap_or_else(|error| panic!("validation failed: {error}"));
-        let root = validated
-            .root()
-            .unwrap_or_else(|error| panic!("root failed: {error}"));
-        let semantics = validated
-            .record_semantics(&root)
-            .unwrap_or_else(|error| panic!("semantics failed: {error}"));
-        let IndexNodeBodyView::Directory { descriptor } = semantics.body() else {
-            panic!("root body was not a directory");
-        };
-        assert_eq!(descriptor.digest(), root_descriptor.digest());
-        assert_eq!(descriptor.encoded_size(), root_descriptor.encoded_size());
-        assert!(matches!(
-            validated.record_semantics(&foreign_node),
-            Err(IndexError::ForeignNode)
-        ));
-    }
+    let (bytes, tree, root_descriptor) = root_index_bytes();
+    let validated = validate_fresh(&bytes, &tree, &root_descriptor)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let root = validated
+        .root()
+        .unwrap_or_else(|error| panic!("root failed: {error}"));
+    let semantics = validated
+        .record_semantics(&root)
+        .unwrap_or_else(|error| panic!("semantics failed: {error}"));
+    let IndexNodeBodyView::Directory { descriptor } = semantics.body() else {
+        panic!("root body was not a directory");
+    };
+    assert_eq!(descriptor.digest(), root_descriptor.digest());
+    assert_eq!(descriptor.encoded_size(), root_descriptor.encoded_size());
+    assert!(matches!(
+        validated.record_semantics(&foreign_node),
+        Err(IndexError::ForeignNode)
+    ));
 
     let (whole_bytes, whole_tree, whole_root) = iterable_index();
     let whole_index = validate_fresh(&whole_bytes, &whole_tree, &whole_root)
@@ -876,42 +805,21 @@ fn assert_semantic_identity_forgery_is_rejected(
 }
 
 #[test]
-fn semantic_identity_is_authenticated_by_each_format_structure() {
-    let (v1_bytes, v1_tree, v1_root) = root_index_v1();
-    let v1 = validate_fresh(&v1_bytes, &v1_tree, &v1_root)
-        .unwrap_or_else(|error| panic!("V1 validation failed: {error}"));
-    let v1_node = v1
+fn semantic_identity_is_authenticated_by_the_index_structure() {
+    let (bytes, tree, root) = lookup_index();
+    let index = validate_fresh(&bytes, &tree, &root)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
+    let root_node = index
         .root()
-        .unwrap_or_else(|error| panic!("V1 root failed: {error}"));
-    assert_semantic_identity_forgery_is_rejected(&v1, v1_node);
+        .unwrap_or_else(|error| panic!("root failed: {error}"));
+    assert_semantic_identity_forgery_is_rejected(&index, root_node);
 
-    let (v2_bytes, v2_tree, v2_root) = lookup_index();
-    let v2 = validate_fresh(&v2_bytes, &v2_tree, &v2_root)
-        .unwrap_or_else(|error| panic!("V2 validation failed: {error}"));
-    let v2_root_node = v2
-        .root()
-        .unwrap_or_else(|error| panic!("V2 root failed: {error}"));
-    let v2_name =
-        PathName::new(b"z".to_vec()).unwrap_or_else(|error| panic!("V2 name failed: {error}"));
-    let v2_node = v2
-        .lookup_child(&v2_root_node, &v2_name)
-        .unwrap_or_else(|error| panic!("V2 lookup failed: {error}"))
-        .unwrap_or_else(|| panic!("V2 child missing"));
-    assert_semantic_identity_forgery_is_rejected(&v2, v2_node);
-
-    let (v3_bytes, v3_tree, v3_root) = iterable_index();
-    let v3 = validate_fresh(&v3_bytes, &v3_tree, &v3_root)
-        .unwrap_or_else(|error| panic!("V3 validation failed: {error}"));
-    let v3_root_node = v3
-        .root()
-        .unwrap_or_else(|error| panic!("V3 root failed: {error}"));
-    let v3_name =
-        PathName::new(b"b".to_vec()).unwrap_or_else(|error| panic!("V3 name failed: {error}"));
-    let v3_node = v3
-        .lookup_child(&v3_root_node, &v3_name)
-        .unwrap_or_else(|error| panic!("V3 lookup failed: {error}"))
-        .unwrap_or_else(|| panic!("V3 child missing"));
-    assert_semantic_identity_forgery_is_rejected(&v3, v3_node);
+    let name = PathName::new(b"z".to_vec()).unwrap_or_else(|error| panic!("name failed: {error}"));
+    let node = index
+        .lookup_child(&root_node, &name)
+        .unwrap_or_else(|error| panic!("lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("child missing"));
+    assert_semantic_identity_forgery_is_rejected(&index, node);
 }
 
 #[test]
@@ -1017,21 +925,19 @@ fn borrowed_semantic_parser_fails_closed_on_structural_corruption() {
 }
 
 #[test]
-fn v3_directory_ranges_and_exact_nlink_are_lazy_and_canonical() {
+fn directory_ranges_and_exact_nlink_are_lazy_and_canonical() {
     let (bytes, tree, root) = iterable_index();
     assert_eq!(
-        descriptor_for_bytes(index_media_for(&bytes), &bytes)
+        descriptor_for_bytes(index_media(), &bytes)
             .digest()
             .as_bytes(),
         &[
-            118, 109, 109, 56, 7, 22, 111, 231, 229, 148, 152, 44, 86, 236, 184, 171, 14, 134, 234,
-            50, 21, 157, 220, 226, 157, 1, 17, 27, 140, 35, 253, 9,
+            140, 164, 184, 249, 62, 68, 52, 145, 250, 62, 32, 101, 138, 12, 132, 180, 193, 198, 90,
+            90, 68, 252, 3, 254, 249, 117, 66, 29, 125, 13, 246, 9,
         ]
     );
     let validated = validate_fresh(&bytes, &tree, &root)
         .unwrap_or_else(|error| panic!("validation failed: {error}"));
-    assert!(validated.supports_point_lookup());
-    assert!(validated.supports_directory_iteration());
     let root = validated
         .root()
         .unwrap_or_else(|error| panic!("root failed: {error}"));
@@ -1093,8 +999,8 @@ fn v3_directory_ranges_and_exact_nlink_are_lazy_and_canonical() {
 }
 
 #[test]
-fn v3_empty_root_and_foreign_nodes_fail_closed() {
-    let (empty_bytes, empty_tree, empty_root_descriptor) = root_index_v3();
+fn empty_root_and_foreign_nodes_fail_closed() {
+    let (empty_bytes, empty_tree, empty_root_descriptor) = root_index_bytes();
     let empty = validate_fresh(&empty_bytes, &empty_tree, &empty_root_descriptor)
         .unwrap_or_else(|error| panic!("empty validation failed: {error}"));
     let empty_root = empty
@@ -1130,7 +1036,7 @@ fn v3_empty_root_and_foreign_nodes_fail_closed() {
 }
 
 #[test]
-fn v3_hardlink_counts_span_distinct_parent_ranges() {
+fn hardlink_counts_span_distinct_parent_ranges() {
     let tree = descriptor();
     let root = directory_descriptor();
     let directory_a = ObjectDescriptor::new(
@@ -1164,7 +1070,7 @@ fn v3_hardlink_counts_span_distinct_parent_ranges() {
         .collect::<Vec<_>>();
     let group = hardlink_group_digest(&paths, &metadata, &content)
         .unwrap_or_else(|error| panic!("group failed: {error}"));
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
         [3; 32],
         tree.clone(),
@@ -1263,9 +1169,9 @@ fn v3_hardlink_counts_span_distinct_parent_ranges() {
 }
 
 #[test]
-fn v3_validator_reconstructs_directory_order_offsets_and_link_counts() {
+fn validator_reconstructs_directory_order_offsets_and_link_counts() {
     let (bytes, tree, root) = iterable_index();
-    let exact_index = descriptor_for_bytes(index_media_for(&bytes), &bytes);
+    let exact_index = descriptor_for_bytes(index_media(), &bytes);
     assert!(matches!(
         validate_index(
             &bytes,
@@ -1282,7 +1188,8 @@ fn v3_validator_reconstructs_directory_order_offsets_and_link_counts() {
         Err(IndexError::LimitExceeded)
     ));
     let wrong_media = descriptor_for_bytes(
-        MediaType::new(INDEX_MEDIA_TYPE_V2).unwrap_or_else(|error| panic!("media failed: {error}")),
+        MediaType::new("application/octet-stream")
+            .unwrap_or_else(|error| panic!("media failed: {error}")),
         &bytes,
     );
     assert!(matches!(
@@ -1301,16 +1208,16 @@ fn v3_validator_reconstructs_directory_order_offsets_and_link_counts() {
         Err(IndexError::DescriptorMismatch)
     ));
     let records_bytes = u64::from_le_bytes(
-        bytes[HEADER_BYTES_V1..HEADER_BYTES_V1 + 8]
+        bytes[RECORDS_BYTES_OFFSET..RECORDS_BYTES_OFFSET + 8]
             .try_into()
             .unwrap_or_else(|_| panic!("records length missing")),
     ) as usize;
     let slots = u64::from_le_bytes(
-        bytes[HEADER_BYTES_V1 + 8..HEADER_BYTES_V1 + 16]
+        bytes[LOOKUP_SLOTS_OFFSET..LOOKUP_SLOTS_OFFSET + 8]
             .try_into()
             .unwrap_or_else(|_| panic!("slot count missing")),
     ) as usize;
-    let table = HEADER_BYTES_V3 + records_bytes + slots * LOOKUP_SLOT_BYTES;
+    let table = HEADER_BYTES + records_bytes + slots * LOOKUP_SLOT_BYTES;
 
     let mut swapped = bytes.clone();
     let second = table + DIRECTORY_SLOT_BYTES;
@@ -1332,7 +1239,7 @@ fn v3_validator_reconstructs_directory_order_offsets_and_link_counts() {
 
     let mut forged_offset = bytes.clone();
     forged_offset[table + 8..table + 16]
-        .copy_from_slice(&((HEADER_BYTES_V3 + 1) as u64).to_le_bytes());
+        .copy_from_slice(&((HEADER_BYTES + 1) as u64).to_le_bytes());
     resign_payload(&mut forged_offset);
     assert!(matches!(
         validate_fresh(&forged_offset, &tree, &root),
@@ -1348,33 +1255,35 @@ fn v3_validator_reconstructs_directory_order_offsets_and_link_counts() {
     ));
 
     let mut forged_root = bytes;
-    forged_root[HEADER_BYTES_V3 - 16..HEADER_BYTES_V3 - 8].copy_from_slice(&4_u64.to_le_bytes());
+    forged_root[ROOT_NLINK_OFFSET..ROOT_NLINK_OFFSET + 8].copy_from_slice(&4_u64.to_le_bytes());
     assert!(matches!(
         validate_fresh(&forged_root, &tree, &root),
         Err(IndexError::InvalidRecord)
     ));
 
     let mut open_extension = iterable_index().0;
-    open_extension[HEADER_BYTES_V3 - 1] = 1;
+    open_extension[HEADER_BYTES - 1] = 1;
     assert!(matches!(
         validate_fresh(&open_extension, &tree, &root),
         Err(IndexError::InvalidHeader)
     ));
 
     let mut wrong_count = iterable_index().0;
-    wrong_count[HEADER_BYTES_V2..HEADER_BYTES_V2 + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    wrong_count[DIRECTORY_SLOTS_OFFSET..DIRECTORY_SLOTS_OFFSET + 8]
+        .copy_from_slice(&u64::MAX.to_le_bytes());
     assert!(matches!(
         validate_fresh(&wrong_count, &tree, &root),
         Err(IndexError::InvalidHeader)
     ));
     let mut wrong_width = iterable_index().0;
-    wrong_width[HEADER_BYTES_V2 + 8..HEADER_BYTES_V2 + 12].copy_from_slice(&31_u32.to_le_bytes());
+    wrong_width[DIRECTORY_SLOT_BYTES_OFFSET..DIRECTORY_SLOT_BYTES_OFFSET + 4]
+        .copy_from_slice(&31_u32.to_le_bytes());
     assert!(matches!(
         validate_fresh(&wrong_width, &tree, &root),
         Err(IndexError::InvalidHeader)
     ));
     let mut wrong_version = iterable_index().0;
-    wrong_version[8..12].copy_from_slice(&VERSION_V2.to_le_bytes());
+    wrong_version[8..12].copy_from_slice(&(VERSION + 1).to_le_bytes());
     assert!(matches!(
         validate_fresh(&wrong_version, &tree, &root),
         Err(IndexError::InvalidHeader)
@@ -1382,16 +1291,16 @@ fn v3_validator_reconstructs_directory_order_offsets_and_link_counts() {
 }
 
 #[test]
-fn v3_nlink_rejects_a_corrupted_direct_ordinal_position() {
+fn nlink_rejects_a_corrupted_direct_ordinal_position() {
     let (mut bytes, tree, root) = iterable_index();
-    let descriptor = descriptor_for_bytes(index_media_for(&bytes), &bytes);
+    let descriptor = descriptor_for_bytes(index_media(), &bytes);
     let records_bytes = u64::from_le_bytes(
-        bytes[HEADER_BYTES_V1..HEADER_BYTES_V1 + 8]
+        bytes[RECORDS_BYTES_OFFSET..RECORDS_BYTES_OFFSET + 8]
             .try_into()
             .unwrap_or_else(|_| panic!("records length missing")),
     );
     let lookup_slots = u64::from_le_bytes(
-        bytes[HEADER_BYTES_V1 + 8..HEADER_BYTES_V1 + 16]
+        bytes[LOOKUP_SLOTS_OFFSET..LOOKUP_SLOTS_OFFSET + 8]
             .try_into()
             .unwrap_or_else(|_| panic!("slot count missing")),
     );
@@ -1429,7 +1338,7 @@ fn v3_nlink_rejects_a_corrupted_direct_ordinal_position() {
             hardlink_groups: 1,
             hardlink_members: 2,
         },
-        layout: IndexLayout::IterableV3 {
+        layout: IndexLayout {
             records_bytes,
             lookup_slots,
             directory_slots: lookup_slots,
@@ -1448,12 +1357,12 @@ fn v3_nlink_rejects_a_corrupted_direct_ordinal_position() {
 }
 
 #[test]
-fn v3_high_fanout_iteration_is_bounded_and_byte_exact() {
+fn high_fanout_iteration_is_bounded_and_byte_exact() {
     let tree = descriptor();
     let root = directory_descriptor();
     let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
         .unwrap_or_else(|error| panic!("metadata failed: {error}"));
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 2 * 1024 * 1024, 4096),
         [3; 32],
         tree.clone(),
@@ -1489,7 +1398,7 @@ fn v3_high_fanout_iteration_is_bounded_and_byte_exact() {
         .unwrap_or_else(|error| panic!("finish failed: {error}"))
         .into_parts();
     let bytes = writer.into_inner();
-    let index = descriptor_for_bytes(index_media_for(&bytes), &bytes);
+    let index = descriptor_for_bytes(index_media(), &bytes);
     let validated = validate_index(
         &bytes,
         2 * 1024 * 1024,
@@ -1551,12 +1460,12 @@ fn v3_high_fanout_iteration_is_bounded_and_byte_exact() {
 }
 
 #[test]
-fn v3_finish_admits_aggregate_actual_table_capacity() {
+fn finish_admits_aggregate_actual_table_capacity() {
     let tree = descriptor();
     let root = directory_descriptor();
     let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
         .unwrap_or_else(|error| panic!("metadata failed: {error}"));
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 4096, 4096),
         [3; 32],
         tree,
@@ -1600,7 +1509,7 @@ fn push_actual_retained_capacity_blocks_scratch_allocation_and_write() {
     let root = directory_descriptor();
     let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
         .unwrap_or_else(|error| panic!("metadata failed: {error}"));
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
         [3; 32],
         tree,
@@ -1668,7 +1577,7 @@ fn finish_actual_directory_capacity_blocks_hardlink_allocation() {
         ObjectDigest::from_bytes([5; 32]),
         0,
     ));
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
         [3; 32],
         tree,
@@ -1726,7 +1635,7 @@ fn finish_actual_lookup_capacity_obeys_staging_local_limit() {
     let root = directory_descriptor();
     let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, Vec::new(), None)
         .unwrap_or_else(|error| panic!("metadata failed: {error}"));
-    let mut builder = StructuralIndexBuilder::new_v3(
+    let mut builder = StructuralIndexBuilder::new(
         IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 16 * 1024),
         [3; 32],
         tree,
@@ -1777,15 +1686,14 @@ fn finish_actual_lookup_capacity_obeys_staging_local_limit() {
 }
 
 #[test]
-fn v2_point_lookup_is_byte_exact_lazy_and_allocation_free() {
+fn point_lookup_is_byte_exact_lazy_and_allocation_free() {
     let (bytes, tree, root) = lookup_index();
-    let media =
-        MediaType::new(INDEX_MEDIA_TYPE_V2).unwrap_or_else(|error| panic!("media failed: {error}"));
+    let media = index_media();
     assert_eq!(
         descriptor_for_bytes(media, &bytes).digest().as_bytes(),
         &[
-            43, 195, 204, 224, 254, 52, 240, 117, 151, 113, 200, 69, 165, 159, 85, 211, 21, 210,
-            243, 62, 195, 151, 144, 66, 130, 38, 172, 185, 62, 229, 192, 188,
+            128, 179, 59, 110, 162, 134, 52, 10, 83, 242, 28, 180, 24, 56, 86, 60, 190, 114, 140,
+            173, 14, 3, 206, 106, 187, 75, 84, 55, 193, 110, 220, 20,
         ]
     );
     let validated = validate_fresh(&bytes, &tree, &root)
@@ -1795,15 +1703,19 @@ fn v2_point_lookup_is_byte_exact_lazy_and_allocation_free() {
         .unwrap_or_else(|error| panic!("root failed: {error}"));
     assert_eq!(root_view.kind(), IndexNodeKind::Directory);
     assert_eq!(root_view.record_id(), 0);
-    assert!(!validated.supports_directory_iteration());
-    assert!(matches!(
-        validated.directory_entries(&root_view),
-        Err(IndexError::DirectoryIterationUnavailable)
-    ));
-    assert!(matches!(
-        validated.nlink(&root_view),
-        Err(IndexError::DirectoryIterationUnavailable)
-    ));
+    assert_eq!(
+        validated
+            .directory_entries(&root_view)
+            .unwrap_or_else(|error| panic!("directory iteration failed: {error}"))
+            .len(),
+        2
+    );
+    assert_eq!(
+        validated
+            .nlink(&root_view)
+            .unwrap_or_else(|error| panic!("nlink failed: {error}")),
+        2
+    );
 
     let z = PathName::new(b"z".to_vec()).unwrap_or_else(|error| panic!("name failed: {error}"));
     let file = validated
@@ -1863,14 +1775,14 @@ fn v2_point_lookup_is_byte_exact_lazy_and_allocation_free() {
 }
 
 #[test]
-fn v2_validator_rejects_noncanonical_or_forged_lookup_entries() {
+fn validator_rejects_noncanonical_or_forged_lookup_entries() {
     let (bytes, tree, root) = lookup_index();
     let records_bytes = u64::from_le_bytes(
-        bytes[HEADER_BYTES_V1..HEADER_BYTES_V1 + 8]
+        bytes[RECORDS_BYTES_OFFSET..RECORDS_BYTES_OFFSET + 8]
             .try_into()
             .unwrap_or_else(|_| panic!("records length missing")),
     ) as usize;
-    let table = HEADER_BYTES_V2 + records_bytes;
+    let table = HEADER_BYTES + records_bytes;
 
     let mut swapped = bytes.clone();
     let second = table + LOOKUP_SLOT_BYTES;
@@ -1884,7 +1796,7 @@ fn v2_validator_rejects_noncanonical_or_forged_lookup_entries() {
 
     let mut forged_offset = bytes.clone();
     forged_offset[table + 40..table + 48]
-        .copy_from_slice(&((HEADER_BYTES_V2 + 1) as u64).to_le_bytes());
+        .copy_from_slice(&((HEADER_BYTES + 1) as u64).to_le_bytes());
     resign_payload(&mut forged_offset);
     assert!(matches!(
         validate_fresh(&forged_offset, &tree, &root),
@@ -1941,7 +1853,7 @@ fn resign_payload(bytes: &mut [u8]) {
             .unwrap_or_else(|_| panic!("header length missing")),
     ) as usize;
     let digest: [u8; 32] = Sha256::digest(&bytes[header_bytes..]).into();
-    bytes[152..HEADER_BYTES_V1].copy_from_slice(&digest);
+    bytes[PAYLOAD_DIGEST_OFFSET..RECORDS_BYTES_OFFSET].copy_from_slice(&digest);
 }
 
 #[test]
@@ -1961,8 +1873,8 @@ fn authenticated_impossible_xattr_and_acl_counts_fail_before_allocation() {
     // `u32::MAX` is the canonical absent-ACL sentinel, so the largest
     // hostile ACL entry count is one less than the xattr maximum.
     for (count_offset, count) in [
-        (HEADER_BYTES_V2 + 52, u32::MAX),
-        (HEADER_BYTES_V2 + 56, u32::MAX - 1),
+        (HEADER_BYTES + 52, u32::MAX),
+        (HEADER_BYTES + 56, u32::MAX - 1),
     ] {
         let mut hostile = bytes.clone();
         hostile[count_offset..count_offset + 4].copy_from_slice(&count.to_le_bytes());
@@ -2018,11 +1930,11 @@ fn authenticated_impossible_sparse_extent_count_fails_before_allocation() {
         .into_parts();
     let mut bytes = writer.into_inner();
     let root_record_bytes = u32::from_le_bytes(
-        bytes[HEADER_BYTES_V2..HEADER_BYTES_V2 + 4]
+        bytes[HEADER_BYTES..HEADER_BYTES + 4]
             .try_into()
             .unwrap_or_else(|_| panic!("root record length missing")),
     ) as usize;
-    let file_record = HEADER_BYTES_V2 + root_record_bytes;
+    let file_record = HEADER_BYTES + root_record_bytes;
     let sparse_count = file_record + 70;
     bytes[sparse_count..sparse_count + 4].copy_from_slice(&u32::MAX.to_le_bytes());
     resign_payload(&mut bytes);
@@ -2036,7 +1948,7 @@ fn authenticated_impossible_sparse_extent_count_fails_before_allocation() {
 #[test]
 fn authenticated_descriptor_is_required_before_semantic_parsing() {
     let (mut bytes, _, summary, tree, root) = root_index();
-    let media = index_media_for(&bytes);
+    let media = index_media();
     let index = descriptor_for_bytes(media.clone(), &bytes);
     let expected = IndexExpectation {
         index: &index,
@@ -2062,9 +1974,9 @@ fn authenticated_descriptor_is_required_before_semantic_parsing() {
         Err(IndexError::LimitExceeded)
     ));
 
-    bytes[HEADER_BYTES_V2 + 17] ^= 1;
-    let internal: [u8; 32] = Sha256::digest(&bytes[HEADER_BYTES_V2..]).into();
-    bytes[152..184].copy_from_slice(&internal);
+    bytes[HEADER_BYTES + 17] ^= 1;
+    let internal: [u8; 32] = Sha256::digest(&bytes[HEADER_BYTES..]).into();
+    bytes[PAYLOAD_DIGEST_OFFSET..RECORDS_BYTES_OFFSET].copy_from_slice(&internal);
     assert!(matches!(
         validate_index(&bytes, 4096, 1_048_576, &expected),
         Err(IndexError::DescriptorMismatch)
@@ -2108,10 +2020,10 @@ fn recomputed_checksum_cannot_hide_invalid_reserved_record_bytes() {
         .unwrap_or_else(|error| panic!("finish failed: {error}"));
     let (writer, _) = staged.into_parts();
     let mut bytes = writer.into_inner();
-    bytes[HEADER_BYTES_V2 + 17] = 1;
-    let digest: [u8; 32] = Sha256::digest(&bytes[HEADER_BYTES_V2..]).into();
-    bytes[152..184].copy_from_slice(&digest);
-    let media = index_media_for(&bytes);
+    bytes[HEADER_BYTES + 17] = 1;
+    let digest: [u8; 32] = Sha256::digest(&bytes[HEADER_BYTES..]).into();
+    bytes[PAYLOAD_DIGEST_OFFSET..RECORDS_BYTES_OFFSET].copy_from_slice(&digest);
+    let media = index_media();
     let index = descriptor_for_bytes(media, &bytes);
     let expected = IndexExpectation {
         index: &index,
@@ -2326,7 +2238,7 @@ fn valid_hardlink_path_reconstruction_requires_admission() {
         .unwrap_or_else(|error| panic!("finish failed: {error}"))
         .into_parts();
     let bytes = writer.get_ref();
-    let media = index_media_for(bytes);
+    let media = index_media();
     let index = descriptor_for_bytes(media, bytes);
     let expected = IndexExpectation {
         index: &index,
@@ -2379,55 +2291,26 @@ fn presentation_map() -> crate::IdentityMap {
 }
 
 #[test]
-fn sequential_records_cover_every_validated_format() {
-    let (v1, v1_tree, v1_root) = root_index_v1();
-    let v1 = validate_fresh(&v1, &v1_tree, &v1_root)
-        .unwrap_or_else(|error| panic!("V1 validation failed: {error}"));
+fn records_cover_the_complete_validated_payload() {
+    let (bytes, tree, root) = iterable_index();
+    let index = validate_fresh(&bytes, &tree, &root)
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
     assert_eq!(
-        v1.records()
+        index
+            .records()
             .map(|record| record.map(|record| record.record_id()))
             .collect::<Result<Vec<_>, _>>()
-            .unwrap_or_else(|error| panic!("V1 iteration failed: {error}")),
-        vec![0]
-    );
-
-    let (v2, _, _, v2_tree, v2_root) = root_index();
-    let v2 = validate_fresh(&v2, &v2_tree, &v2_root)
-        .unwrap_or_else(|error| panic!("V2 validation failed: {error}"));
-    assert_eq!(v2.records().len(), 1);
-
-    let (v3, v3_tree, v3_root) = iterable_index();
-    let v3 = validate_fresh(&v3, &v3_tree, &v3_root)
-        .unwrap_or_else(|error| panic!("V3 validation failed: {error}"));
-    assert_eq!(
-        v3.records()
-            .map(|record| record.map(|record| record.record_id()))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_or_else(|error| panic!("V3 iteration failed: {error}")),
+            .unwrap_or_else(|error| panic!("record iteration failed: {error}")),
         vec![0, 1, 2, 3, 4, 5]
     );
 }
 
 #[test]
-fn prepared_presentation_requires_v3_and_explicit_limits() {
+fn prepared_presentation_enforces_explicit_limits() {
     let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
-    let permissive = crate::PresentationLimits::new(16, 16, 2);
-    for (bytes, tree, root) in {
-        let (v1, v1_tree, v1_root) = root_index_v1();
-        let (v2, _, _, v2_tree, v2_root) = root_index();
-        [(v1, v1_tree, v1_root), (v2, v2_tree, v2_root)]
-    } {
-        let index = validate_fresh(&bytes, &tree, &root)
-            .unwrap_or_else(|error| panic!("old index validation failed: {error}"));
-        assert!(matches!(
-            crate::PreparedPresentation::prepare(&index, &plan, 1, [2; 32], permissive),
-            Err(crate::PresentationError::VersionUnsupported)
-        ));
-    }
-
     let (bytes, tree, root) = semantic_index();
     let index = validate_fresh_with_features(&bytes, &tree, &root, FEATURE_ACL)
-        .unwrap_or_else(|error| panic!("V3 validation failed: {error}"));
+        .unwrap_or_else(|error| panic!("validation failed: {error}"));
     for (limits, dimension) in [
         (crate::PresentationLimits::new(3, 7, 2), "record"),
         (crate::PresentationLimits::new(4, 6, 2), "ACL entry"),
@@ -2725,7 +2608,7 @@ fn metadata_transport_preflight_validates_limits_before_scanning() {
 
 #[test]
 fn metadata_transport_preflight_includes_synthetic_names_for_empty_root() {
-    let (bytes, tree, root_descriptor) = root_index_v3();
+    let (bytes, tree, root_descriptor) = root_index_bytes();
     let index = validate_fresh(&bytes, &tree, &root_descriptor)
         .unwrap_or_else(|error| panic!("validation failed: {error}"));
     let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
@@ -2841,10 +2724,7 @@ fn prepared_presentation_rejects_identity_acl_and_nlink_failures() {
         ))
     ));
 
-    let IndexLayout::IterableV3 { root_nlink, .. } = &mut index.layout else {
-        panic!("fixture was not V3");
-    };
-    *root_nlink = u64::from(u32::MAX) + 1;
+    index.layout.root_nlink = u64::from(u32::MAX) + 1;
     let plan = crate::PresentationPlan::new(presentation_map(), crate::AclCapability::Posix);
     assert!(matches!(
         crate::PreparedPresentation::prepare(&index, &plan, 1, [0; 32], limits),

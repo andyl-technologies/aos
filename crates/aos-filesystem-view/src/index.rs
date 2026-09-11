@@ -1,23 +1,19 @@
 //! Architecture-neutral structural-index staging and validation.
 //!
-//! Formats v1, v2, and v3 are little-endian derived caches. V2 leaves the v1
-//! record encoding unchanged and appends a fixed-width point-lookup table. V3
-//! adds a canonical directory table without changing either older format:
+//! Format v1 is a little-endian derived cache with fixed-width point-lookup
+//! and canonical directory tables:
 //!
 //! ```text
 //! header = magic[8], version:u32, header-bytes:u32, compiler-abi[32],
 //!          tree-digest[32], tree-size:u64, root-digest[32], root-size:u64,
 //!          tree-features:u32, reserved:u32, record-count:u64,
 //!          payload-bytes:u64, payload-sha256[32]
-//! v1-payload = record*
-//! v2-header-tail = records-bytes:u64, lookup-slots:u64, lookup-slot-bytes:u32,
-//!                  lookup-hash:u32, reserved:u64
-//! v2-payload = record*, lookup-entry*
+//! header-tail = records-bytes:u64, lookup-slots:u64, lookup-slot-bytes:u32,
+//!               lookup-hash:u32, reserved:u64, directory-slots:u64,
+//!               directory-slot-bytes:u32, reserved:u32, root-nlink:u64,
+//!               reserved:u64
+//! payload = record*, lookup-entry*, directory-entry*
 //! lookup-entry = parent:u64, name-sha256[32], record-offset:u64, record-id:u64
-//! v3-header-tail = v2-header-tail, directory-slots:u64,
-//!                  directory-slot-bytes:u32, reserved:u32, root-nlink:u64,
-//!                  reserved:u64
-//! v3-payload = record*, lookup-entry*, directory-entry*
 //! directory-entry = parent:u64, record-offset:u64, record-id:u64, nlink:u64
 //! record = record-bytes:u32, parent:u64, depth:u32, sibling-ordinal:u32,
 //!          kind:u8, reserved[3],
@@ -33,10 +29,10 @@
 //! Builder working-byte limits account for fallible heap allocations. Header
 //! encoding instead uses one fixed 248-byte stack object, which is part of the
 //! compiler's constant stack budget and never scales with hostile input.
-//! V3 adds structural ranges and link counts, while every version exposes the
-//! shared record body through allocation-free borrowed semantic views. FUSE
-//! cookie translation, READDIRPLUS policy, and checked `u64`-to-`u32` protocol
-//! conversion belong to later worker-facing increments.
+//! Structural ranges, point lookup, exact link counts, and allocation-free
+//! borrowed semantic views are mandatory. FUSE cookie translation,
+//! READDIRPLUS policy, and checked `u64`-to-`u32` protocol conversion belong to
+//! later worker-facing increments.
 
 use std::io::{Seek, SeekFrom, Write};
 
@@ -66,7 +62,7 @@ pub use view::{
     DirectoryEntries, DirectoryEntryView, DirectoryRange, IndexNodeKind, IndexNodeView,
     IndexRecords, IndexSummary, ValidatedIndex,
 };
-pub use wire::{INDEX_MEDIA_TYPE, INDEX_MEDIA_TYPE_V1, INDEX_MEDIA_TYPE_V2, INDEX_MEDIA_TYPE_V3};
+pub use wire::INDEX_MEDIA_TYPE;
 
 #[allow(unused_imports)]
 pub(crate) use builder::{FinishIndexResult, PushIndexResult, StructuralIndexBuilder};

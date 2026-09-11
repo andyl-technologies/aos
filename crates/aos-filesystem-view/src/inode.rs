@@ -1,4 +1,4 @@
-//! Connection-scoped lazy inode identity over an immutable V2 or V3 index.
+//! Connection-scoped lazy inode identity over an immutable structural index.
 //!
 //! The table assigns monotonically increasing, never-reused node IDs as a
 //! connection observes records. Two fixed-slot open-addressed tables map node
@@ -395,8 +395,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     ///
     /// # Errors
     ///
-    /// Returns [`InodeError::Index`] for a validation-only V1 artifact,
-    /// [`InodeError::LimitExceeded`] when root cannot be admitted, or
+    /// Returns [`InodeError::LimitExceeded`] when root cannot be admitted, or
     /// [`InodeError::AllocationRefused`] when either initial table allocation
     /// fails.
     pub fn new(
@@ -428,9 +427,6 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         limits: InodeTableLimits,
         directory_limits: Option<DirectoryHandleLimits>,
     ) -> Result<Self, InodeError> {
-        if !index.supports_point_lookup() {
-            return Err(InodeError::Index(IndexError::PointLookupUnavailable));
-        }
         if limits.maximum_nodes == 0
             || limits.maximum_lookup_references == 0
             || limits.maximum_forget_batch == 0

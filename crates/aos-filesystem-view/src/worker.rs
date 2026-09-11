@@ -351,7 +351,7 @@ pub struct MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
 }
 
 impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
-    /// Creates one uninitialized worker bound to the presentation's exact V3 index.
+    /// Creates one uninitialized worker bound to the presentation's exact index.
     ///
     /// # Errors
     ///
@@ -1045,9 +1045,6 @@ fn validate_scratch(budget: RequestBudget, scratch: &ReplyScratch) -> Result<(),
 fn map_index(error: IndexError) -> WorkerError {
     match error {
         IndexError::InvalidPathName(_) => WorkerError::InvalidArgument,
-        IndexError::PointLookupUnavailable | IndexError::DirectoryIterationUnavailable => {
-            WorkerError::OperationNotSupported
-        }
         IndexError::LimitExceeded => WorkerError::ResourceExhausted,
         IndexError::AllocationRefused => WorkerError::AllocationRefused,
         _ => WorkerError::IntegrityFailure,
@@ -1060,7 +1057,6 @@ fn map_presentation(error: PresentationError) -> WorkerError {
         PresentationError::Identity(_) | PresentationError::LinkCountOverflow => {
             WorkerError::IntegrityFailure
         }
-        PresentationError::VersionUnsupported => WorkerError::OperationNotSupported,
         PresentationError::Index(error) => map_index(error),
     }
 }

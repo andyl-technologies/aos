@@ -44,38 +44,23 @@ pub struct ValidatedIndex<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum IndexLayout {
-    SequentialV1,
-    PointLookupV2 {
-        records_bytes: u64,
-        lookup_slots: u64,
-    },
-    IterableV3 {
-        records_bytes: u64,
-        lookup_slots: u64,
-        directory_slots: u64,
-        root_nlink: u64,
-    },
+pub(super) struct IndexLayout {
+    pub(super) records_bytes: u64,
+    pub(super) lookup_slots: u64,
+    pub(super) directory_slots: u64,
+    pub(super) root_nlink: u64,
 }
 
 impl<'bytes> ValidatedIndex<'bytes> {
     /// Iterates every authenticated record in canonical record-ID order.
     ///
     /// The iterator borrows the exact bytes retained by this validation
-    /// authority, performs no allocation, and is available for every index
-    /// version. Each yielded locator remains subject to reauthentication by
-    /// APIs that use it for authorization.
+    /// authority and performs no allocation. Each yielded locator remains
+    /// subject to reauthentication by APIs that use it for authorization.
     #[must_use]
     pub fn records(&self) -> IndexRecords<'_> {
-        let (start, records_bytes) = match self.layout {
-            IndexLayout::SequentialV1 => (HEADER_BYTES_V1, self.bytes.len() - HEADER_BYTES_V1),
-            IndexLayout::PointLookupV2 { records_bytes, .. } => {
-                (HEADER_BYTES_V2, records_bytes as usize)
-            }
-            IndexLayout::IterableV3 { records_bytes, .. } => {
-                (HEADER_BYTES_V3, records_bytes as usize)
-            }
-        };
+        let start = HEADER_BYTES;
+        let records_bytes = self.layout.records_bytes as usize;
         IndexRecords {
             bytes: self.bytes,
             artifact: self.descriptor.digest(),
@@ -125,12 +110,7 @@ impl<'bytes> ValidatedIndex<'bytes> {
 
     /// Decodes a root whose byte lifetime is retained by an internal owner.
     pub(crate) fn retained_root(&self) -> Result<IndexNodeView<'bytes>, IndexError> {
-        let offset = match self.layout {
-            IndexLayout::SequentialV1 => HEADER_BYTES_V1,
-            IndexLayout::PointLookupV2 { .. } => HEADER_BYTES_V2,
-            IndexLayout::IterableV3 { .. } => HEADER_BYTES_V3,
-        };
-        decode_record_view(self.bytes, offset, 0, self.descriptor.digest())
+        decode_record_view(self.bytes, HEADER_BYTES, 0, self.descriptor.digest())
     }
 
     /// Re-resolves a private node handle through the authenticated format index.
@@ -143,32 +123,13 @@ impl<'bytes> ValidatedIndex<'bytes> {
         }
 
         let authenticated_offset = if node.id == 0 {
-            let root_offset = match self.layout {
-                IndexLayout::SequentialV1 => HEADER_BYTES_V1,
-                IndexLayout::PointLookupV2 { .. } => HEADER_BYTES_V2,
-                IndexLayout::IterableV3 { .. } => HEADER_BYTES_V3,
-            };
-            let root_offset = u64::try_from(root_offset).map_err(|_| IndexError::InvalidRecord)?;
+            let root_offset = u64::try_from(HEADER_BYTES).map_err(|_| IndexError::InvalidRecord)?;
             if node.record_offset != root_offset {
                 return Err(IndexError::InvalidRecord);
             }
             root_offset
         } else {
-            match self.layout {
-                IndexLayout::SequentialV1 => return Err(IndexError::InvalidRecord),
-                IndexLayout::PointLookupV2 {
-                    records_bytes,
-                    lookup_slots,
-                } => self.authenticate_v2_node(node, records_bytes, lookup_slots)?,
-                IndexLayout::IterableV3 {
-                    records_bytes,
-                    lookup_slots,
-                    directory_slots,
-                    ..
-                } => {
-                    self.authenticate_v3_node(node, records_bytes, lookup_slots, directory_slots)?
-                }
-            }
+            self.authenticate_indexed_node(node)?
         };
         let offset =
             usize::try_from(authenticated_offset).map_err(|_| IndexError::InvalidRecord)?;
@@ -179,53 +140,19 @@ impl<'bytes> ValidatedIndex<'bytes> {
         Ok(decoded)
     }
 
-    fn authenticate_v2_node(
-        &self,
-        node: &IndexNodeView<'_>,
-        records_bytes: u64,
-        lookup_slots: u64,
-    ) -> Result<u64, IndexError> {
-        let table_offset = (HEADER_BYTES_V2 as u64)
-            .checked_add(records_bytes)
-            .ok_or(IndexError::InvalidRecord)?;
-        let target_hash = lookup_hash(node.parent, node.name);
-        let mut left = 0_u64;
-        let mut right = lookup_slots;
-        while left < right {
-            let middle = left + (right - left) / 2;
-            let slot = read_lookup_slot(self.bytes, table_offset, middle)?;
-            if (slot.parent, slot.name_hash) < (node.parent, target_hash) {
-                left = middle + 1;
-            } else {
-                right = middle;
-            }
-        }
-        while left < lookup_slots {
-            let slot = read_lookup_slot(self.bytes, table_offset, left)?;
-            if (slot.parent, slot.name_hash) != (node.parent, target_hash) {
-                break;
-            }
-            if slot.record_id == node.id && slot.record_offset == node.record_offset {
-                return Ok(slot.record_offset);
-            }
-            left += 1;
-        }
-        Err(IndexError::InvalidRecord)
-    }
-
-    fn authenticate_v3_node(
-        &self,
-        node: &IndexNodeView<'_>,
-        records_bytes: u64,
-        lookup_slots: u64,
-        directory_slots: u64,
-    ) -> Result<u64, IndexError> {
-        let table_offset = directory_table_offset(records_bytes, lookup_slots)?;
-        let start = directory_lower_bound(self.bytes, table_offset, directory_slots, node.parent)?;
+    fn authenticate_indexed_node(&self, node: &IndexNodeView<'_>) -> Result<u64, IndexError> {
+        let table_offset =
+            directory_table_offset(self.layout.records_bytes, self.layout.lookup_slots)?;
+        let start = directory_lower_bound(
+            self.bytes,
+            table_offset,
+            self.layout.directory_slots,
+            node.parent,
+        )?;
         let position = start
             .checked_add(u64::from(node.sibling_ordinal))
             .ok_or(IndexError::InvalidRecord)?;
-        if position >= directory_slots {
+        if position >= self.layout.directory_slots {
             return Err(IndexError::InvalidRecord);
         }
         let slot = read_directory_slot(self.bytes, table_offset, position)?;
@@ -247,9 +174,9 @@ impl<'bytes> ValidatedIndex<'bytes> {
     ///
     /// # Errors
     ///
-    /// Returns [`IndexError::PointLookupUnavailable`] for a V1 artifact,
-    /// [`IndexError::ForeignNode`] for a parent from another artifact, or
-    /// [`IndexError::InvalidRecord`] if an internal validated offset is invalid.
+    /// Returns [`IndexError::ForeignNode`] for a parent from another artifact,
+    /// or [`IndexError::InvalidRecord`] if an internal validated offset is
+    /// invalid.
     pub fn lookup_child<'index>(
         &'index self,
         parent: &IndexNodeView<'_>,
@@ -283,28 +210,16 @@ impl<'bytes> ValidatedIndex<'bytes> {
         name: &[u8],
     ) -> Result<Option<IndexNodeView<'bytes>>, IndexError> {
         PathName::validate(name)?;
-        let (header_bytes, records_bytes, lookup_slots) = match self.layout {
-            IndexLayout::SequentialV1 => return Err(IndexError::PointLookupUnavailable),
-            IndexLayout::PointLookupV2 {
-                records_bytes,
-                lookup_slots,
-            } => (HEADER_BYTES_V2, records_bytes, lookup_slots),
-            IndexLayout::IterableV3 {
-                records_bytes,
-                lookup_slots,
-                ..
-            } => (HEADER_BYTES_V3, records_bytes, lookup_slots),
-        };
         if parent.artifact != self.descriptor.digest() || parent.kind != IndexNodeKind::Directory {
             return Err(IndexError::ForeignNode);
         }
 
         let target_hash = lookup_hash(parent.id, name);
-        let table_offset = (header_bytes as u64)
-            .checked_add(records_bytes)
+        let table_offset = (HEADER_BYTES as u64)
+            .checked_add(self.layout.records_bytes)
             .ok_or(IndexError::InvalidRecord)?;
         let mut left = 0_u64;
-        let mut right = lookup_slots;
+        let mut right = self.layout.lookup_slots;
         while left < right {
             let middle = left + (right - left) / 2;
             let slot = read_lookup_slot(self.bytes, table_offset, middle)?;
@@ -314,7 +229,7 @@ impl<'bytes> ValidatedIndex<'bytes> {
                 right = middle;
             }
         }
-        while left < lookup_slots {
+        while left < self.layout.lookup_slots {
             let slot = read_lookup_slot(self.bytes, table_offset, left)?;
             if (slot.parent, slot.name_hash) != (parent.id, target_hash) {
                 break;
@@ -331,25 +246,13 @@ impl<'bytes> ValidatedIndex<'bytes> {
         Ok(None)
     }
 
-    /// Reports whether this artifact supports immutable point lookup.
-    #[must_use]
-    pub const fn supports_point_lookup(&self) -> bool {
-        !matches!(self.layout, IndexLayout::SequentialV1)
-    }
-
-    /// Reports whether this artifact supports authenticated directory iteration.
-    #[must_use]
-    pub const fn supports_directory_iteration(&self) -> bool {
-        matches!(self.layout, IndexLayout::IterableV3 { .. })
-    }
-
     /// Returns a borrowed allocation-free range over canonical children.
     ///
     /// # Errors
     ///
-    /// Returns [`IndexError::DirectoryIterationUnavailable`] for V1/V2,
-    /// [`IndexError::ForeignNode`] for a foreign or non-directory node, or
-    /// [`IndexError::InvalidRecord`] if internally authenticated offsets fail.
+    /// Returns [`IndexError::ForeignNode`] for a foreign or non-directory node,
+    /// or [`IndexError::InvalidRecord`] if internally authenticated offsets
+    /// fail.
     pub fn directory_range<'index>(
         &'index self,
         directory: &IndexNodeView<'_>,
@@ -362,26 +265,23 @@ impl<'bytes> ValidatedIndex<'bytes> {
         &self,
         directory: &IndexNodeView<'_>,
     ) -> Result<DirectoryRange<'bytes>, IndexError> {
-        let IndexLayout::IterableV3 {
-            records_bytes,
-            lookup_slots,
-            directory_slots,
-            ..
-        } = self.layout
-        else {
-            return Err(IndexError::DirectoryIterationUnavailable);
-        };
         if directory.artifact != self.descriptor.digest()
             || directory.kind != IndexNodeKind::Directory
         {
             return Err(IndexError::ForeignNode);
         }
-        let table_offset = directory_table_offset(records_bytes, lookup_slots)?;
-        let start = directory_lower_bound(self.bytes, table_offset, directory_slots, directory.id)?;
+        let table_offset =
+            directory_table_offset(self.layout.records_bytes, self.layout.lookup_slots)?;
+        let start = directory_lower_bound(
+            self.bytes,
+            table_offset,
+            self.layout.directory_slots,
+            directory.id,
+        )?;
         let end = directory_lower_bound(
             self.bytes,
             table_offset,
-            directory_slots,
+            self.layout.directory_slots,
             directory.id.saturating_add(1),
         )?;
         Ok(DirectoryRange {
@@ -413,31 +313,27 @@ impl<'bytes> ValidatedIndex<'bytes> {
     ///
     /// # Errors
     ///
-    /// Returns [`IndexError::DirectoryIterationUnavailable`] for V1/V2,
-    /// [`IndexError::ForeignNode`] for a node from another artifact, or
+    /// Returns [`IndexError::ForeignNode`] for a node from another artifact, or
     /// [`IndexError::InvalidRecord`] if the node is absent from the table.
     pub fn nlink(&self, node: &IndexNodeView<'_>) -> Result<u64, IndexError> {
-        let IndexLayout::IterableV3 {
-            records_bytes,
-            lookup_slots,
-            directory_slots,
-            root_nlink,
-        } = self.layout
-        else {
-            return Err(IndexError::DirectoryIterationUnavailable);
-        };
         if node.artifact != self.descriptor.digest() {
             return Err(IndexError::ForeignNode);
         }
         if node.id == 0 {
-            return Ok(root_nlink);
+            return Ok(self.layout.root_nlink);
         }
-        let table_offset = directory_table_offset(records_bytes, lookup_slots)?;
-        let start = directory_lower_bound(self.bytes, table_offset, directory_slots, node.parent)?;
+        let table_offset =
+            directory_table_offset(self.layout.records_bytes, self.layout.lookup_slots)?;
+        let start = directory_lower_bound(
+            self.bytes,
+            table_offset,
+            self.layout.directory_slots,
+            node.parent,
+        )?;
         let position = start
             .checked_add(u64::from(node.sibling_ordinal))
             .ok_or(IndexError::InvalidRecord)?;
-        if position >= directory_slots {
+        if position >= self.layout.directory_slots {
             return Err(IndexError::InvalidRecord);
         }
         let slot = read_directory_slot(self.bytes, table_offset, position)?;
@@ -524,7 +420,7 @@ pub(super) fn directory_table_offset(
     records_bytes: u64,
     lookup_slots: u64,
 ) -> Result<u64, IndexError> {
-    (HEADER_BYTES_V3 as u64)
+    (HEADER_BYTES as u64)
         .checked_add(records_bytes)
         .and_then(|offset| {
             lookup_slots
@@ -553,7 +449,7 @@ pub(super) fn directory_lower_bound(
     Ok(left)
 }
 
-/// Borrows a V3 directory's canonical child range without allocating.
+/// Borrows a directory's canonical child range without allocating.
 #[derive(Clone, Copy)]
 pub struct DirectoryRange<'a> {
     pub(super) bytes: &'a [u8],
@@ -635,7 +531,7 @@ impl<'a> IntoIterator for DirectoryRange<'a> {
     }
 }
 
-/// Iterates borrowed V3 directory children without allocating.
+/// Iterates borrowed directory children without allocating.
 pub struct DirectoryEntries<'a> {
     pub(super) range: DirectoryRange<'a>,
     pub(super) next: u64,

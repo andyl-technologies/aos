@@ -440,12 +440,11 @@ impl<'a> IndexExtentView<'a> {
 impl<'bytes> ValidatedIndex<'bytes> {
     /// Borrows a node's authenticated variable metadata and semantic body.
     ///
-    /// Locator authentication is constant-time for a root, otherwise it uses a
-    /// V2 point-lookup binary search or a V3 parent-range binary search and
-    /// direct ordinal access. A V2 cryptographic hash-collision run is scanned
-    /// to find the exact ID and offset. The subsequent exact identity check and
-    /// semantic parsing are linear in the encoded record length. The complete
-    /// operation uses constant working memory and performs no allocation.
+    /// Locator authentication is constant-time for a root; other nodes use a
+    /// parent-range binary search and direct ordinal access. The subsequent
+    /// exact identity check and semantic parsing are linear in the encoded
+    /// record length. The complete operation uses constant working memory and
+    /// performs no allocation.
     /// Retain the returned small view when several fields from the same record
     /// are needed.
     ///

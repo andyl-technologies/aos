@@ -810,7 +810,7 @@ completes. The Git history remains authoritative for code details.
   token. Portable owners and ACL qualifiers remain structural data; exact ID
   translation is separately cache-partitioned and rejects gaps, overflow, and
   unsupported ACLs. Fixed index and hard-link digest vectors pin the derived
-  formats. The slice passes 28 filesystem-view and 140 sandbox-core unit tests,
+  format. The slice passes 28 filesystem-view and 140 sandbox-core unit tests,
   doctests, strict all-target Clippy, warning-denied rustdoc, formatting, and
   two-round independent adversarial review. mmap lookup, lazy inode
   instantiation, cache management, FUSE request handling, sealed publication,
@@ -857,20 +857,19 @@ completes. The Git history remains authoritative for code details.
   rustdoc, formatting, and multi-round independent adversarial review. The
   production seqpacket client, systemd service binding, and Host Apply
   advertisement remain open.
-- `d96752e94` — further foundation toward `SBX-FS-02`: structural-index V2
-  retains V1's validated record encoding and adds a fixed-width canonical
-  child-lookup table under a distinct media type. Entries sort by parent,
+- `d96752e94` — further foundation toward `SBX-FS-02`: structural-index V1
+  includes a fixed-width canonical child-lookup table. Entries sort by parent,
   full domain-separated SHA-256 component digest, and record ID; lookup uses a
   binary lower bound and then requires byte-exact parent and component matches,
   so digest collisions cannot change correctness. Validation reconstructs the
   table from exact record starts and requires byte-for-byte equality, rejecting
   omissions, duplicates, forged offsets, and alternate orderings before a
-  lazy borrowed node view is exposed. V1 remains golden-compatible and
-  validation-only. Compilation pre-admits retained lookup storage together
-  with graph queues, record scratch, hard-link state, and the finish-time
-  sorting copy under the aggregate working-memory ceiling. The slice passes 33
-  unit tests, one doctest, strict all-target crate-local Clippy,
-  warning-denied rustdoc, formatting, and independent adversarial review.
+  lazy borrowed node view is exposed. Compilation pre-admits retained lookup
+  storage together with graph queues, record scratch, hard-link state, and the
+  finish-time sorting copy under the aggregate working-memory ceiling. The
+  slice passes 33 unit tests, one doctest, strict all-target crate-local
+  Clippy, warning-denied rustdoc, formatting, and independent adversarial
+  review.
   Immutable backing-file opening/sealing, mapping lifetime, per-connection
   inode assignment, FUSE authority, and `FORGET` handling remain open, so
   `SBX-FS-02` remains unchecked.
@@ -894,8 +893,8 @@ completes. The Git history remains authoritative for code details.
   Publisher enable/fsync/no-replace/catalog transactions, successful VM
   fs-verity exercise, mapped-byte reservation pins, worker composition,
   quarantine recovery, and FUSE lifecycle remain open.
-- `5e1e33c6d` — further foundation toward `SBX-FS-02`: a V2-only
-  connection-scoped inode table now pins root at node 1, assigns monotonic
+- `5e1e33c6d` — further foundation toward `SBX-FS-02`: a connection-scoped
+  inode table over the rich V1 index now pins root at node 1, assigns monotonic
   never-reused node IDs after positive lookup, retains no state for negative
   lookup, coalesces only validated hard-link groups, and keeps identical
   ungrouped records distinct. Two explicit fixed-slot maps preserve the live
@@ -954,15 +953,14 @@ completes. The Git history remains authoritative for code details.
   after expanding into hundreds of unrelated rebuilds, and the existing
   package-platform-support check remains blocked by unrelated excluded-resource
   inventory failures. `SBX-P0-11` and `SBX-FS-03` remain unchecked.
-- `17162fea3` — further foundation toward `SBX-FS-02`: structural-index V3
-  preserves the locked V1/V2 record and lookup bytes under a distinct media
-  type, then adds a canonical fixed-width directory table with authenticated
-  root and per-occurrence link counts. Validation reconstructs exact parent,
+- `17162fea3` — further foundation toward `SBX-FS-02`: structural-index V1
+  includes a canonical fixed-width directory table with authenticated root and
+  per-occurrence link counts. Validation reconstructs exact parent,
   sibling order, record start, record ID, and `nlink` bytes after hard-link
   semantics pass. Borrowed directory ranges perform two binary searches and
   support allocation-free O(1) ordinal seek; exact link count is one range
-  search plus a verified direct slot. Graph compilation now emits V3 while
-  legacy builders remain test-only for golden compatibility. Builder-local and
+  search plus a verified direct slot. Graph compilation emits only this rich
+  V1 layout, and validation rejects every other version. Builder-local and
   graph-aggregate ceilings cross one API: requested storage is admitted before
   allocation, actual entry, record-scratch, lookup, directory, and hard-link
   capacities are checked before the next allocation or write, and the actual
@@ -980,10 +978,10 @@ completes. The Git history remains authoritative for code details.
 - `1c622188c` — mechanically splits the structural-index implementation into a
   72-line public facade and focused builder, validation, borrowed-view, wire,
   and test modules before further filesystem work. Public and crate-visible
-  paths, all 95 production declarations, all 114 production functions, all 33
-  test helpers, and V1/V2/V3 golden bytes and digests remain unchanged. The
-  only visibility expansion is sibling-private `pub(super)` access inside the
-  private index module. The refactor passes 62 unit tests, one compile-fail
+  paths remain behind the same facade, and the sole rich V1 codec stays split
+  across those focused private modules. The only visibility expansion is
+  sibling-private `pub(super)` access inside the private index module. The
+  refactor passes 62 unit tests, one compile-fail
   doctest, strict Clippy, warning-denied rustdoc, scoped formatting, and an
   independent adversarial inventory comparison. Explicit imports and a leaf
   wire layer remain desirable cleanup; the current production modules are each
@@ -1005,13 +1003,12 @@ completes. The Git history remains authoritative for code details.
   a real `/dev/fuse`, count internal `close(2)` calls, issue backing ioctls, or
   prove kernel passthrough I/O; those broker and VM gates remain open, so
   `SBX-P0-11` and `SBX-FS-03` remain unchecked.
-- `63dd51aec` — further foundation toward `SBX-FS-02`: authenticated V1,
-  V2, and V3 records now expose allocation-free borrowed directory, symlink,
-  whole-file, sparse-file, extent, xattr, ACL, hard-link, descriptor, and
-  logical-size semantics without materializing the owned portable model or
-  changing any wire byte. Returned lifetimes remain bound to the non-cloneable
-  validation proof. V1 root offsets, V2 point-lookup slots, and V3 canonical
-  directory slots independently authenticate node identity before every fixed
+- `63dd51aec` — further foundation toward `SBX-FS-02`: authenticated V1
+  records now expose allocation-free borrowed directory, symlink, whole-file,
+  sparse-file, extent, xattr, ACL, hard-link, descriptor, and logical-size
+  semantics without materializing the owned portable model. Returned lifetimes
+  remain bound to the non-cloneable validation proof. The root offset and
+  canonical directory slots authenticate node identity before every fixed
   field and the exact record bytes are compared and reparsed. Forged artifact,
   ID, offset, parent, depth, ordinal, kind, mode, identity, timestamp, name,
   and record-body handles fail across all formats. Counts, lengths, slices,
@@ -1028,9 +1025,9 @@ completes. The Git history remains authoritative for code details.
   without allocation and is the single implementation used by owned names.
   Exact byte lookup retains full-digest partitioning and byte comparison, while
   the inode table exposes the same borrowed path. A `LiveInode` capability
-  reauthenticates the record against V2/V3 format structure, recomputes its
+  reauthenticates the record against the V1 format structure, recomputes its
   semantic identity and keyed reverse mapping, and immutably borrows the table
-  while record, semantic, or V3 directory views exist. Parent lookup, semantic
+  while record, semantic, or directory views exist. Parent lookup, semantic
   reuse, `getattr`, file-open reservation, and active-open observation all use
   that same proof; same-artifact record substitution fails before references,
   pins, handles, heap, or monotonic IDs change. Pending reservations expose a
@@ -1059,21 +1056,22 @@ completes. The Git history remains authoritative for code details.
   Non-copyable authenticated reservations pin their inode before external
   work, then activate or abort explicitly; branded active handles reject
   foreign, pending, stale, and wrong-kind use. Each handle caches a
-  reauthenticated V3 ordinal range and exposes allocation-free, stateless
+  reauthenticated ordinal range and exposes allocation-free, stateless
   `READDIR` iteration with exact dot, dot-dot, child, and EOF cookies, including
   signed-offset and target-`usize` bounds. Directory, aggregate-handle, and
   retained-plus-replacement heap ceilings fail before mutation; release
   preflights range identity, reverse maps, pins, counters, and reap state.
-  High-fanout and byte-name pagination, rewind, V2 rollback, ID sharing,
-  allocation refusal, churn, tombstones, `FORGET`, corruption, and connection
-  teardown semantics pass 80 filesystem tests, the harness-free allocator
-  binary, seven compile-fail doctests, strict Clippy, warning-denied rustdoc,
-  scoped formatting, and independent adversarial review. Attribute
+  High-fanout and byte-name pagination, rewind, disabled-handle rollback, ID
+  sharing, allocation refusal, churn, tombstones, `FORGET`, corruption, and
+  connection teardown semantics pass 80 filesystem tests, the harness-free
+  allocator binary, seven compile-fail doctests, strict Clippy,
+  warning-denied rustdoc, scoped formatting, and independent adversarial
+  review. Attribute
   presentation, protocol dispatch, and a real kernel FUSE connection remain
   open, so neither task is checked.
 - `c50405864` — further foundation toward `SBX-FS-02` and `SBX-FS-03`: a
-  validation-scoped sequential iterator exposes every V1/V2/V3 record without
-  allocation, and a V3-only prepared-presentation capability scans the exact
+  validation-scoped sequential iterator exposes every V1 record without
+  allocation, and a prepared-presentation capability scans the exact
   immutable index before worker readiness. Admission bounds retained identity
   map capacity, records, and aggregate ACL entries; validates every owner and
   named qualifier; preserves translated ACL canonical order; and narrows every
@@ -1109,7 +1107,7 @@ completes. The Git history remains authoritative for code details.
   still not the production transient-unit, full-argv, MAC, or guardian path;
   therefore both tasks remain unchecked.
 - `38fb4bab7` — further foundation toward `SBX-FS-02` and `SBX-FS-03`: a
-  backend-neutral single-connection metadata worker now composes the exact V3
+  backend-neutral single-connection metadata worker now composes the exact V1
   index, prepared presentation, inode table, directory handles, and reusable
   reply scratch. INIT-gated typed operations cover lookup, batch `FORGET`,
   `GETATTR`, `READLINK`, two-phase `OPENDIR`, stateless paged `READDIR`, and

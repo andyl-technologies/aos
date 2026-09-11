@@ -2,7 +2,7 @@
 //!
 //! Directory handles use a table distinct from file opens but draw identities
 //! from the same monotonic connection namespace. Each slot caches an
-//! authenticated V3 child range, so resumed iteration is O(entries returned).
+//! authenticated child range, so resumed iteration is O(entries returned).
 
 use std::iter::FusedIterator;
 
@@ -275,13 +275,13 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         self.pending_directories as u64
     }
 
-    /// Reserves and immediately pins a V3 directory inode.
+    /// Reserves and immediately pins a directory inode.
     ///
     /// # Errors
     ///
     /// Returns [`InodeError`] for disabled directory support, a stale or
-    /// non-directory node, V1/V2 iteration, limits, allocation refusal, or
-    /// authenticated identity failure. Failure changes no table state.
+    /// non-directory node, limits, allocation refusal, or authenticated
+    /// identity failure. Failure changes no table state.
     pub fn reserve_directory(&mut self, node_id: u64) -> Result<DirectoryReservation, InodeError> {
         let limits = self
             .directory_limits

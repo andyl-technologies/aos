@@ -103,7 +103,6 @@ pub(crate) struct StructuralIndexBuilder<W> {
     pub(super) payload_bytes: u64,
     pub(super) payload_hash: Sha256,
     pub(super) entries: Vec<BuildEntry>,
-    pub(super) format: BuildFormat,
     #[cfg(test)]
     pub(super) refuse_record_scratch_allocation: bool,
     #[cfg(test)]
@@ -112,12 +111,6 @@ pub(crate) struct StructuralIndexBuilder<W> {
     pub(super) directory_capacity_floor: usize,
     #[cfg(test)]
     pub(super) refuse_hardlink_allocation: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum BuildFormat {
-    V2,
-    V3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,9 +155,6 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             .retained_working_bytes()?
             .checked_add(lookup_vector_charge(slots)?)
             .ok_or(IndexError::LimitExceeded)?;
-        if self.format == BuildFormat::V2 {
-            return Ok(lookup_peak);
-        }
         let hardlinks = self
             .entries
             .iter()
@@ -181,9 +171,6 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
     pub(crate) fn finish_temporary_working_bytes(&self) -> Result<u64, IndexError> {
         let slots = lookup_slot_count(self.records)?;
         let lookup = lookup_vector_charge(slots)?;
-        if self.format == BuildFormat::V2 {
-            return Ok(lookup);
-        }
         let hardlinks = self
             .entries
             .iter()
@@ -196,7 +183,6 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         ))
     }
 
-    #[cfg(test)]
     pub(crate) fn new(
         staging: IndexStaging<W>,
         compiler_abi: [u8; 32],
@@ -204,52 +190,13 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         root: ObjectDescriptor,
         tree_features: u32,
     ) -> Result<Self, IndexError> {
-        Self::new_with_format(
-            staging,
-            compiler_abi,
-            tree,
-            root,
-            tree_features,
-            BuildFormat::V2,
-        )
-    }
-
-    pub(crate) fn new_v3(
-        staging: IndexStaging<W>,
-        compiler_abi: [u8; 32],
-        tree: ObjectDescriptor,
-        root: ObjectDescriptor,
-        tree_features: u32,
-    ) -> Result<Self, IndexError> {
-        Self::new_with_format(
-            staging,
-            compiler_abi,
-            tree,
-            root,
-            tree_features,
-            BuildFormat::V3,
-        )
-    }
-
-    pub(super) fn new_with_format(
-        staging: IndexStaging<W>,
-        compiler_abi: [u8; 32],
-        tree: ObjectDescriptor,
-        root: ObjectDescriptor,
-        tree_features: u32,
-        format: BuildFormat,
-    ) -> Result<Self, IndexError> {
         let IndexStaging {
             mut writer,
             maximum_bytes,
             maximum_record_bytes,
             maximum_working_bytes,
         } = staging;
-        let header_bytes = match format {
-            BuildFormat::V2 => HEADER_BYTES_V2,
-            BuildFormat::V3 => HEADER_BYTES_V3,
-        };
-        if maximum_bytes < header_bytes as u64 || maximum_record_bytes == 0 {
+        if maximum_bytes < HEADER_BYTES as u64 || maximum_record_bytes == 0 {
             return Err(IndexError::LimitExceeded);
         }
         validate_descriptor_role(DescriptorRole::ImmutableViewSource, &tree)
@@ -260,11 +207,9 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             return Err(IndexError::NonEmptyStaging);
         }
         writer.seek(SeekFrom::Start(0)).map_err(IndexError::Io)?;
-        match format {
-            BuildFormat::V2 => writer.write_all(&[0; HEADER_BYTES_V2]),
-            BuildFormat::V3 => writer.write_all(&[0; HEADER_BYTES_V3]),
-        }
-        .map_err(IndexError::Io)?;
+        writer
+            .write_all(&[0; HEADER_BYTES])
+            .map_err(IndexError::Io)?;
         Ok(Self {
             writer,
             compiler_abi,
@@ -278,7 +223,6 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             payload_bytes: 0,
             payload_hash: Sha256::new(),
             entries: Vec::new(),
-            format,
             #[cfg(test)]
             refuse_record_scratch_allocation: false,
             #[cfg(test)]
@@ -316,8 +260,7 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             .payload_bytes
             .checked_add(record_bytes)
             .ok_or(IndexError::LimitExceeded)?;
-        let header_bytes = self.header_bytes();
-        let total = (header_bytes as u64)
+        let total = (HEADER_BYTES as u64)
             .checked_add(next_payload)
             .ok_or(IndexError::LimitExceeded)?;
         if total > self.maximum_bytes {
@@ -392,7 +335,7 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         if bytes.len() != encoded_len {
             return Err(IndexError::InvalidRecord);
         }
-        let record_offset = (header_bytes as u64)
+        let record_offset = (HEADER_BYTES as u64)
             .checked_add(self.payload_bytes)
             .ok_or(IndexError::LimitExceeded)?;
         self.writer.write_all(&bytes).map_err(IndexError::Io)?;
@@ -452,11 +395,7 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         let lookup_slots_u64 =
             u64::try_from(lookup_slots).map_err(|_| IndexError::LimitExceeded)?;
         let lookup_bytes = lookup_allocation_bytes(lookup_slots)?;
-        let directory_bytes = if self.format == BuildFormat::V3 {
-            directory_allocation_bytes(lookup_slots)?
-        } else {
-            0
-        };
+        let directory_bytes = directory_allocation_bytes(lookup_slots)?;
         let peak_lookup_working = self.finish_working_bytes()?;
         if peak_lookup_working > self.maximum_working_bytes
             || external_working_bytes
@@ -470,8 +409,7 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             .checked_add(lookup_bytes)
             .and_then(|bytes| bytes.checked_add(directory_bytes))
             .ok_or(IndexError::LimitExceeded)?;
-        let header_bytes = self.header_bytes();
-        let total_bytes = (header_bytes as u64)
+        let total_bytes = (HEADER_BYTES as u64)
             .checked_add(next_payload)
             .ok_or(IndexError::LimitExceeded)?;
         if total_bytes > self.maximum_bytes {
@@ -505,27 +443,19 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
             self.writer.write_all(&encoded).map_err(IndexError::Io)?;
             self.payload_hash.update(encoded);
         }
-        let root_nlink = if self.format == BuildFormat::V3 {
-            self.write_directory_table(
-                lookup_slots,
-                external_working_bytes,
-                aggregate_maximum_working_bytes,
-            )?
-        } else {
-            (0, actual_lookup_peak)
-        };
-        let (root_nlink, directory_peak) = root_nlink;
+        let (root_nlink, directory_peak) = self.write_directory_table(
+            lookup_slots,
+            external_working_bytes,
+            aggregate_maximum_working_bytes,
+        )?;
         let peak_working_bytes = actual_lookup_peak.max(directory_peak);
         self.payload_bytes = next_payload;
 
         let payload_digest: [u8; 32] = self.payload_hash.finalize().into();
         let mut header = HeaderEncoder::new();
         header.put(MAGIC)?;
-        header.u32(match self.format {
-            BuildFormat::V2 => VERSION_V2,
-            BuildFormat::V3 => VERSION_V3,
-        })?;
-        header.u32(header_bytes as u32)?;
+        header.u32(VERSION)?;
+        header.u32(HEADER_BYTES as u32)?;
         header.put(&self.compiler_abi)?;
         header.put(self.tree.digest().as_bytes())?;
         header.u64(self.tree.encoded_size())?;
@@ -541,20 +471,18 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         header.u32(LOOKUP_SLOT_BYTES as u32)?;
         header.u32(LOOKUP_HASH_SHA256)?;
         header.u64(0)?;
-        if self.format == BuildFormat::V3 {
-            header.u64(lookup_slots_u64)?;
-            header.u32(DIRECTORY_SLOT_BYTES as u32)?;
-            header.u32(0)?;
-            header.u64(root_nlink)?;
-            header.u64(0)?;
-        }
-        let header = header.finish(header_bytes)?;
+        header.u64(lookup_slots_u64)?;
+        header.u32(DIRECTORY_SLOT_BYTES as u32)?;
+        header.u32(0)?;
+        header.u64(root_nlink)?;
+        header.u64(0)?;
+        let header = header.finish(HEADER_BYTES)?;
         self.writer
             .seek(SeekFrom::Start(0))
             .and_then(|_| self.writer.write_all(header))
             .and_then(|_| self.writer.flush())
             .map_err(IndexError::Io)?;
-        let expected_end = header_bytes as u64 + self.payload_bytes;
+        let expected_end = HEADER_BYTES as u64 + self.payload_bytes;
         let actual_end = self.writer.seek(SeekFrom::End(0)).map_err(IndexError::Io)?;
         if actual_end != expected_end {
             return Err(IndexError::UnexpectedStagingLength);
@@ -569,18 +497,11 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
                     root_digest: self.root.digest(),
                     root_size: self.root.encoded_size(),
                     records: self.records,
-                    bytes: header_bytes as u64 + self.payload_bytes,
+                    bytes: HEADER_BYTES as u64 + self.payload_bytes,
                 },
             },
             peak_working_bytes,
         })
-    }
-
-    pub(super) fn header_bytes(&self) -> usize {
-        match self.format {
-            BuildFormat::V2 => HEADER_BYTES_V2,
-            BuildFormat::V3 => HEADER_BYTES_V3,
-        }
     }
 
     pub(super) fn write_directory_table(

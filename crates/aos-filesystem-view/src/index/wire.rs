@@ -6,25 +6,15 @@ use super::view::*;
 use super::*;
 
 pub(super) const MAGIC: &[u8; 8] = b"AOSVIDX\0";
-pub(super) const VERSION_V1: u32 = 1;
-pub(super) const VERSION_V2: u32 = 2;
-pub(super) const VERSION_V3: u32 = 3;
-pub(super) const HEADER_BYTES_V1: usize = 184;
-pub(super) const HEADER_BYTES_V2: usize = 216;
-pub(super) const HEADER_BYTES_V3: usize = 248;
+pub(super) const VERSION: u32 = 1;
+pub(super) const HEADER_BYTES: usize = 248;
 pub(super) const RECORD_FIXED_BYTES: usize = 48;
 pub(super) const LOOKUP_SLOT_BYTES: usize = 56;
 pub(super) const LOOKUP_HASH_SHA256: u32 = 1;
 pub(super) const DIRECTORY_SLOT_BYTES: usize = 32;
 
-/// Media type emitted for new node-local structural indexes.
-pub const INDEX_MEDIA_TYPE: &str = INDEX_MEDIA_TYPE_V3;
-/// Media type of the validation-only sequential structural-index format.
-pub const INDEX_MEDIA_TYPE_V1: &str = "application/vnd.aos.filesystem-view.index.v1";
-/// Media type of the point-lookup structural-index format.
-pub const INDEX_MEDIA_TYPE_V2: &str = "application/vnd.aos.filesystem-view.index.v2";
-/// Media type of the iterable structural-index format.
-pub const INDEX_MEDIA_TYPE_V3: &str = "application/vnd.aos.filesystem-view.index.v3";
+/// Media type of the node-local structural-index format.
+pub const INDEX_MEDIA_TYPE: &str = "application/vnd.aos.filesystem-view.index.v1";
 
 pub(crate) const FEATURE_ACL: u32 = 1 << 0;
 pub(crate) const FEATURE_ABSOLUTE_SYMLINK: u32 = 1 << 1;
@@ -60,14 +50,14 @@ pub(super) struct HardlinkSlot {
 }
 
 pub(super) struct HeaderEncoder {
-    pub(super) bytes: [u8; HEADER_BYTES_V3],
+    pub(super) bytes: [u8; HEADER_BYTES],
     pub(super) position: usize,
 }
 
 impl HeaderEncoder {
     pub(super) const fn new() -> Self {
         Self {
-            bytes: [0; HEADER_BYTES_V3],
+            bytes: [0; HEADER_BYTES],
             position: 0,
         }
     }
@@ -217,7 +207,7 @@ pub(super) fn directory_allocation_bytes(slots: usize) -> Result<u64, IndexError
 
 pub(super) fn lookup_hash(parent: u64, name: &[u8]) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"AOS filesystem-view lookup v2\0");
+    digest.update(b"AOS filesystem-view lookup v1\0");
     digest.update(parent.to_le_bytes());
     digest.update((name.len() as u64).to_le_bytes());
     digest.update(name);

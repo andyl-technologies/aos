@@ -10,24 +10,18 @@ use aos_sandbox_core::{
 
 use super::*;
 use crate::index::{IndexNode, IndexRecord, StructuralIndexBuilder};
-use crate::{INDEX_MEDIA_TYPE_V2, IndexExpectation, IndexStaging, validate_index};
+use crate::{INDEX_MEDIA_TYPE, IndexExpectation, IndexStaging, validate_index};
 
 struct Fixture {
     bytes: Vec<u8>,
     tree: ObjectDescriptor,
     root: ObjectDescriptor,
-    v3: bool,
 }
 
 impl Fixture {
     fn validate(&self) -> ValidatedIndex<'_> {
-        let media_type = if self.v3 {
-            crate::INDEX_MEDIA_TYPE_V3
-        } else {
-            INDEX_MEDIA_TYPE_V2
-        };
-        let media =
-            MediaType::new(media_type).unwrap_or_else(|error| panic!("media failed: {error}"));
+        let media = MediaType::new(INDEX_MEDIA_TYPE)
+            .unwrap_or_else(|error| panic!("media failed: {error}"));
         let descriptor = descriptor_for_bytes(media, &self.bytes);
         validate_index(
             &self.bytes,
@@ -46,18 +40,10 @@ impl Fixture {
 }
 
 fn fixture() -> Fixture {
-    fixture_with_format([3; 32], false)
-}
-
-fn fixture_v3() -> Fixture {
-    fixture_with_format([3; 32], true)
+    fixture_with_content_digest([3; 32])
 }
 
 fn fixture_with_content_digest(content_digest: [u8; 32]) -> Fixture {
-    fixture_with_format(content_digest, false)
-}
-
-fn fixture_with_format(content_digest: [u8; 32], v3: bool) -> Fixture {
     let tree = descriptor("application/vnd.aos.sandbox.tree.v1+cbor", [1; 32]);
     let root = descriptor("application/vnd.aos.sandbox.directory.v1+cbor", [2; 32]);
     let content_descriptor = descriptor("application/vnd.aos.sandbox.content.v1", content_digest);
@@ -78,12 +64,8 @@ fn fixture_with_format(content_digest: [u8; 32], v3: bool) -> Fixture {
     let hardlink = hardlink_group_digest(&paths, &file_metadata, &content)
         .unwrap_or_else(|error| panic!("hardlink failed: {error}"));
     let staging = IndexStaging::new(IoCursor::new(Vec::new()), 16 * 1024, 4096);
-    let mut builder = if v3 {
-        StructuralIndexBuilder::new_v3(staging, [7; 32], tree.clone(), root.clone(), 0)
-    } else {
-        StructuralIndexBuilder::new(staging, [7; 32], tree.clone(), root.clone(), 0)
-    }
-    .unwrap_or_else(|error| panic!("builder failed: {error}"));
+    let mut builder = StructuralIndexBuilder::new(staging, [7; 32], tree.clone(), root.clone(), 0)
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
     builder
         .push(&IndexRecord {
             parent: u64::MAX,
@@ -153,11 +135,10 @@ fn fixture_with_format(content_digest: [u8; 32], v3: bool) -> Fixture {
         bytes: writer.into_inner(),
         tree,
         root,
-        v3,
     }
 }
 
-fn fixture_v3_names(names: &[Vec<u8>]) -> Fixture {
+fn fixture_names(names: &[Vec<u8>]) -> Fixture {
     let tree = descriptor("application/vnd.aos.sandbox.tree.v1+cbor", [51; 32]);
     let root = descriptor("application/vnd.aos.sandbox.directory.v1+cbor", [52; 32]);
     let content_descriptor = descriptor("application/vnd.aos.sandbox.content.v1", [53; 32]);
@@ -167,9 +148,8 @@ fn fixture_v3_names(names: &[Vec<u8>]) -> Fixture {
     let file_metadata = FilesystemMetadata::new(0o644, 5, 6, 7, 8, Vec::new(), None)
         .unwrap_or_else(|error| panic!("metadata failed: {error}"));
     let staging = IndexStaging::new(IoCursor::new(Vec::new()), 1_048_576, 4096);
-    let mut builder =
-        StructuralIndexBuilder::new_v3(staging, [7; 32], tree.clone(), root.clone(), 0)
-            .unwrap_or_else(|error| panic!("builder failed: {error}"));
+    let mut builder = StructuralIndexBuilder::new(staging, [7; 32], tree.clone(), root.clone(), 0)
+        .unwrap_or_else(|error| panic!("builder failed: {error}"));
     builder
         .push(&IndexRecord {
             parent: u64::MAX,
@@ -204,7 +184,6 @@ fn fixture_v3_names(names: &[Vec<u8>]) -> Fixture {
         bytes: writer.into_inner(),
         tree,
         root,
-        v3: true,
     }
 }
 
@@ -332,15 +311,17 @@ fn live_inode_reauthenticates_and_bounds_all_borrowed_views() {
     let root = table
         .live_inode(ROOT_NODE_ID)
         .unwrap_or_else(|error| panic!("root live inode failed: {error}"));
-    assert!(matches!(
-        root.directory_range(),
-        Err(InodeError::Index(IndexError::DirectoryIterationUnavailable))
-    ));
+    assert_eq!(
+        root.directory_range()
+            .unwrap_or_else(|error| panic!("directory range failed: {error}"))
+            .len(),
+        5
+    );
 }
 
 #[test]
-fn live_inode_exposes_a_canonical_v3_directory_range() {
-    let fixture = fixture_v3();
+fn live_inode_exposes_a_canonical_directory_range() {
+    let fixture = fixture();
     let index = fixture.validate();
     let table = InodeTable::new(&index, [40; 32], generous_limits())
         .unwrap_or_else(|error| panic!("table failed: {error}"));
@@ -1632,7 +1613,7 @@ fn abort_zero_pending_counter_leaves_slots_and_counters_unchanged() {
 
 #[test]
 fn directory_handle_cookies_are_stable_stateless_and_do_not_intern_children() {
-    let fixture = fixture_v3();
+    let fixture = fixture();
     let index = fixture.validate();
     let directory_limits = DirectoryHandleLimits::new(8, 16);
     let mut table = InodeTable::new_with_directory_limits(
@@ -1728,10 +1709,10 @@ fn directory_handle_cookies_are_stable_stateless_and_do_not_intern_children() {
 }
 
 #[test]
-fn directory_handles_are_opt_in_v3_only_and_share_raw_identity_with_files() {
-    let v3_fixture = fixture_v3();
-    let v3_index = v3_fixture.validate();
-    let mut disabled = InodeTable::new(&v3_index, [41; 32], generous_limits())
+fn directory_handles_are_opt_in_and_share_raw_identity_with_files() {
+    let fixture = fixture();
+    let index = fixture.validate();
+    let mut disabled = InodeTable::new(&index, [41; 32], generous_limits())
         .unwrap_or_else(|error| panic!("disabled table failed: {error}"));
     assert!(matches!(
         disabled.reserve_directory(ROOT_NODE_ID),
@@ -1739,23 +1720,8 @@ fn directory_handles_are_opt_in_v3_only_and_share_raw_identity_with_files() {
     ));
     assert_eq!(disabled.next_handle_id, 1);
 
-    let v2_fixture = fixture();
-    let v2_index = v2_fixture.validate();
-    let mut v2 = InodeTable::new_with_directory_limits(
-        &v2_index,
-        [42; 32],
-        generous_limits(),
-        DirectoryHandleLimits::new(2, 4),
-    )
-    .unwrap_or_else(|error| panic!("v2 table failed: {error}"));
-    assert!(matches!(
-        v2.reserve_directory(ROOT_NODE_ID),
-        Err(InodeError::Index(IndexError::DirectoryIterationUnavailable))
-    ));
-    assert_eq!((v2.live_directory_handles(), v2.next_handle_id), (0, 1));
-
     let mut table = InodeTable::new_with_directory_limits(
-        &v3_index,
+        &index,
         [43; 32],
         generous_limits(),
         DirectoryHandleLimits::new(2, 4),
@@ -1779,7 +1745,7 @@ fn directory_handles_are_opt_in_v3_only_and_share_raw_identity_with_files() {
     let directory_raw = directory_reservation.raw_protocol_handle();
     assert!(directory_raw > file_raw);
     let mut foreign_table = InodeTable::new_with_directory_limits(
-        &v3_index,
+        &index,
         [54; 32],
         generous_limits(),
         DirectoryHandleLimits::new(2, 4),
@@ -1811,7 +1777,7 @@ fn directory_handles_are_opt_in_v3_only_and_share_raw_identity_with_files() {
 
 #[test]
 fn directory_pin_survives_forget_and_abort_or_release_reaps() {
-    let fixture = fixture_v3();
+    let fixture = fixture();
     let index = fixture.validate();
     let mut table = InodeTable::new_with_directory_limits(
         &index,
@@ -1881,7 +1847,7 @@ fn directory_seek_is_page_local_for_high_fanout_and_preserves_byte_names() {
         .collect::<Vec<_>>();
     names.push(vec![b'x'; 255]);
     names.push(vec![0x80]);
-    let fixture = fixture_v3_names(&names);
+    let fixture = fixture_names(&names);
     let index = fixture.validate();
     let mut table = InodeTable::new_with_directory_limits(
         &index,
@@ -1916,7 +1882,7 @@ fn directory_seek_is_page_local_for_high_fanout_and_preserves_byte_names() {
     assert_eq!(tail[0].name(), vec![b'x'; 255]);
     assert_eq!(tail[1].name(), &[0x80]);
 
-    let empty_fixture = fixture_v3_names(&[]);
+    let empty_fixture = fixture_names(&[]);
     let empty_index = empty_fixture.validate();
     let mut empty_table = InodeTable::new_with_directory_limits(
         &empty_index,
@@ -1949,7 +1915,7 @@ fn directory_seek_is_page_local_for_high_fanout_and_preserves_byte_names() {
 
 #[test]
 fn directory_limits_foreign_handles_and_cached_substitution_fail_closed() {
-    let fixture = fixture_v3();
+    let fixture = fixture();
     let index = fixture.validate();
     let directory_limits = DirectoryHandleLimits::new(1, 2);
     let mut first = InodeTable::new_with_directory_limits(
@@ -2125,7 +2091,7 @@ fn directory_limits_foreign_handles_and_cached_substitution_fail_closed() {
 
 #[test]
 fn directory_churn_rebuilds_and_exact_tombstone_reuse_needs_no_heap_growth() {
-    let fixture = fixture_v3();
+    let fixture = fixture();
     let index = fixture.validate();
     let mut table = InodeTable::new_with_directory_limits(
         &index,
@@ -2173,7 +2139,7 @@ fn directory_churn_rebuilds_and_exact_tombstone_reuse_needs_no_heap_growth() {
 
 #[test]
 fn prepared_forget_commit_matches_the_public_atomic_operation() {
-    let fixture = fixture_v3();
+    let fixture = fixture();
     let index = fixture.validate();
     let mut public = InodeTable::new(&index, [72; 32], generous_limits())
         .unwrap_or_else(|error| panic!("public table failed: {error}"));

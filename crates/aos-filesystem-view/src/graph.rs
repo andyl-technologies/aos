@@ -70,7 +70,7 @@ impl TreeCompiler {
         let maximum_tree_bytes = tree_reservation.max(retained_tree);
         drop(tree);
         drop(tree_bytes);
-        let mut index = StructuralIndexBuilder::new_v3(
+        let mut index = StructuralIndexBuilder::new(
             staging.narrow(
                 self.limits.index_bytes,
                 self.limits.index_record_bytes,
@@ -1458,7 +1458,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("tree decode failed: {error}"))
             .root()
             .clone();
-        let mut index = StructuralIndexBuilder::new_v3(
+        let mut index = StructuralIndexBuilder::new(
             IndexStaging::new(Cursor::new(Vec::new()), 4096, 4096),
             [9; 32],
             tree,
@@ -1676,7 +1676,7 @@ mod tests {
             .root()
             .clone();
         let staging = IndexStaging::new(Cursor::new(Vec::new()), 4096, 4096);
-        let mut builder = StructuralIndexBuilder::new_v3(staging, [1; 32], tree, root.clone(), 0)
+        let mut builder = StructuralIndexBuilder::new(staging, [1; 32], tree, root.clone(), 0)
             .unwrap_or_else(|error| panic!("builder failed: {error}"));
         let work = Work {
             descriptor: root.clone(),

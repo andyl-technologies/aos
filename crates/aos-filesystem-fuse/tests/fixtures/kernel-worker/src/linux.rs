@@ -18,7 +18,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
 use aos_filesystem_fuse::{RunError, TransportLimits, run_metadata};
 use aos_filesystem_view::{
-    AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE_V3, IdMapExtent, IdentityMap,
+    AclCapability, DirectoryHandleLimits, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
     IndexExpectation, IndexStaging, InodeTableLimits, MetadataConnection, ObjectSource,
     PreparedPresentation, PresentationLimits, PresentationPlan, ReplyScratch, RequestBudget,
     TreeCompileLimits, TreeCompiler, WorkerLimits, validate_index,
@@ -114,7 +114,7 @@ fn serve(connected: &OwnedFd, cancellation: &OwnedFd) -> Result<()> {
     )?;
     let (writer, _) = staged.into_parts();
     let bytes = writer.into_inner();
-    let artifact = descriptor_for_bytes(MediaType::new(INDEX_MEDIA_TYPE_V3)?, &bytes);
+    let artifact = descriptor_for_bytes(MediaType::new(INDEX_MEDIA_TYPE)?, &bytes);
     let index = validate_index(
         &bytes,
         65_536,
