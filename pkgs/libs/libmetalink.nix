@@ -1,5 +1,7 @@
 ##! libmetalink — Metalink XML document parser
 {
+  lib,
+  stdenv,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -35,14 +37,20 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix="$out" \
-            --disable-static \
-            --without-libxml2 \
-            --with-libexpat
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Target glibc returns nonnull for malloc(0). The cross default
+            # selects rpl_malloc even though this package has no replacement.
+            export ac_cv_func_malloc_0_nonnull=yes
+          ''
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix="$out" \
+              --disable-static \
+              --without-libxml2 \
+              --with-libexpat
+          '';
       }
       {
         name = "build";
