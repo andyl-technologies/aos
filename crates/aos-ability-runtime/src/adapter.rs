@@ -636,6 +636,12 @@ pub trait TrustedAdapter {
     ) -> ReconcileDisposition<Self::Completion, Self::Observation>;
 
     /// Requests cancellation without asserting that an effect disappeared.
+    ///
+    /// The runtime invokes this method after persisting cancellation intent.
+    /// Its control preserves the live elapsed and deadline budgets while
+    /// reporting `false` from [`RuntimeControl::is_cancelled`], allowing bounded
+    /// termination and postcondition probes to finish. Process-level escalation
+    /// remains external to the adapter call.
     fn cancel(
         &mut self,
         request: &Self::Request,

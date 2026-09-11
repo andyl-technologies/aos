@@ -2179,6 +2179,27 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_postcondition_probe_runs_with_usable_control() {
+        let mut command = helper_command("postcondition");
+        let mut child = command
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("postcondition helper starts");
+        let group = child_process_group(&child).expect("helper process group exists");
+        let control = FixedBudgetControl::new(2_000);
+        let deadline = ExecutionDeadline::new(&control).expect("cancellation budget is usable");
+
+        let output = exchange_kubectl_io(&mut child, group, None, &control, deadline)
+            .expect("Kubernetes postcondition probe completes");
+
+        let marker = b"postcondition-observed";
+        assert!(output.windows(marker.len()).any(|window| window == marker));
+    }
+
+    #[test]
     fn process_group_cleanup_does_not_wait_for_inherited_output_pipes() {
         let mut command = helper_command("spawn-descendant");
         let mut child = command
@@ -2231,6 +2252,7 @@ mod tests {
                     .spawn()
                     .expect("descendant helper starts");
             }
+            Ok("postcondition") => print!("postcondition-observed"),
             Ok("sleep") => std::thread::sleep(Duration::from_secs(60)),
             _ => {}
         }
