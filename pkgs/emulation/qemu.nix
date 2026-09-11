@@ -22,6 +22,7 @@
   libgcrypt,
   gnutls,
   fuse3,
+  gcc-libs,
   bash,
   stdenv,
   buildPackages,
@@ -211,6 +212,10 @@
       "--enable-vhost-net"
       "--enable-fuse"
     ]
+    # Thread exit unwinds through glibc's dlopen of libgcc_s. Retain it even
+    # when QEMU itself has no direct references to its exported symbols. Keep
+    # the scoped linker state in one argument so Meson cannot reorder it.
+    ++ lib.optional stdenv.hostPlatform.isLinux "--extra-ldflags=-Wl,--push-state,--no-as-needed,-l:libgcc_s.so.1,--pop-state"
     ++ lib.optionals isDarwinCross [
       "--disable-cap-ng"
       "--disable-libusb"
@@ -241,7 +246,8 @@
       libgcrypt
       gnutls
       fuse3
-    ];
+    ]
+    ++ lib.optional stdenv.hostPlatform.isLinux gcc-libs;
   qemuRuntimeRpath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") qemuRuntimeDeps);
   qemuBuildIdentityMaterial = ''
     qemu_package=${pname}

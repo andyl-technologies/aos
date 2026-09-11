@@ -14,6 +14,7 @@ in
     version = "1";
     src = null;
     buildDeps = [qemu];
+    runtimeDeps = [pkgs.gcc-libs];
     phases = [
       {
         name = "check";
@@ -38,6 +39,37 @@ in
             echo 'binfmt interpreter accepted a missing original argv[0]' >&2
             exit 1
           fi
+
+          # Guest thread exit also unwinds a host QEMU thread. Both processes
+          # must resolve their own libgcc_s without environment injection.
+          cat > thread-exit.c <<'SOURCE'
+          #include <pthread.h>
+
+          static void *exit_thread(void *argument)
+          {
+              pthread_exit(argument);
+          }
+
+          int main(void)
+          {
+              pthread_t thread;
+              int token = 0;
+              void *result = 0;
+
+              if (pthread_create(&thread, 0, exit_thread, &token) != 0) {
+                  return 1;
+              }
+              if (pthread_join(thread, &result) != 0) {
+                  return 2;
+              }
+              return result != &token;
+          }
+          SOURCE
+          cc -O2 -pthread thread-exit.c \
+            -Wl,--push-state,--no-as-needed,-l:libgcc_s.so.1,--pop-state \
+            -o thread-exit
+          unset LD_PRELOAD LD_LIBRARY_PATH
+          ${qemu}/bin/qemu-${architecture} "$PWD/thread-exit"
 
           mkdir -p "$out"
           echo PASS > "$out/result"
