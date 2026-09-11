@@ -19,6 +19,7 @@
   libaio,
   libevent,
   liburing,
+  libxcrypt,
   linux-pam,
   lz4,
   ncurses,
@@ -451,6 +452,8 @@ in
           ncurses
           numactl
           linux-pam
+          # The server and backup tool link crypt directly on Linux.
+          libxcrypt
           openssl
           pcre2
           snappy
