@@ -153,7 +153,7 @@ in {
       operation = "Format the Nix expression in place.";
       expected = "Alejandra accepts the expression and writes its canonical layout.";
       files."expression.nix" = "{a=1;b=[2 3];}\n";
-      arguments = ["@work@/primary/expression.nix"];
+      arguments = ["--quiet" "@work@/primary/expression.nix"];
       stdout = "";
       stderr = "";
       artifacts = [
@@ -555,11 +555,7 @@ in {
       input = "A makefile deriving an output file from an input variable.";
       operation = "Build the declared target with GNU Make.";
       expected = "Make runs the recipe and creates the exact output artifact.";
-      files.Makefile = ''
-               value = 42
-               result.txt:
-        printf 'make result: %s\n' '$(value)' > result.txt
-      '';
+      files.Makefile = "value = 42\nresult.txt:\n\tprintf 'make result: %s\\n' '$(value)' > result.txt\n";
       arguments = ["--no-print-directory" "result.txt"];
       stdout = "printf 'make result: %s\\n' '42' > result.txt\n";
       stderr = "";

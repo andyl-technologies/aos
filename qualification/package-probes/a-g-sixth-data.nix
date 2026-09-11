@@ -183,7 +183,8 @@ in {
       import pathlib, xml.etree.ElementTree as ET
       root = pathlib.Path("@out@/share/xml/docbook/schema/dtd/4.5")
       ET.parse(root / "catalog.xml")
-      assert "<!ELEMENT book" in (root / "docbookx.dtd").read_text(errors="replace")
+      assert "dbhierx.mod" in (root / "docbookx.dtd").read_text()
+      assert "<!ELEMENT book" in (root / "dbhierx.mod").read_text()
       print("docbook-xml data passed")
     '';
     badInput = "A request for an element declaration absent from DocBook 4.5.";
@@ -191,7 +192,8 @@ in {
     badExpected = "The DTD lookup rejects the unknown element.";
     badScript = ''
       import pathlib, sys
-      source = pathlib.Path("@out@/share/xml/docbook/schema/dtd/4.5/docbookx.dtd").read_text(errors="replace")
+      root = pathlib.Path("@out@/share/xml/docbook/schema/dtd/4.5")
+      source = "\n".join(path.read_text() for path in root.iterdir() if path.suffix in {".dtd", ".mod"})
       if "<!ELEMENT aos-nonexistent" in source:
           raise SystemExit(2)
       sys.stderr.write("docbook-xml rejected invalid input\n")
@@ -229,13 +231,19 @@ in {
     package = "edk2";
     primaryInput = "The architecture-specific EDK2 flash-volume images.";
     primaryOperation = "Inspect every installed firmware image for its firmware-volume signature.";
-    primaryExpected = "At least one nonempty flash image carries an FVH signature near its volume header.";
+    primaryExpected = "Every installed flash image contains a version 2 firmware volume with valid bounds and header checksum.";
     primaryScript = ''
-      import pathlib
+      import pathlib, struct
       images = sorted(pathlib.Path("@out@/FV").glob("*.fd"))
       assert images
-      assert all(image.stat().st_size > 1024 * 1024 for image in images)
-      assert all(b"_FVH" in image.read_bytes()[:4096] for image in images)
+      for image in images:
+          data = image.read_bytes()
+          assert data[40:44] == b"_FVH"
+          volume_length = struct.unpack_from("<Q", data, 32)[0]
+          header_length = struct.unpack_from("<H", data, 48)[0]
+          assert 56 <= header_length <= volume_length <= len(data)
+          assert header_length % 2 == 0 and data[55] == 2
+          assert sum(struct.unpack_from("<" + "H" * (header_length // 2), data)) % 65536 == 0
       print("edk2 data passed")
     '';
     badInput = "A request for an architecture-neutral EDK2 flash image that is not produced.";

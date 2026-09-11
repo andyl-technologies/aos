@@ -87,7 +87,7 @@ in {
       build = subprocess.run(["@out@/bin/mkcomposefs", "source", "image.cfs"], capture_output=True)
       assert build.returncode == 0, build.stderr
       assert pathlib.Path("image.cfs").stat().st_size > 0
-      inspect = subprocess.run(["@out@/bin/composefs-info", "image.cfs"], capture_output=True)
+      inspect = subprocess.run(["@out@/bin/composefs-info", "dump", "image.cfs"], capture_output=True)
       assert inspect.returncode == 0, inspect.stderr
       print("composefs operation passed")
     '';
@@ -119,9 +119,9 @@ in {
     '';
     primaryScript = ''
       import subprocess
-      result = subprocess.run(["@out@/bin/crictl", "--config", "crictl.yaml", "config"], capture_output=True, text=True)
+      result = subprocess.run(["@out@/bin/crictl", "--config", "crictl.yaml", "config", "--get", "runtime-endpoint"], capture_output=True, text=True)
       assert result.returncode == 0, result.stderr
-      assert "runtime-endpoint: unix:///run/containerd/containerd.sock" in result.stdout
+      assert result.stdout.strip() == "unix:///run/containerd/containerd.sock"
       print("crictl operation passed")
     '';
     badInput = "A crictl configuration containing an unterminated sequence.";
@@ -130,7 +130,7 @@ in {
     badFiles."crictl.yaml" = "runtime-endpoint: [unterminated\n";
     badScript = ''
       import subprocess, sys
-      result = subprocess.run(["@out@/bin/crictl", "--config", "crictl.yaml", "config"], capture_output=True)
+      result = subprocess.run(["@out@/bin/crictl", "--config", "crictl.yaml", "config", "--get", "runtime-endpoint"], capture_output=True)
       if result.returncode == 0:
           raise SystemExit(2)
       sys.stderr.write("crictl rejected invalid input\n")
@@ -203,7 +203,7 @@ in {
       import subprocess
       result = subprocess.run(["@out@/bin/dockerd", "--validate", "--config-file", "daemon.json"], capture_output=True, text=True)
       assert result.returncode == 0, result.stderr
-      assert "configuration OK" in result.stdout
+      assert "configuration OK" in result.stderr
       print("docker-engine operation passed")
     '';
     badInput = "A daemon configuration containing an unknown directive.";

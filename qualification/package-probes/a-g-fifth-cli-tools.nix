@@ -58,7 +58,7 @@ in {
     primaryOperation = "Render the definition through the packaged AutoGen interpreter.";
     primaryExpected = "AutoGen expands the template to the fixed qualification line.";
     primaryFiles."probe.def" = ''
-      AutoGen Definitions;
+      AutoGen Definitions probe.tpl;
       answer = "qualified";
     '';
     primaryFiles."probe.tpl" = ''
@@ -75,7 +75,7 @@ in {
     badInput = "An AutoGen definition with an unterminated aggregate value.";
     badOperation = "Render the malformed definition.";
     badExpected = "AutoGen rejects the invalid definition syntax.";
-    badFiles."probe.def" = "AutoGen Definitions;\nanswer = {\n";
+    badFiles."probe.def" = "AutoGen Definitions probe.tpl;\nanswer = {\n";
     badFiles."probe.tpl" = "[+ AutoGen5 template +]\n[+ answer +]\n";
     badScript = ''
       import subprocess, sys
@@ -148,7 +148,7 @@ in {
       assert result.returncode == 0
       rows = list(csv.DictReader(result.stdout.splitlines()))
       python = next(row for row in rows if row["language"] == "Python")
-      assert (python["files_count"], python["blank"], python["comment"], python["code"]) == ("1", "1", "1", "1")
+      assert (python["files"], python["blank"], python["comment"], python["code"]) == ("1", "1", "1", "1")
       print("cloc operation passed")
     '';
     badInput = "A command-line option that cloc does not define.";

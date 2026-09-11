@@ -3,6 +3,7 @@
   mkCProbe = {
     package,
     compiler ? "@cc@",
+    compileCommand ? [compiler],
     suffix ? "c",
     compileArguments,
     primaryInput,
@@ -24,7 +25,7 @@
           files."primary.${suffix}" = primarySource;
           steps = [
             {
-              argv = [compiler "primary.${suffix}"] ++ compileArguments ++ ["-o" "primary-consumer"];
+              argv = compileCommand ++ ["primary.${suffix}"] ++ compileArguments ++ ["-o" "primary-consumer"];
               exit_code = 0;
               stdout.exact = "";
               stderr.exact = "";
@@ -45,7 +46,7 @@
           files."bad-input.${suffix}" = badInputSource;
           steps = [
             {
-              argv = [compiler "bad-input.${suffix}"] ++ compileArguments ++ ["-o" "bad-input-consumer"];
+              argv = compileCommand ++ ["bad-input.${suffix}"] ++ compileArguments ++ ["-o" "bad-input-consumer"];
               exit_code = 0;
               stdout.exact = "";
               stderr.exact = "";
@@ -190,7 +191,17 @@ in {
 
   gpgme = mkCProbe {
     package = "gpgme";
-    compileArguments = ["-I@out@/include" "-L@out@/lib" "-Wl,-rpath,@out@/lib" "-lgpgme"];
+    compileCommand = [
+      "@python@"
+      "-c"
+      ''
+        import shlex, subprocess, sys
+        flags = shlex.split(subprocess.check_output(["@out@/bin/gpgme-config", "--cflags", "--libs"], text=True))
+        runtime_paths = ["-Wl,-rpath," + flag[2:] for flag in flags if flag.startswith("-L")]
+        raise SystemExit(subprocess.run(["@cc@", *sys.argv[1:], *flags, *runtime_paths]).returncode)
+      ''
+    ];
+    compileArguments = ["-Wl,-rpath,@out@/lib"];
     primaryInput = "A fixed memory buffer exposed as GPGME data.";
     primaryOperation = "Create a data object, seek it, and read back the exact bytes.";
     primarySource = ''
@@ -199,6 +210,10 @@ in {
       #include <gpgme.h>
 
       int main(void) {
+          if (gpgme_check_version(NULL) == NULL) {
+              return 2;
+          }
+
           const char source[] = "qualification";
           char recovered[sizeof(source)] = {0};
           gpgme_data_t data = NULL;
@@ -220,6 +235,10 @@ in {
       #include <gpgme.h>
 
       int main(void) {
+          if (gpgme_check_version(NULL) == NULL) {
+              return 2;
+          }
+
           gpgme_ctx_t context;
           if (gpgme_new(&context) != 0) {
               return 2;

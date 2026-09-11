@@ -373,7 +373,7 @@ in {
     compileArguments = [
       "-I@output:dev@/include/glib-2.0"
       "-I@output:dev@/lib/glib-2.0/include"
-      "-L@out@/lib"
+      "-L@output:dev@/lib"
       "-Wl,-rpath,@out@/lib"
       "-lglib-2.0"
     ];
