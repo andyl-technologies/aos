@@ -224,6 +224,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use std::cell::Cell;
 
     use super::*;

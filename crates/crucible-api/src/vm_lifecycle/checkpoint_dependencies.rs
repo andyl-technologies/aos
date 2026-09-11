@@ -325,6 +325,8 @@ fn capture_limit(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use crucible::model::{
         MemoryDagStore, SignalBoundaryBehavior, SignalDomain, SignalId, SignalInterpolation,

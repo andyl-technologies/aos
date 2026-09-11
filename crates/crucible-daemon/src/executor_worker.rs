@@ -2153,6 +2153,7 @@ pub struct StagedAttemptResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 impl StagedAttemptResult {
     pub(crate) fn from_test_parts(
         queued: QueuedAttempt,

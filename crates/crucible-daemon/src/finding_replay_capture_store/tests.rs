@@ -1,5 +1,7 @@
 //! Regression coverage for chunked finding replay capture persistence.
 
+#![allow(clippy::expect_used)]
+
 use super::*;
 use std::sync::Arc;
 
