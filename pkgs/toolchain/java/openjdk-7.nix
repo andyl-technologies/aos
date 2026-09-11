@@ -38,7 +38,7 @@
   bootstrapTools,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
-  buildTools =
+  platformTools =
     if isDarwinCross
     then buildPackages
     else {
@@ -67,6 +67,24 @@
         libxslt
         ;
     };
+
+  # Java compilation and JNI header generation produce platform-independent
+  # data. Run those tools natively; retain the ARM binutils and uname that the
+  # legacy makefiles use to select and build the target VM.
+  buildTools =
+    platformTools
+    // lib.optionalAttrs (stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) {
+      inherit
+        (buildPackages)
+        jamvm-2_0
+        ecj-bootstrap
+        classpath-0_99
+        gjavah
+        ant-bootstrap
+        fastjar
+        ;
+    };
+
   alsaForBuild =
     if isDarwinCross
     then buildPackages.alsa-lib
