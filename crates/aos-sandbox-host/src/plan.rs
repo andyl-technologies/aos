@@ -48,7 +48,10 @@ use crate::{HostError, Result};
 mod kernel_tests;
 mod readiness;
 
-pub use readiness::{BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence};
+pub use readiness::{
+    BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
+    VerifiedCompiledSupervisorProfileV1,
+};
 
 const PROCESSES: u8 = 2;
 const MEMORY: u8 = 3;
@@ -60,6 +63,9 @@ const MICROS_PER_SECOND: u64 = 1_000_000;
 pub(crate) const WORKSPACE_PIN_PREFIX: &str = "/run/aos/sandbox-pins/workspaces/";
 pub(crate) const NETWORK_PIN_PREFIX: &str = "/run/aos/sandbox-pins/netns/";
 pub(crate) const ATTACHMENT_ANCHOR_PIN_PREFIX: &str = "/run/aos/sandbox-mount-catalog/slots/";
+#[cfg(test)]
+const TEST_NSPAWN_PATH: &str =
+    "/nix/store/00000000000000000000000000000000-aos-readiness-absent/bin/systemd-nspawn";
 const SUPPORTED_BACKEND_FEATURES: &[(&str, u32, u32)] = &[
     ("aos.sandbox.runtime.linux-systemd", 1, 0),
     ("aos.sandbox.identity.posix32", 1, 0),
@@ -448,11 +454,10 @@ fn validate_fixed_nspawn_path(executable: &str) -> Result<()> {
     Ok(())
 }
 
-/// Stores node-owned constants used to compile a launch request.
+/// Retains verified backend readiness and node-owned launch timeouts.
 #[derive(Debug)]
 pub struct NspawnConfig {
-    executable_pin: Arc<OwnedFd>,
-    executable_snapshot: NspawnExecutableSnapshot,
+    readiness: BackendReadiness,
     timeout_start: Duration,
     timeout_stop: Duration,
 }
@@ -475,54 +480,24 @@ impl NspawnConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`HostError::InvalidPlan`] for an invalid executable path,
-    /// incomplete readiness evidence, descriptor metadata drift, or zero
-    /// timeouts.
+    /// Returns [`HostError::State`] when the current kernel boot identity
+    /// cannot be read. Returns [`HostError::InvalidPlan`] for zero timeouts, an
+    /// invalid executable path, incomplete readiness evidence, an admitted boot
+    /// or binding mismatch, or retained executable metadata or content drift.
     pub fn from_readiness(
         readiness: BackendReadiness,
         timeout_start: Duration,
         timeout_stop: Duration,
     ) -> Result<Self> {
-        let BackendReadiness {
-            executable,
-            executable_device,
-            executable_inode,
-            executable_pin,
-            executable_snapshot,
-            probe_generation,
-            mac_policy_digest,
-            supervisor_profile_digest,
-            payload_filter_digest,
-        } = readiness;
-        validate_fixed_nspawn_path(&executable)?;
-        if executable_device == 0
-            || executable_inode == 0
-            || probe_generation == 0
-            || mac_policy_digest == [0; 32]
-            || supervisor_profile_digest == [0; 32]
-            || payload_filter_digest == [0; 32]
-        {
-            return Err(HostError::InvalidPlan(
-                "nspawn backend readiness evidence is incomplete".to_owned(),
-            ));
-        }
         if timeout_start.is_zero() || timeout_stop.is_zero() {
             return Err(HostError::InvalidPlan(
                 "systemd operation timeouts must be nonzero".to_owned(),
             ));
         }
-        let current_snapshot = nspawn_executable_snapshot(executable_pin.as_fd())?;
-        if current_snapshot != executable_snapshot
-            || current_snapshot.device != executable_device
-            || current_snapshot.inode != executable_inode
-        {
-            return Err(HostError::InvalidPlan(
-                "nspawn executable identity changed".to_owned(),
-            ));
-        }
+
+        let readiness = readiness.into_nspawn_readiness()?;
         Ok(Self {
-            executable_snapshot,
-            executable_pin: Arc::new(executable_pin),
+            readiness,
             timeout_start,
             timeout_stop,
         })
@@ -539,12 +514,8 @@ impl NspawnConfig {
             rustix::fs::Mode::empty(),
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        Ok(Self {
-            executable_snapshot: nspawn_executable_snapshot(executable_pin.as_fd())?,
-            executable_pin: Arc::new(executable_pin),
-            timeout_start: Duration::from_secs(30),
-            timeout_stop: Duration::from_secs(10),
-        })
+        let readiness = readiness::backend_readiness_for_tests(TEST_NSPAWN_PATH, executable_pin)?;
+        Self::from_readiness(readiness, Duration::from_secs(30), Duration::from_secs(10))
     }
 
     /// Pins the real packaged nspawn for explicit kernel qualification.
@@ -562,29 +533,21 @@ impl NspawnConfig {
         }
         let executable_pin = open_executable_pin(executable)?;
 
-        Ok(Self {
-            executable_snapshot: nspawn_executable_snapshot(executable_pin.as_fd())?,
-            executable_pin: Arc::new(executable_pin),
-            timeout_start,
-            timeout_stop,
-        })
+        let readiness = readiness::backend_readiness_for_tests(executable, executable_pin)?;
+        Self::from_readiness(readiness, timeout_start, timeout_stop)
     }
 
     pub(crate) fn revalidate(&self) -> Result<()> {
-        if nspawn_executable_snapshot(self.executable_pin.as_fd())? != self.executable_snapshot {
-            return Err(HostError::InvalidPlan(
-                "nspawn executable identity changed after backend admission".to_owned(),
-            ));
-        }
-        Ok(())
+        self.readiness.revalidate_for_nspawn()
     }
 
     /// Resolves opaque resources and compiles the sole accepted nspawn argv.
     ///
     /// # Errors
     ///
-    /// Returns an error when catalog resolution fails, mandatory cgroup limits
-    /// are missing or invalid, or a trusted catalog returns an unsafe path.
+    /// Returns an error when catalog resolution fails, backend readiness
+    /// changed, mandatory cgroup limits are missing or invalid, or a trusted
+    /// catalog returns an unsafe path.
     pub fn compile<C: HostCatalog>(
         &self,
         catalog: &C,
@@ -604,14 +567,16 @@ impl NspawnConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error for unsupported features, invalid required resources,
-    /// unsafe resolved paths, or a contradictory identity allocation.
+    /// Returns an error when backend readiness changed, or for unsupported
+    /// features, invalid required resources, unsafe resolved paths, or a
+    /// contradictory identity allocation.
     pub(crate) fn compile_resolved(
         &self,
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
         resolved: ResolvedLaunchResources,
     ) -> Result<PreparedLaunch> {
+        self.revalidate()?;
         validate_backend_features(plan)?;
         let workspace = resolved.workspace;
         let network = resolved.network;
@@ -654,7 +619,7 @@ impl NspawnConfig {
         }
 
         let executable_path =
-            SandboxDescriptorPath::for_current_process(self.executable_pin.as_fd())
+            SandboxDescriptorPath::for_current_process(self.readiness.executable_pin())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let root_path = SandboxDescriptorPath::for_current_process(workspace.pin.as_fd())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
@@ -682,12 +647,12 @@ impl NspawnConfig {
             self.timeout_stop,
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let nspawn_identity = fstat(self.executable_pin.as_fd())
+        let nspawn_identity = fstat(self.readiness.executable_pin())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let workspace_identity = fstat(workspace.pin.as_fd())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let nspawn_mount_id =
-            aos_sandbox_linux::inventory::MountId::from_fd(self.executable_pin.as_fd())
+            aos_sandbox_linux::inventory::MountId::from_fd(self.readiness.executable_pin())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?
                 .get();
         let workspace_mount_id =
@@ -721,7 +686,7 @@ impl NspawnConfig {
             spec,
             snapshot,
             pins: LaunchPins {
-                executable: Arc::clone(&self.executable_pin),
+                executable: Arc::clone(self.readiness.executable_pin_arc()),
                 workspace: workspace.pin,
                 network: network.pin,
                 attachment_anchor: attachment_anchor.pin,
@@ -896,26 +861,18 @@ mod tests {
 
     use super::*;
 
-    const ABSENT_NSPAWN_PATH: &str =
-        "/nix/store/00000000000000000000000000000000-aos-readiness-absent/bin/systemd-nspawn";
-
     fn readiness_with_pin(executable_pin: OwnedFd) -> BackendReadiness {
-        let executable_snapshot = nspawn_executable_snapshot(executable_pin.as_fd()).unwrap();
-
-        BackendReadiness {
-            executable: ABSENT_NSPAWN_PATH.to_owned(),
-            executable_device: executable_snapshot.device,
-            executable_inode: executable_snapshot.inode,
-            executable_pin,
-            executable_snapshot,
-            probe_generation: 1,
-            mac_policy_digest: [1; 32],
-            supervisor_profile_digest: [2; 32],
-            payload_filter_digest: [3; 32],
-        }
+        readiness_with_path_and_pin(TEST_NSPAWN_PATH, executable_pin)
     }
 
-    fn readiness() -> BackendReadiness {
+    fn readiness_with_path_and_pin(
+        executable_path: &str,
+        executable_pin: OwnedFd,
+    ) -> BackendReadiness {
+        readiness::backend_readiness_for_tests(executable_path, executable_pin).unwrap()
+    }
+
+    fn readiness_with_path(executable_path: &str) -> BackendReadiness {
         let executable = std::env::current_exe().unwrap();
         let executable_pin = rustix::fs::open(
             executable,
@@ -924,15 +881,20 @@ mod tests {
         )
         .unwrap();
 
-        readiness_with_pin(executable_pin)
+        readiness_with_path_and_pin(executable_path, executable_pin)
+    }
+
+    fn readiness() -> BackendReadiness {
+        readiness_with_path(TEST_NSPAWN_PATH)
     }
 
     #[test]
     fn nspawn_readiness_transfers_the_exact_pin_without_reopening_its_path() {
-        assert!(!Path::new(ABSENT_NSPAWN_PATH).exists());
+        assert!(!Path::new(TEST_NSPAWN_PATH).exists());
         let readiness = readiness();
-        let admitted_descriptor = readiness.executable_pin.as_raw_fd();
-        let admitted_snapshot = readiness.executable_snapshot;
+        let admitted_descriptor = readiness.binding.executable_pin.as_raw_fd();
+        let admitted_snapshot = readiness.binding.executable_snapshot;
+        let admitted_executable_sha256 = readiness.binding.executable_sha256;
 
         let config = NspawnConfig::from_readiness(
             readiness,
@@ -941,17 +903,27 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.executable_pin.as_raw_fd(), admitted_descriptor);
-        assert_eq!(config.executable_snapshot, admitted_snapshot);
+        assert_eq!(
+            config.readiness.binding.executable_pin.as_raw_fd(),
+            admitted_descriptor
+        );
+        assert_eq!(
+            config.readiness.binding.executable_snapshot,
+            admitted_snapshot
+        );
+        assert_eq!(
+            config.readiness.binding.executable_sha256,
+            admitted_executable_sha256
+        );
         config.revalidate().unwrap();
     }
 
     #[test]
-    fn nspawn_readiness_rejects_each_incomplete_claim() {
+    fn nspawn_readiness_rejects_each_incomplete_binding_or_claim() {
         let remove_claims: [fn(&mut BackendReadiness); 6] = [
-            |readiness| readiness.executable_device = 0,
-            |readiness| readiness.executable_inode = 0,
-            |readiness| readiness.probe_generation = 0,
+            |readiness| readiness.binding.executable_snapshot.device = 0,
+            |readiness| readiness.binding.executable_snapshot.inode = 0,
+            |readiness| readiness.binding.artifact_sha256 = [0; 32],
             |readiness| readiness.mac_policy_digest = [0; 32],
             |readiness| readiness.supervisor_profile_digest = [0; 32],
             |readiness| readiness.payload_filter_digest = [0; 32],
@@ -974,16 +946,17 @@ mod tests {
 
     #[test]
     fn nspawn_readiness_rejects_invalid_path_and_zero_timeouts() {
-        let mut invalid_path = readiness();
-        invalid_path.executable = "/tmp/systemd-nspawn".to_owned();
-        assert!(
-            NspawnConfig::from_readiness(
-                invalid_path,
-                Duration::from_secs(30),
-                Duration::from_secs(10),
-            )
-            .is_err()
+        let invalid_path = readiness_with_path("/tmp/systemd-nspawn");
+        let error = NspawnConfig::from_readiness(
+            invalid_path,
+            Duration::from_secs(30),
+            Duration::from_secs(10),
         );
+        assert!(matches!(
+            error,
+            Err(HostError::InvalidPlan(message))
+                if message == "nspawn executable is not the fixed AOS store binary"
+        ));
 
         assert!(
             NspawnConfig::from_readiness(readiness(), Duration::ZERO, Duration::from_secs(10),)
@@ -998,7 +971,11 @@ mod tests {
     #[test]
     fn nspawn_readiness_rejects_declared_descriptor_identity_substitution() {
         let mut changed_device = readiness();
-        changed_device.executable_device = changed_device.executable_device.wrapping_add(1);
+        changed_device.binding.executable_snapshot.device = changed_device
+            .binding
+            .executable_snapshot
+            .device
+            .wrapping_add(1);
         assert!(
             NspawnConfig::from_readiness(
                 changed_device,
@@ -1009,7 +986,11 @@ mod tests {
         );
 
         let mut changed_inode = readiness();
-        changed_inode.executable_inode = changed_inode.executable_inode.wrapping_add(1);
+        changed_inode.binding.executable_snapshot.inode = changed_inode
+            .binding
+            .executable_snapshot
+            .inode
+            .wrapping_add(1);
         assert!(
             NspawnConfig::from_readiness(
                 changed_inode,
@@ -1044,7 +1025,7 @@ mod tests {
 
         for change_field in change_fields {
             let mut readiness = readiness();
-            change_field(&mut readiness.executable_snapshot);
+            change_field(&mut readiness.binding.executable_snapshot);
 
             assert!(
                 NspawnConfig::from_readiness(

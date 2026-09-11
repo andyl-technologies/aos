@@ -1,10 +1,12 @@
 //! Explicit VM qualification of the production compiler and systemd worker.
 //!
 //! This test pins the real packaged nspawn, not the unit-test executable. It
-//! deliberately does not construct `BackendReadiness`: a successful launch is
-//! only one prerequisite, not evidence of deployed MAC or ownership enforcement.
-//! The fleet fixture supplies an inert guardian dependency and prepared root
-//! and network objects. No production feature or constructor bypasses readiness.
+//! synthesizes placeholder [`BackendReadiness`] through a cfg(test)-only factory
+//! which is absent from production. That lets the fixture exercise compilation
+//! and worker mechanics; it does not satisfy real backend qualification or
+//! establish deployed MAC, profile, filter, or ownership enforcement. The fleet
+//! fixture supplies an inert guardian dependency and prepared root and network
+//! objects. No production feature or constructor bypasses readiness.
 
 #![allow(
     clippy::unwrap_used,
@@ -194,8 +196,9 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
 
     let executable = std::env::var("AOS_SANDBOX_QUALIFICATION_NSPAWN").unwrap();
     validate_fixed_nspawn_path(&executable).unwrap();
-    // A test-only candidate config exercises production compilation. It does
-    // not mint the readiness token that the real service requires to launch.
+    // The cfg(test)-only constructor synthesizes placeholder BackendReadiness
+    // so this fixture can exercise production compilation. The constructor is
+    // absent from production and its placeholder digests are not qualification.
     let config = NspawnConfig::for_kernel_test(
         &executable,
         Duration::from_secs(60),
