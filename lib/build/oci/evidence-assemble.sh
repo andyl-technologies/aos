@@ -274,38 +274,8 @@ write_compact_json closure-layer-descriptors.pretty.json closure-layer-descripto
 jq -s -S 'sort_by(.path)' layer-map.jsonl > layer-map.pretty.json
 write_compact_json layer-map.pretty.json layer-map.json
 
-# The first release emits one platform. Bind the ordered closure descriptors
-# to the exact runnable child manifest so independently supplied image and
-# closure inputs cannot qualify together.
-jq -e '
-  .schemaVersion == 2
-  and .mediaType == "application/vnd.oci.image.index.v1+json"
-  and (.manifests | length) == 1
-  and .manifests[0].mediaType == "application/vnd.oci.image.manifest.v1+json"
-  and (.manifests[0].digest | test("^sha256:[0-9a-f]{64}$"))
-  and (.manifests[0].size | type == "number" and . > 0 and floor == .)
-  and (.manifests[0].platform.os | type == "string" and length > 0)
-  and (.manifests[0].platform.architecture | type == "string" and length > 0)
-' "$out/image-index.json" >/dev/null
-platform_manifest_hex=$(jq -r '.manifests[0].digest | sub("^sha256:"; "")' "$out/image-index.json")
-platform_manifest_size=$(jq -r '.manifests[0].size' "$out/image-index.json")
-case "$platform_manifest_hex" in
-  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-  *) echo "platform manifest digest is not canonical sha256" >&2; exit 1 ;;
-esac
-test "${#platform_manifest_hex}" -eq 64
-platform_manifest="$out/layout/blobs/sha256/$platform_manifest_hex"
-test -f "$platform_manifest"
-test "$(stat -c %s "$platform_manifest")" -eq "$platform_manifest_size"
-test "$(sha256sum "$platform_manifest" | cut -d ' ' -f 1)" = "$platform_manifest_hex"
-test "$platform_manifest_size" -le "$max_json_bytes"
-jq -e \
-  --slurpfile closureLayers closure-layer-descriptors.json '
-    .schemaVersion == 2
-    and .mediaType == "application/vnd.oci.image.manifest.v1+json"
-    and (.layers | length) >= ($closureLayers[0] | length)
-    and .layers[0:($closureLayers[0] | length)] == $closureLayers[0]
-  ' "$platform_manifest" >/dev/null
+"$CONFIG_SHELL" "$AOS_EVIDENCE_PLATFORM_VALIDATOR" \
+  "$out/image-index.json" "$out/layout" closure-layer-descriptors.json
 
 jq -r '.[].path' layer-map.json | sort > layer-paths.sorted
 jq -r '.paths[].path' "$AOS_EVIDENCE_REFERENCE_GRAPH/inventory.json" \
