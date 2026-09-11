@@ -132,11 +132,19 @@
     manifestTools
     // extraTools
     // {
-      bash = withRuntimeShell {
-        package = privateTools.bash;
-        buildTools = privateTools;
-        shell = "$out/bin/bash";
-      };
+      bash = let
+        package = withRuntimeShell {
+          package = privateTools.bash;
+          buildTools = privateTools;
+          shell = "$out/bin/bash";
+        };
+      in
+        package
+        // {
+          # The retained shell still links its construction libc. Expose that
+          # exact package for source evidence without changing either output.
+          passthru = (package.passthru or {}) // {evidenceRuntimePackages = [privateTools.glibc];};
+        };
       inherit (privateTools) linuxHeaders;
       glibc = let
         package = finish (call libcBuildScope (directory + "/glibc.nix") libcBuildOverrides);
