@@ -8,8 +8,8 @@ use aos_ability_model::{
     AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
     ImplementationKind, InstanceId, LocalKey, ObligationKind, PackageDocument,
     PackageImplementation, ProviderImplementation, ProviderImplementationReference, RequestId,
-    RequirementDeclaration, RequirementStrength, ResourceLifetime, ResourcePermission, ScopePath,
-    ValueSchema, VersionedDocument,
+    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
+    ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -84,6 +84,51 @@ struct LowerRequirementEvaluator {
     expanding_provider: InstanceId,
     lower_request: BindingRequest,
     providers: Vec<InstanceId>,
+}
+
+struct AlternatingRequirementEvaluator {
+    expanding_provider: InstanceId,
+    lower_request: BindingRequest,
+    request_count_trace: Vec<(usize, usize)>,
+}
+
+impl CompositionEvaluator for AlternatingRequirementEvaluator {
+    fn evaluate(
+        &mut self,
+        _implementation: &ProviderImplementationReference,
+        _entry: &LocalKey,
+        input: &AbilityValue,
+    ) -> Result<AbilityValue, EvaluationError> {
+        let context: CompositionContext = serde_json::from_value(input.as_json().clone())
+            .map_err(|error| EvaluationError::new(error.to_string()))?;
+        let lower_request_is_bound = context
+            .bindings
+            .iter()
+            .any(|binding| binding.request == self.lower_request.id);
+        let requests = if context.provider != self.expanding_provider || lower_request_is_bound {
+            Vec::new()
+        } else {
+            vec![self.lower_request.clone()]
+        };
+        if context.provider == self.expanding_provider {
+            self.request_count_trace
+                .push((context.bindings.len(), requests.len()));
+        }
+
+        let fragment = CompositionFragment {
+            schema: "aos.ability.composition-fragment/v1".to_string(),
+            requests,
+            contributions: Vec::new(),
+            resources: Vec::new(),
+            outputs: Vec::new(),
+            controllers: Vec::new(),
+        };
+        AbilityValue::new(
+            serde_json::to_value(fragment)
+                .map_err(|error| EvaluationError::new(error.to_string()))?,
+        )
+        .map_err(|error| EvaluationError::new(error.to_string()))
+    }
 }
 
 impl CompositionEvaluator for LowerRequirementEvaluator {
@@ -586,6 +631,60 @@ fn recursive_failed_attempts_share_one_composer_search_bound() {
     );
 }
 
+#[test]
+fn alternating_composition_reports_bounded_oscillation_without_a_partial_outcome() {
+    let mut fixture = planner_fixture(1);
+    let setup = configure_oscillating_requirement(&mut fixture);
+    let expanded_policy = policy_for_oscillating_expansion(&fixture, &setup);
+    let initial_digest = fixture
+        .desired
+        .content_digest()
+        .expect("test desired state must have a digest");
+    let limits = CompositionLimits {
+        max_rounds: 3,
+        max_evaluations: 3,
+        max_search_attempts: 3,
+        max_trace_entries: 3,
+        ..CompositionLimits::default()
+    };
+    let composer = RecursiveComposer::new(&fixture.context)
+        .with_limits(limits)
+        .expect("tight oscillation bounds are valid");
+    let mut evaluator = AlternatingRequirementEvaluator {
+        expanding_provider: setup.expanding_provider,
+        lower_request: setup.lower_request,
+        request_count_trace: Vec::new(),
+    };
+
+    let result = composer.compose(
+        &[fixture.policy.clone(), expanded_policy],
+        fixture.desired,
+        fixture.environment,
+        fixture.packages,
+        &mut evaluator,
+    );
+
+    let error = match result {
+        Ok(outcome) => panic!(
+            "oscillation returned a partial outcome with {} passes",
+            outcome.passes.len()
+        ),
+        Err(error) => error,
+    };
+    let CompositionError::Oscillation { desired_state } = &error else {
+        panic!("alternating evaluator returned the wrong failure: {error:?}");
+    };
+    assert_eq!(*desired_state, initial_digest);
+    assert_eq!(evaluator.request_count_trace, vec![(1, 1), (2, 0)]);
+
+    let diagnostic = error.to_string();
+    assert_eq!(
+        diagnostic,
+        format!("recursive composition oscillated at desired state {initial_digest}")
+    );
+    assert!(diagnostic.len() <= 128);
+}
+
 struct RecursiveFallbackSetup {
     first_parent: InstanceId,
     fallback_parent: InstanceId,
@@ -601,6 +700,115 @@ impl RecursiveFallbackSetup {
             providers: Vec::new(),
         }
     }
+}
+
+struct OscillatingRequirementSetup {
+    expanding_provider: InstanceId,
+    lower_provider: InstanceId,
+    lower_package: Sha256Digest,
+    lower_implementation: ProviderImplementationReference,
+    lower_request: BindingRequest,
+}
+
+fn configure_oscillating_requirement(fixture: &mut PlannerFixture) -> OscillatingRequirementSetup {
+    let lower_alias = key("alternating-service");
+    let lower_request = BindingRequest {
+        id: crate::child_request_id(&fixture.provider, lower_alias.clone())
+            .expect("test child request is in scope"),
+        accepted_interfaces: vec![fixture.implementation_interface()],
+        methods: fixture.desired.child_requests[0].methods.clone(),
+        guarantees: Vec::new(),
+        lifetime: ResourceLifetime::Instance,
+    };
+    let lower_provider = sibling_instance(&fixture.provider, "alternating-provider");
+    add_provider_inventory(fixture, &lower_provider);
+
+    let lower_package = fixture.packages[0].clone();
+    let lower_package_digest = fixture.package;
+    let lower_implementation = fixture.implementation.clone();
+    let mut package = lower_package.clone();
+    let provider_implementation = &mut package.implementation.providers[0];
+    provider_implementation.requirements = vec![RequirementDeclaration {
+        alias: lower_alias,
+        accepted_interfaces: lower_request.accepted_interfaces.clone(),
+        methods: lower_request.methods.clone(),
+        guarantees: Vec::new(),
+        strength: RequirementStrength::Advisory,
+        fallback: Some(RequirementFallback {
+            outputs: BTreeMap::new(),
+        }),
+    }];
+    let descriptor = provider_implementation
+        .descriptor_digest()
+        .expect("oscillating test implementation must have a digest");
+    let implementation = ProviderImplementationReference {
+        descriptor,
+        artifact: fixture.implementation.artifact.clone(),
+        handler: None,
+    };
+    package.exports[0].implementation = descriptor;
+    let package_digest = package
+        .content_digest()
+        .expect("oscillating test package must have a digest");
+
+    fixture.packages = vec![lower_package, package];
+    fixture.packages.sort_by_key(|package| {
+        package
+            .content_digest()
+            .expect("oscillating test package must have a digest")
+    });
+    fixture.package = package_digest;
+    fixture.implementation = implementation.clone();
+    for provider in &mut fixture.environment.providers {
+        provider.implementation = if provider.provider == fixture.provider {
+            implementation.clone()
+        } else {
+            lower_implementation.clone()
+        };
+    }
+    fixture.policy.candidates[0].provider_package = package_digest;
+    fixture.policy.candidates[0].implementation = implementation;
+    fixture.refresh_policy();
+
+    OscillatingRequirementSetup {
+        expanding_provider: fixture.provider.clone(),
+        lower_provider,
+        lower_package: lower_package_digest,
+        lower_implementation,
+        lower_request,
+    }
+}
+
+fn policy_for_oscillating_expansion(
+    fixture: &PlannerFixture,
+    setup: &OscillatingRequirementSetup,
+) -> ResolutionPolicyDocument {
+    let mut expanded = fixture.desired.clone();
+    expanded.child_requests.push(setup.lower_request.clone());
+    expanded
+        .child_requests
+        .sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut child_candidate = fixture.policy.candidates[0].clone();
+    child_candidate.key = key("provider-for-alternating-service");
+    child_candidate.request = setup.lower_request.id.clone();
+    child_candidate.provider = setup.lower_provider.clone();
+    child_candidate.provider_package = setup.lower_package;
+    child_candidate.implementation = setup.lower_implementation.clone();
+    child_candidate.caller_grant.principal = setup.lower_request.id.consumer.clone();
+    child_candidate.caller_grant.methods = setup.lower_request.methods.clone();
+    child_candidate.caller_grant.resources.clear();
+    child_candidate.provider_grant = empty_grant(setup.lower_provider.clone());
+
+    let mut policy = fixture.policy.clone();
+    policy.desired_state = expanded
+        .content_digest()
+        .expect("expanded test desired state must have a digest");
+    policy.candidates.push(child_candidate);
+    policy
+        .candidates
+        .sort_by(|left, right| left.key.cmp(&right.key));
+    policy
 }
 
 fn configure_recursive_fallback(fixture: &mut PlannerFixture) -> RecursiveFallbackSetup {
