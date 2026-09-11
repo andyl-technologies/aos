@@ -71,7 +71,7 @@ in {
       javascript = (root / "hub-console.js").read_text()
       stylesheet = (root / "hub-console.css").read_text()
       wasm = (root / "hub-console_bg.wasm").read_bytes()
-      assert javascript.strip() and stylesheet.strip() and wasm.startswith(b"\\0asm")
+      assert javascript.strip() and stylesheet.strip() and wasm.startswith(b"\x00asm\x01\x00\x00\x00")
       print("aos-hub-console-dist data passed")
     '';
     badInput = "A request for an undeclared source-map asset.";
@@ -91,7 +91,7 @@ in {
       shim = (root / "shim.mjs").read_text()
       wasm = (root / "index.wasm").read_bytes()
       assets = root / "assets/_assets"
-      assert "index.wasm" in shim and wasm.startswith(b"\\0asm")
+      assert "index.wasm" in shim and wasm.startswith(b"\x00asm\x01\x00\x00\x00")
       assert all((assets / name).stat().st_size > 0 for name in ["style.css", "app.js", "theme.js"])
       print("aos-hub-worker-dist data passed")
     '';
