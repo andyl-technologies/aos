@@ -7246,3 +7246,37 @@ Validation passed the focused readiness suite (6/6), the complete Host suite
 all-target/all-feature Clippy, warning-denied rustdoc, rustfmt, and diff checks.
 Dependency-inclusive Clippy reported only pre-existing generated `aos-proto`
 `HashMap` disallowed-types warnings. No Nix build or VM qualification was run.
+
+### Bound Host readiness evidence and nspawn custody (source qualified)
+
+Commit `e0ef9526` makes `ProtectedBackendReadinessEvidence` noncloneable and
+retains a domain-separated binding over the current boot, nonzero global
+publisher generation, raw artifact SHA-256, canonical executable path, exact
+admitted descriptor, complete nine-field metadata snapshot, and streamed
+executable content SHA-256. The probe, supervisor-profile, and payload-filter
+digests remain separate untrusted phase-0 claims; protection and binding do not
+endorse them.
+
+The narrow opaque `VerifiedCompiledSupervisorProfileV1` proof freshly rechecks
+that binding, executable metadata and content, and the current boot, then proves
+only that the supervisor-profile claim matches the sealed root-continuity
+compiler policy. It does not prove live deployment, probe execution,
+payload-filter enforcement, MAC enforcement, or shifted-payload inspection and
+cannot construct `BackendReadiness`.
+
+`NspawnConfig` now retains the complete `BackendReadiness` token and revalidates
+it at construction, explicit configuration check, and launch compilation entry.
+Compilation shares the exact admitted `Arc<OwnedFd>` with `LaunchPins`; it never
+reopens the executable pathname. The kernel fixture still uses a cfg(test)-only
+factory with placeholder claims, which is absent from production and is not
+qualification evidence.
+
+Production Apply remains closed. A full concrete phase-0 producer and manifest,
+shifted-payload pidfd namespace inspection in the deployed Host, deployed proof
+of normalized properties, MAC, and root continuity, and final containment
+cleanup all remain open. No checkbox is closed by this increment.
+
+Validation passed the readiness tests (16/16), nspawn tests (6/6), and complete
+Host suite (172 unit tests, one integration test, and two doctests), plus strict
+no-deps all-target/all-feature Clippy, warning-denied rustdoc, rustfmt, and diff
+checks. No Nix build or VM qualification was run.
