@@ -401,6 +401,7 @@
     else null;
   nativeAbilityScenarioIds = [
     "ability-native-activation"
+    "ability-native-adapter-matrix"
     "ability-native-kubernetes"
     "ability-native-postgresql"
     "ability-native-recovery"

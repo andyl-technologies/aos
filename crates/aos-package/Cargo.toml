@@ -57,6 +57,11 @@ rayon = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "process"] }
 zeroize = { workspace = true }
 
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
 [dev-dependencies]
 aos-ability-plan = { workspace = true, features = ["test-support"] }
 aos-ability-validate = { workspace = true, features = ["test-support"] }

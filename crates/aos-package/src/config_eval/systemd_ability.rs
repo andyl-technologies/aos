@@ -70,7 +70,7 @@ const MAX_REVISION_RECEIPT_BYTES: u64 = 16 * 1024;
 const CATALOG_QUALIFICATION_MILLIS: u64 = 30_000;
 const NATIVE_EXECUTOR_SUFFIX: &str = "bin/.aos-package-runtime-unwrapped";
 const REFERENCE_SYSTEMD_INTERFACE: &str = "aos.systemd-service-effects";
-const REFERENCE_SYSTEMD_DESCRIPTOR: &str =
+pub(super) const REFERENCE_SYSTEMD_DESCRIPTOR: &str =
     "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98";
 const REFERENCE_SYSTEMD_HANDLER: &str = "systemd-terminal";
 const SYSTEMD_PROVIDER_BOOTSTRAP_HANDLER: &str = "systemd-bootstrap-terminal";

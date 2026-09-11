@@ -1146,6 +1146,21 @@ pub(crate) mod tests {
             )
         };
         let now = "2026-09-01T00:00:02Z";
+        let matrix_index = records
+            .iter()
+            .position(|record| record.policy_id == "ability-native-adapter-matrix")
+            .expect("fixture must carry the mandatory native-adapter matrix");
+        let mut missing_matrix = records.clone();
+        missing_matrix.remove(matrix_index);
+        assert!(check(&missing_matrix, now).is_err());
+        let mut stale_matrix_subject = records.clone();
+        stale_matrix_subject[matrix_index]
+            .qualification
+            .as_mut()
+            .expect("matrix record must be structured")
+            .case_digest = digest("stale-native-adapter-matrix-subject");
+        assert!(check(&stale_matrix_subject, now).is_err());
+
         assert!(check(&records[1..], now).is_err());
         let mut failed = records.clone();
         failed[0].result = GateResult::Failed;

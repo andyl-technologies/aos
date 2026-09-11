@@ -161,6 +161,29 @@
     },
     {
       "checks": [
+        "native-adapter-matrix-v1-sha256-5dc483f564ecbded54fcfad5c1db7e070ea2ac09cf50280e781e88f48bb57244"
+      ],
+      "id": "ability-native-adapter-matrix",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": true,
+      "regressions": [
+        "checks.fleet.ability-native-activation",
+        "checks.fleet.ability-native-kubernetes",
+        "checks.fleet.ability-native-postgresql",
+        "checks.fleet.ability-native-power-loss"
+      ],
+      "scope": "release"
+    },
+    {
+      "checks": [
         "authenticated-k3s-bootstrap-and-provider-authority",
         "exact-service-and-kubernetes-object-resource-mapping",
         "consumer-observed-kubernetes-readiness",

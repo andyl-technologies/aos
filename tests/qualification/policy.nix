@@ -171,10 +171,19 @@
       );
     }) [
       "ability-native-activation"
+      "ability-native-adapter-matrix"
       "ability-native-kubernetes"
       "ability-native-postgresql"
       "ability-native-recovery"
     ]);
+  nativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  nativeAdapterSurface = builtins.fromJSON (builtins.readFile ../../qualification/native-adapter-surface.json);
+  nativeCells = nativeAdapterMatrix.cells;
+  firstNativeCell = builtins.head nativeCells;
+  remainingNativeCells = builtins.tail nativeCells;
+  replaceFirstNativeCell = replacement: [replacement] ++ remainingNativeCells;
+  rejectsNativeMatrix = arguments:
+    !(builtins.tryEval (builtins.deepSeq (import ../../qualification/modules/_native-adapter-matrix.nix ({inherit lib;} // arguments)) true)).success;
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
@@ -298,6 +307,75 @@ in
     "retained-plan-journal-and-independent-service-observation"
     "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
   ];
+  assert abilityRequirements.ability-native-adapter-matrix.regressions
+  == [
+    "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-kubernetes"
+    "checks.fleet.ability-native-postgresql"
+    "checks.fleet.ability-native-power-loss"
+  ];
+  assert abilityRequirements.ability-native-adapter-matrix.production_only;
+  assert nativeAdapterMatrix.cell_count == 1064;
+  assert nativeAdapterMatrix.missing_production_vm_cells == 1064;
+  assert abilityRequirements.ability-native-adapter-matrix.checks == [nativeAdapterMatrix.check];
+  assert rejectsNativeMatrix {cells = remainingNativeCells;};
+  assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
+  assert rejectsNativeMatrix {subject = nativeAdapterMatrix.subject // {surface_digest = "sha256:stale";};};
+  assert rejectsNativeMatrix {
+    surface =
+      nativeAdapterSurface
+      // {
+        scenarios =
+          [(builtins.head nativeAdapterSurface.scenarios // {failure = "none";})]
+          ++ builtins.tail nativeAdapterSurface.scenarios;
+      };
+  };
+  assert rejectsNativeMatrix {invalidatedBy = ["subject" "policy" "executor"];};
+  assert rejectsNativeMatrix {
+    regressions = abilityRequirements.ability-native-adapter-matrix.regressions ++ ["checks.fleet.foreign"];
+  };
+  assert rejectsNativeMatrix {
+    regressions =
+      builtins.filter (regression: regression != "checks.fleet.ability-native-postgresql")
+      abilityRequirements.ability-native-adapter-matrix.regressions;
+  };
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        subject = firstNativeCell.subject // {surface_digest = "sha256:stale";};
+      });
+  };
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        interface = firstNativeCell.interface // {abi = 2;};
+      });
+  };
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        interface = firstNativeCell.interface // {descriptor = "sha256:${builtins.hashString "sha256" "foreign interface"}";};
+      });
+  };
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {adapter = "foreign";});};
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        interface = firstNativeCell.interface // {name = "aos.foreign";};
+      });
+  };
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {method = "foreign";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {scope = "host-manager";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {boundary = "deadline";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {failure = "none";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {predecessor = "foreign";});};
+  assert rejectsNativeMatrix {cells = replaceFirstNativeCell (firstNativeCell // {candidate = "foreign";});};
+  assert rejectsNativeMatrix {
+    cells = replaceFirstNativeCell (firstNativeCell
+      // {
+        evidence = firstNativeCell.evidence // {regressions = ["checks.fleet.foreign"];};
+      });
+  };
   assert builtins.all (requirement:
     requirement.phase
     == "staging"
@@ -305,6 +383,9 @@ in
     && requirement.method == "automated"
     && requirement.invalidated_by == ["subject" "policy" "executor" "environment"])
   (builtins.attrValues abilityRequirements);
+  assert rejects {
+    qualification.requirements.ability-native-adapter-matrix.production_only = lib.mkForce false;
+  };
   assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
   assert packageCoverage.total == builtins.length packageNames;
   assert packageCoverage.total
@@ -368,10 +449,11 @@ in
     "rollout-observation"
     "staging-delivery"
   ];
+  assert !builtins.hasAttr "ability-native-adapter-matrix" releaseExecutor.passthru.qualification.scenarios;
   assert builtins.match ".*/aos-qualification-x86_64-linux-package-function" releaseExecutor.passthru.qualification.scenarios.package-function != null;
   assert builtins.all (id:
     builtins.match ".*/aos-qualification-${id}" releaseExecutor.passthru.qualification.scenarios.${id}
-    != null) (builtins.attrNames abilityRequirements);
+    != null) (builtins.filter (id: id != "ability-native-adapter-matrix") (builtins.attrNames abilityRequirements));
   assert builtins.match ".*/aos-qualification-x86_64-linux-container-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-container-x86_64-linux-functional != null;
   assert builtins.match ".*/aos-qualification-x86_64-linux-image-lifecycle" releaseExecutor.passthru.qualification.scenarios.claim-disk-x86_64-linux-functional != null;
   assert builtins.attrNames releaseExecutor.passthru.qualification.caseScenarios == ["package-function/aos-recovery/x86_64-linux"];

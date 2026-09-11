@@ -1274,6 +1274,10 @@ class Scenario:
 
 
 CHECK_DETAILS = {
+    "native-adapter-matrix-v1-sha256-5dc483f564ecbded54fcfad5c1db7e070ea2ac09cf50280e781e88f48bb57244": (
+        "The closed native-adapter matrix bound every durability and authority "
+        "cell to the exact adapter interface name, ABI, and descriptor."
+    ),
     "authenticated-package-policy-and-operator-authority": (
         "The published AOS activation engine admitted only authenticated "
         "reference packages and explicit operator authority."

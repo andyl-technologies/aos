@@ -50,6 +50,7 @@ pub mod managed_configuration_ability;
 pub mod materialize;
 mod native_ability_fs;
 mod native_activation;
+mod native_adapter_surface;
 mod native_boundary_observer;
 mod native_cancellation;
 mod native_consumer_observation;

@@ -33,6 +33,7 @@ use aos_ability_runtime::execution::{
 };
 use aos_ability_runtime::journal::JournalLimits;
 use aos_ability_validate::{BindingAuthorityKind, CheckedEffectPlan};
+use aos_contract::Sha256Digest;
 
 use super::ability_activation::SpecializedAbilityActivation;
 use super::ability_policy::{
@@ -54,13 +55,14 @@ use super::managed_configuration_ability::{
     ManagedConfigurationResourceCatalog, ManagedConfigurationResourceSpec,
     NativeManagedConfigurationAdapter, preflight_native_managed_configuration,
 };
+use super::native_adapter_surface::{adapter_id, supports_exact_route};
 use super::native_consumer_observation::{
     classify_native_http_consumer, observe_native_http_consumer,
 };
 use super::native_host_resources::{
     HostResourceAllocations, NativeDependencyBinding, NativeHostResourceAdapter,
     NativeHostResourceCatalog, NativeHostResourceKind, NativeHostResourceSpec,
-    StorageAllocationRequest, native_host_method_supported, preflight_native_host_resource,
+    StorageAllocationRequest, preflight_native_host_resource,
 };
 use super::native_provider_capability::{
     KubernetesClusterReadinessOutput, NativeProviderReadinessOutput, SystemdManagerCapabilities,
@@ -2627,6 +2629,9 @@ fn preflight_operation_contract(kind: NativeAdapterKind, operation: &Operation) 
         native_method_is_supported(
             kind,
             operation.interface.name.as_str(),
+            operation.interface.abi.get(),
+            operation.interface.descriptor,
+            operation.method.as_str(),
             operation.method.as_str(),
             InvocationPurpose::Effect,
         ),
@@ -2654,6 +2659,9 @@ fn preflight_operation_contract(kind: NativeAdapterKind, operation: &Operation) 
                 && native_method_is_supported(
                     kind,
                     method.interface.name.as_str(),
+                    method.interface.abi.get(),
+                    operation.interface.descriptor,
+                    operation.method.as_str(),
                     method.method.as_str(),
                     purpose,
                 ),
@@ -2666,59 +2674,23 @@ fn preflight_operation_contract(kind: NativeAdapterKind, operation: &Operation) 
 fn native_method_is_supported(
     kind: NativeAdapterKind,
     interface: &str,
-    method: &str,
+    interface_abi: u32,
+    interface_descriptor: Sha256Digest,
+    effect_method: &str,
+    invoked_method: &str,
     purpose: InvocationPurpose,
 ) -> bool {
-    match (kind, interface, purpose) {
-        (
-            NativeAdapterKind::ManagedConfiguration,
-            "aos.managed-configuration-effects",
-            InvocationPurpose::Effect | InvocationPurpose::Reconcile | InvocationPurpose::Cancel,
-        ) => matches!(method, "prepare" | "publish" | "release"),
-        (
-            NativeAdapterKind::NginxValidation,
-            "aos.nginx-validation",
-            InvocationPurpose::Effect | InvocationPurpose::Reconcile | InvocationPurpose::Cancel,
-        ) => matches!(method, "validate" | "record" | "release"),
-        (
-            NativeAdapterKind::KubernetesObject,
-            aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-            InvocationPurpose::Effect | InvocationPurpose::Reconcile | InvocationPurpose::Cancel,
-        ) => matches!(method, "apply" | "delete" | "observe"),
-        (
-            NativeAdapterKind::Systemd,
-            aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME,
-            InvocationPurpose::Effect,
-        ) => matches!(method, "start" | "reload" | "restart" | "stop" | "observe"),
-        (
-            NativeAdapterKind::Systemd,
-            aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME,
-            InvocationPurpose::Reconcile | InvocationPurpose::Cancel,
-        ) => method == "observe",
-        (
-            NativeAdapterKind::Systemd,
-            aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME,
-            InvocationPurpose::Effect,
-        ) => matches!(method, "observe-manager" | "start" | "stop"),
-        (
-            NativeAdapterKind::Systemd,
-            aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME,
-            InvocationPurpose::Reconcile | InvocationPurpose::Cancel,
-        ) => method == "observe-manager",
-        (NativeAdapterKind::Systemd, "aos.systemd-service-effects", InvocationPurpose::Effect) => {
-            matches!(method, "observe" | "reload" | "start" | "stop")
-        }
-        (
-            NativeAdapterKind::Systemd,
-            "aos.systemd-service-effects",
-            InvocationPurpose::Reconcile | InvocationPurpose::Cancel,
-        ) => method == "observe",
-        (NativeAdapterKind::HostResource(host_kind), interface, purpose) => {
-            interface == host_kind.interface_name()
-                && native_host_method_supported(host_kind, method, purpose)
-        }
-        _ => false,
-    }
+    adapter_id(kind, interface).is_some_and(|adapter| {
+        supports_exact_route(
+            adapter,
+            interface,
+            interface_abi,
+            interface_descriptor,
+            effect_method,
+            invoked_method,
+            purpose,
+        )
+    })
 }
 
 /// Combines desired-policy authority with fresh current-assignment policy.
@@ -2847,6 +2819,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_eval::native_adapter_surface::{NATIVE_METHODS, NativeAdapterId};
 
     struct FixedClock;
 
@@ -2950,212 +2923,177 @@ mod tests {
 
     #[test]
     fn native_method_matrix_is_closed_to_exact_adapter_contracts() {
-        let supported = [
-            (
-                NativeAdapterKind::ManagedConfiguration,
-                "aos.managed-configuration-effects",
-                "publish",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::ManagedConfiguration,
-                "aos.managed-configuration-effects",
-                "publish",
-                InvocationPurpose::Reconcile,
-            ),
-            (
-                NativeAdapterKind::ManagedConfiguration,
-                "aos.managed-configuration-effects",
-                "release",
-                InvocationPurpose::Cancel,
-            ),
-            (
-                NativeAdapterKind::NginxValidation,
-                "aos.nginx-validation",
-                "validate",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::NginxValidation,
-                "aos.nginx-validation",
-                "record",
-                InvocationPurpose::Reconcile,
-            ),
-            (
-                NativeAdapterKind::NginxValidation,
-                "aos.nginx-validation",
-                "release",
-                InvocationPurpose::Cancel,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "apply",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "delete",
-                InvocationPurpose::Reconcile,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "observe",
-                InvocationPurpose::Cancel,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "apply",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "delete",
-                InvocationPurpose::Reconcile,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "observe",
-                InvocationPurpose::Cancel,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME,
-                "restart",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME,
-                "observe",
-                InvocationPurpose::Reconcile,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                "aos.systemd-service-effects",
-                "start",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                "aos.systemd-service-effects",
-                "observe",
-                InvocationPurpose::Cancel,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME,
-                "start",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME,
-                "observe-manager",
-                InvocationPurpose::Reconcile,
-            ),
-        ];
-        for (kind, interface, method, purpose) in supported {
-            assert!(native_method_is_supported(kind, interface, method, purpose));
-        }
-
-        let rejected = [
-            (
-                NativeAdapterKind::ManagedConfiguration,
-                "aos.nginx-validation",
-                "publish",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::NginxValidation,
-                "aos.nginx-validation",
-                "publish",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME,
-                "restart",
-                InvocationPurpose::Reconcile,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                "aos.systemd-service-effects",
-                "restart",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                "aos.systemd-service-effects",
-                "observe",
-                InvocationPurpose::Compensate,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME,
-                "reload",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME,
-                "start",
-                InvocationPurpose::Reconcile,
-            ),
-            (
-                NativeAdapterKind::Systemd,
-                "aos.systemd-service-effects",
-                "observe-manager",
-                InvocationPurpose::Effect,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "apply",
-                InvocationPurpose::Compensate,
-            ),
-            (
-                NativeAdapterKind::KubernetesObject,
-                aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
-                "apply",
-                InvocationPurpose::Compensate,
-            ),
-        ];
-        for (kind, interface, method, purpose) in rejected {
-            assert!(!native_method_is_supported(
-                kind, interface, method, purpose
-            ));
-        }
-
-        // Credential delivery is a checked planning contract in the reference
-        // fixture. No built-in adapter is qualified to execute its terminal.
-        for kind in [
-            NativeAdapterKind::KubernetesObject,
+        assert!(native_method_is_supported(
             NativeAdapterKind::ManagedConfiguration,
-            NativeAdapterKind::NginxValidation,
+            "aos.managed-configuration-effects",
+            1,
+            advertised_descriptor(NativeAdapterId::ManagedConfiguration),
+            "publish",
+            "publish",
+            InvocationPurpose::Effect,
+        ));
+        assert!(native_method_is_supported(
             NativeAdapterKind::Systemd,
-        ] {
-            for method in ["deliver", "release"] {
-                for purpose in [
-                    InvocationPurpose::Effect,
-                    InvocationPurpose::Reconcile,
-                    InvocationPurpose::Cancel,
-                    InvocationPurpose::Compensate,
-                ] {
-                    assert!(!native_method_is_supported(
-                        kind,
-                        "aos.credential-delivery-effects",
-                        method,
-                        purpose,
-                    ));
-                }
-            }
+            aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME,
+            1,
+            advertised_descriptor(NativeAdapterId::SystemdManager),
+            "stop",
+            "observe",
+            InvocationPurpose::Reconcile,
+        ));
+        assert!(native_method_is_supported(
+            NativeAdapterKind::HostResource(NativeHostResourceKind::Postgresql),
+            "aos.postgresql-effects",
+            1,
+            advertised_descriptor(NativeAdapterId::Postgresql),
+            "restart",
+            "restart",
+            InvocationPurpose::Reconcile,
+        ));
+
+        assert!(!native_method_is_supported(
+            NativeAdapterKind::ManagedConfiguration,
+            "aos.managed-configuration-effects",
+            2,
+            advertised_descriptor(NativeAdapterId::ManagedConfiguration),
+            "publish",
+            "publish",
+            InvocationPurpose::Effect,
+        ));
+        assert!(!native_method_is_supported(
+            NativeAdapterKind::Systemd,
+            aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME,
+            1,
+            advertised_descriptor(NativeAdapterId::SystemdManager),
+            "start",
+            "observe",
+            InvocationPurpose::Cancel,
+        ));
+        assert!(!native_method_is_supported(
+            NativeAdapterKind::Systemd,
+            "aos.systemd-service-effects",
+            1,
+            advertised_descriptor(NativeAdapterId::SystemdServiceLegacy),
+            "reload",
+            "observe",
+            InvocationPurpose::Reconcile,
+        ));
+        assert!(native_method_is_supported(
+            NativeAdapterKind::HostResource(NativeHostResourceKind::Credential),
+            "aos.credential-delivery-effects",
+            1,
+            advertised_descriptor(NativeAdapterId::CredentialDelivery),
+            "deliver",
+            "deliver",
+            InvocationPurpose::Cancel,
+        ));
+        assert!(!native_method_is_supported(
+            NativeAdapterKind::KubernetesObject,
+            aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME,
+            1,
+            advertised_descriptor(NativeAdapterId::KubernetesObject),
+            "apply",
+            "apply",
+            InvocationPurpose::Compensate,
+        ));
+
+        assert!(!native_method_is_supported(
+            NativeAdapterKind::ManagedConfiguration,
+            "aos.managed-configuration-effects",
+            1,
+            Sha256Digest::of_bytes(b"foreign interface descriptor"),
+            "publish",
+            "publish",
+            InvocationPurpose::Effect,
+        ));
+    }
+
+    #[test]
+    fn every_advertised_method_preflights_its_exact_production_plan_routes() {
+        for contract in NATIVE_METHODS {
+            let kind = runtime_kind(contract.adapter);
+            let mut operation = aos_ability_validate::test_support::plan_fixture()
+                .effect_plan
+                .operations
+                .remove(0);
+            operation.interface.name =
+                aos_ability_model::InterfaceName::new(contract.interface_name)
+                    .expect("generated interface name");
+            operation.interface.abi =
+                std::num::NonZeroU32::new(contract.interface_abi).expect("generated ABI");
+            operation.interface.descriptor = contract.interface_descriptor;
+            operation.method =
+                aos_ability_model::LocalKey::new(contract.method).expect("generated method");
+            operation.target.interface = operation.interface.clone();
+            operation.target.operations = vec![operation.method.clone()];
+            operation.recovery.reconcile = contract.reconcile.map(|method| MethodReference {
+                interface: operation.interface.clone(),
+                method: aos_ability_model::LocalKey::new(method).expect("generated reconcile"),
+            });
+            operation.recovery.cancel = contract.cancel.map(|method| MethodReference {
+                interface: operation.interface.clone(),
+                method: aos_ability_model::LocalKey::new(method).expect("generated cancel"),
+            });
+            operation.recovery.compensate = None;
+
+            preflight_operation_contract(kind, &operation)
+                .expect("the generated production route must preflight");
+
+            operation.interface.descriptor =
+                Sha256Digest::of_bytes(b"foreign interface descriptor");
+            assert!(
+                preflight_operation_contract(kind, &operation).is_err(),
+                "{}:{} admitted a foreign interface descriptor",
+                contract.interface_name,
+                contract.method,
+            );
+            operation.interface.descriptor = contract.interface_descriptor;
+
+            operation.recovery.reconcile = Some(MethodReference {
+                interface: operation.interface.clone(),
+                method: aos_ability_model::LocalKey::new("foreign-recovery").expect("test method"),
+            });
+            assert!(
+                preflight_operation_contract(kind, &operation).is_err(),
+                "{}:{} admitted a foreign recovery route",
+                contract.interface_name,
+                contract.method,
+            );
         }
+    }
+
+    fn runtime_kind(adapter: NativeAdapterId) -> NativeAdapterKind {
+        match adapter {
+            NativeAdapterId::CredentialDelivery => {
+                NativeAdapterKind::HostResource(NativeHostResourceKind::Credential)
+            }
+            NativeAdapterId::HostNetworkPolicy => {
+                NativeAdapterKind::HostResource(NativeHostResourceKind::NetworkPolicy)
+            }
+            NativeAdapterId::HostStorage => {
+                NativeAdapterKind::HostResource(NativeHostResourceKind::Storage)
+            }
+            NativeAdapterId::KubernetesObject => NativeAdapterKind::KubernetesObject,
+            NativeAdapterId::ManagedConfiguration => NativeAdapterKind::ManagedConfiguration,
+            NativeAdapterId::NetworkEndpoint => {
+                NativeAdapterKind::HostResource(NativeHostResourceKind::Endpoint)
+            }
+            NativeAdapterId::NginxValidation => NativeAdapterKind::NginxValidation,
+            NativeAdapterId::Postgresql => {
+                NativeAdapterKind::HostResource(NativeHostResourceKind::Postgresql)
+            }
+            NativeAdapterId::SystemdBootstrap
+            | NativeAdapterId::SystemdManager
+            | NativeAdapterId::SystemdServiceLegacy => NativeAdapterKind::Systemd,
+        }
+    }
+
+    fn advertised_descriptor(adapter: NativeAdapterId) -> Sha256Digest {
+        NATIVE_METHODS
+            .iter()
+            .find(|contract| contract.adapter == adapter)
+            .expect("generated adapter must advertise a method")
+            .interface_descriptor
     }
 
     #[test]
