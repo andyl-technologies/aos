@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
   stdenv,
   gnumake,
   perl,
@@ -41,32 +42,38 @@ in
       }
       {
         name = "build";
-        script = ''
-          # Fix shebangs: scripts reference /bin/bash which doesn't exist
-          # in the Nix sandbox. Replace with $CONFIG_SHELL (bootstrap bash).
-          for f in $(find . -name '*.sh' -o -name '*.pl'); do
-            if [ -f "$f" ]; then
-              sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
-              sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
-            fi
-          done
+        script =
+          lib.optionalString stdenv.isCross ''
+            # The libpsx hooks invoke raw syscalls, so their numbers must come
+            # from target UAPI headers rather than spliced build dependencies.
+            export C_INCLUDE_PATH="${linux-headers}/include''${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+          ''
+          + ''
+            # Fix shebangs: scripts reference /bin/bash which doesn't exist
+            # in the Nix sandbox. Replace with $CONFIG_SHELL (bootstrap bash).
+            for f in $(find . -name '*.sh' -o -name '*.pl'); do
+              if [ -f "$f" ]; then
+                sed -i "1s|#!/bin/bash|#!$CONFIG_SHELL|" "$f"
+                sed -i "1s|#!/usr/bin/env bash|#!$CONFIG_SHELL|" "$f"
+                sed -i "1s|#!/usr/bin/bash|#!$CONFIG_SHELL|" "$f"
+              fi
+            done
 
-          build_cc=''${BUILD_CC:-$CC}
+            build_cc=''${BUILD_CC:-$CC}
 
-          make -j$NIX_BUILD_CORES \
-            CC="$CC" \
-            AR="$AR" \
-            RANLIB="$RANLIB" \
-            OBJCOPY="${stdenv.binutils}/bin/objcopy" \
-            BUILD_CC="$build_cc" \
-            prefix=$out \
-            lib=lib \
-            SHARED=yes \
-            GOLANG=no \
-            PAM_CAP=no \
-            DYNAMIC=yes
-        '';
+            make -j$NIX_BUILD_CORES \
+              CC="$CC" \
+              AR="$AR" \
+              RANLIB="$RANLIB" \
+              OBJCOPY="${stdenv.binutils}/bin/objcopy" \
+              BUILD_CC="$build_cc" \
+              prefix=$out \
+              lib=lib \
+              SHARED=yes \
+              GOLANG=no \
+              PAM_CAP=no \
+              DYNAMIC=yes
+          '';
       }
       {
         name = "install";
