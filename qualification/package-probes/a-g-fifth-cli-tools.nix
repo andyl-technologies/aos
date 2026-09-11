@@ -113,14 +113,22 @@ in {
 
   bridge-utils = mkPythonToolProbe {
     package = "bridge-utils";
-    primaryInput = "The host's current read-only Linux bridge inventory.";
-    primaryOperation = "Query the inventory with brctl show and validate its tabular heading.";
-    primaryExpected = "Brctl returns a bridge table headed by bridge name and bridge ID fields.";
+    primaryInput = "A temporary Linux bridge created in the qualification VM.";
+    primaryOperation = "Create the bridge, inspect its name and ID with brctl show, and remove it.";
+    primaryExpected = "Brctl lists the created bridge with a valid bridge ID.";
     primaryScript = ''
-      import subprocess
-      result = subprocess.run(["@out@/sbin/brctl", "show"], capture_output=True, text=True)
-      assert result.returncode == 0
-      assert result.stdout.splitlines()[0].startswith("bridge name\tbridge id")
+      import os, re, subprocess
+      bridge = "aosq" + str(os.getpid())
+      command = "@out@/sbin/brctl"
+      subprocess.run([command, "addbr", bridge], check=True, capture_output=True)
+      try:
+          result = subprocess.run([command, "show", bridge], check=True, capture_output=True, text=True)
+          rows = result.stdout.splitlines()
+          assert rows[0].startswith("bridge name\tbridge id")
+          fields = rows[1].split()
+          assert fields[0] == bridge and re.fullmatch(r"[0-9a-f]{4}\.[0-9a-f]{12}", fields[1])
+      finally:
+          subprocess.run([command, "delbr", bridge], check=True, capture_output=True)
       print("bridge-utils operation passed")
     '';
     badInput = "A bridge-utils command name that does not exist.";

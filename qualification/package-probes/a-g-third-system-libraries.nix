@@ -61,7 +61,8 @@
 in {
   attr = mkLibraryProbe {
     package = "attr";
-    compileArguments = ["-I@out@/include" "-L@out@/lib" "-Wl,-rpath,@out@/lib" "-lattr"];
+    # This probe intentionally exercises libattr's retained compatibility API.
+    compileArguments = ["-Wno-deprecated-declarations" "-I@out@/include" "-L@out@/lib" "-Wl,-rpath,@out@/lib" "-lattr"];
     primaryInput = "A user extended-attribute name and two-byte value on a regular file.";
     primaryOperation = "Store the attribute with attr_set and retrieve it with attr_get.";
     primarySource = ''
@@ -76,12 +77,13 @@ in {
           if (descriptor < 0 || close(descriptor) != 0) {
               return 2;
           }
-          if (attr_set("target", "user.aos_probe", "42", 2, 0) != 0) {
+          if (attr_set("target", "aos_probe", "42", 2, 0) != 0) {
+              perror("attr_set");
               return 3;
           }
           char value[8] = {0};
           int length = sizeof(value);
-          if (attr_get("target", "user.aos_probe", value, &length, 0) != 0
+          if (attr_get("target", "aos_probe", value, &length, 0) != 0
               || length != 2 || memcmp(value, "42", 2) != 0) {
               return 4;
           }
@@ -165,7 +167,7 @@ in {
     package = "device-mapper";
     compileArguments = ["-I@out@/include" "-L@out@/lib" "-Wl,-rpath,@out@/lib" "-ldevmapper"];
     primaryInput = "A syntactically valid device-mapper name.";
-    primaryOperation = "Create an information task and assign the name without contacting the kernel.";
+    primaryOperation = "Initialize the kernel device-mapper connection, create an information task, and assign the name.";
     primarySource = ''
       #include <stdio.h>
       #include <libdevmapper.h>
