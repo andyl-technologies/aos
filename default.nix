@@ -1522,6 +1522,7 @@ in {
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
+      evidence-platforms = import ./tests/containers/evidence-platforms.nix {inherit pkgs;};
       evidence = import ./tests/containers/evidence.nix {
         inherit pkgs lib;
         inherit (containerImages.aos.checks) evidence evidenceRepeat;
@@ -1561,6 +1562,7 @@ in {
           phase0
           eval
           oci-builders
+          evidence-platforms
           evidence
           runtime
           aos-runtime-closure
