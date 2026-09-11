@@ -855,6 +855,7 @@ class PackageScenario:
             "AOS_QUALIFICATION_CC": os.environ["AOS_QUALIFICATION_CC"],
             "AOS_QUALIFICATION_CXX": os.environ["AOS_QUALIFICATION_CXX"],
             "AOS_QUALIFICATION_PYTHON": os.environ["AOS_QUALIFICATION_PYTHON"],
+            "AOS_QUALIFICATION_NIX_STORE": os.environ["AOS_QUALIFICATION_NIX_STORE"],
         }
         pathlib.Path(environment["HOME"]).mkdir()
         pathlib.Path(environment["TMPDIR"]).mkdir()
