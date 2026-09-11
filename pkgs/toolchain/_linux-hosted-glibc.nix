@@ -16,7 +16,13 @@ in
     runtimeDeps = [bash perl libc];
     dontStrip = true;
     dontNukeRefs = true;
-    passthru.evidenceSources = libc.passthru.evidenceSources;
+    passthru = {
+      evidenceSources = libc.passthru.evidenceSources;
+      # Catalog the original library outputs reached through the public aliases.
+      evidenceRuntimePackages = [
+        (libc // {meta.license = "LGPL-2.1-or-later";})
+      ];
+    };
 
     # The libc itself must exist before target Bash and Perl can be built.
     # Complete its executable interface separately, preserving the original

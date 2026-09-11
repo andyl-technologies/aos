@@ -1192,7 +1192,17 @@
         '';
       }
     ];
-    passthru.evidenceSources = stdenv.gccRuntime.passthru.evidenceSources;
+    passthru = {
+      evidenceSources = stdenv.gccRuntime.passthru.evidenceSources;
+      # The public package forwards these separately realized runtime libraries.
+      evidenceRuntimePackages = [
+        (stdenv.gccRuntime
+          // {
+            pname = "gcc-runtime";
+            meta.license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+          })
+      ];
+    };
     meta = {
       description = "GCC runtime shared libraries for ${stdenv.hostPlatform.system}";
       homepage = "https://gcc.gnu.org/";
