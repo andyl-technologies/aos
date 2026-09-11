@@ -35,7 +35,7 @@
     scp = "${buildPackages.openssh}/bin/scp";
     sshKeygen = "${buildPackages.openssh}/bin/ssh-keygen";
     swtpm = "${buildPackages.swtpm}/bin/swtpm";
-    sgdisk = "${buildPackages.gptfdisk}/bin/sgdisk";
+    sgdisk = "${buildPackages.gptfdisk}/sbin/sgdisk";
     objcopy = "${buildPackages.binutils}/bin/objcopy";
   };
   runnerFiles = {
