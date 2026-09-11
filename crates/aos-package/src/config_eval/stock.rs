@@ -6,7 +6,8 @@
 //! `config` output through the configured substituter (the registry static
 //! cache). Both are **builder-gated**: they require a real stock-nix and a
 //! reachable registry, so they cannot run on a developer's macOS host and are
-//! unit-tested here only for `entry.nix` rendering.
+//! unit-tested here for `entry.nix` rendering. A pure interpolation check also
+//! runs when the AOS Nix executable is available.
 //!
 //! # The eval invocation
 //!
@@ -25,7 +26,9 @@
 //! `allow-import-from-derivation = false` prevents evaluation from triggering a
 //! build. The generated expression arrives on standard input, so it has no
 //! mutable filesystem identity; facts are rendered inline. Every store input
-//! is admitted through a fixed-NAR-hash `fetchTree` expression.
+//! that evaluation reads is admitted through a fixed-NAR-hash `fetchTree`
+//! expression. Resolver-authenticated runtime output names remain plain strings;
+//! their binary closures are hydrated only after configuration converges.
 //!
 //! `entry.nix` is regenerated each iteration from the current working set, with
 //! the verified `host.nix` injected as an operator-provenance module (the
@@ -349,23 +352,6 @@ fn kill_reason(status: &std::process::ExitStatus, stderr: &str) -> Option<KillRe
 
 /// Renders authenticated working-set modules as resolver-owned provenance records.
 fn render_package_module_list(members: &[WorkingSetMember], locked: bool) -> Result<String> {
-    render_package_module_list_with(members, locked, |path| locked_store_input(path, None))
-}
-
-/// Renders package modules with an injectable locked-input renderer.
-///
-/// Production evaluation uses [`locked_store_input`] above. Keeping the
-/// renderer injectable lets unit tests prove that every resolver-authenticated
-/// runtime output crosses the admission boundary without requiring a real Nix
-/// store path in the test process.
-fn render_package_module_list_with<F>(
-    members: &[WorkingSetMember],
-    locked: bool,
-    mut lock_input: F,
-) -> Result<String>
-where
-    F: FnMut(&Path) -> Result<String>,
-{
     let mut items = Vec::new();
     for member in members {
         if let Some(path) = member.config_output.as_deref() {
@@ -418,32 +404,22 @@ where
             let artifact_units = artifact_list(&member.authorization.artifacts.units);
             let artifact_users = artifact_list(&member.authorization.artifacts.users);
             let artifact_groups = artifact_list(&member.authorization.artifacts.groups);
+            // Runtime outputs are authenticated names, not evaluator inputs.
+            // Keep them as data so config evaluation precedes runtime hydration
+            // and cannot read those outputs through a fetchTree admission.
             let self_output = member
                 .outputs
                 .self_output
                 .as_deref()
-                .map(|output| {
-                    if locked {
-                        lock_input(Path::new(output))
-                    } else {
-                        Ok(nix_string(output))
-                    }
-                })
-                .transpose()?
-                .unwrap_or_else(|| "null".to_string());
+                .map_or_else(|| "null".to_string(), nix_string);
             let dependency_outputs = member
                 .outputs
                 .dependencies
                 .iter()
                 .map(|(package, output)| {
-                    let output = if locked {
-                        lock_input(Path::new(output))?
-                    } else {
-                        nix_string(output)
-                    };
-                    Ok(format!("{} = {output};", nix_string(package)))
+                    format!("{} = {};", nix_string(package), nix_string(output))
                 })
-                .collect::<Result<Vec<_>>>()?
+                .collect::<Vec<_>>()
                 .join(" ");
             items.push(format!(
                     "    (let configRoot = {config_root}; in {{ name = {}; authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; artifacts = {{ etc = [ {artifact_etc} ]; units = [ {artifact_units} ]; users = [ {artifact_users} ]; groups = [ {artifact_groups} ]; }}; }}; inherit configRoot; module = configRoot + \"/module.nix\"; outputs = {{ self = {self_output}; dependencies = {{ {dependency_outputs} }}; }}; }})",
@@ -1165,31 +1141,80 @@ mod tests {
     }
 
     #[test]
-    fn locked_entry_admits_self_and_dependency_outputs() {
+    fn locked_entry_preserves_unrealized_runtime_outputs_as_strings() {
         let mut web = member("web", Some("/nix/store/hash-web-config"));
         web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
-        web.outputs.self_output = Some("/nix/store/hash-web-runtime".to_string());
-        web.outputs.dependencies.insert(
-            "openssl".to_string(),
-            "/nix/store/hash-openssl-runtime".to_string(),
+        let runtime = "/nix/store/00000000000000000000000000000000-unrealized-web-runtime";
+        let dependency = "/nix/store/11111111111111111111111111111111-unrealized-bash-runtime";
+        assert!(!Path::new(runtime).exists());
+        assert!(!Path::new(dependency).exists());
+        web.outputs.self_output = Some(runtime.to_string());
+        web.outputs
+            .dependencies
+            .insert("bash".to_string(), dependency.to_string());
+
+        let text = render_package_module_list(&[web], true).unwrap();
+
+        assert!(text.contains(&format!("self = \"{runtime}\"")), "{text}");
+        assert!(
+            text.contains(&format!("\"bash\" = \"{dependency}\";")),
+            "{text}"
+        );
+        assert_eq!(text.matches("builtins.fetchTree").count(), 1, "{text}");
+        assert!(
+            text.contains("path = \"/nix/store/hash-web-config\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("narHash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\""),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn locked_runtime_output_interpolation_is_data_under_pure_nix() {
+        let Ok(mut command) = command_from_path("nix-instantiate") else {
+            eprintln!("skipping pure runtime-output check: AOS Nix is unavailable");
+            return;
+        };
+        let cache = tempfile::tempdir().unwrap();
+        configure_pure_eval_command(&mut command, Some(cache.path().as_os_str()));
+        let mut web = member("web", Some("/nix/store/hash-web-config"));
+        web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
+        let runtime =
+            r#"/nix/store/00000000000000000000000000000000-${throw "runtime was evaluated"}"#;
+        let dependency = "/nix/store/11111111111111111111111111111111-unrealized-bash-runtime";
+        web.outputs.self_output = Some(runtime.to_string());
+        web.outputs
+            .dependencies
+            .insert("bash".to_string(), dependency.to_string());
+        let rendered = render_package_module_list(&[web], true).unwrap();
+        let expression = format!(
+            r#"let outputs = (builtins.head ({rendered})).outputs; in {{
+                command = "${{outputs.self}}/bin/server";
+                shell = "${{outputs.dependencies.bash}}/bin/bash";
+                context = builtins.getContext outputs.self;
+                dependencyContext = builtins.getContext outputs.dependencies.bash;
+            }}"#
         );
 
-        let mut admitted = Vec::new();
-        let text = render_package_module_list_with(&[web], true, |path| {
-            admitted.push(path.to_path_buf());
-            Ok(format!("(admit {})", nix_path(path)))
-        })
-        .unwrap();
+        let output = command.arg("--expr").arg(expression).output().unwrap();
 
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let actual: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
-            admitted,
-            [
-                PathBuf::from("/nix/store/hash-web-runtime"),
-                PathBuf::from("/nix/store/hash-openssl-runtime"),
-            ]
+            actual,
+            serde_json::json!({
+                "command": format!("{runtime}/bin/server"),
+                "shell": format!("{dependency}/bin/bash"),
+                "context": {},
+                "dependencyContext": {},
+            })
         );
-        assert!(text.contains("self = (admit /nix/store/hash-web-runtime)"));
-        assert!(text.contains("\"openssl\" = (admit /nix/store/hash-openssl-runtime);"));
     }
 
     #[test]
