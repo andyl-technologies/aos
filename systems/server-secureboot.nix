@@ -32,10 +32,11 @@
       then 768
       else 544;
     maxDownloadMiB = 800;
-    # Converted VHDs reach 885 MiB on x86_64 and 1015 MiB on AArch64.
+    # Converted VHDs reach 885 MiB on x86_64 and 1029 MiB on AArch64,
+    # including the lockdown fixture's signed recovery payload.
     maxConvertedDownloadMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 1024
+      then 1056
       else 896;
   };
   aos.image.allowTestArtifacts = true;

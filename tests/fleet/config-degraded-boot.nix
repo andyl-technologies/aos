@@ -37,6 +37,11 @@
       };
       aos.image.allowTestArtifacts = true;
       aos.image.testArtifactRoots = [pkgs.test-http-server.expose];
+
+      # The bundled Python HTTP server and registry fixtures bring this test's
+      # runtime closure to 810 MiB; production keeps its own limit.
+      aos.image.budgets.maxRuntimeClosureMiB = 832;
+
       # Bundling installs the runtime projections. The in-guest publisher also
       # needs each package's registry-only expose and config outputs so it can
       # construct the authenticated fixture catalog.

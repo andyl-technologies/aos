@@ -37,15 +37,21 @@
   aos.image.allowTestArtifacts = true;
   aos.image.testArtifactRoots = [pkgs.binutils];
   # The test agent, debug profile, and guest-side diagnostic tools are an
-  # intentional test-image payload. The complete runtime occupies 668 MiB
+  # intentional test-image payload. The complete runtime occupies up to 675 MiB
   # of EROFS; keep its larger allowance local to this dedicated fixture.
   aos.image.budgets = {
     maxRootMiB = 704;
-    maxDownloadMiB = 768;
-    # Diagnostic VHDs reach 825 MiB on x86_64 and 863 MiB on AArch64.
+
+    # AArch64's uncompressed kernel brings the diagnostic download to 772 MiB.
+    maxDownloadMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 800
+      else 768;
+
+    # Diagnostic VHDs reach 825 MiB on x86_64 and 879 MiB on AArch64.
     maxConvertedDownloadMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 864
+      then 896
       else 832;
   };
 
