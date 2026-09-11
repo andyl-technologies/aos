@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
   gnumake,
   pkg-config,
   file,
@@ -115,22 +116,28 @@ in
               --with-openssl=${openssl} \
               --with-sqlite3=${sqlite}
           ''
-          else ''
-            # Cyrus SASL uses K&R-style prototype compatibility macros. C23
-            # changes empty parameter lists to mean no parameters, so build
-            # this release in the dialect its configure logic expects.
-            export CFLAGS="''${CFLAGS:-} -std=gnu17"
+          else
+            lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              # MIT Kerberos includes SPNEGO; configure otherwise tries to run
+              # its mechanism-enumeration executable while cross compiling.
+              export ac_cv_gssapi_supports_spnego=yes
+            ''
+            + ''
+              # Cyrus SASL uses K&R-style prototype compatibility macros. C23
+              # changes empty parameter lists to mean no parameters, so build
+              # this release in the dialect its configure logic expects.
+              export CFLAGS="''${CFLAGS:-} -std=gnu17"
 
-            ./configure \
-              $configureFlags \
-              --prefix=$out \
-              --enable-shared \
-              --enable-static \
-              --enable-gssapi \
-              --enable-scram \
-              --with-openssl=${openssl} \
-              --with-sqlite3=${sqlite}
-          '';
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --enable-shared \
+                --enable-static \
+                --enable-gssapi \
+                --enable-scram \
+                --with-openssl=${openssl} \
+                --with-sqlite3=${sqlite}
+            '';
       }
       {
         name = "build";
