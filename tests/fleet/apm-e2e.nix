@@ -109,6 +109,10 @@ in {
   # once per narinfo); under sandbox CPU/IO contention this can take
   # tens of seconds.
   timeout = 600;
+  # Both hardened guests must finish memory initialization and metadata-driven
+  # package reconciliation before their agents and runtime services are ready.
+  bootTimeout = 600;
+  systemReadyTimeout = 300;
 
   machines = {
     # Lexicographic order → client=192.168.50.10, server=192.168.50.11.
@@ -120,6 +124,13 @@ in {
     server = {
       system = serverWithRegistry;
       packages = ["aos-registry-server"];
+      metadata."host.nix" = ''
+        {
+          aos.networking.hostName = "server";
+          aos.apm.desiredPackages = ["aos-registry-server"];
+          "aos-registry-server".enable = true;
+        }
+      '';
     };
   };
 
@@ -177,6 +188,15 @@ in {
       server.succeed(textwrap.dedent(f"""
           set -euo pipefail
           export AOS_ROOT=${serverStoreRoot}
+
+          # DynamicUser exposes a symlink in the host namespace. Run store
+          # operations in the cache service's filesystem view, where its state
+          # directory is mounted directly and Nix can validate the store root.
+          cache_pid=$(systemctl show -p MainPID --value aos-registry-server-cache.service)
+          test "$cache_pid" -gt 0
+          with_store_namespace() {{
+            ${pkgs.util-linux}/bin/nsenter --target "$cache_pid" --mount --root --wd=/ ${pkgs.coreutils}/bin/env HOME=/tmp "$@"
+          }}
 
           # 3.1 Init the bare repo + a working clone. The gitd unit's
           # `StateDirectory=aos-registry-server/registries` (mode 0755)
@@ -241,7 +261,7 @@ in {
           fi
           NAR_TMP=$(mktemp)
           NIX_STORE_DIR=$AOS_ROOT/store NIX_STATE_DIR=$AOS_ROOT/var/nix \\
-            ${pkgs.nix}/bin/nix-store --dump ${storePath} > "$NAR_TMP"
+            with_store_namespace ${pkgs.nix}/bin/nix-store --dump ${storePath} > "$NAR_TMP"
           NAR_HASH=$(sha256sum "$NAR_TMP" | awk '{{print $1}}')
           NAR_SIZE=$(stat -c %s "$NAR_TMP")
           rm -f "$NAR_TMP"
@@ -294,7 +314,7 @@ in {
           # package TOML still carries is `nar_hash`. The narinfo route
           # is anonymous-readable because the default view has
           # `anonymous_read = true`.
-          ${pkgs.aos}/bin/aos cache push ${storePath} \\
+          with_store_namespace ${pkgs.aos}/bin/aos cache push ${storePath} \\
             --to http://127.0.0.1:15000/default --token "$PROV" 2>&1
           chown -R aos-gitd:aos-gitd "$AOS_ROOT/store" "$AOS_ROOT/var/nix"
           NARINFO=$(curl -sf \\
@@ -364,7 +384,13 @@ in {
           # 3.10 Hand the bare repo over to the gitd daemon's user. Done
           # last so root's earlier git invocations on the same tree
           # aren't blocked by CVE-2022-24765's dubious-ownership check.
-          chown -R aos-gitd:aos-gitd "$REG_DIR"
+          # StateDirectory may use an idmapped mount. Set ownership in the
+          # daemon's view so Git sees its own UID rather than the host mapping.
+          git_pid=$(systemctl show -p MainPID --value aos-registry-server-gitd.service)
+          test "$git_pid" -gt 0
+          git_owner=$(id -u aos-gitd):$(id -g aos-gitd)
+          ${pkgs.util-linux}/bin/nsenter --target "$git_pid" --mount --root --wd=/ \\
+            ${pkgs.coreutils}/bin/chown -R "$git_owner" "$REG_DIR"
       """), timeout=240)
 
       # ── 4. Client adds the registry and syncs ─────────────────────
@@ -390,10 +416,17 @@ in {
       # the fleet's multicast L2, which can comfortably overshoot the
       # 30s default agent timeout under host load (other VMs running,
       # cargo recompiles competing for CPU).
-      client.succeed(
-          "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm update --registry test-reg",
-          timeout=120,
-      )
+      try:
+          client.succeed(
+              "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm update --registry test-reg",
+              timeout=120,
+          )
+      except Exception:
+          print(server.succeed(
+              "journalctl -u aos-registry-server-gitd.service -n 80 --no-pager",
+              timeout=60,
+          ))
+          raise
       # `extract_packages` strips the leading `packages/` and lands TOMLs
       # under `cache_path()/<registry>/packages/` —
       # `crates/aos-package/src/{update,registry/git}.rs::extract_packages`.
@@ -449,10 +482,17 @@ in {
       )
 
       # ── 7. Idempotency: second sync exits clean ───────────────────
-      client.succeed(
-          "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm update --registry test-reg",
-          timeout=120,
-      )
+      try:
+          client.succeed(
+              "HOME=/tmp USER=apmfleet ${pkgs.aos.apm}/bin/apm update --registry test-reg",
+              timeout=120,
+          )
+      except Exception:
+          print(server.succeed(
+              "journalctl -u aos-registry-server-gitd.service -n 80 --no-pager",
+              timeout=60,
+          ))
+          raise
 
       # ── 8. Negative path: registry down ───────────────────────────
       # Stop the git daemon. `apm update` should fail — there's no
