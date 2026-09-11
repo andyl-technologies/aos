@@ -27,10 +27,10 @@
     inherit lib buildPlatform hostPlatform targetPlatform;
   };
 
-  # Build dependencies may use the private tools. Runtime interpreter and
-  # compiler inputs are explicit overrides, so exporting a tool never changes
-  # the inputs of the private tools needed to construct it.
-  buildTools = privateTools // {bash = exports.bash;};
+  # The completed compiler stack must exist before Bash can be rebuilt against
+  # it. Keep the construction shell for that transition, then use the rebuilt
+  # Bash for every remaining public tool.
+  buildTools = privateTools;
   platforms = {inherit buildPlatform hostPlatform targetPlatform;};
   call = scope: path: overrides: let
     function = import path;
@@ -46,6 +46,12 @@
     withRuntimeShell {
       inherit package buildTools;
       shell = "${exports.bash}/bin/bash";
+      scriptFilterTool = publicScriptFilter;
+    };
+  finishConstruction = package:
+    withRuntimeShell {
+      inherit package buildTools;
+      shell = "${privateTools.bash}/bin/bash";
       scriptFilterTool = publicScriptFilter;
     };
 
@@ -110,6 +116,29 @@
     };
   manifest = call manifestScope (directory + "/manifest.nix") {};
   constructionManifest = call publicBuildScope (directory + "/manifest.nix") {};
+  bashBuildTools =
+    privateTools
+    // {
+      inherit (exports) gcc glibc binutils;
+    };
+  bashLib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = privateTools.bash;
+  };
+  bashStdenv =
+    (import ../../tier-stdenv.nix {
+      lib = bashLib;
+      inherit buildPlatform hostPlatform targetPlatform;
+    }) {
+      tc = bashBuildTools;
+      staticDefault = true;
+      inherit staticNoPie;
+    };
+  mkBash = import ./mk-autotools-tool.nix {
+    lib = bashLib;
+    inherit phases buildPlatform hostPlatform;
+    tierStdenv = bashStdenv;
+  };
   compileTool = spec:
     finishFiltered (mkTool (spec
       // {
@@ -134,20 +163,23 @@
     // {
       bash = let
         package = withRuntimeShell {
-          package = privateTools.bash;
-          buildTools = privateTools;
+          package = mkBash (constructionManifest.bash
+            // {
+              inherit gccVersion;
+              runtimeShell = "$out/bin/bash";
+              sourceScriptFilter = publicScriptFilter;
+            });
+          buildTools = bashBuildTools;
           shell = "$out/bin/bash";
         };
       in
         package
         // {
-          # The retained shell still links its construction libc. Expose that
-          # exact package for source evidence without changing either output.
-          passthru = (package.passthru or {}) // {evidenceRuntimePackages = [privateTools.glibc];};
+          passthru = (package.passthru or {}) // {evidenceRuntimePackages = [exports.glibc];};
         };
       inherit (privateTools) linuxHeaders;
       glibc = let
-        package = finish (call libcBuildScope (directory + "/glibc.nix") libcBuildOverrides);
+        package = finishConstruction (call libcBuildScope (directory + "/glibc.nix") libcBuildOverrides);
       in
         if privateTools ? perl
         then
@@ -157,8 +189,8 @@
             constructionPerl = privateTools.perl;
           }
         else package;
-      binutils = finish (call compilerBuildScope (directory + "/binutils.nix") binutilsBuildOverrides);
-      gcc = finishFiltered (call (compilerBuildScope
+      binutils = finishConstruction (call compilerBuildScope (directory + "/binutils.nix") binutilsBuildOverrides);
+      gcc = finishConstruction (call (compilerBuildScope
         // {
           prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;
           binutils = exports.binutils;
