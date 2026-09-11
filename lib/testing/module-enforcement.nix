@@ -65,10 +65,10 @@
   healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
   healthyBuildSucceeds = healthyTryBuild.success;
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
-  defaultRootPartitionHasHeadroom =
+  serverRootPartitionHasHeadroom =
     healthySystem.config.aos.image.rootPartitionMiB
     == 1024
-    && healthySystem.config.aos.image.budgets.maxRootMiB == 512;
+    && healthySystem.config.aos.image.budgets.maxRootMiB == 640;
 
   overriddenRootPartitionSystem = aos.mkSystem {
     modules = [
@@ -1218,8 +1218,8 @@
         message = "cross images must retain target identity and native construction tools";
       }
       {
-        ok = defaultRootPartitionHasHeadroom;
-        message = "default root partition must retain headroom above the artifact budget";
+        ok = serverRootPartitionHasHeadroom;
+        message = "server root partition must retain headroom above its declared artifact budget";
       }
       {
         ok = rootPartitionOverridePropagates;
