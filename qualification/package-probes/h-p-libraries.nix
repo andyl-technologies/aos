@@ -13,6 +13,7 @@
     libraries,
     cxx ? false,
     extraArguments ? [],
+    compileTimeoutSeconds ? 60,
   }:
     testing.mkQualificationPackageProbe {
       name = package;
@@ -50,6 +51,7 @@
                 ++ extraArguments
                 ++ libraries
                 ++ ["-o" "primary-check"];
+              timeout_seconds = compileTimeoutSeconds;
               exit_code = 0;
               stdout.exact = "";
             }
@@ -93,6 +95,7 @@
                 ++ extraArguments
                 ++ libraries
                 ++ ["-o" "bad-input-check"];
+              timeout_seconds = compileTimeoutSeconds;
               exit_code = 0;
               stdout.exact = "";
             }
@@ -411,6 +414,8 @@ in {
   "nlohmann-json" = mkCProbe {
     package = "nlohmann-json";
     cxx = true;
+    # Its template-heavy header takes longer under an emulated target compiler.
+    compileTimeoutSeconds = 180;
     primaryInput = "A JSON object containing an integer answer.";
     primaryOperation = "Parse the document and read the value through nlohmann::json.";
     primaryExpected = "The answer field has integer value 42.";
