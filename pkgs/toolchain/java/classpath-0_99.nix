@@ -63,37 +63,43 @@ in
       }
       {
         name = "patch";
-        script = ''
-          # Fix implicit function declarations for GCC 14 (C23 default)
-          sed -i '1i #include <stdlib.h>' native/fdlibm/dtoa.c
-
-          # Disable -Werror — old code triggers many new GCC 14 warnings
-          find . -name Makefile.in -exec sed -i 's/-Werror//g' {} +
-          find . -name configure -exec sed -i 's/-Werror//g' {} +
-
-          # Remove any stray 'sun' file in lib/ that blocks sun/ directory creation
-          test -f lib/sun && rm lib/sun || true
-
-          ${lib.optionalString isDarwinCross ''
-            # This release predates AArch64. Refresh only the canonical target
-            # table; its generated configure logic is otherwise cross-aware.
-            cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
-
-            # GNU Classpath's fdlibm predates AArch64 but uses the standard
-            # little-endian IEEE-754 word layout on that architecture.
+        script =
+          lib.optionalString (stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+            # The bundled fdlibm predates AArch64's IEEE-754 word layout.
             sed -i '/#ifdef __alpha__/i #ifdef __aarch64__\n#define __IEEE_LITTLE_ENDIAN\n#endif\n' \
               native/fdlibm/ieeefp.h
+          ''
+          + ''
+            # Fix implicit function declarations for GCC 14 (C23 default)
+            sed -i '1i #include <stdlib.h>' native/fdlibm/dtoa.c
 
-            # IUCLC is a Linux terminal extension. On Darwin the remaining
-            # standard input flags still implement the intended echo guard.
-            sed -i '/#define TERMIOS_ECHO_IFLAGS/i #ifndef IUCLC\n#define IUCLC 0\n#endif\n' \
-              native/jni/java-io/java_io_VMConsole.c
-          ''}
+            # Disable -Werror — old code triggers many new GCC 14 warnings
+            find . -name Makefile.in -exec sed -i 's/-Werror//g' {} +
+            find . -name configure -exec sed -i 's/-Werror//g' {} +
 
-          # Fix: --disable-tools leaves GCJ_JAVAC automake conditional undefined
-          # Insert default values just before the check that errors out
-          sed -i 's/if test -z "''${GCJ_JAVAC_TRUE}" && test -z "''${GCJ_JAVAC_FALSE}"/GCJ_JAVAC_TRUE="''${GCJ_JAVAC_TRUE:-#}"; GCJ_JAVAC_FALSE="''${GCJ_JAVAC_FALSE:-}"; if test -z "''${GCJ_JAVAC_TRUE}" \&\& test -z "''${GCJ_JAVAC_FALSE}"/' configure
-        '';
+            # Remove any stray 'sun' file in lib/ that blocks sun/ directory creation
+            test -f lib/sun && rm lib/sun || true
+
+            ${lib.optionalString isDarwinCross ''
+              # This release predates AArch64. Refresh only the canonical target
+              # table; its generated configure logic is otherwise cross-aware.
+              cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
+
+              # GNU Classpath's fdlibm predates AArch64 but uses the standard
+              # little-endian IEEE-754 word layout on that architecture.
+              sed -i '/#ifdef __alpha__/i #ifdef __aarch64__\n#define __IEEE_LITTLE_ENDIAN\n#endif\n' \
+                native/fdlibm/ieeefp.h
+
+              # IUCLC is a Linux terminal extension. On Darwin the remaining
+              # standard input flags still implement the intended echo guard.
+              sed -i '/#define TERMIOS_ECHO_IFLAGS/i #ifndef IUCLC\n#define IUCLC 0\n#endif\n' \
+                native/jni/java-io/java_io_VMConsole.c
+            ''}
+
+            # Fix: --disable-tools leaves GCJ_JAVAC automake conditional undefined
+            # Insert default values just before the check that errors out
+            sed -i 's/if test -z "''${GCJ_JAVAC_TRUE}" && test -z "''${GCJ_JAVAC_FALSE}"/GCJ_JAVAC_TRUE="''${GCJ_JAVAC_TRUE:-#}"; GCJ_JAVAC_FALSE="''${GCJ_JAVAC_FALSE:-}"; if test -z "''${GCJ_JAVAC_TRUE}" \&\& test -z "''${GCJ_JAVAC_FALSE}"/' configure
+          '';
       }
       {
         name = "configure";
