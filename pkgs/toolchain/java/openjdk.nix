@@ -26,6 +26,7 @@
   bootstrapTools,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   buildTools =
     if isDarwinCross
     then buildPackages
@@ -46,9 +47,14 @@
 
   # Boot Java executes build-time generators; target compilers still build the JVM.
   bootJdk =
-    if isDarwinCross || (stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64)
+    if isDarwinCross || isLinuxArmCross
     then buildPackages.openjdk-24
     else openjdk-24;
+  linuxBuildJdkFlag =
+    if isLinuxArmCross
+    then " --with-build-jdk=${buildPackages.openjdk}"
+    else "";
+
   nativeMig =
     if isDarwinCross
     then
@@ -414,7 +420,7 @@ in
           else ''
             # OpenJDK configure requires bash
             $CONFIG_SHELL configure \
-              --with-boot-jdk=${bootJdk} \
+              --with-boot-jdk=${bootJdk}${linuxBuildJdkFlag} \
               --enable-headless-only \
               --with-native-debug-symbols=none \
               --disable-warnings-as-errors \
