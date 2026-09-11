@@ -50,6 +50,7 @@ pub mod managed_configuration_ability;
 pub mod materialize;
 mod native_ability_fs;
 mod native_activation;
+pub(crate) use native_activation::verify_rollout_boot_commit;
 mod native_adapter_surface;
 mod native_boundary_observer;
 mod native_cancellation;

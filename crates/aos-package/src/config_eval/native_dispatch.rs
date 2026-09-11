@@ -16,13 +16,15 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use aos_ability_model::{
-    AggregateOutput, Binding, DependencyKind, DesiredStateDocument, IncarnationId, MethodReference,
-    Operation, PlanNodeKey, ProviderAssignment, ResourceId, ResultProducerKey, ScopedOperationKey,
+    AbilityValue, AggregateOutput, Binding, DependencyKind, DesiredStateDocument,
+    EffectPlanDocument, IncarnationId, MethodReference, Operation, OperationFamily, PlanNodeKey,
+    ProviderAssignment, ResourceId, ResultProducerKey, RevisionId, ScopedOperationKey,
     TransactionId, ValueExpression,
 };
 use aos_ability_plan::{
-    RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState,
-    TransitionReconciliation,
+    AbRolloutRequest, RolloutAuthority, RuntimeResourceHealth, RuntimeResourceObservation,
+    RuntimeResourceState, TransitionReconciliation, admit_ab_rollout, admit_retirement,
+    lower_ab_rollout_fragment, retention_dominates_effects,
 };
 use aos_ability_runtime::adapter::{
     CancellationToken, InvocationPurpose, MonotonicClock, ResourceAdmissionEvidence,
@@ -80,10 +82,149 @@ use super::systemd_ability::{
     SystemdResourceRuntimeState, SystemdResourceSpec, preflight_native_systemd,
 };
 use crate::ability_package::{VerifiedAbilityPackage, VerifiedAbilityPackageSet};
+use crate::sysroot::image_rollout::{
+    NativeAbRolloutAdapter, NativeAbRolloutBackend, NativeAbRolloutCatalog,
+    PhysicalRolloutObservation, SystemAbRolloutPlatform, preflight_native_ab_rollout,
+};
 
 const MANAGED_CONFIGURATION_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/managed-configuration";
 const NGINX_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/nginx";
 const RETRY_CANCELLATION_POLL: Duration = Duration::from_millis(50);
+
+/// Authenticates the sole built-in image rollout fragment inside a checked plan.
+///
+/// Operations and control-flow nodes outside the rollout are permitted. An edge
+/// crossing the rollout boundary is part of its incident graph and therefore
+/// must match the built-in fragment exactly.
+///
+/// # Errors
+///
+/// Returns an error unless the document contains exactly one rollout resource,
+/// one literal request, and the exact nine-operation built-in lifecycle graph.
+pub(crate) fn authenticate_single_image_rollout_fragment(
+    document: &EffectPlanDocument,
+) -> Result<AbRolloutRequest> {
+    let rollout_operations = document
+        .operations
+        .iter()
+        .filter(|operation| matches!(operation.family, OperationFamily::ImageRollout { .. }))
+        .collect::<Vec<_>>();
+    ensure!(
+        !rollout_operations.is_empty(),
+        "boot commit transaction has no rollout operations"
+    );
+    let resources = rollout_operations
+        .iter()
+        .map(|operation| operation.target.resource.clone())
+        .collect::<BTreeSet<_>>();
+    ensure!(
+        resources.len() == 1,
+        "boot commit transaction does not contain exactly one rollout resource"
+    );
+    let resource = resources
+        .first()
+        .context("boot commit transaction has no rollout resource")?;
+    ensure!(
+        document.operations.iter().all(|operation| {
+            operation.target.resource != *resource
+                || matches!(operation.family, OperationFamily::ImageRollout { .. })
+        }),
+        "boot commit rollout resource is shared with a non-rollout operation"
+    );
+
+    let mut request = None;
+    for operation in &rollout_operations {
+        let ValueExpression::Literal { value } = &operation.inputs else {
+            anyhow::bail!("boot commit rollout request is not an exact literal")
+        };
+        let operation_request: AbRolloutRequest = serde_json::from_value(value.as_json().clone())
+            .context("decoding retained rollout request")?;
+        if let Some(expected) = &request {
+            ensure!(
+                expected == &operation_request,
+                "boot commit transaction contains different rollout requests"
+            );
+        } else {
+            request = Some(operation_request);
+        }
+    }
+    let request = request.context("boot commit transaction has no rollout request")?;
+    let retain = rollout_operations
+        .iter()
+        .find(|operation| operation.key.key.as_str() == "retain")
+        .context("boot commit rollout graph has no retention operation")?;
+    let expected = lower_ab_rollout_fragment(retain)
+        .context("lowering the expected boot commit rollout graph")?;
+    ensure!(
+        rollout_operations.len() == expected.operations.len()
+            && rollout_operations
+                .iter()
+                .zip(&expected.operations)
+                .all(|(actual, expected)| *actual == expected),
+        "boot commit rollout operations differ from the built-in lifecycle graph"
+    );
+
+    let nodes = expected
+        .operations
+        .iter()
+        .map(|operation| PlanNodeKey::Operation {
+            key: operation.key.clone(),
+        })
+        .chain(
+            expected
+                .decisions
+                .iter()
+                .map(|decision| PlanNodeKey::Decision {
+                    key: decision.key.clone(),
+                }),
+        )
+        .chain(expected.merges.iter().map(|merge| PlanNodeKey::Merge {
+            key: merge.key.clone(),
+        }))
+        .collect::<BTreeSet<_>>();
+    let actual_decisions = document
+        .decisions
+        .iter()
+        .filter(|decision| {
+            nodes.contains(&PlanNodeKey::Decision {
+                key: decision.key.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let actual_merges = document
+        .merges
+        .iter()
+        .filter(|merge| {
+            nodes.contains(&PlanNodeKey::Merge {
+                key: merge.key.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let actual_edges = document
+        .edges
+        .iter()
+        .filter(|edge| nodes.contains(&edge.from) || nodes.contains(&edge.to))
+        .collect::<Vec<_>>();
+    ensure!(
+        actual_decisions.len() == expected.decisions.len()
+            && actual_decisions
+                .iter()
+                .zip(&expected.decisions)
+                .all(|(actual, expected)| *actual == expected)
+            && actual_merges.len() == expected.merges.len()
+            && actual_merges
+                .iter()
+                .zip(&expected.merges)
+                .all(|(actual, expected)| *actual == expected)
+            && actual_edges.len() == expected.edges.len()
+            && actual_edges
+                .iter()
+                .zip(&expected.edges)
+                .all(|(actual, expected)| *actual == expected),
+        "boot commit rollout control flow differs from the built-in lifecycle graph"
+    );
+    Ok(request)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeCancellationAction {
@@ -105,6 +246,8 @@ pub(crate) enum NativeAdapterKind {
     Systemd,
     /// Uses one exact production host-resource contract.
     HostResource(NativeHostResourceKind),
+    /// Uses the existing single-host A/B image backend.
+    ImageRollout,
 }
 
 /// Borrows the exact package and mapping selected for one checked operation.
@@ -358,9 +501,196 @@ impl<'a> NativeAdapterRegistry<'a> {
         for operation in registry.plan.operations() {
             registry.route(operation)?;
         }
+        registry.validate_image_rollout_plans()?;
         registry.validate_manager_readiness_contracts()?;
 
         Ok(registry)
+    }
+
+    /// Authenticates every native rollout as the exact built-in lifecycle graph.
+    fn validate_image_rollout_plans(&self) -> Result<()> {
+        let resources = self
+            .plan
+            .operations()
+            .iter()
+            .filter_map(|operation| {
+                matches!(
+                    &operation.family,
+                    aos_ability_model::OperationFamily::ImageRollout { .. }
+                )
+                .then_some(operation.target.resource.clone())
+            })
+            .collect::<BTreeSet<_>>();
+
+        for resource in resources {
+            self.validate_image_rollout_plan(&resource)?;
+        }
+        Ok(())
+    }
+
+    fn validate_image_rollout_plan(&self, resource: &ResourceId) -> Result<()> {
+        let operations = self
+            .plan
+            .operations()
+            .iter()
+            .filter(|operation| operation.target.resource == *resource)
+            .collect::<Vec<_>>();
+        let first = operations
+            .first()
+            .context("native rollout graph has no operations")?;
+        let route = self.route(first)?;
+        ensure!(
+            route.kind == NativeAdapterKind::ImageRollout
+                && operations.iter().all(|operation| {
+                    matches!(
+                        &operation.family,
+                        aos_ability_model::OperationFamily::ImageRollout { .. }
+                    ) && self
+                        .route(operation)
+                        .is_ok_and(|candidate| candidate.mapping == route.mapping)
+                }),
+            "native rollout resource mixes operations or authenticated mappings"
+        );
+        let request = self.image_rollout_request(&route)?;
+        let expected_inputs = AbilityValue::new(serde_json::to_value(&request)?)?;
+        ensure!(
+            operations.iter().all(|operation| {
+                matches!(
+                    &operation.inputs,
+                    ValueExpression::Literal { value } if value == &expected_inputs
+                )
+            }),
+            "native rollout operations do not pin the authenticated rollout request"
+        );
+
+        let binding = self
+            .plan
+            .binding_plan()
+            .binding(&first.binding)
+            .context("native rollout operation lost its checked binding")?;
+        let authority = RolloutAuthority {
+            policy_revision: binding.policy_revision,
+            provider_incarnation: IncarnationId::new("native-static-preflight")
+                .context("constructing rollout graph authority")?,
+            active_image: request.predecessor.clone(),
+            revoked: false,
+        };
+
+        if operations
+            .iter()
+            .all(|operation| operation.method.as_str() == "retire")
+        {
+            ensure!(
+                operations.len() == 1,
+                "native rollout retirement must contain exactly one operation"
+            );
+            let mut retirement_authority = authority;
+            retirement_authority.active_image = request.candidate.clone();
+            let retirement_time = request.retention_expires_at_millis;
+            admit_retirement(request, &retirement_authority, retirement_time)
+                .context("admitting native rollout retirement semantics")?;
+            ensure!(
+                self.plan
+                    .document()
+                    .edges
+                    .iter()
+                    .all(|edge| { edge.from.key() != &first.key && edge.to.key() != &first.key }),
+                "native rollout retirement must be an independent transition"
+            );
+            return Ok(());
+        }
+
+        let admission_time = request
+            .retention_expires_at_millis
+            .checked_sub(1)
+            .context("native rollout retention deadline is zero")?;
+        let admitted = admit_ab_rollout(request, &authority, admission_time)
+            .context("admitting native rollout semantics")?;
+        ensure!(
+            retention_dominates_effects(&admitted),
+            "native rollout retention does not dominate every strategy effect"
+        );
+        let retain = operations
+            .iter()
+            .find(|operation| operation.key.key.as_str() == "retain")
+            .context("native rollout graph has no retention operation")?;
+        let expected = lower_ab_rollout_fragment(retain)
+            .context("lowering the admitted native rollout graph")?;
+        ensure!(
+            operations.len() == expected.operations.len()
+                && operations
+                    .iter()
+                    .zip(&expected.operations)
+                    .all(|(actual, expected)| *actual == expected),
+            "native rollout operations differ from the built-in lifecycle graph"
+        );
+
+        let nodes = expected
+            .operations
+            .iter()
+            .map(|operation| PlanNodeKey::Operation {
+                key: operation.key.clone(),
+            })
+            .chain(
+                expected
+                    .decisions
+                    .iter()
+                    .map(|decision| PlanNodeKey::Decision {
+                        key: decision.key.clone(),
+                    }),
+            )
+            .chain(expected.merges.iter().map(|merge| PlanNodeKey::Merge {
+                key: merge.key.clone(),
+            }))
+            .collect::<BTreeSet<_>>();
+        let actual_decisions = self
+            .plan
+            .document()
+            .decisions
+            .iter()
+            .filter(|decision| {
+                nodes.contains(&PlanNodeKey::Decision {
+                    key: decision.key.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let actual_merges = self
+            .plan
+            .document()
+            .merges
+            .iter()
+            .filter(|merge| {
+                nodes.contains(&PlanNodeKey::Merge {
+                    key: merge.key.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let actual_edges = self
+            .plan
+            .document()
+            .edges
+            .iter()
+            .filter(|edge| nodes.contains(&edge.from) || nodes.contains(&edge.to))
+            .collect::<Vec<_>>();
+        ensure!(
+            actual_decisions.len() == expected.decisions.len()
+                && actual_decisions
+                    .iter()
+                    .zip(&expected.decisions)
+                    .all(|(actual, expected)| *actual == expected)
+                && actual_merges.len() == expected.merges.len()
+                && actual_merges
+                    .iter()
+                    .zip(&expected.merges)
+                    .all(|(actual, expected)| *actual == expected)
+                && actual_edges.len() == expected.edges.len()
+                && actual_edges
+                    .iter()
+                    .zip(&expected.edges)
+                    .all(|(actual, expected)| *actual == expected),
+            "native rollout control flow differs from the built-in lifecycle graph"
+        );
+        Ok(())
     }
 
     /// Resolves one checked operation to its exact authenticated adapter route.
@@ -679,6 +1009,19 @@ impl<'a> NativeAdapterRegistry<'a> {
                 _ => None,
             },
         })
+    }
+
+    fn image_rollout_request(
+        &self,
+        route: &NativeAdapterRoute<'_>,
+    ) -> Result<aos_ability_plan::AbRolloutRequest> {
+        let NativeResourceQualification::AbImageRollout { request } = &route.mapping.qualification
+        else {
+            return Err(anyhow!(
+                "native dispatcher route is not an A/B image rollout"
+            ));
+        };
+        Ok(request.clone())
     }
 
     fn build_host_allocations(&self) -> Result<HostResourceAllocations> {
@@ -1188,6 +1531,11 @@ impl<'a> NativeAdapterRegistry<'a> {
                 .context("constructing native adapter preflight assignment")?,
         };
         let kind = match &mapping.qualification {
+            NativeResourceQualification::AbImageRollout { .. } => {
+                preflight_native_ab_rollout(package, &assignment)
+                    .context("preflighting native A/B rollout adapter")?;
+                NativeAdapterKind::ImageRollout
+            }
             NativeResourceQualification::ManagedConfiguration { .. } => {
                 preflight_native_managed_configuration(package, &assignment)
                     .context("preflighting managed-configuration adapter")?;
@@ -1597,6 +1945,18 @@ impl<'a> NativeDispatcher<'a> {
                 catalog
                     .classify_runtime_state(&mapping.resource)
                     .context("classifying current host resource")
+            }
+            NativeAdapterKind::ImageRollout => {
+                let request = self.registry.image_rollout_request(route)?;
+                let qualified = NativeQualifiedResource::host_resource(
+                    mapping.resource.clone(),
+                    "ab-image-rollout",
+                    "aos-host-runtime",
+                    "machine",
+                )
+                .context("qualifying current image rollout")?;
+                let state = image_rollout_runtime_state(&request, mapping.revision)?;
+                Ok((qualified, state))
             }
         }
     }
@@ -2074,12 +2434,9 @@ impl<'a> NativeDispatcher<'a> {
                 .registry
                 .preflight_reconciliation_mapping(mapping, generation)?;
             let assignment = self.registry.assignment(&route, &self.assignments)?;
-            let (qualified, state) = self.classify_mapping_state(
-                &route,
-                mapping,
-                assignment,
-                session.resource_inventory(),
-            )?;
+            let inventory = session.resource_inventory();
+            let (qualified, state) =
+                self.classify_mapping_state(&route, mapping, assignment, inventory)?;
             let linked_resource = linked.is_some_and(|reconciliation| {
                 reconciliation
                     .unsettled_provider_adoptions
@@ -2288,6 +2645,10 @@ impl<'a> NativeDispatcher<'a> {
                     .context("observing current host-resource state")?
                     .1
             }
+            NativeAdapterKind::ImageRollout => {
+                let request = self.registry.image_rollout_request(route)?;
+                image_rollout_runtime_state(&request, route.mapping.revision)?
+            }
         };
         self.current_state_for_execution(
             &route.mapping.resource,
@@ -2482,6 +2843,32 @@ impl<'a> NativeDispatcher<'a> {
                     kind,
                 )
                 .context("constructing host-resource adapter")?;
+                drive_with_adapter(
+                    session,
+                    operation,
+                    &mut adapter,
+                    &mut catalog,
+                    policy,
+                    clock,
+                    cancellation,
+                    observer,
+                )
+            }
+            NativeAdapterKind::ImageRollout => {
+                let request = self.registry.image_rollout_request(&route)?;
+                let inventory = session.resource_inventory();
+                let backend = NativeAbRolloutBackend::new("/var/lib/profiles/image", "/boot");
+                let mut catalog = NativeAbRolloutCatalog::new(
+                    assignment.clone(),
+                    route.mapping.resource.clone(),
+                    route.mapping.revision,
+                    request,
+                    backend.clone(),
+                    inventory,
+                )
+                .context("constructing image-rollout resource catalog")?;
+                let mut adapter =
+                    NativeAbRolloutAdapter::new(assignment, backend, SystemAbRolloutPlatform);
                 drive_with_adapter(
                     session,
                     operation,
@@ -2918,6 +3305,25 @@ fn preflight_operation_contract(kind: NativeAdapterKind, operation: &Operation) 
     Ok(())
 }
 
+fn image_rollout_runtime_state(
+    request: &AbRolloutRequest,
+    revision: RevisionId,
+) -> Result<RuntimeResourceState> {
+    let observation = NativeAbRolloutBackend::new("/var/lib/profiles/image", "/boot")
+        .observe(request)
+        .context("classifying current image rollout")?;
+    let health = match observation {
+        PhysicalRolloutObservation::Healthy | PhysicalRolloutObservation::Fallback => {
+            RuntimeResourceHealth::Healthy
+        }
+        PhysicalRolloutObservation::AwaitingBoot
+        | PhysicalRolloutObservation::CandidateBooted
+        | PhysicalRolloutObservation::FallbackPendingCommit => RuntimeResourceHealth::Stopped,
+    };
+
+    Ok(RuntimeResourceState::Present { revision, health })
+}
+
 fn native_method_is_supported(
     kind: NativeAdapterKind,
     interface: &str,
@@ -3081,8 +3487,58 @@ where
 
 #[cfg(test)]
 mod tests {
+    use aos_ability_model::LocalKey;
+
     use super::*;
     use crate::config_eval::native_adapter_surface::{NATIVE_METHODS, NativeAdapterId};
+
+    fn rollout_request(candidate_suffix: &str) -> AbRolloutRequest {
+        let image = |name: &str| aos_ability_plan::RolloutImageIdentity {
+            toplevel: format!("/nix/store/00000000000000000000000000000000-{name}-toplevel"),
+            uki: format!("/nix/store/00000000000000000000000000000000-{name}.efi"),
+            executor: format!("/nix/store/00000000000000000000000000000000-{name}-executor"),
+            state_format: "1".to_string(),
+        };
+        AbRolloutRequest {
+            strategy: "single-host-ab-v1".to_string(),
+            concurrency: 1,
+            predecessor: image("predecessor"),
+            candidate: image(&format!("candidate-{candidate_suffix}")),
+            retention_expires_at_millis: 10_000,
+        }
+    }
+
+    fn rollout_document_with_non_rollout_operation() -> EffectPlanDocument {
+        let fixture = aos_ability_validate::test_support::plan_fixture();
+        let mut document = fixture.effect_plan;
+        let mut template = document.operations[0].clone();
+        template.target.resource.key = LocalKey::new("machine").expect("rollout resource key");
+        for access in &mut template.accesses {
+            access.resource = template.target.resource.clone();
+        }
+        template.inputs = ValueExpression::Literal {
+            value: AbilityValue::new(
+                serde_json::to_value(rollout_request("one")).expect("rollout request JSON"),
+            )
+            .expect("bounded rollout request"),
+        };
+        let fragment = lower_ab_rollout_fragment(&template).expect("built-in rollout fragment");
+        document.operations.extend(fragment.operations);
+        document
+            .operations
+            .sort_by(|left, right| left.key.cmp(&right.key));
+        document.decisions.extend(fragment.decisions);
+        document
+            .decisions
+            .sort_by(|left, right| left.key.cmp(&right.key));
+        document.merges.extend(fragment.merges);
+        document
+            .merges
+            .sort_by(|left, right| left.key.cmp(&right.key));
+        document.edges.extend(fragment.edges);
+        document.edges.sort_by(aos_ability_model::compare_edges);
+        document
+    }
 
     struct FixedClock;
 
@@ -3114,6 +3570,92 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(500),
             "retry wait exceeded its bounded cancellation poll"
+        );
+    }
+
+    #[test]
+    fn boot_commit_rollout_fragment_coexists_with_a_non_rollout_operation() {
+        let document = rollout_document_with_non_rollout_operation();
+        assert_eq!(
+            authenticate_single_image_rollout_fragment(&document)
+                .expect("one exact rollout fragment beside an unrelated checked effect"),
+            rollout_request("one")
+        );
+        assert!(
+            document
+                .operations
+                .iter()
+                .any(|operation| !matches!(operation.family, OperationFamily::ImageRollout { .. }))
+        );
+    }
+
+    #[test]
+    fn boot_commit_rejects_duplicate_rollout_resources_and_requests() {
+        let mut duplicate_resource = rollout_document_with_non_rollout_operation();
+        let mut duplicate_operations = duplicate_resource
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation.family, OperationFamily::ImageRollout { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        for operation in &mut duplicate_operations {
+            operation.target.resource.key =
+                LocalKey::new("other-machine").expect("second rollout resource key");
+            for access in &mut operation.accesses {
+                access.resource = operation.target.resource.clone();
+            }
+        }
+        duplicate_resource.operations.extend(duplicate_operations);
+        assert!(
+            authenticate_single_image_rollout_fragment(&duplicate_resource).is_err(),
+            "two rollout resources must not authorize one boot commit"
+        );
+
+        let mut different_request = rollout_document_with_non_rollout_operation();
+        let operation = different_request
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation.family, OperationFamily::ImageRollout { .. }))
+            .expect("rollout operation");
+        operation.inputs = ValueExpression::Literal {
+            value: AbilityValue::new(
+                serde_json::to_value(rollout_request("two")).expect("rollout request JSON"),
+            )
+            .expect("bounded rollout request"),
+        };
+        assert!(
+            authenticate_single_image_rollout_fragment(&different_request).is_err(),
+            "different rollout requests must not authorize one boot commit"
+        );
+    }
+
+    #[test]
+    fn boot_commit_rejects_edges_crossing_the_rollout_fragment_boundary() {
+        let mut document = rollout_document_with_non_rollout_operation();
+        let non_rollout = document
+            .operations
+            .iter()
+            .find(|operation| !matches!(operation.family, OperationFamily::ImageRollout { .. }))
+            .expect("non-rollout operation");
+        let retain = document
+            .operations
+            .iter()
+            .find(|operation| operation.key.key.as_str() == "retain")
+            .expect("rollout retention operation");
+        document.edges.push(aos_ability_model::DependencyEdge {
+            from: PlanNodeKey::Operation {
+                key: non_rollout.key.clone(),
+            },
+            to: PlanNodeKey::Operation {
+                key: retain.key.clone(),
+            },
+            kind: DependencyKind::RequiredSuccess,
+        });
+        document.edges.sort_by(aos_ability_model::compare_edges);
+
+        assert!(
+            authenticate_single_image_rollout_fragment(&document).is_err(),
+            "an incident edge must be part of the exact built-in fragment"
         );
     }
 
@@ -3374,6 +3916,7 @@ mod tests {
             NativeAdapterId::HostStorage => {
                 NativeAdapterKind::HostResource(NativeHostResourceKind::Storage)
             }
+            NativeAdapterId::ImageRollout => NativeAdapterKind::ImageRollout,
             NativeAdapterId::KubernetesObject => NativeAdapterKind::KubernetesObject,
             NativeAdapterId::ManagedConfiguration => NativeAdapterKind::ManagedConfiguration,
             NativeAdapterId::NetworkEndpoint => {

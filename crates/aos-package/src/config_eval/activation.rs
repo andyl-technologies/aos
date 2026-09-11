@@ -866,7 +866,7 @@ where
             if params.image_profile.join("state.json").is_file() {
                 let images =
                     crate::sysroot::load_image_generation_state_pub(&params.image_profile)?;
-                crate::store::reconcile_baselib_gc_roots(&params.image_profile, &images, &state)?;
+                crate::store::reconcile_image_gc_roots(&params.image_profile, &images, &state)?;
             }
             // Make the prepared generation discoverable for crash recovery;
             // `current` remains unchanged until the swap succeeds.

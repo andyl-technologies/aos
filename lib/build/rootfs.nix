@@ -246,7 +246,6 @@ in
               chmod 0700 rootfs/root/.config
               chmod 0755 rootfs/root/.config/apm
               chmod 0755 rootfs/root/.config/apm/registries.d
-              mkdir -p rootfs/run/current-system
 
               # ── 2. Copy the closure into /nix/store ─────────────────────────
               total=$(wc -l < store-paths)
@@ -330,7 +329,10 @@ in
               cp -a "$SYSTEMD_PRESETS"/. rootfs/usr/lib/systemd/system-preset/
 
               # ── 7. /run/current-system → toplevel ───────────────────────────
-              ln -sfn "$TOPLEVEL" rootfs/run/current-system
+              # Keep the on-disk tree correct for image inspection and boot
+              # paths that do not preserve the initrd's /run. Normal boots
+              # republish this link in the initrd-owned /run before switch-root.
+              ln -s "$TOPLEVEL" rootfs/run/current-system
 
               # ── 8. /aos-toplevel seed pointer ──────────────────────────────
               # First-boot bootstrap: aos-seed-profiles.service reads this

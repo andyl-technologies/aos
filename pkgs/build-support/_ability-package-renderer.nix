@@ -104,7 +104,9 @@ in {
     featureCheck =
       if !(builtins.elem activationMode ["contracts-only" "structured-effects"])
       then fail packageName "has unsupported activationMode '${toString activationMode}'"
-      else if !(builtins.isList requiredFeatures) || !(lib.all (feature: builtins.elem feature ["abilities-v1" "provider-state-format-v1"]) requiredFeatures)
+      else if
+        !(builtins.isList requiredFeatures)
+        || !(lib.all (feature: builtins.elem feature ["ab-image-rollout-v1" "abilities-v1" "provider-state-format-v1"]) requiredFeatures)
       then failFeature packageName "requires an unsupported package feature"
       else if declaresStateFormat != requiresStateFormat
       then failFeature packageName "must require provider-state-format-v1 exactly when an implementation declares stateFormat"

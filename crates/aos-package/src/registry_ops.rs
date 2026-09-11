@@ -66,7 +66,7 @@ mod store_commands;
 mod store_paths;
 mod tags;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod trust;
 mod uki;
 mod workflow;

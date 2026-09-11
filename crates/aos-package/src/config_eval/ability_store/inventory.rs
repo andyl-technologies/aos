@@ -316,7 +316,8 @@ impl NativePhysicalResource {
                 }
             }
             ("network-endpoint-allocation", "aos-host-runtime")
-            | ("host-network-policy", "aos-host-runtime") => {
+            | ("host-network-policy", "aos-host-runtime")
+            | ("ab-image-rollout", "aos-host-runtime") => {
                 if self.object.starts_with('/') {
                     return Err(GenerationAbilityStoreError::Conflict(
                         "native host-resource ledger key must not be a path".to_string(),

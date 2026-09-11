@@ -70,4 +70,9 @@ in
       checked = requireAttrs "host network policy operation family" ["kind" "action"] value;
     in
       checked // {action = requireChoice "host network policy action" ["apply" "observe" "remove"] checked.action;}
+    else if kind == "image-rollout"
+    then let
+      checked = requireAttrs "image rollout operation family" ["kind" "action"] value;
+    in
+      checked // {action = requireChoice "image rollout action" ["drain" "hold" "observe-boot" "observe-health" "prepare" "retain" "retire" "select" "withdraw"] checked.action;}
     else fail "operation family '${kind}' is unsupported"

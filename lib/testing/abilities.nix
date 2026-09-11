@@ -135,6 +135,57 @@
       handler = "ordering-handler";
     }).guarantees;
 
+  methodFamilyInterface = operationFamily:
+    lib.abilities.define {
+      interface = "aos.test.method-family";
+      abi = 1;
+      requestSchema = lib.abilities.schemas.boolean;
+      outputs = {};
+      methods.run = {
+        inherit operationFamily;
+        parameters = lib.abilities.schemas.boolean;
+        targetResource = "aos.test.method-family";
+        outputs = {};
+        permittedOperations = ["run"];
+        guarantees = [];
+        outcome = {
+          completionEvidence = lib.abilities.schemas.boolean;
+          observationEvidence = lib.abilities.schemas.boolean;
+          supportsRejectedBeforeEffect = true;
+          indeterminate = "reconcile";
+        };
+      };
+      lifecycle = {
+        stableResourceIdentity = true;
+        releasesEphemeralOnDisable = true;
+        retainsPersistentByDefault = true;
+        persistentDeleteMethod = null;
+      };
+      guarantees = [];
+      aggregation = {
+        scope = "provider-instance";
+        key = "authorized-slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = "method-family";
+      };
+      requires = {};
+      ownsResourceKinds = ["aos.test.method-family"];
+      handler = "method-family-handler";
+    };
+  acceptedMethodImageFamily =
+    (methodFamilyInterface {
+      kind = "image-rollout";
+      action = "retain";
+    }).methods.run.operation_family;
+  invalidMethodImageFamily = builtins.tryEval (builtins.deepSeq (
+      (methodFamilyInterface {
+        kind = "image-rollout";
+        action = "unknown";
+      }).methods.run.operation_family
+    )
+    true);
+
   configurationExport = configurationSchema:
     lib.abilities.define {
       interface = "aos.test.configuration";
@@ -256,6 +307,20 @@
   };
   effectPlan = effectFixture.normalized;
   postgresqlReconciliation = import ../../tests/abilities/reference-postgresql/reconciliation.nix;
+  acceptedEffectImageFamily =
+    (builtins.head
+      (effectFixture.familyPlan {
+        kind = "image-rollout";
+        action = "retain";
+      }).operations)
+    .family;
+  invalidEffectImageFamily = builtins.tryEval (builtins.deepSeq (
+      effectFixture.familyPlan {
+        kind = "image-rollout";
+        action = "unknown";
+      }
+    )
+    true);
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -448,6 +513,14 @@ in
     closure = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
   });
   assert guaranteeOrdering == ["aos.a:2" "aos.a:10" "aos.a.long:1" "aos.zz:1"];
+  assert acceptedMethodImageFamily
+  == {
+    kind = "image-rollout";
+    action = "retain";
+  };
+  assert acceptedEffectImageFamily == acceptedMethodImageFamily;
+  assert !invalidMethodImageFamily.success;
+  assert !invalidEffectImageFamily.success;
   assert advisoryRequirement.strength == "advisory";
   assert advisoryRequirement.fallback.outputs
   == {

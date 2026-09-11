@@ -536,6 +536,26 @@
           /nix/store/*) ;;
           *) fail_image_identity "immutable toplevel has unsafe target $toplevel" ;;
         esac
+        validate_nix_store_root "$toplevel" \
+          || fail_image_identity "immutable toplevel is not a canonical Nix store root"
+        [ "$(readlink "/sysroot$toplevel/sw" 2>/dev/null || true)" = /usr ] \
+          || fail_image_identity "immutable toplevel has an invalid system command tree"
+        [ -d /sysroot/usr/bin ] && [ -d /sysroot/usr/sbin ] \
+          || fail_image_identity "immutable rootfs has no system command directories"
+        for command in mount bootctl systemctl aos-rollout-drain aos-rollout-health; do
+          [ -x "/sysroot/usr/bin/$command" ] \
+            || fail_image_identity "immutable rootfs omits rollout command $command"
+        done
+
+        # The initrd's /run mount moves into the real root during switch-root,
+        # shadowing the rootfs tree. Publish the authenticated immutable image
+        # identity here so stage-2 consumers observe the toplevel that actually
+        # booted, independently of the mutable configured-generation pointer.
+        if [ -e /run/current-system ] && [ ! -L /run/current-system ]; then
+          fail_image_identity "/run/current-system is not a symbolic link"
+        fi
+        ln -sfn "$toplevel" /run/current-system
+
         case "$base_lib" in
           /nix/store/*) ;;
           *) fail_image_identity "immutable base-lib has unsafe target $base_lib" ;;
@@ -620,16 +640,19 @@
           recovery_audit=/run/aos-seed-recovery-audit
           rm -rf "$recovery_audit"
           mkdir -p "$recovery_audit"
-          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.cmdline \
-            "$recovery_mount/$recovery_uki" "$recovery_audit/cmdline" \
+          ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped \
+            attest __read-uki-identity-section \
+            --uki "$recovery_mount/$recovery_uki" --section cmdline \
+            > "$recovery_audit/cmdline" \
             || fail_image_identity "cannot inspect paired recovery command line"
-          recovery_cmdline=$(tr -d '\000' < "$recovery_audit/cmdline")
+          recovery_cmdline=$(cat "$recovery_audit/cmdline")
           [ "$recovery_cmdline" = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0" ] \
             || fail_image_identity "paired recovery UKI has a noncanonical signed command line"
-          ${pkgs.binutils}/bin/objcopy -O binary --only-section=.osrel \
-            "$recovery_mount/$recovery_uki" "$recovery_audit/os-release" \
+          ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped \
+            attest __read-uki-identity-section \
+            --uki "$recovery_mount/$recovery_uki" --section osrel \
+            > "$recovery_audit/os-release.clean" \
             || fail_image_identity "cannot inspect paired recovery identity"
-          tr -d '\000' < "$recovery_audit/os-release" > "$recovery_audit/os-release.clean"
           recovery_release=$(read_os_release VERSION_ID "$recovery_audit/os-release.clean") \
             || fail_image_identity "paired recovery UKI has no unique signed release"
           recovery_copy=$(read_os_release AOS_RECOVERY_COPY "$recovery_audit/os-release.clean") \

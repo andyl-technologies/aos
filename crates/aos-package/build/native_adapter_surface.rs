@@ -12,12 +12,12 @@ const SURFACE_PATH: &str = "../../qualification/native-adapter-surface.json";
 const SURFACE_SCHEMA: &str = "aos.qualification.native-adapter-surface/v1";
 const MATRIX_SCHEMA: &str = "aos.qualification.native-adapter-matrix/v1";
 const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-subject/v1";
-const EXPECTED_ADAPTERS: usize = 11;
-const EXPECTED_METHODS: usize = 38;
+const EXPECTED_ADAPTERS: usize = 12;
+const EXPECTED_METHODS: usize = 47;
 const EXPECTED_SCENARIOS: usize = 28;
 const MAX_SURFACE_BYTES: u64 = 64 * 1024;
 const EXPECTED_SURFACE_DIGEST: &str =
-    "7d0dff058d2b4165e7b6af56e9656fecd789babe6d3fc182fa031f7f83a320fd";
+    "23371e64d59579c373175f20188680f2d8d0de77dbef1d96a8c9a5cc5a5e2367";
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -139,6 +139,24 @@ fn validate(document: &SurfaceDocument) -> BuildResult<()> {
                 "aos.host-storage-effects",
                 "host-resource",
                 &["ensure", "observe", "release"],
+            ),
+        ),
+        (
+            "image-rollout",
+            (
+                "aos.ab-image-rollout-effects",
+                "host-machine",
+                &[
+                    "drain",
+                    "hold",
+                    "observe-boot",
+                    "observe-health",
+                    "prepare",
+                    "retain",
+                    "retire",
+                    "select",
+                    "withdraw",
+                ],
             ),
         ),
         (
@@ -350,8 +368,8 @@ fn validate_digest(value: &str) -> BuildResult<()> {
 fn generate(document: &SurfaceDocument) -> BuildResult<String> {
     let mut output = String::from(
         "// Generated from qualification/native-adapter-surface.json.\n\
-         pub(crate) const NATIVE_ADAPTER_COUNT: usize = 11;\n\
-         pub(crate) const NATIVE_METHOD_COUNT: usize = 38;\n\n\
+         pub(crate) const NATIVE_ADAPTER_COUNT: usize = 12;\n\
+         pub(crate) const NATIVE_METHOD_COUNT: usize = 47;\n\n\
          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n\
          pub(crate) enum NativeAdapterId {\n",
     );
@@ -389,6 +407,7 @@ fn variant(adapter: &str) -> BuildResult<&'static str> {
         "credential-delivery" => "CredentialDelivery",
         "host-network-policy" => "HostNetworkPolicy",
         "host-storage" => "HostStorage",
+        "image-rollout" => "ImageRollout",
         "kubernetes-object" => "KubernetesObject",
         "managed-configuration" => "ManagedConfiguration",
         "network-endpoint" => "NetworkEndpoint",

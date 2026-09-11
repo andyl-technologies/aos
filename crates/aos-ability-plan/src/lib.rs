@@ -10,6 +10,7 @@
 
 pub mod composition;
 pub mod resolution;
+pub mod rollout;
 pub mod snapshot;
 pub mod transition;
 
@@ -25,6 +26,12 @@ pub use resolution::{
     BindingCandidate, CandidateOrder, CandidateRejection, CandidateSelection,
     EnabledProviderSelection, ExistingProviderPin, ResolutionDecision, ResolutionError,
     ResolutionLimits, ResolutionOutcome, ResolutionPolicyDocument, Resolver,
+};
+pub use rollout::{
+    AbRolloutRequest, AdmittedAbRollout, AdmittedRetirement, MAX_RETENTION_MILLIS,
+    RolloutAdmissionError, RolloutAuthority, RolloutBranch, RolloutDependency,
+    RolloutImageIdentity, RolloutStep, admit_ab_rollout, admit_retirement,
+    lower_ab_rollout_fragment, retention_dominates_effects,
 };
 pub use snapshot::{
     PLANNING_SNAPSHOT_MAX_BYTES, PLANNING_SNAPSHOT_SCHEMA, PlanningReplayInputs, PlanningSnapshot,

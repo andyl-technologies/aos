@@ -1274,7 +1274,7 @@ class Scenario:
 
 
 CHECK_DETAILS = {
-    "native-adapter-matrix-v1-sha256-5dc483f564ecbded54fcfad5c1db7e070ea2ac09cf50280e781e88f48bb57244": (
+    "native-adapter-matrix-v1-sha256-17ea1abb4ab4c2e76981ba77d8959cfc8167be9f520f8c05672ad01ed4870c16": (
         "The closed native-adapter matrix bound every durability and authority "
         "cell to the exact adapter interface name, ABI, and descriptor."
     ),
@@ -1300,6 +1300,34 @@ CHECK_DETAILS = {
     "rollback-revalidates-and-retains-transaction-evidence": (
         "Rollback revalidated authority, restored observations, and retained "
         "canonical transaction evidence."
+    ),
+    "advisory-exact-candidate-staging-without-selection-or-reboot": (
+        "Advisory image staging retained the exact candidate generation without "
+        "changing boot selection, creating rollout authority, or rebooting."
+    ),
+    "authenticated-rollout-plan-and-exact-native-request": (
+        "The authenticated rollout package lowered one exact image request into "
+        "the complete built-in native lifecycle graph."
+    ),
+    "booted-candidate-health-hook-before-config-generation-commit": (
+        "The candidate image's distinct health hook ran while the configuration "
+        "profile still named its prior committed generation."
+    ),
+    "healthy-provider-and-journal-evidence-before-physical-commit": (
+        "Candidate health and the successful native journal were durable before "
+        "boot commit finalized firmware and image state."
+    ),
+    "failed-health-mark-reboot-and-predecessor-retention": (
+        "Failed health was durable before reboot, and the transaction retained "
+        "the predecessor only after it booted."
+    ),
+    "exact-generation-roots-and-uki-retention": (
+        "Both exact generation roots and signed UKIs remained retained across "
+        "the healthy and fallback branches."
+    ),
+    "post-expiry-rollout-root-retirement": (
+        "A separately admitted transition removed rollout-specific roots only "
+        "after the retention deadline and physical finalization."
     ),
     "authenticated-k3s-bootstrap-and-provider-authority": (
         "The published guest bootstrapped K3s only from authenticated packages "

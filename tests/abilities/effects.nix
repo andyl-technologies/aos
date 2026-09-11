@@ -479,6 +479,18 @@
       group = "services";
     };
   };
+
+  familyPlan = family:
+    effects.normalize ["family"] (effects.graph {
+      operation = invoke {
+        target = service "observe";
+        through = serviceBinding;
+        method = "observe";
+        inherit family;
+        inputs = {};
+        group = "services";
+      };
+    });
 in {
   normalized = effects.normalize ["nginx"] transition;
   reversed = effects.normalize ["nginx"] (effects.graph {
@@ -503,5 +515,6 @@ in {
     missingReadinessProducer
     unusedProviderReadiness
     oversizedProviderReadiness
+    familyPlan
     ;
 }

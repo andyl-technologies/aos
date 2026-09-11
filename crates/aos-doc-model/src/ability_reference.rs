@@ -32,6 +32,7 @@ pub const MAX_ABILITY_REFERENCE_BYTES: usize = 4 * 1024 * 1024;
 /// Returns an error if a built-in feature identifier is invalid.
 pub fn ability_reference_supported_features() -> Result<BTreeSet<RequiredFeature>> {
     [
+        aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
         "abilities-v1",
         "ability-effects-v1",
         aos_ability_model::PROVIDER_STATE_FORMAT_V1,

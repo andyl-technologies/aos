@@ -169,7 +169,7 @@ pub(crate) mod testutil;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -1278,7 +1278,9 @@ impl PackageCommand {
                 | PackageCommand::TestVerifyPackageAttestation { .. }
                 | PackageCommand::TestProducePackageAttestationQuote { .. }
                 | PackageCommand::Attest {
-                    command: AttestCommand::VerifyBootCommit { .. },
+                    command: AttestCommand::VerifyBootCommit { .. }
+                        | AttestCommand::VerifyRolloutBootCommit { .. }
+                        | AttestCommand::ReadUkiIdentitySection { .. },
                 }
                 | PackageCommand::LoadEbpfLsmPolicies { .. }
                 | PackageCommand::Eval { .. }
@@ -1438,6 +1440,29 @@ pub enum AttestCommand {
         #[arg(long = "expected-pcr11")]
         expected_pcr11: Option<String>,
     },
+    /// Verify native transaction and provider health before rollout finalization.
+    #[command(name = "__verify-rollout-boot-commit", hide = true)]
+    VerifyRolloutBootCommit {
+        /// Configuration generation that owns the protected transaction
+        #[arg(long)]
+        generation: u32,
+        /// Exact native ability transaction named by activation evidence
+        #[arg(long)]
+        transaction: String,
+        /// Authenticated running image generation
+        #[arg(long)]
+        running: u32,
+    },
+    /// Read one bounded identity section from an installed UKI.
+    #[command(name = "__read-uki-identity-section", hide = true)]
+    ReadUkiIdentitySection {
+        /// Installed regular-file UKI to inspect.
+        #[arg(long)]
+        uki: PathBuf,
+        /// Fixed identity section to emit as exact UTF-8 text.
+        #[arg(long, value_enum)]
+        section: UkiIdentitySection,
+    },
     /// Verify a package event log against a PCR 15 value or quote bundle
     Verify {
         /// Use system registry metadata
@@ -1488,6 +1513,24 @@ pub enum AttestCommand {
     },
 }
 
+/// Selects one bounded UKI text section used by early boot identity checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UkiIdentitySection {
+    /// Selects the measured kernel command line.
+    Cmdline,
+    /// Selects the measured operating-system release fields.
+    Osrel,
+}
+
+impl UkiIdentitySection {
+    fn as_pe_name(self) -> &'static str {
+        match self {
+            Self::Cmdline => ".cmdline",
+            Self::Osrel => ".osrel",
+        }
+    }
+}
+
 impl AttestCommand {
     fn is_system(&self) -> bool {
         match self {
@@ -1495,7 +1538,9 @@ impl AttestCommand {
             AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Quote { .. }
             | AttestCommand::Enroll { .. }
-            | AttestCommand::VerifyBootCommit { .. } => false,
+            | AttestCommand::VerifyBootCommit { .. }
+            | AttestCommand::VerifyRolloutBootCommit { .. }
+            | AttestCommand::ReadUkiIdentitySection { .. } => false,
         }
     }
 }
@@ -3889,6 +3934,34 @@ pub async fn run(
         );
     }
 
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::VerifyRolloutBootCommit {
+                generation,
+                transaction,
+                running,
+            },
+    } = command
+    {
+        let transaction = aos_ability_model::TransactionId(
+            aos_ability_model::LocalKey::new(transaction.clone())
+                .context("decoding rollout transaction identity")?,
+        );
+        return config_eval::verify_rollout_boot_commit(*generation, &transaction, *running);
+    }
+
+    if let PackageCommand::Attest {
+        command: AttestCommand::ReadUkiIdentitySection { uki, section },
+    } = command
+    {
+        let text = sysroot::read_uki_section_text(uki, section.as_pe_name())?;
+        let mut output = std::io::stdout().lock();
+        output
+            .write_all(text.as_bytes())
+            .context("writing UKI identity section")?;
+        return Ok(());
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -4167,6 +4240,16 @@ pub async fn run(
         PackageCommand::Attest {
             command: AttestCommand::VerifyBootCommit { .. },
         } => unreachable!("AttestCommand::VerifyBootCommit is handled before ApmConfig::load"),
+        PackageCommand::Attest {
+            command: AttestCommand::VerifyRolloutBootCommit { .. },
+        } => {
+            unreachable!("AttestCommand::VerifyRolloutBootCommit is handled before ApmConfig::load")
+        }
+        PackageCommand::Attest {
+            command: AttestCommand::ReadUkiIdentitySection { .. },
+        } => {
+            unreachable!("AttestCommand::ReadUkiIdentitySection is handled before ApmConfig::load")
+        }
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,

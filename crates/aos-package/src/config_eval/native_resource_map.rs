@@ -120,10 +120,19 @@ impl NativeResourceMap {
         let mut claimed_storage: BTreeMap<(&str, &str), &ResourceId> = BTreeMap::new();
         let mut claimed_policies: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         let mut claimed_postgresql_clusters: BTreeMap<&str, &ResourceId> = BTreeMap::new();
+        let mut claimed_image_rollout_hosts: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         for entry in &self.entries {
             validate_mapping(entry, &mut remaining_items)?;
 
             match &entry.qualification {
+                NativeResourceQualification::AbImageRollout { .. } => {
+                    claim_physical(
+                        &mut claimed_image_rollout_hosts,
+                        "machine",
+                        &entry.resource,
+                        "A/B image rollout host",
+                    )?;
+                }
                 NativeResourceQualification::ManagedConfiguration { destination, .. } => {
                     claimed_paths.push((destination, &entry.resource));
                 }
@@ -260,6 +269,11 @@ pub struct NativeOutputLocator {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum NativeResourceQualification {
+    /// Applies one checked single-host A/B image rollout request.
+    AbImageRollout {
+        /// Pins the exact predecessor, candidate, strategy, and retention window.
+        request: aos_ability_plan::AbRolloutRequest,
+    },
     /// Publishes a candidate file at one managed host destination.
     ManagedConfiguration {
         /// Names the canonical destination beneath `/etc` or `/var/lib`.
@@ -399,6 +413,32 @@ fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) 
     )?;
 
     match &mapping.qualification {
+        NativeResourceQualification::AbImageRollout { request } => {
+            consume_items(remaining_items, 12)?;
+            ensure!(
+                request.strategy == "single-host-ab-v1"
+                    && request.concurrency == 1
+                    && !request.predecessor.state_format.is_empty()
+                    && request.predecessor.state_format == request.candidate.state_format,
+                "native A/B rollout qualification is unsupported or incompatible"
+            );
+            for (label, value) in [
+                (
+                    "predecessor toplevel",
+                    request.predecessor.toplevel.as_str(),
+                ),
+                ("predecessor UKI", request.predecessor.uki.as_str()),
+                (
+                    "predecessor executor",
+                    request.predecessor.executor.as_str(),
+                ),
+                ("candidate toplevel", request.candidate.toplevel.as_str()),
+                ("candidate UKI", request.candidate.uki.as_str()),
+                ("candidate executor", request.candidate.executor.as_str()),
+            ] {
+                validate_string(value, label)?;
+            }
+        }
         NativeResourceQualification::ManagedConfiguration {
             destination,
             candidate,
@@ -831,6 +871,33 @@ mod tests {
     }
 
     #[test]
+    fn validation_allows_only_one_compatible_machine_rollout() {
+        NativeResourceMap::new(
+            digest("desired"),
+            vec![mapping("rollout", rollout_qualification())],
+        )
+        .expect("one compatible A/B rollout maps the machine");
+
+        let error = NativeResourceMap::new(
+            digest("desired"),
+            vec![
+                mapping("rollout-a", rollout_qualification()),
+                mapping("rollout-b", rollout_qualification()),
+            ],
+        )
+        .expect_err("two logical rollouts cannot control the same machine");
+        assert!(error.to_string().contains("A/B image rollout host"));
+
+        let mut invalid = mapping("invalid", rollout_qualification());
+        let NativeResourceQualification::AbImageRollout { request } = &mut invalid.qualification
+        else {
+            panic!("fixture remains an A/B image rollout");
+        };
+        request.concurrency = 2;
+        assert!(NativeResourceMap::new(digest("desired"), vec![invalid]).is_err());
+    }
+
+    #[test]
     fn validation_rejects_noncanonical_reserved_paths_and_non_service_units() {
         for destination in [
             "etc/nginx.conf",
@@ -1006,6 +1073,24 @@ mod tests {
             destination: destination.to_string(),
             candidate: locator(),
             resource_reference: locator(),
+        }
+    }
+
+    fn rollout_qualification() -> NativeResourceQualification {
+        let identity = |seed: char| aos_ability_plan::RolloutImageIdentity {
+            toplevel: format!("/nix/store/{}-system", seed.to_string().repeat(32)),
+            uki: format!("EFI/Linux/aos-{seed}+3.efi"),
+            executor: format!("/nix/store/{}-executor", seed.to_string().repeat(32)),
+            state_format: "7".into(),
+        };
+        NativeResourceQualification::AbImageRollout {
+            request: aos_ability_plan::AbRolloutRequest {
+                strategy: "single-host-ab-v1".into(),
+                concurrency: 1,
+                predecessor: identity('a'),
+                candidate: identity('b'),
+                retention_expires_at_millis: 2_000,
+            },
         }
     }
 

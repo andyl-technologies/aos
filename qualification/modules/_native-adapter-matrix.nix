@@ -7,6 +7,7 @@
   invalidatedBy ? ["subject" "policy" "executor" "environment"],
   regressions ? [
     "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
@@ -19,11 +20,12 @@
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   allowedRegressions = [
     "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
-  expectedSurfaceDigest = "7d0dff058d2b4165e7b6af56e9656fecd789babe6d3fc182fa031f7f83a320fd";
+  expectedSurfaceDigest = "23371e64d59579c373175f20188680f2d8d0de77dbef1d96a8c9a5cc5a5e2367";
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0
@@ -38,8 +40,8 @@
     schema = "aos.qualification.native-adapter-subject/v1";
     matrix_schema = "aos.qualification.native-adapter-matrix/v1";
     surface_digest = "sha256:${surfaceDigest}";
-    adapter_count = 11;
-    method_count = 38;
+    adapter_count = 12;
+    method_count = 47;
     scenario_count = 28;
     interfaces =
       map (adapter: {
@@ -157,6 +159,7 @@
       "bootstrap-manager"
       "host-filesystem"
       "host-manager"
+      "host-machine"
       "host-process"
       "host-resource"
       "kubernetes-cluster"
@@ -198,12 +201,12 @@
     && surface.subject_schema == "aos.qualification.native-adapter-subject/v1"
     && surface.limits
     == {
-      max_adapters = 11;
-      max_methods = 38;
+      max_adapters = 12;
+      max_methods = 47;
       max_scenarios = 28;
     }
-    && builtins.length surface.adapters == 11
-    && builtins.length adapterMethods == 38
+    && builtins.length surface.adapters == 12
+    && builtins.length adapterMethods == 47
     && builtins.length surface.scenarios == 28
     && unique (map (adapter: adapter.adapter) surface.adapters)
     && unique (map (adapter: "${adapter.interface_name}/abi-${toString adapter.interface_abi}/${adapter.interface_descriptor}") surface.adapters)

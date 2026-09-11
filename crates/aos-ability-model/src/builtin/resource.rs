@@ -5,7 +5,7 @@
 //! values behind native execution boundaries while preserving one stable
 //! built-in import surface.
 
-mod common;
+pub(crate) mod common;
 mod credential;
 mod endpoint;
 mod network_policy;

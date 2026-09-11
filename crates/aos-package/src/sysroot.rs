@@ -75,7 +75,7 @@ use crate::types::{
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads};
 
-mod image_rollout;
+pub(crate) mod image_rollout;
 
 use image_rollout::{
     is_qualified_image_rollout, preflight_image_selection, qualified_rollout_record,
@@ -120,6 +120,7 @@ const IMMUTABLE_ACTIVE_DB_CERTS: &str = "/usr/lib/aos/image-trust/active-db-cert
 const MAX_CONFIGURED_DB_CERTIFICATES: usize = 32;
 const MAX_INSTALLED_UKI_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_OS_RELEASE_BYTES: u64 = 64 * 1024;
+const MAX_UKI_IDENTITY_SECTION_BYTES: usize = 64 * 1024;
 const SUPPORTED_RECOVERY_ABI: u32 = 1;
 
 /// Recoverable intent record for publishing a generation as current.
@@ -1573,6 +1574,21 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
 /// rename UKIs, so they use this narrow bracket and restore read-only state on
 /// both success and failure.
 fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
+    with_writable_boot_controlled(remount_boot, action)
+}
+
+/// Runs one ESP mutation with caller-supplied bounded remount operations.
+///
+/// The physical mount identity is authenticated before making the ESP writable,
+/// and the read-only restoration is attempted even when the mutation fails.
+///
+/// # Errors
+///
+/// Returns an error when mount validation, either remount, or the action fails.
+pub(crate) fn with_writable_boot_controlled<T>(
+    remount: impl FnMut(&Path, bool) -> Result<()>,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     let layout = ImageSlotLayout::from_running_toplevel()?;
     validate_boot_esp_mount(
         Path::new(BOOT_ROOT),
@@ -1580,7 +1596,7 @@ fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
         &layout.esp_devices,
         true,
     )?;
-    with_writable_boot_using(Path::new(BOOT_ROOT), remount_boot, action)
+    with_writable_boot_using(Path::new(BOOT_ROOT), remount, action)
 }
 
 fn validate_boot_esp_mount(
@@ -2255,7 +2271,7 @@ fn validate_known_good_recovery(
 }
 
 /// Reads a required PE section as UTF-8 text after removing section padding.
-fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
+pub(crate) fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
     let metadata = std::fs::symlink_metadata(uki)
         .with_context(|| format!("inspecting installed UKI {}", uki.display()))?;
     if !metadata.file_type().is_file()
@@ -2271,11 +2287,23 @@ fn read_uki_section_text(uki: &Path, section: &str) -> Result<String> {
     }
     let bytes = crate::registry_ops::pe_section(&image, section)?
         .with_context(|| format!("UKI {} has no {section} section", uki.display()))?;
+    ensure!(
+        bytes.len() <= MAX_UKI_IDENTITY_SECTION_BYTES,
+        "{section} in {} exceeds its {}-byte identity bound",
+        uki.display(),
+        MAX_UKI_IDENTITY_SECTION_BYTES
+    );
     let content_end = bytes
         .iter()
         .rposition(|byte| *byte != 0)
         .map_or(0, |index| index + 1);
-    let text = std::str::from_utf8(&bytes[..content_end])
+    let content = &bytes[..content_end];
+    ensure!(
+        !content.contains(&0),
+        "{section} in {} contains an interior NUL byte",
+        uki.display()
+    );
+    let text = std::str::from_utf8(content)
         .with_context(|| format!("{section} in {} is not UTF-8", uki.display()))?;
     Ok(text.to_string())
 }
@@ -2355,6 +2383,7 @@ fn cleanup_replaced_slot_ukis(
     slot: ImageSlot,
     keep_recorded: &str,
 ) -> Result<()> {
+    let retained_entries = image_rollout::retained_uki_entry_ids(&layout.boot_root)?;
     let keep_entry = stable_uki_entry_id(
         Path::new(keep_recorded)
             .file_name()
@@ -2370,7 +2399,9 @@ fn cleanup_replaced_slot_ukis(
         let Ok(entry) = resolve_installed_uki_entry(&layout.boot_root, &previous.uki_path) else {
             continue;
         };
-        if stable_uki_entry_id(&entry)? == keep_entry {
+        if stable_uki_entry_id(&entry)? == keep_entry
+            || retained_entries.contains(&stable_uki_entry_id(&entry)?)
+        {
             continue;
         }
         let source = linux.join(entry);
@@ -2546,12 +2577,18 @@ where
         recovery.is_some(),
     )?;
 
-    // Copy the lower-backed running evaluator before the inactive slot is
-    // overwritten. The target closure arrived through Nix and is copied too,
-    // making both baselib roots physical `/var` retention rather than dangling
-    // symlinks into whichever immutable root happens to be mounted.
+    // Copy every lower-backed running identity before the inactive slot is
+    // overwritten. The candidate closure arrived through Nix, but copying its
+    // exact identities is idempotent and ensures all ordinary image roots point
+    // into the persistent upper rather than a replaceable immutable lower.
     persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
+    persist_store_closure_to_upper(&running.toplevel, upper_store)?;
+    if let Some(executor) = &running.native_executor_ref {
+        persist_store_closure_to_upper(executor, upper_store)?;
+    }
     persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
+    persist_store_closure_to_upper(&package.store_path, upper_store)?;
+    persist_store_closure_to_upper(&native_executor_ref, upper_store)?;
     if let Some(artifact) = &recovery {
         let publication = RecoveryPublication {
             target: target_slot,
@@ -2639,13 +2676,9 @@ where
     )?;
     replicate_boot_partitions(layout)?;
     state.recovery_pending = None;
-    crate::store::create_baselib_gc_root(
-        &profile.join(format!("image-gen-{number}")),
-        module_abi,
-        &evaluator_ref,
-    )?;
+    crate::store::create_image_gc_roots(&profile.join(format!("image-gen-{number}")), &generation)?;
     let configs = load_generation_state_readonly(system_profile)?;
-    crate::store::reconcile_baselib_gc_roots(profile, &state, &configs)?;
+    crate::store::reconcile_image_gc_roots(profile, &state, &configs)?;
     select_image_default_with(profile, &mut state, number, &entry_id, rollout, select)?;
     cleanup_replaced_slot_ukis(layout, &state, target_slot, &installed_uki)?;
     replicate_boot_partitions(layout)?;
@@ -5693,6 +5726,83 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry_ops::test_support::synthetic_pe_section;
+
+    #[test]
+    fn uki_identity_section_reader_removes_only_nul_padding() {
+        let temporary = TempDir::new().unwrap();
+        let uki = temporary.path().join("identity.efi");
+        let section = b"ID=AOS\nVERSION_ID=1\n\0\0";
+        std::fs::write(
+            &uki,
+            synthetic_pe_section(b".osrel", section.len() as u32, section),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_uki_section_text(&uki, ".osrel").unwrap(),
+            "ID=AOS\nVERSION_ID=1\n"
+        );
+    }
+
+    #[test]
+    fn uki_identity_section_reader_rejects_malformed_and_duplicate_sections() {
+        let temporary = TempDir::new().unwrap();
+        let malformed_path = temporary.path().join("malformed.efi");
+        let duplicate_path = temporary.path().join("duplicate.efi");
+        let pe_offset = 0x40_usize;
+        let coff = pe_offset + 4;
+        let section_table = coff + 20 + 112;
+
+        let mut malformed = synthetic_pe_section(b".cmdline", 5, b"root\0");
+        malformed[section_table + 20..section_table + 24].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&malformed_path, malformed).unwrap();
+
+        let mut duplicate = synthetic_pe_section(b".osrel", 5, b"ID=A\n");
+        duplicate[coff + 2..coff + 4].copy_from_slice(&2_u16.to_le_bytes());
+        let repeated_header = duplicate[section_table..section_table + 40].to_vec();
+        duplicate.splice(section_table + 40..section_table + 40, repeated_header);
+        std::fs::write(&duplicate_path, duplicate).unwrap();
+
+        assert!(read_uki_section_text(&malformed_path, ".cmdline").is_err());
+        assert!(read_uki_section_text(&duplicate_path, ".osrel").is_err());
+    }
+
+    #[test]
+    fn uki_identity_section_reader_rejects_interior_nul_for_both_sections() {
+        let temporary = TempDir::new().unwrap();
+
+        for section in [".cmdline", ".osrel"] {
+            let uki = temporary.path().join(section.trim_start_matches('.'));
+            let content = b"first\0second\0";
+            std::fs::write(
+                &uki,
+                synthetic_pe_section(section.as_bytes(), content.len() as u32, content),
+            )
+            .unwrap();
+
+            assert!(read_uki_section_text(&uki, section).is_err());
+        }
+    }
+
+    #[test]
+    fn uki_identity_section_reader_enforces_file_and_section_bounds() {
+        let temporary = TempDir::new().unwrap();
+        let oversized_file = temporary.path().join("oversized-file.efi");
+        let oversized_section = temporary.path().join("oversized-section.efi");
+
+        let file = std::fs::File::create(&oversized_file).unwrap();
+        file.set_len(MAX_INSTALLED_UKI_BYTES + 1).unwrap();
+        let section = vec![b'x'; MAX_UKI_IDENTITY_SECTION_BYTES + 1];
+        std::fs::write(
+            &oversized_section,
+            synthetic_pe_section(b".cmdline", section.len() as u32, &section),
+        )
+        .unwrap();
+
+        assert!(read_uki_section_text(&oversized_file, ".cmdline").is_err());
+        assert!(read_uki_section_text(&oversized_section, ".cmdline").is_err());
+    }
 
     #[test]
     fn parses_only_complete_pem_certificate_sets() {
@@ -6267,12 +6377,12 @@ mod tests {
                 )
                 .unwrap();
                 std::fs::write(
-                image_store.join(format!("recovery-{target_name}.conf")),
-                format!(
+                    image_store.join(format!("recovery-{target_name}.conf")),
+                    format!(
                     "title AOS Recovery {target_name}\nefi /EFI/AOS/recovery-{target_name}.efi\n"
                 ),
-            )
-            .unwrap();
+                )
+                .unwrap();
                 let known_good = format!("known-good-recovery-{opposite_name}").into_bytes();
                 std::fs::write(
                     recovery_dir.join(format!("recovery-{opposite_name}.efi")),

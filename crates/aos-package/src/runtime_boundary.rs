@@ -154,7 +154,10 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::Options { command } => options_require_host_runtime(command),
         PackageCommand::Schema { system, .. } => *system,
         PackageCommand::Attest { command } => match command {
-            AttestCommand::Quote { .. } | AttestCommand::VerifyBootCommit { .. } => true,
+            AttestCommand::Quote { .. }
+            | AttestCommand::VerifyBootCommit { .. }
+            | AttestCommand::VerifyRolloutBootCommit { .. }
+            | AttestCommand::ReadUkiIdentitySection { .. } => true,
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Enroll { .. } => false,
         },
@@ -222,6 +225,8 @@ fn is_read_only(command: &PackageCommand) -> bool {
             AttestCommand::Verify { .. }
                 | AttestCommand::Catalog { .. }
                 | AttestCommand::VerifyBootCommit { .. }
+                | AttestCommand::VerifyRolloutBootCommit { .. }
+                | AttestCommand::ReadUkiIdentitySection { .. }
         ),
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),

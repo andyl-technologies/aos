@@ -492,11 +492,7 @@ pub(in crate::registry_ops) fn verity_expose_manifest(root_hash: &str) -> Publis
     }
 }
 
-pub(in crate::registry_ops) fn synthetic_pe_section(
-    name: &[u8],
-    virtual_size: u32,
-    raw: &[u8],
-) -> Vec<u8> {
+pub(crate) fn synthetic_pe_section(name: &[u8], virtual_size: u32, raw: &[u8]) -> Vec<u8> {
     assert!(name.len() <= 8);
     let pe_offset = 0x40_usize;
     let optional_size = 112_usize;

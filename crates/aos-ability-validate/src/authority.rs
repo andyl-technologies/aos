@@ -168,6 +168,11 @@ pub(crate) const fn required_target_access(family: &OperationFamily) -> AccessMo
         }
         | OperationFamily::HostNetworkPolicy {
             action: NetworkPolicyAction::Observe,
+        }
+        | OperationFamily::ImageRollout {
+            action:
+                aos_ability_model::ImageRolloutAction::ObserveBoot
+                | aos_ability_model::ImageRolloutAction::ObserveHealth,
         } => AccessMode::Read,
         OperationFamily::KubernetesObject {
             action: KubernetesObjectAction::Observe,
@@ -192,6 +197,7 @@ pub(crate) const fn required_target_access(family: &OperationFamily) -> AccessMo
         | OperationFamily::HostNetworkPolicy {
             action: NetworkPolicyAction::Apply | NetworkPolicyAction::Remove,
         }
+        | OperationFamily::ImageRollout { .. }
         | OperationFamily::ReleaseResource => AccessMode::ExclusiveWrite,
     }
 }

@@ -63,9 +63,30 @@ impl AbilityActivationInput {
             "native-platform-policy-v1".to_string(),
             "native-resource-map-v2".to_string(),
         ];
+        let rollout_planning_features = vec![
+            aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE.to_string(),
+            FEATURE_ABILITIES_V1.to_string(),
+            FEATURE_ABILITY_EFFECTS_V1.to_string(),
+        ];
+        let rollout_execution_features = vec![
+            aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE.to_string(),
+            FEATURE_ABILITIES_V1.to_string(),
+            FEATURE_ABILITY_EFFECTS_V1.to_string(),
+            "native-resource-map-v2".to_string(),
+        ];
+        let rollout_platform_execution_features = vec![
+            aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE.to_string(),
+            FEATURE_ABILITIES_V1.to_string(),
+            FEATURE_ABILITY_EFFECTS_V1.to_string(),
+            "native-platform-policy-v1".to_string(),
+            "native-resource-map-v2".to_string(),
+        ];
         if self.required_features != planning_features
             && self.required_features != execution_features
             && self.required_features != platform_execution_features
+            && self.required_features != rollout_planning_features
+            && self.required_features != rollout_execution_features
+            && self.required_features != rollout_platform_execution_features
         {
             bail!(
                 "ability activation requires the exact planning or native-execution feature sequence"

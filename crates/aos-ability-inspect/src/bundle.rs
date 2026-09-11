@@ -258,7 +258,9 @@ impl InspectionBundle {
         }
         validate_artifact_consumption_edges(&self.artifact_consumption_edges)?;
 
+        // This reader-owned set cannot be widened by bundle-authored input.
         let supported_features = [
+            aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
             "abilities-v1",
             "ability-effects-v1",
             aos_ability_model::PROVIDER_STATE_FORMAT_V1,
