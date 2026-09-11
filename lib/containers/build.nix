@@ -12,6 +12,7 @@
   systemIdentity,
   definitionAttribute,
 }: let
+  buildPackages = pkgs.buildPackages;
   releaseIdentity =
     systemIdentity.release
     or {
@@ -49,7 +50,8 @@
 
   auditRoots = uniqueByPath (builtins.concatMap (layer: layer.roots) container.layers);
   runtimeAudit = import ../build/runtime-closure-audit.nix {
-    inherit pkgs lib;
+    inherit lib;
+    pkgs = buildPackages;
     name = "container-${container.name}";
     roots = auditRoots;
     inherit (container.budgets) maxClosureMiB maxDevelopmentPayloadMiB;
@@ -245,7 +247,8 @@
       rootPaths = auditRoots;
     };
     facadeLayer = import ./facade-layer.nix {
-      inherit lib pkgs oci referenceGraph;
+      inherit lib oci referenceGraph;
+      pkgs = buildPackages;
       packageRoots = container.packageRoots;
       explicit = container.filesystem.facade;
       expectedCollisions = container.filesystem.allowedFacadeCollisions;
@@ -389,25 +392,25 @@
     platformBuild = repeat;
   };
   publicationInputs = import ./publication-inputs.nix {
-    inherit pkgs;
+    pkgs = buildPackages;
     pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs";
     index = primary.ociIndex;
     evidenceLayout = evidence;
   };
   publicationInputsRepeat = import ./publication-inputs.nix {
-    inherit pkgs;
+    pkgs = buildPackages;
     pname = "aos-container-${container.name}-${container.platform.architecture}-publication-inputs-repeat";
     index = repeat.ociIndex;
     evidenceLayout = evidenceRepeat;
   };
-  reproducibility = pkgs.mkDerivation {
+  reproducibility = buildPackages.mkDerivation {
     pname = "aos-container-${container.name}-${container.platform.architecture}-reproducibility";
     version = "1";
     src = null;
     buildDeps = [
-      pkgs.coreutils
-      pkgs.diffutils
-      pkgs.jq
+      buildPackages.coreutils
+      buildPackages.diffutils
+      buildPackages.jq
       primary.image
       repeat.image
       primary.dockerArchive
@@ -486,11 +489,11 @@
       })
       container.layers;
   };
-  metadata = pkgs.mkDerivation {
+  metadata = buildPackages.mkDerivation {
     pname = "aos-container-${container.name}-metadata";
     version = "1";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.jq];
+    buildDeps = [buildPackages.coreutils buildPackages.jq];
     outputChecks.out = {};
     inherit metadataSpec;
     unsafeDiscardReferences.out = true;
