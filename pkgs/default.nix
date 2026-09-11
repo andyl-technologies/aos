@@ -1596,7 +1596,7 @@
             if stdenv.hostPlatform.isDarwin
             then darwinGcc
             else if stdenv.isCross && stdenv.hostPlatform.isLinux
-            then linuxHostedGcc
+            then linuxHostedCc
             else stdenv.gcc
           ))
         // {version = "16.2.0";};

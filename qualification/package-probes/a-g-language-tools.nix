@@ -3,6 +3,7 @@
   mkCCompilerProbe = {
     package,
     executable,
+    unwrapped ? false,
   }:
     testing.mkQualificationPackageProbe {
       name = package;
@@ -11,7 +12,10 @@
         inherit package;
         primary = {
           input = "A C program that computes and prints an integer result.";
-          operation = "Compile the program with ${executable}, then execute the generated binary.";
+          operation =
+            if unwrapped
+            then "Compile an object with ${executable}, link it with the AOS compiler wrapper, and execute the binary."
+            else "Compile the program with ${executable}, then execute the generated binary.";
           expected = "The compiler succeeds and the binary prints the fixed result.";
           files."valid.c" = ''
             #include <stdio.h>
@@ -21,20 +25,40 @@
                 return printf("compiler result: %d\n", values[0] + values[1]) < 0;
             }
           '';
-          steps = [
-            {
-              argv = ["@out@/bin/${executable}" "valid.c" "-o" "compiled-program"];
-              exit_code = 0;
-              stdout.exact = "";
-              stderr.exact = "";
-            }
-            {
-              argv = ["@work@/primary/compiled-program"];
-              exit_code = 0;
-              stdout.exact = "compiler result: 42\n";
-              stderr.exact = "";
-            }
-          ];
+          steps =
+            (
+              if unwrapped
+              then [
+                {
+                  argv = ["@out@/bin/${executable}" "-c" "valid.c" "-o" "compiled-program.o"];
+                  exit_code = 0;
+                  stdout.exact = "";
+                  stderr.exact = "";
+                }
+                {
+                  argv = ["@cc@" "compiled-program.o" "-o" "compiled-program"];
+                  exit_code = 0;
+                  stdout.exact = "";
+                  stderr.exact = "";
+                }
+              ]
+              else [
+                {
+                  argv = ["@out@/bin/${executable}" "valid.c" "-o" "compiled-program"];
+                  exit_code = 0;
+                  stdout.exact = "";
+                  stderr.exact = "";
+                }
+              ]
+            )
+            ++ [
+              {
+                argv = ["@work@/primary/compiled-program"];
+                exit_code = 0;
+                stdout.exact = "compiler result: 42\n";
+                stderr.exact = "";
+              }
+            ];
           artifacts = [];
         };
         bad_input = {
@@ -312,6 +336,8 @@ in {
   gccUnwrapped = mkCCompilerProbe {
     package = "gccUnwrapped";
     executable = "gcc";
+    # The wrapper supplies AOS libc paths and the runtime interpreter at link time.
+    unwrapped = true;
   };
 
   go = mkGoProbe "go";
