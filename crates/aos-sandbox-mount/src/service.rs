@@ -174,8 +174,7 @@ impl<W: MountWorker> MountService<W> {
                 (
                     *header.request_id(),
                     ceiling,
-                    self.broker
-                        .inventory_resources_for_version(session.version()),
+                    self.broker.inventory_resources(),
                 )
             }
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
@@ -222,8 +221,7 @@ impl<W: MountWorker> MountService<W> {
                 (
                     *header.request_id(),
                     header.maximum_response_bytes(),
-                    self.broker
-                        .inventory_destination_slots_for_version(session.version()),
+                    self.broker.inventory_destination_slots(),
                 )
             }
             BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
@@ -525,7 +523,7 @@ mod tests {
         ] {
             let hello = BrokerClientHello {
                 protocol_major: 1,
-                protocol_minor: 6,
+                protocol_minor: 0,
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 maximum_response_bytes: 8192,
                 required_methods: vec![unavailable.into()],
@@ -554,7 +552,7 @@ mod tests {
 
         let hello = BrokerClientHello {
             protocol_major: 1,
-            protocol_minor: 6,
+            protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 8192,
             required_methods: [
@@ -583,6 +581,6 @@ mod tests {
             &methods,
         )
         .unwrap();
-        assert_eq!(session.version(), ProtocolVersion::new(1, 6));
+        assert_eq!(session.version(), ProtocolVersion::new(1, 0));
     }
 }

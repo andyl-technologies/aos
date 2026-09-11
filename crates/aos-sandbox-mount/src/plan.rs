@@ -21,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{MountError, Result};
 
 const MAGIC: &[u8; 8] = b"AOSMNT01";
-const VERSION: u16 = 6;
+const VERSION: u16 = 1;
 const FIXED_PLAN_BYTES: usize =
     8 + 2 + 1 + 1 + (4 * 8) + (2 * 16) + 32 + (18 * 8) + (2 * 16) + 8 + 32;
 const CHECKSUM_BYTES: usize = 32;
@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_rejects_the_ephemeral_v5_plan_version() {
+    fn final_v1_helper_rejects_an_unknown_plan_version() {
         let mut encoded = plan().encode().unwrap();
         encoded[8..10].copy_from_slice(&5_u16.to_le_bytes());
         let payload_length = encoded.len() - CHECKSUM_BYTES;

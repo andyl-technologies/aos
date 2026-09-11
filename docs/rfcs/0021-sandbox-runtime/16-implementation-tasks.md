@@ -437,12 +437,11 @@ completes. The Git history remains authoritative for code details.
   cross-boot, or nonreciprocal edges, and descriptor-store keys are canonical
   to mount handles. Bounded tombstone retirement remains open.
 - `0f7688335` — foundation toward `SBX-BPROTO-04`, `SBX-HOST-01`, and
-  `SBX-MOUNT-01`: host and mount protocol 1.1 carries an exact bounded signed
+  `SBX-MOUNT-01`: Host 1.1 and exact Mount 1.0 carry an exact bounded signed
   plan/lease quartet as explicitly untrusted input; effect methods fail closed
-  without the negotiated feature while legacy 1.0 remains
-  observation/inventory-only. Broker signature verification, semantic matching,
-  durable intersection admission, and immediate pre-effect expiry checks remain
-  open.
+  without the negotiated feature. Broker signature verification, semantic
+  matching, durable intersection admission, and immediate pre-effect expiry
+  checks remain open.
 - `d60256506` — foundation toward `SBX-BPROTO-04` and `SBX-MOUNT-01`: the mount
   audience now verifies protected signed-plan and ownership-lease anchors,
   commits exact catalog/request/lease intersections under a node-local MAC,
@@ -2549,10 +2548,10 @@ qualification is claimed for this protocol/publication increment.
 The Host broker can now export a launched payload's root and namespaces
 directly to the privileged Mount broker, without sending those descriptors
 through the node controller. Host protocol 1.3 adds a RootMount-only query
-with an exact retained-scope grant. Mount protocol 1.2 adds a read-only catalog
-preparation request: the controller supplies a prospective Mount operation and
-the complete authorized Host query, Mount performs the Host exchange, and the
-controller receives only the resulting opaque catalog commitment. Existing
+with an exact retained-scope grant. Exact Mount protocol 1.0 includes a
+read-only catalog preparation request: the controller supplies a prospective
+Mount operation and the complete authorized Host query, Mount performs the Host
+exchange, and the controller receives only the resulting opaque catalog commitment. Existing
 controller Host observations retain their two-descriptor protocol.
 
 The deployed Host socket gives the root group access without adding a
@@ -2572,12 +2571,12 @@ format consumes its already pinned sources and slots but does not create them.
 
 Validation passes the Host, Mount, Linux transport, protocol, and core crate
 suites, strict Clippy, formatting, diff checks, and the local-identity VM
-fixture. Preparation regressions cover 1.2-only negotiation, nested request
-and authority binding, live descriptor-backed resolution, exact refresh, and
-changed-scope rejection. The root-only VM exercises the complete five-FD Host
-exchange and prepared catalog with kernel descriptor identities. The synthetic
-responder does not qualify Host launch attestation, production catalog
-publication, controller plan signing, or end-to-end attachment replay.
+fixture. Preparation regressions cover exact 1.0-only negotiation, nested
+request and authority binding, live descriptor-backed resolution, exact
+refresh, and changed-scope rejection. The root-only VM exercises the complete
+five-FD Host exchange and prepared catalog with kernel descriptor identities.
+The synthetic responder does not qualify Host launch attestation, production
+catalog publication, controller plan signing, or end-to-end attachment replay.
 
 ### Observed-to-signed namespace target allocation
 
@@ -2686,10 +2685,10 @@ claimed by this admission-only increment.
 ### Authenticated Mount Apply and durable success correlation
 
 The controller can now transmit an already durable current Mount attempt over a
-single-use Mount 1.2 client. The client requires signed-plan/lease negotiation,
-authenticates the actual hello and response writers against the configured
-service cgroup and credentials, and sends the byte-exact admitted authorization
-packet. Successful `MountResult` decoding rejects unknown fields, inner errors,
+single-use exact Mount 1.0 client. The client requires signed-plan/lease
+negotiation, authenticates the actual hello and response writers against the
+configured service cgroup and credentials, and sends the byte-exact admitted
+authorization packet. Successful `MountResult` decoding rejects unknown fields, inner errors,
 Apply-body substitution, and every mismatched attachment, view, source
 generation, state, or handle. CREATE handle derivation is shared by the
 protocol validator and privileged broker so the two sides cannot drift.
@@ -2721,13 +2720,13 @@ checks.
 ### Authenticated Mount resource inventory snapshot
 
 The controller can now query the complete `InventoryMountResources` table over
-a dedicated Mount 1.2 session. The client authenticates the actual hello and
+a dedicated Mount 1.0 session. The client authenticates the actual hello and
 response writers against the configured service execution, admits only the
 closed read-only method with an empty descriptor table, and validates every
 bounded resource, lifecycle, kernel identity, recipe, and replacement
 correlation before the response reaches controller state.
 
-The exact query and response become the latest durable `AOSMTI02` snapshot in
+The exact query and response become the latest durable `AOSMTI01` snapshot in
 journal namespace 15. Its response ceiling leaves explicit room below the
 journal's 16 MiB record-frame limit while carrying the protocol's complete
 1,024-row inventory. Snapshot replacement rejects broker journal rollback,
@@ -2802,8 +2801,9 @@ view and optional live incarnation, descriptor, destination slot, consistency,
 mutation, closed mount attributes, and lease. Construction and decoding reject
 zero sentinels, wrong descriptor roles, mutation/read-only mismatches, missing
 `nosuid` or `nodev`, and invalid lease intervals. Mount inventory controller
-commitments advance to domain v3 and include the exact attachment desired-state
-namespace, so any later desired mutation makes a pre-mutation snapshot stale.
+commitments use the sole current domain v1 and include the exact attachment
+desired-state namespace, so any later desired mutation makes a pre-mutation
+snapshot stale.
 
 This advances `SBX-VIEW-01` but does not complete it: durable source handles,
 view-revision publication, lease-expiry scheduling, realization planning,
@@ -2848,12 +2848,11 @@ does not manufacture or extend lease authority. Source, generation, recursive,
 and lease substitutions fail closed across protocol, authorization, result,
 catalog, durable broker state, and reconciliation tests.
 
-The changed canonical Mount semantics, static and Host-backed catalog
-commitments, sealed helper plans, and durable broker-resource envelope advance
-their embedded format versions. Older durable resource envelopes are not
-silently decoded under the stronger schema. This corrects Mount 1.2 on this
-unmerged implementation branch; it does not claim a migration path from an
-already deployed Mount resource journal.
+The canonical Mount semantics, exact prepared catalog commitments, sealed
+helper plans, and durable broker-resource envelope use their sole version-one
+encodings. Unknown format versions fail closed. This finalizes exact Mount 1.0
+on this unmerged implementation branch; it does not claim a migration path from
+an already deployed Mount resource journal.
 
 Validation passes all 266 sandbox unit tests, its downstream public API test,
 and 14 doctests; all 63 Mount broker unit tests, its helper integration test,
@@ -2924,11 +2923,10 @@ before a stale live completion is withheld.
 RELEASE now has an explicit catalogless path. It derives its fence and lifetime
 from the current target and must match a separately signed Mount plan, but it
 does not ask Host or Mount to reacquire namespace descriptors. Durable Mount
-attempts advance to `AOSMTA02`; a flag distinguishes the required catalog
+attempts use `AOSMTA01`; a flag distinguishes the required catalog
 commitment on CREATE, INSTALL, REPLACE, and DETACH from the required all-zero
 catalog field on RELEASE. The codec, canonical-semantics check, and success
-receipt validation reject action/catalog substitution and legacy `AOSMTA01`
-records rather than silently reinterpreting them.
+receipt validation reject action/catalog substitution.
 
 This closes action derivation and first-issue execution, not attachment
 readiness or crash replay. A pending exact attempt still needs authenticated
@@ -2958,8 +2956,9 @@ commitment all remain explicit durable evidence.
 
 Journal namespace 17 retains bounded generation history and validates every
 desired-state and namespace-allocation cross-reference on replay. The Mount
-inventory controller-state commitment advances to domain v4 and includes this
-namespace, so recording verification necessarily stales its source inventory.
+inventory controller-state commitment uses the sole current domain v1 and
+includes this namespace, so recording verification necessarily stales its
+source inventory.
 A later authenticated inventory yields `Ready` only when the exact current
 desired resource reproduces the durable record under the same live target.
 Missing or changed verified state reports a closed verification conflict rather
@@ -2984,7 +2983,7 @@ hermetic rerun passed without changing source or test scope.
 The controller can now resume one already admitted attachment Mount operation
 after losing its in-memory dispatch token. Recovery begins only from a current
 attachment reconciliation whose authenticated complete inventory reports the
-exact local request as pending. It loads the immutable `AOSMTA02` attempt by
+exact local request as pending. It loads the immutable `AOSMTA01` attempt by
 request ID and current namespace-allocation reference, checks the inventory's
 derived or supplied Mount handle, and preserves the original action, Apply body,
 request identity, semantic commitment, and exclusive BOOTTIME deadline.
@@ -3046,8 +3045,8 @@ bounded scan, so an orphaned or rewritten reference blocks reconciliation
 before broker I/O. A view with a present attachment cannot be released. After
 attachment release, view release additionally requires a fresh authenticated
 Mount inventory proving that no physical resource for any revision of that
-view remains; the Mount controller-state commitment advances to domain v5 and
-now includes the full view-revision namespace.
+view remains; the Mount controller-state commitment uses the sole current
+domain v1 and includes the full view-revision namespace.
 
 Focused validation passes all 339 sandbox unit tests, three downstream public
 API tests, and 14 doctests with one test thread. Strict crate-local Clippy with
@@ -3064,12 +3063,12 @@ remain.
 
 The controller can now create a logical destination slot only while retaining
 current authority for the sandbox namespace that will own it. Journal namespace
-19 stores a fixed-size `AOSSLT01` creation record binding the slot ID to the
-exact sandbox, incarnation, and namespace generation derived from that live
-target. A compare-and-swap successor can release the slot, after which its
-identity is a permanent tombstone and cannot be rebound to another target or
-resurrected. The record contains no host path or descriptor and grants no Mount
-authority.
+19 stores a fixed-size `AOSSLT01` creation record binding the slot ID and
+sandbox-specification descriptor to the exact sandbox, incarnation, and
+namespace generation derived from that live target. A compare-and-swap
+successor can release the slot, after which its identity is a permanent
+tombstone and cannot be rebound to another target or resurrected. The record
+contains no host path or descriptor and grants no Mount authority.
 
 Attachment admission now requires the named slot to be available and bound to
 the attachment's exact consumer. Restart validation checks every historical
@@ -3078,9 +3077,9 @@ rewritten, cross-incarnation, or cross-namespace slot references block ordinary
 reconciliation before broker I/O. A present attachment prevents slot release.
 After any attachment history, release additionally requires fresh authenticated
 Mount inventory proving that no physical resource still names the slot. The
-inventory controller-state commitment advances to domain v6 and includes the
-complete slot namespace, so slot creation or release immediately makes an older
-snapshot stale.
+inventory controller-state commitment uses the sole current domain v1 and
+includes the complete slot namespace, so slot creation or release immediately
+makes an older snapshot stale.
 
 Focused validation passes all 347 sandbox unit tests, four downstream public
 API tests, and 14 doctests with one test thread. Strict all-target/all-feature
@@ -3104,7 +3103,7 @@ survive restart and compaction; descriptor collisions, operation reuse,
 noncanonical bytes, malformed records, and count or retained-byte exhaustion
 fail closed before new state is admitted.
 
-Destination-slot records advance to the fixed-size `AOSSLT02` schema. Creation
+Destination-slot records use the sole fixed-size `AOSSLT01` schema. Creation
 derives the sandbox-spec descriptor from the retained current namespace target,
 requires that exact published specification to declare the slot ID, and binds
 the descriptor beside the sandbox, incarnation, and namespace generation.
@@ -3177,7 +3176,7 @@ VM qualification, and end-to-end attachment lifecycle coverage also remain.
 
 ### Signed Mount destination-slot authority
 
-Mount protocol 1.3 now exposes a signed destination-slot effect method and a
+Exact Mount protocol 1.0 exposes a signed destination-slot effect method and a
 separate peer-authenticated inventory method. Materialization carries the exact
 canonical sandbox specification, its independently reproduced descriptor, the
 declared slot ID, namespace generation, and current assignment fence. Reaping
@@ -3192,9 +3191,9 @@ slot, resource, and historical-fence field. Append-only broker verbs 29 and 30
 name materialization and reap, while Mount-local authenticated effect codes 6
 and 7 preserve those operations across journal recovery without crossing
 broker domains. Common signed-plan admission accepts each broker's registered
-contract without cross-domain version inheritance. Mount remains version-bound
-to its own plan, Storage is pinned to exact 1.0, and Network negotiates only its
-independently registered versions.
+contract without cross-domain version inheritance. Mount remains bound to its
+independently registered exact version, Storage is pinned to exact 1.0, and
+Network negotiates only its independently registered versions.
 
 The production Mount broker opens the existing private catalog root as the
 destination-slot anchor store. It atomically persists the signed assignment
@@ -3210,7 +3209,7 @@ draining resources prevent directory removal.
 Focused tests cover exact replay across broker restart, complete inventory,
 newer-authority teardown of an older immutable binding, historical-fence
 substitution, signature and semantic substitution, domain-separated effect
-record round trips, protocol-1.3-only method negotiation, and installed Mount
+record round trips, exact-protocol method negotiation, and installed Mount
 state blocking reap. The changed sandbox, portable core, common broker,
 protocol, and Mount crates pass 676 unit tests. Strict all-target/all-feature
 Clippy with warnings denied (excluding dependency linting), warnings-as-errors
@@ -3250,12 +3249,12 @@ Host scope custody is now keyed by sandbox, incarnation, and namespace
 generation rather than assignment generation. Both the volatile registry and
 the published entry reject a changed runtime handle, payload-scope handle,
 root, mount namespace, or user namespace under the same namespace generation,
-including across same-node assignment advancement and broker restart. Legacy
-static path-backed entries remain readable, while newly published entries
-explicitly omit reopenable Host namespace and root paths.
+including across same-node assignment advancement and broker restart. The sole
+exact prepared-entry schema omits reopenable Host namespace and root paths;
+legacy static path-backed entries are not readable.
 
-Focused tests cover deterministic source naming, static/prepared schema
-separation, stable ordered upsert, interrupted-next-file replacement, exact
+Focused tests cover deterministic source naming, final prepared-schema
+validation, stable ordered upsert, interrupted-next-file replacement, exact
 readback, private file mode, and catalog commitment changes. All 80
 host-runnable Mount unit tests and strict all-target/all-feature Clippy pass.
 
@@ -3269,7 +3268,7 @@ VM qualification, and end-to-end reconciliation remain.
 
 ### Durable controller destination-slot inventory
 
-The node controller can now authenticate Mount's complete protocol 1.3
+The node controller can now authenticate Mount's complete protocol 1.0
 destination-slot inventory and retain the exact query and response as its
 latest durable observation. The fixed `AOSDSI01` record commits the request
 identity, complete broker response, and a digest of the controller namespaces
@@ -3313,7 +3312,7 @@ qualification, and end-to-end attachment reconciliation remain.
 ### Durable signed controller destination-slot effects
 
 The node controller can now carry a reconciled materialize or reap decision
-through exact signed Mount 1.3 dispatch. It derives every portable request
+through exact signed Mount 1.0 dispatch. It derives every portable request
 field from the current logical slot, its retained canonical sandbox
 specification, fresh authenticated destination-slot inventory, and a live
 namespace target. A separately supplied signed plan must grant those exact
@@ -3337,9 +3336,9 @@ the actual Mount hello and response writers against the retained service
 cgroup, and accepts only a terminal receipt for the admitted request and exact
 resource. The controller commits that receipt before returning a live
 completion token. Attempt and completion records participate in the Mount
-inventory controller-state digest, now domain v7, so their admission
-immediately invalidates older planning snapshots. Startup validates both new
-namespaces and all logical, specification, namespace-target, attempt,
+inventory controller-state digest under the sole current domain v1, so their
+admission immediately invalidates older planning snapshots. Startup validates
+both new namespaces and all logical, specification, namespace-target, attempt,
 completion, and materialization cross-links. Request identities cannot cross
 between ordinary Mount attempts and destination-slot attempts.
 
@@ -3379,7 +3378,7 @@ sandbox-specification descriptor exclusively from the signed assignment. The
 target carries no Host process, root, cgroup, or namespace observation and
 therefore cannot claim runtime readiness.
 
-Logical slot admission and signed Mount 1.3 destination-slot effects now
+Logical slot admission and signed Mount 1.0 destination-slot effects now
 consume that assignment target. Their pre- and post-commit checks preserve one
 fixed deadline while allowing only an uninterrupted same-holder renewal chain
 with the identical canonical assignment. Revocation, holder replacement,
@@ -3388,7 +3387,7 @@ or expiry invalidates the live target. A caller that already holds a live
 runtime or namespace proof may deliberately discard its execution evidence and
 retain only the more limited assignment target.
 
-Durable destination-slot attempts use the new `AOSDSE02` record. It replaces
+Durable destination-slot attempts use the sole `AOSDSE01` record. It replaces
 the impossible pre-launch namespace-allocation reference with an exact
 runtime-authority binding revision and digest. Startup validates the complete
 runtime-authority namespace, requires the retained origin to be a bound holder,
@@ -3396,12 +3395,11 @@ and cross-checks its incarnation, epoch, desired generation, assignment digest,
 reserved namespace generation, and sandbox specification against the exact
 request. Recovery reacquires fresh assignment authority and proves an
 uninterrupted origin-to-current chain; durable bytes never reconstruct live
-authority. Existing `AOSDSE01` rows require migration rather than being
-reinterpreted under the stronger format.
+authority.
 
 Focused tests cover acquisition without Host I/O, fixed assignment-derived
 identities, same-holder renewal, revocation and rebind rejection, the complete
-version-two attempt codec, and the downstream public slot API. All 377 sandbox
+`AOSDSE01` attempt codec, and the downstream public slot API. All 377 sandbox
 unit tests, seven downstream integration tests, and 15 doctests pass. Strict
 all-target/all-feature crate-local Clippy, warnings-as-errors rustdoc, targeted
 Rust formatting, and diff checks pass. The hermetic
@@ -3445,7 +3443,7 @@ and end-to-end attachment reconciliation remain.
 
 ### Crash-recoverable stale destination-slot rematerialization
 
-Mount protocol 1.4 now carries an explicit `REMATERIALIZE` action for an exact
+Exact Mount protocol 1.0 carries an explicit `REMATERIALIZE` action for an exact
 stale ready destination-slot record. The controller derives a domain-separated
 operation ID from the logical slot, predecessor record digest, and current
 kernel boot. Its signed grant is resource-scoped to that predecessor while the
@@ -3464,12 +3462,10 @@ can distinguish initial materialization, pending replacement, completed
 replacement, and a later reap. Repeated host reboots can replace successive
 stale ready records without losing the original creation lineage.
 
-The durable Mount row advances to fixed `AOSMSL02` bytes, and controller
-destination-slot attempts advance to fixed `AOSDSE03` bytes so a later reap or
-rematerialization retains any prior replacement correlation. Older
-`AOSMSL01` and `AOSDSE02` records require migration and fail closed rather than
-being reinterpreted under the stronger formats. Broker verb and local effect
-codes remain append-only.
+The durable Mount row uses fixed `AOSMSL01` bytes, and controller
+destination-slot attempts use fixed `AOSDSE01` bytes so a later reap or
+rematerialization retains any prior replacement correlation. Broker verb and
+local effect codes remain append-only.
 
 Focused validation covers protocol action shape and resource-scoped semantics,
 inventory correlation shape and global operation uniqueness, deterministic
@@ -3636,7 +3632,7 @@ remain open.
 
 ### Authenticated Mount attachment-anchor inventory
 
-Mount protocol 1.5 now reports the broker-owned attachment anchor behind every
+Exact Mount protocol 1.0 reports the broker-owned attachment anchor behind every
 current-boot namespace generation that contains a Ready destination slot. Each
 strictly ordered row carries the sandbox, incarnation, namespace generation,
 boot identity, generation-directory device and inode, and kernel-unique mount
@@ -3644,24 +3640,22 @@ ID. A domain-separated handle commits that complete physical identity for later
 use in a Host launch plan. Response validation requires exactly one row for
 every current Ready generation, rejects orphan, duplicate, reordered,
 stale-boot, and slot-inconsistent rows, and independently recomputes every
-handle. Mount 1.4 remains wire compatible and rejects the new field rather than
-silently accepting incomplete anchor evidence.
+handle.
 
 The Mount broker revalidates each live slot pin and its fixed generation
 directory while it holds the destination-slot store, groups slots only when
-their anchor device and mount identity agree, and binds the response to the
-negotiated session version. The controller now queries 1.5, stores the exact
-authenticated response in its existing self-authenticating snapshot record,
-and exposes a logical-generation lookup over the validated anchor table.
-Retained 1.4 records remain recoverable for a one-way upgrade. A 1.5-to-1.4
-downgrade, slot change at the same journal sequence, or same-version anchor
-equivocation on the same boot at that sequence fails closed. A broker restart
-on a new boot may report those former Ready slots without current anchors.
+their anchor device and mount identity agree, and binds the response to exact
+Mount 1.0. The controller stores the exact authenticated response in its
+existing self-authenticating snapshot record and exposes a logical-generation
+lookup over the validated anchor table. A slot change at the same journal
+sequence or anchor equivocation on the same boot at that sequence fails closed.
+A broker restart on a new boot may report those former Ready slots without
+current anchors.
 
-Focused validation covers the frozen handle derivation, version separation,
-current-versus-stale boot completeness, physical cross-links, broker directory
-revalidation, controller lookup, one-way snapshot upgrade, downgrade rejection,
-same-sequence reboot recovery, and same-boot anchor equivocation. All 340
+Focused validation covers the frozen handle derivation, exact-version
+rejection, current-versus-stale boot completeness, physical cross-links,
+broker directory revalidation, controller lookup, same-sequence reboot
+recovery, and same-boot anchor equivocation. All 340
 controller, 186 core, 84 Mount, and 90 protocol library tests pass. The four
 changed crates also pass all-target, all-feature compilation, strict crate-local
 Clippy without dependency linting, warnings-as-errors rustdoc, Rust formatting,

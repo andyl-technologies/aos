@@ -22,9 +22,9 @@ use crate::{
 
 /// Bounds the fixed prospective Apply body nested in a preparation request.
 pub const MAXIMUM_MOUNT_CATALOG_INTENT_BYTES: usize = 16 * 1024;
-/// Bounds Mount 1.6 preparation above the largest authorized Host packet.
+/// Bounds Mount 1.0 preparation above the largest authorized Host packet.
 pub const MOUNT_CATALOG_PREPARATION_OVERHEAD_BYTES: usize = 32 * 1024;
-/// Maximum encoded Mount 1.6 preparation packet accepted before decoding.
+/// Maximum encoded Mount 1.0 preparation packet accepted before decoding.
 pub const MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES: usize =
     MAXIMUM_HOST_QUERY_PACKET_BYTES + MOUNT_CATALOG_PREPARATION_OVERHEAD_BYTES;
 
@@ -91,12 +91,12 @@ impl ValidatedMountCatalogPreparationResponse {
     }
 }
 
-/// Decodes a bounded Mount 1.6 catalog preparation request.
+/// Decodes a bounded Mount 1.0 catalog preparation request.
 ///
 /// # Errors
 ///
-/// Rejects malformed or oversized fields, old Mount sessions, a release
-/// action, missing Host authorization, non-Host-scope nested methods, or any
+/// Rejects malformed or oversized fields, a release action, missing Host
+/// authorization, non-Host-scope nested methods, or any
 /// request ID, deadline, or assignment substitution between the three layers.
 pub fn decode_mount_catalog_preparation(
     bytes: &[u8],
@@ -123,10 +123,6 @@ pub fn decode_mount_catalog_preparation(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version().minor() < 2 {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
-
     let mount_wire = request
         .mount_request
         .as_option()

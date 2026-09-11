@@ -33,10 +33,9 @@ pub use host_catalog_snapshot::{
 pub use inventory::{
     MAXIMUM_MOUNT_INVENTORY_RECORDS, ValidatedMountAssignmentBinding,
     ValidatedMountFaultCorrelation, ValidatedMountInventory, ValidatedMountInventoryRecord,
-    ValidatedMountInventorySource, ValidatedMountKernelObservation,
-    ValidatedMountOperationCorrelation, ValidatedMountPublicationCorrelation, ValidatedMountRecipe,
-    decode_mount_inventory_request, decode_mount_inventory_response_for_version,
-    encode_mount_inventory_response_for_version,
+    ValidatedMountKernelObservation, ValidatedMountOperationCorrelation,
+    ValidatedMountPublicationCorrelation, ValidatedMountRecipe, decode_mount_inventory_request,
+    decode_mount_inventory_response, encode_mount_inventory_response,
 };
 pub use mount_destination_slot::{
     MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS, MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS,
@@ -45,11 +44,8 @@ pub use mount_destination_slot::{
     ValidatedDestinationSlotOperation, ValidatedDestinationSlotReap,
     ValidatedDestinationSlotRequest, attachment_anchor_handle_v1,
     decode_destination_slot_inventory_request, decode_destination_slot_inventory_response,
-    decode_destination_slot_inventory_response_for_version, decode_destination_slot_request,
-    decode_destination_slot_response, decode_destination_slot_response_for_version,
-    encode_destination_slot_inventory_response,
-    encode_destination_slot_inventory_response_for_version, encode_destination_slot_response,
-    encode_destination_slot_response_for_version,
+    decode_destination_slot_request, decode_destination_slot_response,
+    encode_destination_slot_inventory_response, encode_destination_slot_response,
 };
 pub use mount_result::{
     ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
@@ -108,7 +104,7 @@ const OPAQUE_HANDLE_BYTES: usize = 32;
 const MAXIMUM_ATTACHMENTS: usize = 256;
 const MAXIMUM_RESOURCE_LIMITS: usize = 16;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
-const SOURCE_BINDING_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
+const MOUNT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 #[cfg(test)]
 fn immutable_source_handle_fixture() -> Vec<u8> {
@@ -738,9 +734,9 @@ pub fn decode_mount_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if header.protocol_version() != SOURCE_BINDING_PROTOCOL_VERSION {
+    if header.protocol_version() != MOUNT_PROTOCOL_VERSION {
         return Err(ProtocolValidationError::InvalidField(
-            "source binding requires Mount protocol 1.6",
+            "Mount protocol version",
         ));
     }
     let fence = validate_fence(
@@ -1728,7 +1724,7 @@ mod tests {
         let mut request = ApplyMountRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 6;
+        header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 101;

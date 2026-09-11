@@ -592,19 +592,24 @@ two-record completion; exact absence remains `AwaitFreshRepair` without a
 journal write. Recovery never converts that observer envelope into fresh
 mutation authority.
 
-Host- and mount-broker protocol 1.1 defines a generic request-envelope carrier
-for the exact canonical broker plan, detached plan signature, ownership lease,
-and detached lease signature. The carrier is negotiated with
-`aos.sandbox.authorization.signed-plan-lease, 1, 0` and is mandatory on effect
-methods. Legacy 1.0 is observation/inventory-only; it rejects effect methods
-and the carrier. Protocol 1.1 observation and inventory methods also reject the
-carrier. The transport validator applies independent and aggregate byte limits,
-fully decodes each canonical object, and preserves the received bytes exactly;
-that structural validation grants no authority. Trust anchors, public keys,
-trusted clock samples, revocation state, and node-local records never cross in
-the request. The same portable artifact quartet can later be placed in a
-distinct authenticated remote wrapper, but the local `SOCK_SEQPACKET` framing,
-peer credentials, and descriptor table are not a remote protocol.
+Host-broker protocol 1.1 defines a generic request-envelope carrier for the
+exact canonical broker plan, detached plan signature, ownership lease, and
+detached lease signature. Host negotiates the carrier with
+`aos.sandbox.authorization.signed-plan-lease, 1, 0` and requires it on effect
+methods. Host 1.0 is observation/inventory-only and rejects the carrier; Host
+1.1 observation and inventory methods also reject it. Later Host carrier
+versions retain that method-specific authority split.
+
+Mount instead uses exact protocol 1.0. It negotiates the same signed-plan/lease
+feature and requires the carrier on every effect method, while its observation
+and inventory methods reject the carrier. The transport validator applies
+independent and aggregate byte limits, fully decodes each canonical object, and
+preserves the received bytes exactly; that structural validation grants no
+authority. Trust anchors, public keys, trusted clock samples, revocation state,
+and node-local records never cross in the request. The same portable artifact
+quartet can later be placed in a distinct authenticated remote wrapper, but the
+local `SOCK_SEQPACKET` framing, peer credentials, and descriptor table are not
+a remote protocol.
 
 Host-broker protocol 1.2 adds `QueryRuntimeEffect`. The query carries a fresh
 1.2 header, zero descriptors, the same exact signed authorization quartet, and
@@ -758,7 +763,7 @@ effect; the exact composite attempt must be committed first. An authenticated
 durable replacement before a new Apply. Transport ambiguity or `Pending` never
 authorizes construction of a different packet.
 
-Mount-broker protocol 1.2 adds `PrepareMountCatalog`. The authenticated node
+Mount-broker protocol 1.0 includes `PrepareMountCatalog`. The authenticated node
 controller sends no descriptors and no outer Mount authorization. Its bounded
 body contains a complete prospective `ApplyMountRequest` plus a complete
 authorized Host 1.3 `ObserveMountScope` envelope. The outer request, prospective
@@ -806,7 +811,7 @@ bytes. On restart, authenticated inventory must first report the exact local
 request as pending. Catalog-backed actions then reacquire their catalog, and a
 durable packet or catalog digest alone is never descriptor authority.
 
-Pending resumption loads the immutable `AOSMTA02` record by request ID and exact
+Pending resumption loads the immutable `AOSMTA01` record by request ID and exact
 current namespace-allocation reference, matches the Mount handle observed in
 inventory, and reconstructs preparation from the original deadline-free body.
 The reacquired catalog commitment must equal the durable commitment; release is
@@ -832,18 +837,17 @@ admission. The admitted record invalidates the pre-attempt inventory snapshot;
 the live dispatch token retains the exact desired generation, lease mode, and
 namespace target instead.
 
-Mount attempts use digest-protected `AOSMTA02` records. Flag bit zero marks a
+Mount attempts use digest-protected `AOSMTA01` records. Flag bit zero marks a
 present 32-byte catalog commitment. It is set for CREATE, INSTALL, REPLACE, and
 DETACH; RELEASE clears it and requires the catalog field to be all zeroes.
 Validation requires catalog absence if and only if the exact Apply action is
 RELEASE and reconstructs portable semantics with the corresponding optional
-binding. The previous `AOSMTA01` record is rejected instead of being interpreted
-under this stronger shape. A catalogless release remains durable-before-I/O and
-receipt-bound; only descriptor acquisition is omitted.
+binding. A catalogless release remains durable-before-I/O and receipt-bound;
+only descriptor acquisition is omitted.
 
-The controller's Apply client negotiates Mount 1.2 with the signed-plan/lease
-feature and authenticates both the hello and result writers against the pinned
-Mount service execution. First issue sends the packet durably admitted above;
+The controller's Apply client negotiates exact Mount 1.0 with the
+signed-plan/lease feature and authenticates both the hello and result writers
+against the pinned Mount service execution. First issue sends the packet durably admitted above;
 pending resumption sends the same body and deadline under the exact plan with a
 current lease. Mount admits by request ID plus request digest, refreshes only
 permitted authority on a matching pending effect, resumes its worker without
@@ -860,10 +864,10 @@ a durable intermediate resource, so authoritative inventory still decides
 retry, adoption, or cleanup.
 
 The controller queries `InventoryMountResources` over a separate one-shot
-Mount 1.2 session with no effect authorization. It authenticates the actual
+Mount 1.0 session with no effect authorization. It authenticates the actual
 hello and response writers, accepts no descriptors, and applies the complete
 resource-table validator before committing the exact query and response in a
-bounded `AOSMTI02` latest-snapshot record. The record also commits the complete
+bounded `AOSMTI01` latest-snapshot record. The record also commits the complete
 validated namespace-target, Mount-attempt, and completion set that the query
 postdates. Successive snapshots may advance the Mount journal sequence or
 refresh an unchanged sequence from a new broker process; sequence rollback,
@@ -913,15 +917,16 @@ complete identity-map commitment.
 Verification records are append-only and bounded. Replay validates every
 desired-generation and namespace-allocation cross-reference and recomputes the
 recipe commitment from historical desired state. A verification commit enters
-journal namespace 17 and advances the Mount inventory controller-state domain
-to version 4, deliberately making its source snapshot stale. Only a later
-authenticated complete inventory that reproduces the exact verified installed
-resource under the same current desired state and live target yields `Ready`.
-A missing resource or changed recipe, assignment, revision, boot identity,
-kernel observation, operation correlation, or other durable resource field is
-a verification conflict, not permission to reinstall or reverify the same
-generation. Release and lease-expiry drains remain available under newer
-desired authority and do not mistake historical readiness for effect authority.
+journal namespace 17 and advances the Mount inventory controller-state
+commitment under its sole v1 domain, deliberately making its source snapshot
+stale. Only a later authenticated complete inventory that reproduces the exact
+verified installed resource under the same current desired state and live
+target yields `Ready`. A missing resource or changed recipe, assignment,
+revision, boot identity, kernel observation, operation correlation, or other
+durable resource field is a verification conflict, not permission to reinstall
+or reverify the same generation. Release and lease-expiry drains remain
+available under newer desired authority and do not mistake historical readiness
+for effect authority.
 
 Caller role derives from peer credentials, socket activation, and the expected
 service-unit identity; a serialized role is descriptive only. Unknown

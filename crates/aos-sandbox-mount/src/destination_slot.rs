@@ -45,9 +45,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{MountError, Result};
 
-const MAGIC: &[u8; 8] = b"AOSMSL02";
-const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v2\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.transaction.v2\0";
+const MAGIC: &[u8; 8] = b"AOSMSL01";
+const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v1\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.transaction.v1\0";
 const RECORD_BYTES: usize = 436;
 const MAXIMUM_SLOT_RESOURCES: usize = 16_384;
 const SLOT_DIRECTORY_MODE: u32 = 0o555;
@@ -2506,7 +2506,7 @@ mod tests {
         ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 6,
+                protocol_minor: 0,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,

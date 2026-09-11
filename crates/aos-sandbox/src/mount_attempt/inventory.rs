@@ -18,8 +18,8 @@ use aos_sandbox_core::{ObjectDigest, ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedHeader, ValidatedMountInventory,
-    decode_mount_inventory_request, decode_mount_inventory_response_for_version,
-    decode_response_envelope, decode_server_hello, encode_unauthed_request_envelope,
+    decode_mount_inventory_request, decode_mount_inventory_response, decode_response_envelope,
+    decode_server_hello, encode_unauthed_request_envelope,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -43,8 +43,7 @@ pub use reconciliation::{
 };
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountInventory;
-const FIRST_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES;
 const RESPONSE_BYTES: u32 = 15 * 1024 * 1024;
 const QUERY_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
@@ -52,7 +51,7 @@ const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.transaction.v1\0";
-const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v7\0";
+const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v1\0";
 
 /// Reports whether an authenticated inventory snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -204,11 +203,8 @@ impl MountInventoryClient {
             });
         }
         let response_body = envelope.body().to_vec();
-        let inventory = decode_mount_inventory_response_for_version(
-            &response_body,
-            request.maximum_response_bytes(),
-            session.version(),
-        )?;
+        let inventory =
+            decode_mount_inventory_response(&response_body, request.maximum_response_bytes())?;
         transport::check_deadline(deadline).map_err(MountAttemptError::Preparation)?;
 
         Ok(QuerySuccess {
@@ -294,11 +290,8 @@ impl SnapshotRecord {
         response_body: Vec<u8>,
     ) -> Result<(Self, ValidatedMountInventory), MountAttemptError> {
         let request = decode_inventory_request_body(&request_body)?;
-        let inventory = decode_mount_inventory_response_for_version(
-            &response_body,
-            request.maximum_response_bytes(),
-            request.protocol_version(),
-        )?;
+        let inventory =
+            decode_mount_inventory_response(&response_body, request.maximum_response_bytes())?;
         let mut record = Self {
             request_id: *request.request_id(),
             controller_state_digest,
@@ -354,12 +347,8 @@ impl SnapshotRecord {
         if request.request_id() != &self.request_id {
             return Err(MountAttemptError::CorruptState);
         }
-        decode_mount_inventory_response_for_version(
-            &self.response_body,
-            request.maximum_response_bytes(),
-            request.protocol_version(),
-        )
-        .map_err(|_| MountAttemptError::CorruptState)
+        decode_mount_inventory_response(&self.response_body, request.maximum_response_bytes())
+            .map_err(|_| MountAttemptError::CorruptState)
     }
 }
 
@@ -727,9 +716,7 @@ fn decode_inventory_request_body(bytes: &[u8]) -> Result<ValidatedHeader, MountA
     )
     .map_err(|_| MountAttemptError::CorruptState)?;
     let version = request.protocol_version();
-    if version.major() != CARRIER_VERSION.major()
-        || version.minor() < FIRST_CARRIER_VERSION.minor()
-        || version.minor() > CARRIER_VERSION.minor()
+    if version != CARRIER_VERSION
         || request.audience() != Audience::AUDIENCE_NODE_CONTROLLER
         || request.maximum_response_bytes() != RESPONSE_BYTES
     {
@@ -771,22 +758,14 @@ mod tests {
     use crate::JournalLimits;
 
     fn query(request_byte: u8) -> Vec<u8> {
-        query_with_id_for_version([request_byte; 16], CARRIER_VERSION)
-    }
-
-    fn query_for_version(request_byte: u8, version: ProtocolVersion) -> Vec<u8> {
-        query_with_id_for_version([request_byte; 16], version)
+        query_with_id([request_byte; 16])
     }
 
     fn query_with_id(request_id: [u8; 16]) -> Vec<u8> {
-        query_with_id_for_version(request_id, CARRIER_VERSION)
-    }
-
-    fn query_with_id_for_version(request_id: [u8; 16], version: ProtocolVersion) -> Vec<u8> {
         InventoryMountsRequest {
             header: Some(RequestHeader {
-                protocol_major: version.major().into(),
-                protocol_minor: version.minor().into(),
+                protocol_major: CARRIER_VERSION.major().into(),
+                protocol_minor: CARRIER_VERSION.minor().into(),
                 request_id: request_id.to_vec(),
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -810,20 +789,6 @@ mod tests {
     }
 
     fn response_with_released_mount(sequence: u64, boot_byte: u8, instance_byte: u8) -> Vec<u8> {
-        response_with_released_mount_for_version(
-            sequence,
-            boot_byte,
-            instance_byte,
-            CARRIER_VERSION,
-        )
-    }
-
-    fn response_with_released_mount_for_version(
-        sequence: u64,
-        boot_byte: u8,
-        instance_byte: u8,
-        version: ProtocolVersion,
-    ) -> Vec<u8> {
         let binding = MountAssignmentBinding {
             fence: Some(AssignmentFence {
                 sandbox_id: vec![1; 16],
@@ -852,23 +817,15 @@ mod tests {
             source_view_id: vec![13; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
-            source_handle: if version.minor() >= CARRIER_VERSION.minor() {
-                encode_view_source(&ViewSource::ImmutableTree {
-                    tree: ObjectDescriptor::new(
-                        MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
-                        ObjectDigest::from_bytes([14; 32]),
-                        15,
-                    ),
-                })
-            } else {
-                Vec::new()
-            },
-            source_authority: if version.minor() >= CARRIER_VERSION.minor() {
-                MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
-            } else {
-                MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED
-            }
-            .into(),
+            source_handle: encode_view_source(&ViewSource::ImmutableTree {
+                tree: ObjectDescriptor::new(
+                    MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                    ObjectDigest::from_bytes([14; 32]),
+                    15,
+                ),
+            }),
+            source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
+                .into(),
             attributes: Some(MountAttributes {
                 read_only: true,
                 no_exec: true,
@@ -939,29 +896,18 @@ mod tests {
     }
 
     #[test]
-    fn stored_inventory_request_version_controls_legacy_source_authority() {
-        for minor in 2..=6 {
-            let version = ProtocolVersion::new(1, minor);
-            let (_, inventory) = SnapshotRecord::from_query(
-                [20; 32],
-                query_for_version(minor as u8, version),
-                response_with_released_mount_for_version(2, 3, 4, version),
-            )
-            .unwrap();
-            let source = inventory.mounts()[0].recipe().source();
+    fn stored_inventory_preserves_exact_source_authority() {
+        let (_, inventory) =
+            SnapshotRecord::from_query([20; 32], query(1), response_with_released_mount(2, 3, 4))
+                .unwrap();
+        let recipe = inventory.mounts()[0].recipe();
 
-            if minor < 6 {
-                assert_eq!(
-                    source,
-                    &aos_sandbox_protocol::ValidatedMountInventorySource::LegacyUnbound
-                );
-            } else {
-                assert!(matches!(
-                    source,
-                    aos_sandbox_protocol::ValidatedMountInventorySource::Exact { .. }
-                ));
-            }
-        }
+        assert_eq!(recipe.source().source_view_id(), recipe.source_view_id());
+        assert_eq!(
+            recipe.source().source_view_revision(),
+            recipe.source_generation()
+        );
+        assert_eq!(recipe.source().view_descriptor(), recipe.view_revision());
     }
 
     #[test]

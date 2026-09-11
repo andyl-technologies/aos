@@ -99,7 +99,7 @@ fn request(assignment: BrokerAssignment, deadline: u64, action: MountAction) -> 
     ApplyMountRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 6,
+            protocol_minor: 0,
             request_id: vec![10; 16],
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: deadline,
@@ -410,7 +410,7 @@ fn codec_preserves_one_exact_self_consistent_attempt() {
 }
 
 #[test]
-fn catalogless_release_has_an_explicit_version_two_record_shape() {
+fn catalogless_release_has_an_explicit_final_v1_record_shape() {
     let release = record_for_action(MountAction::MOUNT_ACTION_RELEASE);
     release.validate_contents().unwrap();
     let encoded = release.encode();
@@ -438,9 +438,9 @@ fn catalogless_release_has_an_explicit_version_two_record_shape() {
     create_without_catalog.digest = create_without_catalog.compute_digest();
     assert!(create_without_catalog.validate_contents().is_err());
 
-    let mut legacy_magic = encoded;
-    legacy_magic[..8].copy_from_slice(b"AOSMTA01");
-    assert!(Record::decode(&legacy_magic).is_err());
+    let mut unknown_magic = encoded;
+    unknown_magic[..8].copy_from_slice(b"AOSMTA99");
+    assert!(Record::decode(&unknown_magic).is_err());
 }
 
 #[test]
@@ -716,10 +716,10 @@ fn completion_codec_binds_one_exact_success_receipt() {
 }
 
 #[test]
-fn mount_apply_dispatch_is_end_to_end_bound_to_carrier_1_6() {
+fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_1_0() {
     let hello = completion::mount_apply_client_hello();
     assert_eq!(hello.protocol_major, 1);
-    assert_eq!(hello.protocol_minor, 6);
+    assert_eq!(hello.protocol_minor, 0);
 
     let feature = FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(), 1, 0).unwrap();
     let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
@@ -734,11 +734,11 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_carrier_1_6() {
         audience: Audience::AUDIENCE_NODE_CONTROLLER,
     };
 
-    let mut legacy = hello.clone();
-    legacy.protocol_minor = 5;
+    let mut wrong_version = hello.clone();
+    wrong_version.protocol_minor = 1;
     assert!(
         negotiate_client_hello(
-            &legacy.encode_to_vec(),
+            &wrong_version.encode_to_vec(),
             peer,
             policy,
             ProtocolId::MountBroker,
@@ -761,7 +761,7 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_carrier_1_6() {
         &server_session.server_hello().encode_to_vec(),
         ProtocolId::MountBroker,
         Audience::AUDIENCE_NODE_CONTROLLER,
-        ProtocolVersion::new(1, 6),
+        ProtocolVersion::new(1, 0),
         std::slice::from_ref(&feature),
         &[method],
         hello.maximum_response_bytes,

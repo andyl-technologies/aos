@@ -3,9 +3,8 @@
 //! Materialization requests carry the exact canonical portable sandbox
 //! specification that declares the slot. Inventory carries only the proven
 //! descriptor and the broker's lossless node-local lifecycle record. Mount
-//! 1.3 preserves the original materialize/reap and slot-only schema,
-//! 1.4 adds rematerialization, and 1.5-1.6 additionally report the exact
-//! current namespace-generation anchors that contain Ready slots:
+//! 1.0 supports materialization, rematerialization, and reap, and reports the
+//! exact current namespace-generation anchors that contain Ready slots:
 //!
 //! ```text
 //! assignment + namespace generation + slot + sandbox-spec descriptor
@@ -22,8 +21,8 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryDestinationSlotsRequest, InventoryDestinationSlotsResponse, MountOperationCorrelation,
 };
 use aos_sandbox_core::{
-    DecodeLimits, DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion,
-    decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
+    DecodeLimits, DescriptorRole, ObjectDescriptor, ProtocolId, decode_sandbox_spec,
+    descriptor_for_bytes, encode_sandbox_spec,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -42,11 +41,6 @@ pub const MAXIMUM_DESTINATION_SLOT_INVENTORY_RECORDS: usize = 16_384;
 pub const MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS: usize = 16_384;
 
 const ATTACHMENT_ANCHOR_HANDLE_DOMAIN: &[u8] = b"aos.sandbox.mount.attachment-anchor-handle.v1\0";
-const DESTINATION_SLOT_PROTOCOL_V1_3: ProtocolVersion = ProtocolVersion::new(1, 3);
-const DESTINATION_SLOT_PROTOCOL_V1_4: ProtocolVersion = ProtocolVersion::new(1, 4);
-const DESTINATION_SLOT_PROTOCOL_V1_5: ProtocolVersion = ProtocolVersion::new(1, 5);
-const DESTINATION_SLOT_PROTOCOL_V1_6: ProtocolVersion = ProtocolVersion::new(1, 6);
-
 /// Carries one destination-slot effect after complete portable validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedDestinationSlotRequest {
@@ -306,7 +300,6 @@ impl ValidatedDestinationSlotInventoryRecord {
 /// Carries one validated authoritative destination-slot inventory snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedDestinationSlotInventory {
-    protocol_version: ProtocolVersion,
     kernel_boot_id: [u8; 16],
     journal_sequence: u64,
     slots: Vec<ValidatedDestinationSlotInventoryRecord>,
@@ -315,12 +308,6 @@ pub struct ValidatedDestinationSlotInventory {
 }
 
 impl ValidatedDestinationSlotInventory {
-    /// Returns the exact protocol version used to validate this snapshot.
-    #[must_use]
-    pub const fn protocol_version(&self) -> ProtocolVersion {
-        self.protocol_version
-    }
-
     /// Returns the broker's current Linux boot identifier.
     #[must_use]
     pub const fn kernel_boot_id(&self) -> &[u8; 16] {
@@ -451,14 +438,14 @@ pub fn attachment_anchor_handle_v1(
         .into()
 }
 
-/// Decodes and validates one hostile Mount 1.3-1.6 destination-slot effect body.
+/// Decodes and validates one hostile Mount 1.0 destination-slot effect body.
 ///
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] for an oversized or malformed message,
-/// an older protocol version, unknown fields or enums, invalid assignment or
-/// action shape, noncanonical specification bytes, descriptor substitution,
-/// or a slot not declared by that exact specification.
+/// unknown fields or enums, invalid assignment or action shape, noncanonical
+/// specification bytes, descriptor substitution, or a slot not declared by
+/// that exact specification.
 pub fn decode_destination_slot_request(
     bytes: &[u8],
     peer: PeerCredentials,
@@ -482,9 +469,6 @@ pub fn decode_destination_slot_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if !destination_slot_version_supported(header.protocol_version()) {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
     let fence = validate_fence(
         request
             .fence
@@ -501,11 +485,6 @@ pub fn decode_destination_slot_request(
         .as_known()
         .filter(|value| *value != DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED)
         .ok_or(ProtocolValidationError::UnknownAction)?;
-    if header.protocol_version() == DESTINATION_SLOT_PROTOCOL_V1_3
-        && action == DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
-    {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
     if request.namespace_generation == 0 {
         return Err(ProtocolValidationError::InvalidField(
             "namespace_generation",
@@ -614,7 +593,7 @@ fn resource_fence_precedes(
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] for an oversized or malformed request,
-/// an older protocol version, unknown fields, or an invalid common header.
+/// unknown fields or an invalid common header.
 pub fn decode_destination_slot_inventory_request(
     bytes: &[u8],
     peer: PeerCredentials,
@@ -637,9 +616,6 @@ pub fn decode_destination_slot_inventory_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    if !destination_slot_version_supported(header.protocol_version()) {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
     Ok(header)
 }
 
@@ -651,23 +627,7 @@ pub fn decode_destination_slot_inventory_request(
 pub fn encode_destination_slot_response(
     resource: DestinationSlotInventoryRecord,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
-    encode_destination_slot_response_for_version(resource, DESTINATION_SLOT_PROTOCOL_V1_4)
-}
-
-/// Validates and encodes one version-bound destination-slot apply response.
-///
-/// Mount 1.3 rejects the later rematerialization correlation. Mount 1.4-1.6
-/// preserve the complete current row.
-///
-/// # Errors
-///
-/// Returns [`ProtocolValidationError`] for an unsupported version, a v1.3 row
-/// containing post-v1.3 state, or any malformed resource row.
-pub fn encode_destination_slot_response_for_version(
-    resource: DestinationSlotInventoryRecord,
-    protocol_version: ProtocolVersion,
-) -> Result<Vec<u8>, ProtocolValidationError> {
-    validate_inventory_record_for_version(&resource, protocol_version)?;
+    validate_inventory_record(&resource)?;
     Ok(ApplyDestinationSlotResponse {
         resource: Some(resource).into(),
         ..Default::default()
@@ -685,35 +645,15 @@ pub fn decode_destination_slot_response(
     bytes: &[u8],
     maximum_response_bytes: u32,
 ) -> Result<ValidatedDestinationSlotInventoryRecord, ProtocolValidationError> {
-    decode_destination_slot_response_for_version(
-        bytes,
-        maximum_response_bytes,
-        DESTINATION_SLOT_PROTOCOL_V1_4,
-    )
-}
-
-/// Decodes and validates one version-bound destination-slot apply response.
-///
-/// # Errors
-///
-/// Returns [`ProtocolValidationError`] for an unsupported version, an
-/// oversized or malformed response, unknown fields, post-v1.3 state in a v1.3
-/// row, or any lifecycle inconsistency.
-pub fn decode_destination_slot_response_for_version(
-    bytes: &[u8],
-    maximum_response_bytes: u32,
-    protocol_version: ProtocolVersion,
-) -> Result<ValidatedDestinationSlotInventoryRecord, ProtocolValidationError> {
     validate_response_bound(bytes, maximum_response_bytes)?;
     let response = ApplyDestinationSlotResponse::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     reject_unknown(&response.__buffa_unknown_fields)?;
-    validate_inventory_record_for_version(
+    validate_inventory_record(
         response
             .resource
             .as_option()
             .ok_or(ProtocolValidationError::MissingField("resource"))?,
-        protocol_version,
     )
 }
 
@@ -726,25 +666,7 @@ pub fn decode_destination_slot_response_for_version(
 pub fn encode_destination_slot_inventory_response(
     response: InventoryDestinationSlotsResponse,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
-    encode_destination_slot_inventory_response_for_version(response, DESTINATION_SLOT_PROTOCOL_V1_4)
-}
-
-/// Validates and encodes one version-bound destination-slot inventory snapshot.
-///
-/// Mount 1.3 preserves the original slot-only response and rejects the later
-/// rematerialization field. Mount 1.4 accepts rematerialization without anchor
-/// rows. Mount 1.5-1.6 require a complete anchor row for every current Ready
-/// namespace generation.
-///
-/// # Errors
-///
-/// Returns [`ProtocolValidationError`] for an unsupported protocol version,
-/// version-incompatible fields, or any invalid snapshot identity or row.
-pub fn encode_destination_slot_inventory_response_for_version(
-    response: InventoryDestinationSlotsResponse,
-    protocol_version: ProtocolVersion,
-) -> Result<Vec<u8>, ProtocolValidationError> {
-    validate_inventory_response(&response, protocol_version)?;
+    validate_inventory_response(&response)?;
     Ok(response.encode_to_vec())
 }
 
@@ -759,40 +681,16 @@ pub fn decode_destination_slot_inventory_response(
     bytes: &[u8],
     maximum_response_bytes: u32,
 ) -> Result<ValidatedDestinationSlotInventory, ProtocolValidationError> {
-    decode_destination_slot_inventory_response_for_version(
-        bytes,
-        maximum_response_bytes,
-        DESTINATION_SLOT_PROTOCOL_V1_4,
-    )
-}
-
-/// Decodes one complete version-bound destination-slot inventory snapshot.
-///
-/// # Errors
-///
-/// Returns [`ProtocolValidationError`] for an unsupported version, an
-/// oversized or malformed response, version-incompatible fields, sentinel
-/// snapshot identity, noncanonical order, reused operations, or an invalid
-/// slot/anchor cross-link.
-pub fn decode_destination_slot_inventory_response_for_version(
-    bytes: &[u8],
-    maximum_response_bytes: u32,
-    protocol_version: ProtocolVersion,
-) -> Result<ValidatedDestinationSlotInventory, ProtocolValidationError> {
     validate_response_bound(bytes, maximum_response_bytes)?;
     let response = InventoryDestinationSlotsResponse::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     reject_unknown(&response.__buffa_unknown_fields)?;
-    validate_inventory_response(&response, protocol_version)
+    validate_inventory_response(&response)
 }
 
 fn validate_inventory_response(
     response: &InventoryDestinationSlotsResponse,
-    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedDestinationSlotInventory, ProtocolValidationError> {
-    if !destination_slot_version_supported(protocol_version) {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
     if response.journal_sequence == 0 {
         return Err(ProtocolValidationError::InvalidField("journal_sequence"));
     }
@@ -808,16 +706,6 @@ fn validate_inventory_response(
             maximum: MAXIMUM_ATTACHMENT_ANCHOR_INVENTORY_RECORDS,
         });
     }
-    if matches!(
-        protocol_version,
-        DESTINATION_SLOT_PROTOCOL_V1_3 | DESTINATION_SLOT_PROTOCOL_V1_4
-    ) && !response.attachment_anchors.is_empty()
-    {
-        return Err(ProtocolValidationError::InvalidField(
-            "inventory.attachment_anchors protocol version",
-        ));
-    }
-
     let kernel_boot_id = exact_nonzero::<16>(&response.kernel_boot_id, "kernel_boot_id")?;
     let broker_instance_id =
         exact_nonzero::<16>(&response.broker_instance_id, "broker_instance_id")?;
@@ -825,7 +713,7 @@ fn validate_inventory_response(
     let mut operations = BTreeSet::new();
     let mut current_ready_anchors = BTreeMap::new();
     for source in &response.slots {
-        let slot = validate_inventory_record_for_version(source, protocol_version)?;
+        let slot = validate_inventory_record(source)?;
         if slots
             .last()
             .is_some_and(|previous: &ValidatedDestinationSlotInventoryRecord| {
@@ -904,18 +792,13 @@ fn validate_inventory_response(
         }
         attachment_anchors.push(anchor);
     }
-    if matches!(
-        protocol_version,
-        DESTINATION_SLOT_PROTOCOL_V1_5 | DESTINATION_SLOT_PROTOCOL_V1_6
-    ) && attachment_anchors.len() != current_ready_anchors.len()
-    {
+    if attachment_anchors.len() != current_ready_anchors.len() {
         return Err(ProtocolValidationError::InvalidField(
             "inventory.attachment_anchors completeness",
         ));
     }
 
     Ok(ValidatedDestinationSlotInventory {
-        protocol_version,
         kernel_boot_id,
         journal_sequence: response.journal_sequence,
         slots,
@@ -971,13 +854,9 @@ fn validate_attachment_anchor(
     })
 }
 
-fn validate_inventory_record_for_version(
+fn validate_inventory_record(
     record: &DestinationSlotInventoryRecord,
-    protocol_version: ProtocolVersion,
 ) -> Result<ValidatedDestinationSlotInventoryRecord, ProtocolValidationError> {
-    if !destination_slot_version_supported(protocol_version) {
-        return Err(ProtocolValidationError::MethodMismatch);
-    }
     reject_unknown(&record.__buffa_unknown_fields)?;
     let binding = record
         .binding
@@ -1026,11 +905,6 @@ fn validate_inventory_record_for_version(
         .as_option()
         .map(validate_rematerialization)
         .transpose()?;
-    if protocol_version == DESTINATION_SLOT_PROTOCOL_V1_3 && rematerialization.is_some() {
-        return Err(ProtocolValidationError::InvalidField(
-            "destination_slot.rematerialization protocol version",
-        ));
-    }
     let reap = record.reap.as_option().map(validate_reap).transpose()?;
     let slot_device = optional_nonzero(record.slot_device, "destination_slot.slot_device")?;
     let slot_inode = optional_nonzero(record.slot_inode, "destination_slot.slot_inode")?;
@@ -1085,16 +959,6 @@ fn validate_inventory_record_for_version(
         anchor_unique_mount_id,
         resource_digest,
     })
-}
-
-const fn destination_slot_version_supported(protocol_version: ProtocolVersion) -> bool {
-    matches!(
-        protocol_version,
-        DESTINATION_SLOT_PROTOCOL_V1_3
-            | DESTINATION_SLOT_PROTOCOL_V1_4
-            | DESTINATION_SLOT_PROTOCOL_V1_5
-            | DESTINATION_SLOT_PROTOCOL_V1_6
-    )
 }
 
 fn validate_rematerialization(
@@ -1289,7 +1153,7 @@ mod tests {
         ApplyDestinationSlotRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 4,
+                protocol_minor: 0,
                 request_id: vec![operation_byte; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -1490,16 +1354,6 @@ mod tests {
             encode_sandbox_spec(validated.sandbox_specification())
         );
 
-        for minor in 3..=6 {
-            let mut compatible = materialize.clone();
-            compatible.header.get_or_insert_default().protocol_minor = minor;
-            assert!(
-                decode_destination_slot_request(&compatible.encode_to_vec(), peer(), policy(), 1,)
-                    .is_ok(),
-                "Mount 1.{minor} rejected the original materialization contract"
-            );
-        }
-
         let reap = decode(&request(
             DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
             10,
@@ -1516,23 +1370,6 @@ mod tests {
             rematerialize.resource_fence(),
             Some(rematerialize.binding_fence())
         );
-        for minor in 3..=6 {
-            let mut compatible = request(
-                DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
-                11,
-            );
-            compatible.header.get_or_insert_default().protocol_minor = minor;
-            let decoded =
-                decode_destination_slot_request(&compatible.encode_to_vec(), peer(), policy(), 1);
-            if minor == 3 {
-                assert_eq!(decoded, Err(ProtocolValidationError::MethodMismatch));
-            } else {
-                assert!(
-                    decoded.is_ok(),
-                    "Mount 1.{minor} rejected rematerialization"
-                );
-            }
-        }
 
         let mut missing_resource_fence = request(
             DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
@@ -1549,16 +1386,19 @@ mod tests {
             .is_err()
         );
 
-        let mut legacy = materialize.clone();
-        legacy.header.get_or_insert_default().protocol_minor = 2;
-        assert_eq!(
-            decode_destination_slot_request(&legacy.encode_to_vec(), peer(), policy(), 1),
-            Err(ProtocolValidationError::MethodMismatch)
-        );
-        legacy.header.get_or_insert_default().protocol_minor = 7;
-        assert!(
-            decode_destination_slot_request(&legacy.encode_to_vec(), peer(), policy(), 1).is_err()
-        );
+        let mut wrong_version = materialize.clone();
+        wrong_version.header.get_or_insert_default().protocol_minor = 1;
+        assert!(matches!(
+            decode_destination_slot_request(&wrong_version.encode_to_vec(), peer(), policy(), 1),
+            Err(ProtocolValidationError::Protocol(_))
+        ));
+
+        wrong_version.header.get_or_insert_default().protocol_major = 2;
+        wrong_version.header.get_or_insert_default().protocol_minor = 0;
+        assert!(matches!(
+            decode_destination_slot_request(&wrong_version.encode_to_vec(), peer(), policy(), 1),
+            Err(ProtocolValidationError::Protocol(_))
+        ));
 
         let mut undeclared = materialize.clone();
         undeclared.destination_slot_id = vec![12; 16];
@@ -1767,7 +1607,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_and_inventory_codecs_cover_the_1_3_through_1_6_contract_matrix() {
+    fn apply_and_inventory_codecs_preserve_the_complete_mount_1_0_contract() {
         let ready = inventory_record(
             4,
             30,
@@ -1775,85 +1615,44 @@ mod tests {
         );
         let rematerialized = with_rematerialization(ready.clone(), 50);
 
-        for minor in 3..=6 {
-            let version = ProtocolVersion::new(1, minor);
-            let encoded = encode_destination_slot_response_for_version(ready.clone(), version)
-                .unwrap_or_else(|error| panic!("Mount 1.{minor} response failed: {error}"));
-            decode_destination_slot_response_for_version(&encoded, 4096, version)
-                .unwrap_or_else(|error| panic!("Mount 1.{minor} response decode failed: {error}"));
+        let ready_encoded = encode_destination_slot_response(ready).unwrap();
+        decode_destination_slot_response(&ready_encoded, 4096).unwrap();
 
-            let rematerialized_result =
-                encode_destination_slot_response_for_version(rematerialized.clone(), version);
-            assert_eq!(rematerialized_result.is_ok(), minor >= 4);
+        let rematerialized_encoded =
+            encode_destination_slot_response(rematerialized.clone()).unwrap();
+        let decoded = decode_destination_slot_response(&rematerialized_encoded, 4096).unwrap();
+        assert!(decoded.rematerialization().is_some());
 
-            let slot = if minor >= 4 {
-                rematerialized.clone()
-            } else {
-                ready.clone()
-            };
-            let attachment_anchors = if minor >= 5 {
-                vec![anchor_record(&slot)]
-            } else {
-                Vec::new()
-            };
-            let inventory = InventoryDestinationSlotsResponse {
-                kernel_boot_id: vec![8; 16],
-                journal_sequence: 41,
-                slots: vec![slot],
-                broker_instance_id: vec![9; 16],
-                attachment_anchors,
-                ..Default::default()
-            };
-            let encoded =
-                encode_destination_slot_inventory_response_for_version(inventory, version)
-                    .unwrap_or_else(|error| {
-                        panic!("Mount 1.{minor} slot inventory failed: {error}")
-                    });
-            let decoded = decode_destination_slot_inventory_response_for_version(
-                &encoded,
-                16 * 1024,
-                version,
+        let inventory = InventoryDestinationSlotsResponse {
+            kernel_boot_id: vec![8; 16],
+            journal_sequence: 41,
+            slots: vec![rematerialized.clone()],
+            broker_instance_id: vec![9; 16],
+            attachment_anchors: vec![anchor_record(&rematerialized)],
+            ..Default::default()
+        };
+        let encoded = encode_destination_slot_inventory_response(inventory).unwrap();
+        let decoded = decode_destination_slot_inventory_response(&encoded, 16 * 1024).unwrap();
+        assert!(decoded.slots()[0].rematerialization().is_some());
+        assert_eq!(decoded.attachment_anchors().len(), 1);
+
+        let inventory_request = InventoryDestinationSlotsRequest {
+            header: request(
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+                60,
             )
-            .unwrap_or_else(|error| {
-                panic!("Mount 1.{minor} slot inventory decode failed: {error}")
-            });
-            assert_eq!(decoded.slots()[0].rematerialization().is_some(), minor >= 4);
-
-            let mut inventory_request = InventoryDestinationSlotsRequest::default();
-            let header = inventory_request.header.get_or_insert_default();
-            header.protocol_major = 1;
-            header.protocol_minor = u32::from(minor);
-            header.request_id = vec![60; 16];
-            header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
-            header.deadline_boottime_nanoseconds = 100;
-            header.maximum_response_bytes = 4096;
-            assert!(
-                decode_destination_slot_inventory_request(
-                    &inventory_request.encode_to_vec(),
-                    peer(),
-                    policy(),
-                    1,
-                )
-                .is_ok()
-            );
-        }
-
-        for version in [ProtocolVersion::new(1, 2), ProtocolVersion::new(1, 7)] {
-            assert!(encode_destination_slot_response_for_version(ready.clone(), version).is_err());
-            assert!(
-                encode_destination_slot_inventory_response_for_version(
-                    InventoryDestinationSlotsResponse {
-                        kernel_boot_id: vec![8; 16],
-                        journal_sequence: 41,
-                        slots: vec![ready.clone()],
-                        broker_instance_id: vec![9; 16],
-                        ..Default::default()
-                    },
-                    version,
-                )
-                .is_err()
-            );
-        }
+            .header,
+            ..Default::default()
+        };
+        assert!(
+            decode_destination_slot_inventory_request(
+                &inventory_request.encode_to_vec(),
+                peer(),
+                policy(),
+                1,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1873,6 +1672,7 @@ mod tests {
             journal_sequence: 41,
             slots: vec![first.clone(), second.clone()],
             broker_instance_id: vec![9; 16],
+            attachment_anchors: vec![anchor_record(&first)],
             ..Default::default()
         };
         let encoded = encode_destination_slot_inventory_response(response.clone()).unwrap();
@@ -1931,21 +1731,11 @@ mod tests {
             .is_ok()
         );
 
-        let mut current = inventory_request;
-        current.header.get_or_insert_default().protocol_minor = 5;
-        assert!(
-            decode_destination_slot_inventory_request(
-                &current.encode_to_vec(),
-                peer(),
-                policy(),
-                1,
-            )
-            .is_ok()
-        );
-        current.header.get_or_insert_default().protocol_minor = 7;
+        let mut wrong_version = inventory_request;
+        wrong_version.header.get_or_insert_default().protocol_minor = 1;
         assert!(matches!(
             decode_destination_slot_inventory_request(
-                &current.encode_to_vec(),
+                &wrong_version.encode_to_vec(),
                 peer(),
                 policy(),
                 1,
@@ -1955,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn mount_one_five_and_one_six_inventory_require_exact_complete_current_anchors() {
+    fn mount_inventory_requires_exact_complete_current_anchors() {
         let ready = inventory_record(
             4,
             30,
@@ -1970,84 +1760,43 @@ mod tests {
             attachment_anchors: vec![anchor.clone()],
             ..Default::default()
         };
-        for version in [
-            DESTINATION_SLOT_PROTOCOL_V1_5,
-            DESTINATION_SLOT_PROTOCOL_V1_6,
-        ] {
-            let encoded =
-                encode_destination_slot_inventory_response_for_version(response.clone(), version)
-                    .unwrap();
-            let decoded = decode_destination_slot_inventory_response_for_version(
-                &encoded,
-                16 * 1024,
-                version,
-            )
-            .unwrap();
-            assert_eq!(decoded.protocol_version(), version);
-            assert_eq!(decoded.attachment_anchors().len(), 1);
-            assert_eq!(
-                decoded.attachment_anchors()[0].handle().as_slice(),
-                anchor.attachment_anchor_handle.as_slice()
-            );
-        }
+        let encoded = encode_destination_slot_inventory_response(response.clone()).unwrap();
+        let decoded = decode_destination_slot_inventory_response(&encoded, 16 * 1024).unwrap();
+        assert_eq!(decoded.attachment_anchors().len(), 1);
+        assert_eq!(
+            decoded.attachment_anchors()[0].handle().as_slice(),
+            anchor.attachment_anchor_handle.as_slice()
+        );
 
         let mut missing = response.clone();
         missing.attachment_anchors.clear();
-        for version in [
-            DESTINATION_SLOT_PROTOCOL_V1_5,
-            DESTINATION_SLOT_PROTOCOL_V1_6,
-        ] {
-            assert!(
-                encode_destination_slot_inventory_response_for_version(missing.clone(), version)
-                    .is_err()
-            );
-        }
-        assert!(
-            encode_destination_slot_inventory_response_for_version(
-                response.clone(),
-                DESTINATION_SLOT_PROTOCOL_V1_4,
-            )
-            .is_err()
-        );
+        assert!(encode_destination_slot_inventory_response(missing).is_err());
 
         let mut substituted = response;
         substituted.attachment_anchors[0].directory_inode += 1;
-        assert!(
-            encode_destination_slot_inventory_response_for_version(
-                substituted.clone(),
-                DESTINATION_SLOT_PROTOCOL_V1_5,
-            )
-            .is_err()
-        );
+        assert!(encode_destination_slot_inventory_response(substituted.clone()).is_err());
 
         let mut cross_link_substitution = substituted;
         cross_link_substitution.attachment_anchors[0].unique_mount_id += 1;
         refresh_anchor_handle(&mut cross_link_substitution.attachment_anchors[0]);
-        assert!(
-            encode_destination_slot_inventory_response_for_version(
-                cross_link_substitution,
-                DESTINATION_SLOT_PROTOCOL_V1_5,
-            )
-            .is_err()
-        );
+        assert!(encode_destination_slot_inventory_response(cross_link_substitution).is_err());
 
         let stale_ready = inventory_record(
             4,
             30,
             DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY,
         );
+        let stale_inventory =
+            encode_destination_slot_inventory_response(InventoryDestinationSlotsResponse {
+                kernel_boot_id: vec![9; 16],
+                journal_sequence: 42,
+                slots: vec![stale_ready],
+                broker_instance_id: vec![10; 16],
+                ..Default::default()
+            });
         assert!(
-            encode_destination_slot_inventory_response_for_version(
-                InventoryDestinationSlotsResponse {
-                    kernel_boot_id: vec![9; 16],
-                    journal_sequence: 42,
-                    slots: vec![stale_ready],
-                    broker_instance_id: vec![10; 16],
-                    ..Default::default()
-                },
-                DESTINATION_SLOT_PROTOCOL_V1_5,
-            )
-            .is_ok()
+            stale_inventory.is_ok(),
+            "Ready rows from a different kernel boot are excluded from the current-anchor completeness predicate"
         );
     }
 

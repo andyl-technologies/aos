@@ -487,7 +487,11 @@ impl BrokerAuthority {
 
 fn supports_signed_admission(protocol: ProtocolId, version: ProtocolVersion) -> bool {
     negotiate_protocol(protocol, version).is_ok()
-        && (version.minor() >= 1 || protocol == ProtocolId::StorageBroker)
+        && (version.minor() >= 1
+            || matches!(
+                protocol,
+                ProtocolId::MountBroker | ProtocolId::StorageBroker
+            ))
 }
 
 /// Carries exact authenticated records that callers must commit atomically.
@@ -577,12 +581,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_storage_admits_a_minor_zero_signed_request() {
+    fn mount_and_storage_admit_minor_zero_signed_requests() {
         let version = ProtocolVersion::new(1, 0);
         let cases = [
             (ProtocolId::StorageBroker, true),
             (ProtocolId::HostBroker, false),
-            (ProtocolId::MountBroker, false),
+            (ProtocolId::MountBroker, true),
             (ProtocolId::NetworkBroker, false),
         ];
 

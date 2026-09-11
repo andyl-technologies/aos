@@ -1,4 +1,4 @@
-//! Mount compatibility facade plus node-local catalog commitment construction.
+//! Node-local Mount catalog commitment adapter and construction.
 //!
 //! Portable request canonicalization is owned by
 //! [`aos_sandbox_protocol::semantics::mount`]. This module retains only the
@@ -124,7 +124,7 @@ mod tests {
         let wire = ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 6,
+                protocol_minor: 0,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 10_000,
@@ -216,9 +216,9 @@ mod tests {
         assert_eq!(
             facade.commitment().digest(),
             ObjectDigest::from_bytes([
-                0x96, 0xb4, 0x29, 0x9a, 0x75, 0x78, 0x3e, 0x57, 0x2b, 0x6f, 0xe3, 0xb0, 0x15, 0xd7,
-                0x9f, 0xf3, 0x09, 0xfd, 0xae, 0xb7, 0x99, 0xaf, 0x2d, 0xaa, 0x19, 0x10, 0xf6, 0x01,
-                0x1e, 0x8e, 0xf9, 0x71,
+                0xd1, 0x7b, 0x57, 0xb8, 0x29, 0xdf, 0x14, 0xa9, 0x48, 0x24, 0xb5, 0x65, 0xc8, 0xbf,
+                0x86, 0xf1, 0x37, 0x70, 0xfa, 0x56, 0xc7, 0xf3, 0x73, 0xa1, 0x5e, 0x5a, 0x84, 0x2d,
+                0x7d, 0x5c, 0x8b, 0x75,
             ])
         );
         assert_eq!(facade.canonical_bytes(), portable.canonical_bytes());

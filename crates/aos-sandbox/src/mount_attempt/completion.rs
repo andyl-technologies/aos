@@ -38,7 +38,7 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountCompletion;
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
 const RESPONSE_BYTES: u32 = 16 * 1024;
 const MAXIMUM_COMPLETIONS: usize = 4096;

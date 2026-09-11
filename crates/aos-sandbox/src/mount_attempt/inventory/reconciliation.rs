@@ -286,9 +286,7 @@ fn validate_resource_matches_request(
     let fence = binding.fence();
     let request_fence = request.fence();
     let recipe = resource.recipe();
-    let Some((inventoried_source_handle, _)) = recipe.source().exact() else {
-        return Err(MountAttemptError::Conflict);
-    };
+    let inventoried_source_handle = recipe.source().source();
     let teardown_binding_matches = matches!(
         request.action(),
         MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE
@@ -536,7 +534,7 @@ mod tests {
         let wire = ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 6,
+                protocol_minor: 0,
                 request_id: REQUEST_ID.to_vec(),
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,
@@ -761,13 +759,9 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        aos_sandbox_protocol::decode_mount_inventory_response_for_version(
-            &response,
-            16 * 1024,
-            aos_sandbox_core::ProtocolVersion::new(1, 6),
-        )
-        .unwrap()
-        .mounts()[0]
+        aos_sandbox_protocol::decode_mount_inventory_response(&response, 16 * 1024)
+            .unwrap()
+            .mounts()[0]
             .clone()
     }
 

@@ -63,7 +63,7 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_OBSERVE_RUNTIME = 2;
   BROKER_METHOD_HOST_INVENTORY_RUNTIME = 3;
   BROKER_METHOD_MOUNT_APPLY = 4;
-  BROKER_METHOD_MOUNT_INVENTORY = 5;
+  reserved 5;
   BROKER_METHOD_MOUNT_INVENTORY_RESOURCES = 6;
   BROKER_METHOD_STORAGE_APPLY = 7;
   reserved 8;
@@ -510,7 +510,7 @@ message ApplyMountRequest {
   bytes source_handle = 20;
 }
 
-// Mount 1.6 read-only preparation. The nested Mount request selects the exact
+// Mount 1.0 read-only preparation. The nested Mount request selects the exact
 // catalog behavior later committed by a signed Apply grant. host_request_packet
 // is a complete authorized Host 1.3 ObserveMountScope envelope; the controller
 // cannot receive or nominate any of the returned descriptors.
@@ -525,7 +525,7 @@ message PrepareMountCatalogResponse {
   uint64 valid_until_boottime_nanoseconds = 2;
 }
 
-// Mount 1.3-1.6 materialize/reap and Mount 1.4-1.6 rematerialize effects
+// Mount 1.0 materialize, reap, and rematerialize effects
 // operate only on broker-derived paths. The exact canonical sandbox
 // specification proves the portable declaration; its descriptor prevents
 // substituted bytes.
@@ -616,7 +616,7 @@ message InventoryDestinationSlotsResponse {
   uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
   repeated DestinationSlotInventoryRecord slots = 3; // At most 16384, strict key order.
   bytes broker_instance_id = 4; // Exactly 16 bytes; changes on broker start.
-  // Mount 1.5-1.6 only. One strict logical-key-ordered row for every current
+  // One strict logical-key-ordered row for every current
   // anchor that contains at least one Ready destination slot.
   repeated AttachmentAnchorInventoryRecord attachment_anchors = 5;
 }
@@ -664,10 +664,8 @@ message MountAssignmentBinding {
 // therefore do not appear in inventory.
 enum MountInventorySourceAuthority {
   MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED = 0;
-  // Historical durable row predating broker-owned source-pin authority.
-  MOUNT_INVENTORY_SOURCE_AUTHORITY_LEGACY_UNBOUND = 1;
-  // Row containing the canonical source handle required by Mount 1.6.
-  MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT = 2;
+  // Row containing the canonical source handle required by Mount 1.0.
+  MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT = 1;
 }
 
 message MountRecipe {
@@ -680,11 +678,9 @@ message MountRecipe {
   bytes source_view_id = 7;
   bytes source_incarnation_id = 8;
   MountSourceConsistency source_consistency = 9;
-  // Absent in Mount 1.0-1.5 compatibility inventories. In Mount 1.6 this is
-  // required exactly when source_authority is EXACT.
+  // Exact handle originally presented on CreateDetached.
   bytes source_handle = 10;
-  // Unspecified in Mount 1.0-1.5. Mount 1.6 explicitly distinguishes a
-  // historical non-authorizing row from an exact source-bound row.
+  // Explicit marker for exact source authority.
   MountInventorySourceAuthority source_authority = 11;
 }
 
@@ -780,11 +776,7 @@ message MountInventoryRecord {
   MountOperationCorrelation release = 15;
 }
 
-// Preserved protocol-1.0 action-summary inventory.
-message InventoryMountsResponse { repeated MountResult mounts = 1; }
-
-// Authoritative inventory is a distinct, explicitly negotiated method so a
-// protocol-1.0 peer can never decode resource records as MountResult values.
+// Authoritative inventory is the sole Mount resource snapshot.
 message InventoryMountResourcesResponse {
   bytes kernel_boot_id = 2; // Current Linux boot ID, exactly 16 bytes.
   // Nonzero next-frame boundary after the complete durable snapshot.
@@ -795,7 +787,6 @@ message InventoryMountResourcesResponse {
 
 service MountBroker {
   rpc ApplyMount(ApplyMountRequest) returns (MountResult);
-  rpc InventoryMounts(InventoryMountsRequest) returns (InventoryMountsResponse);
   rpc InventoryMountResources(InventoryMountsRequest) returns (InventoryMountResourcesResponse);
   rpc ApplyDestinationSlot(ApplyDestinationSlotRequest) returns (ApplyDestinationSlotResponse);
   rpc InventoryDestinationSlots(InventoryDestinationSlotsRequest)

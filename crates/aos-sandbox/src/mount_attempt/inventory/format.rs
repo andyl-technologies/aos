@@ -1,7 +1,7 @@
 //! Length-delimited codec for authenticated Mount inventory snapshots.
 //!
 //! ```text
-//! AOSMTI02 | state:1 | flags:1 | reserved:2 | request-id:16 |
+//! AOSMTI01 | state:1 | flags:1 | reserved:2 | request-id:16 |
 //! controller-state:32 | request-bytes:4 | response-bytes:4 |
 //! request | response | digest:32
 //! ```
@@ -14,8 +14,8 @@ use sha2::{Digest as _, Sha256};
 use super::SnapshotRecord;
 use crate::mount_attempt::MountAttemptError;
 
-const MAGIC: &[u8; 8] = b"AOSMTI02";
-const DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.v2\0";
+const MAGIC: &[u8; 8] = b"AOSMTI01";
+const DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.v1\0";
 const STATE_COMPLETE: u8 = 1;
 const PREFIX_BYTES: usize = 68;
 const DIGEST_BYTES: usize = 32;

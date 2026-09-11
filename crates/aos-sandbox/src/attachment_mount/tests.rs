@@ -17,11 +17,10 @@ use aos_sandbox_core::model::{
 use aos_sandbox_core::{
     AttachmentId, AttachmentSlotId, CacheDomainId, DesiredGeneration, FeatureRef, IncarnationId,
     LeaseId, MediaType, NamespaceGeneration, ObjectDigest, OperationId, PortableMediaType,
-    ProtocolVersion, Revision, SandboxId, ViewId, descriptor_for_bytes, encode_view,
-    encode_view_source,
+    Revision, SandboxId, ViewId, descriptor_for_bytes, encode_view, encode_view_source,
 };
 use aos_sandbox_protocol::{
-    PeerCredentials, PeerPolicy, decode_mount_inventory_response_for_version, decode_mount_request,
+    PeerCredentials, PeerPolicy, decode_mount_inventory_response, decode_mount_request,
 };
 use buffa::Message as _;
 
@@ -211,7 +210,7 @@ fn wire_resource(
 }
 
 fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRecord {
-    decode_mount_inventory_response_for_version(
+    decode_mount_inventory_response(
         &InventoryMountResourcesResponse {
             kernel_boot_id: vec![14; 16],
             broker_instance_id: vec![21; 16],
@@ -221,7 +220,6 @@ fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRe
         }
         .encode_to_vec(),
         16 * 1024 * 1024,
-        ProtocolVersion::new(1, 6),
     )
     .unwrap()
     .mounts()[0]
@@ -231,7 +229,7 @@ fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRe
 fn validate_shape(mut request: ApplyMountRequest) {
     request.header = Some(RequestHeader {
         protocol_major: 1,
-        protocol_minor: 6,
+        protocol_minor: 0,
         request_id: vec![22; 16],
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
         deadline_boottime_nanoseconds: 2,

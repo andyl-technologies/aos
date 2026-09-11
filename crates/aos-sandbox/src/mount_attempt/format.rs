@@ -1,7 +1,7 @@
 //! Length-delimited codec for durable controller Mount attempts.
 //!
 //! ```text
-//! AOSMTA02 | state:1 | flags:1 | reserved:2 | request-id:16 |
+//! AOSMTA01 | state:1 | flags:1 | reserved:2 | request-id:16 |
 //! namespace-target-reference:112 | assignment-epoch:8 |
 //! desired-generation:8 | assignment-digest:32 | catalog:32 |
 //! semantics:32 | plan:32 | template:32 | lease:32 |
@@ -19,8 +19,8 @@ use sha2::{Digest as _, Sha256};
 use super::{DurableNamespaceTargetReferenceV1, MountAttemptError, Record};
 use aos_sandbox_core::{IncarnationId, SandboxId};
 
-const MAGIC: &[u8; 8] = b"AOSMTA02";
-const DOMAIN: &[u8] = b"aos.sandbox.mount-attempt.v2\0";
+const MAGIC: &[u8; 8] = b"AOSMTA01";
+const DOMAIN: &[u8] = b"aos.sandbox.mount-attempt.v1\0";
 const STATE_ADMITTED: u8 = 1;
 const HAS_CATALOG: u8 = 1 << 0;
 const PREFIX_BYTES: usize = 376;

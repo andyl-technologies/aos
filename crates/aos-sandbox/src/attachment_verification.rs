@@ -246,9 +246,6 @@ impl Record {
         inventory_request_id: [u8; 16],
         resource: &ValidatedMountInventoryRecord,
     ) -> Result<Self, AttachmentVerificationError> {
-        if resource.recipe().source().exact().is_none() {
-            return Err(AttachmentVerificationError::NotVerifiable);
-        }
         let binding = target.runtime_generation().scope().binding();
         let assignment = binding.manifest().manifest();
         let observation = resource
@@ -326,7 +323,6 @@ impl Record {
         let resource_binding = resource.binding();
         let resource_fence = resource_binding.fence();
         self.attachment_id == desired.intent().id()
-            && resource.recipe().source().exact().is_some()
             && self.desired_generation == desired.intent().desired_generation().get()
             && self.desired_record_digest == *desired.record_digest().as_bytes()
             && self.namespace_target == target.durable_reference()
@@ -362,7 +358,6 @@ impl Record {
         let resource_fence = resource_binding.fence();
 
         self.attachment_id == desired.intent().id()
-            && resource.recipe().source().exact().is_some()
             && self.desired_generation == desired.intent().desired_generation().get()
             && self.desired_record_digest == *desired.record_digest().as_bytes()
             && self.namespace_target.sandbox() == assignment.sandbox()
@@ -754,11 +749,7 @@ fn mount_recipe_digest(resource: &ValidatedMountInventoryRecord) -> [u8; 32] {
 }
 
 fn update_exact_inventoried_source(digest: &mut Sha256, recipe: &ValidatedMountRecipe) {
-    if let Some((handle, _)) = recipe.source().exact() {
-        update_bytes(digest, &encode_view_source(handle));
-    }
-    // Legacy rows append nothing, reproducing the historical resource digest.
-    // They remain audit-readable but fail the explicit exact-source checks.
+    update_bytes(digest, &encode_view_source(recipe.source().source()));
 }
 
 fn desired_recipe_digest(intent: &AttachmentIntent) -> [u8; 32] {

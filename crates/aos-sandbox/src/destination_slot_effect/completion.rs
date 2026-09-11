@@ -19,7 +19,7 @@ use aos_sandbox_core::{FeatureRef, ObjectDigest, ProtocolId, RawPairedClockSampl
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
-    ValidatedDestinationSlotInventoryRecord, decode_destination_slot_response_for_version,
+    ValidatedDestinationSlotInventoryRecord, decode_destination_slot_response,
     decode_response_envelope, decode_server_hello,
 };
 use buffa::Message as _;
@@ -431,8 +431,7 @@ fn validate_receipt(
     receipt: &[u8],
 ) -> Result<ValidatedDestinationSlotInventoryRecord, DestinationSlotEffectError> {
     let request = decode_request(attempt.body(), attempt.deadline_boottime_nanoseconds())?;
-    let result =
-        decode_destination_slot_response_for_version(receipt, RESPONSE_BYTES, CARRIER_VERSION)?;
+    let result = decode_destination_slot_response(receipt, RESPONSE_BYTES)?;
     let request_digest: [u8; 32] = Sha256::digest(attempt.body()).into();
     if result.fence() != request.binding_fence()
         || result.namespace_generation() != request.namespace_generation()

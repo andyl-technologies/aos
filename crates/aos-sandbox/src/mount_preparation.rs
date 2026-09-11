@@ -9,7 +9,7 @@
 //! ```text
 //! CurrentNamespaceTarget + Mount intent
 //!     -> authorized Host 1.3 ObserveMountScope packet
-//!     -> unauthenticated Mount 1.6 PrepareMountCatalog packet
+//!     -> unauthenticated Mount 1.0 PrepareMountCatalog packet
 //!     -> opaque commitment + unchanged exclusive deadline
 //! ```
 //!
@@ -56,11 +56,22 @@ use crate::{BrokerDispatchTemplateError, BrokerDispatchTemplateV1, SignedBrokerP
 
 pub(crate) mod transport;
 
-const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
+const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 3);
 const MOUNT_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
 const HOST_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE;
 const RESPONSE_BYTES: u32 = 16 * 1024;
+
+fn mount_catalog_client_hello() -> BrokerClientHello {
+    BrokerClientHello {
+        protocol_major: MOUNT_VERSION.major().into(),
+        protocol_minor: MOUNT_VERSION.minor().into(),
+        audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+        maximum_response_bytes: RESPONSE_BYTES,
+        required_methods: vec![MOUNT_METHOD.into()],
+        ..Default::default()
+    }
+}
 
 /// Reports invalid intent, stale live authority, or a rejected Mount exchange.
 #[derive(Debug, thiserror::Error)]
@@ -185,14 +196,7 @@ impl MountCatalogClient {
     > {
         let deadline =
             transport::exchange_deadline(request.header().deadline_boottime_nanoseconds())?;
-        let hello = BrokerClientHello {
-            protocol_major: 1,
-            protocol_minor: 6,
-            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-            maximum_response_bytes: RESPONSE_BYTES,
-            required_methods: vec![MOUNT_METHOD.into()],
-            ..Default::default()
-        };
+        let hello = mount_catalog_client_hello();
         let packet = encode_unauthed_request_envelope(ProtocolId::MountBroker, MOUNT_METHOD, body)?;
 
         transport::send(&mut self.socket, &hello.encode_to_vec(), deadline)?;

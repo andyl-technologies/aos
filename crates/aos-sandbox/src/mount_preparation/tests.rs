@@ -57,6 +57,19 @@ fn create_intent() -> ApplyMountRequest {
 }
 
 #[test]
+fn catalog_client_hello_offers_the_exact_mount_baseline() {
+    let hello = mount_catalog_client_hello();
+
+    assert_eq!(hello.protocol_major, 1);
+    assert_eq!(hello.protocol_minor, 0);
+    assert_eq!(hello.required_methods.len(), 1);
+    assert_eq!(
+        hello.required_methods[0],
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
+    );
+}
+
+#[test]
 fn intent_accepts_only_action_fields_and_keeps_context_unset() {
     let intent = MountCatalogIntentV1::new(create_intent()).unwrap();
     assert!(intent.request.header.as_option().is_none());

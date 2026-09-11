@@ -381,7 +381,7 @@ mod tests {
         let request = ApplyMountRequest {
             header: Some(RequestHeader {
                 protocol_major: 1,
-                protocol_minor: 6,
+                protocol_minor: 0,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
                 deadline_boottime_nanoseconds: 100,

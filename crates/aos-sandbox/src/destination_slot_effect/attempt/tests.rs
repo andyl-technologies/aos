@@ -169,7 +169,7 @@ fn request(action: DestinationSlotAction, deadline: u64) -> Vec<u8> {
     aos_proto::aos::sandbox::local::v1::ApplyDestinationSlotRequest {
         header: Some(RequestHeader {
             protocol_major: 1,
-            protocol_minor: 4,
+            protocol_minor: 0,
             request_id: operation_id(action).to_vec(),
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             deadline_boottime_nanoseconds: deadline,

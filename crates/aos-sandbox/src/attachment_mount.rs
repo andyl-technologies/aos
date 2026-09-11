@@ -1064,10 +1064,7 @@ fn request_for_action(
         )
     } else {
         let recipe = recipe.ok_or(AttachmentMountError::NotPreparable)?;
-        let (source_handle, _) = recipe
-            .source()
-            .exact()
-            .ok_or(AttachmentMountError::NotPreparable)?;
+        let source_handle = recipe.source().source();
         (
             recipe.attachment_id().to_vec(),
             recipe.destination_slot_id().to_vec(),

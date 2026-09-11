@@ -5,7 +5,7 @@
 //! reap must preserve:
 //!
 //! ```text
-//! AOSDSE03 | flags:1 | action:1 | reserved:2 | request-id:16 |
+//! AOSDSE01 | flags:1 | action:1 | reserved:2 | request-id:16 |
 //! assignment-target:56 | slot-id:16 | spec-digest:32 | spec-size:8 |
 //! assignment:48 | semantic-digest:32 | plan-digest:32 |
 //! template-digest:32 | lease-digest:32 | lease-generation:8 | deadline:8 |
@@ -54,9 +54,9 @@ use crate::{
 mod tests;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotAttempt;
-const MAGIC: &[u8; 8] = b"AOSDSE03";
-const RECORD_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.v3\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.transaction.v3\0";
+const MAGIC: &[u8; 8] = b"AOSDSE01";
+const RECORD_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.v1\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-attempt.transaction.v1\0";
 const FIXED_RECORD_BYTES: usize = 576;
 const MAXIMUM_ATTEMPTS: usize = 16_384;
 const MAXIMUM_NAMESPACE_BYTES: usize = 256 * 1024 * 1024;

@@ -524,9 +524,7 @@ fn recipe_matches_intent(
     let Some(source_consistency) = source_consistency(intent.consistency()) else {
         return false;
     };
-    let Some((inventoried_source_handle, _)) = recipe.source().exact() else {
-        return false;
-    };
+    let inventoried_source_handle = recipe.source().source();
 
     recipe.attachment_id() == intent.id().as_bytes()
         && recipe.destination_slot_id() == intent.destination_slot().as_bytes()
@@ -1225,10 +1223,9 @@ mod tests {
             broker_instance_id: vec![19; 16],
             ..Default::default()
         };
-        aos_sandbox_protocol::decode_mount_inventory_response_for_version(
+        aos_sandbox_protocol::decode_mount_inventory_response(
             &response.encode_to_vec(),
             16 * 1024 * 1024,
-            aos_sandbox_core::ProtocolVersion::new(1, 6),
         )
         .unwrap()
         .mounts()[0]

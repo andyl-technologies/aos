@@ -16,7 +16,7 @@ use aos_sandbox_core::{
 use crate::{ValidatedMountAttributes, ValidatedMountRequest};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSMSEM1";
-const FORMAT_VERSION: u16 = 4;
+const FORMAT_VERSION: u16 = 1;
 const MAXIMUM_DESCRIPTOR_ROLES: usize = 16;
 const MAXIMUM_CANONICAL_BYTES: usize = 2 * 1024;
 

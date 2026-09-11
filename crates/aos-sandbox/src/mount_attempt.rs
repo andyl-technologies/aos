@@ -87,8 +87,8 @@ pub(crate) use inventory::{
 };
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountAttempt;
-const MOUNT_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 6);
-const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
+const MOUNT_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const MAXIMUM_RESPONSE_BYTES: u32 = 16 * 1024;
 const MAXIMUM_ATTEMPTS: usize = 4096;
 const MAXIMUM_NAMESPACE_BYTES: usize = 256 * 1024 * 1024;

@@ -5,7 +5,7 @@
 //! its optional successor is a permanent release tombstone:
 //!
 //! ```text
-//! AOSSLT02 | presence:1 | flags:1 | reserved:2 | slot-id:16 |
+//! AOSSLT01 | presence:1 | flags:1 | reserved:2 | slot-id:16 |
 //! revision:8 | sandbox-id:16 | incarnation-id:16 |
 //! namespace-generation:8 | sandbox-spec-digest:32 | sandbox-spec-size:8 |
 //! operation-id:16 | request-digest:32 | predecessor-digest:32 | digest:32
@@ -30,9 +30,9 @@ use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentAssignmentTarget, CurrentNamespaceTarget, NamespaceTargetError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
-const MAGIC: &[u8; 8] = b"AOSSLT02";
-const DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.v2\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.transaction.v2\0";
+const MAGIC: &[u8; 8] = b"AOSSLT01";
+const DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.v1\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.attachment-slot.transaction.v1\0";
 const RECORD_BYTES: usize = 228;
 const FLAG_EXPECTED_PREVIOUS: u8 = 1;
 const MAXIMUM_SLOT_RECORDS: usize = 65_536;
