@@ -25,8 +25,9 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         BudgetGrant, CampaignClient, CampaignCommandId, CampaignControlAction, CampaignHash,
         CampaignLineage, CampaignMode, CampaignName, CampaignPolicy, CampaignPrincipal,
         CampaignRepository, CampaignSeed, ConfigurationId, ControlRequest, CoverageProjection,
-        ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingExactPins, FindingKind,
-        FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+        ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingExactPins,
+        FindingExactRetention, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
+        FindingKind, FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
         FindingSignatureMinimizationEvidence, FindingTarget, FindingTriageEvidenceSet,
         FindingTriageReplayEvidence, MeasurementSet, Observation, PropertyEvidence,
         PropertyVerdict, PropertyVerdictSet, RepositoryCampaignService, RetentionPolicy,
@@ -181,6 +182,17 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         BTreeSet::new(),
     )?;
     let observation_snapshot = repository.head(CAMPAIGN)?.snapshot_id();
+    let retention_basis =
+        repository.attempt_retention_policy_basis_at(observation_snapshot, attempt)?;
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )?;
     let observed = repository.publish_observation(CAMPAIGN, observation_snapshot, &observation)?;
     let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
     let reproduction_payload = model_finding.artifact.to_compact_binary();
@@ -314,14 +326,16 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
             verification_selected_native_replay.to_compact_binary()?,
         )?,
     );
-    let bundle = FindingCandidateBundle::new_with_triage_evidence(
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
         observed.observation,
         signature.clone(),
         original,
         minimized,
         signature_minimization.clone(),
         FindingExactPins::default(),
-        triage_evidence,
+        Some(triage_evidence),
+        None,
+        exact_retention,
     )?;
     let bundle = repository.publish_finding_candidate_bundle(&bundle)?;
     let published =
@@ -561,19 +575,21 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         &minimized_signature,
         alternate_selected_replay.to_compact_binary()?,
     )?;
-    let duplicate_bundle = FindingCandidateBundle::new_with_triage_evidence(
+    let duplicate_bundle = FindingCandidateBundle::new_with_exact_retention(
         observed.observation,
         signature.clone(),
         original,
         minimized,
         signature_minimization.clone(),
         FindingExactPins::default(),
-        FindingTriageEvidenceSet::new(
+        Some(FindingTriageEvidenceSet::new(
             triage_evidence.minimization_original(),
             triage_evidence.minimization_selected(),
             triage_evidence.verification_original(),
             alternate_selected,
-        ),
+        )),
+        None,
+        exact_retention,
     )?;
     let duplicate_bundle = repository.publish_finding_candidate_bundle(&duplicate_bundle)?;
     let duplicate_published = repository.incorporate_finding_candidate_bundle(
@@ -619,19 +635,21 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         &signature,
         frame_distinct_replay.to_compact_binary()?,
     )?;
-    let conflicting_bundle = FindingCandidateBundle::new_with_triage_evidence(
+    let conflicting_bundle = FindingCandidateBundle::new_with_exact_retention(
         observed.observation,
         signature.clone(),
         original,
         minimized,
         signature_minimization.clone(),
         FindingExactPins::default(),
-        FindingTriageEvidenceSet::new(
+        Some(FindingTriageEvidenceSet::new(
             frame_distinct_original,
             triage_evidence.minimization_selected(),
             triage_evidence.verification_original(),
             triage_evidence.verification_selected(),
-        ),
+        )),
+        None,
+        exact_retention,
     )?;
     let conflicting_bundle = repository.publish_finding_candidate_bundle(&conflicting_bundle)?;
     let conflicting_published = repository.incorporate_finding_candidate_bundle(
@@ -690,19 +708,21 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         &signature,
         foreign_native_replay.to_compact_binary()?,
     )?;
-    let foreign_bundle = FindingCandidateBundle::new_with_triage_evidence(
+    let foreign_bundle = FindingCandidateBundle::new_with_exact_retention(
         observed.observation,
         signature,
         original,
         minimized,
         signature_minimization,
         FindingExactPins::default(),
-        FindingTriageEvidenceSet::new(
+        Some(FindingTriageEvidenceSet::new(
             foreign_original,
             triage_evidence.minimization_selected(),
             triage_evidence.verification_original(),
             triage_evidence.verification_selected(),
-        ),
+        )),
+        None,
+        exact_retention,
     )?;
     let foreign_bundle = repository.publish_finding_candidate_bundle(&foreign_bundle)?;
     let foreign_published = repository.incorporate_finding_candidate_bundle(
