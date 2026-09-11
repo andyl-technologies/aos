@@ -181,6 +181,11 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
     /// Both executions consume the assignment's shared physical work budget.
     /// An incomplete probe is returned as evidence absence rather than a
     /// modeled timeout or divergence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a worker failure when either probe execution or its required
+    /// cleanup cannot complete within the admitted work budget.
     fn probe_finding_candidate_determinism(
         &mut self,
         _input: &CrucibleAttemptExecution,

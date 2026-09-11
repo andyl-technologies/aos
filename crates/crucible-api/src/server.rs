@@ -1329,6 +1329,8 @@ where
         let mut preparation = tokio::task::spawn_blocking(move || pending.authenticate());
         let mut shutdown = state.shutdown.clone();
         let prepared = tokio::select! {
+            biased;
+
             result = &mut preparation => match result {
                 Ok(Ok(prepared)) => prepared,
                 Ok(Err(error)) => return lifecycle_error_response(error),
@@ -1358,6 +1360,8 @@ where
         let commit_deadline = prepared.context().deadline();
         let mut commit_shutdown = state.shutdown.clone();
         let mut control_plane = tokio::select! {
+            biased;
+
             control_plane = state.control_plane.lock() => control_plane,
             () = tokio::time::sleep_until(tokio::time::Instant::from_std(commit_deadline)) => {
                 cancellation_guard.cancel();
@@ -2457,6 +2461,7 @@ fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, Str
     }
 }
 
+// crucible-lint: allow stringly-error -- this private wire parser returns bounded diagnostics that its typed transport boundary immediately encodes.
 fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), String> {
     match line {
         Some(actual) if actual == expected => Ok(()),
@@ -2465,6 +2470,7 @@ fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), 
     }
 }
 
+// crucible-lint: allow stringly-error -- this private wire parser returns bounded diagnostics that its typed transport boundary immediately encodes.
 fn parse_wire_line<'a>(line: Option<&'a str>, prefix: &'static str) -> Result<&'a str, String> {
     let line = line.ok_or_else(|| format!("missing `{prefix}` line"))?;
     line.strip_prefix(prefix)

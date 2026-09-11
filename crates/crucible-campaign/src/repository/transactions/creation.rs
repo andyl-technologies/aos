@@ -3,6 +3,20 @@
 use super::*;
 
 impl CampaignRepository {
+    /// Builds an in-memory repository with a fixed immutable-object byte limit.
+    ///
+    /// The repository is suitable for bounded fixtures and process-local
+    /// workflows whose state does not need to survive a restart.
+    #[must_use]
+    pub fn in_memory(namespace: impl Into<String>, max_bytes: u64) -> Self {
+        Self::new(
+            Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+                namespace, max_bytes,
+            )),
+            Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        )
+    }
+
     /// Builds a repository over independently composable blob and ref backends.
     #[must_use]
     pub fn new(blobs: Arc<dyn ImmutableBlobBackend>, refs: Arc<dyn MutableRefBackend>) -> Self {

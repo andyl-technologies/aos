@@ -1163,6 +1163,7 @@ impl FindingCandidateBundle {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] under the same conditions as [`Self::new`].
+    // crucible-lint: allow rust-allow -- every immutable replay-capture handoff field remains explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_replay_captures(
         observation: ObservationId,
@@ -1229,6 +1230,7 @@ impl FindingCandidateBundle {
     ///
     /// Returns [`CampaignCodecError`] when the complete retention disposition,
     /// candidate count, selected pins, or evidence shape disagree.
+    // crucible-lint: allow rust-allow -- every authenticated retention handoff field remains explicit.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_authenticated_exact_retention(
         observation: ObservationId,

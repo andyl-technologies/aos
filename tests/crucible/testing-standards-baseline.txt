@@ -16,6 +16,7 @@
 # The delayed cancellation fixture delivers one cancellation, and the moved
 # node fixture waits for loader completion before its single audit assertion.
 # Hot-fork `retry` names classify resource recovery; they never rerun a test.
+# Campaign GC `retry` names authenticated journal recovery; they never rerun a test.
 # The native scenario retry domain and selected-retry metric model a guest
 # choice and its observation; neither retries a failed test.
 # The native atomic-world publication retry resumes one immutable repository
@@ -45,6 +46,7 @@ crucible-cli	tests/campaign_store_process	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process/guest_choice	retry	1
 crucible-daemon	src/campaign_bootstrap/tests	thread::sleep	1
+crucible-daemon	src/campaign_gc/tests	retry	1
 crucible-daemon	src/campaign_transfer/tests	retry	1
 crucible-daemon	src/campaign_server/tests	thread::sleep	1
 crucible-daemon	src/campaign_server	thread::sleep	1

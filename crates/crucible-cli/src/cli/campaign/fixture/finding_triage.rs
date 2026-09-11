@@ -12,7 +12,7 @@
 //! The command reports the paths and expected artifact identities in a
 //! versioned object:
 //!
-//! ```json
+//! ```text
 //! {
 //!   "schema": "crucible.cli.campaign-finding-triage-fixture.v1",
 //!   "directory": "/tmp/fixture",
@@ -27,9 +27,6 @@
 
 use super::*;
 
-use std::fmt;
-use std::sync::Arc;
-
 use crucible_campaign::{
     BudgetGrant, CampaignAuthorizationError, CampaignClient, CampaignCommandId,
     CampaignControlAction, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
@@ -41,7 +38,7 @@ use crucible_campaign::{
     FindingTriageReplayEvidence, MeasurementSet, Observation, PropertyEvidence, PropertyVerdict,
     PropertyVerdictSet, RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopOutcome,
 };
-use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+use std::fmt;
 
 const FINDING_TRIAGE_FIXTURE_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-finding-triage-fixture.v1";
@@ -236,10 +233,7 @@ fn build_native_finding_fixture() -> Result<NativeFindingFixture, CliError> {
 fn start_fixture_campaign(
     form: &crucible::ScenarioDefForm,
 ) -> Result<CampaignFixtureContext, CliError> {
-    let repository = CampaignRepository::new(
-        Arc::new(MemoryBlobBackend::new(CAMPAIGN, u64::MAX)),
-        Arc::new(MemoryRefBackend::new()),
-    );
+    let repository = CampaignRepository::in_memory(CAMPAIGN, u64::MAX);
     let scenario =
         ScenarioDefId::from_hash(CampaignHash::from_bytes(form.scenario_def().id().bytes));
     let scenario_artifact = fixture_step(
@@ -848,7 +842,7 @@ where
 }
 
 #[cfg(test)]
-// crucible-lint: allow rust-allow -- boundary tests use panic shortcuts.
+// crucible-lint: allow panic-shortcut -- boundary tests use panic shortcuts.
 #[allow(clippy::expect_used)]
 mod segmented_replay_tests {
     use super::*;
