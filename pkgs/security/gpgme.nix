@@ -1,6 +1,9 @@
 ##! gpgme — High-level API for GnuPG operations
 {
   mkDerivation,
+  lib,
+  stdenv,
+  bash,
   fetchurl,
   gnumake,
   pkg-config,
@@ -25,7 +28,7 @@ in
     };
 
     buildDeps = [gnumake pkg-config texinfo gnupg libgpg-error];
-    runtimeDeps = [libassuan libgpg-error npth glib];
+    runtimeDeps = [libassuan libgpg-error npth glib] ++ lib.optional (stdenv.isCross && stdenv.hostPlatform.isLinux) bash;
     propagatedDeps = [libassuan libgpg-error];
 
     phases = [
@@ -38,14 +41,28 @@ in
       }
       {
         name = "configure";
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix="$out" \
-            --enable-fixed-path=${gnupg}/bin \
-            --with-libgpg-error-prefix=${libgpg-error} \
-            --with-libassuan-prefix=${libassuan}
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # The native libgpg-error supplies yat2m, but its config helper would
+            # select native libraries. Resolve target metadata with the build shell.
+            mkdir -p .aos-build-tools
+            cat > .aos-build-tools/gpgrt-config <<EOF
+            #!$CONFIG_SHELL
+            exec "$CONFIG_SHELL" ${libgpg-error}/bin/gpgrt-config "\$@"
+            EOF
+            chmod +x .aos-build-tools/gpgrt-config
+            export GPGRT_CONFIG="$PWD/.aos-build-tools/gpgrt-config"
+            export PKG_CONFIG_LIBDIR=
+            export PKG_CONFIG_PATH="${libgpg-error}/lib/pkgconfig:${libassuan}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          ''
+          + ''
+            ./configure \
+              $configureFlags \
+              --prefix="$out" \
+              --enable-fixed-path=${gnupg}/bin \
+              --with-libgpg-error-prefix=${libgpg-error} \
+              --with-libassuan-prefix=${libassuan}
+          '';
       }
       {
         name = "build";
@@ -57,7 +74,14 @@ in
       }
       {
         name = "install";
-        script = ''make install'';
+        script =
+          ''make install''
+          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+
+            # Public config helpers run on the target, including when invoked by
+            # target Python during an emulated consumer build.
+            sed -i '1s|^#!.*|#!${bash}/bin/bash|' "$out/bin/gpgme-config"
+          '';
       }
     ];
 
