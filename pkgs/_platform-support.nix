@@ -551,6 +551,7 @@ let
     "parallel"
     "passt"
     "pciutils"
+    "pe-tools"
     "pm-utils"
     "polkit"
     "policycoreutils"
