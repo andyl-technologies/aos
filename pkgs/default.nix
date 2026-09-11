@@ -1439,6 +1439,15 @@
     units = builtins.sort (left: right: left.unitId < right.unitId) maintenanceUnits;
   };
 
+  # All Linux QEMU variants enable compressed disk-image support when bzip2
+  # is found. Retain that target library through runtime-reference scrubbing.
+  mkQemuPackage = args: let
+    package = callPackage ./emulation/qemu.nix args;
+  in
+    if stdenv.isCross && stdenv.hostPlatform.isLinux
+    then package.overrideAttrs (previous: {runtimeDeps = previous.runtimeDeps ++ [self.bzip2];})
+    else package;
+
   self =
     {
       # --- Plumbing ---
@@ -1499,15 +1508,11 @@
         callPackage ./kernel/nvidia-open.nix {inherit kernel;};
 
       qemu = let
-        package = callPackage ./emulation/qemu.nix {};
+        package = mkQemuPackage {};
       in
         if stdenv.isCross && stdenv.hostPlatform.isLinux
         then
           package.overrideAttrs (previous: {
-            # Meson enables compressed disk-image support when bzip2 is found.
-            # Retain its target library through runtime-reference scrubbing.
-            runtimeDeps = previous.runtimeDeps ++ [self.bzip2];
-
             # Linux-user emulation needs UAPI families such as sound/, beyond
             # the linux/ and asm/ headers exported by the target glibc output.
             # An explicit include preserves the target header identity instead
@@ -1528,12 +1533,12 @@
           })
         else package;
 
-      qemu-crucible = callPackage ./emulation/qemu.nix {
+      qemu-crucible = mkQemuPackage {
         pname = "qemu-crucible";
         enablePlugins = true;
         applyCruciblePatches = true;
       };
-      qemu-crucible-reference = callPackage ./emulation/qemu.nix {
+      qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
         enablePlugins = true;
         applyCruciblePatches = false;
@@ -1546,7 +1551,7 @@
         series,
         testOnlyPostPatch ? null,
       }:
-        callPackage ./emulation/qemu.nix {
+        mkQemuPackage {
           inherit pname series testOnlyPostPatch;
           enablePlugins = true;
           applyCruciblePatches = true;
