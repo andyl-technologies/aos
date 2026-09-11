@@ -139,7 +139,7 @@ in
 
             # Fake git — must return exit 1 to avoid canonicalize("") panic
             mkdir -p .fake-bin
-            printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
             cat > bootstrap.toml << TOML
@@ -174,6 +174,7 @@ in
             # scheduler allocation as the surrounding bootstrap.
             codegen-units = $NIX_BUILD_CORES
             rpath = true
+            remap-debuginfo = true
             omit-git-hash = true
             download-rustc = false
             # With lld disabled, x.py refuses rust.lld = true when configured with an
@@ -189,9 +190,13 @@ in
 
             [target.x86_64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
+            rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
 
             [target.aarch64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
+            rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
 
             # The bare wasm32 target needs no external C toolchain or llvm-config;
             # rustc's own LLVM backend emits the wasm directly. Use the pure-Rust
@@ -204,6 +209,7 @@ in
             # virtual prefix so downstream embedded Wasm has no /build refs.
             rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
             optimized-compiler-builtins = false
+            profiler = false
             TOML
           '';
         }
@@ -266,7 +272,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!/bin/sh
+            #!${bash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
@@ -300,6 +306,23 @@ in
                     if [ -d "$out/lib/rustlib/src" ]; then
                       mkdir -p $dev/lib/rustlib
                       mv "$out/lib/rustlib/src" "$dev/lib/rustlib/src"
+                    fi
+
+                    install_log="$out/lib/rustlib/install.log"
+                    test -f "$install_log"
+                    sed -i \
+                      -e "s|/build/rustc-${version}-src/build/|/rustc/${version}/bootstrap/|g" \
+                      -e "s|/build/rustc-${version}-src|/rustc/${version}|g" \
+                      "$install_log"
+                    old_source_root="/build/rustc-${version}-src"
+                    remapped_source_root="/rustc/${version}/toolchain"
+                    test "''${#old_source_root}" -eq "''${#remapped_source_root}"
+                    find "$out" "$dev" -type f -exec sed -i \
+                      "s|$old_source_root|$remapped_source_root|g" {} +
+                    if find "$out" "$dev" -type f -exec grep -a -l -m1 -F \
+                      "$old_source_root" {} + | grep -q .; then
+                      echo "Rust output retains its bootstrap source root" >&2
+                      exit 1
                     fi
           '';
         }
