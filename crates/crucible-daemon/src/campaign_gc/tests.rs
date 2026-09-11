@@ -23,12 +23,13 @@ use crucible_campaign::{
     ControlRequest, CoverageProjection, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
     ExecutorCompatibilityProfile, ExecutorControlService, ExecutorRejection, ExecutorService,
     ExecutorStatusService, ExplorerPolicy, FairnessPolicy, FindingCandidateBundle,
-    FindingCandidateBundleId, FindingExactPins, FindingId, FindingKind, FindingMinimizationAttempt,
-    FindingMinimizationEvidence, FindingReplayCaptureIncomplete, FindingSignature,
-    FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, MeasurementSet, MerkleMap, Observation, ObservationCandidate,
-    ObservationId, PropertyVerdictSet, RetentionPolicy, ScenarioDefId, StopOutcome,
-    SubmitAttemptDisposition, SubmitAttemptRequest,
+    FindingCandidateBundleId, FindingExactPins, FindingExactRetention,
+    FindingExactRetentionDisposition, FindingExactRetentionIncomplete, FindingId, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplayCaptureIncomplete,
+    FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, MeasurementSet, MerkleMap,
+    Observation, ObservationCandidate, ObservationId, PropertyVerdictSet, RetentionPolicy,
+    ScenarioDefId, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
@@ -613,13 +614,33 @@ fn publish_pending_finding_fixture_with_observation(
         replay_pass,
     )
     .expect("pending finding signature minimization");
-    let bundle = FindingCandidateBundle::new(
+    let source_snapshot = repository
+        .head(CAMPAIGN)
+        .expect("pending finding retention source head")
+        .snapshot_id();
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(source_snapshot, attempt)
+        .expect("pending finding retention policy basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("pending finding exact retention");
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
         observation,
         signature,
         original,
         minimized,
         signature_minimization,
         FindingExactPins::default(),
+        None,
+        None,
+        exact_retention,
     )
     .expect("pending finding candidate bundle");
     let candidate = repository
