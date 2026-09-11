@@ -107,7 +107,7 @@
         '';
         steps = [
           {
-            argv = ["@out@/sbin/dnsmasq" "--test" "--conf-file=dnsmasq.conf"];
+            argv = ["@out@/bin/dnsmasq" "--test" "--conf-file=dnsmasq.conf"];
             exit_code = 0;
           }
         ];
@@ -120,7 +120,7 @@
         files."invalid.conf" = "aos-not-a-dnsmasq-option=42\n";
         steps = [
           {
-            argv = ["@out@/sbin/dnsmasq" "--test" "--conf-file=invalid.conf"];
+            argv = ["@out@/bin/dnsmasq" "--test" "--conf-file=invalid.conf"];
             exit_code = 1;
             observes_rejection = true;
           }

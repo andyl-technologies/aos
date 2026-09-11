@@ -113,8 +113,10 @@ in {
     primaryScript = ''
       import pathlib
       stdio = pathlib.Path("@out@/usr/include/stdio.h").read_text(errors="replace")
+      declarations = pathlib.Path("@out@/usr/include/_stdio.h").read_text()
       tapi = pathlib.Path("@out@/usr/lib/libSystem.tbd").read_text()
-      assert "FILE" in stdio and "printf" in stdio
+      assert "#include <_stdio.h>" in stdio
+      assert "FILE" in declarations and "printf" in declarations
       assert "install-name:" in tapi and "libSystem" in tapi
       print("darwin-sdk data passed")
     '';
