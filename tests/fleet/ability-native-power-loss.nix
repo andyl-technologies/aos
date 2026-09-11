@@ -115,6 +115,7 @@ in {
       PACKAGE_RUNTIME = ${packageRuntime}
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
+      FLOCK = "${pkgs.util-linux}/bin/flock"
       PUBLISH_OPERATION = "publish-nginx-secondary-configuration"
       REFERENCE_ATTEMPT_TIMEOUT_MILLIS = 300_000
       REFERENCE_TOTAL_RECOVERY_MILLIS = 1_200_000
@@ -146,6 +147,69 @@ in {
           return json.loads(runtime.succeed(
               f"{COREUTILS}/cat {shlex.quote(path)}"
           ))
+
+
+      def retained_path_inventory(generations):
+          inventory = {}
+          for generation in generations:
+              root = f"/var/lib/profiles/system/gen-{generation}"
+              inventory[root] = runtime.succeed(
+                  f"{FIND} {shlex.quote(root)} -xdev "
+                  f"-printf '%y\\t%p\\t%l\\n' | {COREUTILS}/sort"
+              )
+          return inventory
+
+
+      def collect_store_paths(value, paths):
+          if isinstance(value, dict):
+              for child in value.values():
+                  collect_store_paths(child, paths)
+          elif isinstance(value, list):
+              for child in value:
+                  collect_store_paths(child, paths)
+          elif isinstance(value, str) and value.startswith("/nix/store/"):
+              paths.add(value)
+
+
+      def retained_store_paths(generations, transaction_root):
+          paths = set()
+          for generation in generations:
+              collect_store_paths(read_json(
+                  f"/var/lib/profiles/system/gen-{generation}/manifest.json"
+              ), paths)
+          collect_store_paths(read_json(
+              f"{transaction_root}/plan-bundle.json"
+          ), paths)
+          assert paths, (generations, transaction_root)
+          return sorted(paths)
+
+
+      def assert_store_paths_exist(paths):
+          for path in paths:
+              runtime.succeed(f"test -e {shlex.quote(path)}")
+
+
+      def disable_automatic_activation_recovery():
+          drop_in_directory = "/run/systemd/system/aos-activate.service.d"
+          drop_in = f"{drop_in_directory}/90-ability-unlocked-gc.conf"
+          runtime.succeed(textwrap.dedent(f"""
+              set -eu
+              {COREUTILS}/mkdir -p {drop_in_directory}
+              {COREUTILS}/printf '%s\\n' '[Service]' 'Restart=no' > {drop_in}
+              {SYSTEMCTL} daemon-reload
+              test "$({SYSTEMCTL} show aos-activate.service -p Restart --value)" = no
+          """))
+          return drop_in
+
+
+      def resume_activation_recovery(drop_in):
+          runtime.succeed(textwrap.dedent(f"""
+              set -eu
+              {COREUTILS}/rm -f {shlex.quote(drop_in)}
+              {SYSTEMCTL} daemon-reload
+              {SYSTEMCTL} reset-failed aos-activate.service
+              {SYSTEMCTL} --no-block start aos-activate.service
+          """))
 
 
       def retained_host_handoff(generation):
@@ -597,6 +661,7 @@ in {
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet nginx-nginx-secondary.service", timeout=120
       )
+      baseline_generation = current_generation()
       assert_route("gamma.example", 18082, "app-c", "gamma-v1")
 
       # Kill the exact native executor after Publish returned success but
@@ -659,10 +724,80 @@ in {
       )
       assert "gamma-process" in selected_process_content, selected_process
       assert_route("gamma.example", 18082, "app-c", "gamma-v1")
+      recovery_drop_in = disable_automatic_activation_recovery()
       kill_exact_activation_runtime()
       wait_switch("ability-boundary-process.service", False)
 
-      print("waiting for systemd to restart the interrupted activation")
+      print("collecting while the crashed activation is unlocked and unresolved")
+      runtime.wait_until_succeeds(
+          f"{SYSTEMCTL} is-failed --quiet aos-activate.service", timeout=120
+      )
+      assert runtime.succeed(
+          f"{SYSTEMCTL} show aos-activate.service -p Restart --value"
+      ).strip() == "no"
+      assert runtime.succeed(
+          f"{SYSTEMCTL} show aos-activate.service -p InvocationID --value"
+      ).strip() == process_invocation_before
+      runtime.succeed(
+          f"{FLOCK} --exclusive --nonblock /run/apm/switch.lock "
+          f"{COREUTILS}/true"
+      )
+
+      recovery_generations = [baseline_generation, process_state[0]]
+      assert len(set(recovery_generations)) == 2, recovery_generations
+      recovery_inventory_before = retained_path_inventory(recovery_generations)
+      recovery_store_paths = retained_store_paths(
+          recovery_generations, process_state[3]
+      )
+      assert_store_paths_exist(recovery_store_paths)
+      execution_journal_before_gc = runtime.succeed(
+          f"{COREUTILS}/cat "
+          f"{shlex.quote(process_state[3] + '/execution.journal')}"
+      ).encode()
+
+      clean_unresolved = json.loads(runtime.succeed(
+          f"{APM} --json clean --system --generations --keep 1",
+          timeout=600,
+      ))
+      retained_unresolved = clean_unresolved["configuration"][
+          "generations_after"
+      ]
+      assert baseline_generation in retained_unresolved, clean_unresolved
+      assert process_state[0] in retained_unresolved, clean_unresolved
+      runtime.succeed(f"{APM} gc", timeout=600)
+
+      assert retained_path_inventory(recovery_generations) == (
+          recovery_inventory_before
+      )
+      assert_store_paths_exist(recovery_store_paths)
+      assert runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(process_state[3] + '/plan-bundle.json')}"
+      ).encode() == process_state[4]
+      assert runtime.succeed(
+          f"{COREUTILS}/cat "
+          f"{shlex.quote(process_state[3] + '/execution.journal')}"
+      ).encode() == execution_journal_before_gc
+      selected_after_gc, selected_content_after_gc = (
+          assert_managed_configuration_selected(
+              activation_process, "nginx-secondary"
+          )
+      )
+      assert selected_after_gc == selected_process, (
+          selected_process,
+          selected_after_gc,
+      )
+      assert selected_content_after_gc == selected_process_content
+      assert_route("gamma.example", 18082, "app-c", "gamma-v1")
+      assert runtime.succeed(
+          f"{SYSTEMCTL} show aos-activate.service -p InvocationID --value"
+      ).strip() == process_invocation_before
+      runtime.succeed(
+          f"{FLOCK} --exclusive --nonblock /run/apm/switch.lock "
+          f"{COREUTILS}/true"
+      )
+
+      print("resuming the same interrupted activation after collection")
+      resume_activation_recovery(recovery_drop_in)
       resumed_boundary(
           "process-loss", process_state[1], process_state[2]
       )
