@@ -13,6 +13,7 @@
 }: let
   version = "1.5.1";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxAarch64 = stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   aarch64Patch = fetchurl {
     urls = [
       "https://cgit.git.savannah.gnu.org/cgit/guix.git/plain/gnu/packages/patches/jamvm-1.5.1-aarch64-support.patch?id=f23b95a3b24003f46293d67ce2ab4c2d1785853d"
@@ -34,13 +35,18 @@ in
     buildDeps =
       [gnumake patch]
       ++ (
-        if isDarwinCross
+        if isDarwinCross || isLinuxAarch64
         then [
           buildPackages.autoconf
           buildPackages.automake
           buildPackages.libtool
           buildPackages.m4
         ]
+        else []
+      )
+      ++ (
+        if isLinuxAarch64
+        then [buildPackages.patch]
         else []
       );
     runtimeDeps =
@@ -89,6 +95,14 @@ in
             sed -i 's/DIST_SUBDIRS = /DIST_SUBDIRS = x86_64 aarch64 /' \
               src/os/darwin/Makefile.am
 
+            ACLOCAL_PATH=${buildPackages.libtool}/share/aclocal autoreconf -fi
+          ''
+          else if isLinuxAarch64
+          then ''
+            # This release predates AArch64; use the existing reviewed Guix
+            # port, including its native-call assembly, for the Linux target.
+            sed -i '1i #define _GNU_SOURCE' src/os/linux/os.c
+            patch -p1 < ${aarch64Patch}
             ACLOCAL_PATH=${buildPackages.libtool}/share/aclocal autoreconf -fi
           ''
           else ''
