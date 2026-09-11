@@ -168,7 +168,7 @@ in
       cli = testing.mkToolCheck {
         pname = "tool-sasl2";
         tool = self;
-        command = "sasl2pluginviewer";
+        command = "${self}/sbin/pluginviewer -s";
       };
 
       soname = testing.mkSONAMECheck {
