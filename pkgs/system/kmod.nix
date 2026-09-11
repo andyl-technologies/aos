@@ -9,6 +9,8 @@
   zlib,
   xz,
   zstd,
+  lib,
+  stdenv,
 }: let
   version = "34";
 in
@@ -57,20 +59,29 @@ in
       }
       {
         name = "configure";
-        script = ''
-          nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
-          export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
-          meson setup build \
-            $mesonFlags \
-            --prefix=$out \
-            --sysconfdir=$out/etc \
-            -Ddistconfdir=$out/lib \
-            -Dzlib=enabled \
-            -Dxz=enabled \
-            -Dzstd=enabled \
-            -Dmanpages=false \
-            -Dbashcompletiondir=no
-        '';
+        script =
+          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+            # Bootstrap XZ also provides liblzma.pc. Resolve target libraries
+            # before build-tool metadata so Meson never links a native archive.
+            export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [openssl zlib xz zstd]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            # Meson removes inferred build RPATHs during installation. Keep
+            # the cross wrapper's declared runtime paths as explicit flags.
+            export LDFLAGS="$NIX_LDFLAGS ''${LDFLAGS:-}"
+          ''
+          + ''
+            nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
+            export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
+            meson setup build \
+              $mesonFlags \
+              --prefix=$out \
+              --sysconfdir=$out/etc \
+              -Ddistconfdir=$out/lib \
+              -Dzlib=enabled \
+              -Dxz=enabled \
+              -Dzstd=enabled \
+              -Dmanpages=false \
+              -Dbashcompletiondir=no
+          '';
       }
       {
         name = "build";
