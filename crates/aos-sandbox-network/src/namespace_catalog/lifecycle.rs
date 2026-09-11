@@ -10,8 +10,7 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    NamespaceLifecycleV1, NetworkNamespaceCatalogError, NetworkNamespaceCatalogV1,
-    RECORD_FORMAT_VERSION, next_generation,
+    NamespaceLifecycleV1, NetworkNamespaceCatalogError, NetworkNamespaceCatalogV1, next_generation,
 };
 
 const TRANSITION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.namespace-lifecycle.v1\0";
@@ -31,7 +30,7 @@ pub(crate) struct NetworkNamespaceLifecycleAuthorityV1 {
     pub(crate) identity: NetworkNamespaceIdentityV1,
     pub(crate) observed_state: NetworkNamespaceObservedStateV1,
     pub(crate) resource_digest: ObjectDigest,
-    pub(crate) kernel_plan_digest: Option<ObjectDigest>,
+    pub(crate) kernel_plan_digest: ObjectDigest,
     pub(crate) highest_lease_generation: u64,
     pub(crate) highest_lease_digest: ObjectDigest,
 }
@@ -652,7 +651,6 @@ impl NetworkNamespaceCatalogV1 {
             }
         }
 
-        next.format_version = RECORD_FORMAT_VERSION;
         next.catalog_generation = next_generation(self.generation)?;
         next.current_observation_digest = *observation.observation_digest.as_bytes();
         next.last_transition_request_id = observation.request_id;
@@ -666,7 +664,7 @@ impl NetworkNamespaceCatalogV1 {
 
     fn validate_transition_pin(
         &self,
-        record: &super::NamespaceRecordV2,
+        record: &super::NamespaceRecordV1,
         action: NetworkNamespaceLifecycleActionV1,
     ) -> Result<(), NetworkNamespaceCatalogError> {
         if action == NetworkNamespaceLifecycleActionV1::Destroy {
@@ -681,7 +679,7 @@ impl NetworkNamespaceCatalogV1 {
     }
 }
 
-impl super::NamespaceRecordV2 {
+impl super::NamespaceRecordV1 {
     fn accept_lease(
         &mut self,
         transition: NetworkNamespaceLifecycleTransitionV1,
@@ -707,7 +705,7 @@ impl super::NamespaceRecordV2 {
 }
 
 fn require_lifecycle(
-    record: &super::NamespaceRecordV2,
+    record: &super::NamespaceRecordV1,
     expected: NamespaceLifecycleV1,
 ) -> Result<(), NetworkNamespaceCatalogError> {
     if record.lifecycle == expected {

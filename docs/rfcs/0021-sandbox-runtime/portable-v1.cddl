@@ -320,7 +320,7 @@ broker-protocol-v1 = (
 ) // (
   audience: 2, protocol: 2, protocol-major: 1, protocol-minor: 0
 ) // (
-  audience: 3, protocol: 3, protocol-major: 1, protocol-minor: 0..2
+  audience: 3, protocol: 3, protocol-major: 1, protocol-minor: 0
 ) // (
   audience: 4, protocol: 4, protocol-major: 1, protocol-minor: 0
 )

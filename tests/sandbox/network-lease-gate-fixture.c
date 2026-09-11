@@ -102,7 +102,7 @@ static void usage(FILE *out)
           "PEER_NETNS EPOCH ALLOCATION HANDLE_HEX ASSIGNMENT_HEX GATE_HEX\n"
           "       network-lease-gate-fixture install-invalid-hold HOST_IF "
           "PEER_IF PEER_NETNS EPOCH ALLOCATION HANDLE_HEX ASSIGNMENT_HEX "
-          "zero-assignment-digest|reserved-binding|old-format DEADLINE_NS LEASE_HEX\n"
+          "zero-assignment-digest|reserved-binding|unknown-format DEADLINE_NS LEASE_HEX\n"
           "       network-lease-gate-fixture update[-hold] "
           "arm|renew EPOCH GENERATION DEADLINE_NS LEASE_HEX\n"
           "       network-lease-gate-fixture update disarm\n"
@@ -1590,8 +1590,8 @@ int main(int argc, char **argv)
       memset(&binding.assignment_digest, 0, sizeof(binding.assignment_digest));
     else if (strcmp(argv[9], "reserved-binding") == 0)
       binding.reserved_tail[0] = 1;
-    else if (strcmp(argv[9], "old-format") == 0)
-      binding.format_version = 1;
+    else if (strcmp(argv[9], "unknown-format") == 0)
+      binding.format_version = 2;
     else {
       fprintf(stderr, "network-lease-gate-fixture: invalid binding fault\n");
       return 2;

@@ -385,7 +385,7 @@ in {
 
     # Malformed frozen binding values remain default-drop even with an armed,
     # otherwise-current state. The fixture bypass is test-only.
-    for fault in ("zero-assignment-digest", "reserved-binding", "old-format"):
+    for fault in ("zero-assignment-digest", "reserved-binding", "unknown-format"):
         deadline = clocks()["boottime_nanoseconds"] + 60_000_000_000
         kill_held_fixture(
             f"aos-gate-invalid-{fault}",

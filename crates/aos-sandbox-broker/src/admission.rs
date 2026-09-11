@@ -490,7 +490,10 @@ fn supports_signed_admission(protocol: ProtocolId, version: ProtocolVersion) -> 
         && (version.minor() >= 1
             || matches!(
                 protocol,
-                ProtocolId::HostBroker | ProtocolId::MountBroker | ProtocolId::StorageBroker
+                ProtocolId::HostBroker
+                    | ProtocolId::MountBroker
+                    | ProtocolId::StorageBroker
+                    | ProtocolId::NetworkBroker
             ))
 }
 
@@ -581,13 +584,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_mount_and_storage_admit_minor_zero_signed_requests() {
+    fn all_broker_domains_admit_minor_zero_signed_requests() {
         let version = ProtocolVersion::new(1, 0);
         let cases = [
             (ProtocolId::StorageBroker, true),
             (ProtocolId::HostBroker, true),
             (ProtocolId::MountBroker, true),
-            (ProtocolId::NetworkBroker, false),
+            (ProtocolId::NetworkBroker, true),
         ];
 
         for (protocol, expected) in cases {

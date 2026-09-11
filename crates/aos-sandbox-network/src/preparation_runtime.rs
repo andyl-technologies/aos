@@ -498,7 +498,7 @@ mod tests {
                     &request,
                     &fixture.artifacts(&request),
                     prepared.preparation(),
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -699,7 +699,7 @@ mod tests {
         let mut request = ApplyNetworkRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 0;
         header.request_id = REQUEST_ID.to_vec();
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 180;

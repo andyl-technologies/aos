@@ -148,7 +148,7 @@ impl StableNetworkKernelObservationV1 {
         &self.observation
     }
 
-    /// Returns the V4 digest of every normalized fact in the snapshot.
+    /// Returns the sole V1 digest of every normalized fact in the snapshot.
     #[must_use]
     pub const fn digest(&self) -> ObjectDigest {
         self.digest
@@ -599,7 +599,7 @@ fn expected_lifecycle(
             _ => return Err(NetworkNamespaceObserverError::AuthorityMismatch),
         };
     let direction = ObservedLeaseDirectionV1 {
-        format_version: 2,
+        format_version: 1,
         armed,
         assignment_epoch: expectation.assignment().epoch().get(),
         assignment_digest: expectation.assignment().digest(),
@@ -609,7 +609,7 @@ fn expected_lifecycle(
     };
 
     Ok(ObservedLeaseStateV1 {
-        format_version: 2,
+        format_version: 1,
         ingress: direction.clone(),
         egress: direction,
     })

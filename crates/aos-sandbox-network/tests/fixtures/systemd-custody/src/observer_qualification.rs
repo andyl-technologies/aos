@@ -269,7 +269,7 @@ pub(crate) fn prepare_worker_dispatch(
         &request,
         &artifacts,
         prepared.preparation(),
-        ProtocolVersion::new(1, 1),
+        ProtocolVersion::new(1, 0),
         peer(),
         peer_policy(),
         &window.clock,
@@ -467,7 +467,7 @@ fn admit_lifecycle_worker(
         &prepared.preparation,
         &prepared.kernel_plan,
         namespaces,
-        ProtocolVersion::new(1, 1),
+        ProtocolVersion::new(1, 0),
         peer(),
         peer_policy(),
         &window.clock,
@@ -1098,7 +1098,7 @@ fn apply_request_with_deadline(
     let mut request = ApplyNetworkRequest::default();
     let header = request.header.get_or_insert_default();
     header.protocol_major = 1;
-    header.protocol_minor = 1;
+    header.protocol_minor = 0;
     header.request_id = REQUEST_ID.to_vec();
     header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
     header.deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
@@ -1124,7 +1124,7 @@ fn lifecycle_destroy_request(
     let mut request = ApplyNetworkRequest::default();
     let header = request.header.get_or_insert_default();
     header.protocol_major = 1;
-    header.protocol_minor = 1;
+    header.protocol_minor = 0;
     header.request_id = LIFECYCLE_REQUEST_ID.to_vec();
     header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
     header.deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
@@ -1154,7 +1154,7 @@ fn commit_or_recover(
         request,
         artifacts,
         preparation,
-        ProtocolVersion::new(1, 1),
+        ProtocolVersion::new(1, 0),
         peer(),
         peer_policy(),
         &clock()?,
@@ -1390,7 +1390,7 @@ impl AuthorityFixture {
         let plan = BrokerAuthorizationPlan::new(
             BrokerAudience::Network,
             ProtocolId::NetworkBroker,
-            ProtocolVersion::new(1, 1),
+            ProtocolVersion::new(1, 0),
             assignment,
             NODE,
             self.lease_signer.clone(),
@@ -1556,7 +1556,7 @@ mod tests {
                 AdmissionRequest {
                     audience: BrokerAudience::Network,
                     protocol: ProtocolId::NetworkBroker,
-                    protocol_version: ProtocolVersion::new(1, 1),
+                    protocol_version: ProtocolVersion::new(1, 0),
                     assignment,
                     request_id: REQUEST_ID,
                     request_body: &request,

@@ -394,10 +394,7 @@ impl NetworkLifecycleDispatchContextV1 {
     fn encode(self) -> Result<Vec<u8>, NetworkWorkerProtocolError> {
         self.validate()?;
         let identity = self.authority.identity;
-        let kernel_plan_digest = self
-            .authority
-            .kernel_plan_digest
-            .ok_or(NetworkWorkerProtocolError::Authority)?;
+        let kernel_plan_digest = self.authority.kernel_plan_digest;
         let mut bytes = Vec::with_capacity(CONTEXT_BYTES);
         bytes.extend_from_slice(CONTEXT_MAGIC);
         bytes.extend_from_slice(&CONTEXT_VERSION.to_be_bytes());
@@ -465,7 +462,7 @@ impl NetworkLifecycleDispatchContextV1 {
                 identity,
                 observed_state,
                 resource_digest,
-                kernel_plan_digest: Some(kernel_plan_digest),
+                kernel_plan_digest,
                 highest_lease_generation,
                 highest_lease_digest,
             },
@@ -508,10 +505,7 @@ impl NetworkLifecycleDispatchContextV1 {
             || self.preparation_generation == 0
             || self.preparation_digest.as_bytes() == &[0; 32]
             || self.authority.resource_digest.as_bytes() == &[0; 32]
-            || self
-                .authority
-                .kernel_plan_digest
-                .is_none_or(|digest| digest.as_bytes() == &[0; 32])
+            || self.authority.kernel_plan_digest.as_bytes() == &[0; 32]
             || !action_matches_verb(self.action, self.verb)
             || !high_water_valid
             || !active_prior_valid
@@ -540,7 +534,7 @@ pub(crate) fn issue_lifecycle_dispatch(
     if durable.request_id == [0; 16]
         || durable.effect_digest.as_bytes() == &[0; 32]
         || transport_digest != durable.transport_digest
-        || context.authority.kernel_plan_digest != Some(kernel_plan.digest())
+        || context.authority.kernel_plan_digest != kernel_plan.digest()
         || context.preparation_generation != resolution.binding().generation()
         || context.preparation_digest != resolution.binding().digest()
         || context.authority.identity.network_handle() != *resolution.reserved_network_handle()
@@ -665,7 +659,7 @@ fn authenticate_association(
         || request.context.authority.identity.network_handle()
             != *resolution.reserved_network_handle()
         || request.context.sandbox_id != *assignment.sandbox().as_bytes()
-        || request.context.authority.kernel_plan_digest != Some(request.kernel_plan.digest())
+        || request.context.authority.kernel_plan_digest != request.kernel_plan.digest()
         || !kernel_plan_matches_catalog(&request.kernel_plan, resolution)
         || !semantics_matches_context(&semantics, request.request_id, request.context)
         || request.effect_digest

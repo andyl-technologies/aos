@@ -23,12 +23,10 @@ use crate::namespace_catalog::{
 };
 
 const MAGIC: &[u8; 8] = b"AOSNLC01";
-const VERSION: u16 = 2;
-const LEGACY_VERSION: u16 = 1;
+const VERSION: u16 = 1;
 const MAXIMUM_OPERATIONS: usize = 16_384;
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
-const EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.lifecycle-effect.v2\0";
-const LEGACY_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.lifecycle-effect.v1\0";
+const EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.lifecycle-effect.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.network.lifecycle-transaction.v1\0";
 
 fn record_domain() -> Result<BrokerLocalRecordDomain, NetworkLifecycleStateError> {
@@ -378,7 +376,7 @@ impl NetworkLifecycleStateStore {
             || existing.preparation_generation != preparation_generation
             || existing.preparation_digest != preparation_digest
             || existing.authority.identity.network_handle() != network_handle
-            || existing.authority.kernel_plan_digest != Some(kernel_plan_digest)
+            || existing.authority.kernel_plan_digest != kernel_plan_digest
         {
             return Err(NetworkLifecycleStateError::Equivocation);
         }
@@ -477,7 +475,7 @@ impl NetworkLifecycleStateStore {
     ) -> Result<AmbiguousNetworkLifecycleDispatchV1, NetworkLifecycleStateError> {
         let mut record = self.exact_current(request_id, effect_digest)?.clone();
         if record.phase != DurableNetworkLifecyclePhase::Prepared
-            || record.authority.kernel_plan_digest.is_none()
+            || record.authority.kernel_plan_digest.as_bytes() == &[0; 32]
         {
             return Err(NetworkLifecycleStateError::InvalidTransition);
         }
@@ -914,13 +912,8 @@ pub(crate) fn lifecycle_effect_digest(
     desired_state: NetworkNamespaceObservedStateV1,
 ) -> ObjectDigest {
     let identity = authority.identity;
-    let effect_domain = if authority.kernel_plan_digest.is_some() {
-        EFFECT_DIGEST_DOMAIN
-    } else {
-        LEGACY_EFFECT_DIGEST_DOMAIN
-    };
     let mut hasher = Sha256::new()
-        .chain_update(effect_domain)
+        .chain_update(EFFECT_DIGEST_DOMAIN)
         .chain_update(request_id)
         .chain_update(transport_digest.as_bytes())
         .chain_update(semantic_digest.as_bytes())
@@ -929,11 +922,8 @@ pub(crate) fn lifecycle_effect_digest(
         .chain_update(identity.kernel_boot_id())
         .chain_update(identity.namespace_device().to_be_bytes())
         .chain_update(identity.namespace_inode().to_be_bytes())
-        .chain_update(authority.resource_digest.as_bytes());
-    if let Some(kernel_plan_digest) = authority.kernel_plan_digest {
-        hasher = hasher.chain_update(kernel_plan_digest.as_bytes());
-    }
-    hasher = hasher
+        .chain_update(authority.resource_digest.as_bytes())
+        .chain_update(authority.kernel_plan_digest.as_bytes())
         .chain_update(authority.highest_lease_generation.to_be_bytes())
         .chain_update(authority.highest_lease_digest.as_bytes());
     encode_state_hash(&mut hasher, authority.observed_state);
@@ -945,10 +935,7 @@ fn ambiguous_dispatch(
     record: &DurableNetworkLifecycleRecord,
 ) -> Result<AmbiguousNetworkLifecycleDispatchV1, NetworkLifecycleStateError> {
     if record.phase != DurableNetworkLifecyclePhase::Ambiguous
-        || record
-            .authority
-            .kernel_plan_digest
-            .is_none_or(|digest| digest.as_bytes() == &[0; 32])
+        || record.authority.kernel_plan_digest.as_bytes() == &[0; 32]
         || record.result.is_some()
     {
         return Err(NetworkLifecycleStateError::InvalidTransition);
@@ -974,7 +961,7 @@ fn ambiguous_dispatch(
 fn encode_record(
     record: &DurableNetworkLifecycleRecord,
 ) -> Result<Vec<u8>, NetworkLifecycleStateError> {
-    validate_record_shape(record, VERSION)?;
+    validate_record_shape(record)?;
     let identity = record.authority.identity;
     let mut bytes = Vec::with_capacity(
         512 + record.current_fence.len() + record.operation_fence.len() + record.effect.len(),
@@ -990,13 +977,7 @@ fn encode_record(
     bytes.push(action_code(record.action));
     bytes.extend_from_slice(&record.preparation_generation.to_be_bytes());
     bytes.extend_from_slice(record.preparation_digest.as_bytes());
-    bytes.extend_from_slice(
-        record
-            .authority
-            .kernel_plan_digest
-            .ok_or(NetworkLifecycleStateError::CorruptRecord)?
-            .as_bytes(),
-    );
+    bytes.extend_from_slice(record.authority.kernel_plan_digest.as_bytes());
     bytes.extend_from_slice(&identity.network_handle());
     bytes.extend_from_slice(&identity.kernel_boot_id());
     bytes.extend_from_slice(&identity.namespace_device().to_be_bytes());
@@ -1031,7 +1012,7 @@ fn decode_record(
         return Err(NetworkLifecycleStateError::CorruptRecord);
     }
     let version = u16::from_be_bytes(decoder.take()?);
-    if !matches!(version, LEGACY_VERSION | VERSION) {
+    if version != VERSION {
         return Err(NetworkLifecycleStateError::CorruptRecord);
     }
     let phase = decode_phase(decoder.byte()?)?;
@@ -1043,11 +1024,7 @@ fn decode_record(
     let action = decode_action(decoder.byte()?)?;
     let preparation_generation = u64::from_be_bytes(decoder.take()?);
     let preparation_digest = ObjectDigest::from_bytes(decoder.take()?);
-    let kernel_plan_digest = if version == VERSION {
-        Some(ObjectDigest::from_bytes(decoder.take()?))
-    } else {
-        None
-    };
+    let kernel_plan_digest = ObjectDigest::from_bytes(decoder.take()?);
     let identity = NetworkNamespaceIdentityV1::new(
         decoder.take()?,
         decoder.take()?,
@@ -1103,13 +1080,12 @@ fn decode_record(
         effect,
         result,
     };
-    validate_record_shape(&record, version)?;
+    validate_record_shape(&record)?;
     Ok(record)
 }
 
 fn validate_record_shape(
     record: &DurableNetworkLifecycleRecord,
-    version: u16,
 ) -> Result<(), NetworkLifecycleStateError> {
     let result_shape = match (record.phase, record.result) {
         (DurableNetworkLifecyclePhase::Committed, Some(result)) => {
@@ -1136,12 +1112,7 @@ fn validate_record_shape(
         || record.preparation_generation == 0
         || record.preparation_digest.as_bytes() == &[0; 32]
         || record.authority.resource_digest.as_bytes() == &[0; 32]
-        || (version == VERSION
-            && record
-                .authority
-                .kernel_plan_digest
-                .is_none_or(|digest| digest.as_bytes() == &[0; 32]))
-        || (version == LEGACY_VERSION && record.authority.kernel_plan_digest.is_some())
+        || record.authority.kernel_plan_digest.as_bytes() == &[0; 32]
         || record.effect_digest.as_bytes() == &[0; 32]
         || record.current_fence.is_empty()
         || record.operation_fence.is_empty()
@@ -1343,5 +1314,23 @@ impl<'a> Decoder<'a> {
 
     const fn finished(&self) -> bool {
         self.cursor == self.bytes.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_rejects_every_non_v1_record_version() {
+        for version in [0_u16, 2] {
+            let mut bytes = Vec::from(MAGIC.as_slice());
+            bytes.extend_from_slice(&version.to_be_bytes());
+
+            assert!(matches!(
+                decode_record(&bytes),
+                Err(NetworkLifecycleStateError::CorruptRecord)
+            ));
+        }
     }
 }

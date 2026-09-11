@@ -23,8 +23,9 @@ use crate::policy::{
 };
 
 const OBSERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.kernel-observation.v1\0";
-// V4 commits IPv6 DAD suppression and the exact permanent-neighbor inventory.
-const OBSERVATION_ENCODING_VERSION: u16 = 4;
+// The sole v1 encoding commits IPv6 DAD suppression and the exact
+// permanent-neighbor inventory.
+const OBSERVATION_ENCODING_VERSION: u16 = 1;
 const BPF_ARRAY: u32 = 2;
 const BPF_HASH: u32 = 1;
 const BPF_F_RDONLY_PROG: u32 = 1 << 7;
@@ -327,7 +328,7 @@ fn valid_lifecycle(
         NetworkNamespaceObservedStateKindV1::Absent => false,
     };
 
-    lifecycle.format_version == 2
+    lifecycle.format_version == 1
         && state_matches
         && valid_lease_direction(expected, &lifecycle.ingress)
         && valid_lease_direction(expected, &lifecycle.egress)
@@ -360,7 +361,7 @@ fn valid_lease_direction(
     expected: &NetworkKernelExpectationV1,
     direction: &ObservedLeaseDirectionV1,
 ) -> bool {
-    let assignment_matches = direction.format_version == 2
+    let assignment_matches = direction.format_version == 1
         && direction.assignment_epoch == expected.assignment.epoch().get()
         && direction.assignment_digest == expected.assignment.digest();
     let lease_tuple_present = direction.lease_generation != 0
@@ -1292,7 +1293,7 @@ fn valid_gate(
         && gate.artifact.loader_object_digest == expected_digest
         && gate.artifact.loader_ingress_program_id == gate.ingress.program_id
         && gate.artifact.loader_egress_program_id == gate.egress.program_id
-        && binding.format_version == 2
+        && binding.format_version == 1
         && binding.network_handle == expected.network_handle
         && binding.assignment_digest == expected.assignment.digest()
         && binding.assignment_epoch == expected.assignment.epoch().get()
@@ -1773,7 +1774,7 @@ mod tests {
 
     fn lifecycle() -> ObservedLeaseStateV1 {
         let direction = ObservedLeaseDirectionV1 {
-            format_version: 2,
+            format_version: 1,
             armed: false,
             assignment_epoch: 41,
             assignment_digest: object(0x33),
@@ -1782,7 +1783,7 @@ mod tests {
             deadline_boottime_nanoseconds: 0,
         };
         ObservedLeaseStateV1 {
-            format_version: 2,
+            format_version: 1,
             ingress: direction.clone(),
             egress: direction,
         }
@@ -1795,7 +1796,7 @@ mod tests {
         deadline: u64,
     ) -> ObservedLeaseStateV1 {
         let direction = ObservedLeaseDirectionV1 {
-            format_version: 2,
+            format_version: 1,
             armed,
             assignment_epoch: 41,
             assignment_digest: object(0x33),
@@ -1804,7 +1805,7 @@ mod tests {
             deadline_boottime_nanoseconds: deadline,
         };
         ObservedLeaseStateV1 {
-            format_version: 2,
+            format_version: 1,
             ingress: direction.clone(),
             egress: direction,
         }
@@ -2013,7 +2014,7 @@ mod tests {
                     loader_egress_program_id: 22,
                 },
                 binding: ObservedBpfBindingV1 {
-                    format_version: 2,
+                    format_version: 1,
                     network_handle: [0x77; 32],
                     assignment_digest: object(0x33),
                     assignment_epoch: 41,
@@ -2315,14 +2316,14 @@ mod tests {
     }
 
     #[test]
-    fn observation_encoding_v4_has_a_fixed_digest_vector() {
-        // This implementation-derived vector freezes the V4 encoding shape;
+    fn observation_encoding_v1_has_a_fixed_digest_vector() {
+        // This implementation-derived vector freezes the sole V1 encoding shape;
         // it is not an independent normative RFC conformance vector.
         assert_eq!(
             observation().digest().as_bytes(),
             &[
-                145, 9, 134, 198, 147, 16, 220, 79, 5, 206, 32, 226, 1, 105, 184, 36, 101, 223, 8,
-                79, 78, 76, 122, 135, 153, 66, 114, 211, 58, 225, 219, 15,
+                252, 124, 47, 237, 223, 42, 144, 246, 129, 48, 238, 253, 229, 163, 9, 197, 177, 87,
+                86, 232, 24, 60, 143, 66, 96, 207, 178, 152, 243, 238, 35, 216,
             ]
         );
     }

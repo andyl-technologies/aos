@@ -3191,8 +3191,8 @@ name materialization and reap, while Mount-local authenticated effect codes 6
 and 7 preserve those operations across journal recovery without crossing
 broker domains. Common signed-plan admission accepts each broker's registered
 contract without cross-domain version inheritance. Mount remains bound to its
-independently registered exact version, Storage is pinned to exact 1.0, and
-Network negotiates only its independently registered versions.
+independently registered exact version, while Storage and Network are each
+pinned independently to exact 1.0.
 
 The production Mount broker opens the existing private catalog root as the
 destination-slot anchor store. It atomically persists the signed assignment
@@ -3705,7 +3705,7 @@ reconciliation before it can schedule the existing Host 1.0 dispatch.
 
 ### Exact Storage and Network resource inventory contracts
 
-Exact Storage 1.0 and Network 1.2 define distinct authoritative-resource
+Exact Storage 1.0 and Network 1.0 define distinct authoritative-resource
 inventory methods. Storage admits no predecessor profile, and neither protocol
 allows an empty response to masquerade as a complete physical snapshot. Both
 methods remain authority-free and descriptor-free: the fixed node controller
@@ -3729,7 +3729,7 @@ into a Host launch catalog. Physical namespace identities and handles are
 unique, and the only admissible pin path is derived beneath the fixed Host
 network-pin root.
 
-Focused validation covers exact Storage 1.0 and Network 1.2 negotiation
+Focused validation covers exact Storage 1.0 and Network 1.0 negotiation
 separation, request-header version binding, strict ordering, current-boot
 enforcement, duplicate physical resources, overlapping identity ranges,
 invalid lifecycle and lease combinations, fixed pin derivation, response
@@ -3746,7 +3746,7 @@ continuity, and exact projection into the shared Host catalog schema.
 ### Durable controller acquisition of Storage and Network inventories
 
 The unprivileged controller now has separate one-shot clients for the Storage
-and Network 1.2 resource methods. Deployment supplies each expected service
+and Network 1.0 resource methods. Deployment supplies each expected service
 UID, GID, and retained exact cgroup. The client authenticates the actual hello
 writer through kernel record credentials and a live pidfd, rechecks that same
 execution immediately before request transfer, and requires the response writer
@@ -4012,16 +4012,18 @@ The request-scoped fence keeps committed authority independently recoverable
 after the sandbox's current assignment fence advances. Recovery rejects
 missing, moved, tampered, orphaned, or inconsistent current fences, operation
 fences, effects, and operation records, as well as duplicate reserved handles
-or committed physical namespaces. Version-one Prepared records remain readable
-under their original current fence but cannot cross the effect boundary without
-an explicit migration that supplies the operation-scoped authority they never
-stored.
+or committed physical namespaces. The sole version-one durable form carries
+the operation-scoped authority and complete authenticated kernel-plan
+commitment. Recovery accepts only exact, mutually consistent current record and
+plan sets; missing plans and unknown format versions fail closed, with no
+compatibility or migration path for an older shape.
 
 Focused validation covers exact transition order, premature completion,
 effect-identity mismatch, Ambiguous restart, exact committed replay and typed
-catalog recovery, result substitution, physical namespace collision, legacy
-record recovery, assignment-fence advancement, authority-link corruption, and
-bounded operation recovery. All 32 Network tests and doctests pass, together
+catalog recovery, result substitution, physical namespace collision, non-v1
+record rejection, exact current record-plan recovery, assignment-fence
+advancement, authority-link corruption, and bounded operation recovery. All 32
+Network tests and doctests pass, together
 with strict all-target/all-feature crate-local Clippy, Rust formatting, and diff
 checks. The full `nix-build -A checks.eval --cores 8 --no-out-link` gate passes
 the complete workspace test phase, configuration evaluation, and system-
@@ -4059,7 +4061,7 @@ silently refreshed from an old committed observation.
 Each inventory call validates the complete retained set, reopens every
 current-boot typed pin, emits rows in strict handle order with the protected
 journal boundary and broker-process identity, and decodes its own bounded
-protobuf through the public Network 1.2 validator. The resource digest commits
+protobuf through the public Network 1.0 validator. The resource digest commits
 the source preparation/result correlation, assignment, physical namespace,
 default-drop lifecycle, and empty lease state.
 
@@ -4085,7 +4087,7 @@ and controller Apply orchestration are ready.
 
 The authoritative Network catalog is now reachable by the node controller
 through an independently packaged, systemd-activated `aos-netd` service. The
-Network 1.2 handshake advertises only the resource-inventory method. The server
+Network 1.0 handshake advertises only the resource-inventory method. The server
 accepts exactly one authorization-free, descriptor-free inventory request per
 connection, returns the complete physically revalidated catalog, and maps
 private catalog failures to a bounded integrity error without exposing journal
@@ -4149,21 +4151,20 @@ boot-scoped namespace and deadline cannot remain live. Retired rows remain in
 the protected catalog as collision evidence, never re-enter inventory, and
 make startup and every inventory call fail if their fixed pin reappears.
 
-Canonical resource-record format two commits creation correlation, the current
+The sole resource-record format 1 commits creation correlation, the current
 observation, closed lifecycle, active lease tuple, lease-generation/digest
-high-water mark, and most recent transition identity. Existing canonical
-format-one default-drop rows remain readable under their original resource
-digest and upgrade only when a transition commits. Exact immediate retry
-replays without another generation, while changed prior state, physical
-identity, transition semantics, request binding, pin identity, or lifecycle
-order fails closed.
+high-water mark, authenticated kernel-plan digest, and most recent transition
+identity under the sole namespace-resource v1 digest domain. Unknown versions
+fail closed. Exact immediate retry replays without another generation, while
+changed prior state, physical identity, transition semantics, request binding,
+pin identity, or lifecycle order fails closed.
 
 Focused validation covers arm, monotonic renewal, guardian fence, disarm,
 stale-generation rejection, same-boot Armed retirement rejection, cross-boot
 retirement, permanent tombstones, exact replay and restart, typed-pin loss,
 request reuse, stale compare-and-swap evidence, corrupt lease high-water state,
 action/postcondition substitution, exact observed lease-tuple matching, and
-byte-exact format-one recovery and upgrade. All 46 locally runnable Network
+byte-exact format-1 recovery with unknown-version rejection. All 46 locally runnable Network
 library tests and its doctests pass; the all-feature root qualification test is
 unchanged and requires a writable root filesystem unavailable in the managed
 worktree. Strict all-target/all-feature crate-local Clippy,
@@ -4241,25 +4242,17 @@ endpoint commitments, verifies the plan kind against the retained portable
 specification, and rejects allocation-policy, program-artifact, plan-digest,
 identity, or route substitution.
 
-A separate allocation head commits the operator-selected legacy handle set and
-thereafter distinguishes those rows from a current journal whose plan was
-removed. Ordinary startup never invents a plan for an old reservation. The
-explicit one-time operator migration accepts structurally valid retained
-reservations only when they reproduce the program-only profile commitment and
-the journal has no allocation rows or allocation head. This validates the
-migration shape, not external historical provenance. Because the allocation-
-aware profile changes the trusted catalog digest, the upgrade policy generation
-must advance; supplying it at the historical generation is a policy fork and
-fails closed. The upgrade policy must retain every original typed packet
-program and endpoint commitment until migration completes. Migrated legacy
-handles retain no plan and remain ineligible for implicit execution.
+Every reservation and allocation plan is created in one journal transaction.
+Recovery therefore requires an exact one-to-one record/plan set and never
+invents or migrates a missing plan. A removed, orphaned, substituted, or
+noncanonical allocation row fails closed before the catalog becomes available.
 
 Focused validation covers IPv4 and IPv6 pool capacity, direct public-enum
 attempts to bypass canonical prefix construction, MTU and MAC policy, exact
 generation-derived labels/MACs/addresses/routes, isolated shape, overlapping
 pools, cross-reservation uniqueness, canonical record recovery, allocation and
-program substitution, missing-plan tamper detection, and a fixture reproducing
-the historical pre-allocation journal shape. All 58 locally runnable Network
+program substitution, missing-plan tamper detection, and unknown-version
+rejection. All 58 locally runnable Network
 tests and the binary target pass. The all-feature-only real-cgroup
 qualification test cannot create its root-level temporary directory on this
 managed read-only root filesystem. Strict all-target/all-feature crate-local
@@ -5875,9 +5868,10 @@ The installed C BPF observer opens one plan-derived pin root through retained
 exact four-pin inventory, and opens each map and TCX link relative to that
 held directory using `BPF_F_PATH_FD`. It validates map ABI and reserved fields,
 the exact queried TCX link IDs, attached program IDs and tags, and both
-programs' exact map relationship before emitting a closed JSON record. A
-nonzero completion discards all output, including a syntactically complete
-record.
+programs' exact map relationship before emitting a closed JSON record. The map
+ABI has the sole format-1 identity, and the complete kernel observation uses
+the sole v1 digest encoding. Unknown identities fail closed. A nonzero
+completion discards all output, including a syntactically complete record.
 
 The Rust reader measures the fixed observer executable and lease-gate object
 through retained readable descriptors. It admits only normalized hash-named
@@ -6165,22 +6159,20 @@ assignment may prepare a distinct handle. Existing-handle admission retains the
 exact creation-time canonical kernel-plan digest and compares it before both
 fresh admission and exact replay.
 
-The creation operation schema is format 4, with format 3 custody and format 2
-committed rows still readable but lacking an exact plan proof. Namespace catalog
-format 3 uses a distinct resource-digest domain; canonical format 1 and 2 rows
-remain inventory-readable under their original domains and exact encodings but
-cannot authorize a new lifecycle effect. Lifecycle operation format 2 binds the
-same plan digest into its effect identity; format 1 remains recoverable but
-cannot cross the effect boundary. Publication requires the plan digest to agree
-through custody, committed result, retained namespace row, authenticated
-preparation, and caller-supplied canonical plan.
+Creation operations use the sole `AOSNTX01` format 1, and lifecycle operations
+use the sole `AOSNLC01` format 1. Both schemas require the exact canonical
+kernel-plan digest; namespace catalog rows likewise use only canonical JSON
+format 1. Result, lifecycle-effect, and namespace-resource commitments use
+their sole v1 digest domains. Unknown versions fail closed. Publication
+requires the plan digest to agree through custody, committed result, retained
+namespace row, authenticated preparation, and caller-supplied canonical plan.
 
-Recovery now treats both ambiguous custody and legacy committed results as
-physical namespace ownership. Authenticated resealed tests reject a custody
-plan/result digest mismatch, a custody collision with another retained result,
-and two independently Ambiguous custody rows with no committed results that
-claim the same physical namespace. Exact replay with a substituted plan is
-rejected before it can reuse a Prepared or Committed outcome.
+Recovery treats both ambiguous custody and committed results as physical
+namespace ownership. Authenticated resealed tests reject a custody plan/result
+digest mismatch, a custody collision with another retained result, and two
+independently Ambiguous custody rows with no committed results that claim the
+same physical namespace. Exact replay with a substituted plan is rejected
+before it can reuse a Prepared or Committed outcome.
 
 Existing-resource admission can now consume only the move-only value produced
 by its exact `Prepared -> Ambiguous` transition into a canonical authenticated
@@ -6209,8 +6201,9 @@ crate and real-systemd custody fixture after the schema, resealed-recovery, and
 pure lifecycle-protocol changes. The lifecycle-focused selection passed all 20
 tests, the genuine
 two-Ambiguous/no-result collision passed its focused run, and the focused
-namespace-catalog compatibility suite previously passed all 15 tests. These are
-source-level regression results, not a production Apply qualification.
+namespace-catalog final-v1 canonical encoding, recovery, and tamper-rejection
+suite previously passed all 15 tests. These are source-level regression
+results, not a production Apply qualification.
 
 Actual lifecycle descriptor/process/cgroup admission, fixed worker integration,
 kernel effects, trusted post-effect observation, broker-owned teardown,

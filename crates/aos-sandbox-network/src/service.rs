@@ -7,7 +7,7 @@
 //! cgroup before the protected namespace catalog is observed.
 //!
 //! Apply is deliberately absent. The sole advertised method is the read-only
-//! Network 1.2 authoritative inventory implemented by [`NetworkNamespaceCatalogV1`].
+//! Network 1.0 authoritative inventory implemented by [`NetworkNamespaceCatalogV1`].
 
 use std::os::fd::BorrowedFd;
 

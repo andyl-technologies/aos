@@ -936,6 +936,11 @@ It contains no arbitrary systemd property, mount option, host path, command, or
 backend expression. Delivery through the unprivileged node daemon does not add
 authority: a broker verifies the controller signature and its own audience.
 
+Host, Mount, Storage, Network, and Guardian each admit only their exact 1.0
+broker protocol. They do not negotiate earlier or later minor versions, and an
+unknown major or minor fails closed. Ownership remains an independently
+versioned protocol and does not lend its version range to a broker domain.
+
 Before acknowledging or performing an effect, each broker durably records its
 highest accepted semantic assignment tuple and plan digest, plus highest lease
 generation/digest, authority expiry, and host boot ID. It rejects

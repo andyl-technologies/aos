@@ -39,13 +39,11 @@ use crate::policy::{NetworkIpPrefixV1, NetworkPolicyProgramV1, program_digest_fr
 
 const PREPARATION_JOURNAL_FILE: &str = "network-preparations.journal";
 const HEAD_KEY: &[u8] = b"aos.network.preparation.head.v1\0";
-const ALLOCATION_HEAD_KEY: &[u8] = b"aos.network.allocation.head.v1\0";
 const RECORD_KEY_PREFIX: &[u8] = b"aos.network.preparation.v1\0";
 const ALLOCATION_KEY_PREFIX: &[u8] = b"aos.network.allocation.v1\0";
 const RECORD_FORMAT_VERSION: u16 = 1;
 const POLICY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.policy-catalog.v1\0";
 const PROFILE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.profile-selection.v1\0";
-const LEGACY_ALLOCATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.legacy-allocation-set.v1\0";
 const RESERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.preparation-reservation.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.network.preparation-transaction.v1\0";
 const MAXIMUM_PROFILES: usize = 256;
@@ -382,35 +380,7 @@ impl NetworkPreparationCatalogV1 {
             PREPARATION_JOURNAL_FILE,
             preparation_journal_limits(),
         )?;
-        Self::recover(journal, policy, minimum_generation, false)
-    }
-
-    /// Explicitly marks every pre-allocation reservation as legacy.
-    ///
-    /// This one-time migration accepts a pre-feature journal only when it has
-    /// retained preparation records but no allocation marker or allocation
-    /// records. It durably commits the exact legacy handle set; those handles
-    /// remain ineligible for implicit allocation and must be settled before an
-    /// effect can begin. The supplied upgrade policy must retain the original
-    /// typed packet program and endpoint commitments for every legacy profile
-    /// until migration completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NetworkPreparationCatalogError`] for unsafe filesystem state,
-    /// a non-legacy or malformed snapshot, identity conflicts, or policy
-    /// rollback. Ordinary startup must use [`Self::open_root_owned`].
-    pub fn migrate_legacy_root_owned(
-        directory: &Path,
-        policy: NetworkPolicyCatalogV1,
-        minimum_generation: u64,
-    ) -> Result<Self, NetworkPreparationCatalogError> {
-        let (journal, _) = Journal::open_protected_at(
-            directory,
-            PREPARATION_JOURNAL_FILE,
-            preparation_journal_limits(),
-        )?;
-        Self::recover(journal, policy, minimum_generation, true)
+        Self::recover(journal, policy, minimum_generation)
     }
 
     #[cfg(test)]
@@ -423,48 +393,24 @@ impl NetworkPreparationCatalogV1 {
             directory.join(PREPARATION_JOURNAL_FILE),
             preparation_journal_limits(),
         )?;
-        Self::recover(journal, policy, minimum_generation, false)
-    }
-
-    #[cfg(test)]
-    fn migrate_legacy_for_test(
-        directory: &Path,
-        policy: NetworkPolicyCatalogV1,
-        minimum_generation: u64,
-    ) -> Result<Self, NetworkPreparationCatalogError> {
-        let (journal, _) = Journal::open(
-            directory.join(PREPARATION_JOURNAL_FILE),
-            preparation_journal_limits(),
-        )?;
-        Self::recover(journal, policy, minimum_generation, true)
+        Self::recover(journal, policy, minimum_generation)
     }
 
     fn recover(
         mut journal: Journal,
         policy: NetworkPolicyCatalogV1,
         minimum_generation: u64,
-        allow_legacy_migration: bool,
     ) -> Result<Self, NetworkPreparationCatalogError> {
         if policy.generation() < minimum_generation {
             return Err(NetworkPreparationCatalogError::Rollback);
         }
 
         let mut head = None;
-        let mut allocation_head = None;
         let mut records = BTreeMap::new();
         let mut plans = BTreeMap::new();
         for (key, value) in journal.records(RecordNamespace::NetworkResourceInventory) {
             if key == HEAD_KEY {
                 if head.replace(decode_head(value)?).is_some() {
-                    return Err(NetworkPreparationCatalogError::CorruptRecord);
-                }
-                continue;
-            }
-            if key == ALLOCATION_HEAD_KEY {
-                if allocation_head
-                    .replace(decode_allocation_head(value)?)
-                    .is_some()
-                {
                     return Err(NetworkPreparationCatalogError::CorruptRecord);
                 }
                 continue;
@@ -505,20 +451,6 @@ impl NetworkPreparationCatalogV1 {
         // trusted policy roll-forward can publish any new state.
         validate_record_set(&records, policy.node(), stored_generation)?;
         validate_plan_set(&records, &plans)?;
-        match allocation_head {
-            Some(head) if allow_legacy_migration => {
-                return Err(NetworkPreparationCatalogError::CorruptRecord);
-            }
-            Some(head) => validate_allocation_head(&head, policy.node(), &records, &plans)?,
-            None if records.is_empty() && plans.is_empty() && !allow_legacy_migration => {
-                initialize_allocation_head(&mut journal, policy.node(), &records, &plans)?;
-            }
-            None if !records.is_empty() && plans.is_empty() && allow_legacy_migration => {
-                validate_legacy_record_set(&records, &policy)?;
-                initialize_allocation_head(&mut journal, policy.node(), &records, &plans)?;
-            }
-            None => return Err(NetworkPreparationCatalogError::CorruptRecord),
-        }
 
         match head {
             None => initialize_head(&mut journal, &policy)?,
@@ -721,9 +653,7 @@ impl NetworkPreparationCatalogV1 {
     /// Resolves one retained preparation to its durable namespace allocation.
     ///
     /// The plan was committed atomically with a new reservation and remains
-    /// stable across trusted policy roll-forward. Legacy reservations without
-    /// an allocation record require an explicit pre-effect migration and do
-    /// not receive a plan implicitly.
+    /// stable across trusted policy roll-forward.
     ///
     /// # Errors
     ///
@@ -765,21 +695,6 @@ struct CatalogHeadV1 {
 struct VersionedHeadV1 {
     version: u16,
     head: CatalogHeadV1,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct AllocationHeadV1 {
-    node: [u8; 16],
-    legacy_count: u32,
-    legacy_digest: [u8; 32],
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct VersionedAllocationHeadV1 {
-    version: u16,
-    head: AllocationHeadV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1327,33 +1242,11 @@ fn validate_record_set(
     Ok(())
 }
 
-fn validate_legacy_record_set(
-    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
-    policy: &NetworkPolicyCatalogV1,
-) -> Result<(), NetworkPreparationCatalogError> {
-    for record in records.values() {
-        let sandbox_spec = decode_sandbox_spec(&record.sandbox_spec_bytes, DecodeLimits::default())
-            .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
-        let resolution = record.resolution()?;
-        let profile = policy
-            .resolve(sandbox_spec.network_profile())
-            .filter(|profile| {
-                profile.program().digest() == resolution.profile_digest()
-                    && profile.endpoints() == resolution.endpoints()
-            })
-            .ok_or(NetworkPreparationCatalogError::CorruptRecord)?;
-        if profile.profile_digest() == resolution.profile_digest() {
-            return Err(NetworkPreparationCatalogError::CorruptRecord);
-        }
-    }
-    Ok(())
-}
-
 fn validate_plan_set(
     records: &BTreeMap<[u8; 32], PreparationRecordV1>,
     plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
 ) -> Result<(), NetworkPreparationCatalogError> {
-    if plans.len() > records.len() {
+    if plans.len() != records.len() {
         return Err(NetworkPreparationCatalogError::CorruptRecord);
     }
 
@@ -1505,90 +1398,6 @@ fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, NetworkPreparationCatalogE
         return Err(NetworkPreparationCatalogError::CorruptRecord);
     }
     if value.head.node == [0; 16] || value.head.generation == 0 || value.head.digest == [0; 32] {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    Ok(value.head)
-}
-
-fn initialize_allocation_head(
-    journal: &mut Journal,
-    node: NodeId,
-    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
-    plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
-) -> Result<(), NetworkPreparationCatalogError> {
-    let (legacy_count, legacy_digest) = legacy_allocation_identity(records, plans)?;
-    let head = AllocationHeadV1 {
-        node: *node.as_bytes(),
-        legacy_count,
-        legacy_digest,
-    };
-    let transaction = JournalTransaction::new(
-        transaction_id(b"allocation-head", &legacy_digest, u64::from(legacy_count)),
-        vec![JournalRecord::put(
-            RecordNamespace::NetworkResourceInventory,
-            ALLOCATION_HEAD_KEY.to_vec(),
-            encode_allocation_head(&head)?,
-        )],
-    )?;
-    journal.commit(&transaction)?;
-    Ok(())
-}
-
-fn validate_allocation_head(
-    head: &AllocationHeadV1,
-    node: NodeId,
-    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
-    plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
-) -> Result<(), NetworkPreparationCatalogError> {
-    let (legacy_count, legacy_digest) = legacy_allocation_identity(records, plans)?;
-    if head.node != *node.as_bytes()
-        || head.legacy_count != legacy_count
-        || head.legacy_digest != legacy_digest
-    {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    Ok(())
-}
-
-fn legacy_allocation_identity(
-    records: &BTreeMap<[u8; 32], PreparationRecordV1>,
-    plans: &BTreeMap<[u8; 32], NetworkNamespacePlanV1>,
-) -> Result<(u32, [u8; 32]), NetworkPreparationCatalogError> {
-    let mut count = 0_u32;
-    let mut digest = Sha256::new();
-    digest.update(LEGACY_ALLOCATION_DIGEST_DOMAIN);
-    for handle in records.keys().filter(|handle| !plans.contains_key(*handle)) {
-        count = count
-            .checked_add(1)
-            .ok_or(NetworkPreparationCatalogError::CorruptRecord)?;
-        digest.update(handle);
-    }
-    Ok((count, digest.finalize().into()))
-}
-
-fn encode_allocation_head(
-    head: &AllocationHeadV1,
-) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
-    serde_json::to_vec(&VersionedAllocationHeadV1 {
-        version: RECORD_FORMAT_VERSION,
-        head: head.clone(),
-    })
-    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
-}
-
-fn decode_allocation_head(
-    bytes: &[u8],
-) -> Result<AllocationHeadV1, NetworkPreparationCatalogError> {
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    let value: VersionedAllocationHeadV1 =
-        serde_json::from_slice(bytes).map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
-    if value.version != RECORD_FORMAT_VERSION
-        || value.head.node == [0; 16]
-        || value.head.legacy_digest == [0; 32]
-        || encode_allocation_head(&value.head)? != bytes
-    {
         return Err(NetworkPreparationCatalogError::CorruptRecord);
     }
     Ok(value.head)
@@ -2056,6 +1865,75 @@ mod tests {
             &first_plan
         );
         assert!(recovered.journal_sequence() > 1);
+    }
+
+    #[test]
+    fn head_reservation_and_allocation_decoders_reject_every_non_v1_version() {
+        let directory = TempDir::new().unwrap();
+        let profile = isolated_profile();
+        let policy = policy_catalog(1, profile.clone(), 81);
+        let spec = sandbox_spec(profile);
+        let manifest = manifest(&spec, 2, 5);
+        let authority = authority();
+        let mut catalog =
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), policy, 1).unwrap();
+        let reservation = NetworkPreparationReservationV1::new(&manifest, &spec).unwrap();
+        let reserved = catalog.reserve(reservation, &authority).unwrap();
+        let handle = *reserved
+            .preparation()
+            .resolution()
+            .reserved_network_handle();
+        drop(catalog);
+
+        let (journal, _) = Journal::open(
+            directory.path().join(PREPARATION_JOURNAL_FILE),
+            preparation_journal_limits(),
+        )
+        .unwrap();
+        let head = journal
+            .get(RecordNamespace::NetworkResourceInventory, HEAD_KEY)
+            .unwrap();
+        let reservation = journal
+            .get(
+                RecordNamespace::NetworkResourceInventory,
+                &record_key(&handle),
+            )
+            .unwrap();
+        let allocation = journal
+            .get(
+                RecordNamespace::NetworkResourceInventory,
+                &allocation_key(&handle),
+            )
+            .unwrap();
+        let canonical_head = String::from_utf8(head.to_vec()).unwrap();
+        let canonical_reservation = String::from_utf8(reservation.to_vec()).unwrap();
+        let canonical_allocation = String::from_utf8(allocation.to_vec()).unwrap();
+
+        for version in [0, 2] {
+            let replacement = format!("\"version\":{version}");
+            let unknown_head = canonical_head
+                .replacen("\"version\":1", &replacement, 1)
+                .into_bytes();
+            let unknown_reservation = canonical_reservation
+                .replacen("\"version\":1", &replacement, 1)
+                .into_bytes();
+            let unknown_allocation = canonical_allocation
+                .replacen("\"version\":1", &replacement, 1)
+                .into_bytes();
+
+            assert!(matches!(
+                decode_head(&unknown_head),
+                Err(NetworkPreparationCatalogError::CorruptRecord)
+            ));
+            assert!(matches!(
+                decode_record(&unknown_reservation),
+                Err(NetworkPreparationCatalogError::CorruptRecord)
+            ));
+            assert!(matches!(
+                decode_allocation_record(&unknown_allocation),
+                Err(NetworkPreparationCatalogError::CorruptRecord)
+            ));
+        }
     }
 
     #[test]
@@ -2648,26 +2526,23 @@ mod tests {
     }
 
     #[test]
-    fn allocation_head_separates_explicit_legacy_migration_from_current_plans() {
-        let current_directory = TempDir::new().unwrap();
+    fn reservation_without_its_atomic_allocation_is_rejected() {
+        let directory = TempDir::new().unwrap();
         let profile = isolated_profile();
-        let current_policy = policy_catalog(1, profile.clone(), 81);
-        let spec = sandbox_spec(profile.clone());
+        let policy = policy_catalog(1, profile.clone(), 81);
+        let spec = sandbox_spec(profile);
         let manifest = manifest(&spec, 2, 5);
         let reservation = NetworkPreparationReservationV1::new(&manifest, &spec).unwrap();
         let authority = authority();
-        let mut catalog = NetworkPreparationCatalogV1::open_for_test(
-            current_directory.path(),
-            current_policy.clone(),
-            1,
-        )
-        .unwrap();
-        let result = catalog.reserve(reservation.clone(), &authority).unwrap();
+        let mut catalog =
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), policy.clone(), 1)
+                .unwrap();
+        let result = catalog.reserve(reservation, &authority).unwrap();
         let handle = *result.preparation().resolution().reserved_network_handle();
         drop(catalog);
 
         let (mut journal, _) = Journal::open(
-            current_directory.path().join(PREPARATION_JOURNAL_FILE),
+            directory.path().join(PREPARATION_JOURNAL_FILE),
             preparation_journal_limits(),
         )
         .unwrap();
@@ -2684,188 +2559,10 @@ mod tests {
             )
             .unwrap();
         drop(journal);
-        assert!(matches!(
-            NetworkPreparationCatalogV1::open_for_test(
-                current_directory.path(),
-                current_policy.clone(),
-                1,
-            ),
-            Err(NetworkPreparationCatalogError::CorruptRecord)
-        ));
-        assert!(matches!(
-            NetworkPreparationCatalogV1::migrate_legacy_for_test(
-                current_directory.path(),
-                current_policy,
-                1,
-            ),
-            Err(NetworkPreparationCatalogError::CorruptRecord)
-        ));
-
-        let (mut journal, _) = Journal::open(
-            current_directory.path().join(PREPARATION_JOURNAL_FILE),
-            preparation_journal_limits(),
-        )
-        .unwrap();
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [96; 16],
-                    vec![JournalRecord::delete(
-                        RecordNamespace::NetworkResourceInventory,
-                        ALLOCATION_HEAD_KEY.to_vec(),
-                    )],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        drop(journal);
-        assert!(matches!(
-            NetworkPreparationCatalogV1::migrate_legacy_for_test(
-                current_directory.path(),
-                policy_catalog(2, profile.clone(), 81),
-                1,
-            ),
-            Err(NetworkPreparationCatalogError::CorruptRecord)
-        ));
-
-        let legacy_directory = TempDir::new().unwrap();
-        let legacy_policy = policy_catalog(1, profile.clone(), 81);
-        let mut catalog = NetworkPreparationCatalogV1::open_for_test(
-            legacy_directory.path(),
-            legacy_policy.clone(),
-            1,
-        )
-        .unwrap();
-        let result = catalog.reserve(reservation.clone(), &authority).unwrap();
-        let current_handle = *result.preparation().resolution().reserved_network_handle();
-        drop(catalog);
-
-        let (mut journal, _) = Journal::open(
-            legacy_directory.path().join(PREPARATION_JOURNAL_FILE),
-            preparation_journal_limits(),
-        )
-        .unwrap();
-        let mut legacy_profile = legacy_policy.profiles()[0].clone();
-        legacy_profile.profile_digest = legacy_profile.program().digest();
-        let legacy_policy_digest =
-            policy_catalog_digest(NODE, 1, &[legacy_profile.clone()]).unwrap();
-        let legacy_policy_catalog = NetworkPolicyCatalogV1 {
-            node: NODE,
-            generation: 1,
-            digest: legacy_policy_digest,
-            profiles: vec![legacy_profile.clone()],
-        };
-        let handle_preimage =
-            reservation_preimage(&reservation, &legacy_policy_catalog, &legacy_profile).unwrap();
-        let legacy_handle = authority
-            .mint_network_handle(reservation.assignment, &handle_preimage)
-            .unwrap();
-        let mut legacy_record = decode_record(
-            journal
-                .get(
-                    RecordNamespace::NetworkResourceInventory,
-                    &record_key(&current_handle),
-                )
-                .unwrap(),
-        )
-        .unwrap();
-        legacy_record.network_handle = legacy_handle;
-        legacy_record.profile_digest = *legacy_profile.program().digest().as_bytes();
-        let legacy_resolution = ResolvedNetworkPreparationV1::new(
-            1,
-            legacy_handle,
-            legacy_profile.program().digest(),
-            legacy_profile.endpoints().to_vec(),
-        )
-        .unwrap();
-        legacy_record.resolution_digest = *legacy_resolution.binding().digest().as_bytes();
-        legacy_record.reservation_digest = legacy_record.derive_digest().unwrap();
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [93; 16],
-                    vec![
-                        JournalRecord::delete(
-                            RecordNamespace::NetworkResourceInventory,
-                            record_key(&current_handle),
-                        ),
-                        JournalRecord::delete(
-                            RecordNamespace::NetworkResourceInventory,
-                            allocation_key(&current_handle),
-                        ),
-                    ],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [94; 16],
-                    vec![
-                        JournalRecord::put(
-                            RecordNamespace::NetworkResourceInventory,
-                            record_key(&legacy_handle),
-                            encode_record(&legacy_record).unwrap(),
-                        ),
-                        JournalRecord::put(
-                            RecordNamespace::NetworkResourceInventory,
-                            HEAD_KEY.to_vec(),
-                            encode_head(&CatalogHeadV1 {
-                                node: *NODE.as_bytes(),
-                                generation: 1,
-                                digest: *legacy_policy_digest.as_bytes(),
-                            })
-                            .unwrap(),
-                        ),
-                    ],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [95; 16],
-                    vec![JournalRecord::delete(
-                        RecordNamespace::NetworkResourceInventory,
-                        ALLOCATION_HEAD_KEY.to_vec(),
-                    )],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        drop(journal);
 
         assert!(matches!(
-            NetworkPreparationCatalogV1::open_for_test(
-                legacy_directory.path(),
-                legacy_policy.clone(),
-                1,
-            ),
-            Err(NetworkPreparationCatalogError::Rollback)
-        ));
-        let upgraded_policy = policy_catalog(2, profile, 81);
-        assert!(matches!(
-            NetworkPreparationCatalogV1::open_for_test(
-                legacy_directory.path(),
-                upgraded_policy.clone(),
-                1,
-            ),
+            NetworkPreparationCatalogV1::open_for_test(directory.path(), policy, 1),
             Err(NetworkPreparationCatalogError::CorruptRecord)
         ));
-        let legacy = NetworkPreparationCatalogV1::migrate_legacy_for_test(
-            legacy_directory.path(),
-            upgraded_policy.clone(),
-            1,
-        )
-        .unwrap();
-        assert!(matches!(
-            legacy.plan_for_resolution(legacy_handle, &legacy_resolution),
-            Err(NetworkPreparationCatalogError::InvalidCandidate)
-        ));
-        drop(legacy);
-        NetworkPreparationCatalogV1::open_for_test(legacy_directory.path(), upgraded_policy, 1)
-            .unwrap();
     }
 }

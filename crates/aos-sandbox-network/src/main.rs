@@ -1,7 +1,7 @@
 //! Runs the root-only, systemd-activated AOS Network inventory broker.
 //!
 //! The executable opens the protected namespace journal and fixed namespace-pin
-//! root before serving Network 1.2 inventory. Apply is not advertised and this
+//! root before serving Network 1.0 inventory. Apply is not advertised and this
 //! process holds no network-administration capability in the current deployment.
 
 use std::env;
@@ -15,33 +15,14 @@ use aos_sandbox_network::{
     NetworkInventoryService, NetworkNamespaceCatalogV1, NetworkServiceError,
 };
 
-const LEGACY_STATE_ROOT: &str = "/var/lib/aos/sandbox-network";
-const PROTECTED_V1_STATE_ROOT: &str = "/var/lib/aos/sandbox-network/broker-state";
-const PROTECTED_V1_PROFILE_ARGUMENT: &str = "--state-root-profile=protected-v1";
-const USAGE: &str =
-    "usage: aos-netd CONTROLLER_UID CONTROLLER_GID [--state-root-profile=protected-v1]";
+const STATE_ROOT: &str = "/var/lib/aos/sandbox-network/broker-state";
+const USAGE: &str = "usage: aos-netd CONTROLLER_UID CONTROLLER_GID";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const PRODUCTION_CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StateRootProfile {
-    Legacy,
-    ProtectedV1,
-}
-
-impl StateRootProfile {
-    fn root(self) -> &'static Path {
-        match self {
-            Self::Legacy => Path::new(LEGACY_STATE_ROOT),
-            Self::ProtectedV1 => Path::new(PROTECTED_V1_STATE_ROOT),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NetworkDaemonArguments {
     controller_identity: (u32, u32),
-    state_root_profile: StateRootProfile,
 }
 
 fn main() -> ExitCode {
@@ -65,7 +46,7 @@ fn run() -> Result<(), NetworkServiceError> {
     // Descriptor 3 must be adopted before another operation can allocate it.
     let mut listener = take_systemd_listener()?;
     let controller_cgroup = open_controller_cgroup()?;
-    let catalog = NetworkNamespaceCatalogV1::open_root_owned(arguments.state_root_profile.root())?;
+    let catalog = NetworkNamespaceCatalogV1::open_root_owned(Path::new(STATE_ROOT))?;
     let mut service =
         NetworkInventoryService::new(catalog, controller_cgroup, arguments.controller_identity)?;
 
@@ -86,18 +67,12 @@ fn parse_arguments(
     let uid = parse_identity(arguments.next(), "controller UID")?;
     let gid = parse_identity(arguments.next(), "controller GID")?;
 
-    let state_root_profile = match arguments.next().as_deref() {
-        None => StateRootProfile::Legacy,
-        Some(PROTECTED_V1_PROFILE_ARGUMENT) => StateRootProfile::ProtectedV1,
-        Some(_) => return Err(NetworkServiceError::Activation(USAGE.to_owned())),
-    };
     if arguments.next().is_some() {
         return Err(NetworkServiceError::Activation(USAGE.to_owned()));
     }
 
     Ok(NetworkDaemonArguments {
         controller_identity: (uid, gid),
-        state_root_profile,
     })
 }
 
@@ -136,55 +111,21 @@ mod tests {
     }
 
     #[test]
-    fn state_root_profile_is_closed_and_default_preserving() {
-        let legacy = parse(&["aos-netd", "811", "812"]).unwrap();
-        assert_eq!(legacy.controller_identity, (811, 812));
-        assert_eq!(legacy.state_root_profile, StateRootProfile::Legacy);
-        assert_eq!(
-            legacy.state_root_profile.root(),
-            Path::new("/var/lib/aos/sandbox-network")
-        );
+    fn state_root_and_identity_arguments_are_fixed() {
+        let arguments = parse(&["aos-netd", "811", "812"]).unwrap();
 
-        let protected = parse(&[
-            "aos-netd",
-            "811",
-            "812",
-            "--state-root-profile=protected-v1",
-        ])
-        .unwrap();
-        assert_eq!(protected.controller_identity, (811, 812));
-        assert_eq!(protected.state_root_profile, StateRootProfile::ProtectedV1);
+        assert_eq!(arguments.controller_identity, (811, 812));
         assert_eq!(
-            protected.state_root_profile.root(),
+            Path::new(STATE_ROOT),
             Path::new("/var/lib/aos/sandbox-network/broker-state")
         );
     }
 
     #[test]
-    fn state_root_profile_rejects_unknown_separate_and_duplicate_arguments() {
+    fn additional_arguments_are_rejected() {
         for arguments in [
-            vec!["aos-netd", "811", "812", "--state-root-profile=other"],
-            vec![
-                "aos-netd",
-                "811",
-                "812",
-                "--state-root-profile",
-                "protected-v1",
-            ],
-            vec![
-                "aos-netd",
-                "811",
-                "812",
-                "--state-root-profile=protected-v1",
-                "--state-root-profile=protected-v1",
-            ],
-            vec![
-                "aos-netd",
-                "811",
-                "812",
-                "--state-root-profile=protected-v1",
-                "/tmp/alternate",
-            ],
+            vec!["aos-netd", "811", "812", "--unknown"],
+            vec!["aos-netd", "811", "812", "/tmp/alternate"],
         ] {
             assert!(parse(&arguments).is_err(), "accepted {arguments:?}");
         }

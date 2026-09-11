@@ -1,7 +1,7 @@
 //! Authenticates and durably records Storage and Network resource inventories.
 //!
 //! Each query uses an independent one-shot session at the domain's exact
-//! protocol version: Storage 1.0 or Network 1.2. A response is accepted only
+//! protocol version: Storage 1.0 or Network 1.0. A response is accepted only
 //! from the configured live broker execution. The controller
 //! records the exact request and complete response in a domain-specific latest
 //! snapshot:
@@ -54,6 +54,8 @@ const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.resource-inventory.transaction.v1\0";
 const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.resource-inventory.controller-state.v1\0";
+const STORAGE_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const NETWORK_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 /// Reports whether an authenticated broker snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -474,8 +476,8 @@ impl InventoryDomain {
 
     const fn protocol_version(self) -> ProtocolVersion {
         match self {
-            Self::Storage => ProtocolVersion::new(1, 0),
-            Self::Network => ProtocolVersion::new(1, 2),
+            Self::Storage => STORAGE_CARRIER_VERSION,
+            Self::Network => NETWORK_CARRIER_VERSION,
         }
     }
 
@@ -1448,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn network_hello_and_request_round_trip_uses_exact_one_two() {
+    fn network_hello_and_request_round_trip_uses_exact_one_zero() {
         assert_hello_and_request_protocol_round_trip(InventoryDomain::Network);
     }
 

@@ -599,11 +599,11 @@ pub fn decode_bpf_observation(
         ));
     }
     let raw: RawObservation = serde_json::from_slice(bytes)?;
-    if raw.binding.format_version != 2
+    if raw.binding.format_version != 1
         || raw.binding.provenance_version != 1
-        || raw.state.format_version != 2
-        || raw.state.ingress.format_version != 2
-        || raw.state.egress.format_version != 2
+        || raw.state.format_version != 1
+        || raw.state.ingress.format_version != 1
+        || raw.state.egress.format_version != 1
         || raw.binding.ingress_program_id != raw.ingress.program_id
         || raw.binding.egress_program_id != raw.egress.program_id
         || raw.binding.host_ifindex != raw.ingress.ifindex
@@ -816,19 +816,19 @@ mod tests {
     const FIXTURE: &str = r#"{
       "binding_map":{"id":11,"type":2,"name":"binding","key_size":4,"value_size":192,"max_entries":1,"flags":128},
       "state_map":{"id":12,"type":1,"name":"lease_state","key_size":4,"value_size":200,"max_entries":1,"flags":128},
-      "binding":{"format_version":2,"provenance_version":1,"ingress_program_id":21,"egress_program_id":22,
+      "binding":{"format_version":1,"provenance_version":1,"ingress_program_id":21,"egress_program_id":22,
         "network_handle":"7777777777777777777777777777777777777777777777777777777777777777",
         "assignment_digest":"3333333333333333333333333333333333333333333333333333333333333333",
         "gate_object_digest":"6666666666666666666666666666666666666666666666666666666666666666",
         "assignment_epoch":41,"allocation_generation":1,"namespace_device":71,"namespace_inode":81,
         "boot_id":"91919191919191919191919191919191","host_ifindex":7,"peer_ifindex":7,
         "host_mac":"02aabb000002","peer_mac":"02aabb000003"},
-      "state":{"format_version":2,
-        "ingress":{"format_version":2,"armed":0,"assignment_epoch":41,
+      "state":{"format_version":1,
+        "ingress":{"format_version":1,"armed":0,"assignment_epoch":41,
           "assignment_digest":"3333333333333333333333333333333333333333333333333333333333333333",
           "lease_generation":0,"lease_digest":"0000000000000000000000000000000000000000000000000000000000000000",
           "deadline_boottime_nanoseconds":0},
-        "egress":{"format_version":2,"armed":0,"assignment_epoch":41,
+        "egress":{"format_version":1,"armed":0,"assignment_epoch":41,
           "assignment_digest":"3333333333333333333333333333333333333333333333333333333333333333",
           "lease_generation":0,"lease_digest":"0000000000000000000000000000000000000000000000000000000000000000",
           "deadline_boottime_nanoseconds":0}},
@@ -837,21 +837,21 @@ mod tests {
     }"#;
 
     #[test]
-    fn complete_v2_bpf_graph_decodes() {
+    fn complete_v1_bpf_graph_decodes() {
         let observation =
             decode_bpf_observation(FIXTURE.as_bytes(), ObjectDigest::from_bytes([0x66; 32]))
                 .unwrap();
 
-        assert_eq!(observation.binding.format_version, 2);
+        assert_eq!(observation.binding.format_version, 1);
         assert_eq!(observation.binding_map.value_size, 192);
         assert_eq!(observation.ingress.map_ids, [11, 12]);
-        assert_eq!(observation.lease_state.ingress.format_version, 2);
+        assert_eq!(observation.lease_state.ingress.format_version, 1);
     }
 
     #[test]
-    fn old_versions_unknown_fields_and_wrong_graphs_fail_closed() {
+    fn unknown_versions_fields_and_wrong_graphs_fail_closed() {
         for mutated in [
-            FIXTURE.replace("\"format_version\":2", "\"format_version\":1"),
+            FIXTURE.replace("\"format_version\":1", "\"format_version\":2"),
             FIXTURE.replace("\"binding_map\":", "\"unknown\":0,\"binding_map\":"),
             FIXTURE.replace("\"map_ids\":[11,12]", "\"map_ids\":[12,11]"),
         ] {
@@ -864,16 +864,16 @@ mod tests {
 
     #[test]
     fn direction_version_and_boolean_are_not_normalized() {
-        let old_direction = FIXTURE.replacen(
-            "\"format_version\":2,\"armed\":0",
+        let unknown_direction = FIXTURE.replacen(
             "\"format_version\":1,\"armed\":0",
+            "\"format_version\":2,\"armed\":0",
             1,
         );
         let non_boolean = FIXTURE.replacen("\"armed\":0", "\"armed\":2", 1);
 
         assert!(
             decode_bpf_observation(
-                old_direction.as_bytes(),
+                unknown_direction.as_bytes(),
                 ObjectDigest::from_bytes([0x66; 32])
             )
             .is_err()

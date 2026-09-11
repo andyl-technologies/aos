@@ -116,7 +116,7 @@ in {
           # The broker's no-new-privileges sandbox must not suppress the
           # dedicated SELinux provisioner transition used by this fresh gate.
           ExecStartPre = lib.optional protectedRoots "+${runtimeRootsCommand}";
-          ExecStart = "${cfg.package}/bin/aos-netd ${toString controller.uid} ${toString controller.gid}${lib.optionalString protectedRoots " --state-root-profile=protected-v1"}";
+          ExecStart = "${cfg.package}/bin/aos-netd ${toString controller.uid} ${toString controller.gid}";
           Restart = "on-failure";
           RestartSec = "2s";
           FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;
@@ -156,7 +156,7 @@ in {
           TasksMax = 32;
         }
         // lib.optionalAttrs (!protectedRoots) {
-          StateDirectory = "aos/sandbox-network";
+          StateDirectory = "aos/sandbox-network/broker-state";
           StateDirectoryMode = "0700";
         }
         // lib.optionalAttrs protectedRoots {

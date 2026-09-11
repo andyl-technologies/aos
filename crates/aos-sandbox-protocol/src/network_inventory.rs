@@ -1,6 +1,6 @@
 //! Authoritative Network namespace-inventory validation.
 //!
-//! Network protocol 1.2 reports current physical namespace resources rather
+//! Exact Network protocol 1.0 reports current physical namespace resources rather
 //! than replaying the latest action result. Each row carries an exact
 //! assignment, current-boot namespace identity, closed lease state, and
 //! observation digest. The namespace pin is derived locally:
@@ -29,7 +29,7 @@ use crate::{
 
 /// Maximum current namespaces accepted in one complete Network snapshot.
 pub const MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS: usize = 16_384;
-const NETWORK_RESOURCE_INVENTORY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
+const NETWORK_RESOURCE_INVENTORY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 /// Carries one complete validated Network resource snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,13 +159,13 @@ impl ValidatedNetworkNamespace {
     }
 }
 
-/// Decodes a Network 1.2 authoritative-inventory request.
+/// Decodes an exact Network 1.0 authoritative-inventory request.
 ///
 /// # Errors
 ///
 /// Returns [`ProtocolValidationError`] for an oversized or malformed request,
 /// invalid peer/header semantics, unknown fields, or any version other than
-/// Network 1.2.
+/// Network 1.0.
 pub fn decode_network_resource_inventory_request(
     bytes: &[u8],
     peer: PeerCredentials,
@@ -416,11 +416,11 @@ mod tests {
     }
 
     #[test]
-    fn request_requires_network_one_two() {
+    fn request_requires_exact_network_one_zero() {
         let mut request = InventoryNetworksRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 2;
+        header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 2;
@@ -441,10 +441,10 @@ mod tests {
                 .is_ok()
         );
         request.header.get_or_insert_default().protocol_minor = 1;
-        assert_eq!(
+        assert!(matches!(
             decode_network_resource_inventory_request(&request.encode_to_vec(), peer, policy, 1),
-            Err(ProtocolValidationError::MethodMismatch)
-        );
+            Err(ProtocolValidationError::Protocol(_))
+        ));
     }
 
     #[test]

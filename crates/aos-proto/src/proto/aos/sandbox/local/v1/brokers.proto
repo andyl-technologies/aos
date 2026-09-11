@@ -832,7 +832,7 @@ enum NetworkState {
 message InventoryNetworksRequest { RequestHeader header = 1; }
 message InventoryNetworksResponse { repeated NetworkResult networks = 1; }
 
-// Network 1.2 authoritative current-resource inventory. The namespace pin path
+// Network 1.0 authoritative current-resource inventory. The namespace pin path
 // is derived from network_handle beneath the fixed root-owned publisher.
 message NetworkNamespaceInventoryRecord {
   bytes network_handle = 1; // Exactly 32 bytes.

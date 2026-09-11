@@ -433,9 +433,9 @@ impl ProtocolVersion {
 
 /// Negotiates one protocol independently from every other compatibility domain.
 ///
-/// Host, Mount, and Storage have single exact baselines. Other domains retain
-/// their existing same-major compatibility policy until their independent
-/// cutovers.
+/// Host, Mount, Storage, and Network have single exact baselines. Other domains
+/// retain their existing same-major compatibility policy until their
+/// independent cutovers.
 ///
 /// # Errors
 ///
@@ -448,7 +448,10 @@ pub fn negotiate_protocol(
     let local = protocol_version(protocol);
     let compatible = if matches!(
         protocol,
-        ProtocolId::HostBroker | ProtocolId::MountBroker | ProtocolId::StorageBroker
+        ProtocolId::HostBroker
+            | ProtocolId::MountBroker
+            | ProtocolId::StorageBroker
+            | ProtocolId::NetworkBroker
     ) {
         offered == local
     } else {
@@ -472,7 +475,7 @@ const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
         ProtocolId::HostBroker => ProtocolVersion::new(1, 0),
         ProtocolId::MountBroker => ProtocolVersion::new(1, 0),
         ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
-        ProtocolId::NetworkBroker => ProtocolVersion::new(1, 2),
+        ProtocolId::NetworkBroker => ProtocolVersion::new(1, 0),
         ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 1),
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
@@ -650,13 +653,15 @@ mod tests {
             ));
         }
         assert_eq!(
-            negotiate_protocol(ProtocolId::NetworkBroker, ProtocolVersion::new(1, 2)),
-            Ok(ProtocolVersion::new(1, 2))
+            negotiate_protocol(ProtocolId::NetworkBroker, ProtocolVersion::new(1, 0)),
+            Ok(ProtocolVersion::new(1, 0))
         );
-        assert!(matches!(
-            negotiate_protocol(ProtocolId::NetworkBroker, ProtocolVersion::new(1, 3)),
-            Err(RegistryError::IncompatibleProtocol { .. })
-        ));
+        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+            assert!(matches!(
+                negotiate_protocol(ProtocolId::NetworkBroker, version),
+                Err(RegistryError::IncompatibleProtocol { .. })
+            ));
+        }
         assert!(matches!(
             negotiate_protocol(ProtocolId::PublicApi, ProtocolVersion::new(2, 0)),
             Err(RegistryError::IncompatibleProtocol { .. })

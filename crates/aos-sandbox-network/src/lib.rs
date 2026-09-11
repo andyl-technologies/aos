@@ -16,7 +16,7 @@
 //! typed committed namespace observations. [`namespace_catalog`] retains
 //! verified namespace identity and lease lifecycle, then emits authoritative
 //! current-boot inventory. [`service`] exposes that catalog through an
-//! authenticated Network 1.2 one-shot session, while [`activation`] validates
+//! authenticated Network 1.0 one-shot session, while [`activation`] validates
 //! its systemd record-subject listener. [`broker`] composes effect state without
 //! exposing Apply or directly performing netlink, nftables, or BPF work.
 //! [`worker_runtime`] and [`kernel_mutator`] provide the fixed one-shot

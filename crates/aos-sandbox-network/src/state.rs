@@ -30,12 +30,9 @@ use crate::authorization::NetworkAuthorityV1;
 use crate::catalog::{NetworkCatalogBindingV1, ResolvedEndpointV1, ResolvedNetworkPreparationV1};
 
 const MAGIC: &[u8; 8] = b"AOSNTX01";
-const VERSION: u16 = 4;
-const CUSTODY_VERSION: u16 = 3;
-const PREVIOUS_VERSION: u16 = 2;
-const LEGACY_VERSION: u16 = 1;
+const VERSION: u16 = 1;
 const EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.effect.v1\0";
-const RESULT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.result.v2\0";
+const RESULT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.result.v1\0";
 const MAXIMUM_OPERATIONS: usize = 256;
 const MAXIMUM_RECORD_BYTES: usize = 96 * 1024;
 
@@ -63,7 +60,7 @@ pub struct CommittedNetworkResultV1 {
     kernel_boot_id: [u8; 16],
     namespace_device: u64,
     namespace_inode: u64,
-    kernel_plan_digest: Option<ObjectDigest>,
+    kernel_plan_digest: ObjectDigest,
     result_digest: ObjectDigest,
 }
 
@@ -73,7 +70,7 @@ pub struct NetworkNamespaceCustodyV1 {
     kernel_boot_id: [u8; 16],
     namespace_device: u64,
     namespace_inode: u64,
-    kernel_plan_digest: Option<ObjectDigest>,
+    kernel_plan_digest: ObjectDigest,
 }
 
 impl NetworkNamespaceCustodyV1 {
@@ -97,7 +94,7 @@ impl NetworkNamespaceCustodyV1 {
 
     /// Returns the authenticated prepare plan bound before worker transfer.
     #[must_use]
-    pub const fn kernel_plan_digest(self) -> Option<ObjectDigest> {
+    pub const fn kernel_plan_digest(self) -> ObjectDigest {
         self.kernel_plan_digest
     }
 }
@@ -140,11 +137,8 @@ impl CommittedNetworkResultV1 {
     }
 
     /// Returns the exact authenticated prepare-plan commitment.
-    ///
-    /// Records committed before format four return `None` and are not eligible
-    /// for lifecycle mutation until an authenticated migration supplies proof.
     #[must_use]
-    pub const fn kernel_plan_digest(self) -> Option<ObjectDigest> {
+    pub const fn kernel_plan_digest(self) -> ObjectDigest {
         self.kernel_plan_digest
     }
 
@@ -602,76 +596,6 @@ impl NetworkStateStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn rewrite_as_legacy_for_test(
-        &mut self,
-        authority: &NetworkAuthorityV1,
-        request_id: [u8; 16],
-    ) -> Result<(), NetworkStateError> {
-        let mut record = self
-            .records
-            .get(&request_id)
-            .cloned()
-            .ok_or(NetworkStateError::InvalidTransition)?;
-        if record.phase != DurableNetworkPhase::Prepared {
-            return Err(NetworkStateError::InvalidTransition);
-        }
-        record.operation_fence = None;
-        let payload = encode_legacy_record(&record)?;
-        let sealed_local = authority
-            .seal_local(&request_id, record_domain()?, &payload)
-            .map_err(|_| NetworkStateError::AuthorityLink)?;
-        let transaction = JournalTransaction::new(
-            transaction_id(b"legacy", &request_id),
-            vec![
-                JournalRecord::delete(RecordNamespace::AuthorityPublication, request_id.to_vec()),
-                JournalRecord::put(
-                    RecordNamespace::Operation,
-                    request_id.to_vec(),
-                    sealed_local,
-                ),
-            ],
-        )?;
-        self.journal.commit(&transaction)?;
-        self.records.insert(request_id, record);
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn rewrite_committed_as_previous_for_test(
-        &mut self,
-        authority: &NetworkAuthorityV1,
-        request_id: [u8; 16],
-    ) -> Result<(), NetworkStateError> {
-        let mut record = self
-            .records
-            .get(&request_id)
-            .cloned()
-            .ok_or(NetworkStateError::InvalidTransition)?;
-        if record.phase != DurableNetworkPhase::Committed {
-            return Err(NetworkStateError::InvalidTransition);
-        }
-        record.custody = None;
-        record.result = record.result.map(|mut result| {
-            result.kernel_plan_digest = None;
-            result
-        });
-        let payload = encode_previous_record(&record)?;
-        let sealed_local = authority
-            .seal_local(&request_id, record_domain()?, &payload)
-            .map_err(|_| NetworkStateError::AuthorityLink)?;
-        self.journal.commit(&JournalTransaction::new(
-            transaction_id(b"previous", &request_id),
-            vec![JournalRecord::put(
-                RecordNamespace::Operation,
-                request_id.to_vec(),
-                sealed_local,
-            )],
-        )?)?;
-        self.records.insert(request_id, record);
-        Ok(())
-    }
-
-    #[cfg(test)]
     pub(crate) fn rewrite_custody_identity_for_test(
         &mut self,
         authority: &NetworkAuthorityV1,
@@ -730,7 +654,7 @@ impl NetworkStateStore {
             .custody
             .as_mut()
             .ok_or(NetworkStateError::InvalidTransition)?;
-        custody.kernel_plan_digest = Some(kernel_plan_digest);
+        custody.kernel_plan_digest = kernel_plan_digest;
         let payload = encode_current_record_unchecked(&record)?;
         let sealed_local = authority
             .seal_local(&request_id, record_domain()?, &payload)
@@ -885,7 +809,7 @@ impl NetworkStateStore {
             kernel_boot_id,
             namespace_device,
             namespace_inode,
-            kernel_plan_digest: Some(kernel_plan_digest),
+            kernel_plan_digest,
         };
         if record.phase != DurableNetworkPhase::Ambiguous
             || network_handle != *record.catalog.reserved_network_handle()
@@ -949,7 +873,7 @@ impl NetworkStateStore {
                     kernel_boot_id: verified.kernel_boot_id,
                     namespace_device: verified.namespace_device,
                     namespace_inode: verified.namespace_inode,
-                    kernel_plan_digest: Some(verified.kernel_plan_digest),
+                    kernel_plan_digest: verified.kernel_plan_digest,
                 })
             || self.records.values().any(|existing| {
                 existing.request_id != request_id
@@ -969,7 +893,7 @@ impl NetworkStateStore {
             kernel_boot_id: verified.kernel_boot_id,
             namespace_device: verified.namespace_device,
             namespace_inode: verified.namespace_inode,
-            kernel_plan_digest: Some(verified.kernel_plan_digest),
+            kernel_plan_digest: verified.kernel_plan_digest,
             result_digest: verified.result_digest,
         };
         record.phase = DurableNetworkPhase::Committed;
@@ -1299,7 +1223,7 @@ fn fence_follows(
 }
 
 fn encode_record(record: &DurableRecord) -> Result<Vec<u8>, NetworkStateError> {
-    validate_record_shape(record, VERSION)?;
+    validate_record_shape(record)?;
     encode_current_record_unchecked(record)
 }
 
@@ -1334,59 +1258,6 @@ fn encode_current_record_unchecked(record: &DurableRecord) -> Result<Vec<u8>, Ne
     Ok(bytes)
 }
 
-#[cfg(test)]
-fn encode_legacy_record(record: &DurableRecord) -> Result<Vec<u8>, NetworkStateError> {
-    validate_record_shape(record, LEGACY_VERSION)?;
-    let mut bytes = Vec::with_capacity(512 + record.current_fence.len() + record.effect.len());
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
-    bytes.push(phase_code(record.phase));
-    bytes.extend_from_slice(&record.request_id);
-    bytes.extend_from_slice(&record.sandbox_id);
-    bytes.extend_from_slice(record.transport_digest.as_bytes());
-    bytes.extend_from_slice(record.semantic_digest.as_bytes());
-    bytes.push(verb_code(record.verb)?);
-    encode_catalog(&mut bytes, &record.catalog)?;
-    push_blob(&mut bytes, &record.current_fence)?;
-    push_blob(&mut bytes, &record.effect)?;
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkStateError::CorruptRecord);
-    }
-    Ok(bytes)
-}
-
-#[cfg(test)]
-fn encode_previous_record(record: &DurableRecord) -> Result<Vec<u8>, NetworkStateError> {
-    validate_record_shape(record, PREVIOUS_VERSION)?;
-    let operation_fence = record
-        .operation_fence
-        .as_deref()
-        .ok_or(NetworkStateError::CorruptRecord)?;
-    let mut bytes = Vec::with_capacity(
-        640 + record.current_fence.len() + operation_fence.len() + record.effect.len(),
-    );
-    bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&PREVIOUS_VERSION.to_be_bytes());
-    bytes.push(phase_code(record.phase));
-    bytes.extend_from_slice(&record.request_id);
-    bytes.extend_from_slice(&record.sandbox_id);
-    bytes.extend_from_slice(record.transport_digest.as_bytes());
-    bytes.extend_from_slice(record.semantic_digest.as_bytes());
-    bytes.push(verb_code(record.verb)?);
-    encode_catalog(&mut bytes, &record.catalog)?;
-    bytes.extend_from_slice(record.effect_digest.as_bytes());
-    push_blob(&mut bytes, &record.current_fence)?;
-    push_blob(&mut bytes, operation_fence)?;
-    push_blob(&mut bytes, &record.effect)?;
-    if let Some(result) = record.result {
-        encode_result(&mut bytes, result);
-    }
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkStateError::CorruptRecord);
-    }
-    Ok(bytes)
-}
-
 fn decode_record(bytes: &[u8]) -> Result<DurableRecord, NetworkStateError> {
     if bytes.len() > MAXIMUM_RECORD_BYTES {
         return Err(NetworkStateError::CorruptRecord);
@@ -1396,10 +1267,7 @@ fn decode_record(bytes: &[u8]) -> Result<DurableRecord, NetworkStateError> {
         return Err(NetworkStateError::CorruptRecord);
     }
     let version = u16::from_be_bytes(decoder.take()?);
-    if !matches!(
-        version,
-        LEGACY_VERSION | PREVIOUS_VERSION | CUSTODY_VERSION | VERSION
-    ) {
+    if version != VERSION {
         return Err(NetworkStateError::CorruptRecord);
     }
     let phase = decode_phase(decoder.byte()?)?;
@@ -1409,25 +1277,13 @@ fn decode_record(bytes: &[u8]) -> Result<DurableRecord, NetworkStateError> {
     let semantic_digest = ObjectDigest::from_bytes(decoder.take()?);
     let verb = decode_verb(decoder.byte()?)?;
     let catalog = decode_catalog(&mut decoder)?;
-    let effect_digest = if version >= PREVIOUS_VERSION {
-        ObjectDigest::from_bytes(decoder.take()?)
-    } else {
-        effect_digest(request_id, transport_digest, &catalog)
-    };
+    let effect_digest = ObjectDigest::from_bytes(decoder.take()?);
     let current_fence = decoder.blob()?.to_vec();
-    let operation_fence = if version >= PREVIOUS_VERSION {
-        Some(decoder.blob()?.to_vec())
-    } else {
-        None
-    };
+    let operation_fence = Some(decoder.blob()?.to_vec());
     let effect = decoder.blob()?.to_vec();
-    let custody = if version >= CUSTODY_VERSION {
-        decode_custody(&mut decoder, version)?
-    } else {
-        None
-    };
+    let custody = decode_custody(&mut decoder)?;
     let result = if phase == DurableNetworkPhase::Committed {
-        Some(decode_result(&mut decoder, catalog.binding(), version)?)
+        Some(decode_result(&mut decoder, catalog.binding())?)
     } else {
         None
     };
@@ -1449,11 +1305,11 @@ fn decode_record(bytes: &[u8]) -> Result<DurableRecord, NetworkStateError> {
     if !decoder.finished() {
         return Err(NetworkStateError::CorruptRecord);
     }
-    validate_record_shape(&record, version)?;
+    validate_record_shape(&record)?;
     Ok(record)
 }
 
-fn validate_record_shape(record: &DurableRecord, version: u16) -> Result<(), NetworkStateError> {
+fn validate_record_shape(record: &DurableRecord) -> Result<(), NetworkStateError> {
     let result_shape_valid = match (record.phase, record.result) {
         (DurableNetworkPhase::Committed, Some(result)) => {
             result.request_id == record.request_id
@@ -1462,6 +1318,7 @@ fn validate_record_shape(record: &DurableRecord, version: u16) -> Result<(), Net
                 && result.kernel_boot_id != [0; 16]
                 && result.namespace_device != 0
                 && result.namespace_inode != 0
+                && result.kernel_plan_digest.as_bytes() != &[0; 32]
                 && result.result_digest.as_bytes() != &[0; 32]
         }
         (DurableNetworkPhase::Prepared | DurableNetworkPhase::Ambiguous, None) => true,
@@ -1476,49 +1333,15 @@ fn validate_record_shape(record: &DurableRecord, version: u16) -> Result<(), Net
                 && custody.namespace_inode == result.namespace_inode
                 && custody.kernel_plan_digest == result.kernel_plan_digest
         }
-        (DurableNetworkPhase::Committed, None, Some(_)) => version < VERSION,
         _ => false,
     };
-    let version_shape_valid = match version {
-        LEGACY_VERSION => {
-            record.phase == DurableNetworkPhase::Prepared
-                && record.operation_fence.is_none()
-                && record.custody.is_none()
-                && record.result.is_none()
-        }
-        PREVIOUS_VERSION => {
-            record.custody.is_none()
-                && record
-                    .operation_fence
-                    .as_ref()
-                    .is_some_and(|fence| !fence.is_empty())
-        }
-        CUSTODY_VERSION => {
-            record
-                .operation_fence
-                .as_ref()
-                .is_some_and(|fence| !fence.is_empty())
-                && record
-                    .custody
-                    .is_none_or(|custody| custody.kernel_plan_digest.is_none())
-                && record
-                    .result
-                    .is_none_or(|result| result.kernel_plan_digest.is_none())
-        }
-        VERSION => {
-            record
-                .operation_fence
-                .as_ref()
-                .is_some_and(|fence| !fence.is_empty())
-                && record
-                    .custody
-                    .is_none_or(|custody| custody.kernel_plan_digest.is_some())
-                && record
-                    .result
-                    .is_none_or(|result| result.kernel_plan_digest.is_some())
-        }
-        _ => false,
-    };
+    let operation_fence_valid = record
+        .operation_fence
+        .as_ref()
+        .is_some_and(|fence| !fence.is_empty());
+    let custody_digest_valid = record
+        .custody
+        .is_none_or(|custody| custody.kernel_plan_digest.as_bytes() != &[0; 32]);
     if record.request_id == [0; 16]
         || record.sandbox_id == [0; 16]
         || record.transport_digest.as_bytes() == &[0; 32]
@@ -1530,7 +1353,8 @@ fn validate_record_shape(record: &DurableRecord, version: u16) -> Result<(), Net
             != effect_digest(record.request_id, record.transport_digest, &record.catalog)
         || !result_shape_valid
         || !custody_shape_valid
-        || !version_shape_valid
+        || !operation_fence_valid
+        || !custody_digest_valid
     {
         return Err(NetworkStateError::CorruptRecord);
     }
@@ -1547,10 +1371,7 @@ fn encode_custody(
             bytes.extend_from_slice(&custody.kernel_boot_id);
             bytes.extend_from_slice(&custody.namespace_device.to_be_bytes());
             bytes.extend_from_slice(&custody.namespace_inode.to_be_bytes());
-            let kernel_plan_digest = custody
-                .kernel_plan_digest
-                .ok_or(NetworkStateError::CorruptRecord)?;
-            bytes.extend_from_slice(kernel_plan_digest.as_bytes());
+            bytes.extend_from_slice(custody.kernel_plan_digest.as_bytes());
         }
         None => bytes.push(0),
     }
@@ -1559,7 +1380,6 @@ fn encode_custody(
 
 fn decode_custody(
     decoder: &mut Decoder<'_>,
-    version: u16,
 ) -> Result<Option<NetworkNamespaceCustodyV1>, NetworkStateError> {
     match decoder.byte()? {
         0 => Ok(None),
@@ -1568,18 +1388,12 @@ fn decode_custody(
                 kernel_boot_id: decoder.take()?,
                 namespace_device: u64::from_be_bytes(decoder.take()?),
                 namespace_inode: u64::from_be_bytes(decoder.take()?),
-                kernel_plan_digest: if version >= VERSION {
-                    Some(ObjectDigest::from_bytes(decoder.take()?))
-                } else {
-                    None
-                },
+                kernel_plan_digest: ObjectDigest::from_bytes(decoder.take()?),
             };
             if custody.kernel_boot_id == [0; 16]
                 || custody.namespace_device == 0
                 || custody.namespace_inode == 0
-                || custody
-                    .kernel_plan_digest
-                    .is_some_and(|digest| digest.as_bytes() == &[0; 32])
+                || custody.kernel_plan_digest.as_bytes() == &[0; 32]
             {
                 return Err(NetworkStateError::CorruptRecord);
             }
@@ -1597,16 +1411,13 @@ fn encode_result(bytes: &mut Vec<u8>, result: CommittedNetworkResultV1) {
     bytes.extend_from_slice(&result.kernel_boot_id);
     bytes.extend_from_slice(&result.namespace_device.to_be_bytes());
     bytes.extend_from_slice(&result.namespace_inode.to_be_bytes());
-    if let Some(kernel_plan_digest) = result.kernel_plan_digest {
-        bytes.extend_from_slice(kernel_plan_digest.as_bytes());
-    }
+    bytes.extend_from_slice(result.kernel_plan_digest.as_bytes());
     bytes.extend_from_slice(result.result_digest.as_bytes());
 }
 
 fn decode_result(
     decoder: &mut Decoder<'_>,
     expected_preparation: NetworkCatalogBindingV1,
-    version: u16,
 ) -> Result<CommittedNetworkResultV1, NetworkStateError> {
     let request_id = decoder.take()?;
     let generation = u64::from_be_bytes(decoder.take()?);
@@ -1621,11 +1432,7 @@ fn decode_result(
         kernel_boot_id: decoder.take()?,
         namespace_device: u64::from_be_bytes(decoder.take()?),
         namespace_inode: u64::from_be_bytes(decoder.take()?),
-        kernel_plan_digest: if version >= VERSION {
-            Some(ObjectDigest::from_bytes(decoder.take()?))
-        } else {
-            None
-        },
+        kernel_plan_digest: ObjectDigest::from_bytes(decoder.take()?),
         result_digest: ObjectDigest::from_bytes(decoder.take()?),
     })
 }
@@ -1837,5 +1644,23 @@ const fn journal_limits() -> JournalLimits {
         maximum_transactions: 65_536,
         maximum_materialized_bytes: MAXIMUM_RECORD_BYTES * MAXIMUM_OPERATIONS * 4,
         maximum_materialized_records: MAXIMUM_OPERATIONS * 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_rejects_every_non_v1_record_version() {
+        for version in [0_u16, 2] {
+            let mut bytes = Vec::from(MAGIC.as_slice());
+            bytes.extend_from_slice(&version.to_be_bytes());
+
+            assert!(matches!(
+                decode_record(&bytes),
+                Err(NetworkStateError::CorruptRecord)
+            ));
+        }
     }
 }

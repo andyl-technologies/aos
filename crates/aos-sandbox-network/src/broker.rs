@@ -138,7 +138,7 @@ pub struct NetworkLifecycleEffectDispatchPermitV1 {
 #[cfg(test)]
 #[allow(
     dead_code,
-    reason = "focused creation-journal tests use subsets of this legacy harness"
+    reason = "focused creation-journal tests use subsets of this test harness"
 )]
 pub(crate) struct NetworkAdmissionCoordinator {
     authority: NetworkAuthorityV1,
@@ -284,32 +284,6 @@ impl NetworkAdmissionCoordinator {
     ) -> Result<CommittedNetworkResultV1, NetworkBrokerError> {
         self.state
             .commit_verified(&self.authority, request_id, effect_digest, verified)
-            .map_err(Into::into)
-    }
-
-    /// Reconstructs one default-drop namespace publication from committed state.
-    ///
-    /// The operation store must reproduce the exact result and protected
-    /// resolution, and the preparation catalog must independently retain that
-    /// resolution with its portable assignment. Pin and current-boot checks are
-    /// performed later by [`crate::NetworkNamespaceCatalogV1::publish`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NetworkBrokerError`] when committed state is not current, the
-    /// preparation reservation is absent or disagrees, or the resulting
-    /// publication is incomplete.
-    pub fn namespace_publication(
-        &self,
-        result: CommittedNetworkResultV1,
-        preparations: &NetworkPreparationCatalogV1,
-    ) -> Result<NetworkNamespacePublicationV1, NetworkBrokerError> {
-        let entry = self.state.committed_recovery_entry(result)?;
-        let resolution = self.state.recover_preparation(&entry)?;
-        let assignment =
-            preparations.assignment_for_resolution(result.network_handle(), &resolution)?;
-
-        NetworkNamespacePublicationV1::from_committed(result, &resolution, assignment)
             .map_err(Into::into)
     }
 
@@ -614,10 +588,7 @@ impl NetworkLifecycleAdmissionCoordinator {
             .filter(|_| entry.phase() == DurableNetworkPhase::Ambiguous)
             .ok_or(NetworkStateError::InvalidTransition)?;
         let identity = namespace.identity();
-        let kernel_plan_digest = custody
-            .kernel_plan_digest()
-            .filter(|digest| digest.as_bytes() != &[0; 32])
-            .ok_or(NetworkStateError::InvalidTransition)?;
+        let kernel_plan_digest = custody.kernel_plan_digest();
         let current_boot_id = KernelBootId::current()
             .map_err(|_| NetworkStateError::InvalidTransition)?
             .into_bytes();
@@ -751,7 +722,7 @@ impl NetworkLifecycleAdmissionCoordinator {
 
         let namespace_authority =
             namespaces.authorize_current_lifecycle(handle, assignment, resolution.binding())?;
-        if namespace_authority.kernel_plan_digest != Some(kernel_plan.digest()) {
+        if namespace_authority.kernel_plan_digest != kernel_plan.digest() {
             return Err(NetworkBrokerError::Request);
         }
         let (action, desired_state) =
@@ -1300,7 +1271,7 @@ pub(crate) mod tests {
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Network,
                 ProtocolId::NetworkBroker,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 assignment,
                 NODE,
                 self.lease_signer.clone(),
@@ -1452,7 +1423,7 @@ pub(crate) mod tests {
         let mut request = ApplyNetworkRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 0;
         header.request_id = vec![request_id; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = 180;
@@ -1523,7 +1494,7 @@ pub(crate) mod tests {
         let mut request = ApplyNetworkRequest::default();
         let header = request.header.get_or_insert_default();
         header.protocol_major = 1;
-        header.protocol_minor = 1;
+        header.protocol_minor = 0;
         header.request_id = vec![request_id; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
         header.deadline_boottime_nanoseconds = request_deadline_boottime_nanoseconds;
@@ -1610,7 +1581,7 @@ pub(crate) mod tests {
                 &prepare_request,
                 &prepare_artifacts,
                 &preparation,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1790,7 +1761,7 @@ pub(crate) mod tests {
                 &preparation,
                 &case.kernel_plan,
                 &case.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1842,7 +1813,7 @@ pub(crate) mod tests {
                 &preparation,
                 &case.kernel_plan,
                 &case.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1903,7 +1874,7 @@ pub(crate) mod tests {
                 &preparation,
                 &case.kernel_plan,
                 &case.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -1959,7 +1930,7 @@ pub(crate) mod tests {
                 &preparation,
                 &case.kernel_plan,
                 &case.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2612,7 +2583,7 @@ pub(crate) mod tests {
                     &preparation,
                     &case.kernel_plan,
                     &case.namespaces,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &advanced_clock(),
@@ -2630,7 +2601,7 @@ pub(crate) mod tests {
                 &preparation,
                 &substituted_plan,
                 &case.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &advanced_clock(),
@@ -2698,7 +2669,7 @@ pub(crate) mod tests {
                     &preparation,
                     &case.kernel_plan,
                     &case.namespaces,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &advanced_clock(),
@@ -2714,7 +2685,7 @@ pub(crate) mod tests {
                     &preparation,
                     &substituted_plan,
                     &case.namespaces,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &advanced_clock(),
@@ -2755,7 +2726,7 @@ pub(crate) mod tests {
                 &preparation,
                 &case.kernel_plan,
                 &case.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2798,7 +2769,7 @@ pub(crate) mod tests {
                 &stale_prepare,
                 &stale_artifacts,
                 &stale_catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2817,7 +2788,7 @@ pub(crate) mod tests {
                     &recreate,
                     &recreate_artifacts,
                     &recreate_catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -2835,7 +2806,7 @@ pub(crate) mod tests {
                 &preparation,
                 &case.kernel_plan,
                 &case.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2863,7 +2834,7 @@ pub(crate) mod tests {
                 &conflicting_artifacts,
                 &semantics,
                 &conflicting_request,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 &clock(),
                 None,
             )
@@ -2906,7 +2877,7 @@ pub(crate) mod tests {
                 &candidate_request,
                 &candidate_artifacts,
                 &candidate_catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -2993,7 +2964,7 @@ pub(crate) mod tests {
                 &preparation,
                 &stale_fence.kernel_plan,
                 &stale_fence.namespaces,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -3082,7 +3053,7 @@ pub(crate) mod tests {
                     &preparation,
                     &kernel_plan,
                     &namespaces,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &advanced_clock(),
@@ -3153,7 +3124,7 @@ pub(crate) mod tests {
                     &preparation,
                     &kernel_plan,
                     &namespaces,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &advanced_clock(),
@@ -3176,7 +3147,7 @@ pub(crate) mod tests {
                     &preparation,
                     &kernel_plan,
                     &namespaces,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &advanced_clock(),
@@ -3338,7 +3309,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -3642,7 +3613,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -3671,7 +3642,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -3720,7 +3691,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -3779,7 +3750,7 @@ pub(crate) mod tests {
                 &artifacts,
                 &semantics,
                 &request,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 &clock(),
                 None,
             )
@@ -3794,7 +3765,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &catalog,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -3811,7 +3782,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock()
@@ -3840,7 +3811,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -3939,7 +3910,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &token,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -3988,7 +3959,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &token,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -4015,7 +3986,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &token,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -4025,50 +3996,6 @@ pub(crate) mod tests {
                 phase: DurableNetworkPhase::Ambiguous,
                 effect_digest,
             }
-        );
-    }
-
-    #[test]
-    fn legacy_prepared_record_remains_recoverable_but_cannot_cross_the_effect_boundary() {
-        let directory = TempDir::new().unwrap();
-        let fixture = Fixture::new();
-        let request = request();
-        let artifacts = fixture.artifacts(&request);
-        let effect_digest;
-        {
-            let authority = fixture.authority();
-            let token = authenticated_catalog(&authority, catalog(), &request);
-            let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
-            let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
-            effect_digest = match coordinator
-                .admit_apply_intent(
-                    &request,
-                    &artifacts,
-                    &token,
-                    ProtocolVersion::new(1, 1),
-                    peer(),
-                    peer_policy(),
-                    &clock(),
-                )
-                .unwrap()
-            {
-                NetworkAdmissionOutcome::Prepared { effect_digest } => effect_digest,
-                _ => panic!("first admission did not prepare the effect"),
-            };
-            coordinator
-                .state
-                .rewrite_as_legacy_for_test(&coordinator.authority, [7; 16])
-                .unwrap();
-        }
-
-        let authority = fixture.authority();
-        let store = NetworkStateStore::open_for_test(directory.path(), &authority, 0).unwrap();
-        assert_eq!(store.phase([7; 16]), Some(DurableNetworkPhase::Prepared));
-        let mut coordinator = NetworkAdmissionCoordinator::new(authority, store);
-        assert!(
-            coordinator
-                .mark_effect_ambiguous([7; 16], effect_digest)
-                .is_err()
         );
     }
 
@@ -4094,7 +4021,7 @@ pub(crate) mod tests {
                 &first_request,
                 &first_artifacts,
                 &first_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4178,7 +4105,7 @@ pub(crate) mod tests {
                 &second_request,
                 &second_artifacts,
                 &second_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4236,10 +4163,6 @@ pub(crate) mod tests {
 
         coordinator
             .state
-            .rewrite_committed_as_previous_for_test(&coordinator.authority, [7; 16])
-            .unwrap();
-        coordinator
-            .state
             .rewrite_custody_identity_for_test(&coordinator.authority, [8; 16], [51; 16], 52, 53, 3)
             .unwrap();
         drop(coordinator);
@@ -4271,7 +4194,7 @@ pub(crate) mod tests {
                 &first_request,
                 &fixture.artifacts(&first_request),
                 &first_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4304,7 +4227,7 @@ pub(crate) mod tests {
                 &second_request,
                 &fixture.artifacts(&second_request),
                 &second_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4375,7 +4298,7 @@ pub(crate) mod tests {
                     &first_request,
                     &first_artifacts,
                     &first_token,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -4426,7 +4349,7 @@ pub(crate) mod tests {
                         &second_request,
                         &second_artifacts,
                         &second_token,
-                        ProtocolVersion::new(1, 1),
+                        ProtocolVersion::new(1, 0),
                         peer(),
                         peer_policy(),
                         &clock(),
@@ -4489,7 +4412,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -4541,7 +4464,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &catalog,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -4600,7 +4523,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &token,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -4621,7 +4544,7 @@ pub(crate) mod tests {
                 &relocated_request,
                 &relocated_artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4653,7 +4576,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4689,7 +4612,7 @@ pub(crate) mod tests {
                         &request,
                         &artifacts,
                         &token,
-                        ProtocolVersion::new(1, 1),
+                        ProtocolVersion::new(1, 0),
                         peer(),
                         peer_policy(),
                         &clock(),
@@ -4747,7 +4670,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4763,7 +4686,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &changed,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4796,7 +4719,7 @@ pub(crate) mod tests {
                 &first,
                 &first_artifacts,
                 &first_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4807,7 +4730,7 @@ pub(crate) mod tests {
                 &changed_semantics,
                 &changed_artifacts,
                 &changed_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4834,7 +4757,7 @@ pub(crate) mod tests {
                 &first,
                 &first_artifacts,
                 &first_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4845,7 +4768,7 @@ pub(crate) mod tests {
                 &changed_sandbox,
                 &changed_artifacts,
                 &changed_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4874,7 +4797,7 @@ pub(crate) mod tests {
                 &first,
                 &first_artifacts,
                 &first_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4885,7 +4808,7 @@ pub(crate) mod tests {
                 &second,
                 &second_artifacts,
                 &second_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4912,7 +4835,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &token,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -4938,7 +4861,7 @@ pub(crate) mod tests {
                 &lower_than_current,
                 &lower_than_current_artifacts,
                 &lower_than_current_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4973,7 +4896,7 @@ pub(crate) mod tests {
                 &first,
                 &first_artifacts,
                 &first_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -4984,7 +4907,7 @@ pub(crate) mod tests {
                 &second,
                 &second_artifacts,
                 &second_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -5017,7 +4940,7 @@ pub(crate) mod tests {
                     &request,
                     &artifacts,
                     &token,
-                    ProtocolVersion::new(1, 1),
+                    ProtocolVersion::new(1, 0),
                     peer(),
                     peer_policy(),
                     &clock(),
@@ -5050,7 +4973,7 @@ pub(crate) mod tests {
                 &request,
                 &artifacts,
                 &token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -5069,7 +4992,7 @@ pub(crate) mod tests {
                 &next,
                 &next_artifacts,
                 &next_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
@@ -5132,7 +5055,7 @@ pub(crate) mod tests {
                 &destroy_bytes,
                 &artifacts,
                 &preparation_token,
-                ProtocolVersion::new(1, 1),
+                ProtocolVersion::new(1, 0),
                 peer(),
                 peer_policy(),
                 &clock(),
