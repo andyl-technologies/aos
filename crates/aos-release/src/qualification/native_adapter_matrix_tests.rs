@@ -624,6 +624,7 @@ fn unqualified_environment_can_only_retain_a_failed_matrix() -> Result<()> {
         for postcondition in cell.postconditions.values_mut() {
             postcondition.passed = false;
         }
+        cell.cohort_subject = None;
         cell.probes.clear();
     }
     assert!(!validate_native_adapter_matrix_observation(
