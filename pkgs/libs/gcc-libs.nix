@@ -12,6 +12,7 @@
   mkDerivation,
   stdenv,
   bootstrapTools,
+  patchelf,
 }: let
   # Use the same sources as the gcc16 tier (builtins.fetchTarball)
   gcc-src = builtins.fetchTarball {
@@ -49,7 +50,7 @@ in
     # No fetchurl source — we use builtins.fetchTarball inline
     src = null;
 
-    buildDeps = [];
+    buildDeps = [patchelf];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -196,6 +197,13 @@ in
           fi
           rm -rf "$out/${platformConfig}" 2>/dev/null || true
           find "$out/lib" -type d -name 'gcc' -exec rm -rf {} + 2>/dev/null || true
+
+          # A consumer's RUNPATH does not resolve transitive dependencies.
+          # Let libstdc++ find the matching libgcc_s beside itself.
+          for library in "$out"/lib/*.so.*; do
+            [ -L "$library" ] && continue
+            patchelf --add-rpath '$ORIGIN' "$library"
+          done
 
           echo "gcc-libs installed to $out"
           find "$out" -name '*.so*' -type f -o -name '*.so*' -type l | sort
