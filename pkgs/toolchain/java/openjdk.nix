@@ -56,10 +56,10 @@
     else "";
 
   # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
-  # Remap header diagnostics at compilation while preserving C++ assertions.
+  # Replace the full compiler prefix, including its hash, but retain assertions.
   linuxJpackageCxxFlag =
     if isLinuxArmCross
-    then " -ffile-prefix-map=/nix/store=/aos-build-inputs"
+    then " -ffile-prefix-map=${stdenv.gcc}=/aos-toolchain"
     else "";
 
   nativeMig =
