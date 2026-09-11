@@ -139,6 +139,27 @@ in
             # GLib's shared libraries whose dependencies load transitively.
             export LDFLAGS="$NIX_LDFLAGS ''${LDFLAGS:-}"
           ''
+          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux && enableIntrospection) ''
+            # The scanner runs on the build machine but links a target dumper.
+            # Keep its executable native while advertising target GI libraries.
+            mkdir -p .aos-introspection
+            cat > .aos-introspection/ldd-target <<'EOF'
+            #!${buildPackages.bash}/bin/bash
+            exec ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} --list "$@"
+            EOF
+            cat > .aos-introspection/g-ir-scanner <<EOF
+            #!${buildPackages.bash}/bin/bash
+            exec ${buildPackages.gobject-introspection}/bin/g-ir-scanner --use-ldd-wrapper="$PWD/.aos-introspection/ldd-target" "\$@"
+            EOF
+            chmod 0755 .aos-introspection/ldd-target .aos-introspection/g-ir-scanner
+            cp ${gobject-introspection}/lib/pkgconfig/gobject-introspection-1.0.pc \
+              .aos-introspection/gobject-introspection-1.0.pc
+            sed -i \
+              -e "s|^g_ir_scanner=.*|g_ir_scanner=$PWD/.aos-introspection/g-ir-scanner|" \
+              -e 's|^g_ir_compiler=.*|g_ir_compiler=${buildPackages.gobject-introspection}/bin/g-ir-compiler|' \
+              .aos-introspection/gobject-introspection-1.0.pc
+            export PKG_CONFIG_PATH="$PWD/.aos-introspection:$PKG_CONFIG_PATH"
+          ''
           + ''
             meson setup build \
               $mesonFlags \
