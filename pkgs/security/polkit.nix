@@ -2,9 +2,12 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   meson,
   ninja,
   pkg-config,
+  patchelf,
   gettext,
   perl,
   python3,
@@ -28,6 +31,21 @@
   buildPackages,
 }: let
   version = "127";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  runtimeLibraries = [glib expat linux-pam dbus duktape systemd gcc-libs];
+  runtimeLibraryPath = lib.concatMapStringsSep ":" (package: "${package}/lib") runtimeLibraries;
+  testPython =
+    if isLinuxCross
+    then buildPackages.python3
+    else python3;
+  testDbus =
+    if isLinuxCross
+    then buildPackages.python3-dbus
+    else python3-dbus;
+  testDbusMock =
+    if isLinuxCross
+    then buildPackages.python3-dbusmock
+    else python3-dbusmock;
 in
   mkDerivation {
     pname = "polkit";
@@ -38,27 +56,29 @@ in
       hash = "sha256-m3vBbwhkedzGJsV1l2VoukqF00KXp1DYqz0uV/bYuYg=";
     };
 
-    buildDeps = [
-      meson
-      ninja
-      pkg-config
-      gettext
-      perl
-      python3
-      python3-dbus
-      python3-dbusmock
-      glib.dev
-      glib.tools
-      util-linux
-      gobject-introspection
-      glibWithIntrospection
-      gtk-doc
-      libxslt
-      docbook-xml
-      docbook-xsl
-      coreutils
-    ];
-    runtimeDeps = [glib expat linux-pam dbus duktape systemd gcc-libs];
+    buildDeps =
+      [
+        meson
+        ninja
+        pkg-config
+        gettext
+        perl
+        python3
+        python3-dbus
+        python3-dbusmock
+        glib.dev
+        glib.tools
+        util-linux
+        gobject-introspection
+        glibWithIntrospection
+        gtk-doc
+        libxslt
+        docbook-xml
+        docbook-xsl
+        coreutils
+      ]
+      ++ lib.optionals isLinuxCross [patchelf];
+    runtimeDeps = runtimeLibraries;
     propagatedDeps = [glib];
 
     phases = [
@@ -102,27 +122,38 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export PKG_CONFIG_SYSTEMD_SYSUSERS_DIR="$out/lib/sysusers.d"
-          export PKG_CONFIG_SYSTEMD_TMPFILES_DIR="$out/lib/tmpfiles.d"
-          export XML_CATALOG_FILES="${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml ${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml"
-          meson setup build \
-            $mesonFlags \
-            --prefix="$out" \
-            --sysconfdir=etc \
-            --localstatedir=var \
-            --buildtype=release \
-            -Dsession_tracking=logind \
-            -Dsystemdsystemunitdir="$out/lib/systemd/system" \
-            -Dpolkitd_user=polkitd \
-            -Dauthfw=pam \
-            -Dos_type=lfs \
-            -Dtests=true \
-            -Dintrospection=true \
-            -Dgtk_doc=true \
-            -Dman=true \
-            -Dgettext=true
-        '';
+        script =
+          lib.optionalString isLinuxCross ''
+            # The wrapper creates Linux namespaces before launching the target
+            # test binaries. Those host operations need the native interpreter.
+            sed -i '1s|.*|#!${testPython}/bin/python3|' test/wrapper.py
+
+            # Native GLib generators also provide pkg-config metadata. Keep
+            # target declarations and development linker symlinks first.
+            export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig:${gobject-introspection}/lib/pkgconfig:${dbus}/lib/pkgconfig:${systemd}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export LDFLAGS="-L${glib.dev}/lib''${LDFLAGS:+ $LDFLAGS}"
+          ''
+          + ''
+            export PKG_CONFIG_SYSTEMD_SYSUSERS_DIR="$out/lib/sysusers.d"
+            export PKG_CONFIG_SYSTEMD_TMPFILES_DIR="$out/lib/tmpfiles.d"
+            export XML_CATALOG_FILES="${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml ${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml"
+            meson setup build \
+              $mesonFlags \
+              --prefix="$out" \
+              --sysconfdir=etc \
+              --localstatedir=var \
+              --buildtype=release \
+              -Dsession_tracking=logind \
+              -Dsystemdsystemunitdir="$out/lib/systemd/system" \
+              -Dpolkitd_user=polkitd \
+              -Dauthfw=pam \
+              -Dos_type=lfs \
+              -Dtests=true \
+              -Dintrospection=true \
+              -Dgtk_doc=true \
+              -Dman=true \
+              -Dgettext=true
+          '';
       }
       {
         name = "build";
@@ -136,8 +167,8 @@ in
         name = "check";
         script = ''
           export GI_GIR_PATH=${glibWithIntrospection}/share/gir-1.0
-          export PYTHONPATH=${python3-dbusmock}/lib/python3.14/site-packages:${python3-dbus}/lib/python3.14/site-packages:${buildPackages.meson}/lib/python3/site-packages
-          ${python3}/bin/python3 -m mesonbuild.mesonmain \
+          export PYTHONPATH=${testDbusMock}/lib/python3.14/site-packages:${testDbus}/lib/python3.14/site-packages:${buildPackages.meson}/lib/python3/site-packages
+          ${testPython}/bin/python3 -m mesonbuild.mesonmain \
             test -C build --print-errorlogs
         '';
       }
@@ -148,7 +179,14 @@ in
           PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
             ninja -C build install
 
-          # Privilege is granted only by the runtime wrapper module.
+          ${lib.optionalString isLinuxCross ''
+            # Meson replaces cross-wrapper runtime paths on installation.
+            # Restore declared libraries before the normal unused-path shrink.
+            find "$out" -type f | while read -r binary; do
+              patchelf --print-needed "$binary" >/dev/null 2>&1 || continue
+              patchelf --add-rpath "$out/lib:${runtimeLibraryPath}" "$binary"
+            done
+          ''}# Privilege is granted only by the runtime wrapper module.
           chmod u-s "$out/bin/pkexec" "$out/lib/polkit-1/polkit-agent-helper-1"
           "$out/bin/pkaction" --version
         '';
