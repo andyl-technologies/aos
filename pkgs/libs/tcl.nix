@@ -192,6 +192,9 @@ in
           ''
           else ''
             make install
+            # ELF fixups can remove the appended ZipFS standard-library image.
+            # Keep the supported loose-library installation available as well.
+            make install-libraries
             make install-private-headers
           '';
       }
@@ -205,7 +208,7 @@ in
       cli = testing.mkToolCheck {
         pname = "tool-tclsh";
         tool = self;
-        command = ''printf 'puts [info patchlevel]\n' | tclsh9.0'';
+        command = ''printf 'if {[catch {package require http} message]} {puts stderr $message; exit 1}\nputs [info patchlevel]\n' | tclsh9.0'';
         expectedOutput = version;
       };
 
