@@ -31,7 +31,7 @@
   httpBackend =
     interface
     "aos.http-backend"
-    "sha256:36ad13775c5b5d81209fdf1c36a715f482b0a1e389fbfbf587072ffdf0e9147f";
+    "sha256:d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf";
   systemdServiceEffects =
     interface
     "aos.systemd-service-effects"
@@ -438,11 +438,7 @@ in {
           requires = {
             configuration = required managedConfiguration;
             backend = requirement httpBackend [] "advisory" {
-              outputs.endpoint = {
-                address = "127.0.0.1";
-                port = 65535;
-                transport = "tcp";
-              };
+              outputs.endpoint = null;
             };
             credential = requirement credentialDelivery [] "advisory" {
               outputs.credential-views = {};

@@ -24,7 +24,7 @@ let
   httpBackend =
     interface
     "aos.http-backend"
-    "sha256:36ad13775c5b5d81209fdf1c36a715f482b0a1e389fbfbf587072ffdf0e9147f";
+    "sha256:d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -314,6 +314,8 @@ let
       in
         if expression.source != "literal"
         then throw "nginx backend endpoint must be available during planning"
+        else if expression.value == null
+        then null
         else validateBackendEndpoint expression.value;
     resolvedVirtualHosts = builtins.map
       (contribution: let
