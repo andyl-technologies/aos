@@ -5,15 +5,17 @@
     builtins.toJSON {
       inherit (operation) interface method;
     };
-  grouped = builtins.foldl' (
-    groups: operation: let
-      group = operationGroup operation;
-    in
-      groups
-      // {
-        ${group} = (groups.${group} or []) ++ [operation];
-      }
-  ) {} fragment.operations;
+  grouped =
+    builtins.foldl' (
+      groups: operation: let
+        group = operationGroup operation;
+      in
+        groups
+        // {
+          ${group} = (groups.${group} or []) ++ [operation];
+        }
+    ) {}
+    fragment.operations;
   pair = operations: let
     ordered = builtins.sort (left: right: left.key.key < right.key.key) operations;
   in
@@ -39,22 +41,27 @@
     "observe-manager"
     "read"
   ];
-  mutationOperations = builtins.filter (
-    operation: !builtins.elem operation.method observationMethods
-  ) fragment.operations;
+  mutationOperations =
+    builtins.filter (
+      operation: !builtins.elem operation.method observationMethods
+    )
+    fragment.operations;
   downstreamWitness = operations: let
     ordered = builtins.sort (left: right: left.key.key < right.key.key) operations;
     dependent = builtins.elemAt ordered 1;
     pairResources = map (operation: operation.target.resource) (
       lib.take 2 ordered
     );
-    candidates = builtins.filter (
-      operation: !builtins.elem operation.target.resource pairResources
-    ) mutationOperations;
+    candidates =
+      builtins.filter (
+        operation: !builtins.elem operation.target.resource pairResources
+      )
+      mutationOperations;
     witness = builtins.head candidates;
   in
     lib.optional (
-      builtins.length ordered >= 2
+      builtins.length ordered
+      >= 2
       && builtins.elem dependent.method observationMethods
       && dependent.method != "acquire"
       && candidates != []
@@ -80,7 +87,8 @@
       else route // {method = "deliver";};
   in
     lib.optionalAttrs (
-      builtins.length ordered >= 2
+      builtins.length ordered
+      >= 2
       && dependent.interface.name == "aos.credential-delivery-effects"
       && dependent.method == "acquire"
     ) {
@@ -95,10 +103,12 @@
           };
           target = dependent.target // {operations = ["deliver"];};
           accesses = map (access: access // {mode = "exclusive-write";}) dependent.accesses;
-          recovery = recovery // {
-            reconcile = routeFor recovery.reconcile;
-            cancel = routeFor recovery.cancel;
-          };
+          recovery =
+            recovery
+            // {
+              reconcile = routeFor recovery.reconcile;
+              cancel = routeFor recovery.cancel;
+            };
         };
       edge = {
         from = {
