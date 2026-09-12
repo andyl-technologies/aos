@@ -240,7 +240,7 @@ def unsupported_observation() -> object:
     """Returns a valid pre-effect transfer rejection observation."""
 
     source = authority("sha256:" + "aa" * 32, "source", "source-binding", "source", 9, 10)
-    candidate = authority(PLAN, TRANSACTION, "candidate-binding", "candidate", 1, 20)
+    candidate = authority(PLAN, TRANSACTION, "candidate-binding", "candidate", 10, 20)
     source_ledger = ledger("source-binding")
     return MODULE.UnsupportedTransferObservation(
         source_generation=2,
