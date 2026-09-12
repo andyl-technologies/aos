@@ -12,6 +12,7 @@
   pkgs,
   systems,
   extraFixtureModules ? [],
+  extraTestArtifactRoots ? [],
 }: let
   testPackages = [
     pkgs.diffutils
@@ -139,6 +140,16 @@
         initrdControlFallback
         {
           aos.system.version = "9999.0.0-image-rollback";
+
+          # This qualification image deliberately carries the guest agent and
+          # binutils-backed recovery inspection used by the A/B rollout harness.
+          # Structured-ability callers also name the Python interpreter for
+          # their in-guest boundary observer. Keep those exact roots explicit
+          # and give the measured 762 MiB closure narrow test-only headroom.
+          aos.image.allowTestArtifacts = true;
+          aos.image.testArtifactRoots = [pkgs.binutils] ++ extraTestArtifactRoots;
+          aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 800;
+
           # The fleet machine module bakes deterministic interface naming into the
           # initial UKI. Preserve that test-machine ABI in the independently built
           # candidate and seed its fleet address so first-boot evaluation can run
