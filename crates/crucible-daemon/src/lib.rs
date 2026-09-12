@@ -98,6 +98,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod anchored_fs;
 pub mod assignment_ledger;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
@@ -146,6 +147,7 @@ pub mod hot_checkpoint_retention;
 pub mod managed_hot_checkpoint_pool;
 #[cfg(target_os = "linux")]
 pub mod managed_qemu_hot_fork_source_world_pool;
+mod operational_state_migration;
 mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
@@ -431,13 +433,15 @@ pub use executor_worker::{
     PublishedAttemptResultAbortError, PublishedCheckpointResult, RepositoryAttemptWorker,
     RepositoryAttemptWorkerError, ResolvedAttemptStart, StagedAttemptResult,
     StagedCheckpointResult, abort_checkpoint_result, abort_prepared_attempt_result,
-    abort_published_attempt_result, abort_staged_attempt_result, journal_prepared_attempt_result,
-    prepare_attempt_result, publish_prepared_attempt_result, publish_staged_checkpoint_result,
-    reconcile_attempt_failure, reconcile_published_attempt_result,
-    reconcile_published_checkpoint_result, recover_prepared_attempt_result,
+    abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
+    publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
+    reconcile_published_attempt_result, reconcile_published_checkpoint_result,
     resolve_attempt_execution_input, resolve_attempt_execution_input_with_resources,
     retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
+};
+pub(crate) use executor_worker::{
+    journal_prepared_attempt_result, recover_prepared_attempt_result,
 };
 pub use finding_production_replay::{
     FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION, FindingProductionReplayAsset,
@@ -515,6 +519,10 @@ pub use managed_qemu_hot_fork_source_world_pool::{
     SharedQemuHotForkSourceWorldProviderConstructionError,
     SharedQemuHotForkSourceWorldProviderError,
 };
+pub use operational_state_migration::{
+    OperationalStateMigrationConfig, OperationalStateMigrationError,
+    OperationalStateMigrationSummary, migrate_operational_state,
+};
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
@@ -561,9 +569,10 @@ pub use planner_process::{
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     serve_canonical_planner_process_once,
 };
-pub use prepared_result_journal::{
+pub use prepared_result_journal::PreparedResultJournalError;
+pub(crate) use prepared_result_journal::{
     DirectoryPreparedResultJournal, PreparedResultJournalCreateDisposition,
-    PreparedResultJournalError,
+    PreparedResultJournalNamespace,
 };
 pub use qemu_baked_genesis::{
     ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,

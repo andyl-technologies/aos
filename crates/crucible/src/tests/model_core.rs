@@ -1,7 +1,6 @@
 //! Core model, scenario identity, and step-transition unit tests.
 
 use super::*;
-use crate::model::{LegacyScheduleDecisionKind, LegacyScheduleMigrationError};
 use crucible_campaign::{
     BooleanDomain, CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
     ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ScenarioDefId,
@@ -93,84 +92,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     let mut legacy = encoded;
     legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
     assert!(Schedule::from_compact_binary(&legacy).is_err());
-    assert!(matches!(
-        Schedule::migrate_version_one(&legacy),
-        Err(LegacyScheduleMigrationError::UnsupportedDecision {
-            index: 0,
-            kind: LegacyScheduleDecisionKind::Selection,
-        })
-    ));
-
-    let selection_free = Schedule::empty().appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("legacy-schedule"),
-        value: 7,
-    }));
-    let mut legacy_selection_free = selection_free.to_compact_binary();
-    legacy_selection_free[..b"crucible.schedule.v2\0".len()]
-        .copy_from_slice(b"crucible.schedule.v1\0");
-    assert!(Schedule::from_compact_binary(&legacy_selection_free).is_err());
-    let migrated = Schedule::migrate_version_one(&legacy_selection_free)?;
-    assert_eq!(migrated, selection_free);
-    assert!(
-        migrated
-            .to_compact_binary()
-            .starts_with(b"crucible.schedule.v2\0")
-    );
-    assert_eq!(
-        Schedule::from_compact_binary(&migrated.to_compact_binary())?,
-        migrated
-    );
     Ok(())
-}
-
-#[test]
-fn version_one_migration_rejects_untyped_explorable_decisions() {
-    let decisions = [
-        Decision::Override(OverrideDecision {
-            point: SchedulingPoint {
-                key: String::from("legacy-point"),
-            },
-            choice: ChoiceTag {
-                name: String::from("legacy-choice"),
-            },
-        }),
-        Decision::Preemption(PreemptionDecision {
-            node: NodeId {
-                name: String::from("legacy-node"),
-            },
-            at: Icount { retired: 1 },
-            kind: PreemptionKind::VcpuSwitch {
-                from_vcpu: VcpuId { index: 0 },
-                to_vcpu: VcpuId { index: 1 },
-            },
-        }),
-        Decision::AppRandom(AppRandomDecision {
-            node: NodeId {
-                name: String::from("legacy-node"),
-            },
-            stream: RngStreamId::from_name("legacy-random"),
-            request_id: 1,
-            width: 8,
-            value: 7,
-        }),
-    ];
-
-    for (expected_kind, decision) in [
-        (LegacyScheduleDecisionKind::Override, decisions[0].clone()),
-        (LegacyScheduleDecisionKind::Preemption, decisions[1].clone()),
-        (LegacyScheduleDecisionKind::AppRandom, decisions[2].clone()),
-    ] {
-        let mut legacy = Schedule::from_decisions([decision]).to_compact_binary();
-        legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
-
-        assert!(matches!(
-            Schedule::migrate_version_one(&legacy),
-            Err(LegacyScheduleMigrationError::UnsupportedDecision {
-                index: 0,
-                kind,
-            }) if kind == expected_kind
-        ));
-    }
 }
 
 #[test]

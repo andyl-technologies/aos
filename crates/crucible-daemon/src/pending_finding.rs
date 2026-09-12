@@ -368,7 +368,7 @@ pub(crate) fn reconcile_authenticated_pending_finding_candidates<A>(
     repository: &CampaignRepository,
     executor_store: &CampaignExecutorStore,
     recovery_owner: &PendingFindingRecoveryOwner,
-    prepared_result_namespace: &std::path::Path,
+    prepared_result_namespace: &crate::PreparedResultJournalNamespace,
     maximum_prepared_result_bytes: usize,
     ledger: &mut A,
     campaign: &CampaignName,
@@ -395,7 +395,11 @@ where
 fn reconcile_pending_finding_candidates_inner<A>(
     repository: &CampaignRepository,
     executor_store: Option<&CampaignExecutorStore>,
-    prepared_results: Option<(&PendingFindingRecoveryOwner, &std::path::Path, usize)>,
+    prepared_results: Option<(
+        &PendingFindingRecoveryOwner,
+        &crate::PreparedResultJournalNamespace,
+        usize,
+    )>,
     ledger: &mut A,
     campaign: &CampaignName,
 ) -> Result<
@@ -643,7 +647,7 @@ where
 struct PendingFindingRecoveryAuthority<'a, A> {
     repository: &'a CampaignRepository,
     ledger: &'a A,
-    prepared_result_namespace: &'a std::path::Path,
+    prepared_result_namespace: &'a crate::PreparedResultJournalNamespace,
     maximum_prepared_result_bytes: usize,
     key: AttemptExecutionKey,
 }

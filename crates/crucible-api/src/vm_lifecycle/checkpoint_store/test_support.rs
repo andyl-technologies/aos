@@ -1,6 +1,11 @@
 //! Production exact-checkpoint codec fixtures for cross-crate integration tests.
 
 use super::*;
+use std::io::SeekFrom;
+
+const STREAMING_FIXTURE_BUFFER_BYTES: usize = 64 * 1024;
+const STREAMING_FIXTURE_OVERLAY_BYTES: u64 = 20 * ARTIFACT_CHUNK_BYTES_U64 + 137;
+const STREAMING_FIXTURE_VMSTATE_BYTES: u64 = 3 * ARTIFACT_CHUNK_BYTES_U64 + 257;
 
 /// Authenticated production checkpoint codec material for integration tests.
 ///
@@ -11,6 +16,8 @@ pub struct AuthenticatedProductionCheckpointCodecFixture {
     source: ScenarioDefForm,
     configuration: Configuration,
     closure: ProductionExactCheckpointClosure,
+    overlay_bytes: u64,
+    vmstate_bytes: u64,
 }
 
 impl AuthenticatedProductionCheckpointCodecFixture {
@@ -30,6 +37,18 @@ impl AuthenticatedProductionCheckpointCodecFixture {
     #[must_use]
     pub const fn closure(&self) -> &ProductionExactCheckpointClosure {
         &self.closure
+    }
+
+    /// Returns the sparse overlay's logical length.
+    #[must_use]
+    pub const fn overlay_bytes(&self) -> u64 {
+        self.overlay_bytes
+    }
+
+    /// Returns the dense VMState artifact's logical length.
+    #[must_use]
+    pub const fn vmstate_bytes(&self) -> u64 {
+        self.vmstate_bytes
     }
 }
 
@@ -54,6 +73,32 @@ pub fn build_authenticated_production_checkpoint_codec_fixture(
             runtime_hash: ContentHash::from_bytes(b"matching integration runtime"),
         },
         true,
+        FixtureArtifactShape::Placeholder,
+    )
+}
+
+/// Builds a multi-chunk production checkpoint codec fixture for streaming gates.
+///
+/// The dense VMState spans several distinct native chunks. The much larger
+/// sparse overlay contains two distant allocated extents, so its stored bytes
+/// stay small relative to its logical length. Both source files are created
+/// with one fixed-size buffer. Like the smaller codec fixture, the bytes are
+/// authenticated production-format placeholders and cannot launch QEMU.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] when fixture construction or durable closure
+/// publication under `run_state_root` fails.
+pub fn build_streaming_production_checkpoint_codec_fixture(
+    run_state_root: &Path,
+) -> Result<AuthenticatedProductionCheckpointCodecFixture, LifecycleApiError> {
+    build_production_checkpoint_codec_fixture(
+        run_state_root,
+        QemuReplayOracleValidation::Match {
+            runtime_hash: ContentHash::from_bytes(b"matching streaming integration runtime"),
+        },
+        true,
+        FixtureArtifactShape::Streaming,
     )
 }
 
@@ -75,13 +120,21 @@ pub fn build_raw_production_checkpoint_codec_fixture(
         run_state_root,
         QemuReplayOracleValidation::NotRun,
         false,
+        FixtureArtifactShape::Placeholder,
     )
+}
+
+#[derive(Clone, Copy)]
+enum FixtureArtifactShape {
+    Placeholder,
+    Streaming,
 }
 
 fn build_production_checkpoint_codec_fixture(
     run_state_root: &Path,
     replay_validation: QemuReplayOracleValidation,
     expected_replay_oracle_ready: bool,
+    artifact_shape: FixtureArtifactShape,
 ) -> Result<AuthenticatedProductionCheckpointCodecFixture, LifecycleApiError> {
     let node = NodeId {
         name: String::from("vm-a"),
@@ -168,10 +221,13 @@ fn build_production_checkpoint_codec_fixture(
         .map_err(|error| loop_factory_error(format!("create checkpoint fixture root: {error}")))?;
     let overlay = run_state_root.join("fixture-overlay.qcow2");
     let vmstate = run_state_root.join("fixture-vmstate.bin");
-    fs::write(&overlay, b"overlay fixture")
-        .map_err(|error| loop_factory_error(format!("write fixture overlay: {error}")))?;
-    fs::write(&vmstate, b"vmstate fixture")
-        .map_err(|error| loop_factory_error(format!("write fixture VMState: {error}")))?;
+    write_fixture_artifacts(&overlay, &vmstate, artifact_shape)?;
+    let overlay_bytes = fs::metadata(&overlay)
+        .map_err(|error| loop_factory_error(format!("inspect fixture overlay: {error}")))?
+        .len();
+    let vmstate_bytes = fs::metadata(&vmstate)
+        .map_err(|error| loop_factory_error(format!("inspect fixture VMState: {error}")))?
+        .len();
     let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
         &overlay,
         &run_state_root.join("fixture-overlay-chunks"),
@@ -260,9 +316,122 @@ fn build_production_checkpoint_codec_fixture(
         source,
         configuration,
         closure,
+        overlay_bytes,
+        vmstate_bytes,
     })
+}
+
+fn write_fixture_artifacts(
+    overlay: &Path,
+    vmstate: &Path,
+    shape: FixtureArtifactShape,
+) -> Result<(), LifecycleApiError> {
+    match shape {
+        FixtureArtifactShape::Placeholder => {
+            fs::write(overlay, b"overlay fixture")
+                .map_err(|error| loop_factory_error(format!("write fixture overlay: {error}")))?;
+            fs::write(vmstate, b"vmstate fixture")
+                .map_err(|error| loop_factory_error(format!("write fixture VMState: {error}")))?;
+        }
+        FixtureArtifactShape::Streaming => {
+            write_sparse_fixture(overlay)?;
+            write_dense_fixture(vmstate)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_sparse_fixture(path: &Path) -> Result<(), LifecycleApiError> {
+    let mut file = File::create(path)
+        .map_err(|error| loop_factory_error(format!("create sparse fixture overlay: {error}")))?;
+    file.set_len(STREAMING_FIXTURE_OVERLAY_BYTES)
+        .map_err(|error| loop_factory_error(format!("size sparse fixture overlay: {error}")))?;
+    let mut buffer = vec![0_u8; STREAMING_FIXTURE_BUFFER_BYTES];
+
+    fill_fixture_buffer(&mut buffer, 0x35);
+    file.seek(SeekFrom::Start(8 * 1024))
+        .and_then(|_| file.write_all(&buffer))
+        .map_err(|error| {
+            loop_factory_error(format!("write first sparse fixture extent: {error}"))
+        })?;
+
+    fill_fixture_buffer(&mut buffer, 0xa7);
+    let final_extent = STREAMING_FIXTURE_OVERLAY_BYTES
+        .checked_sub(u64::try_from(buffer.len()).unwrap_or(u64::MAX))
+        .ok_or_else(|| loop_factory_error("sparse fixture overlay length underflow"))?;
+    file.seek(SeekFrom::Start(final_extent))
+        .and_then(|_| file.write_all(&buffer))
+        .map_err(|error| {
+            loop_factory_error(format!("write final sparse fixture extent: {error}"))
+        })?;
+    file.sync_all()
+        .map_err(|error| loop_factory_error(format!("sync sparse fixture overlay: {error}")))
+}
+
+fn write_dense_fixture(path: &Path) -> Result<(), LifecycleApiError> {
+    let mut file = File::create(path)
+        .map_err(|error| loop_factory_error(format!("create dense fixture VMState: {error}")))?;
+    let mut buffer = vec![0_u8; STREAMING_FIXTURE_BUFFER_BYTES];
+    let mut written = 0_u64;
+    let mut block = 0_u64;
+    while written < STREAMING_FIXTURE_VMSTATE_BYTES {
+        fill_fixture_buffer(&mut buffer, block as u8);
+        let remaining = STREAMING_FIXTURE_VMSTATE_BYTES - written;
+        let count = buffer
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        file.write_all(&buffer[..count])
+            .map_err(|error| loop_factory_error(format!("write dense fixture VMState: {error}")))?;
+        written = written
+            .checked_add(u64::try_from(count).unwrap_or(u64::MAX))
+            .ok_or_else(|| loop_factory_error("dense fixture VMState length overflow"))?;
+        block = block.saturating_add(1);
+    }
+    file.sync_all()
+        .map_err(|error| loop_factory_error(format!("sync dense fixture VMState: {error}")))
+}
+
+fn fill_fixture_buffer(buffer: &mut [u8], block: u8) {
+    for (offset, byte) in buffer.iter_mut().enumerate() {
+        *byte = (offset as u8).wrapping_mul(31).wrapping_add(block);
+    }
 }
 
 fn fixture_error(role: &str, error: impl std::fmt::Debug) -> LifecycleApiError {
     loop_factory_error(format!("{role}: {error:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- fixture assertions identify the violated invariant.
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn streaming_fixture_has_distinct_dense_chunks_and_sparse_extents() {
+        let root = tempfile::tempdir().expect("streaming fixture root");
+        let fixture = build_streaming_production_checkpoint_codec_fixture(root.path())
+            .expect("authenticated streaming fixture");
+
+        assert_eq!(fixture.overlay_bytes(), STREAMING_FIXTURE_OVERLAY_BYTES);
+        assert_eq!(fixture.vmstate_bytes(), STREAMING_FIXTURE_VMSTATE_BYTES);
+
+        let objects = fixture.closure().objects();
+        let full_chunks = objects
+            .iter()
+            .filter(|object| object.length() == ARTIFACT_CHUNK_BYTES_U64)
+            .count();
+        assert!(full_chunks >= 5, "expected dense and sparse full chunks");
+        assert!(
+            objects.windows(2).all(|pair| pair[0] != pair[1]),
+            "portable inventory must contain distinct identities"
+        );
+
+        let stored_bytes = objects.iter().map(|object| object.length()).sum::<u64>();
+        assert!(
+            stored_bytes < fixture.overlay_bytes() + fixture.vmstate_bytes(),
+            "sparse fixture must store less than its logical artifact bytes"
+        );
+    }
 }

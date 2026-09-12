@@ -492,8 +492,10 @@ fn seed_complete_packaged_recovery(
         .run_state_root()
         .join(PACKAGED_PREPARED_RESULT_NAMESPACE);
     std::fs::create_dir_all(&journal_namespace).expect("create recovery journal namespace");
+    let journal_authority = crate::PreparedResultJournalNamespace::open(&journal_namespace)
+        .expect("prepared-result namespace");
     let (journal, _) = DirectoryPreparedResultJournal::create(
-        &journal_namespace,
+        &journal_authority,
         key,
         execution,
         MAX_PREPARED_SEMANTIC_RESULT_BYTES,
@@ -503,6 +505,7 @@ fn seed_complete_packaged_recovery(
     let journal_root = journal.root().to_path_buf();
     let journal_digest = journal.prepared_result_digest();
     drop(journal);
+    drop(journal_authority);
     if matches!(corruption, CompleteRecoveryCorruption::MissingJournal) {
         std::fs::remove_dir_all(&journal_root).expect("remove recovery journal");
     }

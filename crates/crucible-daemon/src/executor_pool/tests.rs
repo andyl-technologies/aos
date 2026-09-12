@@ -517,10 +517,13 @@ fn prepared_result_pool_executes_savepoint_capture_without_semantic_recovery() {
             entered: Arc::clone(&entered),
         }],
         checkpoint_observer,
-        Some(PreparedResultJournalConfig::new(
-            journals.path().to_path_buf(),
-            crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-        )),
+        Some(
+            PreparedResultJournalConfig::new(
+                journals.path().to_path_buf(),
+                crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            )
+            .expect("prepared-result namespace"),
+        ),
         None,
     )
     .expect("prepared-result checkpoint pool");
@@ -594,11 +597,13 @@ fn prepared_result_pool_executes_savepoint_capture_without_semantic_recovery() {
             .len(),
         1
     );
+    let journal_entries = std::fs::read_dir(journals.path())
+        .expect("prepared-result namespace")
+        .map(|entry| entry.expect("journal entry").file_name())
+        .collect::<Vec<_>>();
     assert_eq!(
-        std::fs::read_dir(journals.path())
-            .expect("prepared-result namespace")
-            .count(),
-        0
+        journal_entries,
+        [std::ffi::OsString::from(".lock-runtime-owner")]
     );
     let report = service.report().expect("savepoint capture report");
     assert_eq!(report.executions(), 1);
@@ -1720,6 +1725,7 @@ fn finding_gc_exclusion_spans_prepared_journal_commit() {
         journals.path().to_path_buf(),
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     )
+    .expect("prepared-result namespace")
     .with_before_journal_barrier(barrier);
     let supervisor = LocalExecutorSupervisor::new(
         MemoryAssignmentLedger::default(),
@@ -2122,10 +2128,12 @@ fn recover_complete_prepared_journal(
     );
     drop(ledger);
     let journals = TempDir::new().expect("prepared-result journals");
+    let journal_namespace = crate::PreparedResultJournalNamespace::open(journals.path())
+        .expect("prepared-result namespace");
     // Simulate a crash after Publishing committed and before the hidden
     // prepared journal was promoted into the visible recovery namespace.
     let (journal, _) = crate::DirectoryPreparedResultJournal::prepare_staged(
-        journals.path(),
+        &journal_namespace,
         key,
         producer_execution,
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
@@ -2134,6 +2142,7 @@ fn recover_complete_prepared_journal(
     .expect("seed complete prepared result");
     let journal_root = journal.root().to_path_buf();
     drop(journal);
+    drop(journal_namespace);
 
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let evidence_id = evidence.id().expect("evidence ID");
@@ -2177,10 +2186,13 @@ fn recover_complete_prepared_journal(
         checkpoint_store(),
         vec![PanickingWorker],
         observer,
-        Some(PreparedResultJournalConfig::new(
-            journals.path().to_path_buf(),
-            crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-        )),
+        Some(
+            PreparedResultJournalConfig::new(
+                journals.path().to_path_buf(),
+                crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            )
+            .expect("prepared-result namespace"),
+        ),
         None,
     )
     .expect("prepared-result recovery pool");
@@ -2243,8 +2255,10 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
     let key = AttemptExecutionKey::new(lineage.id().expect("lineage ID"), admitted.attempt);
     let execution = ExecutionId::from_bytes([0xa1; 16]).expect("execution");
     let journals = TempDir::new().expect("prepared journals");
+    let journal_namespace = crate::PreparedResultJournalNamespace::open(journals.path())
+        .expect("prepared-result namespace");
     let (journal, _) = crate::DirectoryPreparedResultJournal::create(
-        journals.path(),
+        &journal_namespace,
         key,
         execution,
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
@@ -2254,6 +2268,7 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
     let journal_root = journal.root().to_path_buf();
     let prepared_result_digest = journal.prepared_result_digest();
     drop(journal);
+    drop(journal_namespace);
 
     let wrong_content = ContentId::for_bytes(ObjectKind::Observation, 1, b"wrong completion");
     let wrong_observation =
@@ -2281,7 +2296,8 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
     let config = PreparedResultJournalConfig::new(
         journals.path().to_path_buf(),
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-    );
+    )
+    .expect("prepared-result namespace");
     let gc_exclusion = repository
         .acquire_gc_exclusion_guard()
         .expect("exclude repository GC");
@@ -2346,8 +2362,10 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
     )
     .expect("policy-bound submit request");
     let journals = TempDir::new().expect("prepared-result journals");
+    let journal_namespace = crate::PreparedResultJournalNamespace::open(journals.path())
+        .expect("prepared-result namespace");
     let (journal, _) = crate::DirectoryPreparedResultJournal::create(
-        journals.path(),
+        &journal_namespace,
         AttemptExecutionKey::for_request(&request),
         ExecutionId::from_bytes([0x87; 16]).expect("producer execution"),
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
@@ -2356,6 +2374,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
     .expect("seed complete prepared result");
     let journal_root = journal.root().to_path_buf();
     drop(journal);
+    drop(journal_namespace);
     let staged_root = journals.path().join(format!(
         ".staged-{}",
         journal_root
@@ -2374,10 +2393,13 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
         checkpoint_store(),
         vec![PanickingWorker],
         observer,
-        Some(PreparedResultJournalConfig::new(
-            journals.path().to_path_buf(),
-            crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-        )),
+        Some(
+            PreparedResultJournalConfig::new(
+                journals.path().to_path_buf(),
+                crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            )
+            .expect("prepared-result namespace"),
+        ),
         None,
     )
     .expect("prepared-result recovery pool");
@@ -2471,10 +2493,10 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
             },
         )],
         observer,
-        Some(PreparedResultJournalConfig::new(
-            journals.path().to_path_buf(),
-            1,
-        )),
+        Some(
+            PreparedResultJournalConfig::new(journals.path().to_path_buf(), 1)
+                .expect("prepared-result namespace"),
+        ),
         None,
     )
     .expect("prepared-result pool");

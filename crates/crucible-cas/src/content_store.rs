@@ -57,11 +57,11 @@ pub use encrypted_directory::{
 pub use graph::{
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
     StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPackedRepackAdmin,
-    StoreGraphPhysicalAdmin, StoreGraphPhysicalRetention, StoreGraphPhysicalVerification,
-    StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError, StoreGraphVerificationLimit,
-    StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreGraphVerificationReport,
-    StoreNodeDescription, StoreNodeId, StoreNodeKind, StoreNodeMetrics,
-    StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
+    StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition, StoreGraphPhysicalRetention,
+    StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError,
+    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
+    StoreGraphVerificationReport, StoreNodeDescription, StoreNodeId, StoreNodeKind,
+    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryRefBackend};
 pub use namespace::{
@@ -1085,6 +1085,44 @@ pub trait ImmutableBlobBackend: Send + Sync {
     /// Returns [`StoreError::Corrupt`] when the source does not authenticate as
     /// `id`, or another backend failure when placement cannot complete.
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError>;
+
+    /// Publishes authenticated bytes through an admitted physical repair capability.
+    ///
+    /// The default uses ordinary conditional publication. Backends whose
+    /// observational graph mode suppresses logical writes may override this
+    /// method for the separately fenced physical repair capability. Such an
+    /// override must recheck `expected_generation` while holding its mutation
+    /// fence through publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when the source does not authenticate as
+    /// `id`, or another backend failure when fenced placement cannot complete.
+    fn repair_put_if_absent(
+        &self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+        _expected_generation: InventoryGeneration,
+    ) -> Result<PutReceipt, StoreError> {
+        self.put_if_absent(id, source)
+    }
+}
+
+/// Unforgeable authority for graph-owned physical repair publication.
+///
+/// Only the graph's physical administration surface can construct this
+/// authority. Its presence prevents callers from invoking a backend's
+/// maintenance publication hook outside graph admission and fencing.
+#[doc(hidden)]
+pub struct PhysicalRepairAuthority {
+    _private: (),
+}
+
+impl PhysicalRepairAuthority {
+    pub(crate) const fn new() -> Self {
+        Self { _private: () }
+    }
 }
 
 /// Authoritative mutable-reference backend.

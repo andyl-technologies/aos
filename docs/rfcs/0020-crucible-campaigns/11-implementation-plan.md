@@ -123,10 +123,10 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
 
 **Manual gate:** accepted §14 Phase 2 real-guest choice flight.
 
-The 2026-09-04 rerun of
-`nix-build -A checks.crucible.phase2.qemuLiveSelectableProduct --no-out-link`
-passed after synchronizing the plugin's patch-coverage roster with carried
-patches 0192-0195. The check captures a pending choice at icount
+The 2026-09-04 rerun of the selectable-product exact-restore flight, now
+exposed as `checks.crucible.phase2.gates.typedChoiceProductCheckpoint`, passed
+after synchronizing the plugin's patch-coverage roster with carried patches
+0192-0195. The check captures a pending choice at icount
 3,306,251,991, force-crashes the source,
 restores the exact request in a fresh QEMU, and observes the selected network
 payload after both discrete and integer replies. This automated prerequisite
@@ -239,7 +239,7 @@ without giving the in-guest crate an L3 dependency. The actual
 network-product initramfs registers a required recovery-policy choice and a
 required stepped retry-quanta choice, blocks on both through the supported
 guest CLI, and makes the returned values change a guest-originated Ethernet
-frame. `checks.crucible.phase2.qemuLiveSelectableProduct` captures that guest
+frame. `checks.crucible.phase2.gates.typedChoiceProductCheckpoint` captures that guest
 with the first request pending, writes the ordinary exact-snapshot envelope and
 canonical catalog-plan sidecar, force-kills the source QEMU, restores a fresh
 QEMU/plugin process, proves the pending token is exact, supplies the discrete

@@ -24,6 +24,8 @@
 # fixed sleep polls the retained production process under a bounded step limit.
 # The preemption regression module uses fixed delays as adversarial stimuli
 # and bounded process-state waits; each unmet signal/watchdog assertion fails.
+# The exact-closure archive delay is a deterministic backend input; correctness
+# compares authenticated output and observed traffic rather than wall time.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/quantum_loop/checkpoint_capture	retry	1
 crucible-campaign	src/campaign_service	retry	1
@@ -67,6 +69,7 @@ crucible-daemon	src/executor_worker	retry	1
 crucible-daemon	src/lib	retry	1
 crucible-daemon	src/planner_process/owner	retry	1
 crucible-daemon	src/planner_process/pipes/tests	thread::sleep	1
+crucible-daemon	tests/gate_exact_closure_streaming	thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_factory/tests	retry	1
 crucible-daemon	src/qemu_hot_fork_world_factory	thread::sleep	1
 crucible-daemon	src/qemu_hot_fork_world_factory/tests	retry	1

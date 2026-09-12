@@ -406,25 +406,27 @@ The daemon's local prepared-publication formats use this closed registry:
 | Schema name | Current version | Contract |
 |---|---:|---|
 | `crucible.executor.prepared-semantic-attempt-result` | 6 | Contains the observation, content-ordered raw measurement replay leaves, optional finding closure, and manifest-rooted production replay outcomes. |
-| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, hash, and an admitted version-2 through version-6 payload. |
+| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, hash, and the current version-6 payload. |
 | `crucible.executor.attempt-state-record` | 15 | Retains publication roots and the full prepared-result digest through Publishing and Completed; Publishing also carries bounded exact-checkpoint roots. |
 | `crucible.executor.finding-replay-capture-manifest` | 1 | Commits one capture hash, logical length, and ordered set of at-most-64-MiB trace chunks. |
 
-Prepared-result readers retain versions 1 through 5 for local recovery.
-Version 6 makes the version-5 native triage records optional alongside a
-finding candidate at schema version 3, 4, or 5. Version 3 carries four
-production replay slots containing only manifest IDs or explicit incomplete
-reasons; versions 4 and 5 add policy-bound exact-retention outcome and typed
-inventory evidence. Raw capture bytes never enter the bounded result journal.
-Journal-state version 1 admits only a version-1 result and omits the raw-leaf
-count and set hash. Journal-state version 2 admits result versions 2 through 6
-and authenticates the exact payload version, bytes, length, and hash. Other
-state/payload combinations fail closed and are never rewritten in place.
+Normal prepared-result readers accept only version 6, and journal-state version
+2 admits only that current payload. Version 6 carries the current optional
+native triage records and finding closure; raw capture bytes never enter the
+bounded result journal. Historical result versions 1 through 5 and
+journal-state version 1 are parsed only by the stopped-daemon, bounded,
+authenticated one-way `store repair operational-state` migration. It records
+source provenance and writes a version-6 result with version-2 journal state
+before normal runtime may reopen the namespace. Other state/payload
+combinations fail closed.
 
 Attempt-state v15 is the sole normal schema. It persists all four capture
 outcomes, at most three sorted complete exact-checkpoint roots, and the full
 prepared-result digest in `Publishing`, and preserves the digest in
 `Completed`, so finding handoff recovery cannot authorize an ID-only candidate.
+Historical versions 1 through 14 are parsed only by the explicit stopped-daemon
+migration, which writes authenticated version-15 records before runtime restart.
+
 
 Under GC exclusion, writers publish replay-capture and exact-checkpoint
 children and bind the complete prepared payload. For Complete v5 retention they
@@ -433,6 +435,7 @@ checkpoint closures from the checkpoint store into campaign CAS, and publish
 the semantic candidate and observation while the original guard still excludes
 GC. They then fsync the payload into a hidden staging directory, commit the
 matching v15 `Publishing` roots and digest, and promote the
+
 journal name into the visible recovery namespace before releasing that guard.
 Later publication is idempotent and cold-validates the already-published
 candidate through selected roots only. The Completed v15 CAS preserves the same

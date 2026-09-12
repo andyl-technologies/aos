@@ -2081,7 +2081,15 @@ identical trait only for fake components and tests.
 The normal assignment ledger admits only attempt-state v15. Its scope, origin,
 promotion basis, candidate roots, capture outcomes, exact-checkpoint roots, and
 prepared-result digest are authenticated before restart recovery. Any other
-schema fails closed before a worker or recovery mutation can run. The
+schema fails closed before a worker or runtime recovery mutation can run.
+Historical versions 1 through 14 are parsed only by the bounded, authenticated,
+stopped-daemon `store repair operational-state` migration, which records source
+provenance and writes version 15 before normal runtime may reopen the ledger.
+Versions 5 through 10 may encode `checkpoint-promoting`; version 6 added its
+resource and retention basis, and version 10 bound its start mode. Versions 7
+through 9 added terminal worker failure and the pending-versus-acknowledged
+finding-candidate roots.
+
 terminal-worker-failure state retains its exact execution basis and prevents
 submission or resume from starting another incarnation.
 
@@ -2161,6 +2169,7 @@ execution identity, but the committed observation ID remains fixed. Normal
 readers and writers accept only attempt-state v15; every other schema fails
 closed before operational recovery.
 
+
 The local Crucible execution adapter owns nested payload schemas. Current
 scenario payload version 3 is the strict `ScenarioDefForm` compact-binary V7
 encoding; configuration payload version 2 is the
@@ -2175,9 +2184,7 @@ dependent for reduction until its typed producer proves narrower locality. It
 contains no callback, native pointer, QEMU object, or consumer closure. Compact
 schedule V1 is rejected at this boundary instead of being silently interpreted
 through the new decision taxonomy. General execution-model readers also reject
-Schedule V1. An explicit bounded offline migration admits only resolved
-delivery-order and raw RNG evidence, emits Schedule V2, and rejects untyped
-override, preemption, application-random, and forged selection decisions.
+Schedule V1; there is no compatibility or migration path.
 Checkpoint V4 carries selection decisions; selection-free Checkpoint V3 remains
 readable, while a selection tag under V3 is rejected.
 

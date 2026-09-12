@@ -634,6 +634,17 @@ pub struct StoreGraphPhysicalAdmin<'a> {
     retention: &'a BTreeMap<ObjectKind, StoreGraphPhysicalRetention>,
 }
 
+/// Outcome of restoring one exact physical placement from authenticated bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreGraphPhysicalRepairDisposition {
+    /// The target already returned a complete authenticated object.
+    AlreadyAuthenticated,
+    /// The target placement was absent and is now authenticated.
+    ReplacedMissing,
+    /// The target placement was corrupt and is now authenticated.
+    ReplacedCorrupt,
+}
+
 impl<'a> StoreGraphPhysicalAdmin<'a> {
     /// Returns the administrative boundary's exact graph node ID.
     #[must_use]
@@ -655,6 +666,70 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
     /// whole-object authentication.
     pub fn read(self, id: ContentId) -> Result<BlobHandle, StoreError> {
         self.backend.read(id, None)
+    }
+
+    /// Restores one missing or corrupt placement from bounded authenticated bytes.
+    ///
+    /// The caller must hold exclusive deployment ownership and verify that the
+    /// source and target physical storage identities differ. Healthy target
+    /// bytes are left untouched. Before changing a missing or corrupt target,
+    /// this method reproduces the caller's exact inventory generation under the
+    /// target fence. It then recreates the placement conditionally and reads it
+    /// to authenticated completion before success is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when `bytes` do not match `id`, or a
+    /// [`StoreError::Incompatible`] when the target inventory changed after
+    /// planning, or a backend error when target inspection, fenced deletion,
+    /// publication, or final authentication fails.
+    pub fn repair_with_authenticated_bytes(
+        self,
+        id: ContentId,
+        bytes: Vec<u8>,
+        expected_generation: InventoryGeneration,
+    ) -> Result<StoreGraphPhysicalRepairDisposition, StoreError> {
+        if !id.authenticates(&bytes) {
+            return Err(StoreError::Corrupt { id });
+        }
+
+        let disposition = match self.backend.read(id, None) {
+            Ok(handle) => match handle.copy_to(&mut std::io::sink()) {
+                Ok(_) => return Ok(StoreGraphPhysicalRepairDisposition::AlreadyAuthenticated),
+                Err(StoreError::Corrupt { id: corrupt }) if corrupt == id => {
+                    StoreGraphPhysicalRepairDisposition::ReplacedCorrupt
+                }
+                Err(error) => return Err(error),
+            },
+            Err(StoreError::NotFound { id: missing }) if missing == id => {
+                StoreGraphPhysicalRepairDisposition::ReplacedMissing
+            }
+            Err(StoreError::Corrupt { id: corrupt }) if corrupt == id => {
+                StoreGraphPhysicalRepairDisposition::ReplacedCorrupt
+            }
+            Err(error) => return Err(error),
+        };
+
+        let mut fence = self.admin.acquire_inventory_fence()?;
+        let observed_generation = fence.visit_inventory(&mut |_| Ok(()))?.generation();
+        if observed_generation != expected_generation {
+            return Err(StoreError::Incompatible);
+        }
+        let publication_generation =
+            if disposition == StoreGraphPhysicalRepairDisposition::ReplacedCorrupt {
+                fence.delete_candidate(id)?;
+                fence.visit_inventory(&mut |_| Ok(()))?.generation()
+            } else {
+                observed_generation
+            };
+        drop(fence);
+
+        let source = BlobHandle::from_bytes(bytes);
+        let authority = super::PhysicalRepairAuthority::new();
+        self.backend
+            .repair_put_if_absent(&authority, id, &source, publication_generation)?;
+        self.backend.read(id, None)?.copy_to(&mut std::io::sink())?;
+        Ok(disposition)
     }
 
     /// Returns the separately held physical inventory/delete authority.

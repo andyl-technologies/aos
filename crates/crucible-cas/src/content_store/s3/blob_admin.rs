@@ -14,8 +14,9 @@ use crate::content_store::admin::{
 };
 use crate::content_store::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    MAX_S3_OBJECT_LIST_ITEMS, PlannedDeleteDisposition, StoreS3ConditionalWriteOutcome,
-    StoreS3ObjectVersion, StoreS3StrongCasClient, StoreS3VersionedObjectMetadata,
+    InventoryGeneration, MAX_S3_OBJECT_LIST_ITEMS, PlannedDeleteDisposition,
+    StoreS3ConditionalWriteOutcome, StoreS3ObjectVersion, StoreS3StrongCasClient,
+    StoreS3VersionedObjectMetadata,
 };
 
 const INVENTORY_STATE_MAGIC: &[u8] = b"crucible.content-store.s3-object-inventory-state.v1\0";
@@ -91,6 +92,20 @@ static BLOB_NAMESPACE_LIFECYCLES: OnceLock<
 
 pub(super) struct S3BlobAdministration {
     client: Arc<dyn StoreS3BlobAdminClient>,
+}
+
+pub(super) struct S3BlobRepairFence<'a> {
+    backend: &'a S3BlobBackend,
+    administration: &'a S3BlobAdministration,
+    _publication: RwLockWriteGuard<'a, ()>,
+    _state: MutexGuard<'a, ()>,
+}
+
+impl S3BlobRepairFence<'_> {
+    pub(super) fn advance_generation(&mut self) -> Result<(), StoreError> {
+        self.administration.advance_state(self.backend)?;
+        Ok(())
+    }
 }
 
 pub(super) fn admit_blob_namespace(
@@ -329,6 +344,46 @@ impl S3BlobBackend {
             })?;
         administration.advance_state(self)?;
         Ok(())
+    }
+
+    pub(super) fn acquire_admin_repair_fence(
+        &self,
+        expected_generation: InventoryGeneration,
+    ) -> Result<S3BlobRepairFence<'_>, StoreError> {
+        let administration =
+            self.administration
+                .as_ref()
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "S3 blob backend has no committed-object administration capability",
+                })?;
+        let publication = self
+            .lifecycle
+            .publication
+            .write()
+            .map_err(|_| StoreError::Poisoned {
+                operation: "acquire-S3-blob-repair-publication-fence",
+            })?;
+        let state = self
+            .lifecycle
+            .state
+            .lock()
+            .map_err(|_| StoreError::Poisoned {
+                operation: "acquire-S3-blob-repair-state-fence",
+            })?;
+        let inventory = administration
+            .load_state(self)?
+            .ok_or(StoreError::Incompatible)?;
+        let observed_generation =
+            persistent_inventory_generation(&self.name, inventory.instance, inventory.generation)?;
+        if observed_generation != expected_generation {
+            return Err(StoreError::Incompatible);
+        }
+        Ok(S3BlobRepairFence {
+            backend: self,
+            administration,
+            _publication: publication,
+            _state: state,
+        })
     }
 }
 
