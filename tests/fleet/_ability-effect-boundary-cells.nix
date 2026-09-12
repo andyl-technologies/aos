@@ -51,7 +51,6 @@ in
   assert builtins.length groups.systemdManager == 20;
   assert builtins.length groups.kubernetes == 24;
   assert builtins.length groups.rollout == 36;
-  assert builtins.all (cell: builtins.length cell.postconditions == 4) selected;
-  {
+  assert builtins.all (cell: builtins.length cell.postconditions == 4) selected; {
     inherit all alreadyQualified groups scenarios;
   }
