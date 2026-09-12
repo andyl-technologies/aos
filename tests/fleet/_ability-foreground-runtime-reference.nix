@@ -5,10 +5,19 @@
   pkgs,
   guestTools ? false,
   effectQualification ? false,
+  providerStateQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   reference = import ./_ability-runtime-reference.nix {
-    inherit lib mkSystem pkgs guestTools effectQualification transitionTransform;
+    inherit
+      lib
+      mkSystem
+      pkgs
+      guestTools
+      effectQualification
+      providerStateQualification
+      transitionTransform
+      ;
   };
   observerConfiguration = ''{"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}'';
   observerClientModule = ''

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -57,6 +59,34 @@ PLAN = "sha256:" + "33" * 32
 TRANSACTION = "provider-state-transaction"
 BUNDLE = MODULE.canonical(
     {
+        "current": {
+            "snapshot": {
+                "resolution": {
+                    "binding_document": {
+                        "bindings": [
+                            {
+                                "id": OPERATION["binding"],
+                                "implementation": IMPLEMENTATION,
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        "desired": {
+            "snapshot": {
+                "resolution": {
+                    "binding_document": {
+                        "bindings": [
+                            {
+                                "id": OPERATION["binding"],
+                                "implementation": IMPLEMENTATION,
+                            }
+                        ]
+                    }
+                }
+            }
+        },
         "plan": PLAN,
         "schema": "aos.ability.plan-bundle/v1",
         "transition": {
@@ -79,7 +109,7 @@ def cell(scenario: str, postconditions: list[str]) -> dict:
     """Returns one exact matrix cell for the local contract test."""
 
     return {
-        "adapter": "test",
+        "adapter": "host-storage",
         "boundary": "recovery",
         "candidate": "current-authority",
         "effect_class": "mutation",
@@ -201,8 +231,16 @@ MATRIX = {"cells": [RETAINED_CELL, UNSUPPORTED_CELL]}
 def retained_observation() -> object:
     """Returns a valid retained rollback observation."""
 
-    before = authority(PLAN, TRANSACTION, "candidate-binding", "candidate", 1, 20)
-    after = authority(PLAN, TRANSACTION, "candidate-binding", "recovered", 2, 21)
+    before = authority(PLAN, TRANSACTION, "candidate-binding", "candidate", 2, 20)
+    after = authority(PLAN, TRANSACTION, "candidate-binding", "candidate", 3, 21)
+    source = authority(
+        "sha256:" + "aa" * 32,
+        "source-transaction",
+        "source-binding",
+        "source",
+        1,
+        10,
+    )
     return MODULE.RetainedTargetObservation(
         retained_generation=1,
         predecessor_generation=2,
@@ -221,15 +259,16 @@ def retained_observation() -> object:
         ],
         authority_before=before,
         authority_after=after,
+        source_authority=source,
         ledger_before=LEDGER,
         ledger_unsettled=LEDGER,
         ledger_after=LEDGER,
-        live_before={"revision": "old"},
-        live_unsettled={"revision": "old"},
-        live_after={"revision": "retained"},
-        foreign_before={"revision": "foreign"},
-        foreign_unsettled={"revision": "foreign"},
-        foreign_after={"revision": "foreign"},
+        live_before={"kind": "filesystem", "revision": "old"},
+        live_unsettled={"kind": "filesystem", "revision": "old"},
+        live_after={"kind": "filesystem", "revision": "retained"},
+        foreign_before={"kind": "filesystem", "revision": "foreign"},
+        foreign_unsettled={"kind": "filesystem", "revision": "foreign"},
+        foreign_after={"kind": "filesystem", "revision": "foreign"},
         dependent_operation=MODULE._operation_identity(DEPENDENT, 1),
         dependent_before=[],
         dependent_after=[{"kind": "effect-completed", "sequence": 4}],
@@ -256,10 +295,10 @@ def unsupported_observation() -> object:
         candidate_authority=candidate,
         ledger_before=source_ledger,
         ledger_after=source_ledger,
-        live_before={"revision": "source"},
-        live_after={"revision": "source"},
-        foreign_before={"revision": "foreign"},
-        foreign_after={"revision": "foreign"},
+        live_before={"kind": "filesystem", "revision": "source"},
+        live_after={"kind": "filesystem", "revision": "source"},
+        foreign_before={"kind": "filesystem", "revision": "foreign"},
+        foreign_after={"kind": "filesystem", "revision": "foreign"},
         dependent_operation=MODULE._operation_identity(DEPENDENT, 1),
         dependent_timeline=[],
     )
@@ -296,17 +335,68 @@ def must_reject(action) -> None:
     raise AssertionError("provider-state evidence accepted a malformed observation")
 
 
+def verify_shared_consumer(builder, cell_document: dict) -> None:
+    """Exercises the release verifier against the producer's exact output."""
+
+    if len(sys.argv) != 2:
+        return
+
+    verifier_path = Path(sys.argv[1])
+    verifier_spec = importlib.util.spec_from_file_location(
+        "provider_state_qualification_verifier", verifier_path
+    )
+    assert verifier_spec is not None and verifier_spec.loader is not None
+    verifier = importlib.util.module_from_spec(verifier_spec)
+    sys.modules[verifier_spec.name] = verifier
+    verifier_spec.loader.exec_module(verifier)
+
+    subjects, evidence, probes = builder.finish()
+    cell_id = cell_document["id"]
+    subject = subjects[cell_id]
+    verifier._validate_cohort_subject(cell_document, subject, evidence[cell_id])
+    for postcondition, probe in probes[cell_id].items():
+        verifier._validate_probe_facts(
+            postcondition,
+            probe["observations"],
+            subject,
+            cell_document,
+        )
+
+    forged_subject = copy.deepcopy(subject)
+    forged_subject["evidence-digest"] = "sha256:" + "00" * 32
+    must_reject(
+        lambda: verifier._validate_cohort_subject(
+            cell_document, forged_subject, evidence[cell_id]
+        )
+    )
+
+    forged_evidence = json.loads(evidence[cell_id])
+    forged_evidence["live-before"]["kind"] = "systemd"
+    forged_evidence_bytes = verifier.canonical(forged_evidence)
+    forged_subject = copy.deepcopy(subject)
+    forged_subject["evidence-digest"] = (
+        "sha256:" + hashlib.sha256(forged_evidence_bytes).hexdigest()
+    )
+    must_reject(
+        lambda: verifier._validate_cohort_subject(
+            cell_document, forged_subject, forged_evidence_bytes
+        )
+    )
+
+
 retained_builder = MODULE.ProviderStateEvidence(MATRIX, [RETAINED_CELL["id"]])
 retained_builder.retain_retained_target(
     RETAINED_CELL["id"], BUNDLE, retained_observation()
 )
 assert set(retained_builder.finish()[2]) == {RETAINED_CELL["id"]}
+verify_shared_consumer(retained_builder, RETAINED_CELL)
 
 unsupported_builder = MODULE.ProviderStateEvidence(MATRIX, [UNSUPPORTED_CELL["id"]])
 unsupported_builder.retain_unsupported_transfer(
     UNSUPPORTED_CELL["id"], BUNDLE, unsupported_contract(), unsupported_observation()
 )
 assert set(unsupported_builder.finish()[2]) == {UNSUPPORTED_CELL["id"]}
+verify_shared_consumer(unsupported_builder, UNSUPPORTED_CELL)
 
 wrong_generation = replace(retained_observation(), activated_generation=2)
 must_reject(

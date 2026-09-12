@@ -483,7 +483,7 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 1,253 cells and 5,119
+independent published-image cohorts that currently exercise 1,355 cells and 5,780
 of the 6,050 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -551,7 +551,29 @@ and same-machine dependency blocking. These cohorts exclude the managed
 configuration `publish` foreign-resource cell and legacy systemd `reload`
 dependency cell already owned by the primary cohort.
 
-The other 147 cells remain explicit failures, so the mandatory
+Provider-state cohorts cover all 50 retained-target routes and all 50
+unsupported-transfer routes. Each retained flight establishes a live owned
+resource, activates a later predecessor, then rolls back to the exact retained
+generation. It captures the predecessor authority before launch, a distinct
+candidate provider incarnation at acquisition, the republished current grant,
+the durable method journal, and provider-specific state after the exact method
+and its required-success successor settle. Each unsupported flight starts from
+a live sole predecessor owner, pauses the candidate at acquisition, and invokes
+the production checked-plan transfer inspector before any provider effect. The
+inspector derives its rejection from the authenticated request, binding, target
+lifetime, owner implementation, and state-format declaration.
+
+All 15 PostgreSQL state-family cells run through its persistent state-format
+contract and real cluster operations. The remaining 45 cells are exactly the
+non-PostgreSQL `adopt-compatible-state` cross-product: 36 reference,
+Kubernetes, systemd, and foreground methods declare instance-lifetime routes,
+while the nine image-rollout methods declare persistent resources without an
+authenticated provider state format. Their matching unsupported-transfer
+flights retain those exact production-contract reasons. Adding a compatible
+adoption cell requires a new valid product lifetime or state-format contract;
+qualification does not infer one from fixture labels.
+
+The other 45 cells remain explicit failures, so the mandatory
 aggregate gate cannot pass. Expand the mapping only with exact cell-bound
 subjects and independent provider-specific observations.
 

@@ -129,6 +129,19 @@ cells with a declared route by executing each provider's cancellation handler
 and applying an exact provider-specific oracle. Routing a cancellation request
 to a generic callback does not complete these cells.
 
+Provider state qualification uses a separate two-phase production path. The
+first phase settles a live resource under one authenticated provider
+incarnation. The second phase executes the exact matrix method under a fresh
+candidate incarnation and monotonic current authority, or retains the
+checked-plan transfer rejection before that method crosses its provider effect
+boundary. Retained-target flights also require the method-specific durable
+journal, required-success settlement, and an independent provider observation.
+PostgreSQL supplies the only authenticated persistent state-format contract in
+this surface. The other 36 non-rollout methods have instance lifetime, and the
+nine rollout methods have no authenticated state format; their corresponding
+compatible-adoption cells remain unqualified until those product contracts
+change.
+
 Supported cancellation is divided by production adapter because the physical
 state that establishes a safe cancellation result differs by provider:
 

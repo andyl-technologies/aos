@@ -5,6 +5,7 @@
   pkgs,
   guestTools ? false,
   effectQualification ? false,
+  providerStateQualification ? false,
   transitionTransform ? transition: transition,
   bootstrapMatrix ? false,
 }: let
@@ -13,7 +14,7 @@
     inherit (pkgs) mkDerivation;
     kubernetesRuntime = pkgs.kubectl;
     systemdRuntime = pkgs.aos.packageRuntime;
-    inherit bootstrapMatrix effectQualification transitionTransform;
+    inherit bootstrapMatrix effectQualification providerStateQualification transitionTransform;
   };
 
   orderedPackages = [
@@ -265,6 +266,7 @@ in {
           authority,
           fault=None,
           lifecycle="full",
+          provider_incarnation_revision=None,
       ):
           arguments = [
               FIXTURE,
@@ -277,6 +279,11 @@ in {
               arguments.append(fault)
           arguments.extend(["--operator-authority-output", authority])
           arguments.extend(["--lifecycle", lifecycle])
+          if provider_incarnation_revision is not None:
+              arguments.extend([
+                  "--provider-incarnation-revision",
+                  provider_incarnation_revision,
+              ])
           command = " ".join(shlex.quote(argument) for argument in arguments)
           return (
               f"PATH={NIX_BIN}:{COREUTILS} "
@@ -303,6 +310,7 @@ in {
           authority,
           fault=None,
           lifecycle="full",
+          provider_incarnation_revision=None,
       ):
           reset_kubernetes_activation_paths(output, authority)
           runtime.succeed(
@@ -313,6 +321,7 @@ in {
                   authority,
                   fault,
                   lifecycle,
+                  provider_incarnation_revision,
               ),
               timeout=1200,
           )

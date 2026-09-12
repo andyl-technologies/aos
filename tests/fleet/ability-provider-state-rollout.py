@@ -120,12 +120,18 @@ def retained_hosts(
     if method == "retire":
         expire(forward)
         retained_host = ROLLOUT_EFFECT.rollout_host(
-            forward, "retire", label + "-retained"
+            forward,
+            f"qualification-{method}",
+            label + "-retained",
+            provider_incarnation_revision=label + "-retained",
         )
         retained_generation = settle(retained_host, label + "-retained")
 
         predecessor_host = ROLLOUT_EFFECT.rollout_host(
-            reverse, "desired", label + "-predecessor"
+            reverse,
+            "rollout",
+            label + "-predecessor",
+            provider_incarnation_revision=label + "-predecessor",
         )
         predecessor_generation = settle(
             predecessor_host, label + "-predecessor"
@@ -133,12 +139,18 @@ def retained_hosts(
         expire(reverse)
     else:
         retained_host = ROLLOUT_EFFECT.rollout_host(
-            reverse, "desired", label + "-retained"
+            reverse,
+            f"qualification-{method}",
+            label + "-retained",
+            provider_incarnation_revision=label + "-retained",
         )
         retained_generation = settle(retained_host, label + "-retained")
 
         predecessor_host = ROLLOUT_EFFECT.rollout_host(
-            forward, "desired", label + "-predecessor"
+            forward,
+            "rollout",
+            label + "-predecessor",
+            provider_incarnation_revision=label + "-predecessor",
         )
         predecessor_generation = settle(
             predecessor_host, label + "-predecessor"
@@ -174,6 +186,9 @@ def run_retained_target(
         flight_cell_id=flight.cell_id,
         retained_generation=retained_generation,
         predecessor_generation=predecessor_generation,
+        source_authority=PROVIDER_STATE_FLIGHT.generation_runtime_authority(
+            predecessor_generation
+        ),
         observe=observe,
     )
     EFFECT_FLIGHT.run_effect_flight(
@@ -202,9 +217,19 @@ def run_unsupported_transfer(
     set_health_branch(method, True)
     if method == "retire":
         expire(forward)
-        host = ROLLOUT_EFFECT.rollout_host(forward, "retire", label)
+        host = ROLLOUT_EFFECT.rollout_host(
+            forward,
+            f"qualification-{method}",
+            label,
+            provider_incarnation_revision=label,
+        )
     else:
-        host = ROLLOUT_EFFECT.rollout_host(reverse, "desired", label)
+        host = ROLLOUT_EFFECT.rollout_host(
+            reverse,
+            f"qualification-{method}",
+            label,
+            provider_incarnation_revision=label,
+        )
 
     def observe(operation: dict[str, Any]) -> dict[str, Any]:
         return observe_rollout(flight, operation)

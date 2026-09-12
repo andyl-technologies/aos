@@ -207,7 +207,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         .position(|argument| argument == "--operator-authority-output")
     else {
         bail!(
-            "usage: aos-release-fleet-fixture kubernetes-activation OUTPUT CILIUM_REPLICAS INCLUDE_LONGHORN [FAULT] --operator-authority-output AUTHORITY_DIR [--lifecycle full|remove]"
+            "usage: aos-release-fleet-fixture kubernetes-activation OUTPUT CILIUM_REPLICAS INCLUDE_LONGHORN [FAULT] --operator-authority-output AUTHORITY_DIR [--lifecycle full|remove] [--provider-incarnation-revision REVISION]"
         );
     };
     ensure!(
@@ -219,6 +219,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let fault = (authority_flag_index == 4).then(|| arguments[3].as_str());
     let authority_index = authority_flag_index + 1;
     let mut lifecycle = FixtureLifecycle::Full;
+    let mut provider_incarnation_revision = None;
     for option in arguments[authority_index + 1..].chunks_exact(2) {
         match option[0].as_str() {
             "--lifecycle" => {
@@ -227,6 +228,9 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
                     "remove" => FixtureLifecycle::Remove,
                     value => bail!("unknown Kubernetes lifecycle {value:?}"),
                 };
+            }
+            "--provider-incarnation-revision" => {
+                provider_incarnation_revision = Some(option[1].clone())
             }
             value => bail!("unknown Kubernetes activation option {value:?}"),
         }
@@ -253,7 +257,17 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     fs::create_dir_all(output)
         .with_context(|| format!("creating Kubernetes fixture output {}", output.display()))?;
     let (_runtime, verified) = load_verified_packages()?;
-    let mut fixture = KubernetesFixture::new(&verified)?;
+    if let Some(revision) = &provider_incarnation_revision {
+        ensure!(
+            !revision.is_empty()
+                && revision.len() <= 128
+                && revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte)),
+            "provider incarnation revision is outside the safe fixture subset"
+        );
+    }
+    let mut fixture = KubernetesFixture::new(&verified, provider_incarnation_revision.as_deref())?;
     let planning_fault = PlanningFault::parse(fault);
     ensure!(
         planning_fault.is_none() || lifecycle == FixtureLifecycle::Full,
@@ -559,7 +573,10 @@ fn load_verified_packages() -> Result<(RuntimeResolution, VerifiedAbilityPackage
 }
 
 impl KubernetesFixture {
-    fn new(verified: &VerifiedAbilityPackageSet) -> Result<Self> {
+    fn new(
+        verified: &VerifiedAbilityPackageSet,
+        provider_incarnation_revision: Option<&str>,
+    ) -> Result<Self> {
         let mut verified_packages = verified.iter().collect::<Vec<_>>();
         verified_packages.sort_by_key(|package| package.package_digest());
         let packages = verified_packages
@@ -625,8 +642,9 @@ impl KubernetesFixture {
                     SYSTEMD_BOOTSTRAP_INTERFACE,
                 )?,
                 state: ProviderState::Available,
-                incarnation: Some(aos_ability_model::IncarnationId::new(
+                incarnation: Some(provider_incarnation(
                     "reference-systemd-bootstrap",
+                    provider_incarnation_revision,
                 )?),
                 guarantees: Vec::new(),
             },
@@ -1388,6 +1406,16 @@ fn instance(environment: &EnvironmentId, name: &str) -> Result<InstanceId> {
         environment: environment.clone(),
         key: key(name)?,
     })
+}
+
+fn provider_incarnation(
+    identity: &str,
+    revision: Option<&str>,
+) -> Result<aos_ability_model::IncarnationId> {
+    let identity = revision
+        .map(|revision| format!("{identity}-{revision}"))
+        .unwrap_or_else(|| identity.to_string());
+    aos_ability_model::IncarnationId::new(&identity).map_err(anyhow::Error::from)
 }
 
 fn binding_key(request: &aos_ability_model::RequestId) -> Result<LocalKey> {

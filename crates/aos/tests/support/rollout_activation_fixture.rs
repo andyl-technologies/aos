@@ -115,8 +115,10 @@ impl ActivationMode {
 /// or exact-method qualification cell.
 ///
 /// Arguments are `OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR
-/// --mode MODE`. `MODE` is `rollout`, `retire`, or
-/// `qualification-{method}`. The request JSON carries one exact
+/// --mode MODE [--provider-incarnation-revision REVISION]`. `MODE` is
+/// `rollout`, `retire`, or `qualification-{method}`. The optional revision
+/// gives state-transition fixtures a fresh authenticated terminal identity.
+/// The request JSON carries one exact
 /// [`AbRolloutRequest`]; qualification changes only graph selection and keeps
 /// the production terminal handler and native resource mapping.
 ///
@@ -125,12 +127,13 @@ impl ActivationMode {
 /// Returns an error when the request, authenticated package, recursive plan,
 /// native resource mapping, or retained sidecar is invalid.
 pub(super) fn generate(arguments: &[String]) -> Result<()> {
-    if arguments.len() != 6
+    if !matches!(arguments.len(), 6 | 8)
         || arguments[2] != "--operator-authority-output"
         || arguments[4] != "--mode"
+        || (arguments.len() == 8 && arguments[6] != "--provider-incarnation-revision")
     {
         bail!(
-            "usage: aos-release-fleet-fixture rollout-activation OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR --mode rollout|retire|qualification-METHOD"
+            "usage: aos-release-fleet-fixture rollout-activation OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR --mode rollout|retire|qualification-METHOD [--provider-incarnation-revision REVISION]"
         );
     }
 
@@ -138,6 +141,17 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let request_path = Path::new(&arguments[1]);
     let authority_output = Path::new(&arguments[3]);
     let mode = ActivationMode::parse(&arguments[5])?;
+    let provider_incarnation_revision = arguments.get(7).map(String::as_str);
+    if let Some(revision) = provider_incarnation_revision {
+        ensure!(
+            !revision.is_empty()
+                && revision.len() <= 128
+                && revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte)),
+            "provider incarnation revision is outside the safe fixture subset"
+        );
+    }
     ensure!(
         output != authority_output,
         "operator authority output must be separate from the activation descriptor output"
@@ -156,7 +170,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     fs::create_dir_all(output)
         .with_context(|| format!("creating rollout fixture output {}", output.display()))?;
     let packages = load_verified_package()?;
-    let fixture = RolloutFixture::new(&packages, &mode)?;
+    let fixture = RolloutFixture::new(&packages, &mode, provider_incarnation_revision)?;
     let composed = fixture.compose(&request, &mode)?;
     let native_resource_map = rollout_resource_map(&composed, &request, &mode)?;
     let platform_policy = platform_policy(&composed)?;
@@ -231,7 +245,7 @@ pub(super) fn audit_foreign_map(arguments: &[String]) -> Result<()> {
 
     let packages = load_verified_package()?;
     let mode = ActivationMode::Rollout;
-    let fixture = RolloutFixture::new(&packages, &mode)?;
+    let fixture = RolloutFixture::new(&packages, &mode, None)?;
     let composed = fixture.compose(&request, &mode)?;
     let valid = rollout_resource_map(&composed, &request, &mode)?;
     let [real] = valid.entries.as_slice() else {
@@ -295,7 +309,11 @@ fn load_verified_package() -> Result<VerifiedAbilityPackageSet> {
 }
 
 impl RolloutFixture {
-    fn new(verified: &VerifiedAbilityPackageSet, mode: &ActivationMode) -> Result<Self> {
+    fn new(
+        verified: &VerifiedAbilityPackageSet,
+        mode: &ActivationMode,
+        provider_incarnation_revision: Option<&str>,
+    ) -> Result<Self> {
         let packages = verified.iter().collect::<Vec<_>>();
         let [verified_package] = packages.as_slice() else {
             bail!(
@@ -376,8 +394,9 @@ impl RolloutFixture {
                 interface: effects_interface.clone(),
                 implementation: effects_implementation.clone(),
                 state: ProviderState::Available,
-                incarnation: Some(aos_ability_model::IncarnationId::new(
+                incarnation: Some(provider_incarnation(
                     "rollout-terminal-v1",
+                    provider_incarnation_revision,
                 )?),
                 guarantees: Vec::new(),
             },
@@ -727,6 +746,16 @@ fn instance(environment: &EnvironmentId, name: &str) -> Result<InstanceId> {
         environment: environment.clone(),
         key: key(name)?,
     })
+}
+
+fn provider_incarnation(
+    identity: &str,
+    revision: Option<&str>,
+) -> Result<aos_ability_model::IncarnationId> {
+    let identity = revision
+        .map(|revision| format!("{identity}-{revision}"))
+        .unwrap_or_else(|| identity.to_string());
+    aos_ability_model::IncarnationId::new(&identity).map_err(anyhow::Error::from)
 }
 
 fn binding_key(request: &aos_ability_model::RequestId) -> Result<LocalKey> {

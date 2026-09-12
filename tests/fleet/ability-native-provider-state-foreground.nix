@@ -8,7 +8,7 @@
   fixture = import ./_ability-foreground-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
-    effectQualification = true;
+    providerStateQualification = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   cells = import ./_ability-provider-state-cells.nix {
@@ -39,6 +39,7 @@ in
               authority,
               lifecycle=lifecycle,
               execution_stage="application-container",
+              provider_incarnation_revision=label,
           )
           provision_operator_authority(activation, authority)
           host = f"/var/lib/aos/provider-state-test/host-{label}.nix"
@@ -82,11 +83,7 @@ in
                   foreground_activation(label + "-retained", "full", "retained"),
                   foreground_activation(
                       label + "-predecessor",
-                      (
-                          "full"
-                          if scenario == "reject-unsupported-transfer"
-                          else "disable-main"
-                      ),
+                      "full",
                       "predecessor",
                   ),
               )
@@ -147,6 +144,9 @@ in
                   flight_cell_id=flight_cell_id,
                   retained_generation=retained_generation,
                   predecessor_generation=predecessor_generation,
+                  source_authority=PROVIDER_STATE_FLIGHT.generation_runtime_authority(
+                      predecessor_generation
+                  ),
                   observe=observe_foreground,
               )
               EFFECT_FLIGHT.run_effect_flight(

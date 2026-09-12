@@ -185,7 +185,9 @@ in {
           """), timeout=1200)
 
 
-      def generate_rollout_activation(request, mode, label):
+      def generate_rollout_activation(
+          request, mode, label, provider_incarnation_revision=None
+      ):
           root = f"/var/lib/aos-test/rollout-activation-{label}"
           output = f"{root}/output"
           authority = f"{root}/authority"
@@ -194,6 +196,12 @@ in {
               request, sort_keys=True, separators=(",", ":")
           ).encode()
           encoded = base64.b64encode(request_bytes).decode()
+          revision_option = ""
+          if provider_incarnation_revision is not None:
+              revision_option = (
+                  " --provider-incarnation-revision "
+                  + shlex.quote(provider_incarnation_revision)
+              )
           target.succeed(
               f"{COREUTILS}/rm -rf {shlex.quote(root)}; "
               f"{COREUTILS}/mkdir -p {shlex.quote(output)} "
@@ -208,7 +216,8 @@ in {
               f"AOS_TEST_ABILITY_CACHE=/var/cache/aos-rollout-evaluator-fixture "
               f"{FIXTURE} rollout-activation {shlex.quote(output)} "
               f"{shlex.quote(request_path)} --operator-authority-output "
-              f"{shlex.quote(authority)} --mode {shlex.quote(mode)}",
+              f"{shlex.quote(authority)} --mode {shlex.quote(mode)}"
+              f"{revision_option}",
               timeout=1200,
           )
           activation = json.loads(target.succeed(

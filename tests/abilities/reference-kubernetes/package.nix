@@ -5,6 +5,7 @@
   kubernetesRuntime,
   systemdRuntime,
   effectQualification ? false,
+  providerStateQualification ? false,
   transitionTransform ? transition: transition,
   bootstrapMatrix ? false,
 }: let
@@ -41,7 +42,7 @@ in {
 
   k3s = mkPackage "ability-reference-k3s" k3sArtifact (contracts.k3sPackage {
     providerArtifact = k3sArtifact;
-    inherit bootstrapMatrix effectQualification transitionTransform;
+    inherit bootstrapMatrix effectQualification providerStateQualification transitionTransform;
   });
 
   systemd = mkPackage "ability-reference-systemd-bootstrap" systemdArtifact (

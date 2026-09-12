@@ -197,6 +197,7 @@ in rec {
     providerArtifact,
     payloadArtifacts ? [],
     effectQualification ? false,
+    providerStateQualification ? false,
     transitionTransform ? transition: transition,
     bootstrapMatrix ? false,
   }:
@@ -228,7 +229,9 @@ in rec {
           ownsResourceKinds = [k3sInterface.name];
           inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}) compose;
           transition = transitionTransform (
-            if effectQualification
+            if providerStateQualification
+            then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).providerStateQualificationTransition
+            else if effectQualification
             then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).effectQualificationTransition
             else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).transition
           );

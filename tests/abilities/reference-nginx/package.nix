@@ -8,6 +8,7 @@
   nginxRuntime ? ../../../pkgs/networking/_nginx-ability-provider,
   systemdRuntime ? ./providers/systemd,
   effectQualification ? false,
+  providerStateQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   inherit (lib.abilities) schemas;
@@ -535,7 +536,7 @@
   systemdProvider = import ./providers/systemd/default.nix;
   httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
   baseNginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
-    inherit effectQualification lib hostResourceRuntime;
+    inherit effectQualification providerStateQualification lib hostResourceRuntime;
     providerArtifact = nginxArtifact;
     runtimeArtifact = nginxRuntime;
   };
@@ -661,7 +662,9 @@ in {
             ownsResourceKinds = [managedConfiguration.name];
             compose = managedConfigurationProvider.compose;
             transition = transitionTransform (
-              if effectQualification
+              if providerStateQualification
+              then managedConfigurationProvider.effectQualificationTransition
+              else if effectQualification
               then managedConfigurationProvider.effectQualificationTransition
               else managedConfigurationProvider.transition
             );
@@ -721,7 +724,9 @@ in {
             ownsResourceKinds = [credentialDelivery.name];
             compose = credentialProvider.compose;
             transition = transitionTransform (
-              if effectQualification
+              if providerStateQualification
+              then credentialProvider.providerStateQualificationTransition
+              else if effectQualification
               then credentialProvider.effectQualificationTransition
               else credentialProvider.transition
             );

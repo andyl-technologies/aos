@@ -8,7 +8,7 @@
   fixture = import ./_ability-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
-    effectQualification = true;
+    providerStateQualification = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   cells = import ./_ability-provider-state-cells.nix {
@@ -27,14 +27,6 @@ in
           "systemctl is-active --quiet multi-user.target", timeout=300
       )
       publish_reference_packages()
-      tls_bundle, _, _ = create_tls_bundle(
-          "/var/lib/aos/provider-state-test/tls", "matrix.example", 4501
-      )
-      tls_version = "sha256:" + runtime.succeed(
-          f"{COREUTILS}/sha256sum {shlex.quote(tls_bundle)}"
-      ).split()[0]
-
-
       def reference_activation(
           label,
           lifecycle,
@@ -46,6 +38,14 @@ in
           authority = f"/var/lib/aos/provider-state-test/authority-{label}"
           arguments = {}
           if tls:
+              tls_bundle, _, _ = create_tls_bundle(
+                  f"/var/lib/aos/provider-state-test/tls-{label}",
+                  "matrix.example",
+                  4501,
+              )
+              tls_version = "sha256:" + runtime.succeed(
+                  f"{COREUTILS}/sha256sum {shlex.quote(tls_bundle)}"
+              ).split()[0]
               arguments = {"tls_version": tls_version, "tls_bundle": tls_bundle}
           activation = generate_activation_fixture(
               output,
@@ -59,6 +59,7 @@ in
                   if systemd_manager_method is not None
                   else None
               ),
+              provider_incarnation_revision=label,
               **arguments,
           )
           provision_operator_authority(activation, authority)
@@ -131,11 +132,7 @@ in
 
 
       def reference_pair(label, adapter, method, scenario):
-          unsupported = scenario == "reject-unsupported-transfer"
           if adapter == "systemd-manager":
-              predecessor_method = method if unsupported else (
-                  "stop" if method == "start" else "start"
-              )
               retained = reference_activation(
                   f"{label}-retained", "full", "retained", True, method
               )
@@ -144,7 +141,7 @@ in
                   "full",
                   "predecessor",
                   True,
-                  predecessor_method,
+                  method,
               )
               return retained, predecessor
           if adapter == "credential-delivery" and method == "deliver":
@@ -154,7 +151,7 @@ in
                       f"{label}-predecessor",
                       "full",
                       "predecessor",
-                      True if unsupported else False,
+                      True,
                   ),
               )
           if adapter == "credential-delivery" and method == "release":
@@ -169,7 +166,7 @@ in
                   reference_activation(f"{label}-retained", "full", "retained", True),
                   reference_activation(
                       f"{label}-predecessor",
-                      "full" if unsupported else "disable-main",
+                      "full",
                       "predecessor",
                       True,
                   ),
@@ -232,6 +229,9 @@ in
                   flight_cell_id=flight_cell_id,
                   retained_generation=retained_generation,
                   predecessor_generation=predecessor_generation,
+                  source_authority=PROVIDER_STATE_FLIGHT.generation_runtime_authority(
+                      predecessor_generation
+                  ),
                   observe=observe_reference,
               )
               EFFECT_FLIGHT.run_effect_flight(

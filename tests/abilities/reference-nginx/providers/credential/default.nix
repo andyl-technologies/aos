@@ -399,8 +399,27 @@ in rec {
   # the currently owned credential view, then repeats it as the settlement
   # successor required by the matrix cell.
   providerStateQualificationTransition = context: let
-    fragment = transition context;
-    acquired = builtins.filter (operation: operation.method == "acquire") fragment.operations;
+    fragment = effectQualificationTransition context;
+    acquiredCandidates = builtins.filter (operation:
+      operation.method
+      == "acquire"
+      && !builtins.any (candidate:
+        candidate.interface
+        == operation.interface
+        && candidate.method == "deliver"
+        && candidate.target.resource == operation.target.resource)
+      fragment.operations)
+    fragment.operations;
+    acquired = builtins.foldl' (selected: operation:
+      if
+        builtins.any (candidate:
+          candidate.interface
+          == operation.interface
+          && candidate.target.resource == operation.target.resource)
+        selected
+      then selected
+      else selected ++ [operation]) []
+    acquiredCandidates;
     delivery = operation:
       operation
       // {

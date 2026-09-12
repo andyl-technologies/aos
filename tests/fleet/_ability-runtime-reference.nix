@@ -5,6 +5,7 @@
   pkgs,
   guestTools ? false,
   effectQualification ? false,
+  providerStateQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   packageSet = import ../abilities/reference-nginx/package.nix {
@@ -14,7 +15,7 @@
     managedConfigurationRuntime = pkgs.aos.packageRuntime;
     nginxRuntime = pkgs.nginx;
     systemdRuntime = pkgs.aos.packageRuntime;
-    inherit effectQualification transitionTransform;
+    inherit effectQualification providerStateQualification transitionTransform;
   };
   systemdManagerPackage = import ../abilities/reference-systemd-manager/package.nix {
     inherit lib;
@@ -139,33 +140,34 @@
       };
     };
   '';
-  qualificationSetupBody = ''
-    environment.etc."tmpfiles.d/ability-reference.conf".text = ${builtins.toJSON ''
-      d /var/lib/aos 0700 root root - -
-      d /var/lib/aos/ability-reference 0700 root root - -
-      d /var/lib/aos/ability-reference/nginx-main 0700 root root - -
-      d /var/lib/aos/ability-reference/nginx-secondary 0700 root root - -
-      d /var/lib/aos/ability-reference/backends 0755 root root - -
-      d /var/lib/aos/ability-reference/backends/app-a 0755 root root - -
-      d /var/lib/aos/ability-reference/backends/app-b 0755 root root - -
-      d /var/lib/aos/ability-reference/backends/app-c 0755 root root - -
-      d /var/lib/aos/ability-runtime 0700 root root - -
-      d /var/lib/aos/ability-runtime/managed-configuration 0700 root root - -
-      d /var/lib/aos/ability-runtime/managed-configuration/candidates 0700 root root - -
-      d /var/lib/aos/ability-runtime/managed-configuration/revisions 0700 root root - -
-      d /var/lib/aos/ability-runtime/nginx 0700 root root - -
-      d /var/lib/aos/ability-runtime/nginx/candidates 0700 root root - -
-      d /var/lib/aos/ability-runtime/nginx/validations 0700 root root - -
-      d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
-      d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
-    ''};
-  ''
-  + lib.concatMapStrings qualificationMatrixUnit [
-    "aos-matrix-primary"
-    "aos-matrix-secondary"
-    "aos-matrix-witness"
-    "aos-matrix-foreign"
-  ];
+  qualificationSetupBody =
+    ''
+      environment.etc."tmpfiles.d/ability-reference.conf".text = ${builtins.toJSON ''
+        d /var/lib/aos 0700 root root - -
+        d /var/lib/aos/ability-reference 0700 root root - -
+        d /var/lib/aos/ability-reference/nginx-main 0700 root root - -
+        d /var/lib/aos/ability-reference/nginx-secondary 0700 root root - -
+        d /var/lib/aos/ability-reference/backends 0755 root root - -
+        d /var/lib/aos/ability-reference/backends/app-a 0755 root root - -
+        d /var/lib/aos/ability-reference/backends/app-b 0755 root root - -
+        d /var/lib/aos/ability-reference/backends/app-c 0755 root root - -
+        d /var/lib/aos/ability-runtime 0700 root root - -
+        d /var/lib/aos/ability-runtime/managed-configuration 0700 root root - -
+        d /var/lib/aos/ability-runtime/managed-configuration/candidates 0700 root root - -
+        d /var/lib/aos/ability-runtime/managed-configuration/revisions 0700 root root - -
+        d /var/lib/aos/ability-runtime/nginx 0700 root root - -
+        d /var/lib/aos/ability-runtime/nginx/candidates 0700 root root - -
+        d /var/lib/aos/ability-runtime/nginx/validations 0700 root root - -
+        d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
+        d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
+      ''};
+    ''
+    + lib.concatMapStrings qualificationMatrixUnit [
+      "aos-matrix-primary"
+      "aos-matrix-secondary"
+      "aos-matrix-witness"
+      "aos-matrix-foreign"
+    ];
   qualificationExtraClosures =
     packageRoots
     ++ [
@@ -364,6 +366,7 @@ in {
           tls_bundle=None,
           systemd_manager_method=None,
           systemd_manager_revision=None,
+          provider_incarnation_revision=None,
           execution_stage="host",
       ):
           assert execution_stage in {"host", "application-container"}, (
@@ -393,6 +396,12 @@ in {
                   f"{shlex.quote(systemd_manager_method)}"
                   " --systemd-manager-revision "
                   f"{shlex.quote(systemd_manager_revision)}"
+              )
+          provider_incarnation_arguments = ""
+          if provider_incarnation_revision is not None:
+              provider_incarnation_arguments = (
+                  " --provider-incarnation-revision "
+                  + shlex.quote(provider_incarnation_revision)
               )
           runtime.succeed(
               f"{COREUTILS}/rm -rf {shlex.quote(output)} "
@@ -428,7 +437,8 @@ in {
               f"{shlex.quote(secondary_response)} --operator-authority-output "
               f"{shlex.quote(authority_staging)} --lifecycle "
               f"{shlex.quote(lifecycle)}{tls_arguments}"
-              f"{systemd_manager_arguments}{execution_stage_arguments}",
+              f"{systemd_manager_arguments}{provider_incarnation_arguments}"
+              f"{execution_stage_arguments}",
               timeout=1200,
           )
           return json.loads(runtime.succeed(

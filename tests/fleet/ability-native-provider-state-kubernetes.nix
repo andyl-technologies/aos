@@ -8,7 +8,7 @@
   fixture = import ./_kubernetes-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
-    effectQualification = true;
+    providerStateQualification = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   cells = import ./_ability-provider-state-cells.nix {
@@ -35,6 +35,7 @@ in
               include_longhorn,
               authority,
               lifecycle=lifecycle,
+              provider_incarnation_revision=label,
           )
           provision_kubernetes_authority(activation, authority)
           host = f"/var/lib/aos/provider-state-test/host-{label}.nix"
@@ -88,7 +89,6 @@ in
 
 
       def kubernetes_pair(label, adapter, method, scenario):
-          unsupported = scenario == "reject-unsupported-transfer"
           if adapter == "kubernetes-object" and method in {"apply", "observe"}:
               return (
                   kubernetes_activation(f"{label}-retained", 2, True),
@@ -108,9 +108,9 @@ in
                   kubernetes_activation(f"{label}-retained", 1, True),
                   kubernetes_activation(
                       f"{label}-predecessor",
-                      2 if unsupported else 1,
+                      2,
                       True,
-                      lifecycle="full" if unsupported else "remove",
+                      lifecycle="full",
                   ),
                   "k3s",
                   "server-service",
@@ -184,6 +184,9 @@ in
                   flight_cell_id=flight_cell_id,
                   retained_generation=retained_generation,
                   predecessor_generation=predecessor_generation,
+                  source_authority=PROVIDER_STATE_FLIGHT.generation_runtime_authority(
+                      predecessor_generation
+                  ),
                   observe=observe_kubernetes,
               )
               EFFECT_FLIGHT.run_effect_flight(
