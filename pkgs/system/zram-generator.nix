@@ -1,5 +1,6 @@
 ##! zram-generator — systemd generator for compressed swap and filesystems
 {
+  lib,
   mkDerivation,
   fetchCargoDeps,
   fetchurl,
@@ -138,8 +139,28 @@ in
     checks = {
       testing,
       self,
-      ...
+      pkgs,
     }: {
+      lowdown-consumption = import ../../lib/build/artifact-consumption-audit.nix {
+        inherit pkgs lib;
+        name = "zram-generator-lowdown-build-tool";
+        consumer = self;
+        consumerPath = "/share/man/man8/zram-generator.8";
+        provider = pkgs.buildPackages.lowdown;
+        providerPath = "/bin/lowdown";
+        targetPlatform = {
+          system = pkgs.stdenv.hostPlatform.constraints.os;
+          architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+        };
+        mechanism = "build-tool-execution";
+        arguments = [
+          "-Tman"
+          "${src}/man/zram-generator.md"
+        ];
+        expectedOutputSha256 = "sha256:48c86a9737fbac21786d0c60ba1d63651a09713a6001e36b84ee7ebd2d5c3e97";
+        inspector = pkgs.buildPackages.aos;
+      };
+
       tool = testing.mkToolCheck {
         pname = "tool-zram-generator";
         tool = self;

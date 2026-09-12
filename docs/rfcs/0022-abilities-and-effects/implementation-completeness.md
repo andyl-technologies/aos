@@ -82,6 +82,16 @@ The validator regressions separately reject missing feature declarations,
 unselected owners, foreign scopes, ambiguous or stale ledger evidence, and any
 retained owner change that lacks one exact compatible adoption contract.
 
+The build-and-library-consumption row has production evidence beyond ordinary
+startup linkage. CPython's interpreter loads its exact `_sqlite3` extension
+during an observed invocation, `zram-generator` reproduces its installed manual
+by executing the build-platform Lowdown artifact, and the eBPF LSM loader reads
+its exact immutable policy document during validation. Each package check emits
+the corresponding version-1 consumption mechanism and build/host/target
+identities, joins the exact provider and consumer artifacts to a checked ability
+graph, hashes the observed files and output, and verifies the runtime closure
+retains runtime inputs while excluding the build-only tool.
+
 The test chapters define the evidence needed for these rows. A schema fixture
 does not substitute for an enforcement test; an opaque legacy adapter does not
 establish typed guarantees; one supported provider does not establish semantic
