@@ -885,6 +885,16 @@ impl KubernetesFixture {
         explicit_bindings.sort_by(|left, right| left.request.cmp(&right.request));
         let k3s = instance(&self.environment.environment, "k3s")?;
         let mut root_resource_keys = BTreeSet::from([key("server-service")?]);
+        root_resource_keys.extend(
+            desired
+                .resources
+                .iter()
+                .filter(|revision| {
+                    revision.resource.provider == k3s
+                        && revision.resource.key.as_str().ends_with("-service")
+                })
+                .map(|revision| revision.resource.key.clone()),
+        );
         for contribution in &desired.contributions {
             if contribution.aggregate.provider == k3s
                 && contribution.aggregate.group.as_str() == "k3s"
@@ -896,7 +906,7 @@ impl KubernetesFixture {
         let root_resources = root_resource_keys
             .into_iter()
             .map(|resource_key| {
-                let operations = if resource_key.as_str() == "server-service" {
+                let operations = if resource_key.as_str().ends_with("-service") {
                     ["observe-manager", "start", "stop"]
                 } else {
                     ["apply", "delete", "observe"]
@@ -963,7 +973,7 @@ impl KubernetesFixture {
                     revision.resource.provider == k3s
                         && match interface.name.as_str() {
                             SYSTEMD_BOOTSTRAP_INTERFACE => {
-                                revision.resource.key.as_str() == "server-service"
+                                revision.resource.key.as_str().ends_with("-service")
                             }
                             KUBERNETES_INTERFACE => {
                                 revision.resource.key.as_str().ends_with("-helmchart")
@@ -1089,19 +1099,37 @@ fn kubernetes_native_resource_map(composed: &ComposedKubernetes) -> Result<Nativ
     }
     let k3s_interface = fixture_interface(composed, K3S_INTERFACE)?;
     let service_binding = find_binding(composed, &k3s, "systemd-bootstrap")?;
-    let service_revision = resource_revision(composed, &k3s, "server-service")?;
-    let mut mappings = vec![NativeResourceMapping {
-        resource: service_revision.resource.clone(),
-        revision: service_revision.revision,
-        owner_package: binding_package(service_binding)?,
-        binding: service_binding.id.clone(),
-        implementation: service_binding.implementation.clone(),
-        qualification: NativeResourceQualification::SystemdService {
-            unit: "k3s.service".to_string(),
-            resource_reference: output_locator(&k3s, "k3s", k3s_interface.clone(), "service", &[])?,
-            consumer_observation: None,
-        },
-    }];
+    let mut mappings = Vec::new();
+    for (resource_key, unit, field) in [
+        ("server-service", "k3s.service", "primary"),
+        (
+            "matrix-secondary-service",
+            "aos-kubernetes-matrix-foreign.service",
+            "secondary",
+        ),
+    ] {
+        let Ok(service_revision) = resource_revision(composed, &k3s, resource_key) else {
+            continue;
+        };
+        mappings.push(NativeResourceMapping {
+            resource: service_revision.resource.clone(),
+            revision: service_revision.revision,
+            owner_package: binding_package(service_binding)?,
+            binding: service_binding.id.clone(),
+            implementation: service_binding.implementation.clone(),
+            qualification: NativeResourceQualification::SystemdService {
+                unit: unit.to_string(),
+                resource_reference: output_locator(
+                    &k3s,
+                    "k3s",
+                    k3s_interface.clone(),
+                    "services",
+                    &[field],
+                )?,
+                consumer_observation: None,
+            },
+        });
+    }
     let kubernetes_binding = find_binding(composed, &k3s, "kubernetes-terminal")?;
     for addon in ["cilium", "longhorn"] {
         let resource_key = format!("{addon}-helmchart");

@@ -6,13 +6,14 @@
   guestTools ? false,
   effectQualification ? false,
   transitionTransform ? transition: transition,
+  bootstrapMatrix ? false,
 }: let
   packageSet = import ../abilities/reference-kubernetes/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     kubernetesRuntime = pkgs.kubectl;
     systemdRuntime = pkgs.aos.packageRuntime;
-    inherit effectQualification transitionTransform;
+    inherit bootstrapMatrix effectQualification transitionTransform;
   };
 
   orderedPackages = [

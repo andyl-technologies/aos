@@ -10,7 +10,7 @@
   k3sInterface =
     interface
     "aos.k3s-cluster"
-    "sha256:20917b76cabc6d68475c0bf1d0cb7e95bd0a6cb92fd3afeca5bcaf292d4943e1";
+    "sha256:64fe45877c89cb26fa3d46e31af58b9ecdd69b276f15535242156f095ea30524";
   systemdBootstrap =
     interface
     "aos.systemd-provider-bootstrap"
@@ -198,6 +198,7 @@ in rec {
     payloadArtifacts ? [],
     effectQualification ? false,
     transitionTransform ? transition: transition,
+    bootstrapMatrix ? false,
   }:
     common
     // {
@@ -212,6 +213,7 @@ in rec {
             object-json = output stringMap "planning";
             objects = output resourceMap "planning";
             service = output schemas.resourceReference "planning";
+            services = output resourceMap "planning";
           };
           methods = {};
           lifecycle = lifecycle null;
@@ -224,11 +226,11 @@ in rec {
           composeEntry = "compose";
           transitionEntry = "transition";
           ownsResourceKinds = [k3sInterface.name];
-          inherit (import ./_k3s-ability-provider/default.nix) compose;
+          inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}) compose;
           transition = transitionTransform (
             if effectQualification
-            then (import ./_k3s-ability-provider/default.nix).effectQualificationTransition
-            else (import ./_k3s-ability-provider/default.nix).transition
+            then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).effectQualificationTransition
+            else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).transition
           );
         };
       };
