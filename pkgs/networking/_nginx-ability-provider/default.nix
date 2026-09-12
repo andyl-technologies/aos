@@ -306,7 +306,7 @@ let
         guarantees = [loopbackIngressGuarantee];
       };
     storageRequest =
-      (childRequest context scope "storage" storageEffects)
+      (childRequest context scope "storage" storageEffects [])
       // {methods = ["ensure" "observe" "release"];};
     requests =
       [configurationRequest endpointRequest networkPolicyRequest storageRequest]
