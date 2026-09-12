@@ -84,6 +84,37 @@
       prev = compilerBuildTools;
       this = compilerBuildTools;
     };
+  constructionGcc = finishConstruction (call (compilerBuildScope
+      // {
+        prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;
+        binutils = exports.binutils;
+        gccStage1 = compilerForLibc;
+      })
+    compilerSource {});
+  bashManifestScope =
+    buildTools
+    // platforms
+    // {
+      gcc = constructionGcc;
+      inherit (exports) glibc binutils;
+    };
+  bashManifest = call bashManifestScope (directory + "/manifest.nix") {};
+
+  finalCompilerTools =
+    buildTools
+    // {
+      gcc = constructionGcc;
+      inherit (exports) bash glibc binutils;
+    };
+  finalCompilerScope =
+    finalCompilerTools
+    // platforms
+    // {
+      prev = finalCompilerTools // compilerToolOverrides;
+      this = finalCompilerTools;
+      gccStage1 = constructionGcc;
+    };
+  publicGcc = finishFiltered (call finalCompilerScope compilerSource {});
 
   publicCompilerTools =
     buildTools
@@ -119,7 +150,8 @@
   bashBuildTools =
     privateTools
     // {
-      inherit (exports) gcc glibc binutils;
+      inherit (exports) glibc binutils;
+      gcc = constructionGcc;
     };
   bashLib = import ../../../lib {
     system = buildPlatform.system;
@@ -163,7 +195,7 @@
     // {
       bash = let
         package = withRuntimeShell {
-          package = mkBash (constructionManifest.bash
+          package = mkBash (bashManifest.bash
             // {
               inherit gccVersion;
               runtimeShell = "$out/bin/bash";
@@ -189,13 +221,10 @@
           constructionShell = "${privateTools.bash}/bin/bash";
         };
       binutils = finishConstruction (call compilerBuildScope (directory + "/binutils.nix") binutilsBuildOverrides);
-      gcc = finishConstruction (call (compilerBuildScope
-        // {
-          prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;
-          binutils = exports.binutils;
-          gccStage1 = compilerForLibc;
-        })
-      compilerSource {});
+      # Bash needs a completed compiler, while GCC's installed scripts need the
+      # public Bash. The completed compiler builds the public GCC after Bash
+      # exists, creating a same-tier rebuild without retaining the cycle.
+      gcc = publicGcc;
       coreutils = compileTool (constructionManifest.coreutils // (manifestToolOverrides.coreutils or {}));
     };
 in
