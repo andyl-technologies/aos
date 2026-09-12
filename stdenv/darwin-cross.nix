@@ -60,6 +60,40 @@
 
   bootstrapCcWrapper = mkCcWrapper null;
 
+  # A native compiler invoked inside a cross build must see native headers and
+  # libraries even though the surrounding build searches the Darwin target.
+  buildCcWrapper = builtins.derivation {
+    name = "aos-${buildPlatform.system}-cc-for-build";
+    inherit system;
+    builder = shellPath;
+    args = [
+      "-c"
+      ''
+        set -eu
+        ${buildStdenv.coreutils}/bin/mkdir -p "$out/bin"
+        ${buildStdenv.coreutils}/bin/cat > "$out/bin/cc" <<'CC_EOF'
+        #!${shellPath}
+        unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+        export C_INCLUDE_PATH="''${AOS_BUILD_C_INCLUDE_PATH:-}"
+        export CPLUS_INCLUDE_PATH="''${AOS_BUILD_CPLUS_INCLUDE_PATH:-}"
+        export LIBRARY_PATH="''${AOS_BUILD_LIBRARY_PATH:-}"
+        export PKG_CONFIG_PATH="''${PKG_CONFIG_PATH_FOR_BUILD:-}"
+        exec ${buildStdenv.cc}/bin/cc "$@"
+        CC_EOF
+        ${buildStdenv.coreutils}/bin/cat > "$out/bin/c++" <<'CXX_EOF'
+        #!${shellPath}
+        unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+        export C_INCLUDE_PATH="''${AOS_BUILD_C_INCLUDE_PATH:-}"
+        export CPLUS_INCLUDE_PATH="''${AOS_BUILD_CPLUS_INCLUDE_PATH:-}"
+        export LIBRARY_PATH="''${AOS_BUILD_LIBRARY_PATH:-}"
+        export PKG_CONFIG_PATH="''${PKG_CONFIG_PATH_FOR_BUILD:-}"
+        exec ${buildStdenv.cc}/bin/c++ "$@"
+        CXX_EOF
+        ${buildStdenv.coreutils}/bin/chmod 755 "$out/bin/cc" "$out/bin/c++"
+      ''
+    ];
+  };
+
   cmakeSystemFlagsFor = compiler:
     builtins.concatStringsSep " " [
       "-DCMAKE_SYSTEM_NAME=Darwin"
@@ -103,6 +137,8 @@
             else []
           )
           ++ buildStdenv.initialPath;
+        dependencySearchDeps = (args.runtimeDeps or []) ++ (args.propagatedDeps or []);
+        buildDependencySearchDeps = (args.buildDeps or []) ++ buildStdenv.initialPath;
         inherit
           system
           hostPlatform
@@ -183,10 +219,10 @@
         export OBJDUMP="${ccWrapper}/bin/objdump"
         export SIZE="${ccWrapper}/bin/size"
         export STRINGS="${ccWrapper}/bin/strings"
-        export CC_FOR_BUILD="${buildStdenv.cc}/bin/cc"
-        export CXX_FOR_BUILD="${buildStdenv.cc}/bin/c++"
-        export BUILD_CC="${buildStdenv.cc}/bin/cc"
-        export BUILD_CXX="${buildStdenv.cc}/bin/c++"
+        export CC_FOR_BUILD="${buildCcWrapper}/bin/cc"
+        export CXX_FOR_BUILD="${buildCcWrapper}/bin/c++"
+        export BUILD_CC="${buildCcWrapper}/bin/cc"
+        export BUILD_CXX="${buildCcWrapper}/bin/c++"
         export SDKROOT="${sdk}"
         export MACOSX_DEPLOYMENT_TARGET="${deploymentTarget}"
         export PKG_CONFIG_ALLOW_CROSS=1
@@ -244,6 +280,8 @@
             else []
           )
           ++ buildStdenv.initialPath;
+        dependencySearchDeps = (args.runtimeDeps or []) ++ (args.propagatedDeps or []);
+        buildDependencySearchDeps = (args.buildDeps or []) ++ buildStdenv.initialPath;
         inherit
           system
           hostPlatform
@@ -278,10 +316,10 @@
         NM = "${ccWrapper}/bin/nm";
         OBJDUMP = "${ccWrapper}/bin/objdump";
         CONFIG_SHELL = shellPath;
-        CC_FOR_BUILD = "${buildStdenv.cc}/bin/cc";
-        CXX_FOR_BUILD = "${buildStdenv.cc}/bin/c++";
-        BUILD_CC = "${buildStdenv.cc}/bin/cc";
-        BUILD_CXX = "${buildStdenv.cc}/bin/c++";
+        CC_FOR_BUILD = "${buildCcWrapper}/bin/cc";
+        CXX_FOR_BUILD = "${buildCcWrapper}/bin/c++";
+        BUILD_CC = "${buildCcWrapper}/bin/cc";
+        BUILD_CXX = "${buildCcWrapper}/bin/c++";
         SDKROOT = sdk;
         MACOSX_DEPLOYMENT_TARGET = deploymentTarget;
         PKG_CONFIG_ALLOW_CROSS = "1";

@@ -62,11 +62,19 @@
         ${buildStdenv.coreutils}/bin/cat > "$out/bin/cc" <<'CC_EOF'
         #!${shellPath}
         unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+        export C_INCLUDE_PATH="''${AOS_BUILD_C_INCLUDE_PATH:-}"
+        export CPLUS_INCLUDE_PATH="''${AOS_BUILD_CPLUS_INCLUDE_PATH:-}"
+        export LIBRARY_PATH="''${AOS_BUILD_LIBRARY_PATH:-}"
+        export PKG_CONFIG_PATH="''${PKG_CONFIG_PATH_FOR_BUILD:-}"
         exec ${buildStdenv.cc}/bin/cc "$@"
         CC_EOF
         ${buildStdenv.coreutils}/bin/cat > "$out/bin/c++" <<'CXX_EOF'
         #!${shellPath}
         unset AOS_HARDENING_ENABLE AOS_HARDENING_DISABLE
+        export C_INCLUDE_PATH="''${AOS_BUILD_C_INCLUDE_PATH:-}"
+        export CPLUS_INCLUDE_PATH="''${AOS_BUILD_CPLUS_INCLUDE_PATH:-}"
+        export LIBRARY_PATH="''${AOS_BUILD_LIBRARY_PATH:-}"
+        export PKG_CONFIG_PATH="''${PKG_CONFIG_PATH_FOR_BUILD:-}"
         exec ${buildStdenv.cc}/bin/c++ "$@"
         CXX_EOF
         ${buildStdenv.coreutils}/bin/chmod 755 "$out/bin/cc" "$out/bin/c++"
@@ -197,6 +205,8 @@
       args
       // {
         buildDeps = [ccWrapper toolchain.binutils] ++ (args.buildDeps or []) ++ buildStdenv.initialPath;
+        dependencySearchDeps = (args.runtimeDeps or []) ++ (args.propagatedDeps or []);
+        buildDependencySearchDeps = (args.buildDeps or []) ++ buildStdenv.initialPath;
         system = schedulerSystem;
         inherit hostPlatform targetPlatform storeDir;
         buildExecutionSystem = buildPlatform.system;
