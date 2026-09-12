@@ -22,8 +22,9 @@ use aos_ability_runtime::adapter::{
 };
 use aos_ability_runtime::bundle::ReloadablePlanBundle;
 use aos_ability_runtime::execution::{
-    Boundary, ExecutionBoundaryControl, ExecutionBoundaryObservation, ExecutionBoundaryObserver,
-    ExecutionError, ExecutionStep, ExecutionTransaction, RecoveryAction, TrustedAdmissionPolicy,
+    AuthorityRejection, Boundary, ExecutionBoundaryControl, ExecutionBoundaryObservation,
+    ExecutionBoundaryObserver, ExecutionError, ExecutionStep, ExecutionTransaction, RecoveryAction,
+    RuntimeAuthorityRole, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 use aos_ability_runtime::journal::JournalLimits;
 use aos_ability_validate::test_support::stateful_owner_plan_fixture;
@@ -395,18 +396,20 @@ impl TrustedResourceCatalog for JournalCatalog {
     }
 }
 
+#[derive(Clone, Copy)]
 struct AllowAllPolicy;
 
-impl TrustedAdmissionPolicy for AllowAllPolicy {
+impl TrustedAuthoritySnapshot for AllowAllPolicy {
     type Error = io::Error;
 
-    fn authorize(
+    fn authorize_role(
         &mut self,
         _plan: &aos_ability_validate::CheckedEffectPlan,
         _binding: &aos_ability_model::Binding,
         _operation: &aos_ability_model::Operation,
         _method: &aos_ability_model::MethodReference,
         _purpose: InvocationPurpose,
+        _role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -420,6 +423,21 @@ impl TrustedAdmissionPolicy for AllowAllPolicy {
         _resources: &[ResourceAdmissionEvidence],
     ) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+impl TrustedAdmissionPolicy for AllowAllPolicy {
+    type DispatchFence = Self;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &aos_ability_model::Operation,
+        _method: &aos_ability_model::MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        Ok(*self)
     }
 }
 

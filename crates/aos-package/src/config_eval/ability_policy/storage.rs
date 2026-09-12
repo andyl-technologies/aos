@@ -233,6 +233,8 @@ impl RootOwnedCurrentAuthoritySource {
 pub trait CurrentAbilityAuthoritySource {
     /// Structured source failure type.
     type Error: std::error::Error + Send + Sync + 'static;
+    /// Held snapshot type that prevents publication or revocation from advancing.
+    type Fence: AsRef<CurrentAbilityAuthorityDocument>;
 
     /// Securely reloads one current authority publication.
     ///
@@ -240,14 +242,40 @@ pub trait CurrentAbilityAuthoritySource {
     ///
     /// Returns an error when the protected source is absent or cannot be read.
     fn load_current(&mut self) -> Result<CurrentAbilityAuthorityDocument, Self::Error>;
+
+    /// Acquires one current publication and holds its revocation fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the protected source is absent, revoked, or
+    /// cannot remain locked through the caller's use of the returned snapshot.
+    fn acquire_current_fence(&mut self) -> Result<Self::Fence, Self::Error>;
+}
+
+/// Holds a protected current-authority snapshot and its publication lock.
+#[derive(Debug)]
+pub struct RootOwnedCurrentAuthorityFence {
+    document: CurrentAbilityAuthorityDocument,
+    _lock: OwnedFd,
+}
+
+impl AsRef<CurrentAbilityAuthorityDocument> for RootOwnedCurrentAuthorityFence {
+    fn as_ref(&self) -> &CurrentAbilityAuthorityDocument {
+        &self.document
+    }
 }
 
 impl CurrentAbilityAuthoritySource for RootOwnedCurrentAuthoritySource {
     type Error = CurrentAuthorityError;
+    type Fence = RootOwnedCurrentAuthorityFence;
 
     fn load_current(&mut self) -> Result<CurrentAbilityAuthorityDocument, Self::Error> {
+        Ok(self.acquire_current_fence()?.document.clone())
+    }
+
+    fn acquire_current_fence(&mut self) -> Result<Self::Fence, Self::Error> {
         let parent = open_authority_parent(&self.path, &self.trust_anchor, self.trusted_owner)?;
-        let _lock = lock_authority_parent(&parent)?;
+        let lock = lock_authority_parent(&parent)?;
         let document = read_authority_at(&parent)?;
         let fence = read_authority_fence_at(&parent)?;
         if fence.state != AuthorityFenceState::Active
@@ -258,7 +286,10 @@ impl CurrentAbilityAuthoritySource for RootOwnedCurrentAuthoritySource {
                 "current authority publication is not selected by its protected fence",
             ));
         }
-        Ok(document)
+        Ok(RootOwnedCurrentAuthorityFence {
+            document,
+            _lock: lock,
+        })
     }
 }
 

@@ -8,35 +8,101 @@ use aos_ability_model::{
     TransactionId, compare_resource_ids,
 };
 use aos_ability_validate::{CheckedEffectPlan, InvocationAuthorizationError};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::adapter::{
     InvocationPurpose, MonotonicClock, PreparedRequest, ReservationContext,
-    ResourceAdmissionEvidence, ResourceHandle, TrustedAdapter, TrustedResourceCatalog,
+    ResourceAdmissionEvidence, ResourceHandle, RuntimeControl, TrustedAdapter,
+    TrustedResourceCatalog,
 };
 use crate::execution::{
-    CompensationInterventionReason, CompensationState, ExecutionEventKind, ExecutionTransaction,
-    OperationHistory, RecoveryAction, TransactionError, transaction::LiveReservationGuard,
+    Boundary, CompensationInterventionReason, CompensationState, ExecutionBoundaryControl,
+    ExecutionBoundaryObservation, ExecutionBoundaryObserver, ExecutionEventKind,
+    ExecutionTransaction, OperationHistory, RecoveryAction, TransactionError,
+    transaction::LiveReservationGuard,
 };
 
-/// Revalidates current policy and provider assignment at every admission.
-pub trait TrustedAdmissionPolicy {
+/// Names one independently revocable authority required by a runtime invocation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeAuthorityRole {
+    /// The consumer identity, exact binding, and caller grant remain authorized.
+    CallerBindingGrant,
+    /// The selected provider method and exact implementation remain authorized.
+    ProviderMethodImplementation,
+    /// The promised enforcement and native platform guarantees remain available.
+    EnforcementPlatformGuarantee,
+    /// The selected provider assignment and resource incarnations remain current.
+    AssignmentIncarnation,
+    /// The protected current-authority publication itself remains available.
+    CurrentAuthorityPublication,
+}
+
+/// Names the runtime boundary at which current authority was checked.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthorityCheckBoundary {
+    /// Current invocation authority is checked before acquiring resources.
+    BeforeResourceAcquisition,
+    /// Current assignments and guarantees are checked under acquired resources.
+    AfterResourceAcquisition,
+    /// All authority is checked under a fence immediately before adapter dispatch.
+    FinalDispatch,
+}
+
+/// Associates a current-policy failure with the authority that was revoked.
+#[derive(Debug, Error)]
+#[error("{role:?} authority rejected the invocation: {source}")]
+pub struct AuthorityRejection<Error> {
+    role: RuntimeAuthorityRole,
+    #[source]
+    source: Error,
+}
+
+impl<Error> AuthorityRejection<Error> {
+    /// Constructs a role-specific current-authority rejection.
+    #[must_use]
+    pub const fn new(role: RuntimeAuthorityRole, source: Error) -> Self {
+        Self { role, source }
+    }
+
+    /// Returns the independently revocable authority that rejected the invocation.
+    #[must_use]
+    pub const fn role(&self) -> RuntimeAuthorityRole {
+        self.role
+    }
+
+    /// Returns the policy-specific rejection detail.
+    #[must_use]
+    pub const fn source(&self) -> &Error {
+        &self.source
+    }
+
+    pub(crate) fn into_parts(self) -> (RuntimeAuthorityRole, Error) {
+        (self.role, self.source)
+    }
+}
+
+/// Revalidates an exact invocation against one current-authority snapshot.
+pub trait TrustedAuthoritySnapshot {
     /// Structured current-policy failure type.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Authorizes one exact implementation method under current assignments.
+    /// Authorizes one independently revocable invocation role.
     ///
     /// # Errors
     ///
-    /// Returns an error when current policy, assignment, principal, artifact,
-    /// or provider state no longer authorizes the exact invocation.
-    fn authorize(
+    /// Returns an error when the snapshot no longer authorizes the role for
+    /// the exact binding, method, implementation, or promised guarantees.
+    fn authorize_role(
         &mut self,
         plan: &CheckedEffectPlan,
         binding: &Binding,
         operation: &Operation,
         method: &MethodReference,
         purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error>;
 
     /// Authorizes current assignments and observations under held reservations.
@@ -53,6 +119,62 @@ pub trait TrustedAdmissionPolicy {
         expected_provider: Option<&aos_ability_model::ProviderAssignment>,
         resources: &[ResourceAdmissionEvidence],
     ) -> Result<(), Self::Error>;
+}
+
+/// Revalidates current policy and provider assignment at every admission.
+pub trait TrustedAdmissionPolicy: TrustedAuthoritySnapshot {
+    /// Holds one current authority generation stable through adapter invocation.
+    ///
+    /// The fence linearizes revocation either before the returned snapshot is
+    /// checked or after the adapter call using it returns. Implementations may
+    /// hold an existing protected policy lock or use a monotonic provider fence;
+    /// this interface does not create a resource broker or imply handle revocation.
+    type DispatchFence: TrustedAuthoritySnapshot<Error = Self::Error>;
+
+    /// Authorizes every independently revocable role for one invocation.
+    ///
+    /// This convenience method preserves the complete admission check for
+    /// callers that do not need role-specific qualification observations.
+    /// Runtime dispatch uses [`TrustedAuthoritySnapshot::authorize_role`]
+    /// directly so a rejection retains its exact authority role.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first current-authority rejection in deterministic role order.
+    fn authorize(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+    ) -> Result<(), Self::Error> {
+        for role in [
+            RuntimeAuthorityRole::CallerBindingGrant,
+            RuntimeAuthorityRole::ProviderMethodImplementation,
+            RuntimeAuthorityRole::EnforcementPlatformGuarantee,
+            RuntimeAuthorityRole::AssignmentIncarnation,
+        ] {
+            self.authorize_role(plan, binding, operation, method, purpose, role)?;
+        }
+        Ok(())
+    }
+
+    /// Acquires a current-authority snapshot whose validity is held through dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a role-specific error when the fence cannot be acquired under
+    /// current authority. The runtime performs all role and resource checks on
+    /// the returned snapshot before invoking the adapter.
+    fn acquire_dispatch_fence(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>>;
 }
 
 /// Reports why fresh operation admission did not complete.
@@ -88,6 +210,12 @@ pub enum AdmissionError {
     /// A durable retry timestamp or elapsed budget was not representable.
     #[error("retry backoff timestamp or elapsed budget overflowed")]
     RetryBackoffOverflow,
+    /// A qualification observer halted at one exact admission boundary.
+    #[error("admission halted at {0:?}")]
+    BoundaryHalt(Boundary),
+    /// A qualification observer failed closed at an admission boundary.
+    #[error("admission boundary observation failed: {0}")]
+    BoundaryObservation(#[source] anyhow::Error),
     /// The checked plan does not authorize the exact invocation semantics.
     #[error("checked plan does not authorize {purpose:?}: {source}")]
     CheckedAuthority {
@@ -101,10 +229,14 @@ pub enum AdmissionError {
     #[error("trusted adapter does not authenticate {0:?}")]
     AdapterMismatch(InvocationPurpose),
     /// Current trusted policy rejected an exact entry point.
-    #[error("fresh policy rejected {purpose:?}: {source}")]
+    #[error("fresh policy rejected {role:?} for {purpose:?} at {boundary:?}: {source}")]
     FreshAuthorization {
         /// Names the independently checked invocation.
         purpose: InvocationPurpose,
+        /// Names the independently revocable authority that was rejected.
+        role: RuntimeAuthorityRole,
+        /// Names the exact runtime boundary where rejection was observed.
+        boundary: AuthorityCheckBoundary,
         /// Retains the current-policy failure.
         #[source]
         source: anyhow::Error,
@@ -124,9 +256,6 @@ pub enum AdmissionError {
     /// A checked operation precondition no longer holds under reservation.
     #[error("fresh precondition failed for {0:?}")]
     StalePrecondition(ResourceId),
-    /// Current policy rejected held resource assignments or observations.
-    #[error("fresh policy rejected resource evidence: {0}")]
-    FreshResourceAuthorization(#[source] anyhow::Error),
     /// The adapter rejected checked inputs or freshly acquired handles.
     #[error("adapter request preparation failed: {0}")]
     RequestPreparation(#[source] anyhow::Error),
@@ -357,6 +486,43 @@ impl<'plan> ExecutionTransaction<'plan> {
         Policy: TrustedAdmissionPolicy,
         Clock: MonotonicClock,
     {
+        let mut observer = ContinueAdmissionObserver;
+        self.admit_with_observer(
+            operation_key,
+            adapter,
+            catalog,
+            policy,
+            clock,
+            &mut observer,
+        )
+    }
+
+    /// Performs fresh admission while exposing deterministic qualification boundaries.
+    ///
+    /// The observer runs before resource acquisition and again after all
+    /// reservations are held. It receives only stable execution identity and
+    /// timing state, and cannot manufacture authority or resource evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::admit`], plus a fail-closed observer
+    /// halt or observer error at an exact qualification boundary.
+    pub fn admit_with_observer<Adapter, Catalog, Policy, Clock, Observer>(
+        &mut self,
+        operation_key: &ScopedOperationKey,
+        adapter: &Adapter,
+        catalog: &mut Catalog,
+        policy: &mut Policy,
+        clock: &Clock,
+        observer: &mut Observer,
+    ) -> AdmissionResult<'plan, Adapter::Request, Adapter::Handle>
+    where
+        Adapter: TrustedAdapter,
+        Catalog: TrustedResourceCatalog<Handle = Adapter::Handle>,
+        Policy: TrustedAdmissionPolicy,
+        Clock: MonotonicClock,
+        Observer: ExecutionBoundaryObserver,
+    {
         let plan = self.plan();
         let session = Arc::clone(self.session());
         let transaction = self.transaction().clone();
@@ -444,6 +610,17 @@ impl<'plan> ExecutionTransaction<'plan> {
             transaction_limit,
         );
 
+        observe_admission_boundary(
+            observer,
+            &transaction,
+            &admission.operation_id,
+            admission.attempt,
+            admission.invocation_purpose,
+            Boundary::BeforeResourceAcquisition,
+            &timer,
+        )
+        .map_err(failure)?;
+
         check_admission_deadline(
             self,
             operation_key,
@@ -453,6 +630,31 @@ impl<'plan> ExecutionTransaction<'plan> {
         )
         .map_err(failure)?;
         if !admission.release_only {
+            let method = invocation_method(admission.operation, admission.invocation_purpose)
+                .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
+            if let Err(error) = check_invocation(
+                plan,
+                admission.operation,
+                admission.binding,
+                &method,
+                admission.invocation_purpose,
+                adapter,
+                policy,
+                AuthorityCheckBoundary::BeforeResourceAcquisition,
+            ) {
+                if let Err(source) = record_authority_rejection(
+                    self,
+                    &transaction,
+                    &admission.operation_id,
+                    admission.attempt,
+                    &error,
+                    timer.operation_elapsed_millis(),
+                ) {
+                    return Err(failure(AdmissionError::Transaction(source)));
+                }
+                return Err(failure(error));
+            }
+
             // Recovery after a crash may reacquire process-scoped catalog
             // handles solely to release durable ownership. That path must not
             // reauthorize or redispatch the already settled effect.
@@ -469,22 +671,6 @@ impl<'plan> ExecutionTransaction<'plan> {
                 admission.invocation_purpose,
                 InvocationPurpose::Reconcile | InvocationPurpose::ReconcileCompensation
             ) {
-                let method = admission
-                    .operation
-                    .recovery
-                    .reconcile
-                    .as_ref()
-                    .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
-                check_invocation(
-                    plan,
-                    admission.operation,
-                    admission.binding,
-                    method,
-                    admission.invocation_purpose,
-                    adapter,
-                    policy,
-                )
-                .map_err(failure)?;
                 check_deadline_or_record_compensation(
                     self,
                     operation_key,
@@ -493,22 +679,6 @@ impl<'plan> ExecutionTransaction<'plan> {
                 )
                 .map_err(failure)?;
             } else if admission.invocation_purpose == InvocationPurpose::Compensate {
-                let method = admission
-                    .operation
-                    .recovery
-                    .compensate
-                    .as_ref()
-                    .ok_or_else(|| failure(AdmissionError::StateDoesNotPermitAdmission))?;
-                check_invocation(
-                    plan,
-                    admission.operation,
-                    admission.binding,
-                    method,
-                    InvocationPurpose::Compensate,
-                    adapter,
-                    policy,
-                )
-                .map_err(failure)?;
                 check_deadline_or_record_compensation(
                     self,
                     operation_key,
@@ -525,6 +695,7 @@ impl<'plan> ExecutionTransaction<'plan> {
                         InvocationPurpose::ReconcileCompensation,
                         adapter,
                         policy,
+                        AuthorityCheckBoundary::BeforeResourceAcquisition,
                     )
                     .map_err(failure)?;
                     check_deadline_or_record_compensation(
@@ -543,16 +714,6 @@ impl<'plan> ExecutionTransaction<'plan> {
                         InvocationPurpose::Compensate,
                     )));
                 }
-                check_invocation(
-                    plan,
-                    admission.operation,
-                    admission.binding,
-                    &effect_method(admission.operation),
-                    InvocationPurpose::Effect,
-                    adapter,
-                    policy,
-                )
-                .map_err(failure)?;
                 check_deadline_or_record_compensation(
                     self,
                     operation_key,
@@ -569,6 +730,7 @@ impl<'plan> ExecutionTransaction<'plan> {
                         InvocationPurpose::Reconcile,
                         adapter,
                         policy,
+                        AuthorityCheckBoundary::BeforeResourceAcquisition,
                     )
                     .map_err(failure)?;
                     check_deadline_or_record_compensation(
@@ -588,6 +750,7 @@ impl<'plan> ExecutionTransaction<'plan> {
                         InvocationPurpose::Cancel,
                         adapter,
                         policy,
+                        AuthorityCheckBoundary::BeforeResourceAcquisition,
                     )
                     .map_err(failure)?;
                     check_deadline_or_record_compensation(
@@ -607,6 +770,7 @@ impl<'plan> ExecutionTransaction<'plan> {
                         InvocationPurpose::Compensate,
                         adapter,
                         policy,
+                        AuthorityCheckBoundary::BeforeResourceAcquisition,
                     )
                     .map_err(failure)?;
                     check_deadline_or_record_compensation(
@@ -625,6 +789,7 @@ impl<'plan> ExecutionTransaction<'plan> {
                             InvocationPurpose::ReconcileCompensation,
                             adapter,
                             policy,
+                            AuthorityCheckBoundary::BeforeResourceAcquisition,
                         )
                         .map_err(failure)?;
                         check_deadline_or_record_compensation(
@@ -717,6 +882,56 @@ impl<'plan> ExecutionTransaction<'plan> {
             }
         }
 
+        if let Err(error) = observe_admission_boundary(
+            observer,
+            &transaction,
+            &admission.operation_id,
+            admission.attempt,
+            admission.invocation_purpose,
+            Boundary::ResourcesAcquired,
+            &timer,
+        ) {
+            return Err(cleanup_failure(error, resources, catalog, live_reservation));
+        }
+        if !admission.release_only {
+            let Some(method) = invocation_method(admission.operation, admission.invocation_purpose)
+            else {
+                return Err(cleanup_failure(
+                    AdmissionError::StateDoesNotPermitAdmission,
+                    resources,
+                    catalog,
+                    live_reservation,
+                ));
+            };
+            if let Err(error) = check_invocation(
+                plan,
+                admission.operation,
+                admission.binding,
+                &method,
+                admission.invocation_purpose,
+                adapter,
+                policy,
+                AuthorityCheckBoundary::AfterResourceAcquisition,
+            ) {
+                if let Err(source) = record_authority_rejection(
+                    self,
+                    &transaction,
+                    &admission.operation_id,
+                    admission.attempt,
+                    &error,
+                    timer.operation_elapsed_millis(),
+                ) {
+                    return Err(cleanup_failure(
+                        AdmissionError::Transaction(source),
+                        resources,
+                        catalog,
+                        live_reservation,
+                    ));
+                }
+                return Err(cleanup_failure(error, resources, catalog, live_reservation));
+            }
+        }
+
         for precondition in admission
             .operation
             .preconditions
@@ -757,19 +972,32 @@ impl<'plan> ExecutionTransaction<'plan> {
                 .iter()
                 .map(|resource| resource.evidence().clone())
                 .collect();
-            if let Err(source) = policy.authorize_resources(
+            if let Err(error) = check_resources(
+                policy,
                 plan,
                 admission.binding,
                 admission.operation,
                 expected_provider.as_ref(),
                 &resource_evidence,
+                admission.invocation_purpose,
+                AuthorityCheckBoundary::AfterResourceAcquisition,
             ) {
-                return Err(cleanup_failure(
-                    AdmissionError::FreshResourceAuthorization(anyhow::Error::new(source)),
-                    resources,
-                    catalog,
-                    live_reservation,
-                ));
+                if let Err(source) = record_authority_rejection(
+                    self,
+                    &transaction,
+                    &admission.operation_id,
+                    admission.attempt,
+                    &error,
+                    timer.operation_elapsed_millis(),
+                ) {
+                    return Err(cleanup_failure(
+                        AdmissionError::Transaction(source),
+                        resources,
+                        catalog,
+                        live_reservation,
+                    ));
+                }
+                return Err(cleanup_failure(error, resources, catalog, live_reservation));
             }
         }
         if let Err(error) = check_admission_deadline(
@@ -1030,28 +1258,63 @@ struct CheckedAdmission<'plan> {
     release_only: bool,
 }
 
-pub(crate) fn check_invocation<Adapter, Policy>(
+pub(crate) fn check_invocation<Adapter, Authority>(
     plan: &CheckedEffectPlan,
     operation: &Operation,
     binding: &Binding,
     method: &MethodReference,
     purpose: InvocationPurpose,
     adapter: &Adapter,
-    policy: &mut Policy,
+    authority: &mut Authority,
+    boundary: AuthorityCheckBoundary,
 ) -> Result<(), AdmissionError>
 where
     Adapter: TrustedAdapter,
-    Policy: TrustedAdmissionPolicy,
+    Authority: TrustedAuthoritySnapshot,
 {
     plan.authorize_invocation(operation, method)
         .map_err(|source| AdmissionError::CheckedAuthority { purpose, source })?;
     if !adapter.authenticates(&binding.implementation, method, purpose) {
         return Err(AdmissionError::AdapterMismatch(purpose));
     }
-    policy
-        .authorize(plan, binding, operation, method, purpose)
+
+    for role in [
+        RuntimeAuthorityRole::CallerBindingGrant,
+        RuntimeAuthorityRole::ProviderMethodImplementation,
+        RuntimeAuthorityRole::EnforcementPlatformGuarantee,
+        RuntimeAuthorityRole::AssignmentIncarnation,
+    ] {
+        authority
+            .authorize_role(plan, binding, operation, method, purpose, role)
+            .map_err(|source| AdmissionError::FreshAuthorization {
+                purpose,
+                role,
+                boundary,
+                source: anyhow::Error::new(source),
+            })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn check_resources<Authority>(
+    authority: &mut Authority,
+    plan: &CheckedEffectPlan,
+    binding: &Binding,
+    operation: &Operation,
+    expected_provider: Option<&aos_ability_model::ProviderAssignment>,
+    resources: &[ResourceAdmissionEvidence],
+    purpose: InvocationPurpose,
+    boundary: AuthorityCheckBoundary,
+) -> Result<(), AdmissionError>
+where
+    Authority: TrustedAuthoritySnapshot,
+{
+    authority
+        .authorize_resources(plan, binding, operation, expected_provider, resources)
         .map_err(|source| AdmissionError::FreshAuthorization {
             purpose,
+            role: RuntimeAuthorityRole::AssignmentIncarnation,
+            boundary,
             source: anyhow::Error::new(source),
         })
 }
@@ -1063,6 +1326,17 @@ fn effect_method(operation: &Operation) -> MethodReference {
     }
 }
 
+fn invocation_method(operation: &Operation, purpose: InvocationPurpose) -> Option<MethodReference> {
+    match purpose {
+        InvocationPurpose::Effect => Some(effect_method(operation)),
+        InvocationPurpose::Reconcile | InvocationPurpose::ReconcileCompensation => {
+            operation.recovery.reconcile.clone()
+        }
+        InvocationPurpose::Cancel => operation.recovery.cancel.clone(),
+        InvocationPurpose::Compensate => operation.recovery.compensate.clone(),
+    }
+}
+
 struct AdmissionTimer<'clock, Clock> {
     clock: &'clock Clock,
     started_at: u64,
@@ -1070,6 +1344,87 @@ struct AdmissionTimer<'clock, Clock> {
     prior_transaction_elapsed: u64,
     operation_limit: u64,
     transaction_limit: u64,
+}
+
+impl<Clock> RuntimeControl for AdmissionTimer<'_, Clock>
+where
+    Clock: MonotonicClock,
+{
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn elapsed_millis(&self) -> u64 {
+        self.operation_elapsed_millis()
+    }
+
+    fn attempt_remaining_millis(&self) -> u64 {
+        self.remaining_millis()
+    }
+
+    fn recovery_remaining_millis(&self) -> u64 {
+        self.remaining_millis()
+    }
+}
+
+struct ContinueAdmissionObserver;
+
+impl ExecutionBoundaryObserver for ContinueAdmissionObserver {
+    fn observe(
+        &mut self,
+        _observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        Ok(ExecutionBoundaryControl::Continue)
+    }
+}
+
+fn observe_admission_boundary(
+    observer: &mut impl ExecutionBoundaryObserver,
+    transaction: &TransactionId,
+    operation: &OperationId,
+    attempt: NonZeroU32,
+    purpose: InvocationPurpose,
+    boundary: Boundary,
+    control: &dyn RuntimeControl,
+) -> Result<(), AdmissionError> {
+    let observation =
+        ExecutionBoundaryObservation::new(transaction, operation, attempt, purpose, boundary);
+    match observer
+        .observe(observation, control)
+        .map_err(AdmissionError::BoundaryObservation)?
+    {
+        ExecutionBoundaryControl::Continue => Ok(()),
+        ExecutionBoundaryControl::Halt => Err(AdmissionError::BoundaryHalt(boundary)),
+    }
+}
+
+fn record_authority_rejection(
+    transaction: &mut ExecutionTransaction<'_>,
+    transaction_id: &TransactionId,
+    operation: &OperationId,
+    attempt: NonZeroU32,
+    error: &AdmissionError,
+    elapsed_millis: u64,
+) -> Result<(), TransactionError> {
+    let AdmissionError::FreshAuthorization {
+        purpose,
+        role,
+        boundary,
+        ..
+    } = error
+    else {
+        return Ok(());
+    };
+    transaction.append(ExecutionEventKind::AuthorityRejected {
+        transaction: transaction_id.clone(),
+        operation: operation.clone(),
+        attempt,
+        purpose: *purpose,
+        role: *role,
+        boundary: *boundary,
+        elapsed_millis,
+    })
 }
 
 impl<'clock, Clock> AdmissionTimer<'clock, Clock>

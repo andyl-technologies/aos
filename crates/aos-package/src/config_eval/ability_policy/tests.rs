@@ -416,6 +416,54 @@ fn same_policy_instance_fails_closed_after_publication_is_revoked() {
 }
 
 #[test]
+fn held_current_authority_fence_linearizes_revocation_after_dispatch() {
+    let fixture = AuthorityFixture::new();
+    fixture.publish(
+        1,
+        1_000,
+        CurrentResourceState::Present {
+            revision: fixture.revision,
+        },
+    );
+    let mut source = RootOwnedCurrentAuthoritySource::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    );
+    let fence = source
+        .acquire_current_fence()
+        .expect("current authority fence acquired");
+    let publisher = CurrentAbilityAuthorityPublisher::for_test(
+        fixture.path.clone(),
+        fixture.trust_anchor.clone(),
+        fixture.owner,
+    );
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let revoker = std::thread::spawn(move || {
+        started_tx.send(()).expect("revoker start reported");
+        let result = publisher.revoke();
+        finished_tx.send(result).expect("revoker result reported");
+    });
+
+    started_rx.recv().expect("revoker started");
+    assert!(
+        finished_rx
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err(),
+        "revocation must wait while the dispatch authority fence is held"
+    );
+    assert_eq!(fence.as_ref().policy_fence, policy_fence());
+    drop(fence);
+
+    finished_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("revocation completed after fence release")
+        .expect("revocation succeeds");
+    revoker.join().expect("revoker thread joined");
+}
+
+#[test]
 fn revoked_scope_rejects_a_delayed_ordinary_publisher() {
     let fixture = AuthorityFixture::new();
     fixture.publish(

@@ -30,10 +30,11 @@ use crate::adapter::{
     TrustedRootStore,
 };
 use crate::execution::{
-    AdmissionError, CheckedExecutionJournalSnapshot, ExecutionBoundaryControl,
-    ExecutionBoundaryObservation, ExecutionBoundaryObserver, ExecutionError, ExecutionEvent,
-    ExecutionEventKind, ExecutionStep, ExecutionTransaction, OperationState, OperationStatus,
-    RecoveryAction, ResourceReleaseError, TerminalResult, TrustedAdmissionPolicy,
+    AdmissionError, AuthorityCheckBoundary, AuthorityRejection, CheckedExecutionJournalSnapshot,
+    ExecutionBoundaryControl, ExecutionBoundaryObservation, ExecutionBoundaryObserver,
+    ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionStep, ExecutionTransaction,
+    OperationState, OperationStatus, RecoveryAction, ResourceReleaseError, RuntimeAuthorityRole,
+    TerminalResult, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 use crate::journal::{FileJournal, JournalLimits};
 
@@ -1055,7 +1056,11 @@ fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_bu
         .map_err(admission_error)?;
     assert_eq!(
         initial_policy.purposes,
-        [InvocationPurpose::Effect, InvocationPurpose::Reconcile]
+        [
+            InvocationPurpose::Effect,
+            InvocationPurpose::Reconcile,
+            InvocationPurpose::Effect,
+        ]
     );
 
     clock.set(100);
@@ -1091,7 +1096,10 @@ fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_bu
         )
         .map_err(admission_error)?;
     assert_eq!(recovered_token.elapsed_millis(), 100);
-    assert_eq!(recovery_policy.purposes, [InvocationPurpose::Reconcile]);
+    assert_eq!(
+        recovery_policy.purposes,
+        [InvocationPurpose::Reconcile, InvocationPurpose::Reconcile]
+    );
 
     clock.set(150);
     assert_eq!(
@@ -1107,6 +1115,7 @@ fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_bu
     assert_eq!(
         recovery_policy.purposes,
         [
+            InvocationPurpose::Reconcile,
             InvocationPurpose::Reconcile,
             InvocationPurpose::Reconcile,
             InvocationPurpose::Reconcile,
@@ -1230,6 +1239,171 @@ fn boundary_source_error_survives_and_reopens_into_fresh_reconciliation()
 }
 
 #[test]
+fn role_revocation_before_acquisition_is_typed_and_never_dispatches()
+-> Result<(), Box<dyn std::error::Error>> {
+    for role in runtime_authority_roles() {
+        let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
+        let mut store = TestStore;
+        let mut transaction = fixture.open(&mut store)?;
+        let mut catalog = TestCatalog::default();
+        let revoked = Rc::new(Cell::new(None));
+        let mut policy = RoleRevocablePolicy {
+            revoked: Rc::clone(&revoked),
+        };
+        let adapter = RecoveryAdapter::default();
+        let mut observer = RevokeRoleAtBoundary {
+            revoked,
+            role,
+            boundary: crate::execution::Boundary::BeforeResourceAcquisition,
+        };
+
+        let failure = transaction
+            .admit_with_observer(
+                fixture.operation(),
+                &adapter,
+                &mut catalog,
+                &mut policy,
+                &TestClock,
+                &mut observer,
+            )
+            .expect_err("role revocation must reject admission");
+        assert_authority_rejection(
+            failure.error(),
+            role,
+            AuthorityCheckBoundary::BeforeResourceAcquisition,
+        )?;
+        assert_eq!(adapter.execute_calls, 0);
+        assert_eq!(catalog.acquire_calls, 0);
+        assert_eq!(catalog.release_calls, 0);
+        drop(failure);
+        drop(transaction);
+
+        assert_durable_authority_rejection(
+            &fixture,
+            role,
+            AuthorityCheckBoundary::BeforeResourceAcquisition,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn role_revocation_after_acquisition_releases_resources_without_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    for role in runtime_authority_roles() {
+        let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
+        let mut store = TestStore;
+        let mut transaction = fixture.open(&mut store)?;
+        let mut catalog = TestCatalog::default();
+        let revoked = Rc::new(Cell::new(None));
+        let mut policy = RoleRevocablePolicy {
+            revoked: Rc::clone(&revoked),
+        };
+        let adapter = RecoveryAdapter::default();
+        let mut observer = RevokeRoleAtBoundary {
+            revoked,
+            role,
+            boundary: crate::execution::Boundary::ResourcesAcquired,
+        };
+
+        let failure = transaction
+            .admit_with_observer(
+                fixture.operation(),
+                &adapter,
+                &mut catalog,
+                &mut policy,
+                &TestClock,
+                &mut observer,
+            )
+            .expect_err("post-acquisition revocation must reject admission");
+        assert_authority_rejection(
+            failure.error(),
+            role,
+            AuthorityCheckBoundary::AfterResourceAcquisition,
+        )?;
+        assert_eq!(adapter.execute_calls, 0);
+        assert_eq!(catalog.acquire_calls, 1);
+        assert_eq!(catalog.release_calls, 1);
+        drop(failure);
+        drop(transaction);
+
+        assert_durable_authority_rejection(
+            &fixture,
+            role,
+            AuthorityCheckBoundary::AfterResourceAcquisition,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn role_revocation_at_final_dispatch_is_durable_and_never_invokes_primary()
+-> Result<(), Box<dyn std::error::Error>> {
+    for role in runtime_authority_roles() {
+        let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
+        let mut store = TestStore;
+        let mut transaction = fixture.open(&mut store)?;
+        let mut catalog = TestCatalog::default();
+        let revoked = Rc::new(Cell::new(None));
+        let mut policy = RoleRevocablePolicy {
+            revoked: Rc::clone(&revoked),
+        };
+        let mut adapter = RecoveryAdapter::default();
+        let admitted = transaction
+            .admit(
+                fixture.operation(),
+                &adapter,
+                &mut catalog,
+                &mut policy,
+                &TestClock,
+            )
+            .map_err(admission_error)?;
+        let mut observer = RevokeRoleAtBoundary {
+            revoked,
+            role,
+            boundary: crate::execution::Boundary::FinalDispatch,
+        };
+
+        let error = transaction
+            .drive_admitted_with_observer(
+                &admitted,
+                &mut adapter,
+                &mut policy,
+                &TestClock,
+                &CancellationToken::default(),
+                &mut observer,
+            )
+            .expect_err("final dispatch revocation must fail closed");
+        let ExecutionError::DispatchAdmission(error) = error else {
+            return Err("final dispatch rejection lost its admission classification".into());
+        };
+        assert_authority_rejection(&error, role, AuthorityCheckBoundary::FinalDispatch)?;
+        assert_eq!(adapter.execute_calls, 0);
+        assert!(matches!(
+            transaction.next_action(fixture.operation())?,
+            RecoveryAction::ReleaseResources
+        ));
+        drop(admitted);
+        drop(transaction);
+
+        assert_durable_authority_rejection(&fixture, role, AuthorityCheckBoundary::FinalDispatch)?;
+        let snapshot = CheckedExecutionJournalSnapshot::read(
+            &fixture.plan,
+            fixture.journal_path(),
+            JournalLimits::default(),
+        )?;
+        assert!(snapshot.records().iter().any(|record| matches!(
+            record.body().body(),
+            ExecutionEventKind::EffectDispatchAborted {
+                reason: crate::execution::DispatchAbortReason::AuthorityRejected,
+                ..
+            }
+        )));
+    }
+    Ok(())
+}
+
+#[test]
 fn revocation_after_effect_intent_prevents_external_dispatch()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
@@ -1268,7 +1442,7 @@ fn revocation_after_effect_intent_prevents_external_dispatch()
     assert_eq!(adapter.execute_calls, 0);
     assert!(matches!(
         transaction.next_action(fixture.operation())?,
-        RecoveryAction::ReconcileBeforeRetry { .. }
+        RecoveryAction::ReleaseResources
     ));
     Ok(())
 }
@@ -1551,6 +1725,13 @@ fn checked_cancellation_reports_exact_admitted_boundaries() -> Result<(), Box<dy
                 expected_attempt,
                 InvocationPurpose::Cancel,
                 crate::execution::Boundary::CancellationIntentDurable,
+            ),
+            (
+                expected_transaction.clone(),
+                expected_operation.clone(),
+                expected_attempt,
+                InvocationPurpose::Cancel,
+                crate::execution::Boundary::FinalDispatch,
             ),
             (
                 expected_transaction.clone(),
@@ -3019,18 +3200,20 @@ impl TrustedResourceCatalog for TestCatalog {
     }
 }
 
+#[derive(Clone, Copy)]
 struct AllowPolicy;
 
-impl TrustedAdmissionPolicy for AllowPolicy {
+impl TrustedAuthoritySnapshot for AllowPolicy {
     type Error = io::Error;
 
-    fn authorize(
+    fn authorize_role(
         &mut self,
         _plan: &aos_ability_validate::CheckedEffectPlan,
         _binding: &aos_ability_model::Binding,
         _operation: &Operation,
         _method: &aos_ability_model::MethodReference,
         _purpose: InvocationPurpose,
+        _role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -3044,6 +3227,21 @@ impl TrustedAdmissionPolicy for AllowPolicy {
         _resources: &[ResourceAdmissionEvidence],
     ) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+impl TrustedAdmissionPolicy for AllowPolicy {
+    type DispatchFence = Self;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &aos_ability_model::MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        Ok(*self)
     }
 }
 
@@ -3068,16 +3266,17 @@ impl RevocablePolicy {
     }
 }
 
-impl TrustedAdmissionPolicy for RevocablePolicy {
+impl TrustedAuthoritySnapshot for RevocablePolicy {
     type Error = io::Error;
 
-    fn authorize(
+    fn authorize_role(
         &mut self,
         _plan: &aos_ability_validate::CheckedEffectPlan,
         _binding: &aos_ability_model::Binding,
         _operation: &Operation,
         _method: &MethodReference,
         _purpose: InvocationPurpose,
+        _role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
         self.authorize_current()
     }
@@ -3091,6 +3290,121 @@ impl TrustedAdmissionPolicy for RevocablePolicy {
         _resources: &[ResourceAdmissionEvidence],
     ) -> Result<(), Self::Error> {
         self.authorize_current()
+    }
+}
+
+impl TrustedAdmissionPolicy for RevocablePolicy {
+    type DispatchFence = AllowPolicy;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        self.authorize_current().map_err(|source| {
+            AuthorityRejection::new(RuntimeAuthorityRole::CallerBindingGrant, source)
+        })?;
+        Ok(AllowPolicy)
+    }
+}
+
+struct RoleRevocablePolicy {
+    revoked: Rc<Cell<Option<RuntimeAuthorityRole>>>,
+}
+
+#[derive(Clone, Copy)]
+struct RoleAuthorityFence {
+    revoked: Option<RuntimeAuthorityRole>,
+}
+
+fn authorize_test_role(
+    revoked: Option<RuntimeAuthorityRole>,
+    role: RuntimeAuthorityRole,
+) -> Result<(), io::Error> {
+    if revoked == Some(role) {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "injected role-specific authority revocation",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+impl TrustedAuthoritySnapshot for RoleAuthorityFence {
+    type Error = io::Error;
+
+    fn authorize_role(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
+    ) -> Result<(), Self::Error> {
+        authorize_test_role(self.revoked, role)
+    }
+
+    fn authorize_resources(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _expected_provider: Option<&ProviderAssignment>,
+        _resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        authorize_test_role(self.revoked, RuntimeAuthorityRole::AssignmentIncarnation)
+    }
+}
+
+impl TrustedAuthoritySnapshot for RoleRevocablePolicy {
+    type Error = io::Error;
+
+    fn authorize_role(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
+    ) -> Result<(), Self::Error> {
+        authorize_test_role(self.revoked.get(), role)
+    }
+
+    fn authorize_resources(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _expected_provider: Option<&ProviderAssignment>,
+        _resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        authorize_test_role(
+            self.revoked.get(),
+            RuntimeAuthorityRole::AssignmentIncarnation,
+        )
+    }
+}
+
+impl TrustedAdmissionPolicy for RoleRevocablePolicy {
+    type DispatchFence = RoleAuthorityFence;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        Ok(RoleAuthorityFence {
+            revoked: self.revoked.get(),
+        })
     }
 }
 
@@ -3131,6 +3445,25 @@ struct RecordingBoundaryObserver {
 struct RevokeAtBoundary {
     revoked: Rc<Cell<bool>>,
     boundary: crate::execution::Boundary,
+}
+
+struct RevokeRoleAtBoundary {
+    revoked: Rc<Cell<Option<RuntimeAuthorityRole>>>,
+    role: RuntimeAuthorityRole,
+    boundary: crate::execution::Boundary,
+}
+
+impl ExecutionBoundaryObserver for RevokeRoleAtBoundary {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        if observation.boundary() == self.boundary {
+            self.revoked.set(Some(self.role));
+        }
+        Ok(ExecutionBoundaryControl::Continue)
+    }
 }
 
 impl RevokeAtBoundary {
@@ -3525,18 +3858,21 @@ struct RecordingPolicy {
     purposes: Vec<InvocationPurpose>,
 }
 
-impl TrustedAdmissionPolicy for RecordingPolicy {
+impl TrustedAuthoritySnapshot for RecordingPolicy {
     type Error = io::Error;
 
-    fn authorize(
+    fn authorize_role(
         &mut self,
         _plan: &aos_ability_validate::CheckedEffectPlan,
         _binding: &aos_ability_model::Binding,
         _operation: &Operation,
         _method: &MethodReference,
         purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
-        self.purposes.push(purpose);
+        if role == RuntimeAuthorityRole::CallerBindingGrant {
+            self.purposes.push(purpose);
+        }
         Ok(())
     }
 
@@ -3549,6 +3885,22 @@ impl TrustedAdmissionPolicy for RecordingPolicy {
         _resources: &[ResourceAdmissionEvidence],
     ) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+impl TrustedAdmissionPolicy for RecordingPolicy {
+    type DispatchFence = AllowPolicy;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        self.purposes.push(purpose);
+        Ok(AllowPolicy)
     }
 }
 
@@ -3670,6 +4022,60 @@ fn assert_revoked_dispatch(
         other => {
             Err(format!("expected {expected_purpose:?} dispatch revocation, got {other:?}").into())
         }
+    }
+}
+
+fn runtime_authority_roles() -> [RuntimeAuthorityRole; 4] {
+    [
+        RuntimeAuthorityRole::CallerBindingGrant,
+        RuntimeAuthorityRole::ProviderMethodImplementation,
+        RuntimeAuthorityRole::EnforcementPlatformGuarantee,
+        RuntimeAuthorityRole::AssignmentIncarnation,
+    ]
+}
+
+fn assert_authority_rejection(
+    error: &AdmissionError,
+    expected_role: RuntimeAuthorityRole,
+    expected_boundary: AuthorityCheckBoundary,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match error {
+        AdmissionError::FreshAuthorization { role, boundary, .. }
+            if *role == expected_role && *boundary == expected_boundary =>
+        {
+            Ok(())
+        }
+        other => Err(format!(
+            "expected {expected_role:?} rejection at {expected_boundary:?}, got {other:?}"
+        )
+        .into()),
+    }
+}
+
+fn assert_durable_authority_rejection(
+    fixture: &RuntimeFixture,
+    expected_role: RuntimeAuthorityRole,
+    expected_boundary: AuthorityCheckBoundary,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let snapshot = CheckedExecutionJournalSnapshot::read(
+        &fixture.plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    )?;
+    if snapshot.records().iter().any(|record| {
+        matches!(
+            record.body().body(),
+            ExecutionEventKind::AuthorityRejected {
+                purpose: InvocationPurpose::Effect,
+                role,
+                boundary,
+                ..
+            } if *role == expected_role && *boundary == expected_boundary
+        )
+    }) {
+        Ok(())
+    } else {
+        Err(format!("journal lacks {expected_role:?} rejection at {expected_boundary:?}").into())
     }
 }
 

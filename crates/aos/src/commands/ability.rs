@@ -513,9 +513,11 @@ fn project_journal_record(
         ExecutionEventKind::EffectRejectedBeforeEffect { .. } => {
             TimelineEventKind::RejectedBeforeEffect
         }
+        ExecutionEventKind::AuthorityRejected { .. } => TimelineEventKind::RejectedBeforeEffect,
         ExecutionEventKind::EffectDispatchAborted { reason, .. } => match reason {
             DispatchAbortReason::Cancelled => TimelineEventKind::DispatchCancelled,
             DispatchAbortReason::DeadlineExpired => TimelineEventKind::DispatchTimedOut,
+            DispatchAbortReason::AuthorityRejected => TimelineEventKind::RejectedBeforeEffect,
         },
         ExecutionEventKind::EffectIndeterminate { .. } => TimelineEventKind::EffectIndeterminate,
         ExecutionEventKind::ReconciliationIntent { .. } => TimelineEventKind::ReconciliationStarted,

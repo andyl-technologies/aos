@@ -1538,6 +1538,7 @@ fn begins_new_work(event: &ExecutionEventKind) -> bool {
 fn event_attempt(event: &ExecutionEventKind) -> Option<std::num::NonZeroU32> {
     match event {
         ExecutionEventKind::OperationAdmitted { attempt, .. }
+        | ExecutionEventKind::AuthorityRejected { attempt, .. }
         | ExecutionEventKind::RetryBackoffScheduled { attempt, .. }
         | ExecutionEventKind::RetryBackoffElapsed { attempt, .. }
         | ExecutionEventKind::EffectIntent { attempt, .. }

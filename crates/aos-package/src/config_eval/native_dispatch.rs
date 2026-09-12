@@ -31,8 +31,9 @@ use aos_ability_runtime::adapter::{
     SystemMonotonicClock, TrustedAdapter, TrustedResourceCatalog,
 };
 use aos_ability_runtime::execution::{
-    AdmittedOperation, CheckedExecutionJournalSnapshot, ExecutionBoundaryObserver, ExecutionError,
-    ExecutionStep, RecoveryAction, TerminalResult, TrustedAdmissionPolicy,
+    AdmittedOperation, AuthorityRejection, CheckedExecutionJournalSnapshot,
+    ExecutionBoundaryObserver, ExecutionError, ExecutionStep, RecoveryAction, RuntimeAuthorityRole,
+    TerminalResult, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 use aos_ability_runtime::journal::JournalLimits;
 use aos_ability_validate::{BindingAuthorityKind, CheckedBindingPlan, CheckedEffectPlan};
@@ -43,7 +44,9 @@ use super::ability_policy::{
     CurrentAbilityAuthoritySource, CurrentResourceObservation, CurrentResourceState,
     NativeCurrentAdmissionPolicy,
 };
-use super::ability_policy_authority::OperatorPolicyAuthorityStore;
+use super::ability_policy_authority::{
+    OperatorPolicyAuthorityRecord, OperatorPolicyAuthorityStore,
+};
 use super::ability_store::inventory::{
     LinkedAdoptionVerificationState, NativeConsumerRequirement, NativeNoOpResourceObservation,
     NativeQualifiedResource, NativeResourceInventory, verify_retained_native_consumers,
@@ -3418,7 +3421,7 @@ impl<'a, Policy> OperatorAuthorizedPolicy<'a, Policy> {
 
 /// Reports which independently refreshed policy layer rejected dispatch.
 #[derive(Debug)]
-pub(crate) enum OperatorAuthorizedPolicyError {
+pub enum OperatorAuthorizedPolicyError {
     /// The desired policy sidecar lost its exact operator grant.
     Operator(anyhow::Error),
     /// The current binding, assignment, or resource observation changed.
@@ -3446,25 +3449,66 @@ impl fmt::Display for OperatorAuthorizedPolicyError {
 
 impl std::error::Error for OperatorAuthorizedPolicyError {}
 
-impl<Policy> TrustedAdmissionPolicy for OperatorAuthorizedPolicy<'_, Policy>
+/// Holds operator and current-policy snapshots through one native dispatch.
+pub struct OperatorDispatchFence<Fence> {
+    current: Fence,
+    _operator_grants: Vec<OperatorPolicyAuthorityRecord>,
+}
+
+impl<Fence> TrustedAuthoritySnapshot for OperatorDispatchFence<Fence>
 where
-    Policy: TrustedAdmissionPolicy,
+    Fence: TrustedAuthoritySnapshot,
 {
     type Error = OperatorAuthorizedPolicyError;
 
-    fn authorize(
+    fn authorize_role(
         &mut self,
         plan: &CheckedEffectPlan,
         binding: &Binding,
         operation: &Operation,
         method: &MethodReference,
         purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
+    ) -> Result<(), Self::Error> {
+        self.current
+            .authorize_role(plan, binding, operation, method, purpose, role)
+            .map_err(|error| OperatorAuthorizedPolicyError::Current(anyhow!(error)))
+    }
+
+    fn authorize_resources(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        expected_provider: Option<&ProviderAssignment>,
+        resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        self.current
+            .authorize_resources(plan, binding, operation, expected_provider, resources)
+            .map_err(|error| OperatorAuthorizedPolicyError::Current(anyhow!(error)))
+    }
+}
+
+impl<Policy> TrustedAuthoritySnapshot for OperatorAuthorizedPolicy<'_, Policy>
+where
+    Policy: TrustedAdmissionPolicy,
+{
+    type Error = OperatorAuthorizedPolicyError;
+
+    fn authorize_role(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
         self.activation
             .reauthorize(self.operator_authority)
             .map_err(OperatorAuthorizedPolicyError::Operator)?;
         self.current
-            .authorize(plan, binding, operation, method, purpose)
+            .authorize_role(plan, binding, operation, method, purpose, role)
             .map_err(|error| OperatorAuthorizedPolicyError::Current(anyhow!(error)))
     }
 
@@ -3482,6 +3526,45 @@ where
         self.current
             .authorize_resources(plan, binding, operation, expected_provider, resources)
             .map_err(|error| OperatorAuthorizedPolicyError::Current(anyhow!(error)))
+    }
+}
+
+impl<Policy> TrustedAdmissionPolicy for OperatorAuthorizedPolicy<'_, Policy>
+where
+    Policy: TrustedAdmissionPolicy,
+{
+    type DispatchFence = OperatorDispatchFence<Policy::DispatchFence>;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        let operator_grants = self
+            .activation
+            .acquire_authority_fence(self.operator_authority)
+            .map_err(|error| {
+                AuthorityRejection::new(
+                    RuntimeAuthorityRole::CallerBindingGrant,
+                    OperatorAuthorizedPolicyError::Operator(error),
+                )
+            })?;
+        let current = self
+            .current
+            .acquire_dispatch_fence(plan, binding, operation, method, purpose)
+            .map_err(|rejection| {
+                AuthorityRejection::new(
+                    rejection.role(),
+                    OperatorAuthorizedPolicyError::Current(anyhow!(rejection)),
+                )
+            })?;
+        Ok(OperatorDispatchFence {
+            current,
+            _operator_grants: operator_grants,
+        })
     }
 }
 

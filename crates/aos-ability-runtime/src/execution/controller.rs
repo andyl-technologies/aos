@@ -8,14 +8,14 @@ use aos_contract::Sha256Digest;
 use crate::adapter::{
     CancellationToken, InvocationPurpose, MonotonicClock, RuntimeControl, TrustedAdapter,
 };
-use crate::execution::admission::check_invocation;
+use crate::execution::admission::{check_invocation, check_resources};
 use crate::execution::machine::{
     AttemptContext, Boundary, BoundaryHook, ExecutionBoundaryControl, ExecutionBoundaryObservation,
     ExecutionBoundaryObserver, OperationExecutor,
 };
 use crate::execution::{
-    AdmittedOperation, CompensationInterventionReason, ExecutionError, ExecutionStep,
-    ExecutionTransaction, RecoveryAction, TrustedAdmissionPolicy,
+    AdmissionError, AdmittedOperation, AuthorityCheckBoundary, CompensationInterventionReason,
+    ExecutionError, ExecutionStep, ExecutionTransaction, RecoveryAction, TrustedAdmissionPolicy,
 };
 
 impl<'plan> ExecutionTransaction<'plan> {
@@ -132,7 +132,7 @@ impl<'plan> ExecutionTransaction<'plan> {
             _ => return Err(ExecutionError::StaleAdmission),
         };
 
-        authorize_dispatch(admitted, adapter, policy, &method, purpose)?;
+        authorize_before_intent(admitted, adapter, policy, &method, purpose)?;
         let persisted_elapsed = self
             .history(&admitted.operation().key)
             .map_err(ExecutionError::Transaction)?
@@ -160,7 +160,7 @@ impl<'plan> ExecutionTransaction<'plan> {
             purpose: admitted.invocation_purpose(),
         };
         let mut authorize_after_intent =
-            |adapter: &Adapter| authorize_dispatch(admitted, adapter, policy, &method, purpose);
+            |adapter: &Adapter| acquire_dispatch_fence(admitted, adapter, policy, &method, purpose);
         let mut executor = OperationExecutor::new(adapter, clock, cancellation, &mut hook);
         match action {
             RecoveryAction::Execute { .. } => executor.execute(
@@ -260,7 +260,7 @@ impl<'plan> ExecutionTransaction<'plan> {
             .cancel
             .clone()
             .ok_or(ExecutionError::StaleAdmission)?;
-        authorize_dispatch(
+        authorize_before_intent(
             admitted,
             adapter,
             policy,
@@ -275,7 +275,7 @@ impl<'plan> ExecutionTransaction<'plan> {
             purpose: InvocationPurpose::Cancel,
         };
         let mut authorize_after_intent = |adapter: &Adapter| {
-            authorize_dispatch(
+            acquire_dispatch_fence(
                 admitted,
                 adapter,
                 policy,
@@ -492,7 +492,7 @@ fn is_compensation_purpose(purpose: InvocationPurpose) -> bool {
     )
 }
 
-fn authorize_dispatch<Adapter, Policy>(
+fn authorize_before_intent<Adapter, Policy>(
     admitted: &AdmittedOperation<'_, Adapter::Request, Adapter::Handle>,
     adapter: &Adapter,
     policy: &mut Policy,
@@ -511,18 +511,75 @@ where
         purpose,
         adapter,
         policy,
+        AuthorityCheckBoundary::AfterResourceAcquisition,
     )
     .map_err(ExecutionError::DispatchAdmission)?;
     let evidence = admitted.resource_evidence();
-    policy
-        .authorize_resources(
+    check_resources(
+        policy,
+        admitted.plan(),
+        admitted.binding(),
+        admitted.operation(),
+        admitted.expected_provider(),
+        &evidence,
+        purpose,
+        AuthorityCheckBoundary::AfterResourceAcquisition,
+    )
+    .map_err(ExecutionError::DispatchAdmission)
+}
+
+fn acquire_dispatch_fence<Adapter, Policy>(
+    admitted: &AdmittedOperation<'_, Adapter::Request, Adapter::Handle>,
+    adapter: &Adapter,
+    policy: &mut Policy,
+    method: &MethodReference,
+    purpose: InvocationPurpose,
+) -> Result<Policy::DispatchFence, ExecutionError>
+where
+    Adapter: TrustedAdapter,
+    Policy: TrustedAdmissionPolicy,
+{
+    let mut fence = policy
+        .acquire_dispatch_fence(
             admitted.plan(),
             admitted.binding(),
             admitted.operation(),
-            admitted.expected_provider(),
-            &evidence,
+            method,
+            purpose,
         )
-        .map_err(|source| ExecutionError::DispatchAuthorization(anyhow::Error::new(source)))
+        .map_err(|rejection| {
+            let (role, source) = rejection.into_parts();
+            ExecutionError::DispatchAdmission(AdmissionError::FreshAuthorization {
+                purpose,
+                role,
+                boundary: AuthorityCheckBoundary::FinalDispatch,
+                source: anyhow::Error::new(source),
+            })
+        })?;
+    check_invocation(
+        admitted.plan(),
+        admitted.operation(),
+        admitted.binding(),
+        method,
+        purpose,
+        adapter,
+        &mut fence,
+        AuthorityCheckBoundary::FinalDispatch,
+    )
+    .map_err(ExecutionError::DispatchAdmission)?;
+    let evidence = admitted.resource_evidence();
+    check_resources(
+        &mut fence,
+        admitted.plan(),
+        admitted.binding(),
+        admitted.operation(),
+        admitted.expected_provider(),
+        &evidence,
+        purpose,
+        AuthorityCheckBoundary::FinalDispatch,
+    )
+    .map_err(ExecutionError::DispatchAdmission)?;
+    Ok(fence)
 }
 
 fn observed_operation_elapsed<Request, Handle, Clock>(

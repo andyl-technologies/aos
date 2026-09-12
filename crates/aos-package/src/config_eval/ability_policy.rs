@@ -34,7 +34,9 @@ use aos_ability_runtime::adapter::{
     InvocationPurpose, MonotonicClock, ResourceAdmissionEvidence, ResourceRevisionObservation,
     SystemMonotonicClock,
 };
-use aos_ability_runtime::execution::TrustedAdmissionPolicy;
+use aos_ability_runtime::execution::{
+    AuthorityRejection, RuntimeAuthorityRole, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
+};
 use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -70,7 +72,7 @@ mod storage;
 
 pub use storage::{
     CurrentAbilityAuthorityPublisher, CurrentAbilityAuthoritySource,
-    RootOwnedCurrentAuthoritySource,
+    RootOwnedCurrentAuthorityFence, RootOwnedCurrentAuthoritySource,
 };
 
 /// Carries independently published current policy and live assignment evidence.
@@ -544,6 +546,14 @@ where
             .source
             .load_current()
             .map_err(|error| source_error(error.to_string()))?;
+        self.accept_publication(&document)?;
+        Ok(document)
+    }
+
+    fn accept_publication(
+        &mut self,
+        document: &CurrentAbilityAuthorityDocument,
+    ) -> Result<(), CurrentAuthorityError> {
         document.validate(&self.supported_features)?;
         if document.plan != self.commitment.plan
             || document.transaction != self.commitment.transaction
@@ -590,7 +600,7 @@ where
             observed_at_restart_millis: document.observed_at_restart_millis,
             digest,
         });
-        Ok(document)
+        Ok(())
     }
 
     /// Revalidates all authority needed to retain an unchanged native mapping.
@@ -680,34 +690,86 @@ where
     }
 }
 
-impl<Source, Clock> TrustedAdmissionPolicy for NativeCurrentAdmissionPolicy<Source, Clock>
+/// Holds one protected native authority publication through adapter dispatch.
+pub struct NativeDispatchAuthority<Fence> {
+    fence: Fence,
+    expected_plan: PlanId,
+}
+
+impl<Fence> TrustedAuthoritySnapshot for NativeDispatchAuthority<Fence>
 where
-    Source: CurrentAbilityAuthoritySource,
-    Clock: MonotonicClock,
+    Fence: AsRef<CurrentAbilityAuthorityDocument>,
 {
     type Error = CurrentAuthorityError;
 
-    fn authorize(
+    fn authorize_role(
         &mut self,
         plan: &CheckedEffectPlan,
         binding: &Binding,
         operation: &Operation,
         method: &MethodReference,
         purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
+    ) -> Result<(), Self::Error> {
+        authorize_current_role(
+            self.fence.as_ref(),
+            plan,
+            binding,
+            operation,
+            method,
+            purpose,
+            role,
+            self.expected_plan,
+        )
+    }
+
+    fn authorize_resources(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        expected_provider: Option<&ProviderAssignment>,
+        resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        authorize_current_resources(
+            self.fence.as_ref(),
+            plan,
+            binding,
+            operation,
+            expected_provider,
+            resources,
+            self.expected_plan,
+        )
+    }
+}
+
+impl<Source, Clock> TrustedAuthoritySnapshot for NativeCurrentAdmissionPolicy<Source, Clock>
+where
+    Source: CurrentAbilityAuthoritySource,
+    Clock: MonotonicClock,
+{
+    type Error = CurrentAuthorityError;
+
+    fn authorize_role(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
         let current = self.refresh()?;
-        require_checked_membership(plan, binding, operation, self.commitment.plan)?;
-        let authorized = find_binding(&current, binding)?;
-        if authorized != binding {
-            return Err(invalid(
-                "current policy binding differs from the checked operation binding",
-            ));
-        }
-        require_purpose_method(operation, method, purpose)?;
-        plan.authorize_invocation(operation, method)
-            .map_err(|error| invalid(format!("checked invocation is unauthorized: {error}")))?;
-        require_live_assignment(&current, binding)?;
-        Ok(())
+        authorize_current_role(
+            &current,
+            plan,
+            binding,
+            operation,
+            method,
+            purpose,
+            role,
+            self.commitment.plan,
+        )
     }
 
     fn authorize_resources(
@@ -719,28 +781,46 @@ where
         resources: &[ResourceAdmissionEvidence],
     ) -> Result<(), Self::Error> {
         let current = self.refresh()?;
-        require_checked_membership(plan, binding, operation, self.commitment.plan)?;
-        if find_binding(&current, binding)? != binding {
-            return Err(invalid(
-                "current policy binding differs from the checked operation binding",
-            ));
-        }
-        let assignment = require_live_assignment(&current, binding)?;
-        if expected_provider.is_some_and(|expected| expected != assignment) {
-            return Err(invalid(
-                "durable provider assignment differs from current policy assignment",
-            ));
-        }
-        if operation.accesses.len() != resources.len() {
-            return Err(invalid(
-                "resource evidence count differs from the checked operation",
-            ));
-        }
+        authorize_current_resources(
+            &current,
+            plan,
+            binding,
+            operation,
+            expected_provider,
+            resources,
+            self.commitment.plan,
+        )
+    }
+}
 
-        for (access, evidence) in operation.accesses.iter().zip(resources) {
-            require_current_resource_evidence(&current, assignment, access, evidence)?;
-        }
-        Ok(())
+impl<Source, Clock> TrustedAdmissionPolicy for NativeCurrentAdmissionPolicy<Source, Clock>
+where
+    Source: CurrentAbilityAuthoritySource,
+    Clock: MonotonicClock,
+{
+    type DispatchFence = NativeDispatchAuthority<Source::Fence>;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        _plan: &CheckedEffectPlan,
+        _binding: &Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        let fence = self.source.acquire_current_fence().map_err(|error| {
+            AuthorityRejection::new(
+                RuntimeAuthorityRole::CurrentAuthorityPublication,
+                source_error(error.to_string()),
+            )
+        })?;
+        self.accept_publication(fence.as_ref()).map_err(|error| {
+            AuthorityRejection::new(RuntimeAuthorityRole::CurrentAuthorityPublication, error)
+        })?;
+        Ok(NativeDispatchAuthority {
+            fence,
+            expected_plan: self.commitment.plan,
+        })
     }
 }
 
@@ -778,19 +858,20 @@ impl super::native_dispatch::NativeNoOpAdmissionPolicy for PublishingNativeAdmis
     }
 }
 
-impl TrustedAdmissionPolicy for PublishingNativeAdmissionPolicy {
+impl TrustedAuthoritySnapshot for PublishingNativeAdmissionPolicy {
     type Error = CurrentAuthorityError;
 
-    fn authorize(
+    fn authorize_role(
         &mut self,
         plan: &CheckedEffectPlan,
         binding: &Binding,
         operation: &Operation,
         method: &MethodReference,
         purpose: InvocationPurpose,
+        role: RuntimeAuthorityRole,
     ) -> Result<(), Self::Error> {
         self.admission_mut()?
-            .authorize(plan, binding, operation, method, purpose)
+            .authorize_role(plan, binding, operation, method, purpose, role)
     }
 
     fn authorize_resources(
@@ -809,6 +890,111 @@ impl TrustedAdmissionPolicy for PublishingNativeAdmissionPolicy {
             resources,
         )
     }
+}
+
+impl TrustedAdmissionPolicy for PublishingNativeAdmissionPolicy {
+    type DispatchFence = NativeDispatchAuthority<RootOwnedCurrentAuthorityFence>;
+
+    fn acquire_dispatch_fence(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        binding: &Binding,
+        operation: &Operation,
+        method: &MethodReference,
+        purpose: InvocationPurpose,
+    ) -> Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+        self.admission_mut()
+            .map_err(|error| {
+                AuthorityRejection::new(RuntimeAuthorityRole::CurrentAuthorityPublication, error)
+            })?
+            .acquire_dispatch_fence(plan, binding, operation, method, purpose)
+    }
+}
+
+fn authorize_current_role(
+    current: &CurrentAbilityAuthorityDocument,
+    plan: &CheckedEffectPlan,
+    binding: &Binding,
+    operation: &Operation,
+    method: &MethodReference,
+    purpose: InvocationPurpose,
+    role: RuntimeAuthorityRole,
+    expected_plan: PlanId,
+) -> Result<(), CurrentAuthorityError> {
+    require_checked_membership(plan, binding, operation, expected_plan)?;
+    let authorized = find_binding(current, binding)?;
+
+    match role {
+        RuntimeAuthorityRole::CallerBindingGrant => {
+            if authorized.id != binding.id
+                || authorized.request != binding.request
+                || authorized.source != binding.source
+                || authorized.caller_grant != binding.caller_grant
+                || authorized.policy_revision != binding.policy_revision
+                || authorized.lifetime != binding.lifetime
+                || authorized.mediation_allowed != binding.mediation_allowed
+            {
+                return Err(invalid(
+                    "current caller binding or grant differs from the checked operation",
+                ));
+            }
+        }
+        RuntimeAuthorityRole::ProviderMethodImplementation => {
+            if authorized.interface != binding.interface
+                || authorized.provider != binding.provider
+                || authorized.provider_package != binding.provider_package
+                || authorized.implementation != binding.implementation
+                || authorized.provider_grant != binding.provider_grant
+            {
+                return Err(invalid(
+                    "current provider method or implementation differs from the checked binding",
+                ));
+            }
+            require_purpose_method(operation, method, purpose)?;
+            plan.authorize_invocation(operation, method)
+                .map_err(|error| invalid(format!("checked invocation is unauthorized: {error}")))?;
+        }
+        RuntimeAuthorityRole::EnforcementPlatformGuarantee => {
+            if authorized.guarantees != binding.guarantees {
+                return Err(invalid(
+                    "current enforcement or platform guarantees differ from the checked binding",
+                ));
+            }
+        }
+        RuntimeAuthorityRole::AssignmentIncarnation => {
+            require_live_assignment(current, binding)?;
+        }
+        RuntimeAuthorityRole::CurrentAuthorityPublication => {}
+    }
+    Ok(())
+}
+
+fn authorize_current_resources(
+    current: &CurrentAbilityAuthorityDocument,
+    plan: &CheckedEffectPlan,
+    binding: &Binding,
+    operation: &Operation,
+    expected_provider: Option<&ProviderAssignment>,
+    resources: &[ResourceAdmissionEvidence],
+    expected_plan: PlanId,
+) -> Result<(), CurrentAuthorityError> {
+    require_checked_membership(plan, binding, operation, expected_plan)?;
+    let assignment = require_live_assignment(current, binding)?;
+    if expected_provider.is_some_and(|expected| expected != assignment) {
+        return Err(invalid(
+            "durable provider assignment differs from current policy assignment",
+        ));
+    }
+    if operation.accesses.len() != resources.len() {
+        return Err(invalid(
+            "resource evidence count differs from the checked operation",
+        ));
+    }
+
+    for (access, evidence) in operation.accesses.iter().zip(resources) {
+        require_current_resource_evidence(current, assignment, access, evidence)?;
+    }
+    Ok(())
 }
 
 fn require_current_resource_evidence(
