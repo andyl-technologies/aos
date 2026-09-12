@@ -362,12 +362,9 @@ def wait_switch_failed(unit: str) -> None:
 def resume_recovery(sequence: str) -> None:
     """Releases reconciliation when recovery reaches its returned boundary."""
 
-    try:
-        runtime.wait_until_succeeds(
-            f"test -s {shlex.quote(RESUMED_EVENT)}", timeout=15
-        )
-    except Exception:
-        return
+    runtime.wait_until_succeeds(
+        f"test -s {shlex.quote(RESUMED_EVENT)}", timeout=180
+    )
     resumed = json.loads(
         runtime.succeed(f"{COREUTILS}/cat {shlex.quote(RESUMED_EVENT)}")
     )
@@ -427,7 +424,11 @@ def run_effect_flight(
     wait_switch_failed(unit)
 
     runtime.succeed(f"{SYSTEMCTL} restart aos-activate.service")
-    resume_recovery(flight.label)
+    if scenario in {
+        "interrupt-after-durable-intent",
+        "lose-external-result",
+    }:
+        resume_recovery(flight.label)
     runtime.wait_until_succeeds(
         f"{SYSTEMCTL} is-active --quiet aos-activate.service", timeout=900
     )
