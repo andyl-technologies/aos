@@ -327,12 +327,9 @@ fn crucible_payloads_reject_schema_and_identity_drift() {
         Err(CrucibleArtifactError::UnsupportedPayloadSchema { .. })
     ));
     let retired_schema = CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3 - 1;
-    let mislabeled_retired = ScenarioArtifact::new(
-        valid.scenario(),
-        retired_schema,
-        valid.payload().to_vec(),
-    )
-    .expect("mislabeled artifact remains structurally valid");
+    let mislabeled_retired =
+        ScenarioArtifact::new(valid.scenario(), retired_schema, valid.payload().to_vec())
+            .expect("mislabeled artifact remains structurally valid");
     assert!(matches!(
         decode_crucible_scenario_artifact(&mislabeled_retired),
         Err(CrucibleArtifactError::UnsupportedPayloadSchema {

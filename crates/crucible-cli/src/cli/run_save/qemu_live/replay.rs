@@ -103,10 +103,7 @@ pub(crate) fn run_live_qemu_artifact_replay(
     if let Some(evidence) = resources.bounded_scheduler_preemption {
         config = config.with_bounded_scheduler_preemption(evidence);
     }
-    validate_live_qemu_campaign_replay_contract(
-        contract,
-        resources.campaign_closure.is_some(),
-    )?;
+    validate_live_qemu_campaign_replay_contract(contract, resources.campaign_closure.is_some())?;
     match &contract.branch {
         LiveQemuReplayBranch::None => {}
         LiveQemuReplayBranch::Resume {
