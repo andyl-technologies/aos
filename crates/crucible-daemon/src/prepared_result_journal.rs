@@ -1043,44 +1043,95 @@ fn remove_orphan_directory(
     namespace: &crate::anchored_fs::AnchoredDirectory,
     root: &Path,
 ) -> Result<bool, PreparedResultJournalError> {
-    let anchored_root = namespace
-        .anchored_path_for(root)
-        .map_err(migration_guard_error)?;
-    match fs::symlink_metadata(&anchored_root) {
-        Ok(metadata) if metadata.file_type().is_dir() => {}
-        Ok(_) => return Err(PreparedResultJournalError::InvalidDirectory),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(source) => return Err(io_error("inspect-journal-orphan", &anchored_root, source)),
+    let Some((root_guard, entries)) = inventory_orphan_directory(namespace, root)? else {
+        return Ok(false);
+    };
+    remove_orphan_inventory(namespace, root_guard, entries)?;
+    Ok(true)
+}
+
+fn remove_orphan_inventory(
+    namespace: &crate::anchored_fs::AnchoredDirectory,
+    root_guard: crate::anchored_fs::AnchoredDirectory,
+    entries: Vec<crate::anchored_fs::AnchoredFile>,
+) -> Result<(), PreparedResultJournalError> {
+    for entry in entries {
+        root_guard
+            .remove_bound_file(&entry, "remove-journal-orphan-file")
+            .map_err(migration_guard_error)?;
     }
+    namespace
+        .remove_bound_directory(&root_guard, "remove-journal-directory")
+        .map_err(migration_guard_error)
+}
+
+fn inventory_orphan_directory(
+    namespace: &crate::anchored_fs::AnchoredDirectory,
+    root: &Path,
+) -> Result<
+    Option<(
+        crate::anchored_fs::AnchoredDirectory,
+        Vec<crate::anchored_fs::AnchoredFile>,
+    )>,
+    PreparedResultJournalError,
+> {
+    let logical_name = root
+        .file_name()
+        .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+    let anchored_namespace = namespace.anchored_path();
+    let mut actual_root = None;
+    for (index, entry) in fs::read_dir(&anchored_namespace)
+        .map_err(|source| io_error("read-journal-orphan-parent", &anchored_namespace, source))?
+        .enumerate()
+    {
+        if index >= crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES {
+            return Err(PreparedResultJournalError::RecoveryRequired);
+        }
+        let entry = entry.map_err(|source| {
+            io_error(
+                "read-journal-orphan-parent-entry",
+                &anchored_namespace,
+                source,
+            )
+        })?;
+        let name = entry.file_name();
+        if name == logical_name
+            || crate::anchored_fs::removal_original_name(&name).as_deref() == Some(logical_name)
+        {
+            if actual_root.replace(entry.path()).is_some() {
+                return Err(PreparedResultJournalError::RecoveryRequired);
+            }
+        }
+    }
+    let Some(actual_root) = actual_root else {
+        return Ok(None);
+    };
+    let root_guard = namespace
+        .open_inventory_child(&actual_root, "open-journal-orphan")
+        .map_err(migration_guard_error)?;
+    let anchored_root = root_guard.anchored_path();
     let mut entries = Vec::new();
     for entry in fs::read_dir(&anchored_root)
         .map_err(|source| io_error("read-journal-orphan", &anchored_root, source))?
         .take(MAX_ORPHAN_DIRECTORY_ENTRIES + 1)
     {
         let entry = entry.map_err(|source| io_error("read-journal-orphan", root, source))?;
-        let name = entry.file_name();
+        let actual_name = entry.file_name();
+        let name = crate::anchored_fs::removal_original_name(&actual_name)
+            .unwrap_or_else(|| actual_name.clone());
         let name = name
             .to_str()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?;
         if entries.len() == MAX_ORPHAN_DIRECTORY_ENTRIES || !is_owned_orphan_file(name) {
             return Err(PreparedResultJournalError::InvalidDirectory);
         }
-        entries.push(entry.path());
+        let authority = root_guard
+            .open_inventory_file(&entry.path(), "pin-journal-orphan-file")
+            .map_err(migration_guard_error)?
+            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+        entries.push(authority);
     }
-    for entry in entries {
-        let relative_name = entry
-            .file_name()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?
-            .to_str()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?
-            .to_owned();
-        namespace
-            .remove_file_if_present(&root.join(relative_name), "remove-journal-orphan-file")
-            .map_err(migration_guard_error)?;
-    }
-    namespace
-        .remove_directory_if_present(root, "remove-journal-directory")
-        .map_err(migration_guard_error)
+    Ok(Some((root_guard, entries)))
 }
 
 fn is_owned_orphan_file(name: &str) -> bool {
@@ -1199,13 +1250,13 @@ fn reject_unfenced_migration_entries(
                 source,
             )
         })?;
-        admit_runtime_entry(&mut entries, &mut bytes, &entry.path())?;
-        let name = entry.file_name();
+        let metadata = admit_runtime_entry(&mut entries, &mut bytes, &entry.path())?;
+        let actual_name = entry.file_name();
+        let name = crate::anchored_fs::removal_original_name(&actual_name)
+            .unwrap_or_else(|| actual_name.clone());
         let name = name
             .to_str()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|source| io_error("stat-runtime-journal-entry", &entry.path(), source))?;
         let file_type = metadata.file_type();
         if name == crate::operational_state_migration::receipt::ACTIVE_MARKER {
             if !file_type.is_file() {
@@ -1231,7 +1282,7 @@ fn reject_unfenced_migration_entries(
                 return Err(PreparedResultJournalError::InvalidDirectory);
             }
             let root = namespace
-                .open_child(&entry.path(), "open-runtime-journal-orphan")
+                .open_inventory_child(&entry.path(), "open-runtime-journal-orphan")
                 .map_err(migration_guard_error)?;
             inspect_runtime_journal_directory(&root, true, &mut entries, &mut bytes)?;
             continue;
@@ -1262,14 +1313,18 @@ fn inspect_runtime_journal_directory(
     {
         let entry =
             entry.map_err(|source| io_error("read-runtime-journal-entry", &anchored, source))?;
-        admit_runtime_entry(entries, bytes, &entry.path())?;
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|source| io_error("stat-runtime-journal-file", &entry.path(), source))?;
-        let name = entry
-            .file_name()
+        let metadata = admit_runtime_entry(entries, bytes, &entry.path())?;
+        let actual_name = entry.file_name();
+        let name = crate::anchored_fs::removal_original_name(&actual_name)
+            .unwrap_or_else(|| actual_name.clone())
             .to_str()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?
             .to_owned();
+        if crate::anchored_fs::removal_original_name(&actual_name).is_some() {
+            root.open_inventory_file(&entry.path(), "pin-runtime-removal-file")
+                .map_err(migration_guard_error)?
+                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+        }
         if !metadata.file_type().is_file()
             || metadata.len() > runtime_journal_file_limit(&name) as u64
         {
@@ -1292,7 +1347,7 @@ fn admit_runtime_entry(
     entries: &mut usize,
     bytes: &mut u64,
     path: &Path,
-) -> Result<(), PreparedResultJournalError> {
+) -> Result<fs::Metadata, PreparedResultJournalError> {
     *entries = entries
         .checked_add(1)
         .ok_or(PreparedResultJournalError::RecoveryRequired)?;
@@ -1310,7 +1365,7 @@ fn admit_runtime_entry(
     if *bytes > maximum {
         return Err(PreparedResultJournalError::RecoveryRequired);
     }
-    Ok(())
+    Ok(metadata)
 }
 
 fn runtime_journal_file_limit(name: &str) -> usize {
@@ -1630,6 +1685,10 @@ mod tests {
         for (marker, cut) in (0x71..=0x75).zip(0..=4) {
             let mut fixture = legacy_journal_fixture(marker);
             let root = journal_path(fixture.namespace.path(), fixture.key);
+            let legacy_payload =
+                fs::read(root.join(migration::JOURNAL_RESULT_FILE_V1)).expect("legacy payload");
+            let legacy_state =
+                fs::read(root.join(migration::JOURNAL_STATE_FILE_V1)).expect("legacy state");
             let payload = fixture
                 .result
                 .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
@@ -1642,6 +1701,28 @@ mod tests {
                 &payload,
             )
             .expect("current journal state");
+            let receipt_parent = TempDir::new().expect("receipt parent");
+            let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+                &receipt_parent.path().join("receipt"),
+            )
+            .expect("receipt directory");
+            let namespace =
+                crate::anchored_fs::AnchoredDirectory::new(fixture.namespace.path().to_owned())
+                    .expect("namespace authority");
+            migrate_prepared_result_journals(
+                &namespace,
+                &receipt,
+                &mut fixture.ledger,
+                8,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .expect("establish file migration receipt");
+            fs::remove_file(root.join(JOURNAL_RESULT_FILE)).expect("remove current payload");
+            fs::remove_file(root.join(JOURNAL_STATE_FILE)).expect("remove current state");
+            fs::write(root.join(migration::JOURNAL_RESULT_FILE_V1), legacy_payload)
+                .expect("restore legacy payload");
+            fs::write(root.join(migration::JOURNAL_STATE_FILE_V1), legacy_state)
+                .expect("restore legacy state");
             if cut >= 1 {
                 fs::write(root.join(".result-v2.pending"), &payload)
                     .expect("write interrupted result temporary");
@@ -1669,9 +1750,14 @@ mod tests {
                 fixture.open(),
                 Err(PreparedResultJournalError::RecoveryRequired)
             ));
-            let summary = fixture
-                .migrate()
-                .unwrap_or_else(|error| panic!("resume migration at cut {cut}: {error}"));
+            let summary = migrate_prepared_result_journals(
+                &namespace,
+                &receipt,
+                &mut fixture.ledger,
+                8,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .unwrap_or_else(|error| panic!("resume migration at cut {cut}: {error}"));
             assert_eq!(summary.migrated, 1);
             assert!(!root.join(migration::JOURNAL_RESULT_FILE_V1).exists());
             assert!(!root.join(migration::JOURNAL_STATE_FILE_V1).exists());
@@ -1702,8 +1788,20 @@ mod tests {
             TEST_PAYLOAD_LIMIT,
         )
         .expect("initial migration");
-        fs::write(root.join(migration::JOURNAL_STATE_FILE_V1), legacy_state)
-            .expect("simulate interrupted legacy cleanup");
+        let legacy_path = root.join(migration::JOURNAL_STATE_FILE_V1);
+        fs::write(&legacy_path, legacy_state).expect("restore legacy state before removal cut");
+        let metadata = fs::metadata(&legacy_path).expect("legacy state identity");
+        let quarantine = root.join(format!(
+            ".{}.removing-v1-{:x}-{:x}",
+            migration::JOURNAL_STATE_FILE_V1,
+            metadata.dev(),
+            metadata.ino()
+        ));
+        fs::rename(&legacy_path, &quarantine).expect("interrupt after removal rename");
+        assert!(matches!(
+            fixture.open(),
+            Err(PreparedResultJournalError::RecoveryRequired)
+        ));
 
         let resumed = migrate_prepared_result_journals(
             &namespace,
@@ -1714,7 +1812,29 @@ mod tests {
         )
         .expect("resume legacy cleanup");
         assert_eq!(resumed.migrated, 1);
-        assert!(!root.join(migration::JOURNAL_STATE_FILE_V1).exists());
+        assert!(!legacy_path.exists());
+        assert!(!quarantine.exists());
+
+        fs::write(&legacy_path, b"self-consistent forgery").expect("forged legacy state");
+        let metadata = fs::metadata(&legacy_path).expect("forged legacy identity");
+        let forged = root.join(format!(
+            ".{}.removing-v1-{:x}-{:x}",
+            migration::JOURNAL_STATE_FILE_V1,
+            metadata.dev(),
+            metadata.ino()
+        ));
+        fs::rename(&legacy_path, &forged).expect("publish forged removal state");
+        assert!(
+            migrate_prepared_result_journals(
+                &namespace,
+                &receipt,
+                &mut fixture.ledger,
+                8,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .is_err()
+        );
+        assert!(forged.exists());
     }
 
     #[test]
@@ -2266,6 +2386,43 @@ mod tests {
             .expect("idempotent orphan cleanup"),
             PreparedResultJournalCleanupDisposition::default()
         );
+    }
+
+    #[test]
+    fn public_and_startup_orphan_cleanup_reject_substituted_files_and_directories() {
+        for kind in ["file", "directory"] {
+            let namespace = TempDir::new().expect("journal namespace");
+            let key = semantic_key(kind.as_bytes());
+            let staged = staged_path(namespace.path(), key);
+            fs::create_dir(&staged).expect("staged directory");
+            if kind == "file" {
+                fs::write(staged.join(JOURNAL_RESULT_FILE), b"pinned").expect("staged result");
+            }
+            let namespace_guard = crate::anchored_fs::AnchoredDirectory::new(
+                namespace
+                    .path()
+                    .canonicalize()
+                    .expect("canonical namespace"),
+            )
+            .expect("namespace authority");
+            let (root_guard, entries) = inventory_orphan_directory(&namespace_guard, &staged)
+                .expect("inventory orphan")
+                .expect("orphan exists");
+
+            let moved = namespace.path().join(format!("moved-{kind}"));
+            if kind == "file" {
+                let result = staged.join(JOURNAL_RESULT_FILE);
+                fs::rename(&result, &moved).expect("move pinned file");
+                fs::write(&result, b"replacement").expect("replace file");
+            } else {
+                fs::rename(&staged, &moved).expect("move pinned directory");
+                fs::create_dir(&staged).expect("replace directory");
+            }
+
+            assert!(remove_orphan_inventory(&namespace_guard, root_guard, entries).is_err());
+            assert!(staged.exists());
+            assert!(moved.exists());
+        }
     }
 
     fn semantic_key(marker: &[u8]) -> AttemptExecutionKey {

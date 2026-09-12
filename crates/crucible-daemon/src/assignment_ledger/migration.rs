@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use crate::OperationalStateMigrationError;
@@ -233,6 +234,11 @@ struct ValidatedAttemptMigration {
     receipt: MigrationObjectReceipt,
 }
 
+struct StaleAttemptStaging {
+    authority: AnchoredFile,
+    receipt: MigrationObjectReceipt,
+}
+
 pub(super) fn migrate_attempt_records(
     ledger: &DirectoryAssignmentLedger,
     receipt_guard: &AnchoredDirectory,
@@ -246,6 +252,7 @@ pub(super) fn migrate_attempt_records(
     let mut inventory = AttemptInventory {
         records: Vec::new(),
         staging: Vec::new(),
+        removals: Vec::new(),
     };
     visit_bounded_ledger_inventory(
         &anchored_root,
@@ -257,21 +264,26 @@ pub(super) fn migrate_attempt_records(
             match entry {
                 AttemptInventoryEntry::Record(path) => inventory.records.push(path.to_owned()),
                 AttemptInventoryEntry::Staging(path) => inventory.staging.push(path.to_owned()),
+                AttemptInventoryEntry::Removal(path) => inventory.removals.push(path.to_owned()),
             }
             Ok(())
         },
     )?;
     inventory.records.sort();
     inventory.staging.sort();
+    inventory.removals.sort();
+    if !inventory.removals.is_empty() && existing.is_none() {
+        return Err(OperationalStateMigrationError::InvalidReceipt);
+    }
     let mut staging = BTreeMap::new();
     let mut stale_staging = Vec::new();
     for path in inventory.staging {
         let authority = root_guard
-            .open_regular_optional(&path, "pin-attempt-migration-staging")?
+            .open_inventory_file(&path, "pin-attempt-migration-staging")?
             .ok_or_else(|| corrupt("attempt-staging-disappeared"))?;
         let bytes = authority.read_bounded(MAX_LEDGER_RECORD_BYTES)?;
         let Ok((key, state)) = decode_attempt_state(&bytes) else {
-            stale_staging.push(authority);
+            stale_staging.push(staging_cleanup(&path, authority, &bytes)?);
             continue;
         };
         let destination = attempt_path_at(&anchored_root, key);
@@ -282,6 +294,13 @@ pub(super) fn migrate_attempt_records(
         {
             return Err(corrupt("attempt-staging-identity-mismatch").into());
         }
+    }
+    for path in inventory.removals {
+        let authority = root_guard
+            .open_inventory_file(&path, "pin-attempt-removal-state")?
+            .ok_or_else(|| corrupt("attempt-removal-state-disappeared"))?;
+        let bytes = authority.read_bounded(MAX_LEDGER_RECORD_BYTES)?;
+        stale_staging.push(staging_cleanup(&path, authority, &bytes)?);
     }
     let mut records = Vec::with_capacity(inventory.records.len());
 
@@ -354,10 +373,27 @@ pub(super) fn migrate_attempt_records(
         return Err(corrupt("attempt-staging-target-missing").into());
     }
 
-    let receipt_objects = records
+    let mut receipt_objects = records
         .iter()
         .map(|record| record.receipt.clone())
         .collect::<Vec<_>>();
+    if let Some(existing) = &existing {
+        for stale in &stale_staging {
+            if !existing.objects.contains(&stale.receipt) {
+                return Err(OperationalStateMigrationError::InvalidReceipt);
+            }
+        }
+        receipt_objects.extend(
+            existing
+                .objects
+                .iter()
+                .filter(|object| object.key.starts_with("cleanup/"))
+                .cloned(),
+        );
+    } else {
+        receipt_objects.extend(stale_staging.iter().map(|stale| stale.receipt.clone()));
+    }
+    receipt_objects.sort_by(|left, right| left.key.cmp(&right.key));
     let receipt = match existing {
         Some(existing) if existing.objects == receipt_objects => existing,
         Some(_) => return Err(OperationalStateMigrationError::InvalidReceipt),
@@ -370,8 +406,8 @@ pub(super) fn migrate_attempt_records(
     };
 
     receipt.verify_path_binding()?;
-    for authority in stale_staging {
-        root_guard.remove_bound_file(&authority, "remove-invalid-attempt-staging")?;
+    for stale in stale_staging {
+        root_guard.remove_bound_file(&stale.authority, "remove-invalid-attempt-staging")?;
     }
     let mut staged = Vec::new();
     for (record_index, record) in records.iter_mut().enumerate() {
@@ -420,7 +456,41 @@ pub(super) fn migrate_attempt_records(
     })
 }
 
+fn staging_cleanup(
+    path: &std::path::Path,
+    authority: AnchoredFile,
+    bytes: &[u8],
+) -> Result<StaleAttemptStaging, AssignmentLedgerError> {
+    let logical_name = authority
+        .removal_original_name()
+        .or_else(|| path.file_name().map(ToOwned::to_owned))
+        .ok_or_else(|| corrupt("attempt-staging-name-missing"))?;
+    let shard = path
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .ok_or_else(|| corrupt("attempt-staging-shard-missing"))?;
+    let identity = authenticated_id(
+        "crucible.assignment-migration-cleanup.v1",
+        &[shard.as_bytes(), logical_name.as_bytes()],
+    );
+    Ok(StaleAttemptStaging {
+        authority,
+        receipt: MigrationObjectReceipt {
+            key: format!("cleanup/{identity}"),
+            source_object_id: authenticated_id(
+                "crucible.assignment-migration-cleanup-source.v1",
+                &[bytes],
+            ),
+            output_object_id: authenticated_id(
+                "crucible.assignment-migration-cleanup-output.v1",
+                &[b"absent"],
+            ),
+        },
+    })
+}
+
 struct AttemptInventory {
     records: Vec<PathBuf>,
     staging: Vec<PathBuf>,
+    removals: Vec<PathBuf>,
 }

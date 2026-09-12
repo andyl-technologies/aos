@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::symlink;
 
 use crucible_campaign::{
@@ -663,8 +664,13 @@ fn assignment_migration_reconciles_bounded_orphan_staging() {
         .join(".staging-123-456");
     fs::write(&staging, b"interrupted staging bytes").expect("stale staging");
 
+    let receipt_parent = tempfile::tempdir().expect("receipt parent");
+    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+        &receipt_parent.path().join("receipt"),
+    )
+    .expect("receipt directory");
     let summary = ledger
-        .migrate_attempt_records_for_test(2)
+        .migrate_attempt_records(&receipt, 258, u64::MAX)
         .expect("resume with stale staging");
     assert_eq!(summary.migrated, 1);
     assert!(!staging.exists());
@@ -672,6 +678,40 @@ fn assignment_migration_reconciles_bounded_orphan_staging() {
         ledger.load_attempt(key).expect("migrated state"),
         Some(state)
     );
+
+    fs::write(&staging, b"interrupted staging bytes").expect("recreated stale staging");
+    let metadata = staging.metadata().expect("staging metadata");
+    let quarantine = staging.with_file_name(format!(
+        ".{}.removing-v1-{:x}-{:x}",
+        staging.file_name().expect("staging name").to_string_lossy(),
+        metadata.dev(),
+        metadata.ino()
+    ));
+    fs::rename(&staging, &quarantine).expect("interrupt staging removal");
+
+    ledger
+        .migrate_attempt_records(&receipt, 258, u64::MAX)
+        .expect("finish interrupted staging removal");
+    assert!(!quarantine.exists());
+
+    let forged_source = record
+        .parent()
+        .expect("attempt shard")
+        .join(".staging-forged");
+    fs::write(&forged_source, b"self-consistent forgery").expect("forged staging");
+    let metadata = forged_source.metadata().expect("forged metadata");
+    let forged = forged_source.with_file_name(format!(
+        ".staging-forged.removing-v1-{:x}-{:x}",
+        metadata.dev(),
+        metadata.ino()
+    ));
+    fs::rename(forged_source, &forged).expect("publish forged quarantine");
+    assert!(
+        ledger
+            .migrate_attempt_records(&receipt, 258, u64::MAX)
+            .is_err()
+    );
+    assert!(forged.exists());
 }
 
 #[test]

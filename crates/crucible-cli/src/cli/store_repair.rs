@@ -104,7 +104,7 @@ fn run_store_placement_repair(
 
     let report = StoreRepairReport {
         schema: STORE_REPAIR_REPORT_SCHEMA,
-        configuration: encode_bytes(&graph.configuration_id().as_bytes()),
+        configuration: encode_store_bytes(&graph.configuration_id().as_bytes()),
         content: content.encode(),
         source: source.as_str().to_owned(),
         source_storage_identity: source_snapshot.identity.to_hex(),
@@ -294,10 +294,6 @@ fn render_fields(report: &StoreRepairReport) -> [(&'static str, String); 12] {
         ("authenticated", report.authenticated.to_string()),
         ("schema", report.schema.to_owned()),
     ]
-}
-
-fn encode_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn repair_error(message: impl Into<String>) -> CliError {
