@@ -1927,10 +1927,10 @@ destination is already present after a publication-before-completion crash;
 focused restart and apply revalidation tests prove staging becomes eligible only
 after durable journal completion and remains readable from the authenticated
 destination after apply.
-The v1 plan and candidate encodings remain byte-stable and unreachable-only;
-v2 journals require matching plan/manifest versions. Wrapped cache, tier,
-write-back staging, shared required-path, same-path alias, strict-codec, and
-forged swapped-role regressions cover the policy boundary. This completes the
+Normal planning and journal admission accept only the graph-aware v2 plan and
+candidate encodings; earlier bytes fail closed. Wrapped cache, tier, write-back
+staging, shared required-path, same-path alias, strict-codec, and forged
+swapped-role regressions cover the policy boundary. This completes the
 automated T-CAM-5.5 graph and layer contract. Representative product flights
 remain under T-CAM-5.8.
 
@@ -1980,7 +1980,7 @@ state records and advance durably before cooperating mutation. Tests cover
 restart, object and ref ABA, early visitor failure, malformed/oversized input,
 valid staging-prefix names, and mutation exclusion while fenced. Store-graph
 administrative composition, the now-implemented fenced operational-ledger root
-snapshot, and a strict registered v1 plan header now compose store-graph,
+snapshot, and a strict registered v2 plan header now compose store-graph,
 root-manifest, candidate-manifest, blob, ref, and ledger hashes/generations into
 one immutable identity. Complete manifest/reachability planning,
 interruption-safe global-GC apply/recovery, composed store-graph administration,

@@ -14,21 +14,16 @@
 //!   content_id_length:u16be || content_id_utf8
 //! ```
 //!
-//! The v1 candidate format is:
+//! The candidate format is:
 //!
 //! ```text
-//! "crucible.campaign.gc-candidate-manifest.v1\0"
+//! "crucible.campaign.gc-candidate-manifest.v2\0"
 //! candidate_count:u64be
 //! repeated candidate_count times in strict
 //! (backend, kind tag, schema version, digest) order:
 //!   backend_length:u16be || backend_utf8
 //!   content_id_length:u16be || content_id_utf8
 //!   logical_length:u64be
-//! ```
-//!
-//! Version 2 appends an explicit reason to every entry:
-//!
-//! ```text
 //! reason:u8 # 0 unreachable, 1 reachable reconstructible cache
 //! if reason == 1:
 //!   required_backend_length:u16be || required_backend_utf8
@@ -49,13 +44,11 @@ use super::{
 
 const ROOT_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-root-manifest.v1\0";
 const ROOT_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-root-manifest.v1";
-const CANDIDATE_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-candidate-manifest.v1\0";
-const CANDIDATE_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-candidate-manifest.v1";
-const CANDIDATE_MANIFEST_V2_MAGIC: &[u8] = b"crucible.campaign.gc-candidate-manifest.v2\0";
-const CANDIDATE_MANIFEST_V2_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-candidate-manifest.v2";
+const CANDIDATE_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-candidate-manifest.v2\0";
+const CANDIDATE_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-candidate-manifest.v2";
 const MAX_CONTENT_ID_BYTES: usize = 128;
 
-/// Maximum number of roots or physical placements in one local v1 manifest.
+/// Maximum number of roots or physical placements in one local manifest.
 ///
 /// This matches the repository's complete-closure work bound. Implementations
 /// reject before retaining an additional entry once this bound is reached.
@@ -182,15 +175,6 @@ pub enum CampaignGcCandidateReason {
     },
 }
 
-/// Canonical candidate-manifest schema version.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CampaignGcCandidateManifestVersion {
-    /// Frozen unreachable-only manifest.
-    V1,
-    /// Policy-aware manifest with explicit deletion reasons.
-    V2,
-}
-
 impl CampaignGcCandidate {
     /// Builds one validated physical candidate entry.
     ///
@@ -274,7 +258,6 @@ impl CampaignGcCandidate {
 /// Canonical ordered physical-deletion candidate manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignGcCandidateManifest {
-    version: CampaignGcCandidateManifestVersion,
     candidates: Vec<CampaignGcCandidate>,
     logical_bytes: u64,
 }
@@ -287,35 +270,8 @@ impl CampaignGcCandidateManifest {
     /// Returns [`CampaignGcManifestError::EntryLimit`] for an excessive entry
     /// count, [`CampaignGcManifestError::DuplicateCandidate`] for the same
     /// physical placement twice, or [`CampaignGcManifestError::CountOverflow`]
-    /// if logical byte accounting overflows. Returns
-    /// [`CampaignGcManifestError::InvalidField`] if any candidate has a
-    /// reachable policy reason, which requires [`Self::new_policy_aware`].
-    pub fn new(candidates: Vec<CampaignGcCandidate>) -> Result<Self, CampaignGcManifestError> {
-        if candidates
-            .iter()
-            .any(|candidate| !matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable))
-        {
-            return Err(CampaignGcManifestError::InvalidField);
-        }
-        Self::new_with_version(CampaignGcCandidateManifestVersion::V1, candidates)
-    }
-
-    /// Builds a canonical policy-aware v2 candidate manifest.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignGcManifestError`] for the same bounds, duplicate, and
-    /// accounting failures as [`Self::new`].
-    pub fn new_policy_aware(
-        candidates: Vec<CampaignGcCandidate>,
-    ) -> Result<Self, CampaignGcManifestError> {
-        Self::new_with_version(CampaignGcCandidateManifestVersion::V2, candidates)
-    }
-
-    fn new_with_version(
-        version: CampaignGcCandidateManifestVersion,
-        mut candidates: Vec<CampaignGcCandidate>,
-    ) -> Result<Self, CampaignGcManifestError> {
+    /// if logical byte accounting overflows.
+    pub fn new(mut candidates: Vec<CampaignGcCandidate>) -> Result<Self, CampaignGcManifestError> {
         if candidates.len() > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
             return Err(CampaignGcManifestError::EntryLimit);
         }
@@ -332,7 +288,6 @@ impl CampaignGcCandidateManifest {
                 .ok_or(CampaignGcManifestError::CountOverflow)
         })?;
         Ok(Self {
-            version,
             candidates,
             logical_bytes,
         })
@@ -346,27 +301,22 @@ impl CampaignGcCandidateManifest {
     /// excessive count, malformed fields, noncanonical order, duplicate
     /// placements, accounting overflow, or trailing bytes.
     pub fn from_canonical_reader(reader: &mut dyn Read) -> Result<Self, CampaignGcManifestError> {
-        let version = read_candidate_manifest_version(reader)?;
+        require_magic(reader, CANDIDATE_MANIFEST_MAGIC)?;
         let count = read_count(reader)?;
         let mut candidates = Vec::with_capacity(count.min(4_096));
         for _ in 0..count {
             let backend = read_bounded_string(reader, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)?;
             let id = read_content_id(reader)?;
             let logical_length = read_u64(reader)?;
-            let candidate = match version {
-                CampaignGcCandidateManifestVersion::V1 => {
-                    CampaignGcCandidate::new(backend, id, logical_length)?
-                }
-                CampaignGcCandidateManifestVersion::V2 => match read_u8(reader)? {
-                    0 => CampaignGcCandidate::new(backend, id, logical_length)?,
-                    1 => CampaignGcCandidate::new_reachable_cache(
-                        backend,
-                        id,
-                        logical_length,
-                        read_bounded_string(reader, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)?,
-                    )?,
-                    _ => return Err(CampaignGcManifestError::InvalidField),
-                },
+            let candidate = match read_u8(reader)? {
+                0 => CampaignGcCandidate::new(backend, id, logical_length)?,
+                1 => CampaignGcCandidate::new_reachable_cache(
+                    backend,
+                    id,
+                    logical_length,
+                    read_bounded_string(reader, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)?,
+                )?,
+                _ => return Err(CampaignGcManifestError::InvalidField),
             };
             candidates.push(candidate);
         }
@@ -377,7 +327,7 @@ impl CampaignGcCandidateManifest {
         {
             return Err(CampaignGcManifestError::Noncanonical);
         }
-        let manifest = Self::new_with_version(version, candidates)?;
+        let manifest = Self::new(candidates)?;
         Ok(manifest)
     }
 
@@ -388,7 +338,7 @@ impl CampaignGcCandidateManifest {
     /// Returns [`CampaignGcManifestError::Io`] if the destination rejects any
     /// bytes. Construction already proves all length fields representable.
     pub fn write_canonical(&self, writer: &mut dyn Write) -> Result<(), CampaignGcManifestError> {
-        writer.write_all(self.magic())?;
+        writer.write_all(CANDIDATE_MANIFEST_MAGIC)?;
         writer.write_all(&entry_count(self.candidates.len())?.to_be_bytes())?;
         for candidate in &self.candidates {
             write_bounded_string(
@@ -398,17 +348,15 @@ impl CampaignGcCandidateManifest {
             )?;
             write_bounded_string(writer, &candidate.id().encode(), MAX_CONTENT_ID_BYTES)?;
             writer.write_all(&candidate.logical_length().to_be_bytes())?;
-            if self.version == CampaignGcCandidateManifestVersion::V2 {
-                match candidate.reason() {
-                    CampaignGcCandidateReason::Unreachable => writer.write_all(&[0])?,
-                    CampaignGcCandidateReason::ReachableCache { required_backend } => {
-                        writer.write_all(&[1])?;
-                        write_bounded_string(
-                            writer,
-                            required_backend,
-                            MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
-                        )?;
-                    }
+            match candidate.reason() {
+                CampaignGcCandidateReason::Unreachable => writer.write_all(&[0])?,
+                CampaignGcCandidateReason::ReachableCache { required_backend } => {
+                    writer.write_all(&[1])?;
+                    write_bounded_string(
+                        writer,
+                        required_backend,
+                        MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
+                    )?;
                 }
             }
         }
@@ -418,22 +366,20 @@ impl CampaignGcCandidateManifest {
     /// Returns the exact manifest identity and terminal counters.
     #[must_use]
     pub fn summary(&self) -> CampaignGcCandidateSetSummary {
-        let mut hasher = manifest_hasher(self.hash_domain());
-        hasher.update(self.magic());
+        let mut hasher = manifest_hasher(CANDIDATE_MANIFEST_HASH_DOMAIN);
+        hasher.update(CANDIDATE_MANIFEST_MAGIC);
         hasher.update(&(self.candidates.len() as u64).to_be_bytes());
         for candidate in &self.candidates {
             hash_bounded_string(&mut hasher, candidate.backend());
             hash_bounded_string(&mut hasher, &candidate.id().encode());
             hasher.update(&candidate.logical_length().to_be_bytes());
-            if self.version == CampaignGcCandidateManifestVersion::V2 {
-                match candidate.reason() {
-                    CampaignGcCandidateReason::Unreachable => {
-                        hasher.update(&[0]);
-                    }
-                    CampaignGcCandidateReason::ReachableCache { required_backend } => {
-                        hasher.update(&[1]);
-                        hash_bounded_string(&mut hasher, required_backend);
-                    }
+            match candidate.reason() {
+                CampaignGcCandidateReason::Unreachable => {
+                    hasher.update(&[0]);
+                }
+                CampaignGcCandidateReason::ReachableCache { required_backend } => {
+                    hasher.update(&[1]);
+                    hash_bounded_string(&mut hasher, required_backend);
                 }
             }
         }
@@ -472,7 +418,7 @@ impl CampaignGcCandidateManifest {
             .count() as u64
     }
 
-    /// Returns reachable cache candidates authorized by v2 policy.
+    /// Returns reachable cache candidates authorized by graph policy.
     #[must_use]
     pub fn reachable_cache_candidates(&self) -> u64 {
         self.candidates
@@ -484,12 +430,6 @@ impl CampaignGcCandidateManifest {
                 )
             })
             .count() as u64
-    }
-
-    /// Returns the exact canonical manifest schema.
-    #[must_use]
-    pub const fn version(&self) -> CampaignGcCandidateManifestVersion {
-        self.version
     }
 
     /// Iterates candidates in canonical physical order.
@@ -506,29 +446,15 @@ impl CampaignGcCandidateManifest {
             .partition_point(|candidate| candidate.backend() <= backend);
         &self.candidates[start..end]
     }
-
-    fn magic(&self) -> &'static [u8] {
-        match self.version {
-            CampaignGcCandidateManifestVersion::V1 => CANDIDATE_MANIFEST_MAGIC,
-            CampaignGcCandidateManifestVersion::V2 => CANDIDATE_MANIFEST_V2_MAGIC,
-        }
-    }
-
-    fn hash_domain(&self) -> &'static [u8] {
-        match self.version {
-            CampaignGcCandidateManifestVersion::V1 => CANDIDATE_MANIFEST_HASH_DOMAIN,
-            CampaignGcCandidateManifestVersion::V2 => CANDIDATE_MANIFEST_V2_HASH_DOMAIN,
-        }
-    }
 }
 
 /// Failure to construct, encode, or decode a canonical GC manifest.
 #[derive(Debug, Error)]
 pub enum CampaignGcManifestError {
-    /// A manifest contains more entries than the fixed v1 work bound.
+    /// A manifest contains more entries than the fixed work bound.
     #[error("campaign GC manifest entry limit exceeded")]
     EntryLimit,
-    /// A physical backend identifier violates the v1 grammar.
+    /// A physical backend identifier violates the fixed grammar.
     #[error("campaign GC manifest backend identifier is invalid")]
     InvalidBackendId,
     /// The same physical backend and content identity occurs more than once.
@@ -610,20 +536,6 @@ fn read_u8(reader: &mut dyn Read) -> Result<u8, CampaignGcManifestError> {
     let mut byte = [0_u8; 1];
     reader.read_exact(&mut byte)?;
     Ok(byte[0])
-}
-
-fn read_candidate_manifest_version(
-    reader: &mut dyn Read,
-) -> Result<CampaignGcCandidateManifestVersion, CampaignGcManifestError> {
-    let mut magic = vec![0_u8; CANDIDATE_MANIFEST_MAGIC.len()];
-    reader.read_exact(&mut magic)?;
-    if magic == CANDIDATE_MANIFEST_MAGIC {
-        Ok(CampaignGcCandidateManifestVersion::V1)
-    } else if magic == CANDIDATE_MANIFEST_V2_MAGIC {
-        Ok(CampaignGcCandidateManifestVersion::V2)
-    } else {
-        Err(CampaignGcManifestError::UnsupportedSchema)
-    }
 }
 
 fn read_u64(reader: &mut dyn Read) -> Result<u64, CampaignGcManifestError> {
