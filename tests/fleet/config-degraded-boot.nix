@@ -39,13 +39,19 @@
       aos.image.testArtifactRoots = [pkgs.test-http-server.expose];
 
       # The bundled Python HTTP server and registry fixtures bring this test's
-      # runtime closure to 810 MiB; production keeps its own limit.
-      aos.image.budgets.maxRuntimeClosureMiB = 832;
+      # runtime closure to 854 MiB. Its compressed disk remains below the
+      # adjacent 832 MiB cap; production keeps its own limits.
+      aos.image.budgets = {
+        maxRootMiB = 736;
+        maxRuntimeClosureMiB = 864;
+        maxDownloadMiB = 832;
+      };
 
       # Bundling installs the runtime projections. The in-guest publisher also
       # needs each package's registry-only expose and config outputs so it can
       # construct the authenticated fixture catalog.
       environment.systemPackages = [
+        pkgs.aos.apr
         pkgs.desired-config-test.expose
         pkgs.desired-config-test.config
         pkgs.desired-prune-test.expose

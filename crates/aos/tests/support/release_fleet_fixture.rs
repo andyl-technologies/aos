@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::{
-    NarCompression, NarInfoSigner, StaticNarInfoInput, render_static_narinfo,
+    NarCompression, NarInfoSigner, StaticNarInfoInput, nar_url, render_static_narinfo,
 };
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
@@ -136,7 +136,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
     for (platform, source) in &package_inputs {
         let package_bytes = fs::read(source)
             .with_context(|| format!("reading mounted package NAR {}", source.display()))?;
-        let relative = format!("releases/candidate/{RELEASE_VERSION}/packages/{platform}.nar");
+        let relative = fixture_nar_url(*platform, &package_bytes)?;
         let destination = output.join(&relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -971,8 +971,7 @@ fn narinfo_id(platform: Platform) -> String {
 
 fn fixture_narinfo(platform: Platform, nar_bytes: &[u8]) -> Result<String> {
     let digest = Sha256Digest::of_bytes(nar_bytes).to_string();
-    let store_path =
-        format!("/nix/store/00000000000000000000000000000000-release-fleet-{platform}");
+    let store_path = fixture_store_path(platform);
     let mut secret = [0_u8; 64];
     secret[..RELEASE_SEED.len()].copy_from_slice(&RELEASE_SEED);
     let encoded = base64::engine::general_purpose::STANDARD.encode(secret);
@@ -993,6 +992,15 @@ fn fixture_narinfo(platform: Platform, nar_bytes: &[u8]) -> Result<String> {
         "/nix/store",
         Some(&signer),
     )
+}
+
+fn fixture_nar_url(platform: Platform, nar_bytes: &[u8]) -> Result<String> {
+    let digest = Sha256Digest::of_bytes(nar_bytes).to_string();
+    nar_url(&fixture_store_path(platform), &digest, NarCompression::None)
+}
+
+fn fixture_store_path(platform: Platform) -> String {
+    format!("/nix/store/00000000000000000000000000000000-release-fleet-{platform}")
 }
 
 fn digest(value: &str) -> Sha256Digest {
