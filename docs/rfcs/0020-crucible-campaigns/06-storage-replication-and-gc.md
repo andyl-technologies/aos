@@ -868,6 +868,18 @@ treating the queue as an archival receipt. Reads prefer staging and fall back
 to the destination only on exact absence. A bounded flush visits node and
 `ContentId` order, idempotently publishes the destination, and durably appends
 completion before the pending root disappears.
+Policy-aware GC treats every pending journal ID as staging ownership even when
+destination publication survived a crash before the completion append. Planning
+does not select any cache placement for that ID, and apply holds the journal
+fence while rejecting a plan whose cache candidate has since become pending.
+Plan and apply require write-back retention authority unconditionally; graphs
+without write-back nodes return an authenticated empty fence.
+The independently composed engines are crate-private. Public callers receive
+only the stopped-owner `CampaignLocalStoreGcAuthority`, which binds the
+repository, graph administration, and write-back journal owner together.
+Graph admission and its administration capability also share a private
+build-instance token; equal canonical configuration IDs cannot substitute an
+independently built memory or external capability graph.
 
 The journal has fixed pending-object and aggregate logical-byte ceilings, a
 64-MiB physical log ceiling, checksummed records, durable append, and atomic

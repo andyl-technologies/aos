@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Cursor;
 use std::sync::{
-    Arc, Mutex, MutexGuard,
+    Arc, LazyLock, Mutex, MutexGuard,
     mpsc::{self, Sender, TryRecvError},
 };
 use std::thread;
@@ -61,6 +61,25 @@ use crate::{
     acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
     reconcile_pending_finding_candidates,
 };
+
+static EMPTY_WRITE_BACK: LazyLock<StoreGraph> = LazyLock::new(|| {
+    let node = StoreNodeId::new("gc-test-empty-write-back").expect("empty retention node");
+    StoreGraph::build(StoreGraphConfig {
+        root: node.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            node,
+            StoreNodeSpec::Memory {
+                max_logical_bytes: 1,
+            },
+        )]),
+    })
+    .expect("empty write-back retention graph")
+});
+
+fn empty_write_back() -> &'static dyn crucible_cas::content_store::WriteBackRetentionAdmin {
+    &*EMPTY_WRITE_BACK
+}
 
 #[test]
 fn provisional_publication_roots_tolerate_only_an_absent_root() {
@@ -978,7 +997,7 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         hash("crucible.test.gc.store-graph.v1", 9),
         &[physical],
@@ -1106,7 +1125,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -1179,7 +1198,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -1210,7 +1229,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -1250,16 +1269,16 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
 }
 
 #[test]
-fn policy_aware_gc_evicts_write_back_staging_only_after_transfer_completion() {
+fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion() {
     let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
     let staging_root = temp.path().join("staging");
     let destination_root = temp.path().join("destination");
     let graph_root = StoreNodeId::new("write-back").expect("root node");
     let staging = StoreNodeId::new("staging").expect("staging node");
     let destination = StoreNodeId::new("destination").expect("destination node");
-    let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+    let config = StoreGraphConfig {
         root: graph_root.clone(),
-        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        admitted_kinds: BTreeSet::from([ObjectKind::ExactManifest, ObjectKind::Trace]),
         nodes: BTreeMap::from([
             (
                 graph_root,
@@ -1284,8 +1303,8 @@ fn policy_aware_gc_evicts_write_back_staging_only_after_transfer_completion() {
                 },
             ),
         ]),
-    })
-    .expect("write-back graph");
+    };
+    let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("write-back graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(graph.clone(), refs.clone());
@@ -1294,47 +1313,84 @@ fn policy_aware_gc_evicts_write_back_staging_only_after_transfer_completion() {
     graph
         .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
         .expect("stage live object");
+    let parent = ContentEnvelope::new(
+        "crucible.test.gc-write-back-parent",
+        1,
+        BTreeSet::from([ContentChild::new("trace", live_id).expect("write-back child reference")]),
+        b"reachable write-back parent".to_vec(),
+    )
+    .expect("write-back parent envelope");
+    let parent_bytes = parent.canonical_bytes();
+    let parent_id = parent.content_id(ObjectKind::ExactManifest);
+    graph
+        .put_if_absent(parent_id, &BlobHandle::from_bytes(parent_bytes.clone()))
+        .expect("stage retained parent");
     refs.compare_exchange(
         &RefName::new("retained/write-back-live").expect("retained ref"),
         None,
-        live_id,
+        parent_id,
     )
     .expect("publish retained root");
+
+    // Simulate a crash after destination publication but before the pending
+    // journal entry is durably completed.
+    let destination_store = DirectoryBlobBackend::new("destination-check", &destination_root);
+    destination_store
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("publish child destination before journal completion");
+    destination_store
+        .put_if_absent(parent_id, &BlobHandle::from_bytes(parent_bytes))
+        .expect("publish parent destination before journal completion");
+    assert_eq!(
+        destination_store
+            .read(live_id, None)
+            .expect("read published destination")
+            .read_all(1024)
+            .expect("authenticate published destination"),
+        live_bytes
+    );
+    drop(repository);
+    drop(graph);
+    drop(admin);
+
+    let (graph, admin) = StoreGraph::build_with_admin(config).expect("restart write-back graph");
+    let graph = Arc::new(graph);
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
 
     let mut ledger = MemoryAssignmentLedger::default();
     let before_transfer = super::plan_single_host_campaign_gc(
         &repository,
         refs.as_ref(),
         &mut ledger,
-        Some(graph.as_ref()),
+        graph.as_ref(),
         None,
         &admin,
     )
-    .expect("plan while destination is missing");
+    .expect("plan recovered pending transfer with destination present");
     assert_eq!(before_transfer.reachable_cache_candidates(), 0);
     assert!(before_transfer.candidates().is_empty());
 
     let flush = graph
-        .flush_write_back(1)
+        .flush_write_back(2)
         .expect("complete destination transfer");
-    assert_eq!(flush.completed(), 1);
+    assert_eq!(flush.completed(), 2);
     assert_eq!(flush.pending(), 0);
 
     let prepared = super::plan_single_host_campaign_gc(
         &repository,
         refs.as_ref(),
         &mut ledger,
-        Some(graph.as_ref()),
+        graph.as_ref(),
         None,
         &admin,
     )
     .expect("plan completed staging eviction");
-    assert_eq!(prepared.reachable_cache_candidates(), 1);
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
     let candidate = prepared
         .candidates()
         .iter()
-        .next()
-        .expect("staging candidate");
+        .find(|candidate| candidate.id() == live_id)
+        .expect("staging child candidate");
     assert_eq!(candidate.backend(), staging.as_str());
     assert!(matches!(
         candidate.reason(),
@@ -1345,20 +1401,66 @@ fn policy_aware_gc_evicts_write_back_staging_only_after_transfer_completion() {
     let journal_root = temp.path().join("gc-journal");
     let (mut journal, _) =
         DirectoryCampaignGcJournal::create(journal_root, &prepared).expect("create GC journal");
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("reintroduce pending ownership after planning");
+    let error = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        graph.as_ref(),
+        None,
+        &admin,
+    )
+    .expect_err("reject cache eviction while write-back is pending again");
+    assert!(matches!(
+        error,
+        CampaignGcApplyError::CandidateBecameWriteBackPending { backend, id }
+            if backend == staging.as_str() && id == live_id
+    ));
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
+    let staging_store = DirectoryBlobBackend::new("staging-check", &staging_root);
+    assert!(
+        staging_store
+            .contains(live_id)
+            .expect("pending staging retained")
+    );
+
+    let flush = graph
+        .flush_write_back(1)
+        .expect("complete reintroduced destination transfer");
+    assert_eq!(flush.completed(), 1);
+    assert_eq!(flush.pending(), 0);
+    drop(journal);
+
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        graph.as_ref(),
+        None,
+        &admin,
+    )
+    .expect("replan after durable journal completion");
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("gc-journal-after-completion"),
+        &prepared,
+    )
+    .expect("create post-completion GC journal");
     let report = super::apply_single_host_campaign_gc(
         &mut journal,
         &repository,
         refs.as_ref(),
         &mut ledger,
-        Some(graph.as_ref()),
+        graph.as_ref(),
         None,
         &admin,
     )
     .expect("apply staging eviction");
-    assert_eq!(report.reachable_cache_candidates(), 1);
+    assert_eq!(report.reachable_cache_candidates(), 2);
 
-    let staging_store = DirectoryBlobBackend::new("staging-check", staging_root);
-    let destination_store = DirectoryBlobBackend::new("destination-check", destination_root);
     assert!(!staging_store.contains(live_id).expect("staging absence"));
     assert!(
         destination_store
@@ -1371,6 +1473,110 @@ fn policy_aware_gc_evicts_write_back_staging_only_after_transfer_completion() {
             .expect("read retained destination")
             .read_all(1024)
             .expect("authenticate retained destination"),
+        live_bytes
+    );
+}
+
+#[test]
+fn policy_aware_gc_evicts_a_promoted_non_write_tier() {
+    let temp = tempfile::TempDir::new().expect("temporary tiered GC root");
+    let cache_root = temp.path().join("cache");
+    let source_root = temp.path().join("source");
+    let root = StoreNodeId::new("tiered").expect("root node");
+    let cache = StoreNodeId::new("cache").expect("cache tier");
+    let source = StoreNodeId::new("source").expect("write tier");
+    let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::Tiered {
+                    tiers: vec![cache.clone(), source.clone()],
+                    write_tier: 1,
+                    promote_reads: true,
+                },
+            ),
+            (
+                cache.clone(),
+                StoreNodeSpec::Directory {
+                    root: cache_root.clone(),
+                },
+            ),
+            (
+                source.clone(),
+                StoreNodeSpec::Directory {
+                    root: source_root.clone(),
+                },
+            ),
+        ]),
+    })
+    .expect("tiered graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live_bytes = b"reachable promoted tier object".to_vec();
+    let live_id = ContentId::for_bytes(ObjectKind::Trace, 1, &live_bytes);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("store in write tier");
+    refs.compare_exchange(
+        &RefName::new("retained/tiered-live").expect("retained ref"),
+        None,
+        live_id,
+    )
+    .expect("publish retained root");
+    graph
+        .read(live_id, None)
+        .expect("read and promote from write tier")
+        .read_all(1024)
+        .expect("authenticate promoted object");
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        empty_write_back(),
+        None,
+        &admin,
+    )
+    .expect("plan non-write tier eviction");
+    assert_eq!(prepared.reachable_cache_candidates(), 1);
+    assert!(matches!(
+        prepared.candidates().iter().next().map(|candidate| (
+            candidate.backend(),
+            candidate.reason()
+        )),
+        Some((backend, CampaignGcCandidateReason::ReachableCache { required_backend }))
+            if backend == cache.as_str() && required_backend == source.as_str()
+    ));
+
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &prepared)
+            .expect("create tiered GC journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        empty_write_back(),
+        None,
+        &admin,
+    )
+    .expect("apply non-write tier eviction");
+    assert_eq!(report.reachable_cache_candidates(), 1);
+
+    let cache_store = DirectoryBlobBackend::new("cache-check", cache_root);
+    let source_store = DirectoryBlobBackend::new("source-check", source_root);
+    assert!(!cache_store.contains(live_id).expect("cache absence"));
+    assert!(source_store.contains(live_id).expect("write-tier presence"));
+    assert_eq!(
+        graph
+            .read(live_id, None)
+            .expect("read retained write tier")
+            .read_all(1024)
+            .expect("authenticate retained write tier"),
         live_bytes
     );
 }
@@ -1447,7 +1653,7 @@ fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -1572,7 +1778,7 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -1600,7 +1806,13 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
             .expect("create pending finding GC journal");
     let report = apply_single_host_campaign_gc(
         &mut journal,
-        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        CampaignGcApplySources::new(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            empty_write_back(),
+            None,
+        ),
         graph,
         &[physical],
     )
@@ -1626,7 +1838,7 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         &restarted_repository,
         refs.as_ref(),
         &mut restarted_ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -1805,7 +2017,7 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
         &repository,
         refs.as_ref(),
         &mut replayed_ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -1823,7 +2035,13 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
             .expect("create post-acknowledgement GC journal");
     apply_single_host_campaign_gc(
         &mut journal,
-        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut replayed_ledger, None, None),
+        CampaignGcApplySources::new(
+            &repository,
+            refs.as_ref(),
+            &mut replayed_ledger,
+            empty_write_back(),
+            None,
+        ),
         graph,
         &[physical],
     )
@@ -2027,7 +2245,7 @@ fn publishing_capture_roots_survive_restart_gc_and_are_reclaimed_after_cancellat
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -2041,7 +2259,13 @@ fn publishing_capture_roots_survive_restart_gc_and_are_reclaimed_after_cancellat
         .expect("capture physical store");
     apply_single_host_campaign_gc(
         &mut journal,
-        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        CampaignGcApplySources::new(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            empty_write_back(),
+            None,
+        ),
         graph,
         &[physical],
     )
@@ -2096,7 +2320,7 @@ fn publishing_capture_roots_survive_restart_gc_and_are_reclaimed_after_cancellat
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -2110,7 +2334,13 @@ fn publishing_capture_roots_survive_restart_gc_and_are_reclaimed_after_cancellat
         .expect("capture physical store");
     apply_single_host_campaign_gc(
         &mut journal,
-        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        CampaignGcApplySources::new(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            empty_write_back(),
+            None,
+        ),
         graph,
         &[physical],
     )
@@ -2184,7 +2414,7 @@ fn finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order(
             &gc_repository,
             gc_refs.as_ref(),
             &mut gc_ledger,
-            None,
+            empty_write_back(),
             None,
             hash("crucible.test.finding-lock-order.v1", 0x77),
             &[physical],
@@ -2396,7 +2626,7 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         CampaignGcHotCheckpointRoots::new(&hot),
         graph,
         &[physical],
@@ -2417,7 +2647,7 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         CampaignGcHotCheckpointRoots::new(&hot),
         graph,
         &[physical],
@@ -2442,7 +2672,7 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
                 &repository,
                 refs.as_ref(),
                 &mut ledger,
-                None,
+                empty_write_back(),
                 None,
                 Some(&hot),
             ),
@@ -2533,7 +2763,7 @@ fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         graph,
         &[physical],
@@ -2587,7 +2817,7 @@ fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
                 &repository,
                 refs.as_ref(),
                 &mut ledger,
-                None,
+                empty_write_back(),
                 CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers).into_sources(),
             ),
             graph,
@@ -2684,7 +2914,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        Some(graph.as_ref()),
+        graph.as_ref(),
         None,
         graph_id,
         &[archive_physical, staging_physical],
@@ -2717,7 +2947,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
                 &repository,
                 refs.as_ref(),
                 &mut ledger,
-                Some(graph.as_ref()),
+                graph.as_ref(),
                 None,
             ),
             graph_id,
@@ -2882,7 +3112,7 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        Some(graph.as_ref()),
+        graph.as_ref(),
         None,
         graph_id,
         &[destination_physical, staging_physical],
@@ -2917,7 +3147,7 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
             &repository,
             refs.as_ref(),
             &mut ledger,
-            Some(graph.as_ref()),
+            graph.as_ref(),
             None,
         ),
         graph_id,
@@ -3082,7 +3312,7 @@ fn apply_revalidates_every_basis_then_deletes_and_completes() {
             &fixture.repository,
             fixture.refs.as_ref(),
             &mut fixture.ledger,
-            None,
+            empty_write_back(),
             None,
         ),
         fixture.graph,
@@ -3104,7 +3334,7 @@ fn apply_revalidates_every_basis_then_deletes_and_completes() {
             &fixture.repository,
             fixture.refs.as_ref(),
             &mut fixture.ledger,
-            None,
+            empty_write_back(),
             None,
         ),
         fixture.graph,
@@ -3137,7 +3367,7 @@ fn cancelled_apply_fails_before_basis_checks_and_preserves_every_candidate() {
                 &fixture.repository,
                 fixture.refs.as_ref(),
                 &mut fixture.ledger,
-                None,
+                empty_write_back(),
                 None,
             ),
             wrong_graph,
@@ -3180,7 +3410,7 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
                 &ref_fixture.repository,
                 ref_fixture.refs.as_ref(),
                 &mut ref_fixture.ledger,
-                None,
+                empty_write_back(),
                 None,
             ),
             ref_fixture.graph,
@@ -3212,7 +3442,7 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
                 &blob_fixture.repository,
                 blob_fixture.refs.as_ref(),
                 &mut blob_fixture.ledger,
-                None,
+                empty_write_back(),
                 None,
             ),
             blob_fixture.graph,
@@ -3242,7 +3472,7 @@ fn stale_ledger_generation_fails_before_deletion() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -3257,7 +3487,13 @@ fn stale_ledger_generation_fails_before_deletion() {
     assert!(matches!(
         apply_single_host_campaign_gc(
             &mut journal,
-            CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None,),
+            CampaignGcApplySources::new(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                empty_write_back(),
+                None,
+            ),
             graph,
             &[physical],
         ),
@@ -3286,7 +3522,7 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
                 &fixture.repository,
                 fixture.refs.as_ref(),
                 &mut fixture.ledger,
-                None,
+                empty_write_back(),
                 None,
             ),
             fixture.graph,
@@ -3303,7 +3539,7 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
                 &fixture.repository,
                 fixture.refs.as_ref(),
                 &mut fixture.ledger,
-                None,
+                empty_write_back(),
                 None,
             ),
             fixture.graph,
@@ -3355,7 +3591,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -3380,7 +3616,13 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         .expect("reopened physical store");
     let report = apply_single_host_campaign_gc(
         &mut journal,
-        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        CampaignGcApplySources::new(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            empty_write_back(),
+            None,
+        ),
         graph,
         &[physical],
     )
@@ -3444,7 +3686,7 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3487,7 +3729,7 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3594,7 +3836,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3630,7 +3872,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3726,7 +3968,7 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3758,7 +4000,7 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3834,7 +4076,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3881,7 +4123,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
             &repository,
             refs.as_ref(),
             &mut ledger,
-            None,
+            empty_write_back(),
             None,
             &different_admin,
         ),
@@ -3912,7 +4154,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         &admin,
     )
@@ -3956,7 +4198,7 @@ fn apply_fixture(orphan_count: u8) -> ApplyFixture {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         graph,
         &[physical],
@@ -4081,7 +4323,7 @@ fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        empty_write_back(),
         None,
         hash("crucible.test.gc.journal-store-graph.v1", graph_byte),
         &[physical],
