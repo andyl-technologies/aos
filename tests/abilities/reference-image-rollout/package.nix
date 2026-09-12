@@ -4,10 +4,14 @@
   mkDerivation,
   rolloutRuntime,
   transitionTransform ? transition: transition,
+  qualificationCell ? false,
 }: let
   inherit (lib.abilities) schemas;
 
-  providerArtifact = ./providers/rollout;
+  providerArtifact =
+    if qualificationCell
+    then ./providers/rollout-qualification
+    else ./providers/rollout;
 
   interface = name: descriptor: {
     inherit name descriptor;
@@ -48,6 +52,24 @@
         maximum = 9007199254740991;
       };
       strategy = schemas.enum ["single-host-ab-v1"];
+    };
+    optional = [];
+  };
+  qualificationRequest = schemas.record {
+    fields = {
+      method = schemas.enum [
+        "drain"
+        "hold"
+        "observe-boot"
+        "observe-health"
+        "prepare"
+        "retain"
+        "retire"
+        "rollout"
+        "select"
+        "withdraw"
+      ];
+      request = rolloutRequest;
     };
     optional = [];
   };
@@ -133,7 +155,7 @@
       indeterminate = "reconcile";
     };
   };
-  rolloutProvider = import ./providers/rollout/default.nix;
+  rolloutProvider = import (providerArtifact + "/default.nix");
 
   abilityPackage = {
     requiredFeatures = ["ab-image-rollout-v1" "abilities-v1"];
@@ -149,7 +171,10 @@
           interface = "aos.ab-image-rollout";
           abi = 1;
           requestSchema = schemas.boolean;
-          configurationSchema = rolloutRequest;
+          configurationSchema =
+            if qualificationCell
+            then qualificationRequest
+            else rolloutRequest;
           outputs.machine = output schemas.resourceReference "planning" "persistent";
           methods = {};
           inherit lifecycle;

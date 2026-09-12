@@ -4,12 +4,14 @@
   pkgs,
   guestTools ? false,
   transitionTransform ? transition: transition,
+  qualificationCell ? false,
 }: let
   package = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     rolloutRuntime = pkgs.aos.packageRuntime;
     inherit transitionTransform;
+    inherit qualificationCell;
   };
   orderedPackages = [
     {

@@ -73,10 +73,11 @@ struct ComposedRollout {
     bindings: Vec<aos_ability_model::Binding>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ActivationMode {
     Rollout,
     Retire,
+    Qualification(String),
 }
 
 impl ActivationMode {
@@ -84,16 +85,39 @@ impl ActivationMode {
         match value {
             "rollout" => Ok(Self::Rollout),
             "retire" => Ok(Self::Retire),
+            value if value.starts_with("qualification-") => {
+                let method = value.trim_start_matches("qualification-");
+                ensure!(
+                    matches!(
+                        method,
+                        "drain"
+                            | "hold"
+                            | "observe-boot"
+                            | "observe-health"
+                            | "prepare"
+                            | "retain"
+                            | "retire"
+                            | "rollout"
+                            | "select"
+                            | "withdraw"
+                    ),
+                    "unknown rollout qualification method {method:?}"
+                );
+                Ok(Self::Qualification(method.to_string()))
+            }
             _ => bail!("unknown rollout activation mode {value:?}"),
         }
     }
 }
 
-/// Generates retained structured-activation inputs for a rollout or retirement.
+/// Generates retained structured-activation inputs for a rollout, retirement,
+/// or exact-method qualification cell.
 ///
 /// Arguments are `OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR
-/// --mode rollout|retire`. The request JSON carries one exact
-/// [`AbRolloutRequest`].
+/// --mode MODE`. `MODE` is `rollout`, `retire`, or
+/// `qualification-{method}`. The request JSON carries one exact
+/// [`AbRolloutRequest`]; qualification changes only graph selection and keeps
+/// the production terminal handler and native resource mapping.
 ///
 /// # Errors
 ///
@@ -105,7 +129,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         || arguments[4] != "--mode"
     {
         bail!(
-            "usage: aos-release-fleet-fixture rollout-activation OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR --mode rollout|retire"
+            "usage: aos-release-fleet-fixture rollout-activation OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR --mode rollout|retire|qualification-METHOD"
         );
     }
 
@@ -131,9 +155,9 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     fs::create_dir_all(output)
         .with_context(|| format!("creating rollout fixture output {}", output.display()))?;
     let packages = load_verified_package()?;
-    let fixture = RolloutFixture::new(&packages)?;
-    let composed = fixture.compose(&request, mode)?;
-    let native_resource_map = rollout_resource_map(&composed, &request, mode)?;
+    let fixture = RolloutFixture::new(&packages, &mode)?;
+    let composed = fixture.compose(&request, &mode)?;
+    let native_resource_map = rollout_resource_map(&composed, &request, &mode)?;
     let platform_policy = platform_policy(&composed)?;
     let desired_document = ActivationDesiredInputDocument {
         schema: ActivationDesiredInputDocument::SCHEMA.to_string(),
@@ -186,7 +210,7 @@ fn load_verified_package() -> Result<VerifiedAbilityPackageSet> {
 }
 
 impl RolloutFixture {
-    fn new(verified: &VerifiedAbilityPackageSet) -> Result<Self> {
+    fn new(verified: &VerifiedAbilityPackageSet, mode: &ActivationMode) -> Result<Self> {
         let packages = verified.iter().collect::<Vec<_>>();
         let [verified_package] = packages.as_slice() else {
             bail!(
@@ -201,7 +225,7 @@ impl RolloutFixture {
         let package = verified_package.package().clone();
         let package_digest = package.content_digest()?;
 
-        let high_document = high_level_interface()?;
+        let high_document = high_level_interface(matches!(mode, ActivationMode::Qualification(_)))?;
         let effects_document = ab_image_rollout_interface()?;
         let high_interface = high_document.interface_key()?;
         let effects_interface = effects_document.interface_key()?;
@@ -317,7 +341,7 @@ impl RolloutFixture {
     fn compose(
         mut self,
         request: &AbRolloutRequest,
-        mode: ActivationMode,
+        mode: &ActivationMode,
     ) -> Result<ComposedRollout> {
         let seed = self.seed(request, mode)?;
         let mut policies = Vec::new();
@@ -349,14 +373,22 @@ impl RolloutFixture {
     fn seed(
         &self,
         request: &AbRolloutRequest,
-        mode: ActivationMode,
+        mode: &ActivationMode,
     ) -> Result<DesiredStateDocument> {
-        let instances = if mode == ActivationMode::Rollout {
+        let instances = if !matches!(mode, ActivationMode::Retire) {
+            let configuration = match mode {
+                ActivationMode::Qualification(method) => serde_json::json!({
+                    "method": method,
+                    "request": request,
+                }),
+                ActivationMode::Rollout => serde_json::to_value(request)?,
+                ActivationMode::Retire => unreachable!("retirement has no desired instance"),
+            };
             vec![DesiredInstance {
                 instance: self.provider.clone(),
                 package: self.package_digest,
                 enabled: true,
-                configuration: Some(AbilityValue::new(serde_json::to_value(request)?)?),
+                configuration: Some(AbilityValue::new(configuration)?),
             }]
         } else {
             Vec::new()
@@ -472,9 +504,9 @@ impl RolloutFixture {
 fn rollout_resource_map(
     composed: &ComposedRollout,
     request: &AbRolloutRequest,
-    mode: ActivationMode,
+    mode: &ActivationMode,
 ) -> Result<NativeResourceMap> {
-    let mappings = if mode == ActivationMode::Rollout {
+    let mappings = if !matches!(mode, ActivationMode::Retire) {
         let resource = composed
             .desired_state
             .resources
@@ -531,7 +563,37 @@ fn platform_policy(composed: &ComposedRollout) -> Result<CurrentPlatformPolicyDo
     })
 }
 
-fn high_level_interface() -> Result<InterfaceDocument> {
+fn high_level_interface(qualification: bool) -> Result<InterfaceDocument> {
+    let configuration = if qualification {
+        ValueSchema::Record {
+            fields: BTreeMap::from([
+                (
+                    key("method")?,
+                    ValueSchema::StringEnum {
+                        values: [
+                            "drain",
+                            "hold",
+                            "observe-boot",
+                            "observe-health",
+                            "prepare",
+                            "retain",
+                            "retire",
+                            "rollout",
+                            "select",
+                            "withdraw",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    },
+                ),
+                (key("request")?, ab_image_rollout_request_schema()?),
+            ]),
+            optional_fields: Vec::new(),
+        }
+    } else {
+        ab_image_rollout_request_schema()?
+    };
     Ok(InterfaceDocument {
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
@@ -539,7 +601,7 @@ fn high_level_interface() -> Result<InterfaceDocument> {
             name: InterfaceName::new(HIGH_LEVEL_INTERFACE)?,
             abi: NonZeroU32::new(1).context("rollout interface ABI must be nonzero")?,
             request: ValueSchema::Boolean,
-            configuration: Some(ab_image_rollout_request_schema()?),
+            configuration: Some(configuration),
             outputs: BTreeMap::from([(
                 key("machine")?,
                 OutputDescriptor {
