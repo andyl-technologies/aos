@@ -14,6 +14,7 @@
   libunistring,
   libxcrypt,
   readline,
+  ncurses,
   lib,
   stdenv,
   buildPackages,
@@ -37,6 +38,8 @@ in
     # links it directly, so retain its runtime path through reference scrubbing.
     runtimeDeps =
       [gc gmp libffi libtool libunistring libxcrypt readline]
+      # The Linux readline extension links ncurses directly.
+      ++ lib.optionals stdenv.hostPlatform.isLinux [ncurses]
       ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [libatomic_ops];
     propagatedDeps =
       [gc gmp libffi libtool libunistring libxcrypt readline]
@@ -96,14 +99,17 @@ in
           + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux") ''
             # QEMU user mode deliberately ignores memory resource limits.
             # The resource-limits package check runs these unchanged under a
-            # target kernel; running them here allocates without bound.
-            printf '\nTESTS := $(filter-out test-out-of-memory test-stack-overflow,$(TESTS))\n' \
+            # target kernel; running them here allocates without bound. Its
+            # forked signal-delivery check also requires target-kernel signal
+            # semantics that user-mode emulation does not preserve.
+            printf '\nTESTS := $(filter-out test-out-of-memory test-stack-overflow test-sigaction-fork,$(TESTS))\n' \
               >> test-suite/standalone/Makefile
 
             # User-mode vfork becomes fork, losing glibc's shared spawn errno;
             # spawned native tools also report the build machine architecture.
-            # Run the complete POSIX suite in the same target-kernel check.
-            printf '\nTESTS := $(filter-out tests/posix.test,$(TESTS))\n' \
+            # QEMU's plugin state also cannot survive the REPL server's fork.
+            # Run both suites in the same target-kernel check.
+            printf '\nTESTS := $(filter-out tests/posix.test tests/00-repl-server.test,$(TESTS))\n' \
               >> test-suite/Makefile
           ''
           + ''
