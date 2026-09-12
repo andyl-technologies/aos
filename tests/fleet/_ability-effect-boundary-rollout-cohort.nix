@@ -6,7 +6,6 @@
   systems,
   cellId,
 }: let
-  effectBoundary = import ../abilities/effect-boundary-transition.nix {inherit lib;};
   imageLifecycle = import ./system-image-rollback.nix {
     inherit lib mkSystem pkgs systems;
     extraFixtureModules = [observerModule];
@@ -15,7 +14,6 @@
   rollout = import ./_image-rollout-runtime-reference.nix {
     inherit lib pkgs;
     qualificationImage = true;
-    transitionTransform = effectBoundary;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   matrixSpec = pkgs.writeTextFile {

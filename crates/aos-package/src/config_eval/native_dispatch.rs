@@ -586,27 +586,13 @@ impl<'a> NativeAdapterRegistry<'a> {
             revoked: false,
         };
 
-        if operations
-            .iter()
-            .all(|operation| operation.method.as_str() == "retire")
-        {
-            ensure!(
-                operations.len() == 1,
-                "native rollout retirement must contain exactly one operation"
-            );
+        if first.method.as_str() == "retire" {
             let mut retirement_authority = authority;
             retirement_authority.active_image = request.candidate.clone();
             let retirement_time = request.retention_expires_at_millis;
             admit_retirement(request, &retirement_authority, retirement_time)
                 .context("admitting native rollout retirement semantics")?;
-            ensure!(
-                self.plan
-                    .document()
-                    .edges
-                    .iter()
-                    .all(|edge| { edge.from.key() != &first.key && edge.to.key() != &first.key }),
-                "native rollout retirement must be an independent transition"
-            );
+            validate_rollout_retirement_control_flow(&operations, &self.plan.document().edges)?;
             return Ok(());
         }
 
@@ -1825,6 +1811,49 @@ impl<'a> NativeAdapterRegistry<'a> {
             .binding(&mapping.binding)
             .context("native mapping lost its independently checked terminal binding")
     }
+}
+
+fn validate_rollout_retirement_control_flow(
+    operations: &[&Operation],
+    edges: &[aos_ability_model::DependencyEdge],
+) -> Result<()> {
+    ensure!(
+        operations.len() == 2
+            && operations[0].key.key.as_str() == "retire"
+            && operations[0].method.as_str() == "retire"
+            && operations[1].key.key.as_str() == "retirement-observation"
+            && operations[1].method.as_str() == "observe-health"
+            && operations[0].binding == operations[1].binding
+            && operations[0].interface == operations[1].interface
+            && operations[0].target.interface == operations[1].target.interface
+            && operations[0].target.resource == operations[1].target.resource
+            && operations[0].target.lifetime == operations[1].target.lifetime
+            && operations[0].inputs == operations[1].inputs,
+        "native rollout retirement must be exactly retire followed by its authenticated health observation"
+    );
+    let retire = PlanNodeKey::Operation {
+        key: operations[0].key.clone(),
+    };
+    let observation = PlanNodeKey::Operation {
+        key: operations[1].key.clone(),
+    };
+    let incident = edges
+        .iter()
+        .filter(|edge| {
+            edge.from == retire
+                || edge.to == retire
+                || edge.from == observation
+                || edge.to == observation
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        incident.len() == 1
+            && incident[0].from == retire
+            && incident[0].to == observation
+            && incident[0].kind == DependencyKind::RequiredSuccess,
+        "native rollout retirement must stay separate from activation and require its exact health observation"
+    );
+    Ok(())
 }
 
 pub(crate) fn retained_maps_match_execution(
@@ -4364,6 +4393,48 @@ mod tests {
         document
     }
 
+    fn retirement_control_flow() -> (Vec<Operation>, Vec<aos_ability_model::DependencyEdge>) {
+        let document = rollout_document_with_non_rollout_operation();
+        let template = document
+            .operations
+            .iter()
+            .find(|operation| operation.key.key.as_str() == "retain")
+            .expect("rollout operation template");
+        let operation = |key: &str, method: &str, action, mode| {
+            let mut operation = template.clone();
+            operation.key.key = LocalKey::new(key).expect("retirement operation key");
+            operation.method = LocalKey::new(method).expect("retirement method");
+            operation.family = OperationFamily::ImageRollout { action };
+            operation.target.operations = vec![operation.method.clone()];
+            for access in &mut operation.accesses {
+                access.mode = mode;
+            }
+            operation
+        };
+        let retire = operation(
+            "retire",
+            "retire",
+            aos_ability_model::ImageRolloutAction::Retire,
+            aos_ability_model::AccessMode::ExclusiveWrite,
+        );
+        let observation = operation(
+            "retirement-observation",
+            "observe-health",
+            aos_ability_model::ImageRolloutAction::ObserveHealth,
+            aos_ability_model::AccessMode::Read,
+        );
+        let edge = aos_ability_model::DependencyEdge {
+            from: PlanNodeKey::Operation {
+                key: retire.key.clone(),
+            },
+            to: PlanNodeKey::Operation {
+                key: observation.key.clone(),
+            },
+            kind: DependencyKind::RequiredSuccess,
+        };
+        (vec![retire, observation], vec![edge])
+    }
+
     struct FixedClock;
 
     impl MonotonicClock for FixedClock {
@@ -4481,6 +4552,35 @@ mod tests {
             authenticate_single_image_rollout_fragment(&document).is_err(),
             "an incident edge must be part of the exact built-in fragment"
         );
+    }
+
+    #[test]
+    fn rollout_retirement_requires_one_exact_terminal_observation() {
+        let (operations, edges) = retirement_control_flow();
+        let references = operations.iter().collect::<Vec<_>>();
+        validate_rollout_retirement_control_flow(&references, &edges)
+            .expect("exact retirement observation graph");
+
+        let reversed = references.iter().copied().rev().collect::<Vec<_>>();
+        assert!(validate_rollout_retirement_control_flow(&reversed, &edges).is_err());
+
+        let mut additional = references.clone();
+        additional.push(references[1]);
+        assert!(validate_rollout_retirement_control_flow(&additional, &edges).is_err());
+
+        let mut wrong_edge = edges.clone();
+        let wrong_from = wrong_edge[0].to.clone();
+        wrong_edge[0].to = wrong_edge[0].from.clone();
+        wrong_edge[0].from = wrong_from;
+        assert!(validate_rollout_retirement_control_flow(&references, &wrong_edge).is_err());
+
+        let mut wrong_kind = edges.clone();
+        wrong_kind[0].kind = DependencyKind::OrderingOnly;
+        assert!(validate_rollout_retirement_control_flow(&references, &wrong_kind).is_err());
+
+        let mut extra_edge = edges.clone();
+        extra_edge.push(edges[0].clone());
+        assert!(validate_rollout_retirement_control_flow(&references, &extra_edge).is_err());
     }
 
     #[test]

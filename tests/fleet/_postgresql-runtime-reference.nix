@@ -4,13 +4,14 @@
   mkSystem,
   pkgs,
   guestTools ? false,
+  effectQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   packageSet = import ../abilities/reference-postgresql/package.nix {
     inherit lib;
     inherit (pkgs) bash coreutils jq mkDerivation postgresql writeTextFile;
     packageRuntime = pkgs.aos.packageRuntime;
-    inherit transitionTransform;
+    inherit effectQualification transitionTransform;
   };
 
   stoppedPostgresqlSource = builtins.toFile "stopped-postgresql.c" ''

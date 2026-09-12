@@ -5,12 +5,10 @@
   pkgs,
   qualificationImage ? false,
 }: let
-  effectBoundary = import ../abilities/effect-boundary-transition.nix {inherit lib;};
-  kubernetesEffect = import ../abilities/kubernetes-effect-boundary-transition.nix {inherit lib;};
   fixture = import ./_kubernetes-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
-    transitionTransform = transition: effectBoundary (kubernetesEffect transition);
+    effectQualification = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   cells = import ./_ability-effect-boundary-cells.nix {

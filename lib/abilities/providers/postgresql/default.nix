@@ -227,7 +227,8 @@ let
       (change: isPostgresqlResource change && change.kind == "remove")
       context.changes;
     teardownOnly =
-      context.authorized_bindings != []
+      context.authorized_bindings
+      != []
       && builtins.all (entry: entry.authority.role == "teardown") context.authorized_bindings;
     contributionFor = snapshot: cluster: let
       selected =
@@ -260,35 +261,35 @@ let
       then observation
       else throw "PostgreSQL transition cannot provision child ${change.resource.key} from '${change.kind}'";
     terminalsFor = authorityRole: requestKey: resourceId: method: access:
-        builtins.filter
-        (entry:
-          entry.authority.role
-          == authorityRole
-          && (
-            if authorityRole == "desired"
-            then
-              entry.binding.request.consumer
-              == context.provider
-              && entry.binding.request.key == requestKey
-            else
-              entry.authority.source_request.consumer
-              == context.provider
-              && entry.authority.source_request.key == requestKey
-          )
-          && builtins.elem method entry.binding.caller_grant.methods
-          && builtins.length (builtins.filter
-            (permission:
-              permission.resource
-              == resourceId
-              && (
-                permission.access
-                == access
-                || (access == "read" && permission.access == "exclusive-write")
-              )
-              && builtins.elem method permission.operations)
-            entry.binding.caller_grant.resources)
-          == 1)
-        context.authorized_bindings;
+      builtins.filter
+      (entry:
+        entry.authority.role
+        == authorityRole
+        && (
+          if authorityRole == "desired"
+          then
+            entry.binding.request.consumer
+            == context.provider
+            && entry.binding.request.key == requestKey
+          else
+            entry.authority.source_request.consumer
+            == context.provider
+            && entry.authority.source_request.key == requestKey
+        )
+        && builtins.elem method entry.binding.caller_grant.methods
+        && builtins.length (builtins.filter
+          (permission:
+            permission.resource
+            == resourceId
+            && (
+              permission.access
+              == access
+              || (access == "read" && permission.access == "exclusive-write")
+            )
+            && builtins.elem method permission.operations)
+          entry.binding.caller_grant.resources)
+        == 1)
+      context.authorized_bindings;
     terminalFor = authorityRole: requestKey: resourceId: method: access: let
       selected = terminalsFor authorityRole requestKey resourceId method access;
     in
@@ -781,7 +782,8 @@ let
         inherit cluster stopKey;
       };
     };
-    replacementChanges = builtins.filter
+    replacementChanges =
+      builtins.filter
       (change: let
         postgresqlResource = change.resource;
         lifecycleMethod =
@@ -794,7 +796,8 @@ let
         && (
           teardownOnly
           || (
-            builtins.length (terminalsFor "desired" "postgresql-terminal" postgresqlResource "materialize" "exclusive-write") == 1
+            builtins.length (terminalsFor "desired" "postgresql-terminal" postgresqlResource "materialize" "exclusive-write")
+            == 1
             && builtins.length (terminalsFor "desired" "postgresql-terminal" postgresqlResource lifecycleMethod "exclusive-write") == 1
           )
         ))
@@ -847,6 +850,67 @@ let
     provider_readiness = [];
     obligations = [];
   };
+
+  # Observe and teardown stop are terminal nodes in the ordinary PostgreSQL
+  # graph. Qualification follows them with the same real idempotent backend
+  # call while retaining the exact authenticated cluster mapping.
+  effectQualificationTransition = context: let
+    fragment = transition context;
+    terminal =
+      builtins.filter (
+        operation: builtins.elem operation.method ["observe" "stop"]
+      )
+      fragment.operations;
+    witnesses =
+      builtins.map (operation: let
+        witness =
+          operation
+          // {
+            key = operation.key // {key = "settle-${operation.key.key}";};
+          };
+      in {
+        inherit witness;
+        edge = {
+          from = {
+            kind = "operation";
+            key = operation.key;
+          };
+          to = {
+            kind = "operation";
+            key = witness.key;
+          };
+          kind = "required-success";
+        };
+      })
+      terminal;
+    dependencyRank = kind:
+      builtins.getAttr kind {
+        data = 0;
+        required-success = 1;
+        ordering-only = 2;
+        readiness = 3;
+        branch-guard = 4;
+        branch-merge = 5;
+        retention = 6;
+        communication = 7;
+      };
+    operationLess = left: right: left.key.key < right.key.key;
+    edgeLess = left: right:
+      if left.from.key.key != right.from.key.key
+      then left.from.key.key < right.from.key.key
+      else if left.to.key.key != right.to.key.key
+      then left.to.key.key < right.to.key.key
+      else dependencyRank left.kind < dependencyRank right.kind;
+  in
+    fragment
+    // {
+      operations = builtins.sort operationLess (
+        fragment.operations ++ builtins.map (entry: entry.witness) witnesses
+      );
+      edges = builtins.sort edgeLess (
+        fragment.edges ++ builtins.map (entry: entry.edge) witnesses
+      );
+    };
 in {
-  inherit compose transition;
+  inherit compose effectQualificationTransition transition;
 }

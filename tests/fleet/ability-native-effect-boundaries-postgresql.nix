@@ -5,12 +5,10 @@
   pkgs,
   qualificationImage ? false,
 }: let
-  effectBoundary = import ../abilities/effect-boundary-transition.nix {inherit lib;};
-  providerNegative = import ../abilities/provider-negative-transition.nix {inherit lib;};
   fixture = import ./_postgresql-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
-    transitionTransform = transition: effectBoundary (providerNegative transition);
+    effectQualification = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   cells = import ./_ability-effect-boundary-cells.nix {

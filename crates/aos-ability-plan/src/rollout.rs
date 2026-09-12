@@ -518,6 +518,27 @@ pub fn lower_ab_rollout_fragment(
             Vec::new(),
         )?,
         operation(
+            "settle-hold-fallback",
+            "hold",
+            ImageRolloutAction::Hold,
+            OperationPhase::Recovering,
+            fallback_context.clone(),
+        )?,
+        operation(
+            "settle-hold-healthy",
+            "hold",
+            ImageRolloutAction::Hold,
+            OperationPhase::Recovering,
+            healthy_context.clone(),
+        )?,
+        operation(
+            "settle-observe-health",
+            "observe-health",
+            ImageRolloutAction::ObserveHealth,
+            OperationPhase::Converging,
+            Vec::new(),
+        )?,
+        operation(
             "withdraw",
             "withdraw",
             ImageRolloutAction::Withdraw,
@@ -532,7 +553,7 @@ pub fn lower_ab_rollout_fragment(
         selector: DecisionSelector {
             result: OperationResultReference {
                 producer: ResultProducerKey::Operation {
-                    key: key("observe-health")?,
+                    key: key("settle-observe-health")?,
                 },
                 output: LocalKey::new("healthy")?,
             },
@@ -569,7 +590,7 @@ pub fn lower_ab_rollout_fragment(
                         LocalKey::new("fallback")?,
                         OperationResultReference {
                             producer: ResultProducerKey::Operation {
-                                key: key("hold-fallback")?,
+                                key: key("settle-hold-fallback")?,
                             },
                             output: state_output.clone(),
                         },
@@ -578,7 +599,7 @@ pub fn lower_ab_rollout_fragment(
                         LocalKey::new("healthy")?,
                         OperationResultReference {
                             producer: ResultProducerKey::Operation {
-                                key: key("hold-healthy")?,
+                                key: key("settle-hold-healthy")?,
                             },
                             output: state_output.clone(),
                         },
@@ -618,6 +639,11 @@ pub fn lower_ab_rollout_fragment(
         ),
         edge(
             op("observe-health")?,
+            op("settle-observe-health")?,
+            DependencyKind::RequiredSuccess,
+        ),
+        edge(
+            op("settle-observe-health")?,
             decision_node.clone(),
             DependencyKind::Data,
         ),
@@ -628,7 +654,17 @@ pub fn lower_ab_rollout_fragment(
         ),
         edge(
             decision_node.clone(),
+            op("settle-hold-fallback")?,
+            DependencyKind::BranchGuard,
+        ),
+        edge(
+            decision_node.clone(),
             op("hold-healthy")?,
+            DependencyKind::BranchGuard,
+        ),
+        edge(
+            decision_node.clone(),
+            op("settle-hold-healthy")?,
             DependencyKind::BranchGuard,
         ),
         edge(decision_node, op("withdraw")?, DependencyKind::BranchGuard),
@@ -639,10 +675,24 @@ pub fn lower_ab_rollout_fragment(
         ),
         edge(
             op("hold-fallback")?,
+            op("settle-hold-fallback")?,
+            DependencyKind::RequiredSuccess,
+        ),
+        edge(
+            op("settle-hold-fallback")?,
             merge_node.clone(),
             DependencyKind::BranchMerge,
         ),
-        edge(op("hold-healthy")?, merge_node, DependencyKind::BranchMerge),
+        edge(
+            op("hold-healthy")?,
+            op("settle-hold-healthy")?,
+            DependencyKind::RequiredSuccess,
+        ),
+        edge(
+            op("settle-hold-healthy")?,
+            merge_node,
+            DependencyKind::BranchMerge,
+        ),
     ];
     edges.sort_by(aos_ability_model::compare_edges);
 

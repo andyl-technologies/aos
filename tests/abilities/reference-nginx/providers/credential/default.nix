@@ -86,7 +86,7 @@ let
       })
       contributions;
   };
-in {
+in rec {
   inherit compose;
 
   transition = context: let
@@ -327,4 +327,71 @@ in {
         exports = [];
       }
     else fragment;
+
+  # Qualification exercises the terminal's real idempotence contract after
+  # the selected credential effect settles. These operations are authored by
+  # this provider so they pass through the same checked binding and handler.
+  effectQualificationTransition = context: let
+    fragment = transition context;
+    witnessMethod = method:
+      if method == "deliver"
+      then "acquire"
+      else method;
+    witness = operation: let
+      method = witnessMethod operation.method;
+      route = value:
+        if value == null
+        then null
+        else value // {inherit method;};
+    in
+      operation
+      // {
+        key = operation.key // {key = "settle-${operation.key.key}";};
+        inherit method;
+        family = {
+          kind = "credential";
+          action = method;
+        };
+        target = operation.target // {operations = [method];};
+        accesses = builtins.map (entry:
+          entry
+          // {
+            mode =
+              if method == "acquire"
+              then "read"
+              else "exclusive-write";
+          })
+        operation.accesses;
+        recovery =
+          operation.recovery
+          // {
+            reconcile = route operation.recovery.reconcile;
+            cancel = route operation.recovery.cancel;
+          };
+      };
+    witnesses =
+      builtins.map (operation: {
+        operation = witness operation;
+        edge = {
+          from = {
+            kind = "operation";
+            key = operation.key;
+          };
+          to = {
+            kind = "operation";
+            key = (witness operation).key;
+          };
+          kind = "required-success";
+        };
+      })
+      fragment.operations;
+  in
+    fragment
+    // {
+      operations =
+        builtins.sort
+        (left: right: left.key.key < right.key.key)
+        (fragment.operations ++ builtins.map (entry: entry.operation) witnesses);
+      edges = fragment.edges ++ builtins.map (entry: entry.edge) witnesses;
+    };
 }

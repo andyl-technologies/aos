@@ -181,7 +181,7 @@ let
       })
       resources;
   };
-in {
+in rec {
   inherit compose;
 
   transition = context: let
@@ -330,4 +330,125 @@ in {
       else [];
     obligations = [];
   };
+
+  # Qualification retains the real bootstrap/object ordering while making
+  # every selected terminal method lead to another authenticated handler call.
+  effectQualificationTransition = context: let
+    original = transition context;
+    recoverable = operation:
+      operation
+      // {
+        recovery =
+          operation.recovery
+          // {
+            reconcile = {
+              inherit (operation) interface method;
+            };
+          };
+      };
+    fragment = original // {operations = builtins.map recoverable original.operations;};
+    operationsFor = method:
+      builtins.filter (operation: operation.method == method) fragment.operations;
+    ready = operationsFor "observe-manager";
+    applies = operationsFor "apply";
+    deletes = operationsFor "delete";
+    stops = operationsFor "stop";
+    operationNode = operation: {
+      kind = "operation";
+      key = operation.key;
+    };
+    observeBefore = apply:
+      apply
+      // {
+        key = apply.key // {key = "observe-before-${apply.target.resource.key}";};
+        method = "observe";
+        family = {
+          kind = "kubernetes-object";
+          action = "observe";
+        };
+        target = apply.target // {operations = ["observe"];};
+        accesses = builtins.map (entry: entry // {mode = "read";}) apply.accesses;
+        recovery =
+          apply.recovery
+          // {
+            reconcile = {
+              inherit (apply) interface;
+              method = "observe";
+            };
+          };
+      };
+    settleApply = apply:
+      apply // {key = apply.key // {key = "settle-${apply.key.key}";};};
+    settleReady = operation: suffix:
+      operation // {key = operation.key // {key = "settle-${suffix}";};};
+    observed = builtins.map observeBefore applies;
+    settledApplies = builtins.map settleApply applies;
+    deleteWitnesses = builtins.concatMap (delete:
+      builtins.map (operation: settleReady operation "delete-${delete.target.resource.key}") ready)
+    deletes;
+    stopWitnesses = builtins.map (operation:
+      operation // {key = operation.key // {key = "settle-${operation.key.key}";};})
+    stops;
+    edge = from: to: {
+      from = operationNode from;
+      to = operationNode to;
+      kind = "required-success";
+    };
+    observeEdges =
+      builtins.concatMap (pair: [
+        (edge (builtins.head ready) pair.observe)
+        (edge pair.observe pair.apply)
+        (edge pair.apply pair.settle)
+      ]) (builtins.map (index: {
+          apply = builtins.elemAt applies index;
+          observe = builtins.elemAt observed index;
+          settle = builtins.elemAt settledApplies index;
+        })
+        (builtins.genList (index: index) (builtins.length applies)));
+    deleteEdges = builtins.concatMap (delete:
+      builtins.concatMap (operation: [
+        (edge operation delete)
+        (edge delete (settleReady operation "delete-${delete.target.resource.key}"))
+      ])
+      ready)
+    deletes;
+    stopEdges = builtins.map (index:
+      edge
+      (builtins.elemAt stops index)
+      (builtins.elemAt stopWitnesses index))
+    (builtins.genList (index: index) (builtins.length stops));
+    dependencyRank = kind:
+      builtins.getAttr kind {
+        data = 0;
+        required-success = 1;
+        ordering-only = 2;
+        readiness = 3;
+        branch-guard = 4;
+        branch-merge = 5;
+        retention = 6;
+        communication = 7;
+      };
+    operationLess = left: right: left.key.key < right.key.key;
+    edgeLess = left: right:
+      if left.from.key.key != right.from.key.key
+      then left.from.key.key < right.from.key.key
+      else if left.to.key.key != right.to.key.key
+      then left.to.key.key < right.to.key.key
+      else dependencyRank left.kind < dependencyRank right.kind;
+  in
+    assert applies == [] || builtins.length ready == 1;
+    assert deletes == [] || builtins.length ready == 1;
+      fragment
+      // {
+        operations = builtins.sort operationLess (
+          fragment.operations
+          ++ observed
+          ++ settledApplies
+          ++ deleteWitnesses
+          ++ stopWitnesses
+        );
+        edges = builtins.sort edgeLess (
+          fragment.edges ++ observeEdges ++ deleteEdges ++ stopEdges
+        );
+      };
 }
