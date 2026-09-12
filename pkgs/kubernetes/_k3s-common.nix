@@ -226,6 +226,16 @@ in {
     pkgs.writeShellScriptBin "k3s-${role}-start" ''
       set -eu
 
+      # The package check uses this side-effect-free path to prove that this
+      # exact production launcher executes its retained k3s payload.
+      if [ "''${1:-}" = verify-payload ]; then
+        [ "$#" -eq 2 ]
+        [ "$2" = ${lib.escapeShellArg "${pkgs.k3s}/bin/k3s"} ]
+        "$2" --version >/dev/null
+        printf '%s\n' k3s-payload-ok
+        exit 0
+      fi
+
       : "''${CREDENTIALS_DIRECTORY:?[k3s] ${role}: token credential was not loaded}"
       token_file="$CREDENTIALS_DIRECTORY/token"
       if [ ! -r "$token_file" ]; then

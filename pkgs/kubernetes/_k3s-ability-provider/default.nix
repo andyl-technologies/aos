@@ -171,13 +171,15 @@ let
         };
       }
     ];
-    controllers = builtins.map (revision: {
-      inherit (revision) resource;
-      controller = {
-        provider = context.provider;
-        group = "k3s";
-      };
-    }) resources;
+    controllers =
+      builtins.map (revision: {
+        inherit (revision) resource;
+        controller = {
+          provider = context.provider;
+          group = "k3s";
+        };
+      })
+      resources;
   };
 in {
   inherit compose;

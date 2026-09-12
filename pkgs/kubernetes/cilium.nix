@@ -26,6 +26,10 @@ in
     ];
     runtimeDeps = [];
 
+    # Cilium contributes typed CNI and Kubernetes resources to a selected k3s
+    # owner; installing its payload never creates a second lifecycle owner.
+    abilityPackage = (import ./_ability-contracts.nix {inherit lib;}).contributorPackage;
+
     phases = [
       {
         name = "unpack";

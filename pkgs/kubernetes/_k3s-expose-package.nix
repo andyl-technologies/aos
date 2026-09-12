@@ -37,6 +37,7 @@
       ;
   };
   common = import ./_k3s-common.nix {inherit lib pkgs;};
+  abilityContracts = import ./_ability-contracts.nix {inherit lib;};
 in
   {
     pname,
@@ -105,6 +106,14 @@ in
       src = null;
       runtimeDeps = common.runtimePath;
 
+      # The role owns lifecycle for the shared k3s service. The raw k3s and
+      # containerd packages remain payloads in this relationship and therefore
+      # do not acquire independent service operations.
+      abilityPackage = abilityContracts.k3sPackage {
+        providerArtifact = ./_k3s-ability-provider;
+        payloadArtifacts = [k3s containerd];
+      };
+
       phases = [
         {
           name = "install";
@@ -117,7 +126,7 @@ in
       ];
 
       passthru = {
-        inherit addonRenderer;
+        inherit addonRenderer launcher;
         evidenceSources =
           evidenceSources
           ++ [
@@ -284,5 +293,34 @@ in
       meta = {
         description = "AOS exposed ${description} package";
         license = "Apache-2.0";
+      };
+
+      checks = {
+        pkgs,
+        self,
+        ...
+      }: let
+        buildPkgs = pkgs.buildPackages or pkgs;
+        platform = pkgs.stdenv.hostPlatform;
+      in {
+        payload-consumption = import ../../lib/build/artifact-consumption-audit.nix {
+          inherit pkgs lib;
+          name = "${pname}-k3s-payload";
+          consumer = self.passthru.launcher;
+          consumerPath = "/bin/k3s-${pname}-start";
+          provider = pkgs.k3s;
+          providerPath = "/bin/k3s";
+          targetPlatform = {
+            system = platform.constraints.os;
+            architecture = platform.constraints.cpu;
+          };
+          mechanism = "helper-execution";
+          arguments = [
+            "verify-payload"
+            "${pkgs.k3s}/bin/k3s"
+          ];
+          expectedOutputSha256 = "sha256:${builtins.hashString "sha256" "k3s-payload-ok\n"}";
+          inspector = buildPkgs.aos;
+        };
       };
     }
