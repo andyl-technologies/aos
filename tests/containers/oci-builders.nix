@@ -148,13 +148,15 @@
     pname = "oci-fixture-multi-platform-static-abilities";
     contracts = [arm64AbilityContract amd64AbilityContract];
   };
-  forgeStaticAbilityContract = pname: sourceContract:
+  # Recompute the descriptor after mutation so only semantic validation can
+  # reject these otherwise self-consistent forged contracts.
+  rewriteStaticAbilityContract = pname: sourceContract: filter:
     pkgs.runCommand pname {
       buildDeps = [pkgs.coreutils pkgs.jq];
       passthru = sourceContract.passthru;
     } ''
       mkdir -p "$out"
-      jq -cS '.platforms[0].semantic_validation_was_bypassed = true' \
+      jq -cS ${lib.escapeShellArg filter} \
         ${sourceContract}/contract.json > "$out/contract.with-newline.json"
       size=$(stat -c %s "$out/contract.with-newline.json")
       truncate -s "$((size - 1))" "$out/contract.with-newline.json"
@@ -169,6 +171,11 @@
         '{mediaType: $mediaType, digest: $digest, size: $size}' \
         > "$out/descriptor.json"
     '';
+  forgeStaticAbilityContract = pname: sourceContract:
+    rewriteStaticAbilityContract
+    pname
+    sourceContract
+    ".platforms[0].semantic_validation_was_bypassed = true";
   forgedPlatformAbilityContract =
     forgeStaticAbilityContract
     "oci-fixture-forged-platform-static-abilities"
@@ -185,6 +192,59 @@
         ];
       };
   });
+  reorderedPlatformAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-reordered-platform-static-abilities"
+    multiPlatformAbilityContract
+    ".platforms |= reverse";
+  requirementObligation = acceptedInterfaces: ''
+    .platforms[0].packages[0].manifest as $manifest
+    | .platforms[0].unresolved_launch_obligations = ([{
+        kind: "ability-requirement",
+        consumer: {package: $manifest},
+        requirement: {
+          alias: "semantic-order-probe",
+          accepted_interfaces: ${acceptedInterfaces},
+          methods: [],
+          guarantees: [],
+          strength: "required",
+          fallback: null
+        },
+        disposition: "external-launch-obligation"
+      }] + .platforms[0].unresolved_launch_obligations)
+  '';
+  reorderedRequirementAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-reordered-requirement-static-abilities"
+    amd64AbilityContract
+    (requirementObligation ''      [
+            {
+              name: "aos.test.zzz",
+              abi: 1,
+              descriptor: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            },
+            {
+              name: "aos.test.aaa",
+              abi: 1,
+              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]'');
+  duplicateRequirementAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-duplicate-requirement-static-abilities"
+    amd64AbilityContract
+    (requirementObligation ''      [
+            {
+              name: "aos.test.duplicate",
+              abi: 1,
+              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            {
+              name: "aos.test.duplicate",
+              abi: 1,
+              descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]'');
 
   # The probe makes the integration call observable while the production
   # validator assertions below establish that the same forged bytes fail.
@@ -531,6 +591,9 @@ in
       multiPlatform
       forgedPlatformAbilityContract
       forgedAggregateAbilityContract
+      reorderedPlatformAbilityContract
+      reorderedRequirementAbilityContract
+      duplicateRequirementAbilityContract
       forgedAmd64Image
       forgedMarkerImageProbe
       forgedMarkerIndexProbe
@@ -564,6 +627,21 @@ in
             static-contract ${forgedAggregateAbilityContract}/contract.json \
             container - 2>/dev/null; then
             fail "forged aggregate static ability contract passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${reorderedPlatformAbilityContract}/contract.json \
+            container - 2>/dev/null; then
+            fail "rehashed contract with reordered platforms passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${reorderedRequirementAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with reordered requirement members passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${duplicateRequirementAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with duplicate requirement members passed semantic validation"
           fi
 
           ${oci.common.realizedStorePolicyScript}
