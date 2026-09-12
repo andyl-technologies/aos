@@ -63,6 +63,10 @@
     + " --address /run/aos-foreground-containerd/containerd.sock"
     + " --namespace aos-foreground-qualification";
   fixtureCommand = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture";
+  containerExec =
+    "${nerdctl} exec"
+    + " --env AOS_NIX_STORE=${pkgs.nix}/bin/nix-store"
+    + " foreground-nginx";
   stateRoot = "/var/lib/aos/ability-runtime/foreground-process";
 in {
   name = "ability-native-foreground-container";
@@ -133,7 +137,9 @@ in {
         "-g",
         "daemon off;",
     ]
-    command = "${nerdctl} exec foreground-nginx " + " ".join(
+    # The fixture invokes the dispatcher directly, so reproduce the immutable
+    # nix-store path exported by the production package-runtime wrapper.
+    command = "${containerExec} " + " ".join(
         shlex.quote(argument) for argument in arguments
     )
     started = json.loads(runtime.succeed(command, timeout=60))
@@ -143,7 +149,7 @@ in {
 
     observed_arguments = arguments.copy()
     observed_arguments[2] = "observe"
-    observe = "${nerdctl} exec foreground-nginx " + " ".join(
+    observe = "${containerExec} " + " ".join(
         shlex.quote(argument) for argument in observed_arguments
     )
     observed = json.loads(runtime.succeed(observe, timeout=60))
@@ -156,7 +162,7 @@ in {
 
     foreign_arguments = observed_arguments.copy()
     foreign_arguments[-1] = "daemon off; worker_processes 2;"
-    foreign = "${nerdctl} exec foreground-nginx " + " ".join(
+    foreign = "${containerExec} " + " ".join(
         shlex.quote(argument) for argument in foreign_arguments
     )
     runtime.fail(foreign, timeout=60)
@@ -164,7 +170,7 @@ in {
 
     stop_arguments = arguments.copy()
     stop_arguments[2] = "stop"
-    stop = "${nerdctl} exec foreground-nginx " + " ".join(
+    stop = "${containerExec} " + " ".join(
         shlex.quote(argument) for argument in stop_arguments
     )
     stopped = json.loads(runtime.succeed(stop, timeout=60))
