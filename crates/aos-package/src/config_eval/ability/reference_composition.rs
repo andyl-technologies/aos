@@ -386,9 +386,22 @@ impl Deployment<'_> {
             .unwrap_or_else(|error| panic!("reference composition failed: {error:#?}"))
     }
 
+    fn compose_without_backends(&mut self, seed: DesiredStateDocument) -> ComposedDeployment {
+        self.try_compose_with_backends(seed, false)
+            .unwrap_or_else(|error| panic!("reference composition failed: {error:#?}"))
+    }
+
     fn try_compose(
         &mut self,
         seed: DesiredStateDocument,
+    ) -> Result<ComposedDeployment, CompositionError> {
+        self.try_compose_with_backends(seed, true)
+    }
+
+    fn try_compose_with_backends(
+        &mut self,
+        seed: DesiredStateDocument,
+        backends_available: bool,
     ) -> Result<ComposedDeployment, CompositionError> {
         let mut authorization_states = Vec::new();
         let mut policies = Vec::new();
@@ -410,7 +423,28 @@ impl Deployment<'_> {
                     });
                 }
                 Err(CompositionError::PolicyRequired { desired_state, .. }) => {
-                    policies.push(self.policy_for(&desired_state));
+                    let mut policy = self.policy_for(&desired_state);
+                    if !backends_available {
+                        let backend_requests = desired_state
+                            .child_requests
+                            .iter()
+                            .filter(|request| {
+                                request.accepted_interfaces
+                                    == [self.fixture.interfaces["aos.http-backend"].clone()]
+                            })
+                            .map(|request| request.id.clone())
+                            .collect::<BTreeSet<_>>();
+                        policy
+                            .candidates
+                            .retain(|candidate| !backend_requests.contains(&candidate.request));
+                        policy
+                            .explicit_bindings
+                            .retain(|binding| !backend_requests.contains(&binding.request));
+                        policy.enabled_providers.retain(|provider| {
+                            provider.interface != self.fixture.interfaces["aos.http-backend"]
+                        });
+                    }
+                    policies.push(policy);
                     authorization_states.push(*desired_state);
                 }
                 Err(error) => return Err(error),
@@ -2445,7 +2479,13 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         interface_document(
             "aos.http-backend",
             ValueSchema::Boolean,
-            vec![("endpoint", endpoint.clone(), ValueVisibility::Protected)],
+            vec![(
+                "endpoint",
+                ValueSchema::Optional {
+                    value: Box::new(endpoint.clone()),
+                },
+                ValueVisibility::Protected,
+            )],
         ),
         interface_document(
             "aos.nginx",
@@ -2822,6 +2862,104 @@ fn production_nginx_companion_matches_the_canonical_network_policy_interface() {
     assert_eq!(actual.interface, expected);
 }
 
+#[test]
+fn proxy_route_resolves_a_real_backend_endpoint() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+    let mut deployment = Deployment {
+        fixture: &mut fixture,
+        nginx_instances: vec![nginx.clone()],
+        app_routes: vec![app_route(
+            "app-a",
+            "nginx-main",
+            "alpha.example",
+            false,
+            "alpha-v1",
+        )],
+    };
+    let seed = deployment.seed(true);
+    let composed = deployment.compose(seed);
+    let desired = &composed.outcome.desired_state;
+
+    assert!(nginx_output(desired, &nginx, "configuration").is_some());
+    assert!(rendered_configuration(desired, &nginx).contains("proxy_pass http://127.0.0.1:19001;"));
+}
+
+#[test]
+fn proxy_route_without_a_backend_emits_no_lower_configuration() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+    let mut deployment = Deployment {
+        fixture: &mut fixture,
+        nginx_instances: vec![nginx.clone()],
+        app_routes: vec![app_route(
+            "app-a",
+            "nginx-main",
+            "alpha.example",
+            false,
+            "alpha-v1",
+        )],
+    };
+    let seed = deployment.seed(true);
+    let composed = deployment.compose_without_backends(seed);
+    let desired = &composed.outcome.desired_state;
+    let configuration_provider = lower_provider(&environment, "configuration");
+
+    assert!(nginx_output(desired, &nginx, "configuration").is_none());
+    assert!(!desired.contributions.iter().any(|contribution| {
+        contribution.aggregate.provider == configuration_provider
+            && contribution.aggregate.group == key("configuration")
+    }));
+    assert!(!desired.resources.iter().any(|revision| {
+        revision.resource.provider == nginx
+            && revision.resource.key.as_str().starts_with("backend-")
+    }));
+}
+
+#[test]
+fn static_route_composes_without_a_backend_request() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+    let mut deployment = Deployment {
+        fixture: &mut fixture,
+        nginx_instances: vec![nginx.clone()],
+        app_routes: vec![app_route(
+            "app-static",
+            "nginx-main",
+            "static.example",
+            false,
+            "static-response",
+        )],
+    };
+    let mut seed = deployment.seed(true);
+    seed.contributions[0].value = value(serde_json::json!({
+        "host": "static.example",
+        "response_content": "static-response",
+        "response_identity": "app-static",
+        "tls": false,
+    }));
+    let composed = deployment.compose(seed);
+    let desired = &composed.outcome.desired_state;
+    let rendered = rendered_configuration(desired, &nginx);
+
+    assert!(rendered.contains("return 200 'static-response';"));
+    assert!(!rendered.contains("proxy_pass"));
+    assert!(
+        !desired.child_requests.iter().any(|request| {
+            request.id.consumer == nginx && request.id.key.as_str() == "backend"
+        })
+    );
+}
+
 fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     assert_eq!(
         interfaces["aos.nginx"].descriptor,
@@ -2829,7 +2967,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.http-backend"].descriptor,
-        digest_from_hex("36ad13775c5b5d81209fdf1c36a715f482b0a1e389fbfbf587072ffdf0e9147f")
+        digest_from_hex("d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf")
     );
     assert_eq!(
         interfaces["aos.managed-configuration"].descriptor,

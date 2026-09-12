@@ -44,7 +44,7 @@
   httpBackend =
     interface
     "aos.http-backend"
-    "sha256:36ad13775c5b5d81209fdf1c36a715f482b0a1e389fbfbf587072ffdf0e9147f";
+    "sha256:d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -504,7 +504,7 @@ in {
         abi = httpBackend.abi;
         requestSchema = schemas.boolean;
         configurationSchema = endpoint;
-        outputs.endpoint = output endpoint;
+        outputs.endpoint = output (schemas.optional endpoint);
         methods = {};
         inherit lifecycle;
         guarantees = [];

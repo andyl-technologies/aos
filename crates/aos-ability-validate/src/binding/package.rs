@@ -507,9 +507,7 @@ fn is_empty_authority_shape(
     value: &serde_json::Value,
 ) -> bool {
     match (schema, value) {
-        (aos_ability_model::ValueSchema::Optional { value: nested }, serde_json::Value::Null) => {
-            schema_may_carry_authority(nested)
-        }
+        (aos_ability_model::ValueSchema::Optional { .. }, serde_json::Value::Null) => true,
         (aos_ability_model::ValueSchema::List { element, .. }, serde_json::Value::Array(items)) => {
             items.is_empty() && schema_may_carry_authority(element)
         }

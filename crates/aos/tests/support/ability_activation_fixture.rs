@@ -1632,7 +1632,12 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
             "aos.http-backend",
             ValueSchema::Boolean,
             Some(endpoint.clone()),
-            vec![("endpoint", endpoint)],
+            vec![(
+                "endpoint",
+                ValueSchema::Optional {
+                    value: Box::new(endpoint),
+                },
+            )],
         )?,
         interface_document(
             "aos.nginx",

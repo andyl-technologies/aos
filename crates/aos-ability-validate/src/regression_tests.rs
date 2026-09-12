@@ -1549,7 +1549,7 @@ fn install_optional_resource_output(fixture: &mut PlanFixture) {
                 value: Box::new(ValueSchema::ResourceReference),
             },
             phase: ValuePhase::Planning,
-            visibility: ValueVisibility::Public,
+            visibility: ValueVisibility::Protected,
             lifetime: ResourceLifetime::Instance,
         },
     );
