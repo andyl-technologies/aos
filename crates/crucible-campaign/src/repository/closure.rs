@@ -416,20 +416,6 @@ impl CampaignRepository {
                                 "savepoint-continuation-parent-is-not-running",
                             ));
                         }
-                        CampaignFact::BranchRequestIssued(request) => {
-                            let request_record = self.read_branch_request(request.content_id())?;
-                            if let BranchRequestCause::Operator(command) = request_record.cause()
-                                && !seen_commands.insert(command)
-                            {
-                                return Err(integrity("snapshot-ancestry-reused-mutation-command"));
-                            }
-                            self.validate_branch_request_successor(
-                                &parent_snapshot,
-                                &loaded,
-                                request,
-                                transition.content_id(),
-                            )?;
-                        }
                         CampaignFact::BranchRequestAccepted { request, summary } => {
                             let request_record = self.read_branch_request(request.content_id())?;
                             if let BranchRequestCause::Operator(command) = request_record.cause()
@@ -465,14 +451,6 @@ impl CampaignRepository {
                         }
                         CampaignFact::PlannerAdvanced(step) => {
                             self.validate_planner_step_successor(&parent_snapshot, &loaded, step)?;
-                        }
-                        CampaignFact::ObservationPublished(observation) => {
-                            self.validate_observation_successor(
-                                &parent_snapshot,
-                                &loaded,
-                                observation,
-                                choice_cache,
-                            )?;
                         }
                         CampaignFact::ObservationCredited(observation) => {
                             self.validate_credited_observation_successor(
@@ -1185,12 +1163,8 @@ impl CampaignRepository {
                 return self.validate_initial_discovery_successor(parent, child, admission_record);
             }
         };
-        let expected = self.expected_stored_proposal_admission(
-            parent,
-            proposal,
-            admission_record.attempt(),
-            admission_record,
-        )?;
+        let expected =
+            self.expected_stored_proposal_admission(parent, proposal, admission_record.attempt())?;
         if admission_record != expected || expected.id()? != admission {
             return Err(integrity("attempt-admission-owner-recomputation-mismatch"));
         }
@@ -1446,8 +1420,7 @@ impl CampaignRepository {
         let roots = parent.snapshot.roots();
         match self.read_fact(transition)? {
             CampaignFact::CampaignDerived(_) => {}
-            CampaignFact::BranchRequestIssued(request_id)
-            | CampaignFact::BranchRequestAccepted {
+            CampaignFact::BranchRequestAccepted {
                 request: request_id,
                 ..
             } => {
@@ -1537,8 +1510,7 @@ impl CampaignRepository {
                     }
                 }
             }
-            CampaignFact::ObservationPublished(observation_id)
-            | CampaignFact::ObservationCredited(observation_id) => {
+            CampaignFact::ObservationCredited(observation_id) => {
                 let observation = self.decode_observation(observation_id.content_id())?;
                 let attempt = observation.attempt().content_id();
                 if self.merkle.get(

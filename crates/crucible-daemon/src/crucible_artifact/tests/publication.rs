@@ -148,7 +148,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     .expect("choice opportunity");
     let discovery =
         ChoiceDiscovery::new(declaration, domain, opportunity.clone()).expect("discovery");
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage =
         CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage projection");
@@ -241,7 +241,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 Ok(CrucibleFindingReplayEvidence::new(
                     Some(observed),
                     candidate_configuration,
-                    MeasurementSet::new(BTreeMap::new()).expect("replay measurements"),
+                    crate::crucible_measurement::empty_test_measurement_set(),
                     properties.clone(),
                     CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
                         .expect("replay coverage"),
@@ -636,7 +636,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                     .and_then(|(measurement, _, _, _, _)| {
                         measurement_records
                             .get(&measurement)
-                            .and_then(|measurement| measurement.evaluation())
+                            .map(|measurement| measurement.evaluation())
                             .map(|evaluation| evaluation.evidence().contains(evidence))
                     })
                     .unwrap_or(false)
@@ -646,7 +646,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                     .and_then(|(measurement, _, _, _, _)| {
                         measurement_records
                             .get(&measurement)
-                            .and_then(|measurement| measurement.evaluation())
+                            .map(|measurement| measurement.evaluation())
                             .map(|evaluation| evaluation.evidence().contains(evidence))
                     })
                     .unwrap_or(false)
@@ -662,7 +662,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
                 .and_then(|(measurement, _, _, _, _)| {
                     measurement_records
                         .get(&measurement)
-                        .and_then(|measurement| measurement.evaluation())
+                        .map(|measurement| measurement.evaluation())
                         .map(|evaluation| evaluation.evidence().contains(&shared_evidence))
                 })
                 .unwrap_or(false)
@@ -676,9 +676,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .get(&original_measurement_id)
         .copied()
         .expect("shared replay measurement");
-    let retained = original_measurement
-        .evaluation()
-        .expect("shared replay evaluation");
+    let retained = original_measurement.evaluation();
     let mut tampered_payload = retained.payload().to_vec();
     tampered_payload.push(b' ');
     let tampered_measurement = MeasurementSet::from_evaluation(
@@ -806,7 +804,6 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             observation_candidate_v2
                 .measurements()
                 .evaluation()
-                .expect("v2 measurement evaluation")
                 .definitions()
         });
         let wrong_measurements = measurement_with_evidence(

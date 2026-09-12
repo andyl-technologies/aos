@@ -27,9 +27,9 @@ use crucible_campaign::{
     FindingExactRetentionDisposition, FindingExactRetentionIncomplete, FindingId, FindingKind,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplayCaptureIncomplete,
     FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, MeasurementSet, MerkleMap,
-    Observation, ObservationCandidate, ObservationId, PropertyVerdictSet, RetentionPolicy,
-    ScenarioDefId, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, MerkleMap, Observation,
+    ObservationCandidate, ObservationId, PropertyVerdictSet, RetentionPolicy, ScenarioDefId,
+    StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
@@ -491,7 +491,7 @@ fn publish_pending_finding_fixture_with_observation(
         )
         .expect("publish pending finding child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(&crate::crucible_measurement::empty_test_measurement_set())
         .expect("publish pending finding measurements");
     let properties = repository
         .publish_property_verdict_set(

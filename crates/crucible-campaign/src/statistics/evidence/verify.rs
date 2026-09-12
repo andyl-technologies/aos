@@ -227,10 +227,7 @@ fn verify_finite(
         verify_execution_common(evidence, execution)?;
         validate_finite_request(evidence, *expected_coordinate, draw_plan, execution, &draws)?;
 
-        let segments = execution
-            .path()
-            .segments()
-            .ok_or_else(|| invalid("statistical evidence draw path is legacy"))?;
+        let segments = execution.path().segments();
         let terminal = segments
             .last()
             .copied()
@@ -425,10 +422,7 @@ fn verify_execution_common(
         return Err(invalid("statistical selection disagrees with the proposal"));
     }
 
-    let segments = execution
-        .path()
-        .segments()
-        .ok_or_else(|| invalid("statistical path is legacy"))?;
+    let segments = execution.path().segments();
     let terminal = segments
         .last()
         .ok_or_else(|| invalid("statistical path is empty"))?;
@@ -662,12 +656,8 @@ fn validate_extended_path(
     source: &BranchPath,
     child: &BranchPath,
 ) -> Result<(), CampaignCodecError> {
-    let source_segments = source
-        .segments()
-        .ok_or_else(|| invalid("SMC source path is legacy"))?;
-    let child_segments = child
-        .segments()
-        .ok_or_else(|| invalid("SMC transition path is legacy"))?;
+    let source_segments = source.segments();
+    let child_segments = child.segments();
     if child_segments.len() != source_segments.len().saturating_add(1)
         || !child_segments.starts_with(source_segments)
     {

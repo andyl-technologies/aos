@@ -32,9 +32,9 @@ use crucible_campaign::{
     DaemonEpoch, DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational,
     ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExecutorService,
     ExplorerPolicy, FairnessPolicy, IntegerDomain, IntegerRepresentation, IntegerValue,
-    MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
-    PropertyVerdictSet, PuctPolicy, RetentionPolicy, SelectableDeclaration, Selection,
-    SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    Observation, ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy,
+    RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -2048,7 +2048,7 @@ fn repository_execution_fixture() -> (
         .expect("initial discovery attempt");
     let attempt = repository.load_attempt(attempt_id).expect("load attempt");
 
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage =
         CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage projection");

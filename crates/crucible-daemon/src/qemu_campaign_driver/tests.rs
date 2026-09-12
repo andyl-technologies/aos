@@ -810,7 +810,7 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
         .collect::<BTreeSet<_>>();
     assert_eq!(candidate.coverage().identities(), &expected);
     assert_eq!(candidate.measurements().schema_version(), 2);
-    assert!(candidate.measurements().evaluation().is_some());
+    assert_eq!(candidate.measurements().schema_version(), 2);
     assert!(candidate.properties().properties().is_empty());
     assert_eq!(owner.drives, 1);
 }
@@ -1091,10 +1091,7 @@ fn modeled_scheduler_metrics_are_derived_from_the_canonical_log() {
         .seal(pending, Vec::new())
         .expect("model-owned measurement projection");
     let candidate = prepared_semantic_observation(product);
-    let retained = candidate
-        .measurements()
-        .evaluation()
-        .expect("verified evaluation payload");
+    let retained = candidate.measurements().evaluation();
     let payload = std::str::from_utf8(retained.payload()).expect("canonical measurement JSON");
     assert!(payload.contains("\"scheduler-events\""));
     assert!(payload.contains(&format!(
@@ -1157,10 +1154,7 @@ fn guest_measurement_messages_normalize_against_the_exact_scenario_contract() {
 
     let publication = evaluate_test_measurements(&definitions, entries)
         .expect("declared guest measurement publication");
-    let evaluation = publication
-        .measurement_set()
-        .evaluation()
-        .expect("verified measurement evaluation");
+    let evaluation = publication.measurement_set().evaluation();
     let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
 
     assert!(payload.contains("\"driver-window\""));
@@ -1248,10 +1242,7 @@ fn fresh_driver_retains_verified_guest_measurement_evaluation() {
         .seal(pending, Vec::new())
         .expect("verified guest measurement projection");
     let candidate = prepared_semantic_observation(product);
-    let evaluation = candidate
-        .measurements()
-        .evaluation()
-        .expect("verified evaluation payload");
+    let evaluation = candidate.measurements().evaluation();
     let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
 
     assert!(payload.contains("\"driver-window\""));

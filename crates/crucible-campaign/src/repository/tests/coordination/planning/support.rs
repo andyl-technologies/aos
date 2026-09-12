@@ -125,7 +125,9 @@ pub(super) fn exercise_beam_out_of_order_completion(
     let (first_configuration, first_content, first_continuation) = make_child("first");
     let (second_configuration, second_content, second_continuation) = make_child("second");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let properties_id = repository
@@ -376,40 +378,6 @@ pub(super) fn canonical_planner_driver_basis(
     .expect("planner artifact");
     let initial_state = CanonicalFrontierPlanner::initial_state().expect("initial planner state");
     let budget = PlanningBudget::new(1, 1, 8, 8_192, 100).expect("planner budget");
-    (engine, artifact, initial_state, budget)
-}
-
-pub(super) fn legacy_request_budget_planner_driver_basis(
-    repository: &CampaignRepository,
-) -> (PlannerEngine, PolicyArtifact, PlannerState, PlanningBudget) {
-    let engine = PlannerEngine::new(
-        "crucible-canonical-frontier",
-        5,
-        1,
-        BTreeSet::from([
-            crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-            crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-            crate::CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-        ]),
-    )
-    .expect("legacy request-budget planner descriptor");
-    let dependency_bytes = b"legacy request-budget planner driver dependency".to_vec();
-    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
-    repository
-        .blobs
-        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
-        .expect("legacy planner dependency");
-    let artifact = PolicyArtifact::new(
-        engine.id().expect("legacy engine id"),
-        1,
-        dependency,
-        BTreeSet::new(),
-        BTreeMap::new(),
-    )
-    .expect("legacy planner artifact");
-    let initial_state = CanonicalFrontierPlanner::initial_state_for_engine(&engine)
-        .expect("legacy initial planner state");
-    let budget = PlanningBudget::new(1, 1, 8, 8_192, 100).expect("legacy planner budget");
     (engine, artifact, initial_state, budget)
 }
 

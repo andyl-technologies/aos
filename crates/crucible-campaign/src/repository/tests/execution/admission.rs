@@ -63,7 +63,7 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
             admission_ordinal: AdmissionOrdinal::new(1),
         }
     );
-    assert_eq!(basis.retention_policy(), policy.id().ok());
+    assert_eq!(basis.retention_policy(), policy.id().expect("policy id"));
     let basis_head = repository.head("admission").expect("basis head");
     assert_eq!(
         repository
@@ -103,6 +103,7 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
             .snapshot
             .transition()
             .expect("admission transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged admission successor");
     let forged_content = repository
@@ -293,7 +294,10 @@ fn attempt_admission_assigns_one_basis_and_deduplicates_later_causes() {
             proposal: duplicate_proposed.proposal,
         }
     );
-    assert_eq!(additional.retention_policy(), policy.id().ok());
+    assert_eq!(
+        additional.retention_policy(),
+        policy.id().expect("policy id")
+    );
     let deduplicated_head = repository.head("admission").expect("deduplicated head");
     assert_eq!(
         repository
@@ -487,7 +491,7 @@ fn policy_bound_admission_validates_every_request_cause() {
         repository
             .put_attempt(&attempt)
             .expect("publish cause attempt");
-        let admission = AttemptAdmission::new_policy_bound(
+        let admission = AttemptAdmission::new(
             attempt.id().expect("attempt ID"),
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: Some(proposal.id().expect("proposal ID")),
@@ -500,7 +504,7 @@ fn policy_bound_admission_validates_every_request_cause() {
         );
         let decoded = AttemptAdmission::from_canonical_bytes(&admission.canonical_bytes())
             .expect("round-trip policy-bound admission");
-        assert_eq!(decoded.retention_policy(), Some(policy_id));
+        assert_eq!(decoded.retention_policy(), policy_id);
         assert_eq!(
             admission
                 .id()
@@ -521,10 +525,10 @@ fn admission_policy_binding_rejects_forgery_and_survives_policy_activation() {
         .load_attempt_admission(admitted.admission)
         .expect("policy-bound admission");
     let policy_id = policy.id().expect("original policy ID");
-    assert_eq!(basis.retention_policy(), Some(policy_id));
+    assert_eq!(basis.retention_policy(), policy_id);
 
     let (revision, revision_id) = retention_policy_revision(&repository, &policy);
-    let forged = AttemptAdmission::new_policy_bound(basis.attempt(), basis.role(), revision_id);
+    let forged = AttemptAdmission::new(basis.attempt(), basis.role(), revision_id);
     let forged_content = repository
         .put_attempt_admission(&forged)
         .expect("publish forged admission");
@@ -618,7 +622,7 @@ fn admission_policy_binding_rejects_forgery_and_survives_policy_activation() {
             .load_attempt_admission(admitted.admission)
             .expect("original basis after activation")
             .retention_policy(),
-        Some(policy_id)
+        policy_id
     );
     assert_eq!(revision.id().expect("revision ID"), revision_id);
 }
@@ -738,8 +742,8 @@ fn post_activation_additional_cause_keeps_each_admission_policy() {
         additional.role(),
         AttemptAdmissionRole::AdditionalCause { .. }
     ));
-    assert_eq!(basis.retention_policy(), policy.id().ok());
-    assert_eq!(additional.retention_policy(), Some(revision_id));
+    assert_eq!(basis.retention_policy(), policy.id().expect("policy id"));
+    assert_eq!(additional.retention_policy(), revision_id);
 }
 
 fn retention_policy_revision(

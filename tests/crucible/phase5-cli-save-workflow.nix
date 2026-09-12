@@ -244,7 +244,7 @@
       }
       {
         label = "qemu-selected save live checkpoint proof";
-        needle = "save-live-checkpoint";
+        needle = "save-campaign-default-path";
       }
       {
         label = "qemu-selected save test";

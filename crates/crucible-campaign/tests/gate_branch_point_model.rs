@@ -1229,8 +1229,13 @@ fn publish_observation(
         1,
         label.as_bytes().to_vec(),
     )?;
-    let measurements =
-        repository.publish_measurement_set(&MeasurementSet::new(BTreeMap::new())?)?;
+    let measurements = repository.publish_measurement_set(&MeasurementSet::from_evaluation(
+        CampaignHash::derive("test.measurement", b"branch-point.measurement-definitions"),
+        1,
+        CampaignHash::derive("test.measurement", b"branch-point.measurement-evaluation"),
+        b"branch-point-measurements".to_vec(),
+        BTreeSet::new(),
+    )?)?;
     let properties =
         repository.publish_property_verdict_set(&PropertyVerdictSet::new(BTreeMap::new())?)?;
     let coverage = repository

@@ -814,10 +814,10 @@ store MUST NOT be required for correctness.
   23, 07 §7.
 
 - **[ADV-29]** A reproduction artifact MUST reproduce a finding regardless of how
-  the finding was reached (interactive forking, state-space search, or
+  the finding was reached (campaign forking, state-space search, or
   coverage-guided fuzzing): all three reduce to the same `(def, seed, schedule)`
   bundle because all three are operations on the one execution model (05) and
-  temporal graph (07). An interactively-discovered finding MUST emit the same kind
+  temporal graph (07). A campaign-fork finding MUST emit the same kind
   of artifact as a fuzzed one (20 [SESS-20]). *Gate:* `gate:e2e-determinism`.
   *Spec:* §22.8.1; cross-ref 20 §8, 05 §9.
 
@@ -1168,13 +1168,13 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   Completed by `checks.crucible.phase6.reproductionArtifacts`: interesting
   findings now emit a `FindingReproductionArtifact` wrapper around the existing
   self-contained `(seed, scenario, schedule)` `ReproductionArtifact`, with explicit
-  discovery-path tags for interactive forks, state-space search failures,
-  coverage-guided fuzzing candidates, and retained corpus entries. Interactive
+  discovery-path tags for campaign forks, state-space search failures,
+  coverage-guided fuzzing candidates, and retained corpus entries. Campaign
   forks and `CoverageGuidedFuzzIteration` expose path-specific emission hooks,
   state-space search records the artifact directly in each `SearchDiscoveredFailure`,
   retained corpus artifacts can be reloaded from the `DagStore`, and the gate
   proves the same configuration yields the same artifact id across
-  interactive/search discovery, artifacts replay without stored snapshots or
+  campaign-fork/search discovery, artifacts replay without stored snapshots or
   campaign/family handles, stored artifact bytes reload into the same replay
   evidence, retained corpus descriptor drift is rejected, and mismatched scenario
   forms are rejected explicitly.

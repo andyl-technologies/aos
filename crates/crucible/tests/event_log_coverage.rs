@@ -183,10 +183,7 @@ fn coverage_fingerprint_is_checkpoint_feedback_from_log_projection() {
 
 #[test]
 fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-coverage.world",
-        "graph-cache-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
     let child = step(
@@ -254,10 +251,7 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
 
 #[test]
 fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-coverage.world",
-        "delayed-closure-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
     let child = step(

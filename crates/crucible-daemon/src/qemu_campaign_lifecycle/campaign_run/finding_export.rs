@@ -716,17 +716,13 @@ where
                 reason: "finding triage replay storage description has no root",
             },
         ))?;
-    capture_remaining_triage_object_segments(
-        context,
+    let identity = TriageReplayIdentity {
         finding,
         bundle,
         role,
         evidence,
-        root,
-        1,
-        budget,
-        &mut segments,
-    )?;
+    };
+    capture_remaining_triage_object_segments(context, &identity, root, 1, budget, &mut segments)?;
     let root_bytes = captured_object_bytes(&description, root, &segments)
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
     description
@@ -738,10 +734,7 @@ where
     for object in &description.objects()[1..] {
         capture_remaining_triage_object_segments(
             context,
-            finding,
-            bundle,
-            role,
-            evidence,
+            &identity,
             object,
             0,
             budget,
@@ -754,13 +747,17 @@ where
     Ok(GuardedCampaignFindingTriageReplayProof { segments })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn capture_remaining_triage_object_segments<C, E>(
-    context: &FindingExportContext<'_, C>,
+#[derive(Clone, Copy)]
+struct TriageReplayIdentity {
     finding: FindingId,
     bundle: crucible_campaign::FindingCandidateBundleId,
     role: CampaignFindingTriageReplayRole,
     evidence: crucible_campaign::FindingTriageReplayEvidenceId,
+}
+
+fn capture_remaining_triage_object_segments<C, E>(
+    context: &FindingExportContext<'_, C>,
+    identity: &TriageReplayIdentity,
     object: &crucible_campaign::FindingTriageReplayStorageObject,
     first_segment_index: u32,
     budget: &mut FindingExportBudget,
@@ -791,10 +788,10 @@ where
             context.principal.clone(),
             context.campaign.clone(),
             context.snapshot,
-            finding,
-            bundle,
-            role,
-            evidence,
+            identity.finding,
+            identity.bundle,
+            identity.role,
+            identity.evidence,
             object.ordinal(),
             object.content(),
             segment_index,
@@ -942,8 +939,8 @@ mod tests {
 
     use crucible_campaign::{
         CampaignHash, CampaignLineageId, CampaignPolicyId, CampaignRoots, CampaignSnapshot,
-        Finding, FindingKind, FindingOccurrenceSet, FindingSignature, MerkleMap, ObservationId,
-        ReproductionArtifactId,
+        Finding, FindingExactPins, FindingKind, FindingOccurrenceSet, FindingSignature, MerkleMap,
+        ObservationId, ReproductionArtifactId,
     };
     use crucible_cas::content_store::{ContentId, MemoryBlobBackend, ObjectKind};
 
@@ -1063,6 +1060,10 @@ mod tests {
             accounting: empty.content_id(),
             coordination: empty.content_id(),
         };
+        let ledger = crucible_campaign::CampaignBudgetLedger::empty(empty.content_id())
+            .expect("campaign budget ledger")
+            .id()
+            .expect("campaign budget ledger ID");
         let snapshot = CampaignSnapshot::genesis(
             CampaignLineageId::parse(&format!(
                 "crucible.campaign.lineage@{}",
@@ -1076,6 +1077,7 @@ mod tests {
             ))
             .expect("campaign policy"),
             roots,
+            ledger,
         )
         .expect("campaign snapshot");
         let snapshot_id = snapshot.id().expect("campaign snapshot ID");
@@ -1122,13 +1124,13 @@ mod tests {
             "crucible.campaign.snapshot@{}",
             ContentId::for_bytes(
                 ObjectKind::CampaignSnapshot,
-                2,
+                3,
                 b"finding-export-first-seen"
             )
             .encode()
         ))
         .expect("first-seen snapshot");
-        Finding::new(
+        Finding::new_with_retention(
             FindingSignature::new(
                 FindingKind::Timeout,
                 CampaignHash::derive("finding-export-fingerprint", b"timeout"),
@@ -1149,7 +1151,7 @@ mod tests {
             FindingOccurrenceSet::new(occurrence_root, 1, observation)
                 .expect("finding occurrence set"),
             None,
-            BTreeSet::new(),
+            FindingExactPins::default(),
         )
         .expect("finding")
     }

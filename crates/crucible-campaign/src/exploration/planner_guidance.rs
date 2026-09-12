@@ -40,7 +40,7 @@ impl PlannerCandidateGuidance {
     ///
     /// Returns [`CampaignCodecError`] when the ordinal is zero, the edge does
     /// not derive from the point/domain/value tuple, evidence counts disagree
-    /// with the PUCT predicates, a legacy record carries objective reward,
+    /// with the PUCT predicates, objective reward is inconsistent,
     /// finding counts are empty or oversized, or the canonical record exceeds
     /// 64 KiB.
     // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
@@ -93,10 +93,7 @@ impl PlannerCandidateGuidance {
         objective_reward_micros: i64,
         finding_events: BTreeMap<FindingKind, u64>,
     ) -> Result<Self, CampaignCodecError> {
-        if !matches!(
-            schema_version,
-            1 | PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION
-        ) || schema_version == 1 && objective_reward_micros != 0
+        if schema_version != PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION
             || ordinal == 0
             || edge
                 != crate::Selection::campaign_edge_id(
@@ -205,10 +202,6 @@ impl PlannerCandidateGuidance {
 
     pub(crate) const fn schema_version(&self) -> u32 {
         self.schema_version
-    }
-
-    pub(crate) const fn current_schema_version() -> u32 {
-        PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION
     }
 
     /// Returns owner-verified finding occurrences by closed finding class.
@@ -350,18 +343,13 @@ impl Canonical for PlannerCandidateGuidance {
         self.edge.encode(encoder);
         self.statistics.encode(encoder);
         self.novelty_events.encode(encoder);
-        if self.schema_version >= 2 {
-            self.objective_reward_micros.encode(encoder);
-        }
+        self.objective_reward_micros.encode(encoder);
         self.finding_events.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if !matches!(
-            schema_version,
-            1 | PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION
-        ) {
+        if schema_version != PLANNER_CANDIDATE_GUIDANCE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner candidate guidance schema version",
             });
@@ -376,11 +364,7 @@ impl Canonical for PlannerCandidateGuidance {
         let edge = BranchEdgeId::decode(decoder)?;
         let statistics = PuctEdgeStatistics::decode(decoder)?;
         let novelty_events = u64::decode(decoder)?;
-        let objective_reward_micros = if schema_version >= 2 {
-            i64::decode(decoder)?
-        } else {
-            0
-        };
+        let objective_reward_micros = i64::decode(decoder)?;
         let finding_events = decoder.map_bounded_by(
             MAX_PLANNER_CANDIDATE_FINDING_KINDS,
             "planner-candidate-guidance-finding-count",

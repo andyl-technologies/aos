@@ -69,6 +69,14 @@ struct GraphPageService {
     attempt_proposal: Proposal,
 }
 
+fn budget_ledger(label: &str) -> CampaignBudgetLedgerId {
+    CampaignBudgetLedgerId::parse(&format!(
+        "crucible.campaign.budget-ledger@{}",
+        ContentId::for_bytes(ObjectKind::CampaignFact, 2, label.as_bytes()).encode()
+    ))
+    .expect("current budget-ledger ID")
+}
+
 macro_rules! impl_unused_finding_occurrence_service {
     ($service:ty) => {
         impl CampaignFindingOccurrenceService for $service {
@@ -153,6 +161,7 @@ fn fixed_branch_response(
             coordination: root,
         },
         acceptance_fact.id().expect("acceptance fact ID"),
+        budget_ledger(label),
     )
     .expect("accepted snapshot");
 
@@ -165,7 +174,6 @@ fn fixed_branch_response(
             summary,
             snapshot: accepted,
             acceptance_fact,
-            summary_recorded: true,
             replayed: false,
         },
     )
@@ -2354,7 +2362,7 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
     ));
     let finding = FindingId::parse(&format!(
         "crucible.campaign.finding@{}",
-        ContentId::for_bytes(ObjectKind::Finding, 1, b"finding-explanation-parser").encode()
+        ContentId::for_bytes(ObjectKind::Finding, 2, b"finding-explanation-parser").encode()
     ))
     .expect("finding explanation ID")
     .to_string();
@@ -3393,6 +3401,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
             cause: branch_request.cause(),
             admission_ordinal: AdmissionOrdinal::new(1),
         },
+        policy("policy"),
     );
     let accounting = map
         .insert(
@@ -3422,7 +3431,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         StopOutcome::ModeledTimeout("execution".to_owned()),
         MeasurementSetId::parse(&format!(
             "crucible.campaign.measurement-set@{}",
-            ContentId::for_bytes(ObjectKind::Observation, 1, b"cli-finding-measurements").encode()
+            ContentId::for_bytes(ObjectKind::Observation, 2, b"cli-finding-measurements").encode()
         ))
         .expect("finding measurement ID"),
         PropertyVerdictSetId::parse(&format!(
@@ -3458,7 +3467,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         b"reproduce-timeout".to_vec(),
     )
     .expect("finding reproduction");
-    let finding = Finding::new(
+    let finding = Finding::new_with_retention(
         FindingSignature::new(
             FindingKind::Timeout,
             hash("finding-fingerprint"),
@@ -3473,7 +3482,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         snapshot("finding-first-seen"),
         FindingOccurrenceSet::new(empty, 3, finding_observation_id).expect("finding occurrences"),
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )
     .expect("finding");
     let finding_root = map
@@ -3494,8 +3503,13 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         accounting: accounting.content_id(),
         coordination: empty,
     };
-    let historical = CampaignSnapshot::genesis(lineage("lineage"), policy("policy"), roots)
-        .expect("historical graph snapshot");
+    let historical = CampaignSnapshot::genesis(
+        lineage("lineage"),
+        policy("policy"),
+        roots,
+        budget_ledger("historical-graph"),
+    )
+    .expect("historical graph snapshot");
     let historical_id = historical.id().expect("historical graph snapshot ID");
     let transition = CampaignFactId::parse(&format!(
         "crucible.campaign.fact@{}",
@@ -3508,6 +3522,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         policy("next-policy"),
         roots,
         transition,
+        historical.budget_ledger(),
     )
     .expect("current graph snapshot");
     let snapshot_id = snapshot.id().expect("current graph snapshot ID");
@@ -3606,6 +3621,7 @@ fn add_ambiguous_selector_choice(
         service.snapshot.active_policy(),
         roots,
         transition,
+        service.snapshot.budget_ledger(),
     )
     .expect("selector ambiguity snapshot");
     let snapshot_id = snapshot.id().expect("selector ambiguity snapshot ID");
@@ -3682,7 +3698,7 @@ fn hash(label: &str) -> CampaignHash {
 fn snapshot(label: &str) -> CampaignSnapshotId {
     CampaignSnapshotId::parse(&format!(
         "crucible.campaign.snapshot@{}",
-        ContentId::for_bytes(ObjectKind::CampaignSnapshot, 2, label.as_bytes()).encode()
+        ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, label.as_bytes()).encode()
     ))
     .expect("snapshot id")
 }

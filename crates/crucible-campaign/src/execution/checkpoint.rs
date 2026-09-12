@@ -12,8 +12,6 @@
 //!                                        completed-disposition | finding-candidate
 //! ```
 //!
-//! The parent module catalogs the retained earlier versions.
-
 use super::*;
 
 /// Strict idempotent exact-checkpoint request for one execution incarnation.
@@ -94,12 +92,10 @@ impl CheckpointAttemptExecutionRequest {
     /// Returns a domain-separated digest of every canonical request field.
     #[must_use]
     pub fn request_digest(&self) -> CampaignHash {
-        let domain = if self.schema_version == EXECUTOR_MESSAGE_SCHEMA_VERSION {
-            "crucible.campaign.checkpoint-attempt-execution-request.v2"
-        } else {
-            "crucible.campaign.checkpoint-attempt-execution-request.v3"
-        };
-        CampaignHash::derive(domain, &self.canonical_bytes())
+        CampaignHash::derive(
+            "crucible.campaign.checkpoint-attempt-execution-request.v3",
+            &self.canonical_bytes(),
+        )
     }
 
     /// Returns strict canonical component-message bytes.
@@ -127,9 +123,7 @@ impl Canonical for CheckpointAttemptExecutionRequest {
         self.attempt.encode(encoder);
         self.execution.encode(encoder);
         self.execution_basis.encode(encoder);
-        if self.schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
-            self.scope.encode(encoder);
-        }
+        self.scope.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -140,11 +134,7 @@ impl Canonical for CheckpointAttemptExecutionRequest {
         let attempt = AttemptId::decode(decoder)?;
         let execution = ExecutionId::decode(decoder)?;
         let execution_basis = CampaignHash::decode(decoder)?;
-        let scope = if schema_version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
-            AttemptExecutionScope::decode(decoder)?
-        } else {
-            AttemptExecutionScope::Semantic
-        };
+        let scope = AttemptExecutionScope::decode(decoder)?;
         let request = Self {
             schema_version,
             daemon_epoch,

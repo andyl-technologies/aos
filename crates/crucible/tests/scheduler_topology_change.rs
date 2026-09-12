@@ -79,11 +79,13 @@ fn runtime_topology_change_queue_recomputes_before_next_pick() {
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
-    scheduler.queue_topology_change(SchedulerTopologyChange::new(
-        2,
-        SchedulerTopologyChangeTrigger::LatencyChange,
-        vec![edge(&producer, &consumer, 6)],
-    ));
+    scheduler
+        .schedule_topology_change(SchedulerTopologyChange::new(
+            2,
+            SchedulerTopologyChangeTrigger::LatencyChange,
+            vec![edge(&producer, &consumer, 6)],
+        ))
+        .expect("future topology change should enqueue");
     let outcome = drive_one_quantum(&mut scheduler);
 
     assert_eq!(outcome.advanced_node, Some(consumer));

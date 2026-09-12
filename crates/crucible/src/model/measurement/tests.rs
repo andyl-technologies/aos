@@ -122,97 +122,29 @@ fn measured_scenario_round_trips_binary_and_toml() -> Result<(), Box<dyn Error>>
         )
         .is_err()
     );
+    assert!(
+        ScenarioDefForm::from_canonical_toml(
+            &toml.replace("crucible.scenario.v7", "crucible.scenario.v6")
+        )
+        .is_err()
+    );
     Ok(())
 }
 
 #[test]
-fn v5_scenario_reads_as_empty_measurements_without_identity_drift() -> Result<(), Box<dyn Error>> {
-    let world = measurement_world()?;
-    let plan = Plan::empty();
-    let properties = Properties::empty();
-    let form = ScenarioDefForm::from_components(&world, &plan, &properties, Seed::default())?;
-    let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V5);
-    writer.write_hash(form.id());
-    write_world_binary(&form.world, &mut writer);
-    write_plan_binary(&form.plan, &mut writer);
-    write_properties_binary(&form.properties, &mut writer);
-    writer.write_seed(form.seed);
-    writer.write_u64(form.app_random_draw_cap);
-
-    let scenario_v5 = writer.finish();
-    let decoded = ScenarioDefForm::from_compact_binary(&scenario_v5)?;
-    assert_eq!(decoded.id(), form.id());
-    assert!(decoded.measurements().is_empty());
-    let toml_v5 = form
-        .to_canonical_toml()?
-        .replace("crucible.scenario.v7", "crucible.scenario.v5")
-        .lines()
-        .filter(|line| !line.starts_with("selectable_"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let decoded_toml = ScenarioDefForm::from_canonical_toml(&toml_v5)?;
-    assert_eq!(decoded_toml.id(), form.id());
-    assert!(decoded_toml.measurements().is_empty());
-
-    let schedule = Schedule::empty();
-    let mut artifact = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5);
-    artifact.write_binary_blob(&scenario_v5);
-    artifact.write_binary_blob(&schedule.to_compact_binary());
-    let artifact = ReproductionArtifact::from_compact_binary(&artifact.finish())?;
-    assert_eq!(artifact.scenario_form(), &form);
-    assert_eq!(artifact.schedule(), &schedule);
-    Ok(())
-}
-
-#[test]
-fn v6_scenario_and_reproduction_read_with_empty_selectables() -> Result<(), Box<dyn Error>> {
-    let world = measurement_world()?;
-    let plan = Plan::empty();
-    let properties = Properties::empty();
-    let measurements = MeasurementDefinitions::new(
-        &world,
-        &plan,
-        &properties,
-        vec![definition("recovery", "latency")?],
-    )?;
-    let form = ScenarioDefForm::from_components_with_measurements(
-        &world,
-        &plan,
-        &properties,
-        &measurements,
-        Seed::default(),
-    )?;
-    let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V6);
-    writer.write_hash(form.id());
-    write_world_binary(&form.world, &mut writer);
-    write_plan_binary(&form.plan, &mut writer);
-    write_properties_binary(&form.properties, &mut writer);
-    writer.write_binary_blob(form.measurements.canonical_bytes());
-    writer.write_seed(form.seed);
-    writer.write_u64(form.app_random_draw_cap);
-
-    let scenario_v6 = writer.finish();
-    let decoded = ScenarioDefForm::from_compact_binary(&scenario_v6)?;
-    assert_eq!(decoded, form);
-    assert!(decoded.selectables().is_empty());
-
-    let toml_v6 = form
-        .to_canonical_toml()?
-        .replace("crucible.scenario.v7", "crucible.scenario.v6")
-        .lines()
-        .filter(|line| !line.starts_with("selectable_"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_eq!(ScenarioDefForm::from_canonical_toml(&toml_v6)?, form);
-
-    let schedule = Schedule::empty();
-    let mut artifact = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6);
-    artifact.write_binary_blob(&scenario_v6);
-    artifact.write_binary_blob(&schedule.to_compact_binary());
-    let artifact = ReproductionArtifact::from_compact_binary(&artifact.finish())?;
-    assert_eq!(artifact.scenario_form(), &form);
-    assert_eq!(artifact.schedule(), &schedule);
-    Ok(())
+fn obsolete_scenario_and_reproduction_versions_fail_at_admission() {
+    for magic in [
+        b"crucible.scenario-def-form.v5\0".as_slice(),
+        b"crucible.scenario-def-form.v6\0".as_slice(),
+    ] {
+        assert!(ScenarioDefForm::from_compact_binary(magic).is_err());
+    }
+    for magic in [
+        b"crucible.reproduction-artifact.v5\0".as_slice(),
+        b"crucible.reproduction-artifact.v6\0".as_slice(),
+    ] {
+        assert!(ReproductionArtifact::from_compact_binary(magic).is_err());
+    }
 }
 
 #[test]
@@ -288,12 +220,13 @@ fn measurement_binary_rejects_noncanonical_json_before_identity_acceptance()
     )?;
     let mut noncanonical = measurements.canonical_bytes().to_vec();
     noncanonical.push(b' ');
-    let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V6);
+    let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V7);
     writer.write_hash(form.id());
     write_world_binary(&form.world, &mut writer);
     write_plan_binary(&form.plan, &mut writer);
     write_properties_binary(&form.properties, &mut writer);
     writer.write_binary_blob(&noncanonical);
+    writer.write_binary_blob(&form.selectables.canonical_bytes());
     writer.write_seed(form.seed);
     writer.write_u64(form.app_random_draw_cap);
 

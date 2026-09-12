@@ -40,11 +40,16 @@ fn initial_discovery_import_recomputes_stop_ordinal_and_lifecycle() {
             cause: BranchRequestCause::ExhaustivePolicy(policy.id().expect("policy id")),
             admission_ordinal: AdmissionOrdinal::new(2),
         },
+        policy.id().expect("policy id"),
     );
     for (candidate, basis) in [
         (
             &wrong_stop,
-            AttemptAdmission::new(wrong_stop.id().expect("wrong id"), admission.role()),
+            AttemptAdmission::new(
+                wrong_stop.id().expect("wrong id"),
+                admission.role(),
+                admission.retention_policy(),
+            ),
         ),
         (&attempt, wrong_ordinal),
     ] {
@@ -61,14 +66,6 @@ fn initial_discovery_import_recomputes_stop_ordinal_and_lifecycle() {
             head.snapshot_id()
         );
     }
-
-    let legacy = AttemptAdmission::new(admission.attempt(), admission.role());
-    assert_eq!(legacy.schema_version(), 1);
-    let legacy_successor =
-        forged_discovery_successor(&repository, &parent, &path, &attempt, legacy, true);
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    cold.validate_complete_head(legacy_successor)
-        .expect("historical v1 discovery remains valid after restart/import");
 
     repository
         .apply_control(
@@ -139,6 +136,7 @@ fn forged_discovery_successor(
             parent.snapshot.active_policy(),
             roots,
             fact_id,
+            crate::test_budget_ledger_id(),
         )
         .expect("successor")
     };

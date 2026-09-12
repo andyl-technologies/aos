@@ -265,7 +265,6 @@ struct Fixture {
     campaign: CampaignName,
     configuration: ConfigurationId,
     pin_fact: CampaignFactId,
-    legacy_pin_fact: CampaignFactId,
     checkpoint: ExactCheckpointId,
 }
 
@@ -1083,10 +1082,7 @@ fn selected_checkpoint_fat_thin_validation_promotes_exact_root() {
         ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes)),
         fixture.configuration
     );
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.exact-pin-materialization.world.v1",
-        "oracle-validator",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let runtime_hash = ContentHash::from_canonical_material(
         "crucible.test.exact-pin-materialization.runtime.v1",
         "oracle-validator",
@@ -1165,10 +1161,7 @@ fn guarded_fat_thin_session_reaps_before_promoting_selected_root() {
         "crucible.test.exact-pin-materialization",
         "guarded-oracle-session",
     ));
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.exact-pin-materialization.world.v1",
-        "guarded-oracle-session",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let runtime_hash = ContentHash::from_canonical_material(
         "crucible.test.exact-pin-materialization.runtime.v1",
         "guarded-oracle-session",
@@ -1247,10 +1240,7 @@ fn failed_guarded_thin_launch_quarantines_resources_without_promotion() {
         "crucible.test.exact-pin-materialization",
         "guarded-oracle-failure",
     ));
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.exact-pin-materialization.world.v1",
-        "guarded-oracle-failure",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let runtime_hash = ContentHash::from_canonical_material(
         "crucible.test.exact-pin-materialization.runtime.v1",
         "guarded-oracle-failure",
@@ -2047,23 +2037,6 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
     let path = store.selection_path(&fixture.campaign, fixture.configuration);
     let bytes = fs::read(&path).expect("read canonical selection");
     let decoded = decode_selection(&bytes).expect("decode canonical selection");
-    // Keep the selection format's historical vector while new genesis binds
-    // an indexed ledger. Only the pin command's expected snapshot changes.
-    let mut legacy = decoded.clone();
-    legacy.pin_fact = fixture.legacy_pin_fact;
-    let legacy_bytes = encode_selection(&legacy);
-    assert_eq!(
-        decode_selection(&legacy_bytes).expect("legacy selection"),
-        legacy
-    );
-    assert_eq!(
-        CampaignHash::derive(
-            "crucible.test.exact-pin-materialization-selection-golden.v1",
-            &legacy_bytes,
-        )
-        .to_hex(),
-        "943d0847422b89df1156560390729ae595e1d343c6babace0ad44ce43b5f34a4"
-    );
     assert_eq!(
         CampaignHash::derive(
             "crucible.test.exact-pin-materialization-selection-golden.v1",
@@ -2344,40 +2317,6 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
     repository
         .apply_pin(campaign.as_str(), &pin)
         .expect("pin campaign");
-    let mut legacy_roots = created.snapshot().roots();
-    let merkle = crucible_campaign::MerkleMap::new(backend.clone());
-    let empty = merkle.empty().expect("legacy empty").content_id();
-    let frontier = merkle
-        .insert(
-            empty,
-            CampaignHash::derive("crucible.campaign-exploration-frontier-index.v1", b""),
-            empty,
-        )
-        .expect("legacy frontier");
-    legacy_roots.exploration = merkle
-        .insert(
-            frontier.content_id(),
-            CampaignHash::derive("crucible.campaign-exploration-branch-request-index.v1", b""),
-            empty,
-        )
-        .expect("legacy request index")
-        .content_id();
-    let legacy_genesis = crucible_campaign::CampaignSnapshot::genesis(
-        created.snapshot().lineage(),
-        created.snapshot().active_policy(),
-        legacy_roots,
-    )
-    .expect("legacy genesis")
-    .with_budget_ledger(
-        crucible_campaign::CampaignBudgetLedger::empty()
-            .id()
-            .expect("legacy ledger"),
-    );
-    let mut legacy_pin = pin.clone();
-    legacy_pin.expected_snapshot = legacy_genesis.id().expect("legacy genesis");
-    let legacy_pin_fact = crucible_campaign::CampaignFact::PinCommandAccepted(legacy_pin)
-        .id()
-        .expect("legacy pin fact");
     let mut pin_fact = None;
     repository
         .visit_pin_retention_roots(campaign.as_str(), &mut |record| {
@@ -2412,7 +2351,6 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
         campaign,
         configuration: configuration_id,
         pin_fact: pin_fact.expect("exact pin fact"),
-        legacy_pin_fact,
         checkpoint,
     }
 }

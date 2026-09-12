@@ -508,13 +508,9 @@ impl CampaignRepository {
                 return Err(integrity("SMC transition selection mismatch"));
             }
             let path = self.read_branch_path(attempt.path().content_id())?;
-            let segments = path
-                .segments()
-                .ok_or_else(|| integrity("SMC transition path is legacy"))?;
+            let segments = path.segments();
             let source_path = self.read_branch_path(particle.path().content_id())?;
-            let source_segments = source_path
-                .segments()
-                .ok_or_else(|| integrity("SMC source path is legacy"))?;
+            let source_segments = source_path.segments();
             let Some(terminal) = segments.last().copied() else {
                 return Err(integrity("SMC transition path is empty"));
             };
@@ -928,10 +924,9 @@ impl CampaignRepository {
     ///
     /// # Errors
     ///
-    /// Returns an error for a stale snapshot, a non-statistical or legacy
+    /// Returns an error for a stale snapshot, a non-statistical or unconfigured
     /// policy, an incomplete/reordered/forged draw, intervention ancestry,
-    /// legacy paths, inconsistent endpoint ancestry, or exact arithmetic
-    /// overflow.
+    /// invalid paths, inconsistent endpoint ancestry, or exact arithmetic overflow.
     pub fn project_statistical_estimate(
         &self,
         name: &str,

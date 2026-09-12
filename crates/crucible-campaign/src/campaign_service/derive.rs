@@ -273,7 +273,7 @@ mod tests {
     fn snapshot(label: &str) -> CampaignSnapshotId {
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             label.as_bytes(),
         ))
         .expect("snapshot")
@@ -339,8 +339,8 @@ mod tests {
                     .to_string(),
             ],
             [
-                String::from("a06941ed5569c83a6bde638b814c1b449feef68381c5e0db4ca47ad553e298e2"),
-                String::from("00aa874cd88c2551e833fa214ac7f525a933c5a26ff2bfcbeca2bd16f9a422a1"),
+                String::from("9f2affae5cc034f5e6ae2710d00e708e91d7000c1758cd520f7830aeb031995e"),
+                String::from("9fa04d81a1711a0652af10ea9951c344ade6bef252fb5d4f98d5c11b03c63e41"),
             ]
         );
     }

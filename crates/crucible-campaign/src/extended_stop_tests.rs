@@ -190,7 +190,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     let measurements = stored_id!(
         MeasurementSetId,
         ObjectKind::Observation,
-        1,
+        2,
         "extended-stop-measurements"
     );
     let properties = stored_id!(
@@ -329,8 +329,8 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             "16a43db59753647e81b424e087085d2dc4602cc1de21daad6cca851064461a54",
             "ca56047687eabd692abfa41dba49e9abbebdaa49e20e4fd4e143d4e13035f95f",
             "747d69bbba99888605848fd8d053f9bcbc47aaab957f37f5f3cadfd1a276ca02",
-            "0c7770852530d0d7998409a6dac1f44c02cec7ef01785f51eb3d26c27fef45bc",
-            "269a80641393f566e0f0bc846dbc8a0f4d4ef626503e0adc4f7c3b56204492f9",
+            "c01f43dfaf3eccd05cfd8ffbf024fbd0cfd34561eb0e5a1f4d6d595745d6fd48",
+            "4843bdc4e0e715066fbc04ab31be52ea01c6df4811431fb0358aba1fcfc1fbcb",
             "2964e78ecc7b1fa408b1e5c16aaad83629f0a09738db28a4d1ed9d264bc06773",
             "62f72751a8db51bb3c033a9da6e454000bda19ab6c1793a92df75b31e86c2b9e",
         ]

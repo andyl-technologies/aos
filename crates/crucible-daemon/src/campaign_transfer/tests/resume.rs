@@ -30,10 +30,10 @@ use crucible_campaign::{
     CampaignPolicy, ConfigurationArtifact, ControlRequest, CoverageProjection, DaemonEpoch,
     DiscoveryRequest, ExecutionRetentionIntent, ExecutorClient, ExecutorCompatibilityProfile,
     ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    MeasurementSet, NonModeledAttemptDisposition, Observation, ObservationCandidate,
-    PropertyVerdictSet, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution, SavepointContinuationSelection, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, WorkerSlotId,
+    NonModeledAttemptDisposition, Observation, ObservationCandidate, PropertyVerdictSet,
+    SavepointCaptureOutcome, SavepointCaptureRequest, SavepointCaptureResolution,
+    SavepointContinuationSelection, StopCondition, StopOutcome, SubmitAttemptDisposition,
+    WorkerSlotId,
 };
 use crucible_cas::content_store::{
     DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend,
@@ -771,8 +771,7 @@ fn observation_product(
         configuration.schedule.to_compact_binary(),
     )
     .map_err(|_| AttemptWorkerFailure::Terminal("build resumed child artifact"))?;
-    let measurements = MeasurementSet::new(BTreeMap::new())
-        .map_err(|_| AttemptWorkerFailure::Terminal("build empty measurements"))?;
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new())
         .map_err(|_| AttemptWorkerFailure::Terminal("build empty properties"))?;
     let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new())

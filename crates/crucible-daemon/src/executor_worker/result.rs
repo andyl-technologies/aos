@@ -1389,8 +1389,9 @@ fn validate_prepared_observation_candidate(
         .observation()
         .measurements()
         .evaluation()
-        .into_iter()
-        .flat_map(|evaluation| evaluation.evidence().iter().copied())
+        .evidence()
+        .iter()
+        .copied()
         .filter(|content| content.kind() == ObjectKind::Trace)
         .collect::<BTreeSet<_>>();
     let owned_trace_leaves = result

@@ -20,7 +20,7 @@ pub use smc::{
 };
 pub use statistical::{StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign};
 
-const LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
+const BASE_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
 const INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 2;
 const FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 3;
 const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 4;
@@ -1378,7 +1378,7 @@ impl CampaignPolicy {
         admit_scenario_defaults: bool,
     ) -> Result<Self, CampaignCodecError> {
         Self::new_for_schema(
-            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION,
+            BASE_CAMPAIGN_POLICY_SCHEMA_VERSION,
             scenario,
             campaign_seed,
             mode,
@@ -1417,7 +1417,7 @@ impl CampaignPolicy {
     ) -> Result<Self, CampaignCodecError> {
         explorer.validate()?;
         let statistical_shape_is_valid = match schema_version {
-            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION => {
+            BASE_CAMPAIGN_POLICY_SCHEMA_VERSION | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION => {
                 statistical_sampling.is_none() && sequential_monte_carlo.is_none()
             }
             FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION => {
@@ -1803,7 +1803,7 @@ impl Canonical for CampaignPolicy {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            LEGACY_CAMPAIGN_POLICY_SCHEMA_VERSION
+            BASE_CAMPAIGN_POLICY_SCHEMA_VERSION
                 | INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION
                 | FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION
                 | CAMPAIGN_POLICY_SCHEMA_VERSION

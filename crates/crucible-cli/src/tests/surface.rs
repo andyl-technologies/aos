@@ -1032,29 +1032,6 @@ pub(super) fn write_savepoint_handle_fixture(
     Ok(path)
 }
 
-pub(super) fn write_checkpoint_closure_fixture(
-    store_root: &Path,
-    form: &crucible::ScenarioDefForm,
-    schedule: &Schedule,
-) -> Result<crucible::ContentHash, Box<dyn Error>> {
-    let checkpoint = crucible::Configuration {
-        def: form.scenario_def(),
-        schedule: schedule.clone(),
-    }
-    .id();
-    let artifact = crucible::ReproductionArtifact::capture(form, schedule)?;
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let artifact_key = store.put(&artifact.to_compact_binary())?;
-    let frontier = schedule.recorded_virtual_time().unwrap_or_default();
-    let index = store.write_checkpoint_closure_index(checkpoint, artifact_key, frontier)?;
-    let loaded = store.read_checkpoint_closure_index(checkpoint)?;
-    assert_eq!(loaded.checkpoint, checkpoint);
-    assert_eq!(loaded.reproduction_artifact, artifact_key);
-    assert_eq!(loaded.frontier, frontier);
-    assert!(store.exists(&index)?);
-    Ok(artifact_key)
-}
-
 pub(super) fn replay_to_savepoint_schedule(len: usize) -> Schedule {
     Schedule::from_decisions((0..len).map(|index| {
         crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {

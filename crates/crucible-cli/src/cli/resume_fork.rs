@@ -40,99 +40,10 @@ pub(super) fn run_local_qemu_fork_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
     let evidence = fork_handle_evidence(fork_plan)?;
-    if fork_plan.execution_mode == RunExecutionMode::ToCompletion {
-        let report = run_local_qemu_campaign_fork_workflow(backend, fork_plan, &evidence)?;
-        let mut outcome = finish_fork_workflow_outcome(
-            thin_plan,
-            backend_plan,
-            ergonomics_plan,
-            fork_plan,
-            report,
-        )?;
-        append_qemu_control_plane_execution_proof(
-            &mut outcome,
-            backend,
-            "fork-campaign-default-path",
-        );
-        return Ok(outcome);
-    }
-    ensure_session_replay_evidence_supported("local QEMU fork", &evidence)?;
-    let mut config = production_qemu_lifecycle_config(backend)?;
-    let override_decisions = fork_override_decisions(fork_plan);
-    if let Some(seed) = fork_plan.fork_seed {
-        config = config.with_branch_reseed(
-            evidence.configuration.clone(),
-            evidence.checkpoint.virtual_time,
-            crucible::Seed::from_u64(seed),
-        );
-    } else if !override_decisions.is_empty() {
-        let network_choices = override_decisions
-            .iter()
-            .filter_map(|decision| match decision {
-                crucible::Decision::Override(choice) => Some(choice.clone()),
-                _ => None,
-            })
-            .collect();
-        config = config
-            .with_branch_prefix_overrides(
-                evidence.configuration.clone(),
-                evidence.checkpoint.virtual_time,
-                Vec::new(),
-            )
-            .with_branch_network_choices(network_choices);
-    } else {
-        config = config.with_branch_prefix_overrides(
-            evidence.configuration.clone(),
-            evidence.checkpoint.virtual_time,
-            Vec::new(),
-        );
-    }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane =
-        production_qemu_control_plane(config, &evidence.scenario_form).with_thin_replay_resume();
-    let client = InProcessLifecycleClient::new(control_plane);
-    let resume_plan = ResumeInvocationPlan {
-        savepoint: fork_plan.source.clone(),
-        store_root: fork_plan.store_root.clone(),
-        terminal_condition: fork_plan.terminal_condition,
-        max_virtual_time: fork_plan.max_virtual_time.clone(),
-        max_virtual_time_ticks: fork_plan.max_virtual_time_ticks,
-        execution_mode: fork_plan.execution_mode,
-        watch_streams_live_status: fork_plan.watch_streams_live_status,
-        startup_commands: fork_plan.startup_commands.clone(),
-        initial_control_commands: fork_plan.initial_control_commands.clone(),
-        accepted_interactive_commands: fork_plan.accepted_interactive_commands.clone(),
-    };
-    let interactive_driver = if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
-        ResumeInteractiveCommandDriver::Stdin
-    } else {
-        ResumeInteractiveCommandDriver::Preparsed(&[])
-    };
-    let resumed = runtime.block_on(
-        run_remote_control_client_resume_from_evidence_with_driver_async(
-            &client,
-            &resume_plan,
-            evidence.clone(),
-            interactive_driver,
-            !fork_plan.decision_overrides.is_empty(),
-        ),
-    )?;
-    let report = ForkWorkflowReport {
-        run: resumed.run,
-        source_checkpoint: resumed.source_checkpoint,
-        branch_checkpoint: evidence.checkpoint.id,
-        branch_configuration: resumed.resumed_configuration,
-        terminal_configuration: resumed.terminal_configuration,
-        scenario_form: evidence.scenario_form,
-        scenario_label: fork_plan.source.label(),
-        label: fork_plan.label.clone(),
-        terminal_oracle: resumed.terminal_oracle,
-    };
+    let report = run_local_qemu_campaign_fork_workflow(backend, fork_plan, &evidence)?;
     let mut outcome =
         finish_fork_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, fork_plan, report)?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "fork-thin-replay");
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "fork-campaign-default-path");
     Ok(outcome)
 }
 
@@ -195,13 +106,13 @@ pub(super) fn run_local_double_fork_workflow_with_interactive_commands(
 pub(super) fn resume_handle_evidence(
     plan: &ResumeInvocationPlan,
 ) -> Result<ResumeHandleEvidence, CliError> {
-    savepoint_evidence("resume", &plan.savepoint, &plan.store_root)
+    savepoint_evidence("resume", &plan.savepoint)
 }
 
 pub(super) fn fork_handle_evidence(
     plan: &ForkInvocationPlan,
 ) -> Result<ResumeHandleEvidence, CliError> {
-    let evidence = savepoint_evidence("fork", &plan.source, &plan.store_root)?;
+    let evidence = savepoint_evidence("fork", &plan.source)?;
     validate_fork_overrides_for_world(plan, &evidence.scenario_form)?;
     Ok(evidence)
 }
@@ -240,18 +151,19 @@ fn validate_fork_overrides_for_world(
 pub(super) fn savepoint_evidence(
     command_name: &'static str,
     savepoint: &ResumeSavepointRef,
-    store_root: &Path,
 ) -> Result<ResumeHandleEvidence, CliError> {
     match savepoint {
-        ResumeSavepointRef::CheckpointHash(checkpoint) => {
-            savepoint_store_evidence(command_name, *checkpoint, store_root)
-        }
+        ResumeSavepointRef::CheckpointHash(checkpoint) => Err(artifact_error(format!(
+            "{command_name} checkpoint {} requires a .crucible-savepoint handle; a checkpoint hash is valid only within the active session that owns it",
+            format_content_hash_ref(*checkpoint)
+        ))),
         ResumeSavepointRef::Handle { handle, .. } => {
             savepoint_handle_evidence(command_name, handle)
         }
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn ensure_session_replay_evidence_supported(
     context: &str,
     evidence: &ResumeHandleEvidence,
@@ -405,121 +317,6 @@ fn validate_campaign_marker_event_source(
         )));
     }
     Ok(())
-}
-
-pub(super) fn savepoint_store_evidence(
-    command_name: &'static str,
-    checkpoint: crucible::ContentHash,
-    store_root: &Path,
-) -> Result<ResumeHandleEvidence, CliError> {
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let index = store
-        .read_checkpoint_closure_index(checkpoint)
-        .map_err(|error| {
-            artifact_error(format!(
-                "{command_name} checkpoint {} could not be loaded from DAG store {}: {error}; pass a .crucible-savepoint handle or use the same --store used when saving",
-                format_content_hash_ref(checkpoint),
-                store.root().display()
-            ))
-        })?;
-    for referenced in index.referenced_objects() {
-        if !store.exists(&referenced).map_err(|error| {
-            artifact_error(format!(
-                "{command_name} checkpoint {} index traversal failed for retained object {} in DAG store {}: {error}",
-                format_content_hash_ref(checkpoint),
-                format_content_hash_ref(referenced),
-                store.root().display()
-            ))
-        })? {
-            return Err(artifact_error(format!(
-                "{command_name} checkpoint {} index traversal found missing retained object {} in DAG store {}",
-                format_content_hash_ref(checkpoint),
-                format_content_hash_ref(referenced),
-                store.root().display()
-            )));
-        }
-    }
-    let artifact_bytes = store.get(&index.reproduction_artifact).map_err(|error| {
-        artifact_error(format!(
-            "{command_name} checkpoint {} index referenced missing artifact {} in DAG store {}: {error}",
-            format_content_hash_ref(checkpoint),
-            format_content_hash_ref(index.reproduction_artifact),
-            store.root().display()
-        ))
-    })?;
-    let artifact =
-        crucible::ReproductionArtifact::from_compact_binary(&artifact_bytes).map_err(|error| {
-            artifact_error(format!(
-                "{command_name} checkpoint {} closure artifact {} is malformed: {error}",
-                format_content_hash_ref(checkpoint),
-                format_content_hash_ref(index.reproduction_artifact)
-            ))
-        })?;
-    if artifact.id() != index.reproduction_artifact {
-        return Err(artifact_error(format!(
-            "{command_name} checkpoint {} closure artifact id {} did not match indexed key {}",
-            format_content_hash_ref(checkpoint),
-            format_content_hash_ref(artifact.id()),
-            format_content_hash_ref(index.reproduction_artifact)
-        )));
-    }
-    artifact.replay().map_err(|error| {
-        artifact_error(format!(
-            "{command_name} checkpoint {} closure artifact {} failed replay validation: {error}",
-            format_content_hash_ref(checkpoint),
-            format_content_hash_ref(index.reproduction_artifact)
-        ))
-    })?;
-    let scenario_form = artifact.scenario_form().clone();
-    let scenario = artifact.scenario_def();
-    let schedule = artifact.schedule().clone();
-    let replay_closure_bytes = index
-        .opaque_replay_artifact
-        .map(|key| {
-            store.get(&key).map_err(|error| {
-                artifact_error(format!(
-                    "{command_name} checkpoint {} index referenced missing replay artifact {} in DAG store {}: {error}",
-                    format_content_hash_ref(checkpoint),
-                    format_content_hash_ref(key),
-                    store.root().display()
-                ))
-            })
-        })
-        .transpose()?;
-    let replay_closure = authenticated_replay_closure(
-        &scenario_form,
-        &schedule,
-        replay_closure_bytes.as_deref(),
-        "savepoint DAG-store index",
-    )?;
-    let configuration = crucible::Configuration {
-        def: scenario.clone(),
-        schedule: schedule.clone(),
-    };
-    if configuration.id() != checkpoint {
-        return Err(artifact_error(format!(
-            "{command_name} checkpoint closure reconstructed {}, expected {}",
-            format_content_hash_ref(configuration.id()),
-            format_content_hash_ref(checkpoint)
-        )));
-    }
-    let frontier = validate_resume_handle_frontier(&schedule, index.frontier.ticks)?;
-    let checkpoint =
-        checkpoint_for_resume_configuration(&configuration, frontier).map_err(|error| {
-            artifact_error(format!(
-                "{command_name} checkpoint closure could not build checkpoint metadata: {error}"
-            ))
-        })?;
-    Ok(ResumeHandleEvidence {
-        scenario_form,
-        scenario,
-        schedule,
-        configuration,
-        checkpoint,
-        replay_closure,
-        source_observation_proof: None,
-        source_observation_evidence: None,
-    })
 }
 
 pub(super) fn validate_resume_handle_frontier(
@@ -1765,7 +1562,7 @@ pub(super) fn write_fork_reproduction_artifact(
     let configuration = &report.terminal_configuration;
     let finding_fingerprint = fork_finding_fingerprint(plan, configuration);
     let finding = FindingReproductionArtifact::capture(
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         finding_fingerprint,
         scenario_form,
         configuration,

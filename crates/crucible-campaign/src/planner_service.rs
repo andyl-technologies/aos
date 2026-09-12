@@ -30,7 +30,6 @@ pub use closed::*;
 mod search;
 pub use search::*;
 
-const LEGACY_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PLANNER_REQUEST_SCHEMA_VERSION: u32 = 2;
 const SMC_PLANNER_REQUEST_SCHEMA_VERSION: u32 = 3;
 const PLANNER_RESPONSE_SCHEMA_VERSION: u32 = 1;
@@ -853,7 +852,7 @@ impl CampaignPlanningBundle {
                 }
                 if let Some(candidate_budget) = &candidate_budget {
                     candidate_budget.validate_for(offer)?;
-                    if candidate_budget.remaining_request_attempts().is_some() != request_budget {
+                    if !request_budget {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "candidate budget version disagrees with request-budget capability",
                         });
@@ -961,16 +960,8 @@ impl CampaignPlanningBundle {
                         limit: "planner-search-candidate-depth",
                     }
                 })?;
-                let Some(parent_segments) = parent_path.segments() else {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "planner search-order candidate parent path is legacy",
-                    });
-                };
-                let Some(path_segments) = path.segments() else {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "planner search-order candidate path is legacy",
-                    });
-                };
+                let parent_segments = parent_path.segments();
+                let path_segments = path.segments();
                 let Some((terminal, prefix)) = path_segments.split_last() else {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "planner search-order candidate path is empty",
@@ -1473,12 +1464,8 @@ impl PlannerRequest {
     ) -> Result<Self, CampaignCodecError> {
         if !matches!(
             schema_version,
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
-                | PLANNER_REQUEST_SCHEMA_VERSION
-                | SMC_PLANNER_REQUEST_SCHEMA_VERSION
-        ) || (schema_version == LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
-            && (statistical_request_basis.is_some() || smc_request_basis.is_some()))
-            || (schema_version < SMC_PLANNER_REQUEST_SCHEMA_VERSION && smc_request_basis.is_some())
+            PLANNER_REQUEST_SCHEMA_VERSION | SMC_PLANNER_REQUEST_SCHEMA_VERSION
+        ) || (schema_version < SMC_PLANNER_REQUEST_SCHEMA_VERSION && smc_request_basis.is_some())
             || (statistical_request_basis.is_some() && smc_request_basis.is_some())
             || (smc_request_basis.is_some() && engine.implementation_version() < 8)
         {
@@ -1772,9 +1759,7 @@ impl Canonical for PlannerRequest {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION
-                | PLANNER_REQUEST_SCHEMA_VERSION
-                | SMC_PLANNER_REQUEST_SCHEMA_VERSION
+            PLANNER_REQUEST_SCHEMA_VERSION | SMC_PLANNER_REQUEST_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported planner request schema version",
@@ -2361,7 +2346,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&bytes).as_bytes()),
-            "592e305f3a6ad2cd3f9b7fb4a94a413b1f7ad838b3d58e73f5200fdeab7315a4"
+            "5ddc6b8b375ed1e52064bc9fe9de628cb5d7efaaa826910ee894a57e51f7717d"
         );
         let retained = ObjectEnvelope::for_record(
             crate::CampaignRecordKind::RetainedPlannerRequest,
@@ -2402,7 +2387,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&response_bytes).as_bytes()),
-            "5e99e8c56d31d7da71983b65c8ca70eadaf45d14d59c074ce30b6d393df0ec31"
+            "3ee3ad727e4a2ac6985672a1d2d229624125381aacb1372aa455b093fd0d2fbf"
         );
 
         let mut wrong_version = bytes.clone();
@@ -2418,108 +2403,6 @@ mod tests {
         assert_eq!(
             PlannerRequest::from_canonical_bytes(&trailing),
             Err(CampaignCodecError::TrailingBytes)
-        );
-    }
-
-    #[test]
-    fn raw_planner_request_and_response_vectors_decode_and_validate_without_construction() {
-        // These reviewed fixtures are transport bytes captured independently
-        // of this test. Keep decoding as the first typed operation so a drifted
-        // constructor cannot regenerate the expected wire representation.
-        let request_bytes = decode_hex_fixture(include_str!("../testdata/planner-request-v2.hex"));
-        let response_bytes =
-            decode_hex_fixture(include_str!("../testdata/planner-response-v1.hex"));
-        assert_eq!(
-            encode_hex(blake3::hash(&request_bytes).as_bytes()),
-            "592e305f3a6ad2cd3f9b7fb4a94a413b1f7ad838b3d58e73f5200fdeab7315a4"
-        );
-        assert_eq!(
-            encode_hex(blake3::hash(&response_bytes).as_bytes()),
-            "5e99e8c56d31d7da71983b65c8ca70eadaf45d14d59c074ce30b6d393df0ec31"
-        );
-
-        let request = PlannerRequest::from_canonical_bytes(&request_bytes)
-            .expect("decode raw planner request vector");
-        let response = PlannerResponse::from_canonical_bytes(&response_bytes)
-            .expect("decode raw planner response vector");
-        response
-            .validate_for(&request)
-            .expect("validate raw response request basis");
-        let authority = PlannerAuthorityKey::from_bytes([0x22; 32]).expect("fixture authority");
-        assert!(response.verify(&authority));
-        assert_eq!(request.canonical_bytes(), request_bytes);
-        assert_eq!(response.canonical_bytes(), response_bytes);
-    }
-
-    #[test]
-    fn legacy_planner_request_preserves_its_exact_bytes_and_identity() {
-        let current = request(0x21);
-        let legacy = PlannerRequest::new_for_schema(
-            LEGACY_PLANNER_REQUEST_SCHEMA_VERSION,
-            current.expected_snapshot,
-            current.invocation.clone(),
-            current.engine.clone(),
-            current.policy_artifact.clone(),
-            current.policy.clone(),
-            current.planner_state.clone(),
-            current.input_view,
-            None,
-            None,
-            current.input_bundle.clone(),
-        )
-        .expect("legacy planner request");
-        let bytes = legacy.canonical_bytes();
-        assert_eq!(
-            encode_hex(blake3::hash(&bytes).as_bytes()),
-            "448d0678beaeb238107a6c4584cda2b5604150556a4b0eac42a720faf372ec66"
-        );
-        assert_eq!(
-            PlannerRequest::from_canonical_bytes(&bytes).expect("decode legacy planner request"),
-            legacy
-        );
-        assert_eq!(
-            legacy.id().expect("legacy request ID").to_text(),
-            "crucible.campaign.retained-planner-request@policy.1.ac1389b8f4319f2ebe5f00536b348218fa1fd567ce870f76db0389507f4533ff"
-        );
-    }
-
-    #[test]
-    fn canonical_frontier_keeps_version_six_and_seven_descriptors_replayable() {
-        let version_six = PlannerEngine::new(
-            "crucible-canonical-frontier",
-            6,
-            1,
-            BTreeSet::from([
-                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-            ]),
-        )
-        .expect("version-six canonical frontier descriptor");
-        assert!(
-            CanonicalFrontierPlanner::supports_descriptor(&version_six)
-                .expect("check version-six support")
-        );
-        let version_seven = PlannerEngine::new(
-            "crucible-canonical-frontier",
-            7,
-            1,
-            BTreeSet::from([
-                CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-                CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-            ]),
-        )
-        .expect("version-seven canonical frontier descriptor");
-        assert!(
-            CanonicalFrontierPlanner::supports_descriptor(&version_seven)
-                .expect("check version-seven support")
-        );
-        assert_eq!(
-            CanonicalFrontierPlanner::descriptor()
-                .expect("current canonical frontier descriptor")
-                .implementation_version(),
-            8
         );
     }
 
@@ -2836,7 +2719,7 @@ mod tests {
 
     fn content(kind: ObjectKind, byte: u8) -> ContentId {
         let schema_version = if kind == ObjectKind::CampaignSnapshot {
-            2
+            3
         } else {
             1
         };
@@ -2851,21 +2734,5 @@ mod tests {
             encoded.push(HEX[(byte & 0x0f) as usize] as char);
         }
         encoded
-    }
-
-    fn decode_hex_fixture(source: &str) -> Vec<u8> {
-        let hex = source
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .collect::<String>();
-        assert_eq!(hex.len() % 2, 0, "raw vector has an incomplete byte");
-        (0..hex.len())
-            .step_by(2)
-            .map(|offset| {
-                u8::from_str_radix(&hex[offset..offset + 2], 16)
-                    .expect("raw vector contains non-hex data")
-            })
-            .collect()
     }
 }

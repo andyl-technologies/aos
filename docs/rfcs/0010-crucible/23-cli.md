@@ -557,25 +557,18 @@ replay establish that the event was actually observed.
 Campaign-backed virtual-time and marker saves export
 `crucible.savepoint-handle.v5`. A v5 handle requires one
 `campaign-replay-closure` line containing the closure's content digest and
-canonical bytes. Before any handle or local-store index is written, export
-decodes those bytes canonically and proves that the records are complete and
-exact for the schedule's typed guest Selections. The local DAG store writes a
-`crucible.local-dag-store.checkpoint-closure-index.v3` record whose
-`opaque_replay_artifact` is the content-addressed closure object; reachability
-traversal retains that object together with the ordinary reproduction artifact.
-The v3 index reader also accepts the older v2 record, which has no opaque
-reference. A typed schedule loaded from an older handle or v2 index therefore
-fails closed for missing closure evidence. Session saves continue to write v3;
-readers continue to accept v3 handles, historical selection-free v4
-campaign-marker handles, and v2 indexes. Standard non-interactive local-QEMU
-resume accepts delivery-order, random-draw, preemption, and typed Selection
-decisions and authenticates the supplied closure before opening attempt host
-resources. Historical override and application-random decisions remain
-unsupported. Remote resume consumes the same closure through a content-bound
-envelope and a daemon-side validator before session allocation. Session-owned
-local-double, interactive, and divergent fork execution paths reject typed
-Selection schedules before launch because they do not consume the campaign
-closure.
+canonical bytes. Before any handle is written, export decodes those bytes
+canonically and proves that the records are complete and exact for the
+schedule's typed guest Selections. Offline resume and fork require the portable
+handle; a bare checkpoint hash is valid only inside the active server session
+that owns it. Standard non-interactive local-QEMU resume accepts delivery-order,
+random-draw, preemption, and typed Selection decisions and authenticates the
+supplied closure before opening attempt host resources. Historical override and
+application-random decisions remain unsupported. Remote resume consumes the
+same closure through a content-bound envelope and a daemon-side validator
+before session allocation. Session-owned local-double, interactive, and
+divergent fork execution paths reject typed Selection schedules before launch
+because they do not consume the campaign closure.
 
 Campaign-backed quiescence and property saves export
 `crucible.savepoint-handle.v6`. Its `campaign-observation` boundary proof
@@ -1557,7 +1550,7 @@ branch on the verdict without parsing output:
   Production-QEMU search and fuzz now classify terminal property violations and
   concrete execution timeouts as findings, honor `--on-violation stop|collect`,
   retain one replay artifact per selected finding, and emit a canonical signed
-  v3 findings ledger automatically (or at `--findings-out`). An explicit
+  v4 findings ledger automatically (or at `--findings-out`). An explicit
   `--findings-out` path is written as a valid signed zero-finding ledger when
   the campaign retains no counterexample, while the implicit default remains
   absent for zero findings. The ledger binds
@@ -1626,7 +1619,7 @@ branch on the verdict without parsing output:
   §16; cross-ref 34.
   Completed under `checks.crucible.phase5.cliTriageWorkflow`: the CLI parses and
   plans the thin `triage <FINDINGS>` driver, loads empty and signed
-  engine-owned property findings ledgers and signed v3 property/timeout ledgers
+  engine-owned property findings ledgers and signed v4 property/timeout ledgers
   through the local DagStore, clusters by
   discovery-time signatures, elects/minimizes representatives through the triage
   engine, emits deterministic reports, stores findings/result artifacts,

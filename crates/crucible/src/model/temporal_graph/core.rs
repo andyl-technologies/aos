@@ -772,11 +772,6 @@ impl TemporalGraph {
             target: resolved_coordinate.clone(),
             event_coordinates: request.event_coordinates.clone(),
         };
-        let failure_footer = request
-            .failure_footer_artifact
-            .as_ref()
-            .map(|artifact| DebugFailureFooterCommand::new(artifact.clone()));
-
         Ok(DebugTargetResolverReport {
             selector: request.selector.clone(),
             resolved_coordinate,
@@ -784,7 +779,6 @@ impl TemporalGraph {
             goto_request,
             failure_event_sequence,
             divergence,
-            failure_footer,
         })
     }
 

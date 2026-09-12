@@ -80,10 +80,7 @@ impl CampaignRepository {
         let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &request)?;
         let edge =
             Selection::campaign_edge_id(offer.branch_point(), domain.semantic_id(), offer.value());
-        let mut segments = parent_path
-            .segments()
-            .ok_or_else(|| integrity("planner-search-parent-path-is-legacy"))?
-            .to_vec();
+        let mut segments = parent_path.segments().to_vec();
         segments.push(crate::BranchPathSegment::new(offer.branch_point(), edge));
         let path = BranchPath::new(segments)?;
         let depth = u64::try_from(path.edges().len()).map_err(|_| {
@@ -159,24 +156,22 @@ impl CampaignRepository {
             }
             _ => return Err(integrity("planner-budget-attempt-index-mismatch")),
         };
-        let budget = crate::PlannerCandidateBudget::new(
+        let work = request_budget_work
+            .ok_or_else(|| integrity("planner-candidate-request-budget-is-missing"))?;
+        let remaining = self.remaining_request_attempts_before(
+            snapshot,
+            offer.request(),
+            offer.ordinal(),
+            request.budget().maximum_attempts(),
+            work,
+        )?;
+        Ok(crate::PlannerCandidateBudget::new(
             offer,
             ledger.remaining_proposals(),
             ledger.remaining_attempts(),
             new_attempt,
-        )?;
-        if let Some(work) = request_budget_work {
-            let remaining = self.remaining_request_attempts_before(
-                snapshot,
-                offer.request(),
-                offer.ordinal(),
-                request.budget().maximum_attempts(),
-                work,
-            )?;
-            Ok(budget.with_request_attempts(remaining))
-        } else {
-            Ok(budget)
-        }
+            remaining,
+        )?)
     }
 
     pub(super) fn preflight_planner_issue(
@@ -532,7 +527,6 @@ impl CampaignRepository {
                 request_attempts,
                 next_ordinal,
                 proposal.policy(),
-                stored_admission.is_none_or(|(_, admission)| admission.schema_version() == 3),
             )?;
             let admission_content = match mode {
                 IssueProjectionMode::Publish => {
@@ -952,7 +946,6 @@ impl CampaignRepository {
         request_attempts: u64,
         next_ordinal: Option<AdmissionOrdinal>,
         retention_policy: CampaignPolicyId,
-        policy_bound: bool,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         if self
             .overlay_get(
@@ -980,11 +973,7 @@ impl CampaignRepository {
                     cause: request.cause(),
                     admission_ordinal,
                 };
-                Ok(if policy_bound {
-                    AttemptAdmission::new_policy_bound(attempt, role, retention_policy)
-                } else {
-                    AttemptAdmission::new(attempt, role)
-                })
+                Ok(AttemptAdmission::new(attempt, role, retention_policy))
             }
             (Some(indexed_attempt), Some(indexed_basis))
                 if indexed_attempt == attempt.content_id() =>
@@ -999,11 +988,7 @@ impl CampaignRepository {
                     return Err(integrity("attempt-execution-basis-index-mismatch"));
                 }
                 let role = AttemptAdmissionRole::AdditionalCause { proposal };
-                Ok(if policy_bound {
-                    AttemptAdmission::new_policy_bound(attempt, role, retention_policy)
-                } else {
-                    AttemptAdmission::new(attempt, role)
-                })
+                Ok(AttemptAdmission::new(attempt, role, retention_policy))
             }
             _ => Err(integrity("attempt-admission-index-shape")),
         }
@@ -1024,11 +1009,7 @@ impl CampaignRepository {
         let crate::SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
             return Err(integrity("planner-issue-selection-is-not-campaign-branch"));
         };
-        let mut segments = basis
-            .parent_path
-            .segments()
-            .ok_or_else(|| integrity("planner-issue-parent-path-is-legacy"))?
-            .to_vec();
+        let mut segments = basis.parent_path.segments().to_vec();
         segments.push(crate::BranchPathSegment::new(proposal.branch_point(), edge));
         let path = BranchPath::new(segments)?;
         self.validate_attempt_path_owner(
@@ -1091,9 +1072,6 @@ impl CampaignRepository {
             return Err(integrity("planner-issue-parent-path-index-key-mismatch"));
         }
         let path = self.read_branch_path(*content)?;
-        if path.segments().is_none() {
-            return Err(integrity("planner-issue-parent-path-is-legacy"));
-        }
         Ok(path)
     }
 

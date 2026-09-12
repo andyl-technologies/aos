@@ -1450,7 +1450,7 @@ pub(super) fn parse_triage_discovery_path(
     value: &str,
 ) -> Result<crucible::FindingDiscoveryPath, CliError> {
     match value {
-        "interactive-fork" => Ok(crucible::FindingDiscoveryPath::InteractiveFork),
+        "campaign-fork" => Ok(crucible::FindingDiscoveryPath::CampaignFork),
         "state-space-search" => Ok(crucible::FindingDiscoveryPath::StateSpaceSearch),
         "coverage-guided-fuzzing" => Ok(crucible::FindingDiscoveryPath::CoverageGuidedFuzzing),
         "retained-corpus-entry" => Ok(crucible::FindingDiscoveryPath::RetainedCorpusEntry),
@@ -1497,7 +1497,7 @@ pub(super) fn assertion_quantifier_label(
 
 pub(super) fn triage_discovery_path_label(value: crucible::FindingDiscoveryPath) -> &'static str {
     match value {
-        crucible::FindingDiscoveryPath::InteractiveFork => "interactive-fork",
+        crucible::FindingDiscoveryPath::CampaignFork => "campaign-fork",
         crucible::FindingDiscoveryPath::StateSpaceSearch => "state-space-search",
         crucible::FindingDiscoveryPath::CoverageGuidedFuzzing => "coverage-guided-fuzzing",
         crucible::FindingDiscoveryPath::RetainedCorpusEntry => "retained-corpus-entry",

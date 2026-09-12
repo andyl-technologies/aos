@@ -970,19 +970,19 @@ pub enum GuardedDefaultCampaignInvariantError {
     #[error("the legacy resume final stop is not supported by the default campaign owner")]
     UnsupportedResumeStop,
     /// The logical source checkpoint did not equal its reconstructed v3 record.
-    #[error("the legacy resume source checkpoint failed exact reconstruction")]
+    #[error("the campaign resume source checkpoint failed exact reconstruction")]
     ResumeSourceCheckpointMismatch,
     /// The source replay produced another configuration or campaign artifact.
-    #[error("the legacy resume source observation differs from its checkpoint configuration")]
+    #[error("the campaign resume source observation differs from its checkpoint configuration")]
     ResumeSourceObservationMismatch,
     /// The source replay stopped at a different scheduler frontier.
-    #[error("the legacy resume source replay differs from its checkpoint frontier")]
+    #[error("the campaign resume source replay differs from its checkpoint frontier")]
     ResumeSourceBoundaryMismatch,
     /// The source replay produced different raw observation evidence.
-    #[error("the legacy resume source replay differs from its retained observation evidence")]
+    #[error("the campaign resume source replay differs from its retained observation evidence")]
     ResumeSourceEvidenceMismatch,
     /// The source attempt ended at an unrelated nonterminal boundary.
-    #[error("the legacy resume source attempt ended before its checkpoint boundary")]
+    #[error("the campaign resume source attempt ended before its checkpoint boundary")]
     ResumeSourceStopNotReached,
     /// The selected continuation did not retain the exact capture provenance.
     #[error("the legacy resume continuation differs from its authenticated source capture")]
@@ -2025,7 +2025,7 @@ where
                     observation_id,
                     &observation,
                     context.discovery_stop,
-                    "legacy resume source",
+                    "campaign resume source",
                     execution_boundary,
                     Some(observation_id),
                 )?);
@@ -2610,9 +2610,7 @@ where
     let measurements = repository
         .load_measurement_set(observation.measurements())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let retained = measurements
-        .evaluation()
-        .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch)?;
+    let retained = measurements.evaluation();
     let mut evidence_ids = retained.evidence().iter();
     let evidence_id = evidence_ids
         .next()

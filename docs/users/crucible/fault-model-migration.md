@@ -34,7 +34,7 @@ fault_model = "signal_bindings_v2"
 ```
 
 Unknown fields, older marker values, missing markers, and mixed old/new forms are
-errors. The control RPC is version 5; clients and servers with a different ABI
+errors. The control RPC is version 6; clients and servers with a different ABI
 version reject one another during admission.
 
 ## Behavior mapping

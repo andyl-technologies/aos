@@ -12,8 +12,8 @@ use crucible::test_support::{
 };
 use crucible::{
     AssertionId, AssertionPhase, ChoiceTag, Configuration, DebugAttachRequest,
-    DebugDivergenceCoordinate, DebugFailureFooterCommand, DebugTargetResolverRequest,
-    DebugTargetSelector, EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel,
+    DebugDivergenceCoordinate, DebugTargetResolverRequest, DebugTargetSelector, EngineError,
+    EventAttributeValue, EventDiagnosticPayload, EventLevel,
     EventLogCausalDivergencePoint, EventLogIcountStamp, EventPayload, EventSource, Icount, NodeId,
     NodeTemplate, ObservableEvent, OverrideDecision, ReadyPoint, SchedulerEventLogClass,
     SchedulerEventLogPayload, SchedulingPoint, TemporalGraph, VirtualTime, VmArchitecture,
@@ -84,14 +84,12 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
 
     let by_failure = graph.debug_resolve_target(
         &DebugTargetResolverRequest::new(third.clone(), DebugTargetSelector::at_failure())
-            .with_event_coordinate(9, second.clone())
-            .with_failure_footer_artifact("./.crucible/repro-first-failure.crucible"),
+            .with_event_coordinate(9, second.clone()),
         &event_log,
     )?;
     assert_eq!(by_failure.failure_event_sequence, Some(9));
     assert_eq!(by_failure.target_configuration, second.id());
     assert!(by_failure.proves_debug_target_resolution());
-    assert!(by_failure.has_copy_pasteable_at_failure_footer());
     assert_eq!(
         graph
             .debug_goto(&attach, &by_failure.goto_request)?
@@ -176,13 +174,6 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
         rounded_divergence,
         EngineError::DebugTimeTravelCoordinateNotFound { .. }
     ));
-
-    let quoted_footer = DebugFailureFooterCommand::new("./artifact dir/repro 'one'.crucible");
-    assert_eq!(
-        quoted_footer.debug_command,
-        "crucible debug './artifact dir/repro '\\''one'\\''.crucible' --at-failure"
-    );
-    assert!(quoted_footer.is_copy_pasteable_at_failure());
 
     Ok(())
 }

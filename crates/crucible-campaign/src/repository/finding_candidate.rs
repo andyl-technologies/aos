@@ -5,8 +5,8 @@ use crate::{
     CampaignName, ConfigurationId, ExecutionId, FindingCandidateBundle, FindingCandidateBundleId,
     FindingExactPins, FindingExactRetentionDisposition, FindingId, FindingTarget,
     FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
-    FindingTriageReplayStorageObjectRole, ScenarioArtifactId, ScenarioDefId,
-    MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+    FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
+    ScenarioArtifactId, ScenarioDefId,
 };
 use ed25519_dalek::Signature;
 
@@ -1323,7 +1323,7 @@ impl CampaignRepository {
             ));
         }
         let admission = self.read_attempt_admission(retention.admission().content_id())?;
-        let AttemptAdmissionRole::ExecutionBasis { proposal, .. } = admission.role() else {
+        let AttemptAdmissionRole::ExecutionBasis { .. } = admission.role() else {
             return Err(integrity(
                 "finding-exact-retention-admission-is-not-execution-basis",
             ));
@@ -1333,29 +1333,8 @@ impl CampaignRepository {
                 "finding-exact-retention-admission-attempt-mismatch",
             ));
         }
-        let admitted_policy = match admission.retention_policy() {
-            Some(policy) => Some(policy),
-            None => proposal
-                .map(|proposal| {
-                    self.read_proposal(proposal.content_id())
-                        .map(|p| p.policy())
-                })
-                .transpose()?,
-        };
-        let Some(policy_id) = retention.policy() else {
-            if admitted_policy.is_some() {
-                return Err(integrity(
-                    "finding-exact-retention-omits-derivable-policy-basis",
-                ));
-            }
-            return match retention.disposition() {
-                FindingExactRetentionDisposition::Incomplete(
-                    crate::FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis,
-                ) => Ok(()),
-                _ => Err(integrity("finding-exact-retention-policy-basis-is-missing")),
-            };
-        };
-        if admitted_policy != Some(policy_id) {
+        let policy_id = retention.policy();
+        if admission.retention_policy() != policy_id {
             return Err(integrity(
                 "finding-exact-retention-policy-admission-mismatch",
             ));

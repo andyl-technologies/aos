@@ -295,7 +295,7 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
     let finding = finding_artifact(
         &scenario,
         schedule.clone(),
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         finding_hash("divergence"),
     )?;
     let entries = recorded_event_log(schedule.decisions()[0].clone());
@@ -1285,7 +1285,7 @@ fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box
     let wrong_original_finding = finding_artifact(
         &scenario,
         Schedule::from_decisions([override_decision("wrong-report-original", "noise")]),
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         finding_hash("wrong-report-original"),
     )?;
     let mut wrong_original_run = property_run.clone();
@@ -1309,7 +1309,7 @@ fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box
     let divergence_finding = finding_artifact(
         &scenario,
         Schedule::from_decisions([divergence_decision.clone()]),
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         finding_hash("cluster-report-divergence"),
     )?;
     let divergence_entries = recorded_node_divergence_event_log(divergence_decision);

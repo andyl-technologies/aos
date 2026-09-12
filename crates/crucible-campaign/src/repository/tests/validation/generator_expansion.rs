@@ -1,6 +1,7 @@
 //! Generator expansion, feedback, and owner-bound validation regressions.
 
 use super::*;
+use crate::FindingExactPins;
 
 #[test]
 fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
@@ -17,7 +18,7 @@ fn branch_request_staleness_and_campaign_scope_fail_before_ref_advance() {
     );
     let stale = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"stale-request",
     ))
     .expect("stale id");
@@ -2851,14 +2852,14 @@ fn finding_progressive_integer_prioritizes_verified_reward_discontinuity() {
         )
         .expect("finding-progressive signature");
         current = repository
-            .publish_finding(
+            .publish_finding_with_retention(
                 campaign,
                 current,
                 signature,
                 observed.observation,
                 reproduction,
                 None,
-                BTreeSet::new(),
+                FindingExactPins::default(),
             )
             .expect("publish finding-progressive finding")
             .new_snapshot;

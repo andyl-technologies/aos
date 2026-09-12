@@ -23,7 +23,7 @@ pub mod engine {
         CheckpointTerminalCause, ChoiceTag, CodePoint, ConditionEventLogPrefix, Configuration,
         ContentAddressedBlobRef, ContentHash, CoverageGuidedCorpusConfig, CoverageGuidedCorpusRun,
         CoverageGuidedFuzzConfig, CoverageGuidedFuzzRun, DagStore, DagStoreError,
-        DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate, DebugFailureFooterCommand,
+        DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate,
         DebugGdbEndpoint, DebugReverseStepGrain, Decision, DeliveryOrderDecision, EngineError,
         EventAttributeValue, EventDiagnosticPayload, EventGraph, EventId, EventKey, EventLevel,
         EventLog, EventLogCoverageFeedback, EventLogCoverageObservation, EventLogIcountStamp,

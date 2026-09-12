@@ -469,15 +469,17 @@ fn pending_topology_scheduler() -> crucible::SingleScheduler {
         crucible::SimDuration { nanos: 20 },
     )]);
     let mut scheduler = crucible::SingleScheduler::new(scenario).expect("scenario should build");
-    scheduler.queue_topology_change(crucible::SchedulerTopologyChange::new(
-        1,
-        crucible::SchedulerTopologyChangeTrigger::LatencyChange,
-        vec![crucible::SchedulerLookaheadEdge::new(
-            vm,
-            router,
-            crucible::SimDuration { nanos: 5 },
-        )],
-    ));
+    scheduler
+        .schedule_topology_change(crucible::SchedulerTopologyChange::new(
+            1,
+            crucible::SchedulerTopologyChangeTrigger::LatencyChange,
+            vec![crucible::SchedulerLookaheadEdge::new(
+                vm,
+                router,
+                crucible::SimDuration { nanos: 5 },
+            )],
+        ))
+        .expect("future topology change should enqueue");
     scheduler
 }
 

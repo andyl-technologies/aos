@@ -129,7 +129,6 @@ fn campaign_acceptance_reports_render_exact_idempotent_results() {
                     1,
                 )
                 .expect("acceptance summary"),
-                true,
             ),
             replayed: false,
         },
@@ -200,7 +199,6 @@ fn campaign_branch_acceptance_summary_json_has_exact_and_range_goldens() {
             2,
         )
         .expect("exact acceptance summary"),
-        true,
     );
     assert_eq!(
         serde_json::to_string(&exact).expect("exact summary JSON"),
@@ -216,11 +214,10 @@ fn campaign_branch_acceptance_summary_json_has_exact_and_range_goldens() {
             1,
         )
         .expect("ranged acceptance summary"),
-        false,
     );
     assert_eq!(
         serde_json::to_string(&ranged).expect("ranged summary JSON"),
-        r#"{"validated_cardinality":{"kind":"range","minimum":4,"maximum":8},"deduplicated_existing_edges":{"kind":"range","minimum":0,"maximum":2},"remaining_lazy_candidates":{"kind":"range","minimum":2,"maximum":4},"budget":{"maximum_proposals":4,"maximum_attempts":1},"summary_provenance":"legacy-recomputed"}"#
+        r#"{"validated_cardinality":{"kind":"range","minimum":4,"maximum":8},"deduplicated_existing_edges":{"kind":"range","minimum":0,"maximum":2},"remaining_lazy_candidates":{"kind":"range","minimum":2,"maximum":4},"budget":{"maximum_proposals":4,"maximum_attempts":1},"summary_provenance":"recorded"}"#
     );
     assert_eq!(
         ranged.human_fields(),
@@ -230,7 +227,7 @@ fn campaign_branch_acceptance_summary_json_has_exact_and_range_goldens() {
             ("remaining_candidates", "2..=4".to_owned()),
             ("maximum_proposals", "4".to_owned()),
             ("maximum_attempts", "1".to_owned()),
-            ("summary_provenance", "legacy-recomputed".to_owned()),
+            ("summary_provenance", "recorded".to_owned()),
         ]
     );
 }

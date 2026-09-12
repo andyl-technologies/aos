@@ -274,7 +274,7 @@ fn finding_replay_retains_nonempty_configuration_target_and_causal_evidence() {
                 Ok(CrucibleFindingReplayEvidence::new(
                     Some(candidate_signature),
                     candidate_configuration,
-                    MeasurementSet::new(BTreeMap::new()).expect("measurements"),
+                    crate::crucible_measurement::empty_test_measurement_set(),
                     properties.clone(),
                     CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
                     Vec::new(),

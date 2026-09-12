@@ -12,7 +12,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use crucible_harness::reproduction::content_address_bytes;
 use crucible_session::engine::{
     Action, ContentAddressedBlobRef, ContentHash, EventGraph, EventId, Icount, NodeId, Plan,
     Predicate, Properties, ReadyPoint, ScenarioDefForm, Seed, SimDuration, VmArchitecture,
@@ -113,7 +112,7 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
     assert!(
         watch_campaigns
             .first()
-            .is_some_and(|campaign| campaign.starts_with("legacy-run-"))
+            .is_some_and(|campaign| campaign.starts_with("campaign-run-"))
     );
     assert!(watch_summaries.iter().all(|summary| {
         summary.contains("\towner=campaign\t")
@@ -185,7 +184,7 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
                 .is_some_and(|summary| summary.contains("operation=run-campaign-default-path"))
     }));
 
-    println!("\nlegacy_default_run_campaign=true");
+    println!("\ncampaign_default_run=true");
     Ok(())
 }
 
@@ -223,8 +222,8 @@ fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<d
     require_success(&save, "campaign virtual-time save")?;
     let save_stdout = String::from_utf8(save.stdout)?;
     assert!(
-        save_stdout.contains("operation=save-live-checkpoint"),
-        "native save omitted its live-checkpoint operation proof; stdout:\n{save_stdout}"
+        save_stdout.contains("operation=save-campaign-default-path"),
+        "campaign save omitted its ownership proof; stdout:\n{save_stdout}"
     );
 
     let handle_text = fs::read_to_string(&handle)?;
@@ -241,8 +240,8 @@ fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<d
     require_success(&resume, "native resume from campaign save handle")?;
     let resume_stdout = String::from_utf8(resume.stdout)?;
     assert!(
-        resume_stdout.contains("operation=resume-thin-replay"),
-        "native resume omitted its thin-replay operation proof; stdout:\n{resume_stdout}"
+        resume_stdout.contains("operation=resume-campaign-default-path"),
+        "campaign resume omitted its ownership proof; stdout:\n{resume_stdout}"
     );
     let resume_final = session_summary(&resume_stdout, "resume-session")?;
     assert_eq!(
@@ -258,14 +257,14 @@ fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<d
 
     let fork = native_state_command(&fork_artifacts, &store, &fork_state, &deployment)?
         .arg("fork")
-        .arg(checkpoint)
+        .arg(&handle)
         .args(["--label", "native-campaign-fork"])
         .output()?;
     require_success(&fork, "native fork from campaign save DAG checkpoint")?;
     let fork_stdout = String::from_utf8(fork.stdout)?;
     assert!(
-        fork_stdout.contains("operation=fork-thin-replay"),
-        "native fork omitted its thin-replay operation proof; stdout:\n{fork_stdout}"
+        fork_stdout.contains("operation=fork-campaign-default-path"),
+        "campaign fork omitted its ownership proof; stdout:\n{fork_stdout}"
     );
     let fork_final = session_summary(&fork_stdout, "fork-session")?;
     assert_eq!(
@@ -279,7 +278,7 @@ fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<d
         "native fork did not reach four milliseconds; stdout:\n{fork_stdout}"
     );
 
-    println!("\nlegacy_campaign_native_save_resume_fork=true");
+    println!("\ncampaign_save_resume_fork=true");
     Ok(())
 }
 
@@ -303,14 +302,11 @@ fn guarded_campaign_failure_artifact_replays_live_evidence() -> Result<(), Box<d
     let root = temporary.path();
     let run_state = root.join("run-state");
     let replay_state = root.join("replay-state");
-    let legacy_replay_state = root.join("legacy-replay-state");
     let artifact_dir = root.join("artifacts");
     fs::create_dir(&run_state)?;
     fs::create_dir(&replay_state)?;
-    fs::create_dir(&legacy_replay_state)?;
     fs::set_permissions(&run_state, fs::Permissions::from_mode(0o700))?;
     fs::set_permissions(&replay_state, fs::Permissions::from_mode(0o700))?;
-    fs::set_permissions(&legacy_replay_state, fs::Permissions::from_mode(0o700))?;
     fs::create_dir(&artifact_dir)?;
     let scenario_path = write_scenario(root, Action::fail("guarded campaign flight failure"))?;
 
@@ -364,36 +360,7 @@ fn guarded_campaign_failure_artifact_replays_live_evidence() -> Result<(), Box<d
     assert!(replay_stdout.contains("owner=campaign"));
     assert!(replay_stdout.contains("reproduced_status=failed"));
 
-    // Recast the same real execution into the historical session-owned `run`
-    // shape: producer `run`, with no campaign choice closure. Its selection-free
-    // schedule must now enter the campaign replay owner and reproduce exactly.
-    let legacy_artifact = legacy_run_artifact_from_campaign(&artifact_text)?;
-    assert!(legacy_artifact.contains("70726f64756365720972756e0a"));
-    assert!(!legacy_artifact.contains("campaign_replay_closure"));
-    let legacy_artifact_path = root.join("legacy-run.crucible");
-    fs::write(&legacy_artifact_path, legacy_artifact)?;
-    let legacy_replay = command()
-        .args(["--backend", "qemu", "--qemu"])
-        .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
-        .arg("--plugin")
-        .arg(required_path("CRUCIBLE_FLIGHT_PLUGIN")?)
-        .arg("--campaign-deployment")
-        .arg(&deployment)
-        .args(["--format", "jsonl", "replay"])
-        .arg(&legacy_artifact_path)
-        .env("CRUCIBLE_RUN_STATE_ROOT", &legacy_replay_state)
-        .output()?;
-    require_success(
-        &legacy_replay,
-        "campaign replay of a selection-free legacy run artifact",
-    )?;
-    let legacy_replay_stdout = String::from_utf8(legacy_replay.stdout)?;
-    assert!(legacy_replay_stdout.contains("replay_live_qemu"));
-    assert!(legacy_replay_stdout.contains("validation=passed"));
-    assert!(legacy_replay_stdout.contains("owner=campaign"));
-    assert!(legacy_replay_stdout.contains("reproduced_status=failed"));
-
-    println!("\nlegacy_guarded_failure_replay=true");
+    println!("\ncampaign_guarded_failure_replay=true");
     Ok(())
 }
 
@@ -433,7 +400,7 @@ fn guarded_campaign_rejects_insufficient_capacity_before_guest_launch() -> Resul
             .is_none()
     );
 
-    println!("\nlegacy_guarded_prelaunch_capacity_refusal=true");
+    println!("\ncampaign_guarded_prelaunch_capacity_refusal=true");
     Ok(())
 }
 
@@ -565,113 +532,6 @@ fn single_reproduction_artifact(root: &std::path::Path) -> Result<PathBuf, Box<d
         [path] => Ok(path.clone()),
         _ => Err(format!("expected one failure artifact, found {}", paths.len()).into()),
     }
-}
-
-fn legacy_run_artifact_from_campaign(artifact: &str) -> Result<String, Box<dyn Error>> {
-    let mut rows = artifact
-        .lines()
-        .map(|line| line.split('\t').map(str::to_owned).collect::<Vec<_>>())
-        .collect::<Vec<_>>();
-    let campaign_closure_digest = rows
-        .iter()
-        .find(|fields| {
-            fields.first().is_some_and(|field| field == "component")
-                && fields
-                    .get(1)
-                    .is_some_and(|field| field == "campaign_replay_closure")
-        })
-        .and_then(|fields| fields.get(3))
-        .cloned()
-        .ok_or("campaign artifact omitted its replay closure")?;
-    rows.retain(|fields| {
-        let is_closure_component = fields.first().is_some_and(|field| field == "component")
-            && fields
-                .get(1)
-                .is_some_and(|field| field == "campaign_replay_closure");
-        let is_closure_payload = fields.first().is_some_and(|field| field == "payload")
-            && fields
-                .get(1)
-                .is_some_and(|field| field == &campaign_closure_digest);
-
-        !(is_closure_component || is_closure_payload)
-    });
-
-    let contract_index = rows
-        .iter()
-        .position(|fields| {
-            fields.first().is_some_and(|field| field == "component")
-                && fields
-                    .get(1)
-                    .is_some_and(|field| field == "live_qemu_replay_contract")
-        })
-        .ok_or("campaign artifact omitted its live-QEMU replay contract")?;
-    let contract_digest = rows[contract_index]
-        .get(3)
-        .cloned()
-        .ok_or("live-QEMU contract component omitted its digest")?;
-    let payload_index = rows
-        .iter()
-        .position(|fields| {
-            fields.first().is_some_and(|field| field == "payload")
-                && fields.get(1).is_some_and(|field| field == &contract_digest)
-        })
-        .ok_or("campaign artifact omitted its live-QEMU contract payload")?;
-    let contract_bytes = decode_hex(
-        rows[payload_index]
-            .get(2)
-            .ok_or("live-QEMU contract payload omitted its bytes")?,
-    )?;
-    let contract = String::from_utf8(contract_bytes)?;
-    let rewritten = contract.replacen("producer\tcampaign-run\n", "producer\trun\n", 1);
-    if rewritten == contract {
-        return Err("live-QEMU contract did not name the campaign-run producer".into());
-    }
-    let rewritten = rewritten.into_bytes();
-    let rewritten_digest = content_address_bytes(&rewritten);
-
-    rows[contract_index][3] = rewritten_digest.clone();
-    rows[contract_index][4] = format!("cas:{rewritten_digest}");
-    rows[contract_index][6] = rewritten.len().to_string();
-    rows[payload_index][1] = rewritten_digest;
-    rows[payload_index][2] = encode_hex(&rewritten);
-
-    Ok(format!(
-        "{}\n",
-        rows.into_iter()
-            .map(|fields| fields.join("\t"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    ))
-}
-
-fn decode_hex(encoded: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    let bytes = encoded.as_bytes();
-    if !bytes.len().is_multiple_of(2) {
-        return Err("hex payload has an odd length".into());
-    }
-    bytes
-        .chunks_exact(2)
-        .map(|pair| Ok((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?))
-        .collect()
-}
-
-fn hex_nibble(byte: u8) -> Result<u8, Box<dyn Error>> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err("hex payload contains a non-hexadecimal byte".into()),
-    }
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
 }
 
 fn require_embedded_component(

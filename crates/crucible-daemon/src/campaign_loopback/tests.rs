@@ -14,40 +14,41 @@ use std::thread;
 use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, BooleanDomain,
     BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget, BranchPointId, BranchRequest,
-    BranchRequestCause, BranchRequestResult, CampaignChoiceEntry, CampaignChoiceObject,
-    CampaignChoiceObjectKind, CampaignClient, CampaignCommandId, CampaignCommandResult,
-    CampaignContinuationStatus, CampaignControlAction, CampaignDerivationResult,
-    CampaignDiscoveryResult, CampaignFact, CampaignFindingOccurrenceObject,
-    CampaignFindingOccurrenceObjectKind, CampaignFindingOccurrenceService,
-    CampaignFindingTriageReplayRole, CampaignHash, CampaignLineage, CampaignLineageId,
-    CampaignMode, CampaignName, CampaignOperationalStatus, CampaignPolicy, CampaignPolicyId,
-    CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignRoots,
-    CampaignSeed, CampaignSemanticStatus, CampaignService, CampaignServiceOperation,
-    CampaignSnapshot, CampaignSnapshotId, CampaignState, CampaignStatusSummary, CandidateSource,
-    ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceDomainId, ChoiceOpportunity,
-    ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
-    ConfigurationId, ContinuationProjection, ContinuationState, ControlRequest,
-    CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
-    DiscoveryRequest, ExactRational, ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse,
-    ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId, FindingId,
-    FindingTriageEvidenceSet, FindingTriageReplayEvidence, GetCampaignChoiceObjectRequest,
-    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
-    GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
-    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
-    GetCampaignFindingTriageReplaySegmentResponse, GetCampaignFrontierObjectRequest,
-    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
-    GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
-    GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES,
-    MerkleMap, ObjectEnvelope, PinCampaignRequest, PinCampaignResponse, PinChange, PinRequest,
-    PinRetention, ProgressiveWideningPolicy, PuctPolicy, QueryCampaignChoicesRequest,
-    QueryCampaignChoicesResponse, QueryCampaignFindingOccurrencesRequest,
-    QueryCampaignFindingOccurrencesResponse, QueryCampaignFindingsRequest,
-    QueryCampaignFindingsResponse, QueryCampaignFrontierRequest, QueryCampaignFrontierResponse,
-    QueryCampaignGraphRequest, QueryCampaignGraphResponse, RepositoryCampaignService,
-    RetentionPolicy, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, StopCondition,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest,
-    SubmitCampaignDiscoveryResponse, WatchCampaignRequest, WatchCampaignResponse,
+    BranchRequestCause, BranchRequestResult, CampaignBudgetLedger, CampaignChoiceEntry,
+    CampaignChoiceObject, CampaignChoiceObjectKind, CampaignClient, CampaignCommandId,
+    CampaignCommandResult, CampaignContinuationStatus, CampaignControlAction,
+    CampaignDerivationResult, CampaignDiscoveryResult, CampaignFact,
+    CampaignFindingOccurrenceObject, CampaignFindingOccurrenceObjectKind,
+    CampaignFindingOccurrenceService, CampaignFindingTriageReplayRole, CampaignHash,
+    CampaignLineage, CampaignLineageId, CampaignMode, CampaignName, CampaignOperationalStatus,
+    CampaignPolicy, CampaignPolicyId, CampaignPrincipal, CampaignPrincipalAuthorizer,
+    CampaignRepository, CampaignRoots, CampaignSeed, CampaignSemanticStatus, CampaignService,
+    CampaignServiceOperation, CampaignSnapshot, CampaignSnapshotId, CampaignState,
+    CampaignStatusSummary, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
+    ChoiceDomainId, ChoiceOpportunity, ChoiceOpportunityId, ChoiceSource, ChoiceValue,
+    ConfigurationArtifact, ConfigurationArtifactId, ConfigurationId, ContinuationProjection,
+    ContinuationState, ControlRequest, CreateCampaignRequest, CreateCampaignResponse,
+    DeriveCampaignRequest, DeriveCampaignResponse, DiscoveryRequest, ExactRational,
+    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, ExplorerPolicy, FairnessPolicy,
+    FindingCandidateBundle, FindingCandidateBundleId, FindingId, FindingTriageEvidenceSet,
+    FindingTriageReplayEvidence, GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
+    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
+    GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
+    GetCampaignFindingTriageReplaySegmentRequest, GetCampaignFindingTriageReplaySegmentResponse,
+    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
+    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
+    GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse, GetCampaignRequest,
+    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
+    MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES, MerkleMap, ObjectEnvelope, PinCampaignRequest,
+    PinCampaignResponse, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
+    PuctPolicy, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
+    QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
+    QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
+    RepositoryCampaignService, RetentionPolicy, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, StopCondition, SubmitCampaignBranchRequest,
+    SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
 
@@ -476,6 +477,10 @@ impl CampaignService for FixedCampaignService {
                 coordination: root,
             },
             acceptance_fact.id().expect("acceptance fact ID"),
+            CampaignBudgetLedger::empty(root)
+                .expect("response ledger")
+                .id()
+                .expect("response ledger ID"),
         )
         .expect("accepted branch snapshot");
         Ok(SubmitCampaignBranchResponse::new(
@@ -487,7 +492,6 @@ impl CampaignService for FixedCampaignService {
                 summary,
                 snapshot,
                 acceptance_fact,
-                summary_recorded: true,
                 replayed: false,
             },
         )
@@ -2441,8 +2445,16 @@ fn fixed_query_snapshot() -> (CampaignSnapshot, MerkleMap, ContentId) {
         accounting: empty,
         coordination: empty,
     };
-    let snapshot = CampaignSnapshot::genesis(lineage("lineage"), policy("policy"), roots)
-        .expect("fixed query snapshot");
+    let snapshot = CampaignSnapshot::genesis(
+        lineage("lineage"),
+        policy("policy"),
+        roots,
+        CampaignBudgetLedger::empty(empty)
+            .expect("fixed query ledger")
+            .id()
+            .expect("fixed query ledger ID"),
+    )
+    .expect("fixed query snapshot");
     (snapshot, map, root)
 }
 

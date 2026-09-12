@@ -431,13 +431,13 @@ pub(crate) use evidence::{
     QemuTerminalEvidenceExecutionRunner, map_observed_evidence_failure, map_observed_inner_failure,
 };
 
-mod legacy_run;
+mod campaign_run;
 #[cfg(any(test, feature = "test-support"))]
-pub use legacy_run::test_support::{
+pub use campaign_run::test_support::{
     GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,
     run_guarded_default_campaign_test_fixture_with_trace,
 };
-pub use legacy_run::{
+pub use campaign_run::{
     GuardedCampaignBranchAcceptance, GuardedCampaignContinuationControl,
     GuardedCampaignContinuationControlError, GuardedCampaignExploration,
     GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,

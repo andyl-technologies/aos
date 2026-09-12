@@ -52,7 +52,7 @@ pub(super) struct CampaignBranchAcceptanceSummaryReport {
 }
 
 impl CampaignBranchAcceptanceSummaryReport {
-    pub(super) fn new(summary: BranchAcceptanceSummary, recorded: bool) -> Self {
+    pub(super) fn new(summary: BranchAcceptanceSummary) -> Self {
         Self {
             validated_cardinality: summary.validated_cardinality().into(),
             deduplicated_existing_edges: summary.deduplicated_existing_edges().into(),
@@ -61,11 +61,7 @@ impl CampaignBranchAcceptanceSummaryReport {
                 maximum_proposals: summary.maximum_proposals(),
                 maximum_attempts: summary.maximum_attempts(),
             },
-            summary_provenance: if recorded {
-                "recorded"
-            } else {
-                "legacy-recomputed"
-            },
+            summary_provenance: "recorded",
         }
     }
 

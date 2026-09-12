@@ -21,7 +21,6 @@ use crate::{
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 const RETENTION_SCHEMA_VERSION: u32 = 2;
-const CANDIDATE_BUNDLE_SCHEMA_VERSION: u32 = 3;
 const CANDIDATE_OCCURRENCES_SCHEMA_VERSION: u32 = 4;
 const MAX_REPRODUCTION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_REPRODUCTION_RECORD_BYTES: usize = 34 * 1024 * 1024;
@@ -98,15 +97,6 @@ impl FindingExactPins {
             additional,
             all,
         })
-    }
-
-    /// Converts a legacy untyped exact-checkpoint set into additional pins.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError::LimitExceeded`] when `pins` exceeds 256.
-    pub fn from_untyped(pins: BTreeSet<ExactCheckpointId>) -> Result<Self, CampaignCodecError> {
-        Self::new(BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), pins)
     }
 
     /// Returns checkpoints immediately before causal failure evidence.
@@ -1138,39 +1128,6 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// Builds one bounded canonical finding cluster.
-    ///
-    /// `first_seen_snapshot` is the authenticated parent snapshot at which the
-    /// first occurrence had already become observable. Naming the successor
-    /// that publishes this record would create a content-address cycle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when the exact-pin set or encoded record
-    /// exceeds its bound.
-    pub fn new(
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        first_seen_snapshot: CampaignSnapshotId,
-        occurrences: FindingOccurrenceSet,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: BTreeSet<ExactCheckpointId>,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            RECORD_SCHEMA_VERSION,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            FindingExactPins::from_untyped(exact_pins)?,
-            None,
-            None,
-        )
-    }
-
     /// Builds a schema-v2 finding with role-tagged exact-checkpoint retention.
     ///
     /// # Errors
@@ -1201,44 +1158,11 @@ impl Finding {
         )
     }
 
-    /// Builds a schema-v3 finding that retains its verified candidate bundle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when reproduction versions are invalid or
-    /// the encoded record exceeds 4 MiB.
-    // crucible-lint: allow rust-allow -- the versioned constructor keeps every canonical field explicit.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_candidate_bundle(
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        first_seen_snapshot: CampaignSnapshotId,
-        occurrences: FindingOccurrenceSet,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: FindingExactPins,
-        candidate_bundle: FindingCandidateBundleId,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_versioned(
-            CANDIDATE_BUNDLE_SCHEMA_VERSION,
-            signature,
-            observation,
-            reproduction,
-            first_seen_snapshot,
-            occurrences,
-            minimized,
-            exact_pins,
-            Some(candidate_bundle),
-            None,
-        )
-    }
-
     /// Builds a schema-v4 finding that retains every verified candidate bundle.
     ///
     /// The representative observation and reproduction fields remain the first
-    /// finding evidence, including an absent or legacy minimized reproduction.
-    /// `candidate_bundle` is the first retained candidate bundle, which can
-    /// postdate that evidence when a legacy finding upgrades.
+    /// finding evidence. `candidate_bundle` is the first retained candidate
+    /// bundle.
     /// `candidate_occurrences` authenticates every retained bundle.
     ///
     /// # Errors
@@ -1289,22 +1213,10 @@ impl Finding {
         let reproduction_version = reproduction.content_id().schema_version();
         let minimized_version = minimized.map(|id| id.content_id().schema_version());
         let reproduction_versions_match = match schema_version {
-            RECORD_SCHEMA_VERSION => {
-                reproduction_version == RECORD_SCHEMA_VERSION
-                    && minimized_version.is_none_or(|version| version == RECORD_SCHEMA_VERSION)
-                    && candidate_bundle.is_none()
-                    && candidate_occurrences.is_none()
-            }
             RETENTION_SCHEMA_VERSION => {
                 reproduction_version == RECORD_SCHEMA_VERSION
                     && minimized_version.is_none_or(|version| version == RETENTION_SCHEMA_VERSION)
                     && candidate_bundle.is_none()
-                    && candidate_occurrences.is_none()
-            }
-            CANDIDATE_BUNDLE_SCHEMA_VERSION => {
-                reproduction_version == RECORD_SCHEMA_VERSION
-                    && minimized_version == Some(RETENTION_SCHEMA_VERSION)
-                    && candidate_bundle.is_some()
                     && candidate_occurrences.is_none()
             }
             CANDIDATE_OCCURRENCES_SCHEMA_VERSION => {
@@ -1410,8 +1322,7 @@ impl Finding {
 
     /// Returns the retained candidate-bundle compatibility anchor.
     ///
-    /// Schema v3 binds this bundle to the representative evidence. Schema v4
-    /// preserves the first bundle retained after upgrade, while
+    /// Schema v4 preserves the first bundle retained for the finding, while
     /// [`Self::candidate_occurrences`] is authoritative for all bundles.
     #[must_use]
     pub const fn candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
@@ -1515,17 +1426,7 @@ impl Finding {
                 candidate_occurrences.latest().content_id(),
             ));
         }
-        if self.schema_version == RECORD_SCHEMA_VERSION {
-            children.extend(
-                self.exact_pins
-                    .all()
-                    .iter()
-                    .enumerate()
-                    .map(|(index, id)| (format!("exact-pin.{index:04x}"), id.content_id())),
-            );
-        } else {
-            children.extend(self.exact_pins.content_children());
-        }
+        children.extend(self.exact_pins.content_children());
         children
     }
 }
@@ -1539,12 +1440,8 @@ impl Canonical for Finding {
         self.first_seen_snapshot.encode(encoder);
         self.occurrences.encode(encoder);
         self.minimized.encode(encoder);
-        if self.schema_version == RECORD_SCHEMA_VERSION {
-            self.exact_pins.all().encode(encoder);
-        } else {
-            self.exact_pins.encode(encoder);
-        }
-        if self.schema_version >= CANDIDATE_BUNDLE_SCHEMA_VERSION {
+        self.exact_pins.encode(encoder);
+        if self.schema_version == CANDIDATE_OCCURRENCES_SCHEMA_VERSION {
             self.candidate_bundle.encode(encoder);
         }
         if self.schema_version == CANDIDATE_OCCURRENCES_SCHEMA_VERSION {
@@ -1556,10 +1453,7 @@ impl Canonical for Finding {
         let schema_version = u32::decode(decoder)?;
         if !matches!(
             schema_version,
-            RECORD_SCHEMA_VERSION
-                | RETENTION_SCHEMA_VERSION
-                | CANDIDATE_BUNDLE_SCHEMA_VERSION
-                | CANDIDATE_OCCURRENCES_SCHEMA_VERSION
+            RETENTION_SCHEMA_VERSION | CANDIDATE_OCCURRENCES_SCHEMA_VERSION
         ) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported finding record schema version",
@@ -1571,14 +1465,8 @@ impl Canonical for Finding {
         let first_seen_snapshot = CampaignSnapshotId::decode(decoder)?;
         let occurrences = FindingOccurrenceSet::decode(decoder)?;
         let minimized = Option::<ReproductionArtifactId>::decode(decoder)?;
-        let exact_pins = if schema_version == RECORD_SCHEMA_VERSION {
-            FindingExactPins::from_untyped(
-                decoder.set_bounded(MAX_FINDING_EXACT_PINS, "finding-exact-pin-count")?,
-            )?
-        } else {
-            FindingExactPins::decode(decoder)?
-        };
-        let candidate_bundle = if schema_version >= CANDIDATE_BUNDLE_SCHEMA_VERSION {
+        let exact_pins = FindingExactPins::decode(decoder)?;
+        let candidate_bundle = if schema_version == CANDIDATE_OCCURRENCES_SCHEMA_VERSION {
             Option::<FindingCandidateBundleId>::decode(decoder)?
         } else {
             None

@@ -7,9 +7,9 @@
 use crucible::{
     BasicBlockCoverageConfig, BasicBlockCoverageError, BasicBlockCoverageMode,
     BasicBlockCoverageRegistrationPlan, BlackBoxObservationKind, BlackBoxObservationSource,
-    Configuration, ContentHash, Decision, EventClass, ExecutionFingerprint, Icount, NodeId,
-    ObservableEvent, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, TcgExecBasicBlock, VirtualTime, World,
+    Configuration, Decision, EventClass, ExecutionFingerprint, Icount, NodeId, ObservableEvent,
+    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, TcgExecBasicBlock, VirtualTime, World,
     basic_block_coverage_map_index, compare_event_log_determinism, reduce,
 };
 
@@ -86,10 +86,7 @@ fn gate_basic_block_coverage_consumes_tcg_exec_blocks_without_guest_instrumentat
 
 #[test]
 fn gate_basic_block_coverage_has_zero_fingerprint_effect() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.basic-block-coverage.world",
-        "zero-fingerprint-effect",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let off_config = BasicBlockCoverageConfig::off();
     let on_config = BasicBlockCoverageConfig::on();
     let off_genesis = Configuration::genesis(world.scenario_def());

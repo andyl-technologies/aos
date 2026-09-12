@@ -169,8 +169,8 @@ impl SavepointContinuationSource {
 impl CampaignRepository {
     /// Loads the first selected physical-source provenance for a continuation.
     ///
-    /// Historical selection remains readable after the capture's operational
-    /// source is discarded. Callers treat an absent physical root as a cold
+    /// The immutable selection remains readable when the capture's operational
+    /// source is unavailable. Callers treat an absent physical root as a cold
     /// replay decision; a malformed retained fact is an integrity failure.
     ///
     /// # Errors
@@ -262,7 +262,6 @@ impl CampaignRepository {
                         true,
                     ),
                 CampaignFact::ControlRequested(_)
-                | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)
@@ -327,7 +326,7 @@ impl CampaignRepository {
         }
         let admission = match indexed_basis {
             Some(content) => self.read_attempt_admission(content)?,
-            None => AttemptAdmission::new_policy_bound(
+            None => AttemptAdmission::new(
                 continuation_id,
                 AttemptAdmissionRole::ExecutionBasis {
                     proposal: None,
@@ -437,7 +436,6 @@ impl CampaignRepository {
                     self.find_savepoint_capture_result(current_content, request, true)
                 }
                 CampaignFact::ControlRequested(_)
-                | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)
@@ -520,47 +518,15 @@ impl CampaignRepository {
     /// # Errors
     ///
     /// Returns an error for command reuse, stale input, a missing or already
-    /// resolved capture, a new discard transition, assignment/request mismatch,
-    /// an unauthenticated status response, a status that differs from the
-    /// requested outcome, publication failure, or final ref conflict.
+    /// resolved capture, assignment/request mismatch, an unauthenticated status
+    /// response, a status that differs from the requested outcome, publication
+    /// failure, or final ref conflict.
     pub fn resolve_savepoint_capture(
         &self,
         name: &str,
         resolution: &SavepointCaptureResolution,
         assignment: &SubmitAttemptRequest,
         status: &GetAttemptExecutionResponse,
-    ) -> Result<SavepointCaptureResolutionResult, CampaignRepositoryError> {
-        self.resolve_savepoint_capture_with_discard_policy(
-            name, resolution, assignment, status, false,
-        )
-    }
-
-    #[cfg(test)]
-    /// Installs a formerly supported discard transition for cold-history tests.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same validation and storage errors as the historical owner
-    /// transaction.
-    pub(super) fn install_historical_savepoint_capture_resolution(
-        &self,
-        name: &str,
-        resolution: &SavepointCaptureResolution,
-        assignment: &SubmitAttemptRequest,
-        status: &GetAttemptExecutionResponse,
-    ) -> Result<SavepointCaptureResolutionResult, CampaignRepositoryError> {
-        self.resolve_savepoint_capture_with_discard_policy(
-            name, resolution, assignment, status, true,
-        )
-    }
-
-    fn resolve_savepoint_capture_with_discard_policy(
-        &self,
-        name: &str,
-        resolution: &SavepointCaptureResolution,
-        assignment: &SubmitAttemptRequest,
-        status: &GetAttemptExecutionResponse,
-        allow_discard: bool,
     ) -> Result<SavepointCaptureResolutionResult, CampaignRepositoryError> {
         let _guard = self.lock_mutation()?;
         let campaign_ref = campaign_ref(name)?;
@@ -581,7 +547,6 @@ impl CampaignRepository {
                     self.find_savepoint_capture_resolution_result(current_content, resolution, true)
                 }
                 CampaignFact::ControlRequested(_)
-                | CampaignFact::BranchRequestIssued(_)
                 | CampaignFact::BranchRequestAccepted { .. }
                 | CampaignFact::PinCommandAccepted(_)
                 | CampaignFact::DiscoveryRequested(_)
@@ -592,15 +557,6 @@ impl CampaignRepository {
                 }
                 _ => Err(integrity("command-index-value-is-not-mutation-fact")),
             };
-        }
-
-        // Historical Ready -> Discarded facts remain canonical and must pass
-        // cold validation. New discard requires the future source-handoff and
-        // ledger-release transaction, so reject it only on this mutation path.
-        if resolution.outcome == SavepointCaptureOutcome::Discarded && !allow_discard {
-            return Err(CampaignRepositoryError::InvalidRequest {
-                reason: "savepoint-capture-discard-is-not-yet-supported",
-            });
         }
 
         let current_id = CampaignSnapshotId::from_content_id(current_content)?;
@@ -629,7 +585,7 @@ impl CampaignRepository {
             current.snapshot.roots().accounting,
             savepoint_capture_resolution_key(resolution.request),
         )?;
-        validate_resolution_predecessor(self, resolution, prior_resolution)?;
+        validate_resolution_predecessor(prior_resolution)?;
         let transition = CampaignFact::SavepointCaptureResolved(resolution.clone());
         let transition_content = self.put_fact(&transition)?;
         let accounting_upserts = BTreeMap::from([
@@ -737,9 +693,8 @@ impl CampaignRepository {
 
     /// Returns the latest authenticated resolution for one capture at a snapshot.
     ///
-    /// A ready capture may be followed only by an explicit discarded
-    /// resolution. The returned value therefore represents the current durable
-    /// retention disposition for the request.
+    /// A capture has at most one terminal resolution. The returned value is the
+    /// durable disposition for the request.
     ///
     /// # Errors
     ///
@@ -1103,7 +1058,7 @@ impl CampaignRepository {
             parent.snapshot.roots().accounting,
             savepoint_capture_resolution_key(resolution.request),
         )?;
-        validate_resolution_predecessor(self, resolution, prior_resolution)
+        validate_resolution_predecessor(prior_resolution)
             .map_err(|_| integrity("savepoint-capture-resolution-predecessor-mismatch"))?;
         let prior = parent.snapshot.roots();
         let next = child.snapshot.roots();
@@ -1187,7 +1142,7 @@ impl CampaignRepository {
         )]);
         match (indexed_basis, indexed_source) {
             (None, None) => {
-                let expected_admission = AttemptAdmission::new_policy_bound(
+                let expected_admission = AttemptAdmission::new(
                     selection.continuation,
                     AttemptAdmissionRole::ExecutionBasis {
                         proposal: None,
@@ -1201,9 +1156,7 @@ impl CampaignRepository {
                     .get(next.accounting, basis_key)?
                     .ok_or_else(|| integrity("savepoint-continuation-admission-is-missing"))?;
                 let admission = self.read_attempt_admission_cached(admission_content, cache)?;
-                let legacy =
-                    AttemptAdmission::new(expected_admission.attempt(), expected_admission.role());
-                if admission != expected_admission && admission != legacy {
+                if admission != expected_admission {
                     return Err(integrity("savepoint-continuation-admission-owner-mismatch"));
                 }
                 upserts.extend(attempt_admission_upserts(admission_content, admission)?);
@@ -1288,9 +1241,6 @@ fn validate_savepoint_capture_status(
         ) | (
             SavepointCaptureOutcome::Failed,
             GetAttemptExecutionDisposition::TerminalFailure
-        ) | (
-            SavepointCaptureOutcome::Discarded,
-            GetAttemptExecutionDisposition::Paused { .. }
         )
     );
     if matches {
@@ -1303,35 +1253,11 @@ fn validate_savepoint_capture_status(
 }
 
 fn validate_resolution_predecessor(
-    repository: &CampaignRepository,
-    resolution: &SavepointCaptureResolution,
     prior_content: Option<ContentId>,
 ) -> Result<(), CampaignRepositoryError> {
-    match (resolution.outcome, prior_content) {
-        (SavepointCaptureOutcome::Discarded, Some(content)) => {
-            let CampaignFact::SavepointCaptureResolved(prior) = repository.read_fact(content)?
-            else {
-                return Err(integrity(
-                    "savepoint-capture-resolution-index-value-is-not-resolution",
-                ));
-            };
-            if prior.request == resolution.request
-                && prior.outcome == SavepointCaptureOutcome::Ready
-            {
-                Ok(())
-            } else {
-                Err(CampaignRepositoryError::InvalidRequest {
-                    reason: "savepoint-capture-discard-requires-ready-resolution",
-                })
-            }
-        }
-        (SavepointCaptureOutcome::Discarded, None) => {
-            Err(CampaignRepositoryError::InvalidRequest {
-                reason: "savepoint-capture-discard-requires-ready-resolution",
-            })
-        }
-        (_, None) => Ok(()),
-        (_, Some(_)) => Err(CampaignRepositoryError::InvalidRequest {
+    match prior_content {
+        None => Ok(()),
+        Some(_) => Err(CampaignRepositoryError::InvalidRequest {
             reason: "savepoint-capture-is-already-resolved",
         }),
     }

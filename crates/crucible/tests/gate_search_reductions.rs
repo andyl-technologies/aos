@@ -20,10 +20,7 @@ use crucible::{
 #[test]
 fn gate_search_reductions_partial_order_records_canonical_representative_on_demand()
 -> Result<(), Box<dyn Error>> {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.search-reductions.world",
-        "partial-order-on-demand",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
@@ -80,10 +77,7 @@ fn gate_search_reductions_partial_order_records_canonical_representative_on_dema
 
 #[test]
 fn gate_search_reductions_symmetry_uses_graph_level_representative() -> Result<(), Box<dyn Error>> {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.search-reductions.world",
-        "symmetry-graph-level",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
@@ -141,10 +135,7 @@ fn gate_search_reductions_reduced_strategy_schedules_covered_representative()
 -> Result<(), Box<dyn Error>> {
     let covered_decision = rng_decision("symmetry-covered", 1);
     let representative_decision = rng_decision("symmetry-representative", 0);
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.search-reductions.world",
-        "strategy-schedules-covered-representative",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake_with_search_frontier_decisions(&world, vec![covered_decision.clone()])?;

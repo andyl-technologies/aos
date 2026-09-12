@@ -759,10 +759,10 @@ pub struct BranchPath {
 }
 
 pub struct AttemptAdmission {
-    pub schema_version: u32, // v3 binds every new admission to retention policy
+    pub schema_version: u32, // current v3 binds every admission to retention policy
     pub attempt: AttemptId,
     pub role: AttemptAdmissionRole,
-    pub retention_policy: Option<CampaignPolicyId>, // present exactly in v3
+    pub retention_policy: CampaignPolicyId,
 }
 
 pub enum AttemptAdmissionRole {
@@ -832,9 +832,11 @@ v8 reserve the corresponding scenario-failure shapes; the current closed
 outcome union cannot construct them and rejects a mismatched body. All earlier
 stop tags keep their prior enclosing versions, bytes, and content identities.
 
-`BranchRequest` schema v1 encodes a uniform finite source as candidate-source
-tag 0 and a generated source as tag 1. Schema v2 preserves both encodings and
-adds tag 2 for an explicitly weighted finite source encoded as a canonical map
+Retired `BranchRequest` schema v1 encoded uniform finite and generated sources
+without a distinct current semantic shape. Normal admission rejects v1, and
+the bounded repository migration recognizes it only to refuse publication
+because no authenticated translation exists. Current schema v2 encodes those
+sources and adds tag 2 for an explicitly weighted finite source encoded as a canonical map
 from value to positive `u64` raw weight. Schema v3 adds tag 3, followed by one
 `ProbabilityModelId` and a canonical value-to-positive-`u64` map, for finite
 masses resolved by the execution-model adapter. The modeled ID must equal the
@@ -844,9 +846,8 @@ contains at most 4,096 entries, and its keys are exactly the finite value set.
 Absolute mass scale is immaterial; the owner normalizes masses only when
 constructing exact planner guidance. New uniform, generated, and explicitly
 weighted requests retain schema v2 and its established keyed generator
-streams; a newly authored modeled finite request uses v3. V1 and v2 request
-bodies retain their original content identities. A weighted source is invalid
-in v1, and a modeled finite source is invalid before v3. Schema v4 adds
+streams; a newly authored modeled finite request uses v3. A modeled finite
+source is invalid before v3. Schema v4 adds
 candidate-source tag 4 followed by one `ProbabilityModelId` and one
 `CandidateGeneratorSpecId`. The generator is an envelope child, and both its
 exact implementation contract and the opportunity-model equality are
@@ -868,13 +869,13 @@ budget semantics remain unchanged.
 `BranchPath` schema version 2 retains each `BranchPointId` beside its
 non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit
 for every ancestor without an in-memory MCTS stack or a reverse hash lookup.
-Version 1 edge-only paths retain their exact body and envelope identity for
-historical reads, but new writers always produce version 2. The current
-admission owner accepts a legacy path only for a single-edge genesis request.
-A version-2 path must end in the exact `(BranchPointId, BranchEdgeId)` selected
-by its request. Its prefix is empty for genesis; for a non-genesis parent, the
-prefix identity must be a member of that exact parent configuration's
-authenticated nested path set in the source snapshot's observation root.
+Current runtime admission accepts only version 2. The explicit bounded
+repository migration recognizes historical edge-only paths only to reject
+their missing branch-point evidence before publication. A path must
+end in the exact `(BranchPointId, BranchEdgeId)` selected by its request. Its
+prefix is empty for genesis; for a non-genesis parent, the prefix identity must
+be a member of that exact parent configuration's authenticated nested path set
+in the source snapshot's observation root.
 Canonical `ObservationCredited` incorporation adds the observation's complete
 path to its exact child configuration set. The nested set retains every path to
 a convergent configuration rather than selecting one graph parent. Direct

@@ -14,7 +14,7 @@ async fn cancelled_acquire_cannot_leave_an_untracked_controller() -> Result<(), 
         .control_plane
         .lock()
         .await
-        .create_session(CreateSessionRequest::inline_form(
+        .create_session(CreateSessionRequest::inline(
             scenario.clone(),
             scenario.seed(),
         ))
@@ -60,7 +60,7 @@ async fn cancelled_final_release_preserves_holder_and_controller() -> Result<(),
         .control_plane
         .lock()
         .await
-        .create_session(CreateSessionRequest::inline_form(
+        .create_session(CreateSessionRequest::inline(
             scenario.clone(),
             scenario.seed(),
         ))
@@ -122,7 +122,7 @@ async fn cancelled_request_retains_gate_until_enqueued_operation_finishes()
         .control_plane
         .lock()
         .await
-        .create_session(CreateSessionRequest::inline_form(
+        .create_session(CreateSessionRequest::inline(
             scenario.clone(),
             scenario.seed(),
         ))

@@ -71,7 +71,7 @@ fn action(
 }
 
 fn opaque_world() -> World {
-    World::from_content_hash(ContentHash::from_bytes(b"storage-resolver-test-world"))
+    World::from_nodes(Vec::new()).expect("empty test world should build")
 }
 
 fn world_with_block_result(id_value: &str, result: StoragePolicyResult) -> World {

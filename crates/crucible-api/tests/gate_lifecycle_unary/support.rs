@@ -163,12 +163,11 @@ impl QuantumLoop for DivergentReplayLoop {
     }
 }
 
-pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
-    ScenarioDef::from_canonical_material_with_seed(
-        "crucible.api.gate-lifecycle-unary.scenario",
-        &format!("seed={seed}"),
-        Seed::from_u64(seed),
-    )
+pub(super) fn generated_scenario(seed: u64) -> ScenarioDefForm {
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    scenario_with_seed(&scenario, Seed::from_u64(seed))
 }
 
 pub(super) fn resume_request(seed: u64) -> ResumeSessionRequest {

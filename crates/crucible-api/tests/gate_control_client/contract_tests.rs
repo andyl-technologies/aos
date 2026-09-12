@@ -887,7 +887,7 @@ async fn production_http2_lifecycle_server_admits_concurrent_watch_and_query_cli
         panic!("HTTP/2 Stop should round-trip the terminal snapshot");
     };
     assert!(matches!(snapshot.state, EngineState::Stopped { .. }));
-    assert_eq!(snapshot.configuration.def, scenario);
+    assert_eq!(snapshot.configuration.def, scenario.scenario_def());
     let checkpoint = snapshot
         .terminal_savepoint
         .as_ref()
@@ -1205,7 +1205,7 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
     );
 
     let scenario = generated_scenario(9013);
-    let config = Configuration::genesis(scenario.clone());
+    let config = Configuration::genesis(scenario.scenario_def());
     let snapshot_result_server = spawn_scripted_send_server(vec![scripted_send_response(
         axum::http::StatusCode::OK,
         format!(
@@ -1369,10 +1369,6 @@ async fn rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes() {
 fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() {
     let session = SessionRef::new(SessionId::new(42), 7, Seed::from_u64(42));
     let seed_hex = session.seed.to_hex();
-    let inline_id = ContentHash { bytes: [0x11; 32] };
-    let inline_seed = Seed::from_u64(77);
-    let inline =
-        ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(inline_id, inline_seed, 5);
     let reproduction = ReproductionCommandRecord {
         sequence: 1,
         payload: ReproductionCommandPayload {
@@ -1396,7 +1392,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=5.1.0+crucible-rpc-abi-v5\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=6.0.0+crucible-rpc-abi-v6\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1415,22 +1411,6 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     );
     assert_rpc_snapshot("create-session-ref-request", &create_ref, &create_ref);
 
-    let create_inline = format!(
-        "crucible.rpc/create-session-request\nsource=inline\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap=5\nseed={seed_hex}\nstart-paused=true\n",
-        inline_id.to_hex(),
-        inline_seed.to_hex(),
-    );
-    assert_eq!(
-        parse_create_session_request(create_inline.as_bytes())
-            .unwrap_or_else(|error| panic!("inline request should parse: {error}")),
-        CreateSessionRequest::inline(inline, session.seed),
-    );
-    assert_rpc_snapshot(
-        "create-session-inline-request",
-        &create_inline,
-        &create_inline,
-    );
-
     let inline_form = resume_session_request(80).scenario;
     let inline_form_scenario = inline_form.scenario_def();
     let create_inline_form = format!(
@@ -1447,12 +1427,22 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_eq!(
         parse_create_session_request(create_inline_form.as_bytes())
             .unwrap_or_else(|error| panic!("inline form request should parse: {error}")),
-        CreateSessionRequest::inline_form(inline_form, session.seed),
+        CreateSessionRequest::inline(inline_form.clone(), session.seed),
     );
     assert_rpc_snapshot(
-        "create-session-inline-form-request",
+        "create-session-inline-request",
         &create_inline_form,
         &create_inline_form,
+    );
+    let missing_inline_payload = format!(
+        "crucible.rpc/create-session-request\nsource=inline\nscenario-id={}\nscenario-seed={}\napp-random-draw-cap={}\nseed={seed_hex}\nstart-paused=true\n",
+        inline_form_scenario.id().to_hex(),
+        inline_form_scenario.seed().to_hex(),
+        inline_form_scenario.app_random_draw_cap(),
+    );
+    assert!(
+        parse_create_session_request(missing_inline_payload.as_bytes()).is_err(),
+        "inline create-session must reject a missing scenario payload"
     );
 
     let resume_request = resume_session_request(78);
@@ -1655,7 +1645,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=5.1.0+crucible-rpc-abi-v5\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=6.0.0+crucible-rpc-abi-v6\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1753,7 +1743,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=5.1.0+crucible-rpc-abi-v5\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=6.0.0+crucible-rpc-abi-v6\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(

@@ -8,7 +8,7 @@
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
-  campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --bin crucible --test campaign_store_process --test legacy_campaign_process";
+  campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --bin crucible --test campaign_store_process --test campaign_process";
   campaignFlightArtifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-packaged-campaign-flight-artifacts";
     version = "0";
@@ -49,16 +49,13 @@
     postInstall = ''
       artifacts="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
       test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$artifacts")
-      legacy_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "legacy_campaign_process" and .executable != null) | .executable' "$artifacts")
-      unit_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == true and .executable != null) | .executable' "$artifacts")
+      campaign_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_process" and .executable != null) | .executable' "$artifacts")
       test -f "$test_binary"
-      test -f "$legacy_test_binary"
-      test -f "$unit_test_binary"
+      test -f "$campaign_test_binary"
 
       mkdir -p "$out/bin"
       cp "$test_binary" "$out/bin/campaign-process-flight"
-      cp "$legacy_test_binary" "$out/bin/legacy-campaign-process-flight"
-      cp "$unit_test_binary" "$out/bin/crucible-unit-flight"
+      cp "$campaign_test_binary" "$out/bin/campaign-continuation-process-flight"
       cp target/release/crucible "$out/bin/crucible"
 
       # Genesis is captured before execution; the immutable blank disk still
@@ -214,60 +211,49 @@
         ''
         else ''
           if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-continuation-process-flight --ignored --exact \
             public_default_run_executes_through_an_authenticated_campaign \
-            --nocapture > /tmp/legacy-default-run-flight.log 2>&1; then
-            cat /tmp/legacy-default-run-flight.log
+            --nocapture > /tmp/campaign-default-run-flight.log 2>&1; then
+            cat /tmp/campaign-default-run-flight.log
             exit 1
           fi
-          cat /tmp/legacy-default-run-flight.log
+          cat /tmp/campaign-default-run-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_default_run_campaign=true' \
-            /tmp/legacy-default-run-flight.log
+            'campaign_default_run=true' \
+            /tmp/campaign-default-run-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-continuation-process-flight --ignored --exact \
             campaign_virtual_time_save_feeds_native_resume_and_fork \
-            --nocapture > /tmp/legacy-native-save-flight.log 2>&1; then
-            cat /tmp/legacy-native-save-flight.log
+            --nocapture > /tmp/campaign-save-flight.log 2>&1; then
+            cat /tmp/campaign-save-flight.log
             exit 1
           fi
-          cat /tmp/legacy-native-save-flight.log
+          cat /tmp/campaign-save-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_campaign_native_save_resume_fork=true' \
-            /tmp/legacy-native-save-flight.log
+            'campaign_save_resume_fork=true' \
+            /tmp/campaign-save-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-continuation-process-flight --ignored --exact \
             guarded_campaign_failure_artifact_replays_live_evidence \
-            --nocapture > /tmp/legacy-failure-replay-flight.log 2>&1; then
-            cat /tmp/legacy-failure-replay-flight.log
+            --nocapture > /tmp/campaign-failure-replay-flight.log 2>&1; then
+            cat /tmp/campaign-failure-replay-flight.log
             exit 1
           fi
-          cat /tmp/legacy-failure-replay-flight.log
+          cat /tmp/campaign-failure-replay-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_guarded_failure_replay=true' \
-            /tmp/legacy-failure-replay-flight.log
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/crucible-unit-flight --ignored --exact \
-            cli_replay::tests::actual_session_run_artifact_replays_through_campaign_owner \
-            --nocapture > /tmp/legacy-actual-session-replay-flight.log 2>&1; then
-            cat /tmp/legacy-actual-session-replay-flight.log
-            exit 1
-          fi
-          cat /tmp/legacy-actual-session-replay-flight.log
-          ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_actual_session_campaign_replay=true' \
-            /tmp/legacy-actual-session-replay-flight.log
+            'campaign_guarded_failure_replay=true' \
+            /tmp/campaign-failure-replay-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 60 \
-            ${flight}/bin/legacy-campaign-process-flight --ignored --exact \
+            ${flight}/bin/campaign-continuation-process-flight --ignored --exact \
             guarded_campaign_rejects_insufficient_capacity_before_guest_launch \
-            --nocapture > /tmp/legacy-capacity-refusal-flight.log 2>&1; then
-            cat /tmp/legacy-capacity-refusal-flight.log
+            --nocapture > /tmp/campaign-capacity-refusal-flight.log 2>&1; then
+            cat /tmp/campaign-capacity-refusal-flight.log
             exit 1
           fi
-          cat /tmp/legacy-capacity-refusal-flight.log
+          cat /tmp/campaign-capacity-refusal-flight.log
           ${pkgs.grep}/bin/grep -Fxq \
-            'legacy_guarded_prelaunch_capacity_refusal=true' \
-            /tmp/legacy-capacity-refusal-flight.log
+            'campaign_guarded_prelaunch_capacity_refusal=true' \
+            /tmp/campaign-capacity-refusal-flight.log
           ${pkgs.coreutils}/bin/timeout -k 5 300 \
             ${flight}/bin/campaign-process-flight --ignored --exact \
             packaged::public_packaged_executor_captures_genesis_and_restarts --nocapture

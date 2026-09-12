@@ -1190,13 +1190,7 @@ fn prepare_existing_finding_exact_retention(
     let policy = context.finding_retention_policy()?;
     let basis = policy.basis();
     match policy.retention() {
-        None => Some(PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason:
-                crucible_campaign::FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis,
-            discarded_checkpoint: None,
-        }),
-        Some(retention) if retention.exact_findings() => {
+        retention if retention.exact_findings() => {
             Some(PreparedFindingExactRetention::Incomplete {
                 basis,
                 reason:
@@ -1204,7 +1198,7 @@ fn prepare_existing_finding_exact_retention(
                 discarded_checkpoint: None,
             })
         }
-        Some(_) => Some(PreparedFindingExactRetention::Disabled { basis }),
+        _ => Some(PreparedFindingExactRetention::Disabled { basis }),
     }
 }
 
@@ -1592,14 +1586,7 @@ where
 {
     let policy = context.finding_retention_policy()?;
     let basis = policy.basis();
-    let Some(retention) = policy.retention() else {
-        return Some(PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason:
-                crucible_campaign::FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis,
-            discarded_checkpoint: None,
-        });
-    };
+    let retention = policy.retention();
     if !retention.exact_findings() {
         return Some(PreparedFindingExactRetention::Disabled { basis });
     }

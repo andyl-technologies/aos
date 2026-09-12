@@ -36,9 +36,6 @@ pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1: u32 = 1;
 /// Failure while binding or verifying a Crucible measurement evaluation.
 #[derive(Debug, thiserror::Error)]
 pub enum CrucibleMeasurementError {
-    /// The campaign record is a legacy claimed-series map, not a verified payload.
-    #[error("legacy campaign measurement sets are not verified Crucible evaluations")]
-    LegacyMeasurementSet,
     /// The measurement set names an unsupported Crucible payload schema.
     #[error("unsupported Crucible measurement payload schema {actual}; expected {expected}")]
     UnsupportedPayloadSchema {
@@ -161,11 +158,28 @@ pub fn evaluate_crucible_measurement_set(
     encode_crucible_measurement_set(&evaluation, evidence)
 }
 
+#[cfg(test)]
+pub(crate) fn empty_test_measurement_set() -> MeasurementSet {
+    evaluate_crucible_measurement_set(
+        &MeasurementDefinitions::empty(),
+        &[],
+        Vec::new(),
+        &MeasurementTerminalState {
+            scenario_ready_at: None,
+            at: Default::default(),
+            node_icounts: BTreeMap::new(),
+            scheduler_quiescent: true,
+        },
+        BTreeSet::new(),
+    )
+    .expect("empty test measurement evaluation")
+}
+
 /// Recomputes and authenticates one retained Crucible measurement-set payload.
 ///
 /// # Errors
 ///
-/// Returns [`CrucibleMeasurementError`] for a legacy or unsupported payload,
+/// Returns [`CrucibleMeasurementError`] for an unsupported payload,
 /// mismatched definition/evaluation identities, or any exact replay failure.
 pub fn verify_crucible_measurement_set(
     measurement_set: &MeasurementSet,
@@ -174,9 +188,7 @@ pub fn verify_crucible_measurement_set(
     samples: Vec<MeasurementRuntimeSample>,
     terminal: &MeasurementTerminalState,
 ) -> Result<MeasurementEvaluation, CrucibleMeasurementError> {
-    let retained = measurement_set
-        .evaluation()
-        .ok_or(CrucibleMeasurementError::LegacyMeasurementSet)?;
+    let retained = measurement_set.evaluation();
     if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual: retained.payload_schema(),
@@ -262,9 +274,7 @@ pub fn evaluate_crucible_objectives(
     observation: &Observation,
     properties: &PropertyVerdictSet,
 ) -> Result<ObjectiveEvaluation, CrucibleMeasurementError> {
-    let retained = measurement_set
-        .evaluation()
-        .ok_or(CrucibleMeasurementError::LegacyMeasurementSet)?;
+    let retained = measurement_set.evaluation();
     if !matches!(
         retained.payload_schema(),
         CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V1

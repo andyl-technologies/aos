@@ -839,7 +839,7 @@ CLI (§34.6): `crucible triage <findings>` — thin driver, no run state; flags
   Result is a content-addressed DagStore artifact (dedup; --compare = content diff,
   [TRI-16]); fully offline + self-checking via --recompute-signatures ([TRI-17]).
 
-LEDGER (§34.7): signed v3 evidence envelope in the DagStore, binding each
+LEDGER (§34.7): signed v4 evidence envelope in the DagStore, binding each
   reproduction artifact to exact event frames, coverage, typed finding evidence,
   and discovery signature; finding identity = artifact content hash ([TRI-18]).
 

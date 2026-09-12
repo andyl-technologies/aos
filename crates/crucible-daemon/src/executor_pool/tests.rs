@@ -47,13 +47,13 @@ use crucible_campaign::{
     ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
     FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
     GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    GetCampaignStatusRequest, InterventionLearningPolicy, MeasurementSet, Objective, ObjectiveGoal,
-    Observation, ObservationCandidate, ObservationId, PinCampaignRequest, PinChange, PinRequest,
-    PinRetention, PlannerProposalDisposition, PlanningBudget, PlanningScanPosition,
-    ProgressiveWideningPolicy, PropertyVerdictSet, Proposal, PuctPolicy, PurePlannerEngine,
-    RepositoryCampaignService, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
-    RetentionPolicy, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection,
-    SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    GetCampaignStatusRequest, InterventionLearningPolicy, Objective, ObjectiveGoal, Observation,
+    ObservationCandidate, ObservationId, PinCampaignRequest, PinChange, PinRequest, PinRetention,
+    PlannerProposalDisposition, PlanningBudget, PlanningScanPosition, ProgressiveWideningPolicy,
+    PropertyVerdictSet, Proposal, PuctPolicy, PurePlannerEngine, RepositoryCampaignService,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin,
+    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
     SubmitAttemptResponse, WorkerSlotId,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
@@ -3515,7 +3515,7 @@ fn campaign_attempt_fixture_with_policy(
     let child_artifact =
         ConfigurationArtifact::new(scenario, scenario_content, child, 1, b"child".to_vec())
             .expect("child artifact");
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
     let observation = Observation::new(
