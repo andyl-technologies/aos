@@ -18,14 +18,14 @@
     ordered = builtins.sort (left: right: left.key.key < right.key.key) operations;
   in
     lib.concatLists (lib.imap (index: operation:
-      lib.optional (index < builtins.length ordered) {
+      lib.optional (index + 1 < builtins.length ordered) {
         from = {
           kind = "operation";
           key = operation.key;
         };
         to = {
           kind = "operation";
-          key = (builtins.elemAt ordered index).key;
+          key = (builtins.elemAt ordered (index + 1)).key;
         };
         kind = "required-success";
       })
