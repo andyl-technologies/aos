@@ -251,6 +251,7 @@ fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFail
         | QemuVmRealizationError::InvalidCheckpoint { .. }
         | QemuVmRealizationError::InvalidAncestor { .. }
         | QemuVmRealizationError::RuntimeContentMismatch { .. }
+        | QemuVmRealizationError::ConfigurationStep { .. }
         | QemuVmRealizationError::SavevmPolicy { .. }
         | QemuVmRealizationError::InvalidLoadvmAuthorization { .. }
         | QemuVmRealizationError::ReadyPointPolicy { .. } => PromotionFailureClass::Terminal,

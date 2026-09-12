@@ -242,8 +242,8 @@ fn nested_signal_fault_selections_resolve_to_one_exact_ordered_plan() {
         .expect("first branch");
     let second_selectable = signal_fault_selectable(first.selected(), b"second-signal-choice", 29);
     let second_selection = second_selectable
-        .branch_selection(first.selected(), 2)
-        .expect("second unmodified selection");
+        .branch_selection(first.selected(), 1)
+        .expect("second true-outcome selection");
     let second = second_selectable
         .resolve_branch(&second_selection)
         .expect("second branch");
@@ -326,19 +326,17 @@ fn crucible_payloads_reject_schema_and_identity_drift() {
         decode_crucible_scenario_artifact(&unsupported),
         Err(CrucibleArtifactError::UnsupportedPayloadSchema { .. })
     ));
-    let mislabeled_legacy = ScenarioArtifact::new(
-        valid.scenario(),
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
-        valid.payload().to_vec(),
-    )
-    .expect("mislabeled artifact remains structurally valid");
+    let retired_schema = CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3 - 1;
+    let mislabeled_retired =
+        ScenarioArtifact::new(valid.scenario(), retired_schema, valid.payload().to_vec())
+            .expect("mislabeled artifact remains structurally valid");
     assert!(matches!(
-        decode_crucible_scenario_artifact(&mislabeled_legacy),
+        decode_crucible_scenario_artifact(&mislabeled_retired),
         Err(CrucibleArtifactError::UnsupportedPayloadSchema {
-            actual: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
+            actual,
             expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
             ..
-        })
+        }) if actual == retired_schema
     ));
 
     let drifted = ScenarioArtifact::new(

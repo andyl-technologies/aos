@@ -29,12 +29,12 @@ use crucible_campaign::{
     ControlRequest, CoverageProjection, DaemonEpoch, DiscoveryRequest, ExactCheckpointId,
     ExecutionId, ExecutionRetentionIntent, ExplorerPolicy, FairnessPolicy, FindingExactPins,
     FindingExactRetention, FindingExactRetentionDisposition, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, MeasurementSet, Observation,
-    ObservationCondition, ObservationEventLogProof, ObservationId, ObservationQuantumBoundary,
-    ObservationStopProof, ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdictSet,
-    PuctPolicy, RetentionPolicy, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution, SavepointContinuationSelection, ScenarioDefId,
-    SelectableDeclaration, Selection, StopCondition, SubmitAttemptRequest,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, Observation, ObservationCondition,
+    ObservationEventLogProof, ObservationId, ObservationQuantumBoundary, ObservationStopProof,
+    ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdictSet, PuctPolicy, RetentionPolicy,
+    SavepointCaptureOutcome, SavepointCaptureRequest, SavepointCaptureResolution,
+    SavepointContinuationSelection, ScenarioDefId, SelectableDeclaration, Selection, StopCondition,
+    SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -1018,7 +1018,7 @@ fn failed_result_for_schedule_with_stop(
 ) -> PreparedSemanticAttemptResult {
     let scenario = encode_crucible_scenario_artifact(input.scenario()).expect("scenario");
     let child = encode_crucible_configuration_artifact(&scenario, schedule).expect("configuration");
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
         property.to_owned(),
         PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new()).expect("failed property"),
@@ -1101,7 +1101,7 @@ fn failed_result_with_unpublished_branch_selection(
     let scenario = encode_crucible_scenario_artifact(input.scenario()).expect("scenario");
     let child =
         encode_crucible_configuration_artifact(&scenario, &schedule).expect("configuration");
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
         property.to_owned(),
         PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new()).expect("failed property"),
@@ -1317,8 +1317,8 @@ fn exact_finding_retention_policy() -> AttemptFindingRetentionPolicy {
     ))
     .expect("campaign policy ID");
     AttemptFindingRetentionPolicy::new(
-        AttemptRetentionPolicyBasis::new(snapshot, admission, Some(policy)),
-        Some(RetentionPolicy::new(true, 1, true, false)),
+        AttemptRetentionPolicyBasis::new(snapshot, admission, policy),
+        RetentionPolicy::new(true, 1, true, false),
     )
 }
 

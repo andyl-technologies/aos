@@ -29,8 +29,8 @@ use std::fmt;
 use crucible_sim::{DecisionRng, DecisionStream};
 
 use crate::{
-    AppRandomDecision, Configuration, Decision, Icount, PreemptionDecision, PreemptionKind,
-    RngDecision, RngStreamId, Schedule, SelectionDecision, VcpuId, step,
+    AppRandomDecision, Configuration, Decision, EngineError, Icount, PreemptionDecision,
+    PreemptionKind, RngDecision, RngStreamId, Schedule, SelectionDecision, VcpuId, try_step,
 };
 
 /// Records intended nondeterminism into a configuration's [`Schedule`].
@@ -80,10 +80,14 @@ impl DecisionRecorder {
     }
 
     /// Draws one `u64` from `stream` and records a [`Decision::RngDraw`].
-    pub fn draw_u64(&mut self, stream: RngStreamId) -> u64 {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecisionRecordError`] when the resulting configuration is invalid.
+    pub fn draw_u64(&mut self, stream: RngStreamId) -> Result<u64, DecisionRecordError> {
         let value = self.draw_stream_value(&stream).1;
-        self.append_decision(Decision::RngDraw(RngDecision { stream, value }));
-        value
+        self.append_decision(Decision::RngDraw(RngDecision { stream, value }))?;
+        Ok(value)
     }
 
     /// Serves an application-requested random value and records it.
@@ -163,8 +167,8 @@ impl DecisionRecorder {
         self.append_decision(Decision::RngDraw(RngDecision {
             stream: decision.stream,
             value: raw_value,
-        }));
-        self.append_decision(Decision::Selection(SelectionDecision::new(&selection)));
+        }))?;
+        self.append_decision(Decision::Selection(SelectionDecision::new(&selection)))?;
         Ok(discovery)
     }
 
@@ -198,13 +202,13 @@ impl DecisionRecorder {
                         .fork_in_domain(&decision.stream.domain, &decision.stream.name)
                 });
         let raw_value = advanced_stream.next_u64();
-        let parent = step(
+        let parent = try_step(
             &self.configuration,
             Decision::RngDraw(RngDecision {
                 stream: decision.stream.clone(),
                 value: raw_value,
             }),
-        );
+        )?;
         let selected = selectable.apply_selection(selection, &parent)?;
         if selected != decision {
             return Err(AppRandomSelectableError::AppliedDecisionMismatch.into());
@@ -215,7 +219,7 @@ impl DecisionRecorder {
         self.streams
             .insert(decision.stream.clone(), advanced_stream);
         self.configuration = parent;
-        self.append_decision(Decision::Selection(SelectionDecision::new(selection)));
+        self.append_decision(Decision::Selection(SelectionDecision::new(selection)))?;
         Ok(discovery)
     }
 
@@ -246,13 +250,13 @@ impl DecisionRecorder {
                         .fork_in_domain(&decision.stream.domain, &decision.stream.name)
                 });
         let raw_value = advanced_stream.next_u64();
-        Ok(step(
+        Ok(try_step(
             &self.configuration,
             Decision::RngDraw(RngDecision {
                 stream: decision.stream.clone(),
                 value: raw_value,
             }),
-        )
+        )?
         .id())
     }
 
@@ -270,7 +274,7 @@ impl DecisionRecorder {
         self.append_decision(Decision::RngDraw(RngDecision {
             stream: stream.clone(),
             value: raw_value,
-        }));
+        }))?;
         let value = mask_to_width(raw_value, width);
         self.append_decision(Decision::AppRandom(AppRandomDecision {
             node,
@@ -278,7 +282,7 @@ impl DecisionRecorder {
             request_id: request_id.unwrap_or(stream_position),
             width,
             value,
-        }));
+        }))?;
         Ok(value)
     }
 
@@ -311,7 +315,7 @@ impl DecisionRecorder {
         self.reserve_app_random_draw()?;
 
         let value = decision.value;
-        self.append_decision(Decision::AppRandom(decision));
+        self.append_decision(Decision::AppRandom(decision))?;
         Ok(value)
     }
 
@@ -372,8 +376,11 @@ impl DecisionRecorder {
     /// Overrides are replay material: unlike default round-robin preemptions,
     /// they are appended as [`Decision::Preemption`] so replay does not
     /// recompute or silently repair the chosen vCPU switch or interrupt timing.
-    pub fn record_preemption_override(&mut self, decision: PreemptionDecision) {
-        self.append_decision(Decision::Preemption(decision));
+    pub fn record_preemption_override(
+        &mut self,
+        decision: PreemptionDecision,
+    ) -> Result<(), DecisionRecordError> {
+        self.append_decision(Decision::Preemption(decision))
     }
 
     fn draw_stream_value(&mut self, stream: &RngStreamId) -> (u64, u64) {
@@ -386,8 +393,9 @@ impl DecisionRecorder {
         (request_id, value)
     }
 
-    fn append_decision(&mut self, decision: Decision) {
-        self.configuration = step(&self.configuration, decision);
+    fn append_decision(&mut self, decision: Decision) -> Result<(), DecisionRecordError> {
+        self.configuration = try_step(&self.configuration, decision)?;
+        Ok(())
     }
 
     fn reserve_app_random_draw(&mut self) -> Result<(), DecisionRecordError> {
@@ -411,6 +419,11 @@ impl DecisionRecorder {
 /// An error produced while recording an intended-randomness decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecisionRecordError {
+    /// The resulting configuration violated a model invariant.
+    Engine {
+        /// Exact model validation failure.
+        source: EngineError,
+    },
     /// Typed app-random choice construction or validation failed.
     InvalidAppRandomSelection {
         /// Exact producer-contract failure.
@@ -451,6 +464,7 @@ pub enum DecisionRecordError {
 impl fmt::Display for DecisionRecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Engine { source } => write!(f, "configuration step rejected: {source}"),
             Self::InvalidAppRandomSelection { source } => {
                 write!(f, "invalid typed app-random selection: {source}")
             }
@@ -482,8 +496,23 @@ impl fmt::Display for DecisionRecordError {
 impl Error for DecisionRecordError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Engine { source } => Some(source),
             Self::InvalidAppRandomSelection { source } => Some(source),
             _ => None,
+        }
+    }
+}
+
+impl From<EngineError> for DecisionRecordError {
+    fn from(source: EngineError) -> Self {
+        match source {
+            EngineError::AppRandomDrawCapExceeded { cap, actual, .. } => {
+                Self::AppRandomDrawCapExceeded {
+                    cap,
+                    attempted: actual,
+                }
+            }
+            source => Self::Engine { source },
         }
     }
 }
@@ -542,6 +571,10 @@ mod tests {
         reduce, try_step,
     };
 
+    fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+        try_step(configuration, decision).expect("test configuration step")
+    }
+
     #[test]
     fn decision_recorder_records_rng_draws_and_app_random_outcomes() {
         assert_decision_rng_branch_coverage();
@@ -551,7 +584,7 @@ mod tests {
         let config = Configuration::genesis(scenario_from_seed(Seed::from_u64(0xdec1_5100)));
         let stream = rng_stream("node-a/fault-signal");
         let mut recorder = DecisionRecorder::new(config);
-        let raw = recorder.draw_u64(stream.clone());
+        let raw = recorder.draw_u64(stream.clone()).expect("record RNG draw");
         assert!(matches!(
             recorder.schedule().decisions(),
             [Decision::RngDraw(RngDecision { stream: recorded, value })]
@@ -580,9 +613,15 @@ mod tests {
         let mut baseline = DecisionRecorder::new(baseline_config);
         let mut edited = DecisionRecorder::new(edited_config);
 
-        let baseline_draw = baseline.draw_u64(stable_stream.clone());
-        let _unrelated_draw = edited.draw_u64(unrelated_stream.clone());
-        let edited_draw = edited.draw_u64(stable_stream.clone());
+        let baseline_draw = baseline
+            .draw_u64(stable_stream.clone())
+            .expect("record baseline draw");
+        let _unrelated_draw = edited
+            .draw_u64(unrelated_stream.clone())
+            .expect("record unrelated draw");
+        let edited_draw = edited
+            .draw_u64(stable_stream.clone())
+            .expect("record edited draw");
 
         assert_eq!(baseline_draw, edited_draw);
         assert!(matches!(
@@ -610,8 +649,12 @@ mod tests {
         let link_stream = RngStreamId::for_link("shared");
         let mut recorder = DecisionRecorder::new(config);
 
-        let node_draw = recorder.draw_u64(node_stream.clone());
-        let link_draw = recorder.draw_u64(link_stream.clone());
+        let node_draw = recorder
+            .draw_u64(node_stream.clone())
+            .expect("record node draw");
+        let link_draw = recorder
+            .draw_u64(link_stream.clone())
+            .expect("record link draw");
 
         assert_ne!(node_stream.domain, link_stream.domain);
         assert_ne!(node_draw, link_draw);
@@ -778,7 +821,7 @@ mod tests {
             width: 16,
             value: selected_value,
         };
-        let parent = step(
+        let parent = valid_step(
             &config,
             Decision::RngDraw(RngDecision {
                 stream: stream.clone(),
@@ -803,14 +846,14 @@ mod tests {
             .expect("plugin-served branch value should validate");
         assert_eq!(
             recorder.configuration().id(),
-            step(
+            valid_step(
                 &parent,
                 Decision::Selection(SelectionDecision::new(&selection))
             )
             .id()
         );
 
-        let mut wrong_parent_recorder = DecisionRecorder::new(step(
+        let mut wrong_parent_recorder = DecisionRecorder::new(valid_step(
             &config,
             Decision::RngDraw(RngDecision {
                 stream: rng_stream("unrelated"),
@@ -1075,13 +1118,13 @@ mod tests {
         let stream = rng_stream("node-a/app");
         let mut recorder = DecisionRecorder::new(config);
 
-        let first = recorder.draw_u64(stream.clone());
+        let first = recorder.draw_u64(stream.clone()).expect("first draw");
         let served = match recorder.serve_app_random(node("node-a"), stream.clone(), 8) {
             Ok(value) => value,
             Err(error) => panic!("valid app-random width should record: {error}"),
         };
         let mut resumed = DecisionRecorder::new(recorder.into_configuration());
-        let resumed_draw = resumed.draw_u64(stream.clone());
+        let resumed_draw = resumed.draw_u64(stream.clone()).expect("resumed draw");
 
         let mut expected_stream = seed
             .decision_rng()
@@ -1157,8 +1200,12 @@ mod tests {
             },
         };
 
-        recorder.record_preemption_override(switch.clone());
-        recorder.record_preemption_override(interrupt.clone());
+        recorder
+            .record_preemption_override(switch.clone())
+            .expect("record preemption override");
+        recorder
+            .record_preemption_override(interrupt.clone())
+            .expect("record preemption override");
 
         assert_eq!(recorder.schedule().len(), 2);
         assert_eq!(
@@ -1244,7 +1291,7 @@ mod tests {
         let mut baseline = DecisionRecorder::new(config.clone());
         let mut overridden = DecisionRecorder::new(config);
 
-        let expected_first_draw = baseline.draw_u64(stream.clone());
+        let expected_first_draw = baseline.draw_u64(stream.clone()).expect("baseline draw");
         let override_value = match overridden.serve_app_random_override(AppRandomDecision {
             node: node("node-a"),
             stream: stream.clone(),
@@ -1255,7 +1302,9 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("valid app-random override should be served: {error}"),
         };
-        let first_draw_after_override = overridden.draw_u64(stream.clone());
+        let first_draw_after_override = overridden
+            .draw_u64(stream.clone())
+            .expect("draw after override");
 
         assert_eq!(override_value, 0x5a);
         assert_eq!(first_draw_after_override, expected_first_draw);
@@ -1313,10 +1362,18 @@ mod tests {
         let mut before = DecisionRecorder::new(first_config);
         let mut after = DecisionRecorder::new(second_config);
 
-        let node_a_before = before.draw_u64(rng_stream("node-a/faults"));
-        let _node_b_before = before.draw_u64(rng_stream("node-b/faults"));
-        let _node_b_after = after.draw_u64(rng_stream("node-b/faults"));
-        let node_a_after = after.draw_u64(rng_stream("node-a/faults"));
+        let node_a_before = before
+            .draw_u64(rng_stream("node-a/faults"))
+            .expect("node-a draw before");
+        let _node_b_before = before
+            .draw_u64(rng_stream("node-b/faults"))
+            .expect("node-b draw before");
+        let _node_b_after = after
+            .draw_u64(rng_stream("node-b/faults"))
+            .expect("node-b draw after");
+        let node_a_after = after
+            .draw_u64(rng_stream("node-a/faults"))
+            .expect("node-a draw after");
 
         assert_eq!(node_a_before, node_a_after);
         assert_ne!(before.schedule(), after.schedule());

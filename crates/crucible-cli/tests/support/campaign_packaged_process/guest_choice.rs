@@ -406,7 +406,7 @@ fn create_guest_choice_campaign(
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-10.0-crucible\"\nscenario_schema = 3\nexact_closure_schema = 4\n[protocol_versions]\ncontrol = 2\nshared-memory = 5\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 4\n[protocol_versions]\ncontrol = 2\nshared-memory = 5\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,

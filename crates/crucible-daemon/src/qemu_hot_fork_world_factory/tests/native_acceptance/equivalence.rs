@@ -15,6 +15,10 @@ use crucible_campaign::{ChoiceValue, ConfigurationId, IntegerValue, Selection};
 use crucible_cas::content_store::{DirectoryBlobBackend, ImmutableBlobBackend};
 
 use super::*;
+
+fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    crucible::try_step(configuration, decision).expect("test decision should be valid")
+}
 use crate::guest_selectable::{resolve_guest_selectable, selected_guest_reply};
 
 const POST_CHOICE_QUANTA: u64 = 512;
@@ -755,7 +759,7 @@ fn continue_from_pending(
     )
     .expect("select equivalence continuation");
     let decision = SelectionDecision::new(&selection);
-    let selected = crucible::step(&parent, Decision::Selection(decision.clone()));
+    let selected = valid_step(&parent, Decision::Selection(decision.clone()));
     let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
         .expect("build exact equivalence reply");
     let reply_events = lifecycle

@@ -171,12 +171,12 @@ uses `selftest_gate`, `selftest_scenario`, and terminal `final_outcome` records.
 | `--marker <name>` | Required with `--at marker` | Guest-marker ID whose observation supplies the boundary. |
 | `--out <path>` | Default below `--artifact-dir` | Select the exported savepoint-handle path. |
 
-Savepoint handle schema v3 records the selected property violation or guest
+Savepoint handle schema v6 records the selected property violation or guest
 marker, its exact boundary proof, and a content-addressed canonical predicate
 payload. The reader rejects mismatched selectors, predicates, terminal
 conditions, frontiers, and undeclared property identities. The canonical trace
 exposes the same proof as `save_boundary_proof`, with percent-encoded selector
-values. Older v2 handles remain readable but lack selector provenance.
+values. The normal reader rejects every other schema version.
 
 A property or marker miss returns exit 3 without a handle. An explicit
 `--trace` is still honored and ends with `save_boundary_failure`, preserving the
@@ -186,7 +186,7 @@ partial control trail for diagnosis.
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `SAVEPOINT` | Required | Savepoint-handle path or checkpoint content hash. |
+| `SAVEPOINT` | Required | Current portable savepoint-handle path. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the resumed terminal condition. |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
 | `--interactive` | Off | Drive the resumed session from standard input. |
@@ -196,7 +196,7 @@ partial control trail for diagnosis.
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `SAVEPOINT` | Required | Savepoint-handle path or checkpoint content hash. |
+| `SAVEPOINT` | Required | Current portable savepoint-handle path. |
 | `--override <decision=value>` | Repeatable; conflicts with global `--seed` | Pin a scheduler-recorded live World-network choice. The percent-encoded point starts with `live-world-network/`; the value uses the canonical loss/duplicate/corrupt choice vocabulary. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the child branch's terminal condition. |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
@@ -210,7 +210,7 @@ partial control trail for diagnosis.
 | --- | --- | --- |
 | `ARTIFACT` | Required | v3 reproduction-artifact path; production replay requires the matching packaged QEMU/plugin identity. |
 | `--check <original-log>` | Optional | After live replay succeeds, require byte-identical canonical JSONL output. |
-| `--to <savepoint>` | Optional | Live-replay the artifact, then validate a target savepoint handle or checkpoint hash as its typed prefix. A v3 artifact can resolve its own terminal checkpoint hash without a separate store object. |
+| `--to <savepoint>` | Optional | Live-replay the artifact, then validate a current savepoint handle as its typed prefix. |
 | `--bisect <other-artifact>` | Optional | Live-replay both artifacts, then locate their first evidence divergence. |
 
 The v3 artifact's live recipe declares its fingerprint evidence scope. Run,

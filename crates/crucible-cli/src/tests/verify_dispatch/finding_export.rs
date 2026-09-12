@@ -161,8 +161,16 @@ pub(super) fn campaign_findings_v4_round_trip_authenticates_occurrence_objects_a
         1,
         b"cli v4 minimized child".to_vec(),
     )?;
-    let measurements =
-        repository.publish_measurement_set(&MeasurementSet::new(BTreeMap::new())?)?;
+    let measurements = repository.publish_measurement_set(&MeasurementSet::from_evaluation(
+        CampaignHash::derive(
+            "crucible.cli.finding-export.measurements.v1",
+            b"definitions",
+        ),
+        1,
+        CampaignHash::derive("crucible.cli.finding-export.evaluation.v1", b"evaluation"),
+        b"empty evaluation".to_vec(),
+        BTreeSet::new(),
+    )?)?;
     let properties =
         repository.publish_property_verdict_set(&PropertyVerdictSet::new(BTreeMap::from([(
             String::from(PROPERTY),

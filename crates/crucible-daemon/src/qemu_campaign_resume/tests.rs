@@ -28,6 +28,10 @@ use crucible_cas::content_store::{
 use crucible_qemu::{QemuReplayOracleValidation, QemuVmSnapshot};
 
 use super::*;
+
+fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    crucible::try_step(configuration, decision).expect("test decision should be valid")
+}
 use crate::qemu_campaign_lifecycle::QemuTerminalEvidenceExecutionRunner;
 use crate::{
     CapturedAttemptCheckpoint, CrucibleResolvedAttemptStart, ExecutionCancellation,
@@ -981,7 +985,7 @@ fn test_branch_input(stop: StopCondition) -> CrucibleAttemptExecution {
     let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
         panic!("branch selection has the wrong origin")
     };
-    let selected = crucible::step(
+    let selected = valid_step(
         &parent,
         Decision::Selection(SelectionDecision::new(&selection)),
     );

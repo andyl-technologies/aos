@@ -30,6 +30,10 @@ use crucible_qemu::{QemuHotForkChildDiagnosticDrain, QemuVmRealizationError};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::*;
+
+fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    crucible::try_step(configuration, decision).expect("test decision should be valid")
+}
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
 fn prepared_semantic_observation(product: AttemptExecutionProduct) -> ObservationCandidate {
@@ -471,7 +475,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         reply: &crucible_protocol::SelectionReply,
     ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
         if parent != &self.frontier
-            || crucible::step(parent, Decision::Selection(decision)) != *selected
+            || valid_step(parent, Decision::Selection(decision)) != *selected
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("selectable lifecycle rejected an inconsistent transition"),
@@ -810,7 +814,7 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
         .collect::<BTreeSet<_>>();
     assert_eq!(candidate.coverage().identities(), &expected);
     assert_eq!(candidate.measurements().schema_version(), 2);
-    assert!(candidate.measurements().evaluation().is_some());
+    assert_eq!(candidate.measurements().schema_version(), 2);
     assert!(candidate.properties().properties().is_empty());
     assert_eq!(owner.drives, 1);
 }
@@ -1091,10 +1095,7 @@ fn modeled_scheduler_metrics_are_derived_from_the_canonical_log() {
         .seal(pending, Vec::new())
         .expect("model-owned measurement projection");
     let candidate = prepared_semantic_observation(product);
-    let retained = candidate
-        .measurements()
-        .evaluation()
-        .expect("verified evaluation payload");
+    let retained = candidate.measurements().evaluation();
     let payload = std::str::from_utf8(retained.payload()).expect("canonical measurement JSON");
     assert!(payload.contains("\"scheduler-events\""));
     assert!(payload.contains(&format!(
@@ -1157,10 +1158,7 @@ fn guest_measurement_messages_normalize_against_the_exact_scenario_contract() {
 
     let publication = evaluate_test_measurements(&definitions, entries)
         .expect("declared guest measurement publication");
-    let evaluation = publication
-        .measurement_set()
-        .evaluation()
-        .expect("verified measurement evaluation");
+    let evaluation = publication.measurement_set().evaluation();
     let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
 
     assert!(payload.contains("\"driver-window\""));
@@ -1248,10 +1246,7 @@ fn fresh_driver_retains_verified_guest_measurement_evaluation() {
         .seal(pending, Vec::new())
         .expect("verified guest measurement projection");
     let candidate = prepared_semantic_observation(product);
-    let evaluation = candidate
-        .measurements()
-        .evaluation()
-        .expect("verified evaluation payload");
+    let evaluation = candidate.measurements().evaluation();
     let payload = std::str::from_utf8(evaluation.payload()).expect("canonical evaluation JSON");
 
     assert!(payload.contains("\"driver-window\""));
@@ -1572,8 +1567,8 @@ fn resumed_driver_starts_from_the_actual_restored_configuration() {
         stream: crucible::RngStreamId::from_name("next-resumed-decision"),
         value: 12,
     });
-    let restored = crucible::step(&original, prior_decision);
-    let continued = crucible::step(&restored, next_decision.clone());
+    let restored = valid_step(&original, prior_decision);
+    let continued = valid_step(&restored, next_decision.clone());
     let mut lifecycle = RestoredFrontierLifecycle {
         expected_first: restored.clone(),
         next: Some(QuantumOutcome {
@@ -3755,6 +3750,7 @@ fn signal_fault_choice_discovery(parent: &Configuration, ticks: u64) -> ChoiceDi
         )),
         candidates_digest: crucible::ContentHash::from_bytes(b"fresh-driver-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };

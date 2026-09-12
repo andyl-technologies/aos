@@ -271,13 +271,14 @@ run anything.
 ///
 /// This is the temporal-graph edge constructor (07). Pure and cheap:
 /// it constructs identity, it does not execute. Running is `instantiate`.
-pub fn step(config: &Configuration, decision: Decision) -> Configuration {
-    Configuration {
-        def: config.def.clone(),
-        schedule: config.schedule.appended(decision),
-    }
-}
+pub fn try_step(
+    config: &Configuration,
+    decision: Decision,
+) -> Result<Configuration, EngineError>;
 ```
+
+`try_step` rejects a child that exceeds the scenario's bounded app-random
+decision allowance.
 
 - **[EXEC-10]** `step(config, d)` MUST return `(config.def, config.schedule ++
   [d])` and MUST NOT execute, boot, or materialize anything. `step` constructs

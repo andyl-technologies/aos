@@ -379,7 +379,19 @@ fn publish_campaign_finding_fixture(
             b"finding triage fixture minimized child".to_vec(),
         ),
     )?;
-    let measurement_set = fixture_step("build measurements", MeasurementSet::new(BTreeMap::new()))?;
+    let measurement_set = fixture_step(
+        "build measurements",
+        MeasurementSet::from_evaluation(
+            CampaignHash::derive(
+                "crucible.cli.finding-triage.measurements.v1",
+                b"definitions",
+            ),
+            1,
+            CampaignHash::derive("crucible.cli.finding-triage.evaluation.v1", b"evaluation"),
+            b"empty evaluation".to_vec(),
+            BTreeSet::new(),
+        ),
+    )?;
     let measurements = fixture_step(
         "publish measurements",
         repository.publish_measurement_set(&measurement_set),

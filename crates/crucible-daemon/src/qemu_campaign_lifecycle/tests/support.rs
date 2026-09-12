@@ -2,6 +2,10 @@
 
 use super::*;
 
+pub(super) fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    crucible::try_step(configuration, decision).expect("test decision should be valid")
+}
+
 #[derive(Default)]
 pub(super) struct GuardCounters {
     pub(super) begins: AtomicUsize,
@@ -217,7 +221,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
                 scheduler_quiescence: None,
             });
         }
-        let configuration = step(
+        let configuration = valid_step(
             &request.configuration,
             Decision::RngDraw(RngDecision {
                 stream: RngStreamId::from_name("fresh-runner-non-genesis"),
@@ -430,7 +434,7 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
             .replay_decisions
             .pop_front()
             .map_or(request.configuration.clone(), |decision| {
-                step(&request.configuration, decision)
+                valid_step(&request.configuration, decision)
             });
         Ok(crucible::QuantumOutcome {
             configuration,
@@ -1173,7 +1177,7 @@ pub(super) fn owned_finding_candidate(
     property: &str,
 ) -> ObservationCandidate {
     let child = finding_candidate_artifact(input);
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("owned measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
         property.to_owned(),
         PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new())
@@ -1267,13 +1271,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let request =
         publish_composed_candidate_input(&repository, &store, &input, &discovery, &selection);
-    let final_event = SchedulerEventLogEntry::assertion_state_observation(
-        1,
-        VirtualTime { ticks: 1 },
-        assertion.clone(),
-        AssertionPhase::Violated,
-    );
-    let decisions = input
+    let decisions: VecDeque<_> = input
         .start()
         .configuration()
         .schedule
@@ -1281,6 +1279,15 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .iter()
         .cloned()
         .collect();
+    let decision_frontier = u64::try_from(decisions.len()).expect("fixture decision count");
+    let final_event = SchedulerEventLogEntry::assertion_state_observation(
+        decision_frontier,
+        VirtualTime {
+            ticks: decision_frontier,
+        },
+        assertion.clone(),
+        AssertionPhase::Violated,
+    );
     let production_boundaries = Arc::new(Mutex::new(Vec::new()));
     let mut runner = crate::packaged_qemu_executor::packaged_finding_replay_runner(
         lifecycle.clone(),
@@ -2220,7 +2227,7 @@ pub(super) fn selected_after_genesis_input_with_optional_continuation_source_sto
 ) {
     let base = fresh_runner_input();
     let configuration = base.start().configuration().clone();
-    let reached = step(
+    let reached = valid_step(
         &configuration,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("fresh-runner-non-genesis"),
@@ -2313,14 +2320,14 @@ pub(super) fn selected_after_two_controlled_generations() -> (
 ) {
     let base = fresh_runner_input();
     let configuration = base.start().configuration().clone();
-    let reached_first = step(
+    let reached_first = valid_step(
         &configuration,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("fresh-runner-non-genesis"),
             value: 7,
         }),
     );
-    let reached_second = step(
+    let reached_second = valid_step(
         &reached_first,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("fresh-runner-non-genesis"),
@@ -2469,7 +2476,7 @@ pub(super) fn modeled_non_genesis_fresh_runner_input_for_stop(
 ) -> CrucibleAttemptExecution {
     let base = modeled_fresh_runner_input_for_stop(StopCondition::Terminal);
     let scenario = base.scenario().clone();
-    let configuration = step(
+    let configuration = valid_step(
         &Configuration::genesis(scenario.scenario_def()),
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("fresh-runner-non-genesis"),
@@ -2523,7 +2530,7 @@ pub(super) fn non_genesis_fresh_runner_input_with_decisions_for_stop(
     let definition = scenario.scenario_def();
     let configuration = decisions.into_iter().fold(
         Configuration::genesis(definition.clone()),
-        |parent, decision| step(&parent, decision),
+        |parent, decision| valid_step(&parent, decision),
     );
     let scenario_id = input.lineage().scenario();
     let scenario_content = input.lineage().scenario_content();

@@ -284,13 +284,18 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
         stored_id!(CampaignLineageId, ObjectKind::CampaignFact, "lineage"),
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("genesis snapshot");
     let mut changed_roots = roots;
     changed_roots.pins = content("pins-b");
-    let changed =
-        CampaignSnapshot::genesis(snapshot.lineage(), snapshot.active_policy(), changed_roots)
-            .expect("changed genesis snapshot");
+    let changed = CampaignSnapshot::genesis(
+        snapshot.lineage(),
+        snapshot.active_policy(),
+        changed_roots,
+        crate::test_budget_ledger_id(),
+    )
+    .expect("changed genesis snapshot");
 
     assert_ne!(
         snapshot.id().expect("snapshot id"),
@@ -306,6 +311,7 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
         snapshot.lineage(),
         snapshot.active_policy(),
         coordinated_roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("coordinated genesis snapshot");
     assert_ne!(
@@ -327,7 +333,7 @@ fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_d
 }
 
 #[test]
-fn planner_candidate_guidance_v2_retains_objective_reward_and_v1_identity() {
+fn planner_candidate_guidance_retains_objective_reward() {
     let input_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "guidance-view");
     let policy_value = CampaignPolicy::new(
         ScenarioDefId::from_hash(hash("guidance-scenario")),
@@ -354,6 +360,7 @@ fn planner_candidate_guidance_v2_retains_objective_reward_and_v1_identity() {
     let request = stored_id!(
         BranchRequestId,
         ObjectKind::CampaignFact,
+        2,
         "guidance-request"
     );
     let branch_point = BranchPointId::from_hash(hash("guidance-branch-point"));
@@ -400,48 +407,6 @@ fn planner_candidate_guidance_v2_retains_objective_reward_and_v1_identity() {
             .schema_version(),
         2
     );
-
-    let legacy_statistics =
-        PuctEdgeStatistics::new(1, 1, 0, 1_000_000, false, true).expect("legacy statistics");
-    let mut legacy_encoder = Encoder::new();
-    1_u32.encode(&mut legacy_encoder);
-    input_view.encode(&mut legacy_encoder);
-    policy.encode(&mut legacy_encoder);
-    position.encode(&mut legacy_encoder);
-    domain.encode(&mut legacy_encoder);
-    domain_semantics.encode(&mut legacy_encoder);
-    value.encode(&mut legacy_encoder);
-    1_u64.encode(&mut legacy_encoder);
-    edge.encode(&mut legacy_encoder);
-    legacy_statistics.encode(&mut legacy_encoder);
-    0_u64.encode(&mut legacy_encoder);
-    BTreeMap::<FindingKind, u64>::new().encode(&mut legacy_encoder);
-    let legacy_bytes = legacy_encoder.finish();
-    let legacy = PlannerCandidateGuidance::from_canonical_bytes(&legacy_bytes)
-        .expect("legacy guidance remains readable");
-    assert_eq!(legacy.canonical_bytes(), legacy_bytes);
-    assert_eq!(legacy.objective_reward_micros(), 0);
-    assert_eq!(
-        legacy
-            .score_for_policy(&policy_value, input_view)
-            .expect("legacy neutral guidance score")
-            .mean_reward_micros(),
-        0
-    );
-    let legacy_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::PlannerCandidateGuidance,
-        1,
-        super::object::content_children(legacy.content_children())
-            .expect("legacy guidance children"),
-        legacy_bytes,
-    )
-    .expect("legacy guidance envelope");
-    assert_eq!(
-        legacy.id().expect("legacy guidance identity").content_id(),
-        legacy_envelope.content_id()
-    );
-    ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes())
-        .expect("legacy guidance envelope remains readable");
 }
 
 #[test]
@@ -472,7 +437,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
         genesis,
         genesis_artifact,
         "1.2.3",
-        "qemu-10.0-series-a",
+        "qemu-11.1.1-series-a",
         protocols.clone(),
         1,
         2,
@@ -484,7 +449,7 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
         lineage.genesis(),
         lineage.genesis_content(),
         "1.2.3",
-        "qemu-10.0-series-b",
+        "qemu-11.1.1-series-b",
         protocols,
         1,
         2,
@@ -539,10 +504,11 @@ fn lineage_and_invocation_identities_name_every_compatibility_input() {
 #[test]
 fn command_and_fact_identities_bind_payload_and_admission_order() {
     let command = CampaignCommandId::from_hash(hash("command"));
+    let policy = stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy");
     let expected_snapshot = stored_id!(
         CampaignSnapshotId,
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         "snapshot"
     );
     let request = ControlRequest {
@@ -566,6 +532,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
                 cause: BranchRequestCause::Operator(command),
                 admission_ordinal: AdmissionOrdinal::new(7),
             },
+            policy,
         )
         .id()
         .expect("first admission id"),
@@ -578,6 +545,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
                 cause: BranchRequestCause::Operator(command),
                 admission_ordinal: AdmissionOrdinal::new(8),
             },
+            policy,
         )
         .id()
         .expect("second admission id"),
@@ -1251,22 +1219,25 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
         })
     ));
     let legacy_body = encode_request_body(1, request.source());
-    let legacy_request = BranchRequest::from_canonical_bytes(&legacy_body)
-        .expect("selection-free branch-request v1 remains readable");
-    assert_eq!(legacy_request.schema_version(), 1);
-    assert_eq!(legacy_request.canonical_bytes(), legacy_body);
+    assert!(matches!(
+        BranchRequest::from_canonical_bytes(&legacy_body),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported branch-request schema or source"
+        })
+    ));
     let legacy_envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::BranchRequest,
         1,
-        super::object::content_children(legacy_request.content_children())
-            .expect("legacy request children"),
+        request_envelope.children().clone(),
         legacy_body,
     )
     .expect("legacy request envelope");
-    assert_eq!(
-        legacy_request.id().expect("legacy request ID").content_id(),
-        legacy_envelope.content_id()
-    );
+    assert!(matches!(
+        ObjectEnvelope::from_canonical_bytes(&legacy_envelope.canonical_bytes()),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported campaign record schema version"
+        })
+    ));
 
     let weighted_source = CandidateSource::weighted_finite(BTreeMap::from([
         (ChoiceValue::Integer(IntegerValue::Unsigned(0)), 1),
@@ -1510,7 +1481,7 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     let path = BranchPath::new(vec![BranchPathSegment::new(branch_point, edge)]).expect("path");
     assert_eq!(
         path.segments(),
-        Some([BranchPathSegment::new(branch_point, edge)].as_slice())
+        [BranchPathSegment::new(branch_point, edge)].as_slice()
     );
     assert_eq!(
         BranchPath::from_canonical_bytes(&path.canonical_bytes()).expect("canonical path"),
@@ -1519,595 +1490,6 @@ fn branch_requests_proposals_and_attempts_share_one_typed_lazy_model() {
     let path_envelope = super::object::ObjectEnvelope::for_branch_path(&path)
         .expect("current branch path envelope");
     assert_eq!(path_envelope.content_id().schema_version(), 2);
-
-    let mut legacy_path_encoder = Encoder::new();
-    1_u32.encode(&mut legacy_path_encoder);
-    vec![edge].encode(&mut legacy_path_encoder);
-    let legacy_path_bytes = legacy_path_encoder.finish();
-    let legacy_path = BranchPath::from_canonical_bytes(&legacy_path_bytes)
-        .expect("legacy branch path remains readable");
-    assert_eq!(legacy_path.edges(), [edge]);
-    assert_eq!(legacy_path.segments(), None);
-    assert_eq!(legacy_path.canonical_bytes(), legacy_path_bytes);
-    let legacy_path_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::BranchPath.schema_name(),
-        1,
-        BTreeSet::new(),
-        legacy_path_bytes,
-    )
-    .expect("legacy branch path envelope");
-    ObjectEnvelope::from_canonical_bytes(&legacy_path_envelope.canonical_bytes())
-        .expect("legacy branch path envelope remains readable");
-    assert_eq!(
-        legacy_path.id().expect("legacy branch path identity"),
-        BranchPathId::from_content_id(legacy_path_envelope.content_id(ObjectKind::CampaignFact))
-            .expect("legacy branch path id")
-    );
-    let mut trailing_path = path.canonical_bytes();
-    trailing_path.push(0);
-    assert_eq!(
-        BranchPath::from_canonical_bytes(&trailing_path),
-        Err(CampaignCodecError::TrailingBytes)
-    );
-
-    let attempt = Attempt::new(
-        AttemptStart::Branch {
-            edge,
-            parent: parent.id().expect("parent id"),
-            selection: selection.id().expect("selection id"),
-        },
-        path.id().expect("path id"),
-        StopCondition::NextChoice,
-    )
-    .expect("attempt");
-    assert_eq!(
-        Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("canonical attempt"),
-        attempt
-    );
-
-    let basis = AttemptAdmission::new(
-        attempt.id().expect("attempt id"),
-        AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(proposal.id().expect("proposal id")),
-            cause,
-            admission_ordinal: AdmissionOrdinal::new(1),
-        },
-    );
-    let additional = AttemptAdmission::new(
-        attempt.id().expect("attempt id"),
-        AttemptAdmissionRole::AdditionalCause {
-            proposal: proposal.id().expect("proposal id"),
-        },
-    );
-    assert_ne!(basis.id(), additional.id());
-    assert_eq!(
-        AttemptAdmission::from_canonical_bytes(&basis.canonical_bytes())
-            .expect("canonical attempt admission"),
-        basis
-    );
-
-    let planner_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "planner-view");
-    let planner_step = PlannerStep::new(
-        None,
-        stored_id!(
-            PlannerInvocationId,
-            ObjectKind::Policy,
-            2,
-            "planner-invocation"
-        ),
-        stored_id!(
-            RetainedPlannerRequestId,
-            ObjectKind::Policy,
-            "retained-planner-request"
-        ),
-        CampaignHash::derive("crucible.test.planner-request-digest.v1", b"planner-step"),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "planner-step-policy"),
-        stored_id!(PlannerEngineId, ObjectKind::Policy, "planner-engine"),
-        stored_id!(PolicyArtifactId, ObjectKind::Policy, "policy-artifact"),
-        planner_view,
-        PlannerDisposition::Issue {
-            selected: PlanningScanPosition::new(branch_point, request.id().expect("request id")),
-            issued_branch_requests: Vec::new(),
-            issued_proposals: vec![proposal.id().expect("proposal id")],
-        },
-        stored_id!(PlannerStateId, ObjectKind::Policy, "next-planner-state"),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 1,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 1,
-        },
-        PlanningAccounting {
-            branch_requests: 0,
-            proposals: 1,
-            attempts: 1,
-            deduplicated: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 1,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("guidance evidence"),
-    )
-    .expect("planner step");
-    assert_eq!(
-        PlannerStep::from_canonical_bytes(&planner_step.canonical_bytes())
-            .expect("canonical planner step"),
-        planner_step
-    );
-    assert_eq!(
-        &planner_step.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &4_u32.to_be_bytes()
-    );
-    let planner_step_children =
-        super::object::content_children(planner_step.content_children()).expect("step children");
-    let planner_step_envelope = ObjectEnvelope::for_record(
-        CampaignRecordKind::PlannerStep,
-        planner_step_children.clone(),
-        planner_step.canonical_bytes(),
-    )
-    .expect("planner step envelope");
-    let stored_planner_step =
-        crucible_cas::content_envelope::ContentEnvelope::from_canonical_bytes(
-            &planner_step_envelope.canonical_bytes(),
-        )
-        .expect("stored planner step envelope");
-    assert_eq!(stored_planner_step.schema_version(), 4);
-    let prior_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::PlannerStep.schema_name(),
-        3,
-        planner_step_children,
-        planner_step.canonical_bytes(),
-    )
-    .expect("prior planner step envelope");
-    assert!(ObjectEnvelope::from_canonical_bytes(&prior_envelope.canonical_bytes()).is_err());
-    let legacy_step_id = PlannerStepId::from_content_id(ContentId::for_bytes(
-        ObjectKind::CampaignFact,
-        3,
-        b"legacy planner step",
-    ))
-    .expect("legacy planner step id");
-    let legacy_fact = CampaignFact::PlannerAdvanced(legacy_step_id);
-    let mut legacy_fact_encoder = Encoder::new();
-    2_u32.encode(&mut legacy_fact_encoder);
-    legacy_fact.encode(&mut legacy_fact_encoder);
-    let legacy_fact_bytes = legacy_fact_encoder.finish();
-    assert_eq!(
-        CampaignFact::from_canonical_bytes(&legacy_fact_bytes)
-            .expect("legacy planner fact remains readable"),
-        legacy_fact
-    );
-    let legacy_fact_children = BTreeSet::from([crucible_cas::content_envelope::ContentChild::new(
-        "planner-step",
-        legacy_step_id.content_id(),
-    )
-    .expect("legacy fact child")]);
-    let legacy_fact_envelope = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        2,
-        legacy_fact_children.clone(),
-        legacy_fact_bytes.clone(),
-    )
-    .expect("legacy fact envelope");
-    ObjectEnvelope::from_canonical_bytes(&legacy_fact_envelope.canonical_bytes())
-        .expect("legacy fact envelope remains readable");
-    let legacy_fact_id =
-        CampaignFactId::from_content_id(legacy_fact_envelope.content_id(ObjectKind::CampaignFact));
-    assert_eq!(legacy_fact.canonical_bytes(), legacy_fact_bytes);
-    assert_eq!(
-        legacy_fact.id().expect("legacy fact identity"),
-        legacy_fact_id.expect("legacy fact id remains readable")
-    );
-    let current_envelope_with_prior_body = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        CampaignRecordKind::Fact.schema_version(),
-        legacy_fact_children,
-        legacy_fact_bytes,
-    )
-    .expect("mismatched current fact envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&current_envelope_with_prior_body.canonical_bytes())
-            .is_err()
-    );
-
-    let derivation = CampaignFact::CampaignDerived(CampaignDerivation::new(
-        stored_id!(
-            CampaignSnapshotId,
-            ObjectKind::CampaignSnapshot,
-            2,
-            "derivation-source"
-        ),
-        stored_id!(CampaignPolicyId, ObjectKind::Policy, "derivation-policy"),
-    ));
-    assert_eq!(
-        &derivation.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &3_u32.to_be_bytes()
-    );
-    let derivation_envelope = ObjectEnvelope::for_fact(&derivation).expect("derivation envelope");
-    ObjectEnvelope::from_canonical_bytes(&derivation_envelope.canonical_bytes())
-        .expect("version 3 derivation envelope remains readable");
-    let prior_envelope_with_derivation_body = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::Fact.schema_name(),
-        2,
-        derivation_envelope.children().clone(),
-        derivation.canonical_bytes(),
-    )
-    .expect("mismatched derivation envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(
-            &prior_envelope_with_derivation_body.canonical_bytes()
-        )
-        .is_err()
-    );
-
-    let continue_scan = PlannerStep::new(
-        Some(planner_step.id().expect("parent planner step")),
-        planner_step.invocation(),
-        planner_step.request(),
-        planner_step.request_digest(),
-        planner_step.policy(),
-        planner_step.engine(),
-        planner_step.policy_artifact(),
-        planner_view,
-        PlannerDisposition::ContinueScan {
-            cursor: PlanningScanCursor::new(
-                planner_view,
-                Some(PlanningScanPosition::new(
-                    branch_point,
-                    request.id().expect("request id"),
-                )),
-            ),
-        },
-        planner_step.next_state(),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 4,
-        },
-        PlanningAccounting {
-            branch_requests: 0,
-            proposals: 0,
-            attempts: 0,
-            deduplicated: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 4,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("scan evidence"),
-    )
-    .expect("continue scan");
-    assert!(continue_scan.selected_source().is_none());
-    assert!(continue_scan.issued_proposals().is_empty());
-    assert_eq!(
-        PlannerStep::from_canonical_bytes(&continue_scan.canonical_bytes())
-            .expect("canonical continue scan"),
-        continue_scan
-    );
-    let no_work = PlannerStep::new(
-        Some(continue_scan.id().expect("continue-scan step id")),
-        planner_step.invocation(),
-        planner_step.request(),
-        planner_step.request_digest(),
-        planner_step.policy(),
-        planner_step.engine(),
-        planner_step.policy_artifact(),
-        planner_view,
-        PlannerDisposition::NoWork,
-        planner_step.next_state(),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 0,
-            input_objects: 1,
-            input_bytes: 64,
-            fuel: 1,
-        },
-        PlanningAccounting {
-            branch_requests: 0,
-            proposals: 0,
-            attempts: 0,
-            deduplicated: 0,
-            input_objects: 1,
-            input_bytes: 64,
-            fuel: 1,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("no-work evidence"),
-    )
-    .expect("no-work step");
-    assert!(no_work.selected_branch_point().is_none());
-    assert_eq!(
-        PlannerStep::from_canonical_bytes(&no_work.canonical_bytes())
-            .expect("canonical no-work step"),
-        no_work
-    );
-
-    assert!(
-        continue_scan
-            .content_children()
-            .iter()
-            .any(|(role, id)| role == "scan-after-source"
-                && *id == request.id().expect("request id").content_id())
-    );
-
-    assert!(
-        PlannerStep::new(
-            None,
-            planner_step.invocation(),
-            planner_step.request(),
-            planner_step.request_digest(),
-            planner_step.policy(),
-            planner_step.engine(),
-            planner_step.policy_artifact(),
-            planner_view,
-            PlannerDisposition::ContinueScan {
-                cursor: PlanningScanCursor::new(
-                    stored_id!(CampaignViewId, ObjectKind::CampaignFact, "another-view"),
-                    None,
-                ),
-            },
-            planner_step.next_state(),
-            PlanningUsage {
-                branch_requests: 0,
-                proposals: 0,
-                input_objects: 1,
-                input_bytes: 64,
-                fuel: 1,
-            },
-            PlanningAccounting {
-                branch_requests: 0,
-                proposals: 0,
-                attempts: 0,
-                deduplicated: 0,
-                input_objects: 1,
-                input_bytes: 64,
-                fuel: 1,
-            },
-            GuidanceEvidence::new(BTreeMap::new()).expect("invalid scan evidence"),
-        )
-        .is_err()
-    );
-
-    let planner_request = BranchRequest::new(
-        branch_point,
-        parent.id().expect("parent id"),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
-        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
-            IntegerValue::Unsigned(10),
-        )]))
-        .expect("planner finite source"),
-        BranchRequestCause::Planner(planner_step.invocation()),
-        BranchBudget::new(1, 1).expect("planner branch budget"),
-        StopCondition::NextChoice,
-    )
-    .expect("planner request");
-    let planner_proposal = Proposal::new(
-        branch_point,
-        planner_request.id().expect("planner request id"),
-        domain.id().expect("domain id"),
-        ChoiceValue::Integer(IntegerValue::Unsigned(10)),
-        planner_step.policy(),
-        Some(planner_step.invocation()),
-        1,
-        planner_view,
-    )
-    .expect("planner proposal");
-    let proposed_step = PlannerStepProposal::new(
-        planner_step.invocation(),
-        PlannerState::new(planner_step.engine(), "scan-state", 1, vec![1, 2, 3])
-            .expect("next planner state"),
-        PlanningUsage {
-            branch_requests: 1,
-            proposals: 1,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 4,
-        },
-        GuidanceEvidence::new(BTreeMap::from([("score".to_owned(), 1_000)]))
-            .expect("proposal evidence"),
-        PlannerProposalDisposition::Issue {
-            selected: PlanningScanPosition::new(
-                branch_point,
-                planner_request.id().expect("planner request id"),
-            ),
-            branch_requests: vec![planner_request.clone()],
-            proposals: vec![planner_proposal.clone()],
-        },
-    )
-    .expect("pure planner result");
-    assert_eq!(
-        PlannerStepProposal::from_canonical_bytes(&proposed_step.canonical_bytes())
-            .expect("canonical pure planner result"),
-        proposed_step
-    );
-    assert!(matches!(
-        PlannerStepProposal::new_with_encoded_limit(
-            planner_step.invocation(),
-            PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
-                .expect("bounded result state"),
-            PlanningUsage {
-                branch_requests: 0,
-                proposals: 0,
-                input_objects: 1,
-                input_bytes: 1,
-                fuel: 1,
-            },
-            GuidanceEvidence::new(BTreeMap::new()).expect("bounded result evidence"),
-            PlannerProposalDisposition::NoWork,
-            1,
-        ),
-        Err(CampaignCodecError::LimitExceeded {
-            limit: "planner-step-proposal-encoded-bytes"
-        })
-    ));
-
-    let proposed_no_work = PlannerStepProposal::new(
-        planner_step.invocation(),
-        PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
-            .expect("no-work result state"),
-        PlanningUsage {
-            branch_requests: 0,
-            proposals: 0,
-            input_objects: 8,
-            input_bytes: 4096,
-            fuel: 1,
-        },
-        GuidanceEvidence::new(BTreeMap::new()).expect("no-work result evidence"),
-        PlannerProposalDisposition::NoWork,
-    )
-    .expect("pure no-work result");
-    assert_eq!(
-        PlannerStepProposal::from_canonical_bytes(&proposed_no_work.canonical_bytes())
-            .expect("canonical pure no-work result"),
-        proposed_no_work
-    );
-
-    assert!(
-        PlannerStepProposal::new(
-            planner_step.invocation(),
-            PlannerState::new(planner_step.engine(), "scan-state", 1, Vec::new())
-                .expect("duplicate result state"),
-            PlanningUsage {
-                branch_requests: 1,
-                proposals: 2,
-                input_objects: 8,
-                input_bytes: 4096,
-                fuel: 4,
-            },
-            GuidanceEvidence::new(BTreeMap::new()).expect("duplicate result evidence"),
-            PlannerProposalDisposition::Issue {
-                selected: PlanningScanPosition::new(
-                    branch_point,
-                    planner_request.id().expect("planner request id"),
-                ),
-                branch_requests: vec![planner_request],
-                proposals: vec![planner_proposal.clone(), planner_proposal],
-            },
-        )
-        .is_err()
-    );
-
-    let illegal = BranchRequest::new(
-        branch_point,
-        parent.id().expect("parent id"),
-        opportunity.id().expect("opportunity id"),
-        domain.id().expect("domain id"),
-        CandidateSource::finite(BTreeSet::from([ChoiceValue::Integer(
-            IntegerValue::Unsigned(11),
-        )]))
-        .expect("bounded source"),
-        cause,
-        BranchBudget::new(1, 1).expect("budget"),
-        StopCondition::NextChoice,
-    )
-    .expect("structural request");
-    assert!(
-        illegal
-            .validate_resolved(&parent, &opportunity, &domain)
-            .is_err()
-    );
-
-    let credit_observation = stored_id!(
-        ObservationId,
-        ObjectKind::Observation,
-        "expansion-credit-observation"
-    );
-    let credit = ExpansionCredit::new(credit_observation, branch_point);
-    assert_eq!(
-        ExpansionCredit::from_canonical_bytes(&credit.canonical_bytes())
-            .expect("canonical expansion credit"),
-        credit
-    );
-    let credit_envelope = ObjectEnvelope::for_record(
-        CampaignRecordKind::ExpansionCredit,
-        super::object::content_children(credit.content_children()).expect("credit children"),
-        credit.canonical_bytes(),
-    )
-    .expect("credit envelope");
-    assert_eq!(
-        credit_envelope.content_id(),
-        credit.content_id().expect("credit content id")
-    );
-    assert_eq!(
-        credit_envelope
-            .children()
-            .iter()
-            .map(crate::ChildReference::id)
-            .collect::<Vec<_>>(),
-        vec![credit_observation.content_id()]
-    );
-
-    let wait = FeedbackWait::new(2, 3).expect("pending feedback");
-    assert_eq!(wait.completed_visits(), 2);
-    assert_eq!(wait.required_visits(), 3);
-    assert!(FeedbackWait::new(3, 3).is_err());
-    assert!(FeedbackWait::new(4, 3).is_err());
-
-    let request_id = request.id().expect("request id");
-    let source_snapshot = stored_id!(
-        CampaignSnapshotId,
-        ObjectKind::CampaignSnapshot,
-        2,
-        "expansion-source-snapshot"
-    );
-    let input_view = stored_id!(CampaignViewId, ObjectKind::CampaignFact, "expansion-view");
-    let expansion = ExpansionState::new(
-        source_snapshot,
-        input_view,
-        branch_point,
-        content("request-root"),
-        content("proposal-root"),
-        content("admission-root"),
-        content("observation-root"),
-        ExpansionStatistics::default(),
-        None,
-        1,
-        None,
-        BTreeMap::from([(request_id, ContinuationState::WaitingForFeedback(wait))]),
-    )
-    .expect("expansion state");
-    assert_eq!(
-        ExpansionState::from_canonical_bytes(&expansion.canonical_bytes())
-            .expect("canonical expansion state"),
-        expansion
-    );
-    let mut invalid_wait = expansion.canonical_bytes();
-    let required_offset = invalid_wait.len() - std::mem::size_of::<u64>();
-    invalid_wait[required_offset..].copy_from_slice(&2_u64.to_be_bytes());
-    assert!(matches!(
-        ExpansionState::from_canonical_bytes(&invalid_wait),
-        Err(CampaignCodecError::InvalidValue { .. })
-    ));
-    let expansion_envelope = ObjectEnvelope::for_record(
-        CampaignRecordKind::ExpansionState,
-        super::object::content_children(expansion.content_children()).expect("expansion children"),
-        expansion.canonical_bytes(),
-    )
-    .expect("expansion envelope");
-    assert_eq!(
-        &expansion.canonical_bytes()[..std::mem::size_of::<u32>()],
-        &2_u32.to_be_bytes()
-    );
-    let mut legacy_body = expansion.canonical_bytes();
-    legacy_body[..std::mem::size_of::<u32>()].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(ExpansionState::from_canonical_bytes(&legacy_body).is_err());
-    assert_eq!(expansion_envelope.content_id().schema_version(), 2);
-    let legacy_expansion = crucible_cas::content_envelope::ContentEnvelope::new(
-        CampaignRecordKind::ExpansionState.schema_name(),
-        1,
-        expansion_envelope.children().clone(),
-        expansion.canonical_bytes(),
-    )
-    .expect("legacy expansion envelope");
-    assert!(ObjectEnvelope::from_canonical_bytes(&legacy_expansion.canonical_bytes()).is_err());
-    assert!(
-        expansion_envelope
-            .children()
-            .iter()
-            .any(|child| child.role() == "continuation.00000000"
-                && child.id() == request_id.content_id())
-    );
 }
 
 #[test]
@@ -2125,6 +1507,7 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let path = stored_id!(
         BranchPathId,
         ObjectKind::CampaignFact,
+        2,
         "continuation-input-path"
     );
     let source_observation = stored_id!(
@@ -2419,16 +1802,11 @@ fn scenario_default_records_have_frozen_versioned_vectors() {
         ),
     );
     let request_bodies = [
-        encode_request(1, &finite, operator),
         encode_request(2, &finite, operator),
         encode_request(3, &modeled_finite, operator),
         encode_request(4, &modeled_generated, operator),
     ];
-    let historical_vectors = [
-        (
-            "3afb6e7cec8c9591128825b6e8977eae491246fe398665dcf9ba918512f07441",
-            "crucible.campaign.branch-request@campaign-fact.1.806e7621b0bd3fe0f7de82ffaf2ca574f99a01a99f2639b5b8d68ccaebf3c8a8",
-        ),
+    let current_vectors = [
         (
             "c469dcd133fd7f21e96e164d029aab8ca22bc69ad529b2aa1d7353d26ad295e6",
             "crucible.campaign.branch-request@campaign-fact.2.e8e6f6351d3453132d4e6585e4afa7c3a235c0dee4b753e72d7df08d8e743aa2",
@@ -2442,11 +1820,11 @@ fn scenario_default_records_have_frozen_versioned_vectors() {
             "crucible.campaign.branch-request@campaign-fact.4.380c8fe90cb736cb0e598c2e7cbf99770aa461befb52a9d59e7441c57569b8a2",
         ),
     ];
-    for (bytes, (expected_digest, expected_id)) in request_bodies.iter().zip(historical_vectors) {
-        let request = BranchRequest::from_canonical_bytes(bytes).expect("historical request");
+    for (bytes, (expected_digest, expected_id)) in request_bodies.iter().zip(current_vectors) {
+        let request = BranchRequest::from_canonical_bytes(bytes).expect("current request");
         assert_eq!(blake3::hash(bytes).to_hex().to_string(), expected_digest);
         assert_eq!(
-            request.id().expect("historical request id").to_text(),
+            request.id().expect("current request id").to_text(),
             expected_id
         );
     }
@@ -2474,93 +1852,14 @@ fn scenario_default_records_have_frozen_versioned_vectors() {
         "crucible.campaign.branch-request@campaign-fact.5.4a8ddd462a022341d775e64866313c45ededfff34db7daefe8eb6a6e5e43330f"
     );
 
-    let admission = AttemptAdmission::new(
-        stored_id!(
-            AttemptId,
-            ObjectKind::CampaignFact,
-            "scenario-default-attempt"
-        ),
-        AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(stored_id!(
-                ProposalId,
-                ObjectKind::CampaignFact,
-                "scenario-default-proposal"
-            )),
-            cause: BranchRequestCause::ScenarioDefault(policy),
-            admission_ordinal: AdmissionOrdinal::new(7),
-        },
-    );
-    let historical_execution_basis = AttemptAdmission::new(
-        admission.attempt(),
-        AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(stored_id!(
-                ProposalId,
-                ObjectKind::CampaignFact,
-                "scenario-default-proposal"
-            )),
-            cause: operator,
-            admission_ordinal: AdmissionOrdinal::new(7),
-        },
-    );
-    assert_eq!(historical_execution_basis.schema_version(), 1);
-    assert_eq!(
-        blake3::hash(&historical_execution_basis.canonical_bytes())
-            .to_hex()
-            .to_string(),
-        "7d18eab10837d432f6daf2e714b9e8bd82c6eded18323ad1400fec92e551679d"
-    );
-    assert_eq!(
-        historical_execution_basis
-            .id()
-            .expect("admission v1 id")
-            .to_text(),
-        "crucible.campaign.attempt-admission@campaign-fact.1.43960bc8f2e8b7bc63ad58584a0cd552233a909c460f94ffb0f303ef66e78dfe"
-    );
-    assert_eq!(admission.schema_version(), 2);
-    assert_eq!(
-        blake3::hash(&admission.canonical_bytes())
-            .to_hex()
-            .to_string(),
-        "f054656caaf6b6eda5093072d40d0470f210bc63be7e3b2cd0498addd9de50e7"
-    );
-    assert_eq!(
-        admission.id().expect("admission v2 id").to_text(),
-        "crucible.campaign.attempt-admission@campaign-fact.2.739e2679ffa2b57d6b8ba13f35f3dc214a97bf3fde7a53f71369fe8237ddc79d"
-    );
-
     let mut wrong_request_version = request.canonical_bytes();
     wrong_request_version[..4].copy_from_slice(&1_u32.to_be_bytes());
     assert!(BranchRequest::from_canonical_bytes(&wrong_request_version).is_err());
-
-    let mut wrong_admission_version = admission.canonical_bytes();
-    wrong_admission_version[..4].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(AttemptAdmission::from_canonical_bytes(&wrong_admission_version).is_err());
-    let mismatched_admission_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::AttemptAdmission,
-        1,
-        super::object::content_children(admission.content_children()).expect("admission children"),
-        admission.canonical_bytes(),
-    )
-    .expect("structural mismatched admission envelope");
-    assert!(
-        ObjectEnvelope::from_canonical_bytes(&mismatched_admission_envelope.canonical_bytes())
-            .is_err()
+    let attempt = stored_id!(
+        AttemptId,
+        ObjectKind::CampaignFact,
+        "scenario-default-attempt"
     );
-    let historical_admission = AttemptAdmission::new(
-        admission.attempt(),
-        AttemptAdmissionRole::AdditionalCause {
-            proposal: stored_id!(
-                ProposalId,
-                ObjectKind::CampaignFact,
-                "scenario-default-proposal"
-            ),
-        },
-    );
-    let mut future_without_new_cause = historical_admission.canonical_bytes();
-    future_without_new_cause[..4].copy_from_slice(&2_u32.to_be_bytes());
-    assert!(AttemptAdmission::from_canonical_bytes(&future_without_new_cause).is_err());
-
-    let attempt = admission.attempt();
     let proposal = stored_id!(
         ProposalId,
         ObjectKind::CampaignFact,
@@ -2583,7 +1882,7 @@ fn scenario_default_records_have_frozen_versioned_vectors() {
         BranchRequestCause::ScenarioDefault(policy),
     ];
     for cause in causes {
-        let bound = AttemptAdmission::new_policy_bound(
+        let bound = AttemptAdmission::new(
             attempt,
             AttemptAdmissionRole::ExecutionBasis {
                 proposal: Some(proposal),
@@ -2593,7 +1892,7 @@ fn scenario_default_records_have_frozen_versioned_vectors() {
             policy,
         );
         assert_eq!(bound.schema_version(), 3);
-        assert_eq!(bound.retention_policy(), Some(policy));
+        assert_eq!(bound.retention_policy(), policy);
         assert_eq!(
             AttemptAdmission::from_canonical_bytes(&bound.canonical_bytes())
                 .expect("policy-bound admission"),
@@ -2881,7 +2180,7 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
     let parent = stored_id!(
         CampaignSnapshotId,
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         "parent-snapshot"
     );
     let transition = stored_id!(CampaignFactId, ObjectKind::CampaignFact, 2, "transition");
@@ -2891,12 +2190,13 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
         stored_id!(CampaignPolicyId, ObjectKind::Policy, "policy"),
         roots,
         transition,
+        crate::test_budget_ledger_id(),
     )
     .expect("successor snapshot");
     let envelope = ObjectEnvelope::for_snapshot(&snapshot).expect("snapshot envelope");
 
     assert_eq!(envelope.record_kind(), CampaignRecordKind::Snapshot);
-    assert_eq!(envelope.children().len(), 13);
+    assert_eq!(envelope.children().len(), 14);
     assert!(
         envelope
             .children()
@@ -2920,7 +2220,7 @@ fn snapshot_envelope_exposes_every_child_and_authenticates_logical_identity() {
     );
     let extra = crucible_cas::content_envelope::ContentEnvelope::new(
         "crucible.campaign.snapshot",
-        2,
+        3,
         extra_children,
         snapshot.canonical_bytes(),
     )
@@ -2956,45 +2256,29 @@ fn generic_public_object_decode_rejects_owner_validated_merkle_records() {
 #[test]
 fn observation_records_are_canonical_bounded_and_child_bearing() {
     let evidence = content_kind("measurement evidence", ObjectKind::Trace);
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        "latency".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(5), MetricValue::Unsigned(8)],
-            MetricValue::Unsigned(13),
-            BTreeSet::from([evidence]),
-        )
-        .expect("measurement series"),
-    )]))
-    .expect("measurement set");
+    let measurements = MeasurementSet::test_evaluation(b"latency-13", BTreeSet::from([evidence]))
+        .expect("measurement set");
     assert_eq!(
         MeasurementSet::from_canonical_bytes(&measurements.canonical_bytes())
             .expect("canonical measurements"),
         measurements
     );
-    assert_eq!(measurements.schema_version(), 1);
+    assert_eq!(measurements.schema_version(), 2);
     assert_eq!(
         measurements
             .id()
-            .expect("legacy measurement id")
+            .expect("measurement id")
             .content_id()
             .schema_version(),
-        1
+        2
     );
-    let legacy_measurement_envelope =
-        ObjectEnvelope::for_measurement_set(&measurements).expect("legacy measurement envelope");
-    assert_eq!(legacy_measurement_envelope.content_id().schema_version(), 1);
+    let measurement_envelope =
+        ObjectEnvelope::for_measurement_set(&measurements).expect("measurement envelope");
+    assert_eq!(measurement_envelope.content_id().schema_version(), 2);
     assert_eq!(
-        ObjectEnvelope::from_canonical_bytes(&legacy_measurement_envelope.canonical_bytes())
-            .expect("canonical legacy measurement envelope"),
-        legacy_measurement_envelope
-    );
-    assert!(
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(1)],
-            MetricValue::Signed(1),
-            BTreeSet::new(),
-        )
-        .is_err()
+        ObjectEnvelope::from_canonical_bytes(&measurement_envelope.canonical_bytes())
+            .expect("canonical measurement envelope"),
+        measurement_envelope
     );
 
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
@@ -3024,7 +2308,12 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             ObjectKind::Configuration,
             "observation child artifact"
         ),
-        stored_id!(BranchPathId, ObjectKind::CampaignFact, "observation path"),
+        stored_id!(
+            BranchPathId,
+            ObjectKind::CampaignFact,
+            2,
+            "observation path"
+        ),
         StopOutcome::Reached(StopCondition::NextChoice),
         measurements.id().expect("measurement id"),
         properties.id().expect("property id"),
@@ -3195,21 +2484,6 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     let maximum_series_evidence = (0_u32..4096)
         .map(|ordinal| ContentId::for_bytes(ObjectKind::Trace, 1, &ordinal.to_be_bytes()))
         .collect::<BTreeSet<_>>();
-    let evidence_heavy_series = MeasurementSeries::new(
-        vec![MetricValue::Unsigned(1)],
-        MetricValue::Unsigned(1),
-        maximum_series_evidence.clone(),
-    )
-    .expect("maximum series evidence");
-    let excessive_measurements = (0..17)
-        .map(|ordinal| (format!("metric-{ordinal}"), evidence_heavy_series.clone()))
-        .collect::<BTreeMap<_, _>>();
-    assert!(matches!(
-        MeasurementSet::new(excessive_measurements),
-        Err(CampaignCodecError::LimitExceeded {
-            limit: "measurement-evidence-child-count"
-        })
-    ));
     let evidence_heavy_property =
         PropertyEvidence::new(PropertyVerdict::Passed, maximum_series_evidence)
             .expect("maximum property evidence");
@@ -3274,8 +2548,7 @@ fn verified_measurement_payload_is_v2_and_retains_exact_children() {
 
     assert_eq!(decoded, measurements);
     assert_eq!(measurements.schema_version(), 2);
-    assert!(measurements.legacy_measurements().is_none());
-    let retained = measurements.evaluation().expect("evaluation payload");
+    let retained = measurements.evaluation();
     assert_eq!(retained.definitions(), definitions);
     assert_eq!(retained.payload_schema(), 1);
     assert_eq!(retained.evaluation(), evaluation);
@@ -3396,11 +2669,11 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
     .expect("observation id");
     let first_seen = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"finding-parent-snapshot",
     ))
     .expect("snapshot id");
-    let finding = Finding::new(
+    let finding = Finding::new_with_retention(
         signature.clone(),
         observation,
         reproduction_id,
@@ -3412,7 +2685,7 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
         )
         .expect("occurrences"),
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )
     .expect("finding");
     assert_eq!(
@@ -3590,7 +2863,7 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
         original_id,
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"finding-v2-parent",
         ))
         .expect("snapshot id"),
@@ -3606,7 +2879,7 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
     .expect("finding v2");
     assert_eq!(finding.schema_version(), 2);
     assert!(matches!(
-        Finding::new(
+        Finding::new_with_retention(
             finding.signature().clone(),
             observation,
             minimized_id,
@@ -3616,9 +2889,9 @@ fn finding_v2_retains_minimization_trace_and_role_tagged_exact_pins() {
                 finding.occurrence_count(),
                 finding.latest_occurrence(),
             )
-            .expect("legacy occurrence set"),
+            .expect("occurrence set"),
             None,
-            BTreeSet::new(),
+            FindingExactPins::default(),
         ),
         Err(CampaignCodecError::InvalidValue {
             reason: "finding schema disagrees with reproduction versions"

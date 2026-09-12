@@ -90,15 +90,10 @@ fn observation_evidence_preflight_rejects_nested_invalid_records_without_writes(
     repository
         .put_observation(&nested)
         .expect("store incomplete nested observation fixture");
-    let evidence = MeasurementSet::new(BTreeMap::from([(
-        "nested-observation".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(1)],
-            MetricValue::Unsigned(1),
-            BTreeSet::from([nested_id.content_id()]),
-        )
-        .expect("nested evidence series"),
-    )]))
+    let evidence = MeasurementSet::test_evaluation(
+        b"nested-observation",
+        BTreeSet::from([nested_id.content_id()]),
+    )
     .expect("nested evidence set");
     let objects_before = blobs.object_count().expect("objects before rejection");
 

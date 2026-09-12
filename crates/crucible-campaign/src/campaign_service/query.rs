@@ -1581,8 +1581,7 @@ impl ExplainCampaignAttemptResponse {
 
     /// Returns the coordinator-accepted planner step that selected the proposal.
     ///
-    /// Operator and exhaustive proposals have no planner step. Legacy
-    /// version-one responses also omit this evidence.
+    /// Operator and exhaustive proposals have no planner step.
     #[must_use]
     pub const fn planner_step(&self) -> Option<&PlannerStep> {
         self.planner_step.as_ref()
@@ -1777,15 +1776,6 @@ impl ExplainCampaignAttemptResponse {
     }
 
     fn validate_planner_evidence(&self) -> Result<(), CampaignCodecError> {
-        if self.schema_version == 1 {
-            if self.planner_step.is_some() || self.planner_step_proof.is_some() {
-                return Err(CampaignCodecError::InvalidValue {
-                    reason: "legacy campaign attempt explanation carries planner evidence",
-                });
-            }
-            return Ok(());
-        }
-
         let invocation = self
             .proposal
             .as_ref()
@@ -1838,23 +1828,18 @@ impl Canonical for ExplainCampaignAttemptResponse {
         self.path.encode(encoder);
         self.selection.encode(encoder);
         self.proposal.encode(encoder);
-        if self.schema_version >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION {
-            self.planner_step.encode(encoder);
-        }
+        self.planner_step.encode(encoder);
         self.observation.encode(encoder);
         self.attempt_proof.encode(encoder);
         self.admission_proof.encode(encoder);
         self.proposal_proof.encode(encoder);
-        if self.schema_version >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION {
-            self.planner_step_proof.encode(encoder);
-        }
+        self.planner_step_proof.encode(encoder);
         self.observation_proof.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
-        if schema_version != 1 && schema_version != EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION
-        {
+        if schema_version != EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign attempt explanation response version",
             });
@@ -1868,22 +1853,12 @@ impl Canonical for ExplainCampaignAttemptResponse {
             path: BranchPath::decode(decoder)?,
             selection: Option::decode(decoder)?,
             proposal: Option::decode(decoder)?,
-            planner_step: if schema_version >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION {
-                Option::decode(decoder)?
-            } else {
-                None
-            },
+            planner_step: Option::decode(decoder)?,
             observation: Option::decode(decoder)?,
             attempt_proof: MerkleMapLookupProof::decode(decoder)?,
             admission_proof: MerkleMapLookupProof::decode(decoder)?,
             proposal_proof: Option::decode(decoder)?,
-            planner_step_proof: if schema_version
-                >= EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION
-            {
-                Option::decode(decoder)?
-            } else {
-                None
-            },
+            planner_step_proof: Option::decode(decoder)?,
             observation_proof: MerkleMapLookupProof::decode(decoder)?,
         };
         ensure_message_size(&response, "explain-campaign-attempt-response-encoded-bytes")?;

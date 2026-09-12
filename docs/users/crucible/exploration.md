@@ -122,7 +122,7 @@ Compare a result with another content-addressed triage result using:
 By default, triage reports go to `--artifact-dir`, and triage objects use the
 same default `<artifact-dir>/store` as other offline operations.
 
-Search and fuzz write a signed v3 ledger automatically when they retain at
+Search and fuzz write a signed v4 ledger automatically when they retain at
 least one finding. Its default location is
 `<artifact-dir>/findings/<digest>.crucible-findings`; use
 `--findings-out <path>` on either command when automation needs a fixed path.

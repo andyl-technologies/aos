@@ -58,9 +58,8 @@ where
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    let request =
-        CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)
-            .with_start_paused(true);
+    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_form().clone(), seed)
+        .with_start_paused(true);
     let created = client
         .create_session(request)
         .await

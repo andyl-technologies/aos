@@ -86,7 +86,7 @@ struct GuestSelectableBoundaryDiagnosticsDeployment {
     maximum_events: usize,
 }
 
-/// Guarded host capability loaded for one campaign-backed legacy command.
+/// Guarded host capability loaded for one current campaign-run command.
 pub(crate) struct GuardedCampaignRunDeployment {
     pub(crate) host: crucible_daemon::LinuxQemuAttemptHostConfig,
     pub(crate) resources: crucible_campaign::AttemptResourceLimits,
@@ -138,7 +138,7 @@ fn resolve_campaign_deployment_path(
     )))
 }
 
-/// Loads the exact process and storage ceilings for a guarded legacy run.
+/// Loads the exact process and storage ceilings for a guarded campaign run.
 ///
 /// The deployment uses the same strict schema, ownership, cgroup, and project
 /// quota policy as the packaged executor. The returned host config still opens

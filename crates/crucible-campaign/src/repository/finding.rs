@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::{
-    ExactCheckpointId, FindingCandidateBundleId, FindingExactPins, FindingKind, FindingSignature,
-    FindingTarget,
+    FindingCandidateBundleId, FindingExactPins, FindingKind, FindingSignature, FindingTarget,
 };
 
 /// Stable result of publishing or rediscovering one campaign finding.
@@ -20,44 +19,6 @@ pub struct FindingPublicationResult {
 }
 
 impl CampaignRepository {
-    /// Publishes or extends one stable finding cluster atomically.
-    ///
-    /// The signature key selects at most one cluster. Rediscovery preserves the
-    /// first observation, reproduction, and parent snapshot while unioning the
-    /// occurrence and exact-pin sets. A minimized reproduction may be added but
-    /// never replaced by a different artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error without writing when the expected snapshot is stale,
-    /// the observation is not canonical in that snapshot, the signature's
-    /// target/evidence is not owned by the observation, either reproduction is
-    /// missing or inconsistent, an existing cluster conflicts, or bounds are
-    /// exceeded. Storage failure after preflight may leave unreachable
-    /// immutable objects before the final ref compare-and-swap.
-    // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish_finding(
-        &self,
-        name: &str,
-        expected_snapshot: CampaignSnapshotId,
-        signature: FindingSignature,
-        observation: ObservationId,
-        reproduction: ReproductionArtifactId,
-        minimized: Option<ReproductionArtifactId>,
-        exact_pins: BTreeSet<ExactCheckpointId>,
-    ) -> Result<FindingPublicationResult, CampaignRepositoryError> {
-        self.publish_finding_with_retention(
-            name,
-            expected_snapshot,
-            signature,
-            observation,
-            reproduction,
-            minimized,
-            FindingExactPins::from_untyped(exact_pins)?,
-        )
-    }
-
     /// Publishes a finding with role-tagged exact-checkpoint retention.
     ///
     /// Rediscovery unions each role independently. The first observation and
@@ -66,8 +27,8 @@ impl CampaignRepository {
     ///
     /// # Errors
     ///
-    /// Returns an error under the same fail-closed and failure-atomic contract
-    /// as [`Self::publish_finding`].
+    /// Returns an error without advancing the ref when any referenced evidence
+    /// or role-tagged checkpoint fails authentication.
     // crucible-lint: allow rust-allow -- this narrowly scoped exception preserves the surrounding typed boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_finding_with_retention(
@@ -555,9 +516,6 @@ impl CampaignRepository {
         if let Some(candidate_bundle) = finding.candidate_bundle() {
             let bundle = self.load_finding_candidate_bundle(candidate_bundle)?;
             if bundle.signature() != finding.signature()
-                || finding.schema_version() == 3
-                    && (bundle.reproduction() != finding.reproduction()
-                        || Some(bundle.minimized()) != finding.minimized())
                 || !exact_pins_contain(finding.exact_pin_retention(), bundle.exact_pins())
                 || self.merkle.get(
                     finding.occurrences(),

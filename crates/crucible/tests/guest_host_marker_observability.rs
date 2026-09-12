@@ -6,9 +6,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendInput, Decision, EventClass, EventLog, EventLogIcountStamp,
-    EventSource, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, ObservableEventPayload,
-    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    AdvanceOutcome, Backend, BackendInput, Decision, EventLog, EventLogIcountStamp, EventSource,
+    ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, ObservableEventPayload, RngDecision,
+    RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SimBackend, VirtualTime, compare_event_log_determinism,
     event_log_causal_projection, observable_event_from_whitebox_marker_payload,
 };
@@ -40,7 +40,7 @@ fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
     for (index, entry) in entries.iter().enumerate() {
         let expected_icount = icount(40 + index as u64);
 
-        assert_eq!(entry.class(), EventClass::Observational);
+        assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
         assert_eq!(entry.time().virtual_time, time(expected_icount.retired));
         assert_eq!(
             entry.time().icount,

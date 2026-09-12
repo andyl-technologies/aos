@@ -480,9 +480,16 @@ fn observation(
         1,
         format!("lazy-frontier child {label}").into_bytes(),
     )?;
-    let measurements = fixture
-        .repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new())?)?;
+    let measurements =
+        fixture
+            .repository
+            .publish_measurement_set(&MeasurementSet::from_evaluation(
+                CampaignHash::derive("test.measurement", b"lazy-frontier.measurement-definitions"),
+                1,
+                CampaignHash::derive("test.measurement", b"lazy-frontier.measurement-evaluation"),
+                b"lazy-frontier-measurements".to_vec(),
+                BTreeSet::new(),
+            )?)?;
     let properties = fixture
         .repository
         .publish_property_verdict_set(&PropertyVerdictSet::new(BTreeMap::new())?)?;

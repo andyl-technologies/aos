@@ -294,19 +294,11 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
     )
     .expect("raw-evidence verification");
     assert_eq!(
-        publication
-            .measurement_set()
-            .evaluation()
-            .expect("evaluation")
-            .payload(),
+        publication.measurement_set().evaluation().payload(),
         verified.canonical_bytes()
     );
     assert_eq!(
-        publication
-            .measurement_set()
-            .evaluation()
-            .expect("evaluation")
-            .payload_schema(),
+        publication.measurement_set().evaluation().payload_schema(),
         CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
     );
 }
@@ -393,10 +385,7 @@ fn v2_verifier_rejects_legacy_verifier_and_missing_or_wrong_binding() {
         })
     ));
 
-    let retained = publication
-        .measurement_set()
-        .evaluation()
-        .expect("evaluation");
+    let retained = publication.measurement_set().evaluation();
     let missing_edge = MeasurementSet::from_evaluation(
         retained.definitions(),
         retained.payload_schema(),

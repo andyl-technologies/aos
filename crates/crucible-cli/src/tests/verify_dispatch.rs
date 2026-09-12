@@ -1416,7 +1416,6 @@ pub(super) fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_
     assert_eq!(report.footer.artifact_path, report.path);
     assert!(report.footer.self_contained_artifact);
     assert!(report.footer.replay_command.starts_with("crucible replay "));
-    assert!(report.footer.debug_command.ends_with(" --at-failure"));
     replay_reproduction_artifact(
         &cli,
         &ReplayArgs {
@@ -1481,9 +1480,7 @@ pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_o
     assert_eq!(artifact.seed, 0x55);
     let footer = reproduction_footer(artifact_path);
     assert!(footer.replay_command.contains('\''));
-    assert!(footer.debug_command.contains('\''));
     assert!(footer.replay_command.starts_with("crucible replay "));
-    assert!(footer.debug_command.ends_with(" --at-failure"));
     assert_eq!(
         CliError::Outcome(BackendCommandStatus::Failed).exit_code(),
         1
@@ -2529,7 +2526,6 @@ pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
     dispatch(&replay_cli)?;
 
     let store_root = temp.path().join("store");
-    write_checkpoint_closure_fixture(&store_root, &form, &schedule)?;
     let store_arg = store_root.display().to_string();
     let checkpoint_arg = format_content_hash_ref(checkpoint.id);
     let hash_replay_cli = Cli::parse_from([
@@ -2546,15 +2542,9 @@ pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
     let Commands::Replay(hash_args) = &hash_replay_cli.command else {
         panic!("expected replay command");
     };
-    let hash_report = replay_reproduction_artifact(&hash_replay_cli, hash_args)?;
-    assert_eq!(
-        hash_report
-            .to_savepoint
-            .as_ref()
-            .expect("hash replay --to should report a target savepoint")
-            .checkpoint,
-        checkpoint.id
-    );
+    let error = replay_reproduction_artifact(&hash_replay_cli, hash_args)
+        .expect_err("offline replay must reject a bare checkpoint hash");
+    assert!(error.to_string().contains("not a portable savepoint"));
 
     Ok(())
 }
@@ -3436,8 +3426,7 @@ pub(super) fn cli_replay_rejects_remote_daemon_without_producer_identity()
 }
 
 #[test]
-pub(super) fn cli_failure_artifact_writer_emits_replay_and_debug_commands()
--> Result<(), Box<dyn Error>> {
+pub(super) fn cli_failure_artifact_writer_emits_replay_command() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("artifact dir with spaces");
     let cli = Cli::parse_from([
@@ -3455,32 +3444,14 @@ pub(super) fn cli_failure_artifact_writer_emits_replay_and_debug_commands()
     assert!(report.path.starts_with(temp.path()));
     assert!(report.path.exists());
     assert!(report.footer.replay_command.starts_with("crucible replay "));
-    assert!(report.footer.debug_command.ends_with(" --at-failure"));
     assert!(
         report
             .footer
-            .debug_command
+            .replay_command
             .contains("artifact dir with spaces")
     );
-    assert!(report.footer.debug_command.contains('\''));
+    assert!(report.footer.replay_command.contains('\''));
     assert!(report.path.to_string_lossy().contains("property-violation"));
-    let debug_cli = Cli::parse_from([
-        "crucible",
-        "debug",
-        report.path.to_str().unwrap_or("."),
-        "--at-failure",
-        "--gdb-listen",
-        "127.0.0.1:9000",
-    ]);
-    assert!(matches!(
-        debug_cli.command,
-        Commands::Debug(DebugArgs {
-            target: Some(_),
-            at_failure: true,
-            gdb_listen: Some(_),
-            ..
-        })
-    ));
     assert_eq!(
         ReproductionArtifact::decode(&fs::read(&report.path)?)?,
         artifact

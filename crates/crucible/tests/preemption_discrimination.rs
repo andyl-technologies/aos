@@ -89,7 +89,9 @@ fn commanded_preemption_discriminates_a_known_two_vcpu_race() {
     // baseline.
     let mut choice_a = DecisionRecorder::new(config.clone());
     let switch_a = vcpu_switch_at(4096, 1, 0);
-    choice_a.record_preemption_override(switch_a.clone());
+    choice_a
+        .record_preemption_override(switch_a.clone())
+        .expect("record preemption override");
     let outcome_a = modeled_last_writer(&switch_a);
 
     // Choice B: an explorer override that lands vCPU 1 — the same last writer as
@@ -97,7 +99,9 @@ fn commanded_preemption_discriminates_a_known_two_vcpu_race() {
     // baseline) even though the Decision is explicitly recorded.
     let mut choice_b = DecisionRecorder::new(config);
     let switch_b = vcpu_switch_at(4096, 0, 1);
-    choice_b.record_preemption_override(switch_b.clone());
+    choice_b
+        .record_preemption_override(switch_b.clone())
+        .expect("record preemption override");
     let outcome_b = modeled_last_writer(&switch_b);
 
     // Discrimination: the two commanded choices resolve the race to different
@@ -140,9 +144,13 @@ fn commanded_preemption_discrimination_is_reproducible() {
     let switch = vcpu_switch_at(4096, 1, 0);
 
     let mut first = DecisionRecorder::new(config.clone());
-    first.record_preemption_override(switch.clone());
+    first
+        .record_preemption_override(switch.clone())
+        .expect("record preemption override");
     let mut second = DecisionRecorder::new(config);
-    second.record_preemption_override(switch.clone());
+    second
+        .record_preemption_override(switch.clone())
+        .expect("record preemption override");
 
     assert_eq!(
         first.schedule().content_hash(),
@@ -178,9 +186,13 @@ fn single_vcpu_interrupt_timing_variation_is_distinct() {
     };
 
     let mut deliver_early = DecisionRecorder::new(config.clone());
-    deliver_early.record_preemption_override(early.clone());
+    deliver_early
+        .record_preemption_override(early.clone())
+        .expect("record preemption override");
     let mut deliver_late = DecisionRecorder::new(config);
-    deliver_late.record_preemption_override(late.clone());
+    deliver_late
+        .record_preemption_override(late.clone())
+        .expect("record preemption override");
 
     assert_ne!(
         early.at, late.at,

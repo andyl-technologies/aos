@@ -10,15 +10,15 @@ use std::sync::Arc;
 use crucible::{
     BackendInput, Checkpoint, CheckpointKind, Configuration, ContentHash, CowDeltaKind,
     CowDeltaRef, DagStore, Decision, DecisionRngState, EngineError, EventLog, ExactLocalEvent,
-    LogEntry, MaterializedState, MemoryDagStore, NetworkLookahead, NodeCounter, NodeId,
-    QuantumLoop, QuantumRequest, RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerState,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, TemporalGraph,
-    VirtualTime, World, bake, instantiate, step,
+    MaterializedState, MemoryDagStore, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
+    QuantumRequest, RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
+    SchedulerState, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
+    TemporalGraph, VirtualTime, World, bake, instantiate,
 };
 
-fn boundary_entry(sequence: u64, ticks: u64) -> LogEntry {
+fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
     crucible::test_support::condition_boundary_entry_for_test(
         sequence,
         VirtualTime { ticks },
@@ -239,13 +239,10 @@ fn resumed_event_log_continues_appending_after_stored_offset() {
 
 #[test]
 fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-content-address",
-        "temporal-graph",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let child = step(
+    let child = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("event-log-content-address"),
@@ -321,20 +318,17 @@ fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
 
 #[test]
 fn thin_replay_rejects_stale_nonzero_event_log_offset() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-content-address",
-        "stale-offset-replay",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let first = step(
+    let first = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("stale-offset-first"),
             value: 1,
         }),
     );
-    let second = step(
+    let second = valid_step(
         &first,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("stale-offset-second"),
@@ -378,4 +372,11 @@ fn thin_replay_rejects_stale_nonzero_event_log_offset() {
         } if start == first.id() && target == second.id() && events == append.offset.events => {}
         other => panic!("unexpected stale-offset replay error: {other:?}"),
     }
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

@@ -1,6 +1,6 @@
 //! Bounded local exploration policy and branch-request construction.
 //!
-//! The compatibility campaign owner uses these types to translate one local
+//! The campaign owner uses these types to translate one local
 //! search into ordinary campaign policy, planner, branch-request, and
 //! observation transitions. The CLI never owns a second frontier or expands a
 //! choice outside the authenticated campaign repository.
@@ -40,7 +40,7 @@ pub enum GuardedCampaignExplorationStrategy {
     BreadthFirst,
     /// Expands the deepest pending path first.
     DepthFirst,
-    /// Expands by the deterministic legacy depth score under an exact seed.
+    /// Expands by the deterministic seeded depth score.
     Priority {
         /// Strategy-local seed used only to order the frontier.
         seed: Seed,

@@ -1031,9 +1031,7 @@ fn validate_measurement_evidence(
 }
 
 fn measurement_requires_replay_evidence(measurement: &MeasurementSet) -> bool {
-    measurement.evaluation().is_some_and(|evaluation| {
-        evaluation.payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
-    })
+    measurement.evaluation().payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
 }
 
 fn validate_observation_stop_evidence(
@@ -1053,10 +1051,7 @@ fn validate_observation_stop_evidence(
         return Err(inconsistent("observation stop boundary"));
     }
 
-    let evaluation = candidate
-        .measurements()
-        .evaluation()
-        .ok_or_else(|| inconsistent("observation stop measurement evaluation"))?;
+    let evaluation = candidate.measurements().evaluation();
     if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
         || evaluation.evidence().len() != 1
     {
@@ -1213,9 +1208,7 @@ fn verify_measurement_record(
         &CrucibleMeasurementReplayEvidence,
     >,
 ) -> Result<(), PreparedSemanticResultCodecError> {
-    let Some(evaluation) = measurement.evaluation() else {
-        return Ok(());
-    };
+    let evaluation = measurement.evaluation();
     if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
         return Ok(());
     }
@@ -1249,9 +1242,7 @@ fn validate_measurement_record(
     >,
     owned: &mut BTreeSet<crucible_cas::content_store::ContentId>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
-    let Some(evaluation) = measurement.evaluation() else {
-        return Ok(());
-    };
+    let evaluation = measurement.evaluation();
     if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
         return Ok(());
     }
@@ -2573,7 +2564,7 @@ fn indexed<T>(records: &[T], index: usize) -> Result<&T, PreparedSemanticResultC
 
 const fn discovery_path_tag(path: crucible::FindingDiscoveryPath) -> u8 {
     match path {
-        crucible::FindingDiscoveryPath::InteractiveFork => 0,
+        crucible::FindingDiscoveryPath::CampaignFork => 0,
         crucible::FindingDiscoveryPath::StateSpaceSearch => 1,
         crucible::FindingDiscoveryPath::CoverageGuidedFuzzing => 2,
         crucible::FindingDiscoveryPath::RetainedCorpusEntry => 3,
@@ -2584,7 +2575,7 @@ fn discovery_path_from_tag(
     tag: u8,
 ) -> Result<crucible::FindingDiscoveryPath, PreparedSemanticResultCodecError> {
     match tag {
-        0 => Ok(crucible::FindingDiscoveryPath::InteractiveFork),
+        0 => Ok(crucible::FindingDiscoveryPath::CampaignFork),
         1 => Ok(crucible::FindingDiscoveryPath::StateSpaceSearch),
         2 => Ok(crucible::FindingDiscoveryPath::CoverageGuidedFuzzing),
         3 => Ok(crucible::FindingDiscoveryPath::RetainedCorpusEntry),

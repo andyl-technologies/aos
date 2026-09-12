@@ -754,7 +754,10 @@ impl AttemptExecutionModel for CandidateModel {
             .expect("runtime basis log")
             .push(context.runtime_basis().expect("worker runtime basis"));
         self.calls.fetch_add(1, Ordering::AcqRel);
-        Ok(AttemptExecutionProduct::observation(self.candidate.clone()))
+        Ok(AttemptExecutionProduct::prepared_semantic(
+            PreparedSemanticAttemptResult::new(self.candidate.clone(), None)
+                .expect("prepare test result"),
+        ))
     }
 
     fn reconcile_execution(
@@ -779,7 +782,10 @@ impl AttemptExecutionModel for SuccessfulCleanupModel {
         _input: &AttemptExecutionInput,
         _context: &AttemptExecutionContext,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
-        Ok(AttemptExecutionProduct::observation(self.candidate.clone()))
+        Ok(AttemptExecutionProduct::prepared_semantic(
+            PreparedSemanticAttemptResult::new(self.candidate.clone(), None)
+                .expect("prepare test result"),
+        ))
     }
 
     fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {
@@ -795,7 +801,10 @@ impl AttemptExecutionModel for ReconciliationCleanupModel {
         _input: &AttemptExecutionInput,
         _context: &AttemptExecutionContext,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
-        Ok(AttemptExecutionProduct::observation(self.candidate.clone()))
+        Ok(AttemptExecutionProduct::prepared_semantic(
+            PreparedSemanticAttemptResult::new(self.candidate.clone(), None)
+                .expect("prepare test result"),
+        ))
     }
 
     fn take_abandoned_native_checkpoint(&mut self) -> Option<crate::NativeCheckpointCleanup> {

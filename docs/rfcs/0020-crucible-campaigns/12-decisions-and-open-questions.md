@@ -351,7 +351,7 @@ Planner-step replay indexes and the current portable planner head live in a
 dedicated authenticated `coordination_root`. The root is part of snapshot
 identity and closure traversal but excluded from `CampaignPlanningView`.
 Therefore persisting `ContinueScan` cannot perturb the view identity whose next
-page it resumes. Snapshot schema v2 makes this ninth root explicit and rejects
+page it resumes. Snapshot schema v3 makes this ninth root explicit and rejects
 the former layout rather than overloading exploration, accounting, or pins.
 
 ### D-30: Planner scan outcomes bind an exact served page

@@ -88,8 +88,6 @@ const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
     "application/vnd.crucible.campaign-replay-closure.v1+binary";
 const LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
     "application/vnd.crucible.lifecycle-artifact-bundle.v1+binary";
-const SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.signal-artifact-bundle.v1+binary";
 const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
     "application/vnd.crucible.signal-mutation-provenance.v1+json";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
@@ -1381,7 +1379,7 @@ struct SaveArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ResumeArgs {
-    /// A savepoint handle / checkpoint content hash (07).
+    /// A current portable savepoint handle (07).
     #[arg(value_name = "SAVEPOINT", required = true)]
     savepoint: Option<String>,
     /// Terminal condition, as in `run` (§6).
@@ -1405,7 +1403,7 @@ struct ResumeArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct ForkArgs {
-    /// The fork point: a savepoint handle / checkpoint hash (07).
+    /// The fork point: a current portable savepoint handle (07).
     #[arg(value_name = "SAVEPOINT", required = true)]
     savepoint: Option<String>,
     /// Override a decision at/after the fork point (05 §3). Repeatable.
@@ -1446,7 +1444,7 @@ struct ReplayArgs {
     /// Assert the replayed canonical log is byte-identical to this one.
     #[arg(long, value_name = "original-log")]
     check: Option<PathBuf>,
-    /// Validate a target savepoint handle or checkpoint hash.
+    /// Validate a target savepoint handle.
     #[arg(long, value_name = "savepoint")]
     to: Option<String>,
     /// Bisect this artifact against another (24 §5).

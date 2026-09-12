@@ -729,17 +729,19 @@ mod tests {
         ) else {
             panic!("recorded app-random discovery should resolve");
         };
-        let parent = crucible::step(
+        let parent = crucible::try_step(
             &Configuration::genesis(scenario.clone()),
             Decision::RngDraw(recorded_draw.clone()),
-        );
+        )
+        .expect("recorded test draw should be valid");
         let Ok(branch_selection) = selectable.branch_selection(&parent, (raw & 0xff) ^ 1) else {
             panic!("typed app-random branch should build");
         };
-        let typed_branch = crucible::step(
+        let typed_branch = crucible::try_step(
             &parent,
             Decision::Selection(crucible::SelectionDecision::new(&branch_selection)),
-        );
+        )
+        .expect("typed test branch should be valid");
         assert_eq!(app_random_request_count(&typed_branch, &node), 1);
 
         let branch = ProductionVmBranchConfig {

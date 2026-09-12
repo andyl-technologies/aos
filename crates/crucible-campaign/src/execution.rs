@@ -514,14 +514,11 @@ impl Canonical for ExecutionRetentionIntent {
 /// this attempt's execution basis. Executors recheck that exact membership;
 /// loading another stored admission for the same attempt is insufficient.
 ///
-/// `policy` is absent only when a legacy admission does not canonically bind a
-/// policy. That absence prevents automatic exact retention and produces a
-/// localized finding diagnostic instead of accepting an unauthenticated policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttemptRetentionPolicyBasis {
     snapshot: CampaignSnapshotId,
     admission: AttemptAdmissionId,
-    policy: Option<CampaignPolicyId>,
+    policy: CampaignPolicyId,
 }
 
 impl AttemptRetentionPolicyBasis {
@@ -530,7 +527,7 @@ impl AttemptRetentionPolicyBasis {
     pub const fn new(
         snapshot: CampaignSnapshotId,
         admission: AttemptAdmissionId,
-        policy: Option<CampaignPolicyId>,
+        policy: CampaignPolicyId,
     ) -> Self {
         Self {
             snapshot,
@@ -551,9 +548,9 @@ impl AttemptRetentionPolicyBasis {
         self.admission
     }
 
-    /// Returns the policy authenticated by the admission closure, when available.
+    /// Returns the policy authenticated by the admission closure.
     #[must_use]
-    pub const fn policy(self) -> Option<CampaignPolicyId> {
+    pub const fn policy(self) -> CampaignPolicyId {
         self.policy
     }
 }
@@ -562,15 +559,19 @@ impl Canonical for AttemptRetentionPolicyBasis {
     fn encode(&self, encoder: &mut Encoder) {
         self.snapshot.encode(encoder);
         self.admission.encode(encoder);
-        self.policy.encode(encoder);
+        Some(self.policy).encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Ok(Self::new(
-            CampaignSnapshotId::decode(decoder)?,
-            AttemptAdmissionId::decode(decoder)?,
-            Option::<CampaignPolicyId>::decode(decoder)?,
-        ))
+        let snapshot = CampaignSnapshotId::decode(decoder)?;
+        let admission = AttemptAdmissionId::decode(decoder)?;
+        let policy = Option::<CampaignPolicyId>::decode(decoder)?.ok_or(
+            CampaignCodecError::InvalidValue {
+                reason: "attempt retention policy basis requires a policy",
+            },
+        )?;
+
+        Ok(Self::new(snapshot, admission, policy))
     }
 }
 
@@ -769,9 +770,7 @@ fn response_schema_version(
 }
 
 const fn require_executor_control_request_version(version: u32) -> Result<(), CampaignCodecError> {
-    if version == EXECUTOR_MESSAGE_SCHEMA_VERSION
-        || version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION
-    {
+    if version == SCOPED_EXECUTOR_CONTROL_REQUEST_SCHEMA_VERSION {
         Ok(())
     } else {
         Err(CampaignCodecError::InvalidValue {

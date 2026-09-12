@@ -85,7 +85,7 @@ pub(super) fn replay_reproduction_artifact(
     let to_savepoint = args
         .to
         .as_deref()
-        .map(|target| replay_to_savepoint(cli, target, &artifact))
+        .map(|target| replay_to_savepoint(target, &artifact))
         .transpose()?;
     let check = if let Some(path) = &args.check {
         let replayed = canonical_log_entry_bytes(&canonical_log_entries_from_artifact(&artifact)?);
@@ -191,21 +191,19 @@ fn replay_live_qemu_evidence(
         contract.producer.as_str(),
         campaign_replay_closure_bytes,
     ) {
-        ("campaign-run" | "campaign-search" | "fork", Some(bytes)) => Some(
+        ("campaign-run" | "campaign-search" | "fork", Some(bytes)) =>
             crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
                 .map_err(|error| artifact_error(format!("decode campaign replay closure: {error}")))?,
-        ),
-        ("campaign-run" | "campaign-search", None) => {
+        ("campaign-run" | "campaign-search" | "fork", None) => {
             return Err(artifact_error(
                 "campaign-owned replay requires exactly one campaign replay closure component",
             ));
         }
-        (_, Some(_)) => {
+        _ => {
             return Err(artifact_error(
-                "a session-owned replay artifact cannot carry a campaign replay closure component",
+                "live-QEMU replay requires a current campaign-owned producer",
             ));
         }
-        (_, None) => None,
     };
     let top_level_fingerprints =
         verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact));
@@ -253,13 +251,9 @@ fn replay_live_qemu_evidence(
             scenario.id().to_hex()
         )));
     }
-    if let Some(closure) = &campaign_replay_closure {
-        closure
-            .validate_for_schedule(&scenario, model.schedule())
-            .map_err(|error| {
-                artifact_error(format!("validate campaign replay closure: {error}"))
-            })?;
-    }
+    campaign_replay_closure
+        .validate_for_schedule(&scenario, model.schedule())
+        .map_err(|error| artifact_error(format!("validate campaign replay closure: {error}")))?;
     let terminal_configuration = crucible::Configuration {
         def: scenario.scenario_def(),
         schedule: model.schedule().clone(),
@@ -297,14 +291,10 @@ fn replay_live_qemu_evidence(
     let preemption_evidence =
         bounded_scheduler_preemption_evidence_from_env(REPLAY_BOUNDED_SCHEDULER_PREEMPTION_ENV, 1)?
             .and_then(|mut evidence| evidence.pop());
-    let expected_execution_owner = expected_live_qemu_execution_owner(
-        &contract,
-        model.schedule(),
-        campaign_replay_closure.is_some(),
-    );
-    if preemption_evidence.is_some() && expected_execution_owner == RunExecutionOwner::Campaign {
+    validate_live_qemu_campaign_replay_contract(&contract, true)?;
+    if preemption_evidence.is_some() {
         return Err(backend_error(
-            "bounded scheduler-preemption artifact replay requires a session-owned replay contract",
+            "campaign-owned artifact replay rejects session scheduler-preemption evidence",
         ));
     }
     let (_run_plan, report) = run_live_qemu_artifact_replay(
@@ -314,7 +304,7 @@ fn replay_live_qemu_evidence(
         model.schedule(),
         &contract,
         LiveQemuReplayResources {
-            campaign_closure: campaign_replay_closure,
+            campaign_closure: Some(campaign_replay_closure),
             effect_trace: resolved_effect_trace,
             lifecycle_artifacts,
             bounded_scheduler_preemption: preemption_evidence.clone(),
@@ -333,7 +323,7 @@ fn replay_live_qemu_evidence(
             perturbations: snapshot.perturbations,
             requested_stopped_milliseconds: snapshot.requested_stopped_milliseconds,
         });
-    if report.execution_owner != expected_execution_owner {
+    if report.execution_owner != RunExecutionOwner::Campaign {
         return Err(CliError::ReplayCheck(format!(
             "live QEMU producer `{}` was replayed by the wrong execution owner",
             contract.producer
@@ -400,33 +390,8 @@ fn replay_live_qemu_evidence(
             replay_fingerprints.len()
         )));
     }
-    if expected_execution_owner == RunExecutionOwner::Session
-        && matches!(
-            contract.producer.as_str(),
-            "run" | "verify" | "fuzz" | "fork"
-        )
-    {
-        let actual_controls = report
-            .acknowledged_commands
-            .iter()
-            .map(|command| session_command_name(*command))
-            .collect::<Vec<_>>();
-        let expected_controls = contract
-            .controls
-            .iter()
-            .map(|control| control.command.as_str())
-            .collect::<Vec<_>>();
-        if actual_controls != expected_controls {
-            return Err(CliError::ReplayCheck(format!(
-                "live QEMU control sequence diverged: expected {expected_controls:?}, got {actual_controls:?}"
-            )));
-        }
-    }
     Ok(ReplayLiveQemuProof {
-        execution_owner: match report.execution_owner {
-            RunExecutionOwner::Campaign => "campaign",
-            RunExecutionOwner::Session => "session",
-        },
+        execution_owner: "campaign",
         producer: contract.producer,
         terminal_status: contract.terminal_status,
         terminal_outcome: contract.terminal_outcome,
@@ -442,28 +407,13 @@ fn replay_lifecycle_artifacts(
     artifact: &CliReproductionArtifact,
     maximum_payload_bytes: u64,
 ) -> Result<Option<std::sync::Arc<crucible::MemoryDagStore>>, CliError> {
-    let lifecycle_artifact_bundle = optional_single_component_payload(
+    optional_single_component_payload(
         artifact,
         LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE,
         "lifecycle artifact bundle",
     )?
     .map(|bytes| decode_lifecycle_artifact_bundle(bytes, maximum_payload_bytes))
-    .transpose()?;
-    let legacy_signal_artifact_bundle = optional_single_component_payload(
-        artifact,
-        SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE,
-        "signal artifact bundle",
-    )?
-    .map(|bytes| decode_signal_artifact_bundle(bytes, maximum_payload_bytes))
-    .transpose()?;
-
-    match (lifecycle_artifact_bundle, legacy_signal_artifact_bundle) {
-        (Some(_), Some(_)) => Err(artifact_error(
-            "live-QEMU replay accepts one lifecycle or legacy signal artifact bundle, not both",
-        )),
-        (Some(bundle), None) | (None, Some(bundle)) => Ok(Some(bundle)),
-        (None, None) => Ok(None),
-    }
+    .transpose()
 }
 
 fn required_single_component_payload<'a>(
@@ -683,18 +633,11 @@ fn validate_embedded_scenario_identity(
 }
 
 pub(super) fn replay_to_savepoint(
-    cli: &Cli,
     target: &str,
     artifact: &CliReproductionArtifact,
 ) -> Result<ReplayToSavepointReport, CliError> {
     let savepoint = resolve_savepoint_ref("replay --to", Some(target))?;
-    let evidence = match savepoint_evidence("replay --to", &savepoint, &default_run_store_root(cli))
-    {
-        Ok(evidence) => evidence,
-        Err(store_error) => {
-            embedded_terminal_savepoint_evidence(artifact, &savepoint)?.ok_or(store_error)?
-        }
-    };
+    let evidence = savepoint_evidence("replay --to", &savepoint)?;
     validate_embedded_scenario_identity("replay --to savepoint", &evidence.scenario, artifact)
         .map_err(|error| match error {
             CliError::Identity(message) => CliError::Artifact(message),
@@ -718,68 +661,6 @@ pub(super) fn replay_to_savepoint(
         oracle,
         materialization,
     })
-}
-
-fn embedded_terminal_savepoint_evidence(
-    artifact: &CliReproductionArtifact,
-    savepoint: &ResumeSavepointRef,
-) -> Result<Option<ResumeHandleEvidence>, CliError> {
-    let ResumeSavepointRef::CheckpointHash(target) = savepoint else {
-        return Ok(None);
-    };
-    let contract_bytes = required_single_component_payload(
-        artifact,
-        LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
-        "live QEMU replay contract",
-    )?;
-    let contract = LiveQemuReplayContract::decode(contract_bytes)?;
-    if contract.terminal_configuration != format_content_hash_ref(*target) {
-        return Ok(None);
-    }
-    let model_bytes = required_single_component_payload(
-        artifact,
-        MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE,
-        "model reproduction",
-    )?;
-    let model = crucible::ReproductionArtifact::from_compact_binary(model_bytes)
-        .map_err(|error| artifact_error(format!("decode replay --to embedded model: {error}")))?;
-    let scenario_form = model.scenario_form().clone();
-    let scenario = model.scenario_def();
-    let schedule = model.schedule().clone();
-    let replay_closure_bytes = optional_single_component_payload(
-        artifact,
-        CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE,
-        "campaign replay closure",
-    )?;
-    let replay_closure = authenticated_replay_closure(
-        &scenario_form,
-        &schedule,
-        replay_closure_bytes,
-        "replay --to embedded savepoint",
-    )?;
-    let configuration = crucible::Configuration {
-        def: scenario.clone(),
-        schedule: schedule.clone(),
-    };
-    if configuration.id() != *target {
-        return Err(CliError::Identity(format!(
-            "replay --to embedded terminal configuration {} did not match target {}",
-            format_content_hash_ref(configuration.id()),
-            format_content_hash_ref(*target)
-        )));
-    }
-    let frontier = validate_resume_handle_frontier(&schedule, contract.final_frontier_ticks)?;
-    let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
-    Ok(Some(ResumeHandleEvidence {
-        scenario_form,
-        scenario,
-        schedule,
-        configuration,
-        checkpoint,
-        replay_closure,
-        source_observation_proof: None,
-        source_observation_evidence: None,
-    }))
 }
 
 pub(super) fn prove_replay_schedule_prefix(
@@ -1040,217 +921,3 @@ pub(super) fn replay_check_mismatch_error(
 mod artifact;
 
 pub(super) use artifact::*;
-
-#[cfg(test)]
-mod tests {
-    //! Production-QEMU compatibility flights for historical replay artifacts.
-
-    use super::*;
-
-    #[test]
-    fn historical_signal_bundle_is_accepted_as_replay_lifecycle_closure()
-    -> Result<(), Box<dyn Error>> {
-        let object = b"historical signal artifact".to_vec();
-        let identity = crucible::ContentHash::from_bytes(&object);
-        let mut legacy_bundle = Vec::from(&b"CSAB\0\0\0\x01"[..]);
-        legacy_bundle.extend_from_slice(&1_u64.to_le_bytes());
-        legacy_bundle.extend_from_slice(&identity.bytes);
-        legacy_bundle.extend_from_slice(&(object.len() as u64).to_le_bytes());
-        legacy_bundle.extend_from_slice(&object);
-        let source = crucible::happy_path_scenario()?.scenario;
-        let canonical_log = vec![CanonicalLogEntry {
-            sequence: 0,
-            virtual_time_ticks: 1,
-            node: String::from("historical-node"),
-            kind: String::from("event"),
-            summary: String::from("historical replay fixture"),
-        }];
-        let artifact_bytes = verify_reproduction_artifact_bytes_with_components(
-            7,
-            None,
-            &source.scenario_def(),
-            &canonical_log,
-            &[],
-            &[ReproductionArtifactComponentPayload {
-                kind: String::from("signal_artifact_bundle"),
-                name: String::from("signal-artifacts.bundle"),
-                media_type: String::from(SIGNAL_ARTIFACT_BUNDLE_MEDIA_TYPE),
-                bytes: legacy_bundle,
-            }],
-        )?;
-        let artifact = decode_reproduction_artifact(&artifact_bytes)?;
-
-        let restored = replay_lifecycle_artifacts(
-            &artifact,
-            crucible::FaultResourceLimits::default().fat_checkpoint_bytes,
-        )?
-        .ok_or_else(|| std::io::Error::other("legacy replay closure was omitted"))?;
-
-        assert_eq!(restored.get(&identity)?, object);
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "requires the packaged patched-QEMU, plugin, kernel, root image, and campaign deployment"]
-    fn actual_session_run_artifact_replays_through_campaign_owner() -> Result<(), Box<dyn Error>> {
-        let temporary = tempfile::TempDir::new()?;
-        let scenario_path = write_failure_scenario(temporary.path())?;
-        let qemu = required_flight_path("CRUCIBLE_FLIGHT_QEMU")?;
-        let plugin = required_flight_path("CRUCIBLE_FLIGHT_PLUGIN")?;
-        let deployment = required_flight_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
-
-        let run_cli = Cli::parse_from([
-            String::from("crucible"),
-            String::from("--backend"),
-            String::from("qemu"),
-            String::from("--qemu"),
-            qemu.display().to_string(),
-            String::from("--plugin"),
-            plugin.display().to_string(),
-            String::from("run"),
-            scenario_path.display().to_string(),
-        ]);
-        let Commands::Run(run_args) = &run_cli.command else {
-            return Err("expected run command".into());
-        };
-        let mut run_plan = plan_run_invocation(run_args, temporary.path())?;
-        run_plan.collect_execution_fingerprints = true;
-        let backend_plan = plan_backend_selection(&run_cli)?
-            .ok_or("the production-QEMU run did not select a backend")?;
-        let backend = backend_plan
-            .resolved_backend
-            .as_ref()
-            .ok_or("the production-QEMU run did not resolve a backend")?;
-        let session_state = temporary.path().join("session-state");
-        std::fs::create_dir(&session_state)?;
-        let lifecycle =
-            production_qemu_lifecycle_config(backend)?.with_run_state_root(session_state);
-        let control_plane =
-            production_qemu_control_plane(lifecycle, run_plan.scenario.scenario_form());
-        let client = InProcessLifecycleClient::new(control_plane);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let report =
-            runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?;
-
-        assert_eq!(report.execution_owner, RunExecutionOwner::Session);
-        assert_eq!(report.status, BackendCommandStatus::Failed);
-        assert_eq!(report.outcome, Some(OutcomeKind::Failed));
-        assert!(report.campaign_replay_closure.is_none());
-        assert!(!report.execution_fingerprints.is_empty());
-        let terminal_configuration = report
-            .terminal_configuration
-            .as_ref()
-            .ok_or("the historical session run omitted its terminal configuration")?;
-        let terminal_configuration = format_content_hash_ref(terminal_configuration.id());
-        let canonical_log = canonical_run_log_entries(&run_plan, &report);
-        let seed = run_plan
-            .request_seed
-            .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-        let artifact_bytes = run_failure_reproduction_artifact_bytes(
-            seed_to_u64(seed),
-            Some(backend),
-            "run",
-            &run_plan,
-            &report,
-            &canonical_log,
-        )?;
-        let artifact_path = temporary.path().join("historical-session-run.crucible");
-        std::fs::write(&artifact_path, &artifact_bytes)?;
-
-        let replay_cli = Cli::parse_from([
-            String::from("crucible"),
-            String::from("--backend"),
-            String::from("qemu"),
-            String::from("--qemu"),
-            qemu.display().to_string(),
-            String::from("--plugin"),
-            plugin.display().to_string(),
-            String::from("--campaign-deployment"),
-            deployment.display().to_string(),
-            String::from("replay"),
-            artifact_path.display().to_string(),
-        ]);
-        let artifact = validate_replayable_reproduction_artifact(&replay_cli, &artifact_bytes)?;
-        assert!(
-            !artifact
-                .components
-                .iter()
-                .any(|component| { component.media_type == CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE })
-        );
-        let contract = LiveQemuReplayContract::decode(required_single_component_payload(
-            &artifact,
-            LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
-            "live QEMU replay contract",
-        )?)?;
-        assert_eq!(contract.producer, "run");
-
-        let proof = replay_live_qemu_evidence(&replay_cli, &artifact)?;
-        assert_eq!(proof.execution_owner, "campaign");
-        assert_eq!(proof.producer, "run");
-        assert_eq!(proof.terminal_status, "failed");
-        assert_eq!(proof.terminal_outcome, "failed");
-        assert_eq!(proof.terminal_configuration, terminal_configuration);
-
-        println!("\nlegacy_actual_session_campaign_replay=true");
-        Ok(())
-    }
-
-    fn write_failure_scenario(root: &Path) -> Result<PathBuf, Box<dyn Error>> {
-        let kernel = required_flight_path("CRUCIBLE_KERNEL")?;
-        let root_image = required_flight_path("CRUCIBLE_ROOT_IMAGE")?;
-        let world = crucible::World::from_nodes_and_links(
-            vec![crucible::WorldNode {
-                id: crucible::NodeId {
-                    name: String::from("node"),
-                },
-                arch: crucible::VmArchitecture::X86_64,
-                memory_mib: 128,
-                cmdline: String::from("console=ttyS0"),
-                ready_point: crucible::ReadyPoint::FixedIcount {
-                    icount: crucible::Icount { retired: 0 },
-                },
-                white_box: crucible::WhiteBoxPolicy::Disabled,
-                smp_vcpus: 1,
-                icount_shift: 0,
-                kernel: Some(crucible::ContentAddressedBlobRef::from_hash(
-                    crucible::ContentHash::from_bytes(&std::fs::read(kernel)?),
-                )),
-                root_image: Some(crucible::ContentAddressedBlobRef::from_hash(
-                    crucible::ContentHash::from_bytes(&std::fs::read(root_image)?),
-                )),
-                initrd: None,
-            }],
-            Vec::new(),
-        )?;
-        let graph = crucible::EventGraph::builder()
-            .event("begin-flight")
-            .entrypoint()
-            .action(crucible::Action::Group(Vec::new()))
-            .event("fail-flight")
-            .when(crucible::Predicate::After {
-                of: crucible::EventId::from_name("begin-flight"),
-                duration: crucible::SimDuration { nanos: 2_000_000 },
-            })
-            .action(crucible::Action::fail(
-                "historical session artifact compatibility flight",
-            ))
-            .build_for_world(&world)?;
-        let scenario = crucible::ScenarioDefForm::from_components(
-            &world,
-            &crucible::Plan::from_event_graph_for_world(&world, graph)?,
-            &crucible::Properties::empty(),
-            crucible::Seed::from_u64(0x1e6a_caca),
-        )?;
-        let scenario_path = root.join("historical-session-scenario.toml");
-        std::fs::write(&scenario_path, scenario.to_canonical_toml()?)?;
-        Ok(scenario_path)
-    }
-
-    fn required_flight_path(name: &str) -> Result<PathBuf, Box<dyn Error>> {
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("missing {name}").into())
-    }
-}

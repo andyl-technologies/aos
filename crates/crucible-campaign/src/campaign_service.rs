@@ -1371,7 +1371,6 @@ pub struct SubmitCampaignBranchResponse {
     summary: crate::BranchAcceptanceSummary,
     snapshot: CampaignSnapshot,
     acceptance_fact: CampaignFact,
-    summary_recorded: bool,
     replayed: bool,
 }
 
@@ -1400,7 +1399,6 @@ impl SubmitCampaignBranchResponse {
             summary: result.summary,
             snapshot: result.snapshot,
             acceptance_fact: result.acceptance_fact,
-            summary_recorded: result.summary_recorded,
             replayed: result.replayed,
         };
         response.validate_for(request)?;
@@ -1432,15 +1430,6 @@ impl SubmitCampaignBranchResponse {
         self.summary
     }
 
-    /// Returns whether the accepting transition recorded the summary.
-    ///
-    /// `false` identifies a legacy transition whose summary was owner-recomputed
-    /// from its immutable original snapshot during replay.
-    #[must_use]
-    pub const fn summary_recorded(&self) -> bool {
-        self.summary_recorded
-    }
-
     /// Returns whether the service observed an idempotent replay.
     #[must_use]
     pub const fn replayed(&self) -> bool {
@@ -1466,10 +1455,6 @@ impl SubmitCampaignBranchResponse {
             Err(CampaignCodecError::InvalidValue {
                 reason: "new campaign branch response has the wrong prior snapshot",
             })
-        } else if !self.summary_recorded && !self.replayed {
-            Err(CampaignCodecError::InvalidValue {
-                reason: "new campaign branch response has an unrecorded summary",
-            })
         } else if self.summary.maximum_proposals() != request.request.budget().maximum_proposals()
             || self.summary.maximum_attempts() != request.request.budget().maximum_attempts()
         {
@@ -1485,15 +1470,11 @@ impl SubmitCampaignBranchResponse {
         if self.snapshot.id()? != self.new_snapshot
             || self.snapshot.parent() != Some(self.prior_snapshot)
             || self.snapshot.transition() != Some(self.acceptance_fact.id()?)
-            || if self.summary_recorded {
-                self.acceptance_fact
-                    != (CampaignFact::BranchRequestAccepted {
-                        request: self.request,
-                        summary: self.summary,
-                    })
-            } else {
-                self.acceptance_fact != CampaignFact::BranchRequestIssued(self.request)
-            }
+            || self.acceptance_fact
+                != (CampaignFact::BranchRequestAccepted {
+                    request: self.request,
+                    summary: self.summary,
+                })
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "campaign branch summary is not bound to its accepting transition",
@@ -1529,7 +1510,7 @@ impl Canonical for SubmitCampaignBranchResponse {
         self.summary.encode(encoder);
         self.snapshot.encode(encoder);
         self.acceptance_fact.encode(encoder);
-        self.summary_recorded.encode(encoder);
+        true.encode(encoder);
         self.replayed.encode(encoder);
     }
 
@@ -1539,16 +1520,27 @@ impl Canonical for SubmitCampaignBranchResponse {
                 reason: "unsupported campaign branch response schema version",
             });
         }
+        let request_digest = CampaignHash::decode(decoder)?;
+        let prior_snapshot = CampaignSnapshotId::decode(decoder)?;
+        let new_snapshot = CampaignSnapshotId::decode(decoder)?;
+        let request = crate::BranchRequestId::decode(decoder)?;
+        let summary = crate::BranchAcceptanceSummary::decode(decoder)?;
+        let snapshot = CampaignSnapshot::decode(decoder)?;
+        let acceptance_fact = CampaignFact::decode(decoder)?;
+        if !bool::decode(decoder)? {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign branch response requires a recorded summary",
+            });
+        }
         let response = Self {
             schema_version: SUBMIT_CAMPAIGN_BRANCH_RESPONSE_SCHEMA_VERSION,
-            request_digest: CampaignHash::decode(decoder)?,
-            prior_snapshot: CampaignSnapshotId::decode(decoder)?,
-            new_snapshot: CampaignSnapshotId::decode(decoder)?,
-            request: crate::BranchRequestId::decode(decoder)?,
-            summary: crate::BranchAcceptanceSummary::decode(decoder)?,
-            snapshot: CampaignSnapshot::decode(decoder)?,
-            acceptance_fact: CampaignFact::decode(decoder)?,
-            summary_recorded: bool::decode(decoder)?,
+            request_digest,
+            prior_snapshot,
+            new_snapshot,
+            request,
+            summary,
+            snapshot,
+            acceptance_fact,
             replayed: bool::decode(decoder)?,
         };
         ensure_message_size(&response, "submit-campaign-branch-response-encoded-bytes")?;

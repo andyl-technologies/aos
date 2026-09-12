@@ -1156,7 +1156,7 @@ campaign = "*"
                 &store,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 1
+version = 2
 root = "primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}

@@ -816,8 +816,7 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
             "session-limit",
             &error.to_string(),
         ),
-        LifecycleApiError::ScenarioSeedMismatch { .. }
-        | LifecycleApiError::InlineScenarioIdentityMismatch { .. } => typed_rpc_status_response(
+        LifecycleApiError::ScenarioSeedMismatch { .. } => typed_rpc_status_response(
             axum::http::StatusCode::BAD_REQUEST,
             crucible_api::RpcStatusCode::InvalidArgument,
             "invalid-argument",
@@ -888,8 +887,7 @@ pub(super) fn streaming_error_response(error: StreamingApiError) -> axum::respon
         ),
         StreamingApiError::CommandChannelClosed { .. }
         | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. }
-        | StreamingApiError::StateUpdateStreamLagged { .. } => typed_rpc_status_response(
+        | StreamingApiError::EventStreamLagged { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             crucible_api::RpcStatusCode::Internal,
             "internal",
@@ -1117,53 +1115,33 @@ pub(super) fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionR
             let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
             let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
             let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
-            let next = lines.next();
-            let (scenario_form, seed_line) = if let Some(line) = next {
-                if line.starts_with("scenario-payload=") {
-                    let scenario = parse_scenario_form_line(Some(line), "scenario-payload=")?;
-                    let scenario_def = scenario.scenario_def();
-                    if scenario_def.id() != id {
-                        return Err(format!(
-                            "scenario payload id {} did not match request scenario id {}",
-                            scenario_def.id().to_hex(),
-                            id.to_hex()
-                        ));
-                    }
-                    if scenario.seed() != scenario_seed {
-                        return Err(format!(
-                            "scenario payload seed {} did not match request scenario seed {}",
-                            scenario.seed().to_hex(),
-                            scenario_seed.to_hex()
-                        ));
-                    }
-                    if scenario.app_random_draw_cap() != app_random_draw_cap {
-                        return Err(format!(
-                            "scenario payload app-random draw cap {} did not match request cap {}",
-                            scenario.app_random_draw_cap(),
-                            app_random_draw_cap
-                        ));
-                    }
-                    (Some(scenario), lines.next())
-                } else {
-                    (None, Some(line))
-                }
-            } else {
-                (None, None)
-            };
-            let seed = parse_seed_line(seed_line, "seed=")?;
+            let scenario = parse_scenario_form_line(lines.next(), "scenario-payload=")?;
+            let scenario_def = scenario.scenario_def();
+            if scenario_def.id() != id {
+                return Err(format!(
+                    "scenario payload id {} did not match request scenario id {}",
+                    scenario_def.id().to_hex(),
+                    id.to_hex()
+                ));
+            }
+            if scenario.seed() != scenario_seed {
+                return Err(format!(
+                    "scenario payload seed {} did not match request scenario seed {}",
+                    scenario.seed().to_hex(),
+                    scenario_seed.to_hex()
+                ));
+            }
+            if scenario.app_random_draw_cap() != app_random_draw_cap {
+                return Err(format!(
+                    "scenario payload app-random draw cap {} did not match request cap {}",
+                    scenario.app_random_draw_cap(),
+                    app_random_draw_cap
+                ));
+            }
+            let seed = parse_seed_line(lines.next(), "seed=")?;
             let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
             reject_extra_line(lines.next())?;
-            let scenario = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
-                id,
-                scenario_seed,
-                app_random_draw_cap,
-            );
-            let request = if let Some(scenario_form) = scenario_form {
-                CreateSessionRequest::inline_form(scenario_form, seed)
-            } else {
-                CreateSessionRequest::inline(scenario, seed)
-            };
-            Ok(request.with_start_paused(start_paused))
+            Ok(CreateSessionRequest::inline(scenario, seed).with_start_paused(start_paused))
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }
@@ -2133,6 +2111,7 @@ pub(super) fn http2_response(
 
 pub(super) fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop>) {
     let scenario = generated_scenario(1);
+    let scenario = scenario.scenario_def();
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
     let engine = Engine::new(config, graph, NoopLoop);
@@ -2152,8 +2131,9 @@ where
     L: QuantumLoop + Send + 'static,
 {
     let scenario = generated_scenario(seed);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
+    let scenario_def = scenario.scenario_def();
+    let config = Configuration::genesis(scenario_def.clone());
+    let graph = graph_with_baked_genesis(&scenario_def);
     let engine = Engine::new(config, graph, quantum_loop);
     let (sender, receiver) = mpsc::channel::<SessionCommand>(16);
     let actor = SessionActor::new(engine, receiver);
@@ -2549,12 +2529,11 @@ pub(super) fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckp
     GenesisCheckpoint { checkpoint }
 }
 
-pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
-    ScenarioDef::from_canonical_material_with_seed(
-        "crucible.api.gate-control-client.scenario",
-        &format!("seed={seed}"),
-        Seed::from_u64(seed),
-    )
+pub(super) fn generated_scenario(seed: u64) -> ScenarioDefForm {
+    let scenario = crucible::happy_path_scenario()
+        .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
+        .scenario;
+    scenario_with_seed(&scenario, Seed::from_u64(seed))
 }
 
 #[path = "http2_fixture/scenario.rs"]

@@ -355,7 +355,6 @@ impl CampaignRepository {
         loaded: &LoadedSnapshot,
         projection: &crate::BranchPuctProjection,
         offer: &Proposal,
-        schema_version: u32,
         cache: &mut PlannerCandidateProjectionCache,
     ) -> Result<crate::PlannerCandidateGuidance, CampaignRepositoryError> {
         if projection.branch_point() != offer.branch_point()
@@ -404,8 +403,7 @@ impl CampaignRepository {
             };
             projection.candidate_evidence_with_prior_basis(edge, basis)?
         };
-        crate::PlannerCandidateGuidance::new_for_schema(
-            schema_version,
+        crate::PlannerCandidateGuidance::new(
             loaded.snapshot.planning_view().id()?,
             loaded.snapshot.active_policy(),
             crate::PlanningScanPosition::new(offer.branch_point(), offer.request()),
@@ -527,7 +525,6 @@ impl CampaignRepository {
                 }
                 let mut matching = path
                     .segments()
-                    .ok_or_else(|| integrity("branch-edge-visits-require-scoped-paths"))?
                     .iter()
                     .filter(|segment| segment.branch_point() == branch_point);
                 let edge = matching

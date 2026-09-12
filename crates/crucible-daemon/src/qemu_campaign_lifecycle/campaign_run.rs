@@ -1,6 +1,6 @@
 //! Shared ownership for one guarded, scenario-default campaign run.
 //!
-//! This compatibility owner translates a single legacy run request into the
+//! This campaign owner translates a single local run request into the
 //! same authenticated repository, planner, executor, and observation flow used
 //! by long-lived campaigns. The caller supplies explicit immutable inputs and
 //! guarded host capabilities; the returned record contains only bounded,
@@ -338,7 +338,7 @@ impl GuardedDefaultCampaignRunRequest {
         self
     }
 
-    /// Resumes an authenticated legacy checkpoint through one campaign.
+    /// Resumes an authenticated checkpoint through one campaign.
     ///
     /// The source schedule is first replayed to the exact logical checkpoint
     /// frontier. Only after the accepted configuration and scheduler frontier
@@ -831,7 +831,7 @@ impl GuardedDefaultCampaignRun {
         self.savepoint.as_ref()
     }
 
-    /// Returns the authenticated legacy-resume admission, when requested.
+    /// Returns the authenticated campaign-resume admission, when requested.
     #[must_use]
     pub const fn resume(&self) -> Option<&GuardedDefaultCampaignResumeProof> {
         self.resume.as_ref()
@@ -898,7 +898,7 @@ where
     /// An authenticated supplemental search oracle could not evaluate an observation.
     #[error("guarded default campaign supplemental finding evaluation failed: {0}")]
     SupplementalFinding(#[source] GuardedCampaignFindingOracleError),
-    /// A legacy logical resume checkpoint could not be reconstructed exactly.
+    /// A logical resume checkpoint could not be reconstructed exactly.
     #[error("guarded default campaign resume checkpoint failed: {0}")]
     ResumeCheckpoint(#[source] crucible::EngineError),
     /// A fixed default-run invariant was violated.
@@ -906,7 +906,7 @@ where
     Invariant(#[source] GuardedDefaultCampaignInvariantError),
 }
 
-/// Invalid state reached by the bounded scenario-default compatibility owner.
+/// Invalid state reached by the bounded scenario-default campaign owner.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum GuardedDefaultCampaignInvariantError {
     /// Final finding proof export was canceled before a transfer or return.
@@ -921,7 +921,7 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// The campaign exceeded its fixed supervisor reconciliation bound.
     #[error("supervisor step count exceeded its fixed bound")]
     SupervisorStepLimit,
-    /// More reached choices were accepted than the fixed compatibility bound.
+    /// More reached choices were accepted than the fixed campaign bound.
     #[error("scenario-default choice count exceeded its fixed bound")]
     ChoiceLimit,
     /// A nonterminal observation contained no choice to continue.
@@ -961,34 +961,34 @@ pub enum GuardedDefaultCampaignInvariantError {
     #[error("the savepoint replay evidence differs from the accepted semantic attempt")]
     SavepointEvidenceMismatch,
     /// Save and resume capture modes were requested together.
-    #[error("savepoint capture and legacy resume cannot share one default run")]
+    #[error("savepoint capture and campaign resume cannot share one default run")]
     ConflictingCheckpointModes,
     /// Exploration was combined with a single-path checkpoint adapter.
     #[error("local exploration cannot share a campaign with savepoint capture or resume")]
     ConflictingExplorationMode,
-    /// The legacy resume requested a stop outside its supported compatibility surface.
-    #[error("the legacy resume final stop is not supported by the default campaign owner")]
+    /// The campaign resume requested a stop outside its supported surface.
+    #[error("the campaign resume final stop is not supported by the default campaign owner")]
     UnsupportedResumeStop,
     /// The logical source checkpoint did not equal its reconstructed v3 record.
-    #[error("the legacy resume source checkpoint failed exact reconstruction")]
+    #[error("the campaign resume source checkpoint failed exact reconstruction")]
     ResumeSourceCheckpointMismatch,
     /// The source replay produced another configuration or campaign artifact.
-    #[error("the legacy resume source observation differs from its checkpoint configuration")]
+    #[error("the campaign resume source observation differs from its checkpoint configuration")]
     ResumeSourceObservationMismatch,
     /// The source replay stopped at a different scheduler frontier.
-    #[error("the legacy resume source replay differs from its checkpoint frontier")]
+    #[error("the campaign resume source replay differs from its checkpoint frontier")]
     ResumeSourceBoundaryMismatch,
     /// The source replay produced different raw observation evidence.
-    #[error("the legacy resume source replay differs from its retained observation evidence")]
+    #[error("the campaign resume source replay differs from its retained observation evidence")]
     ResumeSourceEvidenceMismatch,
     /// The source attempt ended at an unrelated nonterminal boundary.
-    #[error("the legacy resume source attempt ended before its checkpoint boundary")]
+    #[error("the campaign resume source attempt ended before its checkpoint boundary")]
     ResumeSourceStopNotReached,
     /// The selected continuation did not retain the exact capture provenance.
-    #[error("the legacy resume continuation differs from its authenticated source capture")]
+    #[error("the campaign resume continuation differs from its authenticated source capture")]
     ResumeContinuationMismatch,
-    /// The completed run lost its authenticated legacy-resume proof.
-    #[error("the completed campaign did not retain its legacy-resume proof")]
+    /// The completed run lost its authenticated campaign-resume proof.
+    #[error("the completed campaign did not retain its campaign-resume proof")]
     MissingResumeProof,
     /// A modeled continuation input did not match the retained source or attempt.
     #[error("the campaign continuation input differs from its authenticated source or attempt")]
@@ -1056,7 +1056,7 @@ where
 
     let (repository, planner_authority) = default_run_repository(
         Arc::new(MemoryBlobBackend::new(
-            "legacy-run-campaign",
+            "campaign-run-campaign",
             DEFAULT_RUN_REPOSITORY_BYTES,
         )),
         Arc::new(MemoryRefBackend::new()),
@@ -1109,7 +1109,7 @@ where
         runner,
         execution_evidence,
         Arc::new(MemoryBlobBackend::new(
-            "legacy-run-campaign",
+            "campaign-run-campaign",
             DEFAULT_RUN_REPOSITORY_BYTES,
         )),
         Arc::new(MemoryRefBackend::new()),
@@ -1181,11 +1181,11 @@ where
         supplemental_finding_source,
     )?;
     let campaign = CampaignName::new(format!(
-        "legacy-run-{:016x}",
+        "campaign-run-{:016x}",
         request.seed.decision_rng_root_seed()
     ))
     .map_err(GuardedDefaultCampaignRunError::Codec)?;
-    let principal = CampaignPrincipal::new("local:legacy-run")
+    let principal = CampaignPrincipal::new("local:campaign-run")
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let client = CampaignClient::new(RepositoryCampaignService::new(
         repository.as_ref(),
@@ -1254,7 +1254,7 @@ where
     // supervisor can manufacture its automatic NextChoice discovery.
     let discovery = DiscoveryRequest::new(
         CampaignCommandId::from_hash(CampaignHash::derive(
-            "crucible.daemon.legacy-run-discovery.v1",
+            "crucible.daemon.campaign-run-discovery.v1",
             &[],
         )),
         running,
@@ -1494,7 +1494,7 @@ where
     E: Error + 'static,
 {
     let command = CampaignCommandId::from_hash(CampaignHash::derive(
-        "crucible.daemon.legacy-run-control.v1",
+        "crucible.daemon.campaign-run-control.v1",
         &ordinal.to_be_bytes(),
     ));
     let request = ApplyCampaignCommandRequest::new(
@@ -1848,7 +1848,7 @@ where
                 let source_content = source_observation.content_id().encode();
                 let selection = SavepointContinuationSelection {
                     command: CampaignCommandId::from_hash(CampaignHash::derive(
-                        "crucible.daemon.legacy-resume-continuation.v1",
+                        "crucible.daemon.campaign-resume-continuation.v1",
                         source_content.as_bytes(),
                     )),
                     expected_snapshot: result.new_snapshot,
@@ -2025,7 +2025,7 @@ where
                     observation_id,
                     &observation,
                     context.discovery_stop,
-                    "legacy resume source",
+                    "campaign resume source",
                     execution_boundary,
                     Some(observation_id),
                 )?);
@@ -2243,7 +2243,7 @@ where
                 observation_id,
                 &observation,
                 context.discovery_stop,
-                "legacy virtual-time save",
+                "campaign virtual-time save",
                 execution_boundary,
                 None,
             )?);
@@ -2335,7 +2335,7 @@ where
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
     let observation_content = observation_id.content_id().encode();
     let command = CampaignCommandId::from_hash(CampaignHash::derive(
-        "crucible.daemon.legacy-run-savepoint-capture.v1",
+        "crucible.daemon.campaign-run-savepoint-capture.v1",
         observation_content.as_bytes(),
     ));
     let description = SavepointCaptureRequest::new(
@@ -2610,9 +2610,7 @@ where
     let measurements = repository
         .load_measurement_set(observation.measurements())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let retained = measurements
-        .evaluation()
-        .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch)?;
+    let retained = measurements.evaluation();
     let mut evidence_ids = retained.evidence().iter();
     let evidence_id = evidence_ids
         .next()

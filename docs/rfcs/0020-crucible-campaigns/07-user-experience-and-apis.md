@@ -186,7 +186,7 @@ an `action` of `vcpu-switch` or `interrupt-at`. One manifest contains at most
 authored string contains 1 through 4,096 bytes without NUL or line breaks. The
 compiler re-decodes and byte-compares its output before success and reports the
 exact Schedule content hash, count, and byte length. It intentionally cannot
-author legacy `AppRandom` decisions or structurally embedded `Selection`
+author direct guest `AppRandom` decisions or structurally embedded `Selection`
 decisions: new app-random schedules use the typed model, while selections
 require repository-backed opportunity, domain, and origin validation. Runtime
 replay remains authoritative for whether an authored scheduling point exists
@@ -381,10 +381,7 @@ audited successor of the exact source snapshot. It shares the source's immutable
 semantic roots, leaves the source ref unchanged, and can atomically activate a
 compatible future policy. The returned source and new snapshot IDs make that
 edge explicit. It neither creates a branch edge nor QEMU-forks a process. **Hot
-fork** remains the daemon's QEMU realization detail. `fork` may remain a
-deprecated CLI alias for `branch`
-during migration, but structured APIs, stored facts, help, and new documentation
-use the distinct terms.
+fork** remains the daemon's QEMU realization detail.
 
 - **[CAPI-3]** Every mutating CLI command MUST print the prior and new campaign
   snapshot IDs and emit an equivalent structured result.
@@ -662,7 +659,6 @@ The existing command concepts remain useful but use one implementation:
 | `fuzz` | Campaign with sampled/mutational generator and corpus retention |
 | `save` | Run to a stop condition and add an exact pin |
 | `resume` | Instantiate a pinned configuration and continue |
-| `fork` | Deprecated alias for `branch`: issue a bounded finite request at a declared branch point |
 | `replay` | Instantiate a recorded scenario/schedule artifact |
 | `triage` | Project and minimize the campaign findings ledger |
 
@@ -672,24 +668,19 @@ global `--campaign-deployment` option, then
 `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, then the installed
 `/etc/crucible/packaged-executor.toml` deployment. Absence is an actionable,
 fail-closed error before QEMU launch. Its reproduction artifacts carry the
-typed producer `campaign-run`, so replay uses the same campaign owner and
-authenticated recorded schedule. A historical unattended `run` artifact also
-selects the campaign owner when its contract records the standard startup/query
-controls, a non-property terminal mode without coverage, and an authenticated
-schedule containing only delivery-order, RNG-draw, and preemption decisions.
-That subset has no typed selections and therefore admits the canonical empty
-choice closure. Historical `run` contracts with session-specific controls,
-property or coverage semantics, overrides, legacy application randomness, or
-typed selections continue through their compatible session replay path.
-Existing `verify`, `search`, `fuzz`, and `fork` artifacts also retain their
-session replay contracts.
+typed producer `campaign-run`, so replay uses the same campaign owner and its
+authenticated recorded schedule and choice closure. Replay admits only the
+current typed campaign artifact shape; it never infers campaign ownership from
+historical controls, synthesizes an empty closure, or falls back to a Session
+replay contract.
 
-The `run` compatibility path must record each discovered choice as a schema-v5
+The campaign-owned `run` path must record each discovered choice as a schema-v5
 `ScenarioDefault` request tied to the active policy. Repository admission
 accepts only the declared default as one finite candidate with a
 one-proposal/one-attempt budget, so this path cannot silently widen into search.
-Its execution-basis admission must use schema v2; all earlier request and admission
-schemas retain their historical bytes and identities.
+Its execution-basis admission uses the current schema-v3 record. Historical
+request and admission schemas are admitted only by the explicit bounded store
+migration when their semantics can be authenticated.
 
 - **[CAPI-7]** These commands MUST call `CampaignService` and the same campaign
   primitives rather than maintain separate search, fuzz, branch, local-daemon,

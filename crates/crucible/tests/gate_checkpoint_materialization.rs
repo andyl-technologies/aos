@@ -9,7 +9,6 @@ use std::error::Error;
 use crucible::{
     CheckpointKind, Configuration, DagStore, Decision, Icount, MemoryDagStore, NodeId,
     NodeTemplate, ReadyPoint, RngDecision, RngStreamId, TemporalGraph, World, WorldNode, bake,
-    step,
 };
 
 #[test]
@@ -18,8 +17,8 @@ fn gate_checkpoint_materialization_persists_exact_fat_checkpoint_by_configuratio
     let world = checkpoint_world();
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let target = step(
-        &step(&genesis, rng_decision("checkpoint/seed-a", 41)),
+    let target = valid_step(
+        &valid_step(&genesis, rng_decision("checkpoint/seed-a", 41)),
         rng_decision("checkpoint/seed-b", 42),
     );
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
@@ -75,4 +74,11 @@ fn rng_decision(stream: &str, value: u64) -> Decision {
         stream: RngStreamId::from_name(stream),
         value,
     })
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

@@ -23,14 +23,14 @@ use crucible_campaign::{
     CampaignServiceOperation, CampaignSnapshotId, CampaignState, CandidateSource,
     ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
     ChoiceValue, ConfigurationId, ContinuationState, ControlRequest, CoverageProjection,
-    ExactCheckpointId, ExactRational, ExplorerPolicy, FairnessPolicy, FindingKind,
-    FindingSignature, FindingTarget, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MeasurementSeries,
-    MeasurementSet, MetricValue, Observation, ObservationId, PinChange, PinRequest, PinRetention,
-    ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, Proposal,
-    PuctPolicy, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
-    QueryCampaignGraphRequest, RepositoryCampaignService, RetentionPolicy, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    ExactCheckpointId, ExactRational, ExplorerPolicy, FairnessPolicy, FindingExactPins,
+    FindingKind, FindingSignature, FindingTarget, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
+    MAX_CAMPAIGN_FRONTIER_QUERY_PAGE_ITEMS, MAX_CAMPAIGN_QUERY_PAGE_ITEMS, MeasurementSet,
+    Observation, ObservationId, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
+    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, Proposal, PuctPolicy,
+    QueryCampaignFindingsRequest, QueryCampaignFrontierRequest, QueryCampaignGraphRequest,
+    RepositoryCampaignService, RetentionPolicy, ScenarioDefId, SelectableDeclaration, Selection,
+    SelectionOrigin, StopCondition, StopOutcome,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
@@ -494,14 +494,13 @@ fn publish_observed_branch(
         1,
         b"selected continuity configuration".to_vec(),
     )?;
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        String::from("latency"),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(7)],
-            MetricValue::Unsigned(7),
-            BTreeSet::new(),
-        )?,
-    )]))?;
+    let measurements = MeasurementSet::from_evaluation(
+        hash("continuity.measurement-definitions"),
+        1,
+        hash("continuity.measurement-evaluation"),
+        7_u64.to_be_bytes().to_vec(),
+        BTreeSet::new(),
+    )?;
     let measurement_id = repository.publish_measurement_set(&measurements)?;
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
         String::from("network-recovers"),
@@ -541,14 +540,14 @@ fn publish_observed_branch(
         Some(FindingTarget::Configuration(child_content)),
         BTreeSet::from([property_id.content_id()]),
     )?;
-    let found = repository.publish_finding(
+    let found = repository.publish_finding_with_retention(
         CAMPAIGN_NAME,
         observed.new_snapshot,
         signature,
         observed.observation,
         reproduction,
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )?;
 
     Ok(ObservedBranch {

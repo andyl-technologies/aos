@@ -62,12 +62,12 @@ use crate::{
     DirectoryHotCheckpointFallbackRetentionStore, ExactCheckpointStore, ExactCheckpointStoreError,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, ExecutorLocalService,
     ExecutorLocalServiceError, ExecutorLocalServiceReport, ExecutorLocalServiceShutdown,
-    ExecutorLoopbackEndpointConfig, ExecutorLoopbackEndpointError, ExecutorLoopbackListenerError,
-    ExecutorLoopbackServerConfig, GuestSelectableBoundaryDiagnosticConfig, HotCheckpointFallback,
+    ExecutorLoopbackEndpointConfig, ExecutorLoopbackListenerError, ExecutorLoopbackServerConfig,
+    GuestSelectableBoundaryDiagnosticConfig, HotCheckpointFallback,
     HotCheckpointFallbackRetentionError, HotCheckpointHotnessSignals, HotCheckpointLimits,
     LinuxQemuAttemptHostResourceFactory, LocalCheckpointPromotionWorker,
-    LocalExecutorCapabilityService, LocalExecutorPoolConfigError, LocalExecutorSupervisor,
-    LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+    LocalComponentEndpointError, LocalExecutorCapabilityService, LocalExecutorPoolConfigError,
+    LocalExecutorSupervisor, LocalExecutorWorkerPool, MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     ManagedQemuHotForkAuthenticatedAdmissionError, ManagedQemuHotForkAuthenticatedAdmissionFailure,
     ManagedQemuHotForkSourceWorldAdmissionError, ManagedQemuHotForkSourceWorldPool,
     ManagedQemuHotForkSourceWorldPoolConstructionError, ProductionBakedGenesisCaptureError,
@@ -1834,7 +1834,7 @@ pub enum PackagedQemuExecutorError {
     },
     /// Managed endpoint acquisition failed.
     #[error(transparent)]
-    Endpoint(#[from] ExecutorLoopbackEndpointError),
+    Endpoint(#[from] LocalComponentEndpointError),
     /// Fixed listener construction failed.
     #[error(transparent)]
     Listener(#[from] ExecutorLoopbackListenerError),
