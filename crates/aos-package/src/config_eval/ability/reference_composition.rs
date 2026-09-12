@@ -2798,6 +2798,30 @@ fn reference_source_interface_descriptors_are_stable() {
     assert_interface_hashes(&interfaces);
 }
 
+#[test]
+fn production_nginx_companion_matches_the_canonical_network_policy_interface() {
+    let Some(fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let expected = host_network_policy_interface()
+        .unwrap()
+        .interface_key()
+        .unwrap();
+    let nginx = fixture
+        .packages
+        .iter()
+        .find(|package| package.package.name.as_str() == "ability-reference-nginx")
+        .unwrap();
+    let actual = nginx
+        .implementation
+        .providers
+        .iter()
+        .find(|provider| provider.interface.name == expected.name)
+        .unwrap();
+
+    assert_eq!(actual.interface, expected);
+}
+
 fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     assert_eq!(
         interfaces["aos.nginx"].descriptor,
