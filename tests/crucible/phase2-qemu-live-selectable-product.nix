@@ -1,7 +1,7 @@
 {
   pkgs,
   lib,
-  attrPath ? "checks.crucible.phase2.qemuLiveSelectableProduct",
+  attrPath ? "checks.crucible.phase2.gates.typedChoiceProductCheckpoint",
   taskIds ? ["T-CAM-2.8"],
   openTaskIds ? [],
   completionCeiling ? "8000000000",
