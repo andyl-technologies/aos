@@ -22,7 +22,7 @@ use crate::{
 
 use super::AdmissionOrdinal;
 
-const LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
+const BASE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
 const DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
 const CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 4;
 const PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 5;
@@ -981,7 +981,7 @@ impl CampaignFact {
             Self::SavepointContinuationSelected(_) => {
                 SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION
             }
-            _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
+            _ => BASE_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
     }
 
@@ -1016,7 +1016,7 @@ impl CampaignFact {
             fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
                 let version = u32::decode(decoder)?;
                 match version {
-                    LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                    BASE_CAMPAIGN_FACT_SCHEMA_VERSION => {
                         CampaignFact::decode_versioned(decoder, CampaignFactDecodeExtension::None)
                             .map(|fact| Self { version, fact })
                     }
