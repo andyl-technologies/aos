@@ -285,10 +285,6 @@
         needle = "cli_replay_to_savepoint_validates_artifact_prefix_and_oracle";
       }
       {
-        label = "replay to checkpoint hash test";
-        needle = "write_checkpoint_closure_fixture(&store_root";
-      }
-      {
         label = "replay to savepoint scenario mismatch test";
         needle = "cli_replay_to_savepoint_rejects_scenario_mismatch";
       }
@@ -338,7 +334,7 @@
     ++ failuresFor "crates/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
       {
         label = "terminal all-node capture selection regression";
-        needle = "terminal_fingerprint_capture_selects_one_reindexed_sample_per_node";
+        needle = "terminal_fingerprint_capture_selects_the_last_epoch_after_multiple_quanta";
       }
       {
         label = "terminal duplicate-node capture rejection regression";
@@ -394,7 +390,7 @@
     ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2e [
       {
         label = "machine-independent replay profile test";
-        needle = "gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile";
+        needle = "e2e_artifact_component_replays_across_modeled_machine_profiles";
       }
       {
         label = "machine-independent quiet profile";
@@ -510,7 +506,7 @@ in
               --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
               -p crucible-cli \
               --test gate_e2e_determinism \
-              gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile \
+              e2e_artifact_component_replays_across_modeled_machine_profiles \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -636,7 +632,7 @@ in
             replay_to_materialization=model-temporal-graph
             replay_machine_independent=mock-host-profile
             replay_process=live-qemu-ordinary,check,both-bisect-sides,to-savepoint-target-validation
-            producer_contract_matrix=run,verify,search,fuzz,fork
+            producer_contract_matrix=campaign-run,campaign-search,fork
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

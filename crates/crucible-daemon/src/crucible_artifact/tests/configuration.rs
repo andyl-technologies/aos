@@ -326,19 +326,20 @@ fn crucible_payloads_reject_schema_and_identity_drift() {
         decode_crucible_scenario_artifact(&unsupported),
         Err(CrucibleArtifactError::UnsupportedPayloadSchema { .. })
     ));
-    let mislabeled_legacy = ScenarioArtifact::new(
+    let retired_schema = CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3 - 1;
+    let mislabeled_retired = ScenarioArtifact::new(
         valid.scenario(),
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
+        retired_schema,
         valid.payload().to_vec(),
     )
     .expect("mislabeled artifact remains structurally valid");
     assert!(matches!(
-        decode_crucible_scenario_artifact(&mislabeled_legacy),
+        decode_crucible_scenario_artifact(&mislabeled_retired),
         Err(CrucibleArtifactError::UnsupportedPayloadSchema {
-            actual: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1,
+            actual,
             expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
             ..
-        })
+        }) if actual == retired_schema
     ));
 
     let drifted = ScenarioArtifact::new(

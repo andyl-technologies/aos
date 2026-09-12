@@ -574,7 +574,7 @@ pub enum QemuExactThinRunnerError<E> {
     /// The post-materialization attempt driver failed.
     #[error("QEMU campaign attempt driver failed")]
     Driver(E),
-    /// This legacy runner cannot independently authenticate a selected origin.
+    /// This exact-thin runner cannot independently authenticate a selected origin.
     #[error("exact-thin runner cannot execute a selected continuation origin")]
     SelectedOriginUnsupported,
 }

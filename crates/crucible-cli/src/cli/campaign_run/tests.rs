@@ -468,7 +468,7 @@ fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
     unsupported_evidence.schedule =
         Schedule::from_decisions([crucible::Decision::Override(crucible::OverrideDecision {
             point: crucible::SchedulingPoint {
-                key: String::from("legacy-resume/override"),
+                key: String::from("campaign-resume/override"),
             },
             choice: crucible::ChoiceTag {
                 name: String::from("alternate"),
@@ -1639,7 +1639,7 @@ fn assert_campaign_save_exports_closure(
                 Some(crucible::Predicate::guest_marker(proved_marker.clone()))
             );
             if !with_selection {
-                let legacy_v4 = handle
+                let v4_handle = handle
                     .lines()
                     .filter(|line| !line.starts_with("campaign-replay-closure\t"))
                     .map(|line| {
@@ -1652,9 +1652,9 @@ fn assert_campaign_save_exports_closure(
                     .collect::<Vec<_>>()
                     .join("\n")
                     + "\n";
-                let legacy_v4 = decode_savepoint_handle(legacy_v4.as_bytes())
+                let v4_handle = decode_savepoint_handle(v4_handle.as_bytes())
                     .expect("historical selection-free v4 marker handle remains readable");
-                savepoint_handle_evidence("resume", &legacy_v4)
+                savepoint_handle_evidence("resume", &v4_handle)
                     .expect("historical v4 marker evidence synthesizes an empty closure");
             }
 
@@ -1756,7 +1756,7 @@ fn assert_campaign_save_exports_closure(
             decode_savepoint_handle(handle.as_bytes())
                 .expect("v5 decoder accepts campaign coordinate proof");
             if !with_selection {
-                let legacy_v3 = handle
+                let v3_handle = handle
                     .lines()
                     .filter(|line| !line.starts_with("campaign-replay-closure\t"))
                     .map(|line| {
@@ -1769,9 +1769,9 @@ fn assert_campaign_save_exports_closure(
                     .collect::<Vec<_>>()
                     .join("\n")
                     + "\n";
-                let legacy_v3 = decode_savepoint_handle(legacy_v3.as_bytes())
+                let v3_handle = decode_savepoint_handle(v3_handle.as_bytes())
                     .expect("historical selection-free v3 coordinate handle remains readable");
-                savepoint_handle_evidence("resume", &legacy_v3)
+                savepoint_handle_evidence("resume", &v3_handle)
                     .expect("historical v3 coordinate evidence synthesizes an empty closure");
             }
         }
@@ -2295,10 +2295,8 @@ fn assert_campaign_save_exports_closure(
                 .unwrap_or_else(|error| {
                     panic!("{reader} fork closure should cover terminal schedule: {error}")
                 });
-            assert_eq!(
-                expected_live_qemu_execution_owner(&live_artifact.contract, true,),
-                RunExecutionOwner::Campaign,
-            );
+            validate_live_qemu_campaign_replay_contract(&live_artifact.contract, true)
+                .unwrap_or_else(|error| panic!("{reader} fork contract should pass: {error}"));
             let replay_closure = campaign_owner_replay_closure("fork", Some(replay_closure))
                 .unwrap_or_else(|error| {
                     panic!("{reader} fork replay should admit its closure: {error}")
@@ -2335,7 +2333,7 @@ fn assert_campaign_save_exports_closure(
             StopCondition::VirtualTimeNanoseconds(_) => "crucible.savepoint-handle.v3",
             _ => panic!("typed portable-save regression uses marker or virtual time"),
         };
-        let typed_legacy_handle = handle_text
+        let typed_v4_handle = handle_text
             .lines()
             .filter(|line| !line.starts_with("campaign-replay-closure\t"))
             .map(|line| {
@@ -2348,9 +2346,9 @@ fn assert_campaign_save_exports_closure(
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        let typed_legacy_handle = decode_savepoint_handle(typed_legacy_handle.as_bytes())
+        let typed_v4_handle = decode_savepoint_handle(typed_v4_handle.as_bytes())
             .expect("historical schema remains structurally readable");
-        let error = savepoint_handle_evidence("resume", &typed_legacy_handle)
+        let error = savepoint_handle_evidence("resume", &typed_v4_handle)
             .expect_err("historical typed handle without closure must fail closed");
         assert!(error.to_string().contains("missing the replay closure"));
         let empty_closure =

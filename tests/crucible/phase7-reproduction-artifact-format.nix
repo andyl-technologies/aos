@@ -7,7 +7,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  harnessManifest = builtins.readFile ../../crates/crucible-harness/Cargo.toml;
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   reproduction = builtins.readFile ../../crates/crucible-harness/src/reproduction.rs;
@@ -30,20 +29,6 @@
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-    ]
-    ++ forbiddenFor "crates/crucible-harness/Cargo.toml" harnessManifest [
-      {
-        label = "runtime BLAKE3 dependency";
-        needle = "blake3 = { workspace = true }";
-      }
-      {
-        label = "runtime serde dependency";
-        needle = "serde = { workspace = true }";
-      }
-      {
-        label = "runtime serde_json dependency";
-        needle = "serde_json = { workspace = true }";
-      }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
       {
@@ -213,16 +198,8 @@
         needle = "rpc_abi_build: String";
       }
       {
-        label = "CLI failure artifact writer";
-        needle = "fn write_failure_reproduction_artifact";
-      }
-      {
         label = "CLI replay command footer";
         needle = "crucible replay {}";
-      }
-      {
-        label = "CLI debug command footer";
-        needle = "debug_command.ends_with(\" --at-failure\")";
       }
       {
         label = "CLI mock failure artifact seam";
@@ -234,7 +211,7 @@
       }
       {
         label = "CLI failure writer test";
-        needle = "cli_failure_artifact_writer_emits_replay_and_debug_commands";
+        needle = "cli_failure_artifact_writer_emits_replay_command";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

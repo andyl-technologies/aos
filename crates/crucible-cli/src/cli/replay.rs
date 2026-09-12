@@ -191,21 +191,19 @@ fn replay_live_qemu_evidence(
         contract.producer.as_str(),
         campaign_replay_closure_bytes,
     ) {
-        ("campaign-run" | "campaign-search" | "fork", Some(bytes)) => Some(
+        ("campaign-run" | "campaign-search" | "fork", Some(bytes)) =>
             crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
                 .map_err(|error| artifact_error(format!("decode campaign replay closure: {error}")))?,
-        ),
-        ("campaign-run" | "campaign-search", None) => {
+        ("campaign-run" | "campaign-search" | "fork", None) => {
             return Err(artifact_error(
                 "campaign-owned replay requires exactly one campaign replay closure component",
             ));
         }
-        (_, Some(_)) => {
+        _ => {
             return Err(artifact_error(
-                "a session-owned replay artifact cannot carry a campaign replay closure component",
+                "live-QEMU replay requires a current campaign-owned producer",
             ));
         }
-        (_, None) => None,
     };
     let top_level_fingerprints =
         verify_fingerprint_stream_bytes(&artifact_fingerprint_samples(artifact));
@@ -253,13 +251,9 @@ fn replay_live_qemu_evidence(
             scenario.id().to_hex()
         )));
     }
-    if let Some(closure) = &campaign_replay_closure {
-        closure
-            .validate_for_schedule(&scenario, model.schedule())
-            .map_err(|error| {
-                artifact_error(format!("validate campaign replay closure: {error}"))
-            })?;
-    }
+    campaign_replay_closure
+        .validate_for_schedule(&scenario, model.schedule())
+        .map_err(|error| artifact_error(format!("validate campaign replay closure: {error}")))?;
     let terminal_configuration = crucible::Configuration {
         def: scenario.scenario_def(),
         schedule: model.schedule().clone(),
@@ -297,11 +291,13 @@ fn replay_live_qemu_evidence(
     let preemption_evidence =
         bounded_scheduler_preemption_evidence_from_env(REPLAY_BOUNDED_SCHEDULER_PREEMPTION_ENV, 1)?
             .and_then(|mut evidence| evidence.pop());
-    let expected_execution_owner =
-        expected_live_qemu_execution_owner(&contract, campaign_replay_closure.is_some());
-    if preemption_evidence.is_some() && expected_execution_owner == RunExecutionOwner::Campaign {
+    validate_live_qemu_campaign_replay_contract(
+        &contract,
+        true,
+    )?;
+    if preemption_evidence.is_some() {
         return Err(backend_error(
-            "bounded scheduler-preemption artifact replay requires a session-owned replay contract",
+            "campaign-owned artifact replay rejects session scheduler-preemption evidence",
         ));
     }
     let (_run_plan, report) = run_live_qemu_artifact_replay(
@@ -311,7 +307,7 @@ fn replay_live_qemu_evidence(
         model.schedule(),
         &contract,
         LiveQemuReplayResources {
-            campaign_closure: campaign_replay_closure,
+            campaign_closure: Some(campaign_replay_closure),
             effect_trace: resolved_effect_trace,
             lifecycle_artifacts,
             bounded_scheduler_preemption: preemption_evidence.clone(),
@@ -330,7 +326,7 @@ fn replay_live_qemu_evidence(
             perturbations: snapshot.perturbations,
             requested_stopped_milliseconds: snapshot.requested_stopped_milliseconds,
         });
-    if report.execution_owner != expected_execution_owner {
+    if report.execution_owner != RunExecutionOwner::Campaign {
         return Err(CliError::ReplayCheck(format!(
             "live QEMU producer `{}` was replayed by the wrong execution owner",
             contract.producer
@@ -397,33 +393,8 @@ fn replay_live_qemu_evidence(
             replay_fingerprints.len()
         )));
     }
-    if expected_execution_owner == RunExecutionOwner::Session
-        && matches!(
-            contract.producer.as_str(),
-            "run" | "verify" | "fuzz" | "fork"
-        )
-    {
-        let actual_controls = report
-            .acknowledged_commands
-            .iter()
-            .map(|command| session_command_name(*command))
-            .collect::<Vec<_>>();
-        let expected_controls = contract
-            .controls
-            .iter()
-            .map(|control| control.command.as_str())
-            .collect::<Vec<_>>();
-        if actual_controls != expected_controls {
-            return Err(CliError::ReplayCheck(format!(
-                "live QEMU control sequence diverged: expected {expected_controls:?}, got {actual_controls:?}"
-            )));
-        }
-    }
     Ok(ReplayLiveQemuProof {
-        execution_owner: match report.execution_owner {
-            RunExecutionOwner::Campaign => "campaign",
-            RunExecutionOwner::Session => "session",
-        },
+        execution_owner: "campaign",
         producer: contract.producer,
         terminal_status: contract.terminal_status,
         terminal_outcome: contract.terminal_outcome,

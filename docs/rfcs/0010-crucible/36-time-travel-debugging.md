@@ -611,12 +611,6 @@ bisector already pins a divergence to a precise icount-stamped event-log coordin
 bisecting resolver share this path, localizing any divergence by bisection before
 handing the debugger a replay-oracle-checked coordinate.
 
-And the loop closes with triage ergonomics: a **non-passing run's failure footer**
-(the CLI's failure rendering, 23 §4) MUST print a **copy-pasteable
-`crucible debug <artifact> --at-failure`** command, so a developer goes from "it
-failed" to "I'm sitting in a debugger at the failure" in one paste — the debugging
-analogue of the `crucible replay` repro command (23 [CLI-10]).
-
 - **[DBG-27]** The debug target resolver MUST accept, and resolve to a checkpoint
   configuration / virtual-time coordinate the attach (§36.2) realizes: `--at
   <icount|vtime>` (a per-node icount or world virtual time, 09); `--at-event <seq>`
@@ -630,12 +624,6 @@ analogue of the `crucible replay` repro command (23 [CLI-10]).
   pins a divergence to a precise icount-stamped event-log coordinate ([OBS-28]), the
   resolver MUST consume it without translation. *Gate:* `gate:divergence-bisect`,
   `gate:replay-oracle`. *Spec:* §36.6; cross-ref 24, 19 §19.6.2.
-
-- **[DBG-29]** A non-passing run's failure footer (23 §4) MUST print a
-  copy-pasteable **`crucible debug <artifact> --at-failure`** command (the debugging
-  analogue of the `crucible replay` repro command, 23 [CLI-10]), so an operator goes
-  from a reported failure to an attached debugger at the failure point in one paste.
-  *Gate:* `gate:e2e-determinism`. *Spec:* §36.6; cross-ref 23 §4, [CLI-10].
 
 ---
 
@@ -1381,16 +1369,14 @@ peer-credential completion remain open in T-DBG-11.
 - [x] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
   `--at-failure` = first assertion-violation point, `--at-checkpoint`), accept a
   divergence-bisection `(node, icount, kind)` coordinate directly as a goto target,
-  and emit a copy-pasteable `crucible debug <artifact> --at-failure` in the failure
-  footer (23 §4). — satisfies [DBG-27], [DBG-28], [DBG-29]; spec §36.6.
+  and accepts `--at-failure` as an explicit target. — satisfies [DBG-27], [DBG-28];
+  spec §36.6.
   Completed by `checks.crucible.phase6.debugTargetResolver`:
   `TemporalGraph::debug_resolve_target` accepts direct `--at` coordinates,
   event-log `--at-event` sequences, `--at-failure` by scanning for the first
   assertion-state violation, `--at-checkpoint` content addresses, and node-local
   divergence-bisection coordinates, then returns the `DebugGotoRequest` consumed by
-  restore-plus-replay `debug_goto`. `DebugFailureFooterCommand` centralizes the
-  copy-pasteable `crucible debug <artifact> --at-failure` footer and the CLI failure
-  artifact writer uses it.
+  restore-plus-replay `debug_goto`.
 - [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,

@@ -608,12 +608,10 @@ specification = "/absolute/path/generator.bin"
 Unknown fields, zero entries, duplicate configuration pairs, duplicate
 generator paths, relative paths, dot components, symlinks, non-regular files,
 owner mismatch, and group/other-writable files are rejected. Configuration
-entries decode ScenarioDefForm compact binary V5/V6/V7 and Schedule compact
-binary V1/V2. Scenario V5 is accepted only with implicit empty measurement and
-selectable components; scenario V6 is accepted only with an empty selectable
-component. New imports normalize to current V7 bytes and publish campaign
+entries decode ScenarioDefForm compact binary V7 and Schedule compact binary
+V2. Older scenario and schedule forms fail closed. Imports publish campaign
 scenario payload V3 plus configuration payload V2 after semantic identity
-re-derivation; retained scenario payloads V1 and V2 remain readable. Generator entries
+re-derivation. Generator entries
 decode the current strict canonical `CandidateGeneratorSpec` and must appear
 after any child generator records on which they depend. A manifest path and
 every named path are at most 4,095 bytes.

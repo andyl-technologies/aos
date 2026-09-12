@@ -161,7 +161,7 @@ fn canonical_request(byte: u8) -> PlannerRequest {
 
 fn content(kind: ObjectKind, byte: u8) -> ContentId {
     let schema_version = if kind == ObjectKind::CampaignSnapshot {
-        2
+        3
     } else {
         1
     };

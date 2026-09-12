@@ -62,12 +62,10 @@ profile `[A-Za-z0-9._\-/:]+`. Constructors sort measurement IDs, metric IDs,
 cohort nodes, enumeration alternatives, and histogram boundaries before
 content addressing and reject duplicates.
 
-Scenario TOML and compact scenario forms write schema v6. Scenario v5 remains
-readable only as the exact compatibility form with no measurement definitions;
-empty definitions deliberately preserve the prior scenario identity. A
-nonempty component contributes its exact component content hash to scenario
-identity. Reproduction artifacts carrying v6 scenario bytes write outer v6,
-while prior outer v5 artifacts remain readable.
+Scenario TOML and compact scenario forms write and admit schema v7. Earlier
+scenario forms fail closed in normal runtime admission. The measurement
+component contributes its exact content hash to scenario identity.
+Reproduction artifacts likewise write and admit outer v7 only.
 
 The measurement component's canonical body is whitespace-free UTF-8 JSON over
 the field order shown above; the repeated `metrics` Rust field has wire key
@@ -392,10 +390,10 @@ missing or additional evidence edge, stale binding, forged or non-dense log,
 invalid guest message, noncanonical leaf, or replay disagreement fails closed.
 Immutable storage alone does not confer semantic status on either payload.
 
-Legacy measurement-set schema v1 remains readable and preserves its original
-content identity. It contains named `MeasurementSeries` values with a nonempty
-sample vector and claimed same-type aggregate, and is explicitly not a verified
-evaluation or valid new policy input. `PropertyVerdictSet` and
+Measurement-set schema v1 is recognized only by the bounded repository
+migration and rejected because its claimed aggregate lacks the raw evidence
+needed for a verified evaluation. Normal runtime admission accepts schema v2
+only. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
 child-bearing envelopes. Model-owned sample production is implemented by
 T-CAM-3.3. Payload schema 2 provides the codec and replay foundation for

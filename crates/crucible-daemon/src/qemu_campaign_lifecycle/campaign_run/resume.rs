@@ -1,4 +1,4 @@
-//! Legacy checkpoint admission through campaign ownership.
+//! Authenticated checkpoint admission through campaign ownership.
 //!
 //! This module authenticates a v3 logical checkpoint, retains the exact
 //! source observation and physical capture, and verifies the typed `Ready`
@@ -106,7 +106,7 @@ pub(super) struct GuardedDefaultCampaignResumeSource {
     pub(super) capture_only: bool,
 }
 
-/// Authenticated source admission for a legacy checkpoint resumed by the campaign owner.
+/// Authenticated source admission for a checkpoint resumed by the campaign owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedDefaultCampaignResumeProof {
     source_checkpoint: crucible::ContentHash,
@@ -120,7 +120,7 @@ pub struct GuardedDefaultCampaignResumeProof {
 }
 
 impl GuardedDefaultCampaignResumeProof {
-    /// Returns the authenticated logical checkpoint supplied by the legacy reader.
+    /// Returns the authenticated logical checkpoint supplied by the handle reader.
     #[must_use]
     pub const fn source_checkpoint(&self) -> crucible::ContentHash {
         self.source_checkpoint
@@ -284,7 +284,7 @@ where
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
 
-    // Reconstruct the legacy v3 checkpoint rather than trusting caller-owned
+    // Reconstruct the authenticated checkpoint rather than trusting caller-owned
     // state, blob references, metadata, or continuation closure fields.
     // crucible-lint: allow host-nondeterminism-state -- the source configuration is reconstructed only from the authenticated scenario and replay schedule.
     let configuration = Configuration {
