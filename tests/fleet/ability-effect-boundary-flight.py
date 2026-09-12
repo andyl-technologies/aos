@@ -680,6 +680,9 @@ def run_cancellation_flight(
 
     unsettled = observe(state["operation-document"])
     state["switch-process"] = cancel_switch(unit)
+    # The observer deliberately holds the boundary independently of the
+    # runtime token. Release it only after SIGTERM has selected cancellation.
+    write_canonical(CONTINUE, {"sequence": flight.label})
     wait_switch_failed(unit)
 
     after = observe(state["operation-document"])
