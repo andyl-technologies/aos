@@ -764,21 +764,17 @@ impl ObjectEnvelope {
         let version_supported = envelope.schema_version() == record_kind.schema_version()
             || record_kind == CampaignRecordKind::Policy
                 && matches!(envelope.schema_version(), 1..=3)
-            || record_kind == CampaignRecordKind::Snapshot && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::Fact
                 && matches!(envelope.schema_version(), 2..=13)
-            || record_kind == CampaignRecordKind::BranchPath && envelope.schema_version() == 1
             || record_kind == CampaignRecordKind::BranchRequest
                 && matches!(
                     envelope.schema_version(),
-                    1..=crate::exploration::SMC_BRANCH_REQUEST_SCHEMA_VERSION
+                    2..=crate::exploration::SMC_BRANCH_REQUEST_SCHEMA_VERSION
                 )
             || record_kind == CampaignRecordKind::Proposal
                 && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::Attempt
                 && matches!(envelope.schema_version(), 1..=4 | 7..=8)
-            || record_kind == CampaignRecordKind::AttemptAdmission
-                && matches!(envelope.schema_version(), 1..=2)
             || record_kind == CampaignRecordKind::Observation
                 && matches!(envelope.schema_version(), 1..=11)
             || record_kind == CampaignRecordKind::PlannerBeamCandidate
@@ -787,16 +783,9 @@ impl ObjectEnvelope {
                 record_kind,
                 CampaignRecordKind::ObjectiveEvaluation | CampaignRecordKind::RankingExplanation
             ) && matches!(envelope.schema_version(), 1..=2)
-            || matches!(
-                record_kind,
-                CampaignRecordKind::MeasurementSet
-                    | CampaignRecordKind::ReproductionArtifact
-                    | CampaignRecordKind::PlannerCandidateGuidance
-                    | CampaignRecordKind::PlannerCandidateBudget
-                    | CampaignRecordKind::BudgetLedger
-            ) && envelope.schema_version() == 1
-            || record_kind == CampaignRecordKind::Finding
-                && matches!(envelope.schema_version(), 1..=3)
+            || record_kind == CampaignRecordKind::ReproductionArtifact
+                && envelope.schema_version() == 1
+            || record_kind == CampaignRecordKind::Finding && envelope.schema_version() == 2
             || record_kind == CampaignRecordKind::FindingCandidateBundle
                 && matches!(envelope.schema_version(), 1..=4)
             || record_kind == CampaignRecordKind::FindingTriageReplayEvidence
@@ -1076,9 +1065,7 @@ fn snapshot_children(
     if let Some(transition) = snapshot.transition() {
         children.push(("transition", transition.content_id()));
     }
-    if let Some(ledger) = snapshot.budget_ledger() {
-        children.push(("budget-ledger", ledger.content_id()));
-    }
+    children.push(("budget-ledger", snapshot.budget_ledger().content_id()));
     content_children(children)
 }
 
@@ -1096,8 +1083,7 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
             ("parent-configuration", parent.content_id()),
             ("choice-opportunity", opportunity.content_id()),
         ],
-        CampaignFact::BranchRequestIssued(id)
-        | CampaignFact::BranchRequestAccepted { request: id, .. } => {
+        CampaignFact::BranchRequestAccepted { request: id, .. } => {
             vec![("branch-request", id.content_id())]
         }
         CampaignFact::PlannerAdvanced(id) => vec![("planner-step", id.content_id())],
@@ -1106,7 +1092,7 @@ fn fact_children(fact: &CampaignFact) -> Result<BTreeSet<ContentChild>, Campaign
             vec![("attempt-admission", admission.content_id())]
         }
         CampaignFact::AttemptClosed { attempt, .. } => vec![("attempt", attempt.content_id())],
-        CampaignFact::ObservationPublished(id) | CampaignFact::ObservationCredited(id) => {
+        CampaignFact::ObservationCredited(id) => {
             vec![("observation", id.content_id())]
         }
         CampaignFact::FindingPublished(id) => vec![("finding", id.content_id())],

@@ -3,8 +3,8 @@
 //! Live app-random requests are recorded as an exact [`Decision::RngDraw`]
 //! followed by a campaign [`Decision::Selection`]. Branching consumes one
 //! validated [`ChoiceDiscovery`] at that exact parent and emits only typed
-//! campaign selections. The legacy raw [`Decision::AppRandom`] schedule form
-//! remains readable for replay, but has no branch-generation entry point.
+//! campaign selections. The direct guest [`Decision::AppRandom`] schedule form
+//! remains a current replay input, but has no branch-generation entry point.
 
 use crucible_campaign::{ChoiceDiscovery, Selection, SelectionOrigin};
 use thiserror::Error;

@@ -10,7 +10,7 @@ use crucible::{
     ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessReport, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
     SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime, check_scheduler_liveness, step,
+    SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
@@ -228,7 +228,7 @@ fn pure_sequence_scenario() -> SchedulerLivenessScenario {
 fn apply_decisions(configuration: &Configuration, decisions: &[Decision]) -> Configuration {
     let mut next = configuration.clone();
     for decision in decisions {
-        next = step(&next, decision.clone());
+        next = valid_step(&next, decision.clone());
     }
     next
 }
@@ -313,4 +313,11 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 
 fn shift(bits: u8) -> Shift {
     Shift::new(bits).expect("test shift should be valid")
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

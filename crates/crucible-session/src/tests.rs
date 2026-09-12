@@ -10,7 +10,7 @@ use crucible::{
     NodeTemplate, OverrideDecision, Predicate, ReadyPoint, ScenarioDef, ScheduledEvent,
     ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed, TimerId,
     TriggerActionApplication, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake,
-    step, try_step,
+    try_step,
 };
 
 #[path = "tests/actor_runtime.rs"]
@@ -23,3 +23,10 @@ mod engine_state;
 mod terminal_verdict;
 
 use actor_runtime::*;
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
+}

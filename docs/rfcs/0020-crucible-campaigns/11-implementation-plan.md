@@ -98,15 +98,20 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   schedule encoding with branch-point identity separated from materialization.
 - [ ] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
   envelope and provide an explicit offline migration/rejection policy for older
-  schedule artifacts.
+  schedule artifacts. Normal schedule admission now accepts only Schedule V2.
+  The bounded one-way V1 migration accepts resolved delivery-order and RNG
+  evidence, emits V2, and rejects every untyped override, preemption,
+  application-random, or forged selection at its exact decision offset. The
+  remaining live preemption and non-signal override producers still need typed
+  selection envelopes, so this task remains open.
 - [x] **T-CAM-2.4** Implement versioned register/request/reply guest messages and
   typed Rust guest helpers with complete negative decode and allocation tests.
 - [x] **T-CAM-2.5** Freeze guest selectable catalogs at setup, validate scenario
   expectations, support bounded narrowed runtime offers, and checkpoint pending
   requests exactly.
-- [ ] **T-CAM-2.6** Adapt RFC-0014 Boolean outcome, transition, and parameter
-  search surfaces to publish environment choice opportunities without weakening typed
-  effect adapters.
+- [x] **T-CAM-2.6** Adapt RFC-0014 Boolean outcome, transition, and parameter
+  search surfaces to publish environment choice opportunities without weakening
+  typed effect adapters.
 - [x] **T-CAM-2.7** Route application randomness through the integer selectable
   model and remove the parallel raw-width exploration path.
 - [ ] **T-CAM-2.8** Integrate the actual network product guest with discrete and
@@ -200,18 +205,31 @@ version-two launch identity and raw-v2 fallback.
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live
 producer routing, and lazy typed branch generation. The scheduler treats the
-plugin's legacy `AppRandom` result as untrusted transport, reproduces the served
+plugin's direct guest `AppRandom` result as untrusted transport, reproduces the served
 value from its named seeded stream, records canonical `RngDraw` plus
 `Selection`, and hands the self-contained discovery records to the quantum
 result. One exact-parent branch operation consumes those validated records
 and emits only `CampaignBranch` selections; the parallel raw-width generator is
 removed. Model samples and typed replacements consume the existing scenario
 draw cap, and checkpoint relaunch recovers per-node positions from the
-authoritative named-stream cursor. Retained legacy `AppRandom` schedule entries
+authoritative named-stream cursor. Retained direct guest `AppRandom` schedule entries
 remain readable and replayable but are not branchable; re-execution through the
 live producer is the fail-closed conversion path. The broader legacy-decision
 migration policy and Phase 2 real-guest flight remain under T-CAM-2.3 and
 T-CAM-2.8 respectively.
+
+RFC-0014 search choices now retain their typed candidate meaning across the
+runtime frontier. Outcome searches publish Boolean domains. Transition and
+parameter searches publish stable discrete alternatives derived from their
+canonical object or typed-value identities, with an explicit unmodified
+alternative where the model can produce a value outside the branch list. The
+campaign adapter reconstructs and authenticates those records before emitting
+the original finite override index consumed by the unchanged typed effect
+adapter. Index-only and unknown candidate tags fail closed in runtime override
+decoding and campaign promotion; there is no compatibility domain beside the
+typed path. Fault-runtime checkpoint version 4 makes the typed override identity
+required and rejects version 3 at admission, including version-3 checkpoints
+whose override map happened to be empty.
 
 The public static `crucible-guest` product client now constructs discrete and
 unsigned-integral registrations and requests from the L1 protocol-owned
@@ -235,20 +253,22 @@ the automated prerequisite for T-CAM-2.8. The task remains unchecked until the
 Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
 `crucible-api`.
 
-- [ ] **T-CAM-3.1** Add scenario measurement definitions, boundary selectors,
+- [x] **T-CAM-3.1** Add scenario measurement definitions, boundary selectors,
   cohort rules, metric types, exact aggregations, and canonical stop outcomes.
   The pure scenario-owned v1 definition component now provides bounded static
   boundary selectors, validated node cohorts, typed metric sources and values,
-  exact aggregation declarations, deterministic ordering, and scenario-v6
-  identity/serialization with measurement-free v5 read compatibility. The pure
+  exact aggregation declarations, deterministic ordering, and current
+  ScenarioDefForm v7 identity and serialization. The pure
   bounded v1 replay evaluator now authenticates dense scheduler entries,
   resolves compound/cohort boundaries and modeled timeouts, retains canonical
   satisfying evidence, and recomputes exact integer, rational, histogram, and
   delta aggregates. Campaign measurement-set v2 retains the exact verified
   evaluation/definition identities and payload behind a model-specific verifier
-  while preserving identity-exact v1 reads. Model-owned sample producers plus
-  complete raw evidence attachment remain open, so this task is not yet
-  complete.
+  and rejects schema v1 in normal admission. The bounded model projector derives
+  all closed network, storage, scheduler, icount, and virtual-time sources from
+  authenticated event-log entries. Prepared results, journals, executor
+  publication, finding replay, and objective verification retain and
+  reauthenticate the complete raw measurement evidence closure.
 - [x] **T-CAM-3.2** Add guest measurement begin/sample/end and semantic-marker
   protocol messages with scenario validation and limits.
   Doorbell protocol v3 now provides four byte-exact bounded kinds, seven closed
@@ -534,22 +554,19 @@ unfunded issuance before publishing its work; final head acceptance and cold
 validation independently check the ledger. A forged grant total or a downgrade
 to an unbudgeted successor fails closed.
 
-`CampaignRepository::budget_projection` reads this indexed ledger after head
-authentication. Additive `u64` grants sum exactly in `u128`. Legacy version-2
-histories remain readable and upgrade on their next new transition, preserving
-historical debt; their one-time projection fails closed beyond 65,536 entries
-per scanned index. Planner drivers bound invocation output by available
+`CampaignRepository::budget_projection` reads the current indexed ledger after
+head authentication. Additive `u64` grants sum exactly in `u128`. Normal
+admission rejects an unindexed ledger; the explicit bounded one-way repository
+migration is the sole path that can translate authenticated predecessor data. Planner drivers bound invocation output by available
 allowance, return a waitable budget-blocked outcome, and avoid reinvoking on an
 unchanged blocked head. A later grant permits a fresh invocation.
 
-Canonical engine version 3 and PUCT engine version 4 advertise the versioned
-`canonical-frontier-budget-v1` capability. Every Ready offer retains its exact
+Canonical-frontier engine version 8/state 3 and PUCT engine version 6/state 2
+implement the current budget-aware contracts. Every Ready offer retains its exact
 owner-computed aggregate allowances and semantic new-attempt cost, including
 unaffordable offers. Both engines scan through EOF and choose only affordable
 candidates; a convergent cause can therefore pass an earlier canonical or
-higher-ranked PUCT candidate that needs an unfunded attempt. Version-2 portable
-state retains blockers across pages and empty EOF, while the exact legacy
-engine descriptors continue to replay their original version-1 transitions.
+higher-ranked PUCT candidate that needs an unfunded attempt. Their current portable states retain blockers across pages and empty EOF.
 Acceptance and cold validation recompute eligibility before trusting it;
 missing records, inflated allowances, and forged deduplication costs fail
 closed before publication.
@@ -573,7 +590,7 @@ test. Strict affected-crate Clippy and the source-size guard pass. All six
 packaged campaign VM cases also pass with the budget-aware planner build;
 their execution scope remains the six flights described above.
 
-Canonical engine version 5 and PUCT engine version 6 additionally consume
+The current canonical-frontier version 8 and PUCT version 6 engines consume
 owner-authenticated request-local attempt allowances. They pass capped new
 attempts, settle a frontier blocked only by local caps, and retain eligibility
 for a convergent cause without charging another attempt. An aggregate grant
@@ -584,12 +601,10 @@ original selection and portable-state interpretation.
 New version-2 budget ledgers authenticate a nested request-spending Merkle map.
 Each request's spent allowance is the exact entry count of its execution-basis
 map, so admission and candidate projection avoid a campaign-history scan.
-Successors update only newly admitted execution bases; a legacy ledger upgrades
-once from its complete dense admission sequence, excluding additional causes
-and discovery admissions. Cold validation reconstructs the same roots and
-rejects a forged index even when aggregate totals are unchanged. A downgrade
-to an unindexed ledger fails closed. Legacy candidate projections retain a
-bounded dense request-local fallback.
+Successors update only newly admitted execution bases. Normal runtime admission
+rejects unindexed ledgers. Cold
+validation reconstructs the same roots and rejects a forged index even when
+aggregate totals are unchanged.
 
 The distinct-request scale flight exposed two unrelated history-wide scans in
 planner invocation preparation. New campaigns now maintain an authenticated
@@ -597,8 +612,8 @@ ordered position index in their exploration root; request transitions update
 its branch-point/schema/digest order, and cold validation rejects omitted or
 forged positions. Invocation preparation also reuses already-authenticated head
 roots instead of rewalking the retained graph for each page, while still
-checking new dependencies and the complete closure bound. Historical root
-layouts and planner byte identities remain supported.
+checking new dependencies and the complete closure bound. Missing current
+index anchors fail closed.
 
 The request-local-cap increment passes all 253 campaign unit tests and both
 integration tests across the complete unit/integration sweep and focused scale
@@ -644,8 +659,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
 - [x] **T-CAM-4.3** Implement progressive-widening exact rational rules,
   interval refinement, deterministic PUCT, coverage/rarity/assertion/objective
   guidance, and path backpropagation. New branch paths now retain exact
-  branch-point/edge segments under schema version 2, while identity-preserving
-  v1 reads remain available. Canonical schema-v1 observation/branch-point
+  branch-point/edge segments under schema version 2; normal admission rejects
+  v1 paths because they lack branch-point evidence. Canonical schema-v1 observation/branch-point
   credits now survive replay and restart and drive exact completed-visit counts;
   schema-v4 observation transitions additionally retain every cumulative path
   under its exact child configuration, and direct non-genesis admission
@@ -682,8 +697,8 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   to the exact model named by the opportunity; the owner selects the earliest
   credited execution basis per semantic edge and normalizes completed plus one
   prospective offer with exact edge-ordered remainder distribution. Uniform
-  and generated sources remain weight one, and schema-v1/v2 request identities
-  remain readable. Prospective bases are shared by branch point/raw weight and
+  and generated sources remain weight one, and current schema-v2 request
+  identities remain readable. Prospective bases are shared by branch point/raw weight and
   capped at 1,000,000 completed-edge visits per planner page.
   Progressive-integer implementation version 11 now retains version 9's exact
   prefix and visit gates while ranking remaining intervals by owner-derived
@@ -783,11 +798,11 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   observations exist: it
   binds the exact observation root and projects exact completed visits from
   canonical branch-point credit sets. The independent exact PUCT arithmetic and
-  guidance projection are consumed only by canonical frontier engine version 2;
-  version 1 retains its original least-position ordering. Other generated
+  guidance projection are consumed by the current PUCT engine version 6/state 2;
+  canonical-frontier version 8/state 3 retains deterministic position ordering. Other generated
   requests remain conservatively `Open` and fail closed when proposal or
-  expansion semantics are requested. Legacy snapshots remain unindexed and
-  queries fail closed rather than constructing a partial index.
+  expansion semantics are requested. Snapshots missing a current index anchor fail closed rather than constructing
+a partial index.
 - [ ] **T-CAM-4.5** Implement `CampaignSupervisor`, `CampaignProjector`,
   `ProposalPlanner`, `AttemptQueue`, and a bounded local `WorkerPool`.
   A coordinator-owned `CampaignPlannerDriver` now reconstructs the exact
@@ -1339,13 +1354,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   paused root through bounded backpressure, and periodically reconciles pins
   accepted before or after checkpoint publication. Offline GC derives and
   locks the same canonical journal path.
-- [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
+- [x] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
   The execution-model bridge now normalizes one bounded, homogeneous
-  signal-fault runtime frontier into exact campaign declaration, integer
-  domain, and opportunity records. It reauthenticates those records and a
-  campaign branch selection to reconstruct the exact selection plus optional
-  override prefix, including the unmodified-result sentinel. Campaign attempt
+  signal-fault runtime frontier into exact campaign declaration, typed Boolean
+  or discrete domain, and opportunity records. It reauthenticates those records
+  and a campaign branch selection to reconstruct the exact selection plus
+  optional override prefix. Transition and parameter domains include the
+  unmodified-result alternative. Campaign attempt
   decoding recognizes this standardized adapter, reconstructs up to 4,096
   nested promoted events in exact schedule order, and retains one opaque
   validated replay plan. The fresh production lifecycle installs all finite
@@ -1360,12 +1376,16 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   canonical choice material. The modeled driver retains that discovery only
   when it causes the exact `NextChoice` stop; later-stop observations cannot
   retrospectively publish it, and a queued replay branch suppresses duplicate
-  discovery. Promotion is now attempt-scoped: the fresh runner enables it only
+  discovery. Promotion is attempt-scoped: the fresh runner enables it only
   for `NextChoice` after exact start materialization, so historical prefix
   frontiers remain replay-only. Terminal, marker, time, and event-count
   executions pass through finite authored search frontiers without campaign
-  pauses. Automatic planner selection of a bounded interesting suffix/window
-  and automatic signature-preserving minimization remain open.
+  pauses. The minimizer automatically reserves its bounded candidate window for
+  the empty schedule and exact campaign-branch prefixes before enumerating the
+  remaining shortest-first subsequences. Finding preparation invokes that
+  minimizer twice through the signature oracle, requires both passes to agree,
+  and retains the complete bounded replay and raw-measurement evidence before
+  publication.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful
@@ -1386,17 +1406,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   finite absolute deadlines, close-on-error behavior, and direct/loopback
   equivalence. The coordinator now supplies capability-gated, snapshot-owner-
   recomputed continuation projections for every served source. Built-in
-  `crucible-canonical-frontier` version 1 receives one exact next-candidate
-  offer for the least Ready position on each page and consumes that
-  bundle without repository authority, carries the least Ready offer across
-  pages in bounded portable state, and deterministically returns Continue,
-  Issue, or NoWork only at the valid scan boundary. Accepted offer envelopes
-  become retained-request children after zero-write semantic preflight, and
-  import/restart recompute the same source ordinal and value. Version 2 receives
-  an offer and exact bounded PUCT guidance for every Ready source, ranks the
-  owner-derived score across pages, and is now the packaged daemon default;
-  version 1 remains replay-compatible. Both run behind a versioned one-request
-  process protocol:
+  `crucible-canonical-frontier` version 8 with state schema 3 receives one exact
+  next-candidate offer for the least Ready position on each page, carries that
+  offer across pages in bounded portable state, and deterministically returns
+  Continue, Issue, or NoWork only at the valid scan boundary. The canonical
+  PUCT planner version 6 with state schema 2 additionally consumes exact bounded
+  guidance for every Ready source and ranks owner-derived scores across pages.
+  Obsolete planner descriptors fail closed during admission and repository
+  migration. Both current planners run behind a versioned one-request process protocol:
   a parent-owned supervisor measures deterministic page fuel, enforces a
   finite exchange deadline and sticky cancellation, and multiplexes bounded
   nonblocking pipes through EOF. Cleanup signals the dedicated process group
@@ -1507,8 +1524,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   A nested choice index is anchored in the graph root and updated atomically by
   explicit and observation-driven discovery. `QueryChoices` pages at most eight
   opportunity IDs with one exact anchor proof and one exact range/EOF proof;
-  legacy heads without the optional index fail closed until a future explicit
-  complete migration and ordinary mutations never create a partial index.
+  heads without the required index fail closed; ordinary mutations never create
+a partial index.
   A separate current-or-historical choice-object read authenticates the
   opportunity's authoritative graph membership at one exact named-history
   snapshot and returns only its exact declaration or effective domain;
@@ -3592,8 +3609,7 @@ non-default before this gate.
 Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 
 - [ ] **T-CAM-8.1** Implement campaign create/validate/start/pause/resume/stop,
-  budget, steer, semantic `branch`, campaign `derive`, status, and watch, with
-  `fork` only as a deprecated compatibility alias for `branch` if needed. The
+  budget, steer, semantic `branch`, campaign `derive`, status, and watch. The
   checked local client now exposes canonical create/derive inputs and exact
   finite or already-imported generated operator branch requests in addition to
   lifecycle control. Exhaustive `--all` authenticates the exact current or
@@ -3741,57 +3757,23 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel
   explicit-fork/search-expansion state models. The non-interactive local-QEMU
-  `run` path, including `--watch`, now executes through the authenticated
-  scenario-default campaign owner. Watch records name the exact campaign and
-  snapshot and pair that head with the scheduler evidence captured at the same
-  incorporation boundary; the CLI retains them under the owner's fixed bound
-  until its synchronous backend result is rendered. Campaign-produced replay
-  and historical selection-free `run` replay now use the same owner; unsupported
-  historical decision kinds remain on their compatible session path. Standard
-  local production-QEMU virtual-time saves now reach the requested stop through
-  that campaign owner, replay the accepted attempt once through scoped exact
-  capture, authenticate the Ready request/resolution, source attempt, stop,
-  configuration, physical closure, and scheduler evidence, and remove the
-  temporary physical closure before returning. They export the version-5
-  handle and version-3 logical DAG closure index described below, so current
-  resume and fork readers consume the result without native exact-resume
-  acceleration. Campaign-backed
-  marker saves now use the same exact-capture owner with a named-boundary stop.
-  They export a version-5 handle with a campaign-marker-event proof containing
-  the retained, canonically recomputable scheduler event and a required,
-  digest-bound campaign replay closure. Campaign virtual-time saves use the same
-  v5 closure contract. Export authenticates the canonical closure against the
-  exact schedule before durable writes, stores it as a content-addressed object,
-  and retains it through the opaque reference in local checkpoint closure-index
-  v3. Readers preserve version-3 session handles, selection-free version-4
-  marker handles, and closure-index v2 compatibility. Typed schedules missing a
-  closure, tampered closure bytes, and missing referenced objects fail before
-  execution.
+  `run` path, including `--watch`, executes through the authenticated
+  scenario-default campaign owner. Watch records bind the exact campaign head
+  to scheduler evidence captured at the same incorporation boundary, and the
+  CLI retains them under the owner's fixed bound until rendering completes.
+  Current campaign-produced replay uses that same owner and requires its typed,
+  authenticated schedule and replay closure.
 
-  Standard non-interactive local-QEMU resume now uses the campaign owner for
-  version-3, version-4, and version-5 handles and bare checkpoint hashes backed
-  by closure-index v2 or v3. Delivery-order, random-draw, preemption, and typed
-  guest Selection schedules authenticate the logical source and replay closure,
-  capture and restore the exact source, continue to quiescence, virtual-time, or
-  terminal completion, apply replayed guest replies through the live selectable
-  boundary, and replay-validate the descendant checkpoint. Standard unattended
-  unchanged local-QEMU fork targeting virtual time or stopped completion uses
-  the same continuation owner and projects its source and terminal proof through
-  the fork contract. Its reproduction artifact retains the authenticated replay
-  closure and rematerializes the full schedule through campaign replay.
-  Remote fat-checkpoint resume now carries a versioned replay-closure envelope
-  only for typed Selection schedules. The envelope identity binds the exact
-  scenario, configuration, checkpoint bytes, schema version, size, and
-  canonical closure. A newly started daemon reconstructs and authenticates the
-  closure after ordinary checkpoint validation and before backend or session
-  allocation, then retains the existing interactive, watch, stop, and cleanup
-  controls. Selection-free requests preserve their prior wire bytes. Local thin
-  replay and session-owned fork fallbacks still reject typed Selection evidence
-  before launch.
-  Historical override/application-randomness resume schedules, divergent typed
-  fork execution, property stops, quiescence and property saves, search, fuzz,
-  remaining replay producers, triage, and broader long-lived session migration
-  remain open.
+  Production local-QEMU saves reach their requested boundary through campaign
+  ownership and export the current authenticated handle. Local-QEMU resume and
+  fork consume that handle through campaign continuation ownership. They reject
+  unsupported command shapes, missing or tampered closure evidence, and
+  unrecognized handle schemas before execution; they never change ownership to
+  a Session fallback. The distinct remote interactive Session surface remains a
+  separately selected current capability.
+
+  Search, fuzz, remaining replay producers, triage, and broader long-lived
+  Session migration remain open.
 - [x] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture. The public Crucible guide now documents the
   shipped single-host campaign surface: strict offline import, managed daemon

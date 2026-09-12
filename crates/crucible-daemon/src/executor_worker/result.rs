@@ -25,43 +25,8 @@ pub enum AttemptWorkerReconcileOutcome {
 #[derive(Debug)]
 pub struct PendingAttemptResult {
     queued: QueuedAttempt,
-    result: PendingAttemptResultOwner,
+    result: PreparedSemanticAttemptResult,
     finding_exact_retention: Option<PreparedFindingExactRetention>,
-}
-
-#[derive(Debug)]
-enum PendingAttemptResultOwner {
-    Legacy {
-        observation: ObservationCandidate,
-        finding: Option<PreparedCrucibleFindingCandidate>,
-    },
-    Prepared(PreparedSemanticAttemptResult),
-}
-
-impl PendingAttemptResultOwner {
-    const fn observation(&self) -> &ObservationCandidate {
-        match self {
-            Self::Legacy { observation, .. } => observation,
-            Self::Prepared(result) => result.observation(),
-        }
-    }
-
-    const fn finding(&self) -> Option<&PreparedCrucibleFindingCandidate> {
-        match self {
-            Self::Legacy { finding, .. } => finding.as_ref(),
-            Self::Prepared(result) => result.finding(),
-        }
-    }
-
-    fn prepare(&self) -> Result<PreparedSemanticAttemptResult, PreparedSemanticResultCodecError> {
-        match self {
-            Self::Legacy {
-                observation,
-                finding,
-            } => PreparedSemanticAttemptResult::new(observation.clone(), finding.clone()),
-            Self::Prepared(result) => Ok(result.clone()),
-        }
-    }
 }
 
 /// Captured checkpoint retained for no-write preparation retry.
@@ -672,10 +637,7 @@ impl PendingAttemptResult {
         ObservationCandidate,
         Option<PreparedFindingExactRetention>,
     ) {
-        let candidate = match self.result {
-            PendingAttemptResultOwner::Legacy { observation, .. } => observation,
-            PendingAttemptResultOwner::Prepared(result) => result.into_parts().0,
-        };
+        let candidate = self.result.into_parts().0;
         (self.queued, candidate, self.finding_exact_retention)
     }
 }
@@ -1022,38 +984,11 @@ pub fn prepare_attempt_result<W>(
         }
     };
     match product {
-        AttemptExecutionProduct::Observation(candidate) => prepare_pending_attempt_result(
-            store,
-            PendingAttemptResult {
-                queued,
-                result: PendingAttemptResultOwner::Legacy {
-                    observation: *candidate,
-                    finding: None,
-                },
-                finding_exact_retention: None,
-            },
-        )
-        .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
-        AttemptExecutionProduct::ObservationWithFinding {
-            observation,
-            finding,
-        } => prepare_pending_attempt_result(
-            store,
-            PendingAttemptResult {
-                queued,
-                result: PendingAttemptResultOwner::Legacy {
-                    observation: *observation,
-                    finding: Some(*finding),
-                },
-                finding_exact_retention: None,
-            },
-        )
-        .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
         AttemptExecutionProduct::PreparedSemantic(result) => prepare_pending_attempt_result(
             store,
             PendingAttemptResult {
                 queued,
-                result: PendingAttemptResultOwner::Prepared(*result),
+                result: *result,
                 finding_exact_retention: None,
             },
         )
@@ -1063,7 +998,7 @@ pub fn prepare_attempt_result<W>(
                 store,
                 PendingAttemptResult {
                     queued,
-                    result: PendingAttemptResultOwner::Prepared(*result),
+                    result: *result,
                     finding_exact_retention: Some(*retention),
                 },
             )
@@ -1344,18 +1279,9 @@ fn prepare_pending_attempt_result<W>(
         }
         None => None,
     };
-    let result = match pending.result.prepare() {
-        Ok(result) => result,
-        Err(source) => {
-            return Err(AttemptResultPreparationError::Candidate {
-                pending: Box::new(pending),
-                source: source.into(),
-            });
-        }
-    };
     let PendingAttemptResult {
         queued,
-        result: _,
+        result,
         finding_exact_retention,
     } = pending;
     if let Err(source) = validate_prepared_semantic_attempt_result(
@@ -1366,7 +1292,7 @@ fn prepare_pending_attempt_result<W>(
         return Err(AttemptResultPreparationError::Candidate {
             pending: Box::new(PendingAttemptResult {
                 queued,
-                result: PendingAttemptResultOwner::Prepared(result),
+                result,
                 finding_exact_retention,
             }),
             source,
@@ -1389,8 +1315,9 @@ fn validate_prepared_observation_candidate(
         .observation()
         .measurements()
         .evaluation()
-        .into_iter()
-        .flat_map(|evaluation| evaluation.evidence().iter().copied())
+        .evidence()
+        .iter()
+        .copied()
         .filter(|content| content.kind() == ObjectKind::Trace)
         .collect::<BTreeSet<_>>();
     let owned_trace_leaves = result

@@ -153,6 +153,7 @@ mod tests {
             id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"staged-choice")),
             candidates_digest: ContentHash::from_bytes(b"staged-candidates"),
             candidate_count: 2,
+            candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
             selected_index: Some(1),
             overridden: true,
         };

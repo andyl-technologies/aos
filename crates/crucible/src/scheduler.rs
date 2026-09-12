@@ -36,7 +36,7 @@ use crate::{
     SearchRuntimeFrontier, Seed, Shift, SimDuration, SimInstant, SimulationBackend,
     TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldIoInstantiationError,
     WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology, instantiate_world_io_sub_nodes,
-    step,
+    try_step,
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";

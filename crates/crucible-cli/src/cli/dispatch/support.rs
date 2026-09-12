@@ -220,7 +220,7 @@ pub(crate) fn export_savepoint_handle(
         .savepoint_oracle
         .as_ref()
         .ok_or_else(|| backend_error("save completed without replay-oracle proof"))?;
-    let store_report = persist_savepoint_closure_artifact(
+    validate_savepoint_handle_export(
         plan,
         savepoint,
         oracle,
@@ -239,12 +239,6 @@ pub(crate) fn export_savepoint_handle(
         plan.label,
         path.display()
     ));
-    outcome.stdout.push(format!(
-        "save-store\tcheckpoint={checkpoint}\tartifact={}\tindex={}\tstore={}",
-        format_content_hash_ref(store_report.artifact),
-        format_content_hash_ref(store_report.index),
-        plan.store_root.display()
-    ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
         virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -257,20 +251,6 @@ pub(crate) fn export_savepoint_handle(
             plan.label,
             path.display(),
             handle_digest
-        ),
-    });
-    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("cli"),
-        kind: String::from("save_store_index"),
-        summary: format!(
-            "checkpoint={} artifact={} index={} store={}",
-            checkpoint,
-            format_content_hash_ref(store_report.artifact),
-            format_content_hash_ref(store_report.index),
-            plan.store_root.display()
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
@@ -367,18 +347,12 @@ fn push_save_failure_trace_entry(
     });
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SavepointClosureStoreReport {
-    pub(crate) artifact: crucible::ContentHash,
-    pub(crate) index: crucible::ContentHash,
-}
-
-pub(crate) fn persist_savepoint_closure_artifact(
+fn validate_savepoint_handle_export(
     plan: &SaveInvocationPlan,
     savepoint: crucible::ContentHash,
     oracle: &SavepointOracleProof,
     replay_closure: Option<&[u8]>,
-) -> Result<SavepointClosureStoreReport, CliError> {
+) -> Result<(), CliError> {
     if oracle.configuration != savepoint || oracle.fat_checkpoint != savepoint {
         return Err(CliError::Identity(format!(
             "savepoint closure checkpoint {} did not match oracle configuration {} and fat checkpoint {}",
@@ -391,31 +365,7 @@ pub(crate) fn persist_savepoint_closure_artifact(
         def: plan.run_plan.scenario.scenario_def().clone(),
         schedule: oracle.schedule.clone(),
     };
-    persist_checkpoint_closure_artifact(
-        &plan.store_root,
-        plan.run_plan.scenario.scenario_form(),
-        &configuration,
-        oracle.frontier,
-        savepoint,
-        replay_closure,
-    )
-}
-
-/// Persists the replayable closure and lookup index for a terminal checkpoint.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when scenario or checkpoint identities disagree, the
-/// replay artifact cannot be captured, or the DAG store cannot persist its
-/// artifact and checkpoint index.
-pub(crate) fn persist_checkpoint_closure_artifact(
-    store_root: &Path,
-    scenario_form: &crucible::ScenarioDefForm,
-    configuration: &crucible::Configuration,
-    frontier: crucible::VirtualTime,
-    savepoint: crucible::ContentHash,
-    replay_closure: Option<&[u8]>,
-) -> Result<SavepointClosureStoreReport, CliError> {
+    let scenario_form = plan.run_plan.scenario.scenario_form();
     if configuration.def.id() != scenario_form.scenario_def().id() {
         return Err(CliError::Identity(format!(
             "savepoint closure scenario {} did not match terminal configuration scenario {}",
@@ -430,53 +380,13 @@ pub(crate) fn persist_checkpoint_closure_artifact(
             format_content_hash_ref(savepoint)
         )));
     }
-    let artifact = crucible::ReproductionArtifact::capture(scenario_form, &configuration.schedule)
-        .map_err(|error| {
-            artifact_error(format!(
-                "savepoint closure artifact capture failed for {}: {error}",
-                format_content_hash_ref(savepoint)
-            ))
-        })?;
-    let reconstructed = crucible::Configuration {
-        def: artifact.scenario_def(),
-        schedule: artifact.schedule().clone(),
-    };
-    if reconstructed.id() != savepoint {
-        return Err(CliError::Identity(format!(
-            "savepoint closure artifact reconstructed {}, expected {}",
-            format_content_hash_ref(reconstructed.id()),
-            format_content_hash_ref(savepoint)
-        )));
-    }
-    let _replay_closure = authenticated_replay_closure(
+    authenticated_replay_closure(
         scenario_form,
         &configuration.schedule,
         replay_closure,
         "savepoint export",
     )?;
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let artifact_key = store
-        .put(&artifact.to_compact_binary())
-        .map_err(CliError::Store)?;
-    let index_key = if let Some(replay_closure_bytes) = replay_closure {
-        let replay_closure_key = store.put(replay_closure_bytes).map_err(CliError::Store)?;
-        store
-            .write_checkpoint_closure_index_with_opaque_replay_artifact(
-                savepoint,
-                artifact_key,
-                replay_closure_key,
-                frontier,
-            )
-            .map_err(CliError::Store)?
-    } else {
-        store
-            .write_checkpoint_closure_index(savepoint, artifact_key, frontier)
-            .map_err(CliError::Store)?
-    };
-    Ok(SavepointClosureStoreReport {
-        artifact: artifact_key,
-        index: index_key,
-    })
+    Ok(())
 }
 
 pub(crate) fn authenticated_replay_closure(
@@ -518,22 +428,7 @@ pub(crate) fn savepoint_handle_bytes(
         .save_boundary_evidence
         .as_ref()
         .map(|evidence| &evidence.proof);
-    let schema = if matches!(
-        boundary_proof,
-        Some(SaveBoundaryProof::CampaignObservation { .. })
-    ) {
-        CAMPAIGN_OBSERVATION_SAVEPOINT_HANDLE_SCHEMA
-    } else if outcome.savepoint_replay_closure.is_some() {
-        REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
-    } else if matches!(
-        boundary_proof,
-        Some(SaveBoundaryProof::CampaignMarkerEvent { .. })
-    ) {
-        CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA
-    } else {
-        SAVEPOINT_HANDLE_SCHEMA
-    };
-    artifact_line(&mut text, &["schema", schema]);
+    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
     artifact_line(&mut text, &["label", &plan.label]);
     artifact_line(&mut text, &["checkpoint", checkpoint]);
     artifact_line(

@@ -7,7 +7,7 @@
 use crucible::{
     AdvanceOutcome, Backend, BackendInput, Configuration, Decision, ExecutionFingerprint,
     ExecutionHorizon, Icount, NodeId, RngDecision, RngStreamId, ScenarioDef, Schedule,
-    ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SimBackend, VirtualTime, step,
+    ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SimBackend, VirtualTime,
 };
 
 #[test]
@@ -43,8 +43,8 @@ fn gate_layer0_determinism_keeps_schedule_decisions_explicitly_ordered() {
     let first = rng_decision("node-a", 1);
     let second = rng_decision("node-b", 1);
 
-    let left = step(&step(&genesis, first.clone()), second.clone());
-    let right = step(&step(&genesis, second.clone()), first.clone());
+    let left = valid_step(&valid_step(&genesis, first.clone()), second.clone());
+    let right = valid_step(&valid_step(&genesis, second.clone()), first.clone());
 
     assert_eq!(left.schedule.decisions(), &[first.clone(), second.clone()]);
     assert_eq!(right.schedule.decisions(), &[second, first]);
@@ -148,4 +148,11 @@ fn event_key(
         producer.clone(),
         sequence,
     )
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

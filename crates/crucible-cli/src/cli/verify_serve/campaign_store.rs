@@ -38,7 +38,6 @@ use s3::{
 };
 
 const CAMPAIGN_STORE_SCHEMA: &str = "crucible.campaign-repository-store";
-const CAMPAIGN_STORE_VERSION_1: u32 = 1;
 const CAMPAIGN_STORE_VERSION_2: u32 = 2;
 const MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES: usize = 256 * 1024;
 const MAX_CAMPAIGN_STORE_KEY_BYTES: usize = 32;
@@ -469,11 +468,7 @@ fn load_campaign_repository_graph_with_mode(
         .map_err(|error| campaign_store_error(format!("deployment is not UTF-8: {error}")))?;
     let mut deployment: CampaignStoreDeployment = toml::from_str(text)
         .map_err(|error| campaign_store_error(format!("invalid deployment: {error}")))?;
-    if deployment.schema != CAMPAIGN_STORE_SCHEMA
-        || !matches!(
-            deployment.version,
-            CAMPAIGN_STORE_VERSION_1 | CAMPAIGN_STORE_VERSION_2
-        )
+    if deployment.schema != CAMPAIGN_STORE_SCHEMA || deployment.version != CAMPAIGN_STORE_VERSION_2
     {
         return Err(campaign_store_error("unsupported schema or version"));
     }
@@ -481,7 +476,6 @@ fn load_campaign_repository_graph_with_mode(
         deployment.version,
         deployment.ref_directory.take(),
         deployment.s3_ref.take(),
-        deployment.s3_endpoints.is_empty(),
     )?;
 
     let user_id = rustix::process::geteuid().as_raw();
@@ -745,17 +739,10 @@ fn resolve_ref_backend(
     version: u32,
     ref_directory: Option<PathBuf>,
     s3_ref: Option<AuthoredS3RefBackend>,
-    s3_endpoints_empty: bool,
 ) -> Result<ResolvedRefBackend, CliError> {
     match (version, ref_directory, s3_ref) {
-        (CAMPAIGN_STORE_VERSION_1, Some(path), None) if s3_endpoints_empty => {
-            Ok(ResolvedRefBackend::Directory(path))
-        }
         (CAMPAIGN_STORE_VERSION_2, Some(path), None) => Ok(ResolvedRefBackend::Directory(path)),
         (CAMPAIGN_STORE_VERSION_2, None, Some(refs)) => Ok(ResolvedRefBackend::S3(refs.resolve()?)),
-        (CAMPAIGN_STORE_VERSION_1, _, _) => Err(campaign_store_error(
-            "version-one deployment requires only ref_directory and no S3 endpoints",
-        )),
         (CAMPAIGN_STORE_VERSION_2, _, _) => Err(campaign_store_error(
             "version-two deployment requires exactly one of ref_directory or s3_ref",
         )),
@@ -1444,6 +1431,20 @@ unknown_secret_field = true
     }
 
     #[test]
+    fn campaign_store_deployment_rejects_schema_version_one() {
+        let fixture = StoreDeploymentFixture::new();
+        let deployment = fixture.write_deployment("");
+        let current = fs::read_to_string(&deployment).expect("read current deployment");
+        let retired = current.replacen("version = 2", "version = 1", 1);
+        fs::write(&deployment, retired).expect("write retired deployment");
+
+        let Err(error) = load_campaign_repository_store(&deployment) else {
+            panic!("schema-version-one deployment must fail closed");
+        };
+        assert!(error.to_string().contains("unsupported schema or version"));
+    }
+
+    #[test]
     fn serve_selects_the_composed_store_without_creating_default_leafs() {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
@@ -1548,7 +1549,7 @@ campaign = "*"
                 &deployment,
                 format!(
                     r#"schema = "crucible.campaign-repository-store"
-version = 1
+version = 2
 root = "profile"
 admitted_kinds = {kinds}
 ref_directory = {refs:?}

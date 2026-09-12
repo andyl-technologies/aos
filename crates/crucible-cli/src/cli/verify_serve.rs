@@ -21,8 +21,8 @@ pub(crate) fn load_guarded_campaign_deployment(
     packaged_executor::load_guarded_campaign_run_deployment(&path)
 }
 
-#[path = "legacy_campaign.rs"]
-mod legacy_campaign;
+#[path = "campaign_run.rs"]
+pub(super) mod campaign_run;
 
 /// Projects one completed guarded campaign into the shared CLI run report.
 ///
@@ -36,7 +36,7 @@ pub(crate) fn campaign_run_report(
     terminal_outcome: OutcomeKind,
     status: BackendCommandStatus,
 ) -> Result<RunWorkflowReport, CliError> {
-    legacy_campaign::campaign_run_report(run_plan, campaign, terminal_outcome, status)
+    campaign_run::campaign_run_report(run_plan, campaign, terminal_outcome, status)
 }
 
 // crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
@@ -47,7 +47,7 @@ pub(crate) fn run_local_qemu_campaign_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    legacy_campaign::run_local_qemu_campaign_workflow(
+    campaign_run::run_local_qemu_campaign_workflow(
         backend,
         thin_plan,
         backend_plan,
@@ -56,33 +56,13 @@ pub(crate) fn run_local_qemu_campaign_workflow(
     )
 }
 
-pub(crate) fn guarded_campaign_save_eligible(plan: &SaveInvocationPlan) -> bool {
-    legacy_campaign::guarded_campaign_save_eligible(plan)
-}
-
-pub(crate) fn guarded_campaign_resume_eligible(
-    plan: &ResumeInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-) -> bool {
-    legacy_campaign::guarded_campaign_resume_eligible(plan, evidence)
-}
-
-// crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated legacy checkpoint evidence to the daemon owner and only renders its accepted result.
-pub(crate) fn run_local_qemu_campaign_resume_workflow(
-    backend: &ResolvedLocalBackend,
-    resume_plan: &ResumeInvocationPlan,
-    evidence: &ResumeHandleEvidence,
-) -> Result<ResumeWorkflowReport, CliError> {
-    legacy_campaign::run_local_qemu_campaign_resume_workflow(backend, resume_plan, evidence)
-}
-
 // crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated fork evidence to the daemon owner and only renders its accepted result.
 pub(crate) fn run_local_qemu_campaign_fork_workflow(
     backend: &ResolvedLocalBackend,
     fork_plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<ForkWorkflowReport, CliError> {
-    legacy_campaign::run_local_qemu_campaign_fork_workflow(backend, fork_plan, evidence)
+    campaign_run::run_local_qemu_campaign_fork_workflow(backend, fork_plan, evidence)
 }
 
 // crucible-lint: allow host-nondeterminism-state -- this thin command boundary forwards validated inputs to the daemon owner and only renders its accepted result.
@@ -93,7 +73,7 @@ pub(crate) fn run_local_qemu_campaign_save_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    legacy_campaign::run_local_qemu_campaign_save_workflow(
+    campaign_run::run_local_qemu_campaign_save_workflow(
         backend,
         thin_plan,
         backend_plan,
@@ -109,7 +89,7 @@ pub(crate) fn run_local_qemu_campaign_replay(
     schedule: crucible::Schedule,
     replay_closure: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
 ) -> Result<RunWorkflowReport, CliError> {
-    legacy_campaign::run_local_qemu_campaign_replay(
+    campaign_run::run_local_qemu_campaign_replay(
         backend,
         run_plan,
         lifecycle,
@@ -1980,6 +1960,7 @@ where
     .await
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn run_control_client_save_workflow_async<C>(
     client: &C,
     save_plan: &SaveInvocationPlan,
@@ -1991,9 +1972,8 @@ where
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
-    let request =
-        CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)
-            .with_start_paused(true);
+    let request = CreateSessionRequest::inline(run_plan.scenario.scenario_form().clone(), seed)
+        .with_start_paused(true);
     let created = client
         .create_session(request)
         .await

@@ -1,6 +1,7 @@
 //! Core model, scenario identity, and step-transition unit tests.
 
 use super::*;
+use crate::model::{LegacyScheduleDecisionKind, LegacyScheduleMigrationError};
 use crucible_campaign::{
     BooleanDomain, CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate,
     ChoiceDomain, ChoiceOpportunity, ChoiceSource, ChoiceValue, ScenarioDefId,
@@ -49,7 +50,7 @@ fn streamed_content_hash_matches_in_memory_hash() -> Result<(), std::io::Error> 
 }
 
 #[test]
-fn step_appends_decision_without_mutating_parent() {
+fn try_step_appends_decision_without_mutating_parent() {
     let config = Configuration::genesis(ScenarioDef::from_canonical_material(
         "crucible.test.step",
         "scenario=stub",
@@ -59,7 +60,7 @@ fn step_appends_decision_without_mutating_parent() {
         value: 42,
     });
 
-    let child = step(&config, decision.clone());
+    let child = valid_step(&config, decision.clone());
 
     assert!(config.schedule.is_empty());
     assert_eq!(child.schedule.decisions(), &[decision]);
@@ -92,6 +93,13 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     let mut legacy = encoded;
     legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
     assert!(Schedule::from_compact_binary(&legacy).is_err());
+    assert!(matches!(
+        Schedule::migrate_version_one(&legacy),
+        Err(LegacyScheduleMigrationError::UnsupportedDecision {
+            index: 0,
+            kind: LegacyScheduleDecisionKind::Selection,
+        })
+    ));
 
     let selection_free = Schedule::empty().appended(Decision::RngDraw(RngDecision {
         stream: RngStreamId::from_name("legacy-schedule"),
@@ -100,15 +108,73 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     let mut legacy_selection_free = selection_free.to_compact_binary();
     legacy_selection_free[..b"crucible.schedule.v2\0".len()]
         .copy_from_slice(b"crucible.schedule.v1\0");
+    assert!(Schedule::from_compact_binary(&legacy_selection_free).is_err());
+    let migrated = Schedule::migrate_version_one(&legacy_selection_free)?;
+    assert_eq!(migrated, selection_free);
+    assert!(
+        migrated
+            .to_compact_binary()
+            .starts_with(b"crucible.schedule.v2\0")
+    );
     assert_eq!(
-        Schedule::from_compact_binary(&legacy_selection_free)?,
-        selection_free
+        Schedule::from_compact_binary(&migrated.to_compact_binary())?,
+        migrated
     );
     Ok(())
 }
 
 #[test]
-fn step_is_pure_temporal_graph_edge_constructor() {
+fn version_one_migration_rejects_untyped_explorable_decisions() {
+    let decisions = [
+        Decision::Override(OverrideDecision {
+            point: SchedulingPoint {
+                key: String::from("legacy-point"),
+            },
+            choice: ChoiceTag {
+                name: String::from("legacy-choice"),
+            },
+        }),
+        Decision::Preemption(PreemptionDecision {
+            node: NodeId {
+                name: String::from("legacy-node"),
+            },
+            at: Icount { retired: 1 },
+            kind: PreemptionKind::VcpuSwitch {
+                from_vcpu: VcpuId { index: 0 },
+                to_vcpu: VcpuId { index: 1 },
+            },
+        }),
+        Decision::AppRandom(AppRandomDecision {
+            node: NodeId {
+                name: String::from("legacy-node"),
+            },
+            stream: RngStreamId::from_name("legacy-random"),
+            request_id: 1,
+            width: 8,
+            value: 7,
+        }),
+    ];
+
+    for (expected_kind, decision) in [
+        (LegacyScheduleDecisionKind::Override, decisions[0].clone()),
+        (LegacyScheduleDecisionKind::Preemption, decisions[1].clone()),
+        (LegacyScheduleDecisionKind::AppRandom, decisions[2].clone()),
+    ] {
+        let mut legacy = Schedule::from_decisions([decision]).to_compact_binary();
+        legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
+
+        assert!(matches!(
+            Schedule::migrate_version_one(&legacy),
+            Err(LegacyScheduleMigrationError::UnsupportedDecision {
+                index: 0,
+                kind,
+            }) if kind == expected_kind
+        ));
+    }
+}
+
+#[test]
+fn try_step_is_pure_temporal_graph_edge_constructor() {
     for seed in 0..64 {
         let parent = Configuration {
             def: generated_scenario(seed),
@@ -117,7 +183,7 @@ fn step_is_pure_temporal_graph_edge_constructor() {
         let original_parent = parent.clone();
         let decision = generated_decision(seed, 64);
 
-        let child = step(&parent, decision.clone());
+        let child = valid_step(&parent, decision.clone());
 
         assert_eq!(parent, original_parent);
         assert_eq!(child.def, parent.def);
@@ -558,14 +624,14 @@ fn reduce_is_prefix_closed_by_schedule_hash() {
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=prefix");
     let root = Configuration::genesis(scenario.clone());
-    let child = step(
+    let child = valid_step(
         &root,
         Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 4 },
             order: vec![event_key(4, 1), event_key(4, 2)],
         }),
     );
-    let grandchild = step(
+    let grandchild = valid_step(
         &child,
         Decision::AppRandom(AppRandomDecision {
             node: NodeId {
@@ -1158,7 +1224,7 @@ fn temporal_graph_replay_checkpoint_rejects_materialized_payload_drift() {
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let config = step(&genesis, generated_decision(84, 0));
+    let config = valid_step(&genesis, generated_decision(84, 0));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
@@ -1236,7 +1302,7 @@ fn temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin() {
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let config = step(&genesis, generated_decision(87, 0));
+    let config = valid_step(&genesis, generated_decision(87, 0));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),
@@ -1374,8 +1440,8 @@ fn temporal_graph_replay_oracle_admits_cached_ancestors_before_target() {
     }]);
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let ancestor = step(&genesis, generated_decision(88, 0));
-    let target = step(&ancestor, generated_decision(88, 1));
+    let ancestor = valid_step(&genesis, generated_decision(88, 0));
+    let target = valid_step(&ancestor, generated_decision(88, 1));
     let baked = match bake(&world) {
         Ok(genesis) => genesis,
         Err(error) => panic!("world bake should produce a genesis checkpoint: {error}"),

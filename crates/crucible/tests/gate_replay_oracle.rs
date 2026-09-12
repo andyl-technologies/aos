@@ -20,7 +20,7 @@ use crucible::{
     SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices,
     SearchReplayOracleSamplingConfig, Seed, State, TemporalGraph, VirtualTime, WhiteBoxPolicy,
     World, WorldNode, bake, check_assertion_violation_reproduction, compare_event_log_determinism,
-    instantiate, reduce, step,
+    instantiate, reduce,
 };
 use crucible_harness::replay_oracle::{
     ReplayOracleArtifactRun, ReplayOracleBuildIdentity, ReplayOracleCheckpointKind,
@@ -248,7 +248,7 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
     let genesis = Configuration::genesis(scenario.clone());
     let baked = bake(&world)?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
-    let target = step(
+    let target = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("save/descendant"),
@@ -309,7 +309,7 @@ fn gate_replay_oracle_temporal_graph_user_operations_share_instantiate_path()
         baked_with_search_frontier_choices(&world, vec![rng_decision("operation/search", 9)])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let store = MemoryDagStore::new();
-    let saved = step(&genesis, rng_decision("operation/save", 7));
+    let saved = valid_step(&genesis, rng_decision("operation/save", 7));
     let save = graph.save(&store, &saved)?;
 
     assert_eq!(save.configuration, saved.id());
@@ -628,7 +628,7 @@ fn gate_replay_oracle_search_sampling_mismatch_requests_bisection() -> Result<()
     let decision = rng_decision("search-oracle/corrupt", 4);
     let baked = baked_with_search_frontier_choices(&world, vec![decision.clone()])?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
-    let child = step(&genesis, decision.clone());
+    let child = valid_step(&genesis, decision.clone());
     let corrupt_checkpoint = Checkpoint::from_recorded_configuration(
         &child,
         Some(&genesis),
@@ -948,21 +948,21 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.replay-oracle", "nodes=a,b\nseed=42");
     let genesis = Configuration::genesis(scenario.clone());
-    let first = step(
+    let first = valid_step(
         &genesis,
         Decision::DeliveryOrder(DeliveryOrderDecision {
             at: VirtualTime { ticks: 5 },
             order: vec![event_key(5, 1), event_key(5, 2)],
         }),
     );
-    let second = step(
+    let second = valid_step(
         &first,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::for_link("link-a-b/drop"),
             value: 1,
         }),
     );
-    let third = step(
+    let third = valid_step(
         &second,
         Decision::AppRandom(AppRandomDecision {
             node: NodeId {
@@ -1245,8 +1245,8 @@ fn simdouble_replay_build_identity() -> ReplayOracleBuildIdentity {
         ),
         shmem_abi_version: crucible_shmem::ABI_VERSION.to_string(),
         guest_host_protocol_version: crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string(),
-        rpc_abi_version: String::from("5.1.0"),
-        rpc_abi_build: String::from("crucible-rpc-abi-v5"),
+        rpc_abi_version: String::from("6.0.0"),
+        rpc_abi_build: String::from("crucible-rpc-abi-v6"),
         plugin_abi: String::from("simdouble-mock-plugin-abi"),
     }
 }
@@ -1629,4 +1629,11 @@ fn gate_replay_oracle_is_sensitive_to_schedule_order() -> Result<(), Box<dyn Err
     assert_eq!(mismatch.checkpoint_id, "cp-order");
 
     Ok(())
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

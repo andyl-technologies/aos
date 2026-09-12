@@ -631,9 +631,7 @@ where
         };
         let (product, _materialization) = outcome.into_parts();
         match product {
-            AttemptExecutionProduct::Observation(_)
-            | AttemptExecutionProduct::ObservationWithFinding { .. }
-            | AttemptExecutionProduct::PreparedSemantic(_) => {}
+            AttemptExecutionProduct::PreparedSemantic(_) => {}
             product @ (AttemptExecutionProduct::PreparedSemanticWithExactRetention { .. }
             | AttemptExecutionProduct::ExactCheckpoint(_)) => {
                 complete_savepoint_replay_checkpoint_cleanup(

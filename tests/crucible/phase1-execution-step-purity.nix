@@ -13,16 +13,16 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  # The pure temporal-graph edge now lives in `try_step` (step delegates to it and
-  # panics on the draw-cap validation error). This pins the pure-edge body — a clone
+  # The pure temporal-graph edge lives in the fallible `try_step` API. This pins
+  # the pure-edge body — a clone
   # of the scenario def plus the appended decision, with no mutation of `config`.
   pureStepBody = "let next = Configuration {\n        def: config.def.clone(),\n        schedule: config.schedule.appended(decision),\n    };";
 
   failures =
     failuresFor "crates/crucible/src/model.rs" model [
       {
-        label = "step signature";
-        needle = "pub fn step(config: &Configuration, decision: Decision) -> Configuration";
+        label = "fallible step signature";
+        needle = "pub fn try_step(config: &Configuration, decision: Decision) -> Result<Configuration, EngineError>";
       }
       {
         label = "pure step edge body";
@@ -32,11 +32,11 @@
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
         label = "parent immutability step test";
-        needle = "step_appends_decision_without_mutating_parent";
+        needle = "try_step_appends_decision_without_mutating_parent";
       }
       {
         label = "generated step edge-constructor test";
-        needle = "step_is_pure_temporal_graph_edge_constructor";
+        needle = "try_step_is_pure_temporal_graph_edge_constructor";
       }
       {
         label = "generated step corpus";

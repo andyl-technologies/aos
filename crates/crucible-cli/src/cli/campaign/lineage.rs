@@ -171,7 +171,7 @@ scenario_content = "{scenario_content}"
 genesis = "{genesis}"
 genesis_content = "{genesis_content}"
 crucible_version = "crucible-0.1.0"
-qemu_build = "qemu-10.0-crucible"
+qemu_build = "qemu-11.1.1-crucible"
 scenario_schema = 3
 exact_closure_schema = 4
 

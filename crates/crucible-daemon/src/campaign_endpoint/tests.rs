@@ -33,7 +33,7 @@ fn managed_endpoint_is_single_owner_restart_safe_and_exactly_cleaned() {
     assert_eq!(metadata.mode() & 0o777, 0o660);
     assert!(matches!(
         config.bind(),
-        Err(CampaignLoopbackEndpointError::EndpointInUse)
+        Err(LocalComponentEndpointError::EndpointInUse)
     ));
     UnixStream::connect(config.path()).expect("connect managed endpoint");
     let retained_lock_description = managed
@@ -66,11 +66,11 @@ fn managed_endpoint_recovers_only_a_same_owner_stale_socket() {
     fs::write(config.path(), b"not a socket").expect("foreign regular path");
     assert!(matches!(
         config.bind(),
-        Err(CampaignLoopbackEndpointError::InvalidStalePath)
+        Err(LocalComponentEndpointError::InvalidStalePath)
     ));
     assert!(matches!(
         config.bind(),
-        Err(CampaignLoopbackEndpointError::InvalidStalePath)
+        Err(LocalComponentEndpointError::InvalidStalePath)
     ));
     assert_eq!(
         fs::read(config.path()).expect("regular path retained"),
@@ -118,11 +118,11 @@ fn campaign_and_executor_endpoints_share_a_directory_without_sharing_authority()
     let executor_listener = executor.bind().expect("bind executor endpoint");
     assert!(matches!(
         campaign.bind(),
-        Err(CampaignLoopbackEndpointError::EndpointInUse)
+        Err(LocalComponentEndpointError::EndpointInUse)
     ));
     assert!(matches!(
         executor.bind(),
-        Err(ExecutorLoopbackEndpointError::EndpointInUse)
+        Err(LocalComponentEndpointError::EndpointInUse)
     ));
     UnixStream::connect(campaign.path()).expect("connect campaign endpoint");
     UnixStream::connect(executor.path()).expect("connect executor endpoint");
@@ -175,18 +175,18 @@ fn executor_connector_rejects_namespace_and_socket_contract_drift() {
     .expect("executor endpoint config");
     assert!(matches!(
         endpoint.connect_with_timeout(Duration::ZERO),
-        Err(ExecutorLoopbackEndpointError::InvalidConnectTimeout)
+        Err(LocalComponentEndpointError::InvalidConnectTimeout)
     ));
     assert!(matches!(
         endpoint.connect_with_timeout(MAX_EXECUTOR_CONNECT_TIMEOUT + Duration::from_nanos(1)),
-        Err(ExecutorLoopbackEndpointError::InvalidConnectTimeout)
+        Err(LocalComponentEndpointError::InvalidConnectTimeout)
     ));
     let listener = UnixListener::bind(endpoint.path()).expect("bind executor socket");
     fs::set_permissions(endpoint.path(), Permissions::from_mode(0o660))
         .expect("install wrong executor mode");
     assert!(matches!(
         endpoint.connect(),
-        Err(ExecutorLoopbackEndpointError::InvalidConnectedSocket)
+        Err(LocalComponentEndpointError::InvalidConnectedSocket)
     ));
 
     drop(listener);
@@ -195,7 +195,7 @@ fn executor_connector_rejects_namespace_and_socket_contract_drift() {
         .expect("make executor namespace writable");
     assert!(matches!(
         endpoint.connect(),
-        Err(ExecutorLoopbackEndpointError::ParentNamespaceWritable)
+        Err(LocalComponentEndpointError::ParentNamespaceWritable)
     ));
 }
 
@@ -206,7 +206,7 @@ fn endpoint_rejects_writable_or_redirected_namespaces_before_bind() {
         .expect("make endpoint namespace group writable");
     assert!(matches!(
         config.bind(),
-        Err(CampaignLoopbackEndpointError::ParentNamespaceWritable)
+        Err(LocalComponentEndpointError::ParentNamespaceWritable)
     ));
     assert!(!config.path().exists());
 
@@ -217,7 +217,7 @@ fn endpoint_rejects_writable_or_redirected_namespaces_before_bind() {
     symlink(&target, config.path()).expect("endpoint symlink");
     assert!(matches!(
         config.bind(),
-        Err(CampaignLoopbackEndpointError::InvalidStalePath)
+        Err(LocalComponentEndpointError::InvalidStalePath)
     ));
     assert!(
         fs::symlink_metadata(config.path())
@@ -232,7 +232,7 @@ fn endpoint_rejects_writable_or_redirected_namespaces_before_bind() {
     symlink(&target, &lock_path).expect("endpoint lock symlink");
     assert!(matches!(
         config.bind(),
-        Err(CampaignLoopbackEndpointError::Io { .. })
+        Err(LocalComponentEndpointError::Io { .. })
     ));
     assert!(
         fs::symlink_metadata(lock_path)
@@ -247,20 +247,20 @@ fn endpoint_configuration_rejects_invalid_path_mode_and_owner() {
     let (directory, config) = endpoint_fixture();
     assert!(matches!(
         CampaignLoopbackEndpointConfig::new("relative.sock", 1, 1, 0o600),
-        Err(CampaignLoopbackEndpointError::InvalidPath)
+        Err(LocalComponentEndpointError::InvalidPath)
     ));
     assert!(matches!(
         CampaignLoopbackEndpointConfig::new("/tmp/../tmp/campaign.sock", 1, 1, 0o600),
-        Err(CampaignLoopbackEndpointError::InvalidPath)
+        Err(LocalComponentEndpointError::InvalidPath)
     ));
     let oversized = format!("/tmp/{}.sock", "a".repeat(100));
     assert!(matches!(
         CampaignLoopbackEndpointConfig::new(oversized, 1, 1, 0o600),
-        Err(CampaignLoopbackEndpointError::InvalidPath)
+        Err(LocalComponentEndpointError::InvalidPath)
     ));
     assert!(matches!(
         CampaignLoopbackEndpointConfig::new(directory.path().join("zero.sock"), 1, 1, 0),
-        Err(CampaignLoopbackEndpointError::InvalidSocketMode)
+        Err(LocalComponentEndpointError::InvalidSocketMode)
     ));
     let wrong_owner = CampaignLoopbackEndpointConfig::new(
         config.path(),
@@ -271,7 +271,7 @@ fn endpoint_configuration_rejects_invalid_path_mode_and_owner() {
     .expect("wrong-owner contract is structurally valid");
     assert!(matches!(
         wrong_owner.bind(),
-        Err(CampaignLoopbackEndpointError::ParentOwnershipMismatch)
+        Err(LocalComponentEndpointError::ParentOwnershipMismatch)
     ));
     assert!(!config.path().exists());
 }

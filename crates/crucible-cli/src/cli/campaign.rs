@@ -2136,10 +2136,7 @@ where
                 request: response.request().to_string(),
                 prior_snapshot: response.prior_snapshot().to_string(),
                 new_snapshot: response.new_snapshot().to_string(),
-                summary: CampaignBranchAcceptanceSummaryReport::new(
-                    response.summary(),
-                    response.summary_recorded(),
-                ),
+                summary: CampaignBranchAcceptanceSummaryReport::new(response.summary()),
                 replayed: response.replayed(),
             })
         }

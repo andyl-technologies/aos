@@ -206,10 +206,10 @@ pub use objective::{
     SurvivorSelectionBundle, evaluate_objectives, rank_survivors,
 };
 pub use observation::{
-    AssertionViolationWitness, CoverageProjection, MeasurementEvaluationPayload, MeasurementSeries,
-    MeasurementSet, MetricValue, Observation, ObservationEventLogProof, ObservationQuantumBoundary,
-    ObservationStopProof, ObservationStopSatisfaction, PropertyEvidence, PropertyVerdict,
-    PropertyVerdictSet, StopOutcome,
+    AssertionViolationWitness, CoverageProjection, MeasurementEvaluationPayload, MeasurementSet,
+    Observation, ObservationEventLogProof, ObservationQuantumBoundary, ObservationStopProof,
+    ObservationStopSatisfaction, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
+    StopOutcome,
 };
 pub use planner_service::{
     AuthorizedPlannerService, AuthorizedPlannerServiceError, CANONICAL_BEAM_SURVIVORS_CAPABILITY,
@@ -294,6 +294,18 @@ pub use statistics::{
     StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
     verify_sequential_monte_carlo_evidence,
 };
+
+#[cfg(test)]
+fn test_budget_ledger_id() -> CampaignBudgetLedgerId {
+    let root = MerkleMap::empty_content_id().expect("canonical empty Merkle root");
+    let ledger = CampaignBudgetLedger::empty(root).expect("canonical empty budget ledger");
+    CampaignBudgetLedgerId::from_content_id(
+        ObjectEnvelope::for_budget_ledger(&ledger)
+            .expect("canonical budget-ledger envelope")
+            .content_id(),
+    )
+    .expect("typed budget-ledger identity")
+}
 
 #[cfg(test)]
 mod extended_stop_tests;

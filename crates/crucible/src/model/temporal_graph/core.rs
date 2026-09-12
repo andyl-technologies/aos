@@ -15,7 +15,7 @@ pub struct World {
     /// The world content address.
     pub id: ContentHash,
     pub(in crate::model) topology_nodes: Vec<WorldNodeDef>,
-    /// Derived VM-only projection retained for the legacy VM authoring/runtime API.
+    /// Derived VM-only projection used by the runtime and binary codec.
     /// It is rebuilt from `topology_nodes` by every constructor and is not a
     /// separate logical topology collection.
     pub(in crate::model) nodes: Vec<WorldNode>,
@@ -772,11 +772,6 @@ impl TemporalGraph {
             target: resolved_coordinate.clone(),
             event_coordinates: request.event_coordinates.clone(),
         };
-        let failure_footer = request
-            .failure_footer_artifact
-            .as_ref()
-            .map(|artifact| DebugFailureFooterCommand::new(artifact.clone()));
-
         Ok(DebugTargetResolverReport {
             selector: request.selector.clone(),
             resolved_coordinate,
@@ -784,7 +779,6 @@ impl TemporalGraph {
             goto_request,
             failure_event_sequence,
             divergence,
-            failure_footer,
         })
     }
 

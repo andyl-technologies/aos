@@ -1,4 +1,4 @@
-//! Budget-aware offer selection, hostile input, and legacy replay regressions.
+//! Budget-aware offer selection, hostile input, and replay regressions.
 
 use super::*;
 use crate::PlannerEngineOutput;
@@ -418,18 +418,31 @@ fn candidate_budget_forgery_is_rejected_before_publication() {
     .expect("unchecked envelope construction");
     assert!(ObjectEnvelope::from_canonical_bytes(&missing_children.canonical_bytes()).is_err());
     for forged in [
-        crate::PlannerCandidateBudget::new(offer, original.remaining_proposals() + 1, 0, true)
-            .expect("inflated proposals"),
-        crate::PlannerCandidateBudget::new(offer, original.remaining_proposals(), 1, true)
-            .expect("inflated attempts"),
-        crate::PlannerCandidateBudget::new(offer, original.remaining_proposals(), 0, false)
-            .expect("forged dedup"),
+        crate::PlannerCandidateBudget::new(
+            offer,
+            original.remaining_proposals() + 1,
+            0,
+            true,
+            original.remaining_request_attempts(),
+        )
+        .expect("inflated proposals"),
+        crate::PlannerCandidateBudget::new(
+            offer,
+            original.remaining_proposals(),
+            1,
+            true,
+            original.remaining_request_attempts(),
+        )
+        .expect("inflated attempts"),
+        crate::PlannerCandidateBudget::new(
+            offer,
+            original.remaining_proposals(),
+            0,
+            false,
+            original.remaining_request_attempts(),
+        )
+        .expect("forged dedup"),
     ] {
-        let forged = forged.with_request_attempts(
-            original
-                .remaining_request_attempts()
-                .expect("request allowance"),
-        );
         let objects = request
             .input_bundle()
             .object_ids()
@@ -599,185 +612,4 @@ fn restarted_driver_retains_cross_page_blockers_without_settling_the_frontier() 
         .budget_projection(CAMPAIGN)
         .expect("funded ledger");
     assert_eq!((budget.spent_proposals, budget.spent_attempts), (3, 2));
-}
-
-#[test]
-fn legacy_builtin_descriptors_keep_their_original_unfiltered_semantics() {
-    for puct in [false, true] {
-        let mut fixture = mixed_budget_fixture(puct);
-        let mut capabilities =
-            BTreeSet::from([crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned()]);
-        if puct {
-            capabilities.insert(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY.to_owned());
-        }
-        fixture.engine = PlannerEngine::new(
-            "crucible-canonical-frontier",
-            if puct { 2 } else { 1 },
-            1,
-            capabilities,
-        )
-        .expect("legacy engine");
-        fixture.state = if puct {
-            crate::CanonicalPuctPlanner::initial_state_for_engine(&fixture.engine)
-                .expect("legacy PUCT state")
-        } else {
-            CanonicalFrontierPlanner::initial_state_for_engine(&fixture.engine)
-                .expect("legacy canonical state")
-        };
-        fixture.artifact = PolicyArtifact::new(
-            fixture.engine.id().expect("engine id"),
-            1,
-            fixture.artifact.dependency_lock(),
-            BTreeSet::new(),
-            BTreeMap::new(),
-        )
-        .expect("legacy artifact");
-        let request = request_for(&fixture, &fixture.state, None, 8);
-        assert!(
-            request
-                .input_bundle()
-                .candidate_inputs(&request)
-                .expect("legacy inputs")
-                .values()
-                .all(|input| input.budget.is_none())
-        );
-        let output = plan(&request, puct);
-        let blocked = PlanningScanPosition::new(
-            fixture.blocked.branch_point(),
-            fixture.blocked.id().expect("id"),
-        );
-        assert!(
-            matches!(output.proposal().disposition(), PlannerProposalDisposition::Issue { selected, .. } if *selected == blocked),
-            "puct={puct}, expected={blocked:?}, disposition={:?}",
-            output.proposal().disposition()
-        );
-        assert!(
-            !output
-                .proposal()
-                .explanation()
-                .terms_micros()
-                .contains_key("budget-blocked")
-        );
-        assert_eq!(
-            &output.proposal().next_state().bytes()[..4],
-            &1_u32.to_be_bytes()
-        );
-        assert!(matches!(
-            fixture.repository.accept_planner_step(
-                CAMPAIGN,
-                request.expected_snapshot(),
-                output.proposal(),
-                output.proposal().usage_claim()
-            ),
-            Err(CampaignRepositoryError::Budget(
-                crate::CampaignBudgetError::AttemptAllowanceExhausted
-            ))
-        ));
-        grant(&fixture.repository, "fund-legacy", 0, 1);
-        let request = request_for(&fixture, &fixture.state, None, 8);
-        let output = plan(&request, puct);
-        let result = fixture
-            .repository
-            .accept_planner_step(
-                CAMPAIGN,
-                request.expected_snapshot(),
-                output.proposal(),
-                output.proposal().usage_claim(),
-            )
-            .expect("accept legacy output");
-        CampaignRepository::new(
-            fixture.repository.blobs.clone(),
-            fixture.repository.refs.clone(),
-        )
-        .validate_complete_head(result.new_snapshot.content_id())
-        .expect("cold legacy replay");
-    }
-}
-
-#[test]
-fn aggregate_only_builtin_descriptors_replay_version_one_budget_records() {
-    for puct in [false, true] {
-        let mut fixture = mixed_budget_fixture(puct);
-        let mut capabilities = BTreeSet::from([
-            crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-            crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-        ]);
-        if puct {
-            capabilities.insert(crate::CANONICAL_FRONTIER_PUCT_CAPABILITY.to_owned());
-        }
-        fixture.engine = PlannerEngine::new(
-            "crucible-canonical-frontier",
-            if puct { 4 } else { 3 },
-            1,
-            capabilities,
-        )
-        .expect("aggregate-only engine");
-        fixture.state = if puct {
-            crate::CanonicalPuctPlanner::initial_state_for_engine(&fixture.engine).expect("state")
-        } else {
-            CanonicalFrontierPlanner::initial_state_for_engine(&fixture.engine).expect("state")
-        };
-        fixture.artifact = PolicyArtifact::new(
-            fixture.engine.id().expect("engine id"),
-            1,
-            fixture.artifact.dependency_lock(),
-            BTreeSet::new(),
-            BTreeMap::new(),
-        )
-        .expect("artifact");
-        let request = request_for(&fixture, &fixture.state, None, 8);
-        for input in request
-            .input_bundle()
-            .candidate_inputs(&request)
-            .expect("inputs")
-            .into_values()
-        {
-            let Some(budget) = input.budget else {
-                continue;
-            };
-            assert_eq!(budget.remaining_request_attempts(), None);
-            assert_eq!(
-                budget
-                    .id()
-                    .expect("budget id")
-                    .content_id()
-                    .schema_version(),
-                1
-            );
-            let envelope = ObjectEnvelope::for_candidate_budget(&budget).expect("legacy envelope");
-            assert_eq!(
-                ObjectEnvelope::from_canonical_bytes(&envelope.canonical_bytes())
-                    .expect("legacy envelope round trip"),
-                envelope
-            );
-            assert_eq!(
-                crate::PlannerCandidateBudget::from_canonical_bytes(&budget.canonical_bytes())
-                    .expect("legacy body round trip"),
-                budget
-            );
-        }
-        let output = plan(&request, puct);
-        let expected = PlanningScanPosition::new(
-            fixture.convergent.branch_point(),
-            fixture.convergent.id().expect("request id"),
-        );
-        assert!(
-            matches!(output.proposal().disposition(), PlannerProposalDisposition::Issue { selected, .. } if *selected == expected)
-        );
-        let result = fixture
-            .repository
-            .accept_planner_step(
-                CAMPAIGN,
-                request.expected_snapshot(),
-                output.proposal(),
-                output.proposal().usage_claim(),
-            )
-            .expect("accept aggregate-only step");
-        CampaignRepository::new(
-            fixture.repository.blobs.clone(),
-            fixture.repository.refs.clone(),
-        )
-        .validate_complete_head(result.new_snapshot.content_id())
-        .expect("cold aggregate-only replay");
-    }
 }

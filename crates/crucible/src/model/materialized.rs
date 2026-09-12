@@ -795,24 +795,6 @@ pub struct MaterializedState {
 }
 
 impl MaterializedState {
-    /// Builds a legacy materialized-state handle from an existing content address.
-    ///
-    /// The resulting value is not sufficient for a loadable fat checkpoint
-    /// unless `id` is the canonical hash of the empty component set. Use
-    /// [`Self::from_components`] for loadable checkpoint state.
-    #[must_use]
-    pub fn from_content_hash(id: ContentHash) -> Self {
-        Self {
-            id,
-            vm_snapshots: BTreeMap::new(),
-            device_overlays: BTreeMap::new(),
-            scheduler: SchedulerState::empty(),
-            decision_rng: DecisionRngState::empty(),
-            event_log: EventLogOffset::default(),
-            event_log_segments: Vec::new(),
-        }
-    }
-
     /// Builds a materialized state from content-addressed components.
     #[must_use]
     pub fn from_components(

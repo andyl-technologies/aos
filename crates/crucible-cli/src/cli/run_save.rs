@@ -340,30 +340,6 @@ mod test_double;
 #[cfg(any(test, feature = "test-double"))]
 pub(super) use test_double::*;
 
-pub(super) fn run_local_qemu_save_workflow(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
-    save_plan: &SaveInvocationPlan,
-) -> Result<BackendCommandOutcome, CliError> {
-    let backend = backend_plan
-        .resolved_backend
-        .as_ref()
-        .ok_or_else(|| backend_error("local QEMU save requires a resolved backend"))?;
-    let config = production_qemu_lifecycle_config(backend)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane =
-        production_qemu_control_plane(config, save_plan.run_plan.scenario.scenario_form());
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_control_client_save_workflow_async(&client, save_plan))?;
-    let mut outcome =
-        finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-live-checkpoint");
-    Ok(outcome)
-}
-
 #[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_save_recording_workflow(
     thin_plan: &CliThinWrapperPlan,
@@ -428,38 +404,11 @@ pub(super) fn run_local_qemu_resume_workflow(
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU resume requires a resolved backend"))?;
     let evidence = resume_handle_evidence(resume_plan)?;
-    if guarded_campaign_resume_eligible(resume_plan, &evidence) {
-        let report = run_local_qemu_campaign_resume_workflow(backend, resume_plan, &evidence)?;
-        let mut outcome = finish_resume_workflow_outcome(
-            thin_plan,
-            backend_plan,
-            ergonomics_plan,
-            resume_plan,
-            report,
-        )?;
-        append_qemu_control_plane_execution_proof(
-            &mut outcome,
-            backend,
-            "resume-campaign-default-path",
-        );
-        return Ok(outcome);
-    }
-    ensure_session_replay_evidence_supported("local QEMU resume fallback", &evidence)?;
-
-    let config = production_qemu_lifecycle_config(backend)?.with_logical_replay_boundary(
-        evidence.configuration.clone(),
-        evidence.checkpoint.virtual_time,
-    );
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let control_plane =
-        production_qemu_control_plane(config, &evidence.scenario_form).with_thin_replay_resume();
-    let client = InProcessLifecycleClient::new(control_plane);
-    let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
-        &client,
+    let report = crate::cli_verify_serve::campaign_run::run_local_qemu_campaign_resume_workflow(
+        backend,
         resume_plan,
-    ))?;
+        &evidence,
+    )?;
     let mut outcome = finish_resume_workflow_outcome(
         thin_plan,
         backend_plan,
@@ -467,7 +416,11 @@ pub(super) fn run_local_qemu_resume_workflow(
         resume_plan,
         report,
     )?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "resume-thin-replay");
+    append_qemu_control_plane_execution_proof(
+        &mut outcome,
+        backend,
+        "resume-campaign-default-path",
+    );
     Ok(outcome)
 }
 

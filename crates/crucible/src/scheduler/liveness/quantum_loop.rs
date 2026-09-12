@@ -363,7 +363,7 @@ impl QuantumLoop for SingleScheduler {
                 )?;
                 let projected = record.decisions;
                 if !branch_choices.is_empty() {
-                    let branch_configuration = self.step_quantum(&recorded);
+                    let branch_configuration = self.step_quantum(&recorded)?;
                     self.search_frontiers.push(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
@@ -379,7 +379,7 @@ impl QuantumLoop for SingleScheduler {
                 self.advance_decision_rng_cursor_for(draw.stream.clone());
             }
         }
-        let configuration = self.step_quantum(&recorded);
+        let configuration = self.step_quantum(&recorded)?;
         let at = SimInstant {
             nanos: admission_boundary.ticks,
         };

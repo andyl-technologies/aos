@@ -332,7 +332,10 @@ fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
     assert_eq!(marker.decoded_payload(), &payload);
     assert_eq!(sink.entries.len(), 1);
     let entry = &sink.entries[0];
-    assert_eq!(entry.class(), crucible::EventClass::Observational);
+    assert_eq!(
+        entry.class(),
+        crucible::SchedulerEventLogClass::Observational
+    );
     assert_eq!(
         entry.time().icount,
         crucible::EventLogIcountStamp {

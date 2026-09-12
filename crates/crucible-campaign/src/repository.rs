@@ -58,7 +58,6 @@ const MAX_SNAPSHOT_ANCESTRY: usize = 1_000_001;
 /// Maximum unique object-position work charged to one authenticated closure.
 pub const MAX_CAMPAIGN_CLOSURE_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
-const PLANNER_SCAN_STORAGE_PAGE_ITEMS: usize = 10_000;
 /// Maximum source positions served by one coordinator planner page.
 pub const MAX_PLANNER_SCAN_PAGE_ITEMS: u32 = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
@@ -230,8 +229,6 @@ pub struct BranchRequestResult {
     pub snapshot: CampaignSnapshot,
     /// Transition fact that binds the request and summary into `snapshot`.
     pub acceptance_fact: CampaignFact,
-    /// Whether the original transition durably recorded the summary.
-    pub summary_recorded: bool,
     /// Whether this call observed a previously committed request.
     pub replayed: bool,
 }
@@ -883,11 +880,6 @@ impl CampaignExecutorStore {
 
     /// Authenticates one admission-bound policy used for automatic finding retention.
     ///
-    /// A successful `None` result identifies a legacy execution-basis admission
-    /// that has no canonical policy binding. Callers must preserve thin finding
-    /// evidence and report the localized missing-policy diagnostic instead of
-    /// consulting a mutable campaign head.
-    ///
     /// # Errors
     ///
     /// Returns an error when the admission, attempt, lineage, policy, or their
@@ -897,17 +889,12 @@ impl CampaignExecutorStore {
         lineage: CampaignLineageId,
         attempt: AttemptId,
         basis: AttemptRetentionPolicyBasis,
-    ) -> Result<Option<crate::RetentionPolicy>, CampaignRepositoryError> {
+    ) -> Result<crate::RetentionPolicy, CampaignRepositoryError> {
         self.repository
             .validate_attempt_retention_policy_basis(lineage, attempt, basis)?;
-        basis
-            .policy()
-            .map(|policy| {
-                self.repository
-                    .read_policy(policy.content_id())
-                    .map(|policy| policy.retention())
-            })
-            .transpose()
+        self.repository
+            .read_policy(basis.policy().content_id())
+            .map(|policy| policy.retention())
     }
 
     /// Loads and authenticates one campaign compatibility lineage.
@@ -1193,9 +1180,7 @@ impl CampaignExecutorStore {
         max_bytes: u64,
     ) -> Result<Vec<u8>, CampaignRepositoryError> {
         let retained = self.repository.load_measurement_set(measurements)?;
-        let evaluation = retained
-            .evaluation()
-            .ok_or_else(|| integrity("measurement-set-has-no-verified-evaluation"))?;
+        let evaluation = retained.evaluation();
         if evidence.kind() != ObjectKind::Trace || !evaluation.evidence().contains(&evidence) {
             return Err(integrity("measurement-evidence-leaf-is-not-owned"));
         }
@@ -1816,9 +1801,8 @@ mod supervisor;
 mod transactions;
 mod transfer;
 
-pub use budget::CampaignBudgetProjection;
-
 use attempt_closure::non_modeled_attempt_key;
+pub use budget::CampaignBudgetProjection;
 use finding::finding_occurrence_key;
 pub(crate) use finding::{finding_candidate_occurrence_key, finding_signature_key};
 pub use finding_candidate::{

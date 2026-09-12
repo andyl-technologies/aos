@@ -7,9 +7,9 @@
 use crucible::{
     BasicBlockCoverageConfig, BasicBlockCoverageError, BasicBlockCoverageMode,
     BasicBlockCoverageRegistrationPlan, BlackBoxObservationKind, BlackBoxObservationSource,
-    Configuration, ContentHash, Decision, EventClass, ExecutionFingerprint, Icount, NodeId,
-    ObservableEvent, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, TcgExecBasicBlock, VirtualTime, World,
+    Configuration, Decision, ExecutionFingerprint, Icount, NodeId, ObservableEvent, RngDecision,
+    RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, TcgExecBasicBlock, VirtualTime, World,
     basic_block_coverage_map_index, compare_event_log_determinism, reduce,
 };
 
@@ -77,7 +77,7 @@ fn gate_basic_block_coverage_consumes_tcg_exec_blocks_without_guest_instrumentat
     assert_eq!(entry.event_payload().string("kind"), Some("basic_block"));
     assert_eq!(entry.event_payload().u64("guest_pc"), Some(0x4010));
     assert_eq!(entry.event_payload().u64("block_len"), Some(0x20));
-    assert_eq!(entry.class(), EventClass::Observational);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
     assert_eq!(
         consumer.consume_tcg_exec_block(TcgExecBasicBlock::new(icount(78), 0x4010, 0)),
         Err(BasicBlockCoverageError::InvalidBlockLength { block_len: 0 })
@@ -86,10 +86,7 @@ fn gate_basic_block_coverage_consumes_tcg_exec_blocks_without_guest_instrumentat
 
 #[test]
 fn gate_basic_block_coverage_has_zero_fingerprint_effect() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.basic-block-coverage.world",
-        "zero-fingerprint-effect",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let off_config = BasicBlockCoverageConfig::off();
     let on_config = BasicBlockCoverageConfig::on();
     let off_genesis = Configuration::genesis(world.scenario_def());

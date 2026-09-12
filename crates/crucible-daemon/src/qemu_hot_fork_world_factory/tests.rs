@@ -32,9 +32,9 @@ use crucible_campaign::{
     DaemonEpoch, DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational,
     ExecutionId, ExecutionRetentionIntent, ExecutorCompatibilityProfile, ExecutorService,
     ExplorerPolicy, FairnessPolicy, IntegerDomain, IntegerRepresentation, IntegerValue,
-    MeasurementSet, Observation, ObservationCandidate, ProgressiveWideningPolicy,
-    PropertyVerdictSet, PuctPolicy, RetentionPolicy, SelectableDeclaration, Selection,
-    SelectionOrigin, StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    Observation, ObservationCandidate, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy,
+    RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ContentId, ImmutableBlobBackend, MemoryBlobBackend,
@@ -56,6 +56,10 @@ use crucible_qemu::{
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
 use super::*;
+
+fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    crucible::try_step(configuration, decision).expect("test decision should be valid")
+}
 use crate::packaged_qemu_executor::PackagedQemuInitialExecutionRunner;
 use crate::qemu_campaign_lifecycle::{
     QemuAttemptExecutionEvidence, QemuTerminalEvidenceExecutionRunner,
@@ -67,14 +71,14 @@ use crate::{
     CrucibleExecutionRunner, CrucibleMaterializationTier, ExactCheckpointStore,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorCapacity, LocalAttemptWorker,
     LocalExecutorSupervisor, MemoryAssignmentLedger, PreparedAttemptWorkResult,
-    QemuAttemptExecutionRouter, QemuAttemptOperationalBoundary, QemuAttemptResourceGuard,
-    QemuAttemptStartReplayProof, QemuAttemptStartVerifier, QemuFreshModeledDriver,
-    QemuHotFirstExecutionRouter, QemuOrdinaryResumeRunner, QemuSavepointReplayProof,
-    QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier, RepositoryAttemptAdmission,
-    RepositoryAttemptWorker, decode_crucible_configuration_artifact_with_selections,
-    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
-    prepare_attempt_result, publish_prepared_attempt_result, reconcile_published_attempt_result,
-    stage_prepared_attempt_result,
+    PreparedSemanticAttemptResult, QemuAttemptExecutionRouter, QemuAttemptOperationalBoundary,
+    QemuAttemptResourceGuard, QemuAttemptStartReplayProof, QemuAttemptStartVerifier,
+    QemuFreshModeledDriver, QemuHotFirstExecutionRouter, QemuOrdinaryResumeRunner,
+    QemuSavepointReplayProof, QemuSelectedOriginResumeRunner, QemuSelectedOriginVerifier,
+    RepositoryAttemptAdmission, RepositoryAttemptWorker,
+    decode_crucible_configuration_artifact_with_selections, encode_crucible_configuration_artifact,
+    encode_crucible_scenario_artifact, prepare_attempt_result, publish_prepared_attempt_result,
+    reconcile_published_attempt_result, stage_prepared_attempt_result,
 };
 
 #[path = "tests/native_acceptance.rs"]
@@ -425,7 +429,9 @@ impl QemuFreshAttemptDriver for ScriptedPublishedObservationDriver {
         _final_events: Vec<crucible::SchedulerEventLogEntry>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         self.seals.fetch_add(1, Ordering::SeqCst);
-        Ok(AttemptExecutionProduct::observation(candidate))
+        Ok(AttemptExecutionProduct::prepared_semantic(
+            PreparedSemanticAttemptResult::new(candidate, None).expect("prepare test result"),
+        ))
     }
 }
 
@@ -1120,7 +1126,10 @@ impl CrucibleExecutionRunner for RecordingFallbackRunner {
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(CrucibleExecutionOutcome::new(
-            AttemptExecutionProduct::observation(self.candidate.clone()),
+            AttemptExecutionProduct::prepared_semantic(
+                PreparedSemanticAttemptResult::new(self.candidate.clone(), None)
+                    .expect("prepare test result"),
+            ),
             CrucibleMaterializationTier::ThinReplay,
         ))
     }
@@ -1413,7 +1422,7 @@ fn branch_execution_input(
     let SelectionOrigin::CampaignBranch { edge, .. } = selection.origin() else {
         panic!("campaign branch selection has the wrong origin")
     };
-    let selected = crucible::step(
+    let selected = valid_step(
         &parent,
         Decision::Selection(SelectionDecision::new(&selection)),
     );
@@ -1499,12 +1508,17 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
         AttemptExecutionProduct::PreparedSemantic(_)
     ));
     assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+    let expected_replay_requests = if expect_guest_reply {
+        Vec::new()
+    } else {
+        vec![parent]
+    };
     assert_eq!(
         *observations
             .replay_requests
             .lock()
             .expect("branch replay requests"),
-        [parent]
+        expected_replay_requests
     );
     assert_eq!(
         *observations
@@ -2048,7 +2062,7 @@ fn repository_execution_fixture() -> (
         .expect("initial discovery attempt");
     let attempt = repository.load_attempt(attempt_id).expect("load attempt");
 
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage =
         CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage projection");
@@ -2774,16 +2788,13 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     let model = CrucibleExecutionModel::new(store.clone(), router);
     let mut worker = RepositoryAttemptWorker::new(store.clone(), model);
 
-    let profile = ExecutorCompatibilityProfile::new(
-        "crucible-test",
-        "qemu-test",
-        BTreeMap::from([(String::from("control"), 1)]),
-        lineage.scenario_schema(),
-        1,
-    )
-    .expect("compatibility profile");
+    let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
     let epoch = DaemonEpoch::from_bytes([0x72; 16]).expect("daemon epoch");
     let resources = AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("attempt resources");
+    let source_snapshot = repository
+        .head("hot-world-publication")
+        .expect("campaign head")
+        .snapshot_id();
     let request = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x73; 16]).expect("assignment"),
         epoch,
@@ -2792,7 +2803,13 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
         resources,
         ExecutionRetentionIntent::Discard,
     )
-    .expect("submit request");
+    .expect("submit request")
+    .with_retention_policy_basis(
+        repository
+            .attempt_retention_policy_basis_at(source_snapshot, attempt)
+            .expect("retention policy basis"),
+    )
+    .expect("policy-bound submit request");
     let admission = RepositoryAttemptAdmission::new(Arc::clone(&repository), profile);
     let mut supervisor = LocalExecutorSupervisor::new(
         MemoryAssignmentLedger::default(),
@@ -2802,10 +2819,14 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     );
     let submitted =
         ExecutorService::submit_attempt(&mut supervisor, &request).expect("submit exact discovery");
-    assert!(matches!(
-        submitted.disposition(),
-        SubmitAttemptDisposition::Accepted { .. }
-    ));
+    assert!(
+        matches!(
+            submitted.disposition(),
+            SubmitAttemptDisposition::Accepted { .. }
+        ),
+        "unexpected submit disposition: {:?}",
+        submitted.disposition()
+    );
     let queued = supervisor.next_queued().expect("queued execution");
 
     let work = worker.execute(queued);

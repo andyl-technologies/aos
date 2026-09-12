@@ -22,8 +22,9 @@ use crucible_qemu::{
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedExactCheckpoint, CheckpointHandoffFailure, CrucibleAttemptExecution,
-    ExecutionCancellation, QemuCrucibleAttemptSession, QemuCrucibleSessionFactory,
-    captured_qemu_vmstate_blob, exact_checkpoint_store::validate_scheduler_checkpoint_basis,
+    ExecutionCancellation, PreparedSemanticAttemptResult, PreparedSemanticResultCodecError,
+    QemuCrucibleAttemptSession, QemuCrucibleSessionFactory, captured_qemu_vmstate_blob,
+    exact_checkpoint_store::validate_scheduler_checkpoint_basis,
 };
 
 /// Read-only operational boundary available to a modeled attempt driver.
@@ -582,6 +583,9 @@ pub enum QemuLiveAttemptSessionError<E> {
     /// The captured root could not enter its durable supervisor phase.
     #[error("live QEMU checkpoint handoff failed: {0}")]
     CheckpointHandoff(#[source] CheckpointHandoffFailure),
+    /// The modeled observation could not form the canonical semantic result.
+    #[error("live QEMU semantic result preparation failed: {0}")]
+    ResultPreparation(#[source] PreparedSemanticResultCodecError),
     /// The modeled attempt driver failed.
     #[error("live QEMU campaign attempt driver failed")]
     Driver(E),
@@ -892,7 +896,10 @@ where
         self.guard
             .check_operational_boundary()
             .map_err(classify_operational_failure)?;
-        Ok(AttemptExecutionProduct::Observation(candidate))
+        let result = PreparedSemanticAttemptResult::new(*candidate, None).map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuLiveAttemptSessionError::ResultPreparation(error))
+        })?;
+        Ok(AttemptExecutionProduct::prepared_semantic(result))
     }
 
     fn capture_exact_checkpoint(
@@ -1045,6 +1052,7 @@ fn classify_operational_failure<E>(
         }
         QemuLiveAttemptSessionError::Operational(_)
         | QemuLiveAttemptSessionError::CheckpointHandoff(_)
+        | QemuLiveAttemptSessionError::ResultPreparation(_)
         | QemuLiveAttemptSessionError::Driver(_) => AttemptWorkerFailure::Terminal(error),
     }
 }

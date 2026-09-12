@@ -14,11 +14,12 @@ use crate::{
     BranchPointId, BranchRequestCause, CampaignCommandId, CampaignPolicyId, CampaignRoots,
     CampaignViewId, CandidateSource, ChoiceClassContext, ChoiceCoordinate, ChoiceDomainId,
     ChoiceOpportunityId, ChoiceSource, ChoiceValue, ConfigurationArtifact, ConfigurationArtifactId,
-    ConfigurationId, ContinuationState, CoverageProjectionId, FindingKind, FindingOccurrenceSet,
-    FindingSignature, GuidanceEvidence, MeasurementSetId, ObservationId, PlannerDisposition,
-    PlannerEngineId, PlannerInvocationId, PlannerStateId, PlanningAccounting, PlanningScanPosition,
-    PlanningUsage, PolicyArtifactId, PropertyVerdictSetId, ReproductionArtifactId,
-    RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId, StopCondition, StopOutcome,
+    ConfigurationId, ContinuationState, CoverageProjectionId, FindingExactPins, FindingKind,
+    FindingOccurrenceSet, FindingSignature, GuidanceEvidence, MeasurementSetId, ObservationId,
+    PlannerDisposition, PlannerEngineId, PlannerInvocationId, PlannerStateId, PlanningAccounting,
+    PlanningScanPosition, PlanningUsage, PolicyArtifactId, PropertyVerdictSetId,
+    ReproductionArtifactId, RetainedPlannerRequestId, ScenarioArtifactId, ScenarioDefId,
+    StopCondition, StopOutcome,
 };
 
 fn hash(label: &str) -> CampaignHash {
@@ -28,7 +29,7 @@ fn hash(label: &str) -> CampaignHash {
 fn snapshot(label: &str) -> CampaignSnapshotId {
     CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         label.as_bytes(),
     ))
     .expect("snapshot")
@@ -142,7 +143,7 @@ fn finding(label: &str, occurrence_root: ContentId) -> Finding {
         format!("{label}-observation").as_bytes(),
     ))
     .expect("observation id");
-    Finding::new(
+    Finding::new_with_retention(
         FindingSignature::new(
             FindingKind::Timeout,
             CampaignHash::derive("campaign-query-finding-fingerprint", label.as_bytes()),
@@ -162,7 +163,7 @@ fn finding(label: &str, occurrence_root: ContentId) -> Finding {
         snapshot(&format!("{label}-first-seen")),
         FindingOccurrenceSet::new(occurrence_root, 1, observation).expect("finding occurrences"),
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )
     .expect("finding")
 }
@@ -227,6 +228,7 @@ fn graph_pages_are_canonical_bounded_snapshot_and_cursor_bound() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("query snapshot");
     let request = QueryCampaignGraphRequest::new(
@@ -275,8 +277,8 @@ fn graph_pages_are_canonical_bounded_snapshot_and_cursor_bound() {
                 .to_string(),
         ],
         [
-            String::from("1bf139d3ed67872df2ec5241f5b1f3ffa578372fb8899deda231919342a834c0"),
-            String::from("3d774c8603010f829bc81f672cabc7c683c98f9adeb8e10c7d8753f39b51f323"),
+            String::from("60695dd8c9e86f73ca7ca374af7ab9389b339f09e5094ebab1942fbb90f2993b"),
+            String::from("81cb0d70c16de9fccc5e2f540401fdba722415f9c97b8d2373c3b73f41310946"),
         ]
     );
 
@@ -434,6 +436,7 @@ fn finding_pages_authenticate_complete_bodies_order_and_exact_eof() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("finding query snapshot");
     let request = QueryCampaignFindingsRequest::new(
@@ -540,7 +543,7 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
         StopOutcome::ModeledTimeout("execution".to_owned()),
         MeasurementSetId::from_content_id(ContentId::for_bytes(
             ObjectKind::Observation,
-            1,
+            2,
             b"finding-object-measurements",
         ))
         .expect("measurement ID"),
@@ -570,7 +573,7 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
         b"reproduce".to_vec(),
     )
     .expect("reproduction");
-    let finding = Finding::new(
+    let finding = Finding::new_with_retention(
         FindingSignature::new(
             FindingKind::Timeout,
             hash("finding-object-fingerprint"),
@@ -586,7 +589,7 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
         FindingOccurrenceSet::new(empty.content_id(), 1, observation_id)
             .expect("finding occurrences"),
         None,
-        BTreeSet::new(),
+        FindingExactPins::default(),
     )
     .expect("finding");
     let finding_id = finding.id().expect("finding ID");
@@ -622,6 +625,7 @@ fn finding_object_reads_authenticate_exact_child_kind_and_identity() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("finding object snapshot");
     let request = GetCampaignFindingObjectRequest::new(
@@ -820,6 +824,7 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
             cause: request.cause(),
             admission_ordinal: AdmissionOrdinal::new(1),
         },
+        proposal.policy(),
     );
     let admission_id = admission.id().expect("attempt admission ID");
     let observation = Observation::new(
@@ -830,7 +835,7 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
         StopOutcome::TerminalSuccess,
         MeasurementSetId::from_content_id(ContentId::for_bytes(
             ObjectKind::Observation,
-            1,
+            2,
             b"attempt-explanation-measurements",
         ))
         .expect("attempt measurement ID"),
@@ -911,6 +916,7 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
         ))
         .expect("attempt snapshot policy ID"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("attempt explanation snapshot");
     let explanation_request = ExplainCampaignAttemptRequest::new(
@@ -988,18 +994,6 @@ fn attempt_explanations_authenticate_execution_proposal_selection_and_completion
             .terms_micros()["selected-total-micros"],
         375_000
     );
-    let mut legacy = response.clone();
-    legacy.schema_version = 1;
-    legacy.planner_step = None;
-    legacy.planner_step_proof = None;
-    let legacy_bytes = legacy.canonical_bytes();
-    let legacy_decoded = ExplainCampaignAttemptResponse::from_canonical_bytes(&legacy_bytes)
-        .expect("legacy attempt explanation response");
-    assert_eq!(legacy_decoded.canonical_bytes(), legacy_bytes);
-    legacy_decoded
-        .validate_for(&explanation_request)
-        .expect("legacy explanation binding");
-
     let mut wrong = response.clone();
     let Some(proposal) = wrong.proposal.as_mut() else {
         unreachable!("branch proposal")
@@ -1067,20 +1061,20 @@ fn discovery_attempt_explanations_authenticate_absent_branch_and_completion_stat
     )
     .expect("discovery attempt");
     let attempt_id = attempt.id().expect("discovery attempt ID");
+    let discovery_policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Policy,
+        1,
+        b"discovery-explanation-policy",
+    ))
+    .expect("discovery policy ID");
     let admission = AttemptAdmission::new(
         attempt_id,
         AttemptAdmissionRole::ExecutionBasis {
             proposal: None,
-            cause: BranchRequestCause::ExhaustivePolicy(
-                CampaignPolicyId::from_content_id(ContentId::for_bytes(
-                    ObjectKind::Policy,
-                    1,
-                    b"discovery-explanation-policy",
-                ))
-                .expect("discovery policy ID"),
-            ),
+            cause: BranchRequestCause::ExhaustivePolicy(discovery_policy),
             admission_ordinal: AdmissionOrdinal::new(1),
         },
+        discovery_policy,
     );
     let accounting = map
         .insert(
@@ -1121,6 +1115,7 @@ fn discovery_attempt_explanations_authenticate_absent_branch_and_completion_stat
         ))
         .expect("discovery active policy ID"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("discovery explanation snapshot");
     let request = ExplainCampaignAttemptRequest::new(
@@ -1209,6 +1204,7 @@ fn graph_object_response_authenticates_snapshot_key_and_exact_envelope() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = GetCampaignGraphObjectRequest::new(
@@ -1305,6 +1301,7 @@ fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = QueryCampaignChoicesRequest::new(
@@ -1358,8 +1355,8 @@ fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("3d04a1a5b7687ffd4398b162b8b14566e1c56a16b47446db3dc734ac1b318eee"),
-            String::from("9b5d7589cad830b6f816c31d5a4c8e9edae7deea41703d4993ec337833e0172f"),
+            String::from("4cab59b2bc7a6c4c63b954a899655cf0178b1ad347d19823104a9311236801f7"),
+            String::from("0232d8315aef88d88b828b505a37cf4386f9b42a04bcc788f7668feed64478d6"),
         ]
     );
 
@@ -1400,7 +1397,7 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
     .map(|(label, state)| {
         let request = BranchRequestId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            1,
+            2,
             label.as_bytes(),
         ))
         .expect("request id");
@@ -1455,6 +1452,7 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = QueryCampaignFrontierRequest::new(
@@ -1510,8 +1508,8 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("483028d0eea2e19495841dd35e1d12e209c7f6ab06e37f659e5e1dcd98edbca4"),
-            String::from("ff72a3caeb93adf388ca3bdd3a7a7fed45479a7b033ed3dfac0fdd4ed2485c26"),
+            String::from("d2e4acf0fb0e14093b2195a0aa077023005fc00db15e060a28e3db4de2b4b2f0"),
+            String::from("3fd7dff3b9319e758ef845da67bde0f39e895983748813cc325da5e9b4dfec11"),
         ]
     );
 
@@ -1574,6 +1572,7 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
             accounting: empty.content_id(),
             coordination: empty.content_id(),
         },
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = GetCampaignFrontierObjectRequest::new(
@@ -1618,8 +1617,8 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
                 .to_string(),
         ],
         [
-            String::from("ded2cdc531496795ce795c8f01a5fd093fba3917917ba03221248533a7d4e90f"),
-            String::from("3a48809b35eeb65b37ec29ae4dc51b1d877ebbed1f182cab8c61e2a52b35efd4"),
+            String::from("16185b9d7ff6d11e563143ba1e1b72c45638afe31a146bbd625741c80dc16241"),
+            String::from("a152eb397324ef97da88e7d9ee56f43f8f304d8d952d5fd6ee19cde2caddc024"),
         ]
     );
 
@@ -1674,6 +1673,7 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
         ))
         .expect("policy"),
         roots,
+        crate::test_budget_ledger_id(),
     )
     .expect("snapshot");
     let request = GetCampaignChoiceObjectRequest::new(
@@ -1749,8 +1749,8 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
                 .to_string(),
         ],
         [
-            String::from("b3a99f45d1c4d84be0175b9f4b2408877d93a6ea4796466e48350ae035d6da38"),
-            String::from("74abc6ab91c7dec2cb1cde83dad1afc81e1707bf9f0717ebab4b008792a92286"),
+            String::from("5749125328934994e3bd1742872ff7725d97ceb8d97c52364299ae7b8f415157"),
+            String::from("13271a838705a79cc0e914033247b6f940315537893b587656b6eabe1c3e4e0b"),
         ]
     );
 }

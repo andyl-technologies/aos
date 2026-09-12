@@ -611,12 +611,6 @@ bisector already pins a divergence to a precise icount-stamped event-log coordin
 bisecting resolver share this path, localizing any divergence by bisection before
 handing the debugger a replay-oracle-checked coordinate.
 
-And the loop closes with triage ergonomics: a **non-passing run's failure footer**
-(the CLI's failure rendering, 23 §4) MUST print a **copy-pasteable
-`crucible debug <artifact> --at-failure`** command, so a developer goes from "it
-failed" to "I'm sitting in a debugger at the failure" in one paste — the debugging
-analogue of the `crucible replay` repro command (23 [CLI-10]).
-
 - **[DBG-27]** The debug target resolver MUST accept, and resolve to a checkpoint
   configuration / virtual-time coordinate the attach (§36.2) realizes: `--at
   <icount|vtime>` (a per-node icount or world virtual time, 09); `--at-event <seq>`
@@ -630,12 +624,6 @@ analogue of the `crucible replay` repro command (23 [CLI-10]).
   pins a divergence to a precise icount-stamped event-log coordinate ([OBS-28]), the
   resolver MUST consume it without translation. *Gate:* `gate:divergence-bisect`,
   `gate:replay-oracle`. *Spec:* §36.6; cross-ref 24, 19 §19.6.2.
-
-- **[DBG-29]** A non-passing run's failure footer (23 §4) MUST print a
-  copy-pasteable **`crucible debug <artifact> --at-failure`** command (the debugging
-  analogue of the `crucible replay` repro command, 23 [CLI-10]), so an operator goes
-  from a reported failure to an attached debugger at the failure point in one paste.
-  *Gate:* `gate:e2e-determinism`. *Spec:* §36.6; cross-ref 23 §4, [CLI-10].
 
 ---
 
@@ -713,7 +701,7 @@ the CLI catalogue in [`23-cli.md`](23-cli.md)**.
 
   TARGET (choose one)
     <artifact>            a reproduction artifact (06 §7.1) to attach to
-    <savepoint>           a savepoint / checkpoint hash (07)
+    <savepoint>           a current portable savepoint handle (07)
     --session <id:epoch:seed>  attach to a running session via the daemon (21);
                                seed is 64 lowercase hexadecimal digits
 
@@ -1378,20 +1366,15 @@ peer-credential completion remain open in T-DBG-11.
   `(seed, scenario, schedule)` artifacts. Completion remains open until the session
   and CLI expose the explicit transition and prove that forbidden requests never
   fork as a side effect.
-- [x] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
+- [ ] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
   `--at-failure` = first assertion-violation point, `--at-checkpoint`), accept a
   divergence-bisection `(node, icount, kind)` coordinate directly as a goto target,
-  and emit a copy-pasteable `crucible debug <artifact> --at-failure` in the failure
-  footer (23 §4). — satisfies [DBG-27], [DBG-28], [DBG-29]; spec §36.6.
-  Completed by `checks.crucible.phase6.debugTargetResolver`:
-  `TemporalGraph::debug_resolve_target` accepts direct `--at` coordinates,
-  event-log `--at-event` sequences, `--at-failure` by scanning for the first
-  assertion-state violation, `--at-checkpoint` content addresses, and node-local
-  divergence-bisection coordinates, then returns the `DebugGotoRequest` consumed by
-  restore-plus-replay `debug_goto`. `DebugFailureFooterCommand` centralizes the
-  copy-pasteable `crucible debug <artifact> --at-failure` footer and the CLI failure
-  artifact writer uses it.
-- [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
+  and accepts `--at-failure` as an explicit target. — satisfies [DBG-27], [DBG-28];
+  spec §36.6.
+  The previous gate depended on retired artifact/savepoint debug ownership and
+  has been removed. Completion requires executable coverage through the current
+  authenticated daemon Session owner.
+- [ ] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,
   `--checkpoint-stride`) and verbs attach-gdb/fork-debug/goto/reverse-step/reverse-continue
@@ -1402,41 +1385,12 @@ peer-credential completion remain open in T-DBG-11.
   read/mutate boundary. — satisfies [DBG-7], [DBG-30], [DBG-31], [DBG-32], [DBG-33],
   [DBG-34], [DBG-35], [DBG-36], [DBG-37], [DBG-38], [DBG-39], [DBG-40]; spec §36.7,
   §36.8, §36.9, §36.10.
-  Completed under `checks.crucible.phase6.debugCliSurface`:
-  `crucible debug` now parses artifact/savepoint and `--session` targets plus
-  `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, `--node`,
-  `--gdb-listen`, `--read-only`, `--allow-mutate`, `--checkpoint-stride`, and the
-  attach-gdb/goto/reverse-step/reverse-continue verbs. The CLI planner records only
-  delegated session commands and mediated gdbstub-proxy operations, defaults
-  artifacts to `--at-failure`, savepoints to their checkpoint coordinate, and
-  sessions to the current coordinate, realizes reverse-step through the debug
-  reverse-step/goto restore-plus-replay path rather than unsupported forward session
-  step modes, proves that the CLI holds no debugger state, defaults to read-only
-  inspection, exposes the no
-  symbol server policy, requires coherent multi-vCPU gdb threads, and keeps raw gdb
-  single-step disabled. The daemonless local route fails with exit `4` before a
-  generic QEMU admission probe because its instantiate/replay executor remains
-  open under T-DBG-9/T-DBG-10; it never returns a successful planned-only result.
-  The remote unary client now implements an
-  explicit `fork-debug` plus argv `exec`, interactive `pty`, and configured
-  in-guest `ssh` byte bridging. The fork RPC requires the transport-derived
-  controller to hold `control`, `mutate`, and `shell`, records a typed
-  guest-introspection trigger/action on the whole-world branch, and every guest
-  record is rejected while the session remains canonical. Authenticated remote
-  `goto`, `reverse-step`, and `reverse-continue` send only operator intent under
-  the exclusive controller lease. The actor overwrites caller state with its
-  current configuration, checked scheduler-event prefix, and
-  event-to-schedule-prefix map before invoking the existing
-  replay-oracle-checked time-travel path. Each schedule-matching causal decision
-  advances that map to its exact prefix, quantum boundaries bind the completed
-  configuration, and other records retain the deterministic
-  scheduler boundary at which forward stepping would expose them. A per-session
-  operation gate prevents controller release or reassignment between lease
-  authorization and actor completion. Checkpoint-only resume inputs do not carry
-  the historical event log, so reverse event-like operations fail explicitly at
-  the actor's resume-history floor while instruction and coordinate `goto`
-  remain available. The CLI accepts the closed reverse grain set and
-  `quiescent`, `at:<ticks>`, or canonical compact-binary 17a conditions.
+  The authenticated remote Session client implements explicit `fork-debug`,
+  GDB relay, argv `exec`, interactive `pty`, and configured in-guest `ssh`
+  byte bridging. The fork RPC requires the transport-derived controller to hold
+  `control`, `mutate`, and `shell`. The previous gate mixed this current
+  surface with retired artifact/savepoint targets and has been removed; a
+  focused Session-only gate remains required.
 - [x] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
   debugger gateway, a stable asynchronous GDB listener, bounded fail-closed RSP
   parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced
@@ -1518,7 +1472,7 @@ peer-credential completion remain open in T-DBG-11.
   principal on every operation. Authenticated attach allocates a daemon-loopback
   stable gateway, and the CLI exposes it through a bounded client-side loopback
   relay over HTTP/2 while retaining and finally releasing the controller lease.
-  RPC ABI v5 adds caller-owned acquisition tokens and daemon-side holder
+  RPC ABI v6 adds caller-owned acquisition tokens and daemon-side holder
   identities: a lost-response retry reuses one token/holder, while concurrent
   commands and a long-lived relay hold separate
   references to the same principal/generation, and only the final release clears

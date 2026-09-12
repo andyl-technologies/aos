@@ -284,7 +284,6 @@ impl CampaignRepository {
                     &snapshot,
                     &puct_projections[&position.branch_point()],
                     offer,
-                    guidance.schema_version(),
                     &mut candidate_cache,
                 )?;
                 if &expected != guidance {

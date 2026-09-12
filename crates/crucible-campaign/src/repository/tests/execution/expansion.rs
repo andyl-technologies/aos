@@ -142,7 +142,9 @@ fn exercise_intervention_guidance_ordering(
         )
         .expect("publish intervention-guidance child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -546,7 +548,10 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         )
         .expect("publish finite expansion child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("empty measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new())
+                .expect("empty measurements"),
+        )
         .expect("publish finite expansion measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -627,6 +632,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             .snapshot
             .transition()
             .expect("observation transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged path-index successor");
     let forged_path_content = repository
@@ -827,7 +833,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         nested_proposed.new_snapshot
     );
 
-    let mut nested_segments = path.segments().expect("scoped first path").to_vec();
+    let mut nested_segments = path.segments().to_vec();
     nested_segments.push(crate::BranchPathSegment::new(
         nested_branch_point,
         nested_edge,
@@ -1062,13 +1068,7 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         .expect("weighted-guidance snapshot");
     let mut candidate_cache = Default::default();
     let weighted_guidance = repository
-        .planner_candidate_guidance(
-            &loaded,
-            &root_puct,
-            &second_proposal,
-            2,
-            &mut candidate_cache,
-        )
+        .planner_candidate_guidance(&loaded, &root_puct, &second_proposal, &mut candidate_cache)
         .expect("weighted prospective guidance");
     assert_eq!(weighted_guidance.statistics().prior_micros(), 750_000);
     let second_proposed = repository

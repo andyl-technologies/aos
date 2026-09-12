@@ -182,13 +182,13 @@ pub struct AttemptExecutionRuntimeBasis {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttemptFindingRetentionPolicy {
     basis: AttemptRetentionPolicyBasis,
-    retention: Option<RetentionPolicy>,
+    retention: RetentionPolicy,
 }
 
 impl AttemptFindingRetentionPolicy {
     pub(crate) const fn new(
         basis: AttemptRetentionPolicyBasis,
-        retention: Option<RetentionPolicy>,
+        retention: RetentionPolicy,
     ) -> Self {
         Self { basis, retention }
     }
@@ -199,9 +199,9 @@ impl AttemptFindingRetentionPolicy {
         self.basis
     }
 
-    /// Returns the policy's semantic retention settings when canonically bound.
+    /// Returns the policy's semantic retention settings.
     #[must_use]
-    pub const fn retention(self) -> Option<RetentionPolicy> {
+    pub const fn retention(self) -> RetentionPolicy {
         self.retention
     }
 }
@@ -1114,15 +1114,6 @@ impl Drop for NativeCheckpointUnwindGuard {
 /// Canonical completion or exact paused capture returned by an execution model.
 #[derive(Debug)]
 pub enum AttemptExecutionProduct {
-    /// The attempt reached its modeled stop and produced immutable evidence.
-    Observation(Box<ObservationCandidate>),
-    /// The attempt produced an observation and a verified finding closure.
-    ObservationWithFinding {
-        /// Canonical observation candidate from the admitted execution.
-        observation: Box<ObservationCandidate>,
-        /// Prepared private-replay evidence and finding root.
-        finding: Box<PreparedCrucibleFindingCandidate>,
-    },
     /// The complete observation/finding closure with raw measurement evidence.
     PreparedSemantic(Box<PreparedSemanticAttemptResult>),
     /// A semantic finding plus its linear automatic exact-retention handoff.
@@ -1137,24 +1128,6 @@ pub enum AttemptExecutionProduct {
 }
 
 impl AttemptExecutionProduct {
-    /// Wraps one canonical observation candidate.
-    #[must_use]
-    pub fn observation(candidate: ObservationCandidate) -> Self {
-        Self::Observation(Box::new(candidate))
-    }
-
-    /// Wraps an observation and its fully prepared finding candidate.
-    #[must_use]
-    pub fn observation_with_finding(
-        observation: ObservationCandidate,
-        finding: PreparedCrucibleFindingCandidate,
-    ) -> Self {
-        Self::ObservationWithFinding {
-            observation: Box::new(observation),
-            finding: Box::new(finding),
-        }
-    }
-
     /// Wraps a complete semantic result with its raw measurement leaves.
     #[must_use]
     pub fn prepared_semantic(result: PreparedSemanticAttemptResult) -> Self {
@@ -1194,9 +1167,7 @@ impl AttemptExecutionProduct {
                     checkpoint.native_retirement()
                 }
             },
-            Self::Observation(_)
-            | Self::ObservationWithFinding { .. }
-            | Self::PreparedSemantic(_) => None,
+            Self::PreparedSemantic(_) => None,
         }
     }
 }
@@ -1582,26 +1553,16 @@ fn validate_execution_product(
                 }
             }
         }
-        AttemptExecutionProduct::ObservationWithFinding { .. } if policy_basis.is_some() => {
-            return Err("policy-bound finding omitted exact-retention handoff");
-        }
         AttemptExecutionProduct::PreparedSemantic(result)
             if policy_basis.is_some() && result.finding().is_some() =>
         {
             return Err("policy-bound finding omitted exact-retention handoff");
         }
-        AttemptExecutionProduct::Observation(_)
-        | AttemptExecutionProduct::ObservationWithFinding { .. }
-        | AttemptExecutionProduct::PreparedSemantic(_)
+        AttemptExecutionProduct::PreparedSemantic(_)
         | AttemptExecutionProduct::ExactCheckpoint(_) => {}
     }
 
     match product {
-        AttemptExecutionProduct::Observation(candidate)
-        | AttemptExecutionProduct::ObservationWithFinding {
-            observation: candidate,
-            ..
-        } => validate_semantic_observation(candidate, queued, input),
         AttemptExecutionProduct::PreparedSemantic(result)
         | AttemptExecutionProduct::PreparedSemanticWithExactRetention { result, .. } => {
             validate_semantic_observation(result.observation(), queued, input)

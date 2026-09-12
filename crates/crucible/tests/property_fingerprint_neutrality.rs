@@ -132,8 +132,12 @@ struct LaunchMaterial {
 #[cfg(feature = "test-double")]
 fn deterministic_run_material(form: &ScenarioDefForm) -> RunMaterial {
     let mut recorder = DecisionRecorder::new(Configuration::genesis(form.scenario_def()));
-    let _node_draw = recorder.draw_u64(RngStreamId::for_node("node-a/faults/0"));
-    let _network_draw = recorder.draw_u64(RngStreamId::for_node("node-a/network/1"));
+    let _node_draw = recorder
+        .draw_u64(RngStreamId::for_node("node-a/faults/0"))
+        .expect("record node draw");
+    let _network_draw = recorder
+        .draw_u64(RngStreamId::for_node("node-a/network/1"))
+        .expect("record network draw");
     recorder
         .serve_app_random(
             node_id("node-a"),

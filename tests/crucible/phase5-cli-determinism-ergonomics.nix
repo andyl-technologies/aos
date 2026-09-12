@@ -128,20 +128,16 @@
         needle = "struct FailureArtifactRule";
       }
       {
-        label = "failure footer";
-        needle = "struct FailureReproductionFooter";
+        label = "reproduction footer";
+        needle = "struct ReproductionFooter";
       }
       {
-        label = "failure footer builder";
-        needle = "fn failure_reproduction_footer";
+        label = "reproduction footer builder";
+        needle = "fn reproduction_footer";
       }
       {
         label = "replay command footer";
         needle = "crucible replay";
-      }
-      {
-        label = "debug at failure footer";
-        needle = "--at-failure";
       }
       {
         label = "self-contained artifact proof";

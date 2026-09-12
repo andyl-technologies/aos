@@ -22,7 +22,7 @@ use crucible::{
     QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerOperationalFailureClass, SchedulerQuiescence,
     SelectionDecision, VirtualTime, compare_event_log_determinism,
-    coverage_fingerprint_from_event_log, step,
+    coverage_fingerprint_from_event_log, try_step,
 };
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, CampaignCodecError, CampaignHash, ChoiceDiscovery,
@@ -76,6 +76,9 @@ pub const MAX_QEMU_CAMPAIGN_OPEN_MEASUREMENT_INSTANCES: usize = 65_536;
 /// Failure while driving or projecting one fresh modeled campaign attempt.
 #[derive(Debug, Error)]
 pub enum QemuFreshModeledDriverError {
+    /// A campaign decision violated the scenario's configuration limits.
+    #[error("fresh campaign configuration step failed: {0}")]
+    Configuration(#[source] EngineError),
     /// The attempt was canceled at a modeled boundary.
     #[error("fresh campaign attempt was canceled")]
     Canceled,
@@ -1773,7 +1776,10 @@ fn resolve_pending_guest_choices_at_configuration(
     let mut entries = Vec::new();
     for (pending, reply, decision) in continuations {
         let parent = configuration.clone();
-        let selected = step(&parent, Decision::Selection(decision.clone()));
+        let selected =
+            try_step(&parent, Decision::Selection(decision.clone())).map_err(|error| {
+                AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Configuration(error))
+            })?;
         let reply_entries = lifecycle
             .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
             .map_err(classify_scheduler_error)?;

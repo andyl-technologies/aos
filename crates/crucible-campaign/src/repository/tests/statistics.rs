@@ -406,7 +406,9 @@ fn publish_observation_for_attempt_with(
         )
         .expect("publish statistical child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -525,6 +527,7 @@ fn statistical_policy_identity_is_immutable_for_live_and_cold_activation() {
         changed_id,
         roots,
         CampaignFactId::from_content_id(control_content).expect("control fact ID"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged statistical policy successor");
     let forged_content = repository
@@ -539,7 +542,7 @@ fn statistical_policy_identity_is_immutable_for_live_and_cold_activation() {
 }
 
 #[test]
-fn statistical_design_requires_static_exhaustive_policy_and_legacy_reports_fail_closed() {
+fn statistical_design_requires_static_exhaustive_policy_and_unconfigured_reports_fail_closed() {
     let (repository, lineage, base) = fixture();
     let design = one_draw_design(&repository, &lineage);
     for explorer in [
@@ -574,7 +577,7 @@ fn statistical_design_requires_static_exhaustive_policy_and_legacy_reports_fail_
         ));
     }
 
-    let legacy = CampaignPolicy::new(
+    let unconfigured = CampaignPolicy::new(
         base.scenario(),
         base.campaign_seed(),
         CampaignMode::Statistical,
@@ -589,19 +592,21 @@ fn statistical_design_requires_static_exhaustive_policy_and_legacy_reports_fail_
         base.retention(),
         base.admits_scenario_defaults(),
     )
-    .expect("legacy statistical policy");
-    assert!(legacy.statistical_sampling_design().is_none());
+    .expect("unconfigured statistical policy");
+    assert!(unconfigured.statistical_sampling_design().is_none());
     let genesis = repository
         .create(
-            "legacy-statistical-report",
+            "unconfigured-statistical-report",
             &lineage,
-            &legacy,
+            &unconfigured,
             &BTreeMap::new(),
         )
-        .expect("create legacy statistical campaign");
+        .expect("create unconfigured statistical campaign");
     assert!(matches!(
-        repository
-            .project_statistical_estimate("legacy-statistical-report", genesis.snapshot_id(),),
+        repository.project_statistical_estimate(
+            "unconfigured-statistical-report",
+            genesis.snapshot_id(),
+        ),
         Err(CampaignRepositoryError::Integrity {
             reason: "statistical-report-policy-lacks-design"
         })
@@ -806,7 +811,7 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
     let leaf_proposal = repository
         .load_proposal(issued_proposals[0])
         .expect("load leaf statistical proposal");
-    let root_segments = root_path.segments().expect("root path segments");
+    let root_segments = root_path.segments();
     let (leaf_path, leaf_attempt) = statistical_attempt(
         repository.as_ref(),
         &leaf_request,
@@ -1433,6 +1438,7 @@ fn duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity() 
             cause: operator_cause,
             admission_ordinal,
         },
+        policy.id().expect("statistical policy ID"),
     );
     let intervention_content = repository
         .put_attempt_admission(&intervention_basis)
@@ -1456,6 +1462,7 @@ fn duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity() 
         loaded.snapshot.active_policy(),
         forged_roots,
         loaded.snapshot.transition().expect("head transition"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged intervention snapshot");
     let forged_loaded = LoadedSnapshot {
@@ -1513,7 +1520,7 @@ fn ordinary_and_self_normalized_event_estimates_keep_distinct_denominators() {
     let report = crate::StatisticalEstimateReport::new(
         CampaignSnapshotId::from_content_id(content_id(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             "snapshot",
         ))
         .expect("snapshot ID"),

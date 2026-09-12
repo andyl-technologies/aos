@@ -33,10 +33,10 @@ use rustix::fs::{FlockOperation, Mode, OFlags, flock};
 
 use crate::{
     AttachedCanonicalCampaignRuntime, AttachedPackagedQemuExecutor, CampaignLoopbackEndpointConfig,
-    CampaignLoopbackEndpointError, CampaignLoopbackListenerError, CampaignLoopbackServer,
-    CampaignLoopbackServerConfig, CampaignLoopbackServerReport, CampaignLoopbackServerShutdown,
-    CanonicalCampaignRuntimeConfig, CanonicalCampaignRuntimeError, CanonicalPlannerProcessConfig,
-    CrucibleArtifactError, CrucibleCampaignArtifactStore, ExecutorLoopbackEndpointConfig,
+    CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,
+    CampaignLoopbackServerReport, CampaignLoopbackServerShutdown, CanonicalCampaignRuntimeConfig,
+    CanonicalCampaignRuntimeError, CanonicalPlannerProcessConfig, CrucibleArtifactError,
+    CrucibleCampaignArtifactStore, ExecutorLoopbackEndpointConfig, LocalComponentEndpointError,
     MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES, MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor,
     PackagedQemuExecutorConfig, PackagedQemuExecutorError, PackagedQemuExecutorJoinError,
     PackagedQemuExecutorStartError, PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy,
@@ -1821,7 +1821,7 @@ pub enum CampaignLocalServiceError {
     Policy(#[from] UnixPeerCampaignPolicyLoadError),
     /// The managed Unix endpoint could not be acquired.
     #[error(transparent)]
-    Endpoint(#[from] CampaignLoopbackEndpointError),
+    Endpoint(#[from] LocalComponentEndpointError),
     /// A pre-bind artifact import was attempted in read-only mode.
     #[error("campaign artifact import is unavailable in read-only mode")]
     ArtifactImportReadOnly,

@@ -487,13 +487,11 @@ fn materialized_start_capture_is_durable_and_prelatched_before_dispatch() {
             .encode()
         ))
         .expect("materialized resume admission"),
-        Some(
-            CampaignPolicyId::parse(&format!(
-                "crucible.campaign.policy@{}",
-                ContentId::for_bytes(ObjectKind::Policy, 1, b"materialized-resume-policy").encode()
-            ))
-            .expect("materialized resume policy"),
-        ),
+        CampaignPolicyId::parse(&format!(
+            "crucible.campaign.policy@{}",
+            ContentId::for_bytes(ObjectKind::Policy, 1, b"materialized-resume-policy").encode()
+        ))
+        .expect("materialized resume policy"),
     );
     let resumed_assignment = request(0x64, 0x71, second_epoch, resources(1, 2048, 4096))
         .with_retention_policy_basis(policy_basis)
@@ -2474,7 +2472,7 @@ fn selected_savepoint_request(
     request: CampaignFactId,
 ) -> SubmitAttemptRequest {
     let snapshot = CampaignSnapshotId::parse(&format!(
-        "crucible.campaign.snapshot@campaign-snapshot.2.{}",
+        "crucible.campaign.snapshot@campaign-snapshot.3.{}",
         encode_hex(&[snapshot_byte; 32])
     ))
     .expect("campaign snapshot");

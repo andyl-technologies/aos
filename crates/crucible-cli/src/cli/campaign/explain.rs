@@ -188,8 +188,7 @@ struct CampaignExplainedAttemptAdmission {
 struct CampaignExplainedAttemptPath {
     id: String,
     edges: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    segments: Option<Vec<String>>,
+    segments: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -646,12 +645,11 @@ where
         path: CampaignExplainedAttemptPath {
             id: attempt.path().to_string(),
             edges: path.edges().iter().map(ToString::to_string).collect(),
-            segments: path.segments().map(|segments| {
-                segments
-                    .iter()
-                    .map(|segment| format!("{}:{}", segment.branch_point(), segment.edge()))
-                    .collect()
-            }),
+            segments: path
+                .segments()
+                .iter()
+                .map(|segment| format!("{}:{}", segment.branch_point(), segment.edge()))
+                .collect(),
         },
         selection,
         proposal: proposal_body,

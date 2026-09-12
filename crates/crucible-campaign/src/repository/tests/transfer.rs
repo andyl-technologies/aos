@@ -12,8 +12,8 @@ use super::*;
 use crate::{
     ArchiveInventoryDisposition, CampaignArchiveCheckpointResolver,
     CampaignArchiveCheckpointSelection, CampaignArchiveInventoryPage, CampaignArchiveManifest,
-    CampaignArchivePolicy, CampaignFactId, ExactCheckpointId, FindingKind, FindingSignature,
-    FindingTarget, ObjectEnvelope, PinChange, PinRequest, PinRetention,
+    CampaignArchivePolicy, CampaignFactId, ExactCheckpointId, FindingExactPins, FindingKind,
+    FindingSignature, FindingTarget, ObjectEnvelope, PinChange, PinRequest, PinRetention,
 };
 
 struct FixedCheckpoint(ExactCheckpointId);
@@ -54,7 +54,7 @@ fn archive_manifest_rejects_duplicate_configuration_pin_pairs() {
     selections.sort();
     let snapshot = crate::CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"snapshot",
     ))
     .expect("snapshot");
@@ -173,14 +173,20 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
     )
     .expect("representative finding signature");
     let found = source
-        .publish_finding(
+        .publish_finding_with_retention(
             "policy-source",
             observed.new_snapshot,
             signature,
             observed.observation,
             reproduction,
             None,
-            BTreeSet::from([checkpoint]),
+            FindingExactPins::new(
+                BTreeSet::new(),
+                BTreeSet::new(),
+                BTreeSet::new(),
+                BTreeSet::from([checkpoint]),
+            )
+            .expect("exact pins"),
         )
         .expect("publish representative finding");
     source

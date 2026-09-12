@@ -313,8 +313,7 @@ impl CampaignRepository {
                     .transition()
                     .ok_or_else(|| integrity("objective-cursor-accounting-transition-missing"))?;
                 match self.read_fact(transition.content_id())? {
-                    CampaignFact::ObservationPublished(observation)
-                    | CampaignFact::ObservationCredited(observation) => {
+                    CampaignFact::ObservationCredited(observation) => {
                         let observation = self.read_observation(observation.content_id())?;
                         let (_, ordinal) = self.observation_execution_basis(
                             current.roots().accounting,
@@ -331,7 +330,6 @@ impl CampaignRepository {
                         }
                     }
                     CampaignFact::ChoiceOpportunityDiscovered { .. }
-                    | CampaignFact::BranchRequestIssued(_)
                     | CampaignFact::BranchRequestAccepted { .. }
                     | CampaignFact::PlannerAdvanced(_)
                     | CampaignFact::ProposalIssued(_)
@@ -438,10 +436,7 @@ impl CampaignRepository {
         evidence: ContentId,
         max_bytes: u64,
     ) -> Result<Vec<u8>, CampaignRepositoryError> {
-        let retained = input
-            .measurements
-            .evaluation()
-            .ok_or_else(|| integrity("objective-input-measurement-set-has-no-evaluation"))?;
+        let retained = input.measurements.evaluation();
         if evidence.kind() != ObjectKind::Trace || !retained.evidence().contains(&evidence) {
             return Err(integrity("objective-input-evidence-leaf-is-not-owned"));
         }
@@ -784,7 +779,9 @@ mod tests {
         ))
         .expect("synthetic transition ID");
 
-        let genesis = CampaignSnapshot::genesis(lineage, policy, roots).expect("genesis");
+        let genesis =
+            CampaignSnapshot::genesis(lineage, policy, roots, crate::test_budget_ledger_id())
+                .expect("genesis");
         let genesis_id = CampaignSnapshotId::from_content_id(
             repository.put_snapshot(&genesis).expect("publish genesis"),
         )
@@ -802,8 +799,15 @@ mod tests {
         let mut parent = genesis_id;
         let mut head = genesis;
         for _ in 0..=MAX_OBJECTIVE_CURSOR_DELTA_SNAPSHOTS {
-            head = CampaignSnapshot::successor(parent, lineage, policy, roots, transition)
-                .expect("successor");
+            head = CampaignSnapshot::successor(
+                parent,
+                lineage,
+                policy,
+                roots,
+                transition,
+                crate::test_budget_ledger_id(),
+            )
+            .expect("successor");
             parent = CampaignSnapshotId::from_content_id(
                 repository.put_snapshot(&head).expect("publish successor"),
             )

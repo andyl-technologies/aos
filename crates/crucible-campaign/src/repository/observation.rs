@@ -21,23 +21,6 @@ struct ObservationProjection {
     accounting: BTreeMap<CampaignHash, ContentId>,
 }
 
-#[derive(Clone, Copy)]
-enum ObservationOwnerVersion {
-    Legacy,
-    Credits,
-    ScopedPaths,
-}
-
-impl ObservationOwnerVersion {
-    const fn credits(self) -> bool {
-        !matches!(self, Self::Legacy)
-    }
-
-    const fn indexes_path(self) -> bool {
-        matches!(self, Self::ScopedPaths)
-    }
-}
-
 impl CampaignRepository {
     /// Publishes one fully validated immutable executor result without advancing a campaign.
     ///
@@ -201,17 +184,11 @@ impl CampaignRepository {
             });
         }
 
-        let maintain_choice_index = self
-            .merkle
-            .get(current.snapshot.roots().graph, choice_index_anchor_key())?
-            .is_some();
         let projection = self.project_observation(
             &current,
             observation_id.content_id(),
             observation,
             &mut choice_cache,
-            maintain_choice_index,
-            ObservationOwnerVersion::ScopedPaths,
         )?;
         self.preflight_observation_closure(&current, observation, &mut choice_cache)?;
         let observation_content = self.put_observation(observation)?;
@@ -242,7 +219,7 @@ impl CampaignRepository {
             let prior_choice_index = self
                 .merkle
                 .get(roots.graph, choice_index_anchor_key())?
-                .unwrap_or(MerkleMap::empty_content_id()?);
+                .ok_or_else(|| integrity("current-campaign-choice-index-is-missing"))?;
             let published_choice_index =
                 self.insert_upserts(prior_choice_index, &projection.choice_index)?;
             if projection.graph.get(&choice_index_anchor_key()).copied()
@@ -266,9 +243,8 @@ impl CampaignRepository {
             }
         }
         if !projection.frontier_updates.is_empty() {
-            let published = self
-                .frontier_index_after(roots.exploration, &projection.frontier_updates, true)?
-                .ok_or_else(|| integrity("observation-frontier-index-disappeared"))?;
+            let published =
+                self.frontier_index_after(roots.exploration, &projection.frontier_updates, true)?;
             if projection
                 .exploration
                 .get(&frontier_index_anchor_key())
@@ -329,34 +305,6 @@ impl CampaignRepository {
         }
     }
 
-    pub(super) fn validate_observation_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        observation_id: ObservationId,
-        choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(), CampaignRepositoryError> {
-        if self
-            .validate_observation_successor_version(
-                parent,
-                child,
-                observation_id,
-                choice_cache,
-                ObservationOwnerVersion::Credits,
-            )
-            .is_ok()
-        {
-            return Ok(());
-        }
-        self.validate_observation_successor_version(
-            parent,
-            child,
-            observation_id,
-            choice_cache,
-            ObservationOwnerVersion::Legacy,
-        )
-    }
-
     pub(super) fn validate_credited_observation_successor(
         &self,
         parent: &LoadedSnapshot,
@@ -364,13 +312,7 @@ impl CampaignRepository {
         observation_id: ObservationId,
         choice_cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
-        self.validate_observation_successor_version(
-            parent,
-            child,
-            observation_id,
-            choice_cache,
-            ObservationOwnerVersion::ScopedPaths,
-        )
+        self.validate_observation_successor_version(parent, child, observation_id, choice_cache)
     }
 
     fn validate_observation_successor_version(
@@ -379,7 +321,6 @@ impl CampaignRepository {
         child: &LoadedSnapshot,
         observation_id: ObservationId,
         choice_cache: &mut ChoiceValidationCache,
-        owner: ObservationOwnerVersion,
     ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
@@ -398,10 +339,6 @@ impl CampaignRepository {
             observation_id.content_id(),
             &observation,
             choice_cache,
-            self.merkle
-                .get(prior.graph, choice_index_anchor_key())?
-                .is_some(),
-            owner,
         )?;
         for (before, after, upserts, reason) in [
             (
@@ -457,8 +394,6 @@ impl CampaignRepository {
         observation_content: ContentId,
         observation: &Observation,
         choice_cache: &mut ChoiceValidationCache,
-        maintain_choice_index: bool,
-        owner: ObservationOwnerVersion,
     ) -> Result<ObservationProjection, CampaignRepositoryError> {
         self.validate_observation_references_cached(observation, choice_cache)?;
         let roots = parent.snapshot.roots();
@@ -535,12 +470,12 @@ impl CampaignRepository {
             );
         }
         self.validate_compatible_upserts(roots.graph, &graph, "observation-graph-conflict")?;
+        let choice_index = self
+            .merkle
+            .get(roots.graph, choice_index_anchor_key())?
+            .ok_or_else(|| integrity("current-campaign-choice-index-is-missing"))?;
         let mut choice_index_upserts = BTreeMap::new();
-        if maintain_choice_index && !observation.discovered_choices().is_empty() {
-            let choice_index = self
-                .merkle
-                .get(roots.graph, choice_index_anchor_key())?
-                .unwrap_or(MerkleMap::empty_content_id()?);
+        if !observation.discovered_choices().is_empty() {
             for choice_id in observation.discovered_choices() {
                 choice_index_upserts
                     .insert(choice_index_order_key(*choice_id), choice_id.content_id());
@@ -604,11 +539,7 @@ impl CampaignRepository {
             }
         }
 
-        let credits = if owner.credits() {
-            self.expansion_credits(observation_id, &attempt)?
-        } else {
-            Vec::new()
-        };
+        let credits = self.expansion_credits(observation_id, &attempt)?;
         for credit in &credits {
             let anchor = branch_credit_index_key(credit.branch_point());
             let prior_credit_index = self
@@ -630,9 +561,7 @@ impl CampaignRepository {
                 )?,
             );
         }
-        let indexed_path = owner
-            .indexes_path()
-            .then_some((observation.child_content(), observation.path()));
+        let indexed_path = Some((observation.child_content(), observation.path()));
         if let Some((configuration, path)) = indexed_path {
             let anchor = configuration_path_index_key(configuration);
             let prior_path_index = self
@@ -727,9 +656,8 @@ impl CampaignRepository {
         }
         let mut exploration = BTreeMap::new();
         if !frontier_updates.is_empty() {
-            let next_frontier = self
-                .frontier_index_after(roots.exploration, &frontier_updates, false)?
-                .ok_or_else(|| integrity("progressive-generator-frontier-index-is-missing"))?;
+            let next_frontier =
+                self.frontier_index_after(roots.exploration, &frontier_updates, false)?;
             exploration.insert(frontier_index_anchor_key(), next_frontier);
         }
 
@@ -755,28 +683,7 @@ impl CampaignRepository {
     ) -> Result<Vec<ExpansionCredit>, CampaignRepositoryError> {
         let path = self.read_branch_path(attempt.path().content_id())?;
         let mut branch_points = BTreeSet::new();
-        if let Some(segments) = path.segments() {
-            branch_points.extend(segments.iter().map(|segment| segment.branch_point()));
-        } else if !path.edges().is_empty() {
-            let AttemptStart::Branch {
-                edge, selection, ..
-            } = attempt.start()
-            else {
-                return Err(integrity("legacy-discovery-attempt-has-nonempty-path"));
-            };
-            let resolved = self.resolve_selection(selection)?;
-            let crate::SelectionOrigin::CampaignBranch {
-                branch_point,
-                edge: selected_edge,
-            } = resolved.selection().origin()
-            else {
-                return Err(integrity("legacy-branch-selection-origin-mismatch"));
-            };
-            if selected_edge != edge || path.edges().last() != Some(&edge) {
-                return Err(integrity("legacy-branch-path-terminal-scope-mismatch"));
-            }
-            branch_points.insert(branch_point);
-        }
+        branch_points.extend(path.segments().iter().map(|segment| segment.branch_point()));
 
         Ok(branch_points
             .into_iter()

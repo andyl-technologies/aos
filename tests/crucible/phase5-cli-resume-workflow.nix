@@ -59,7 +59,7 @@
       }
       {
         label = "T-CLI-10 local resume progress";
-        needle = "handle- or store-backed local-double resume";
+        needle = "handle-backed local-double resume";
       }
       {
         label = "T-CLI-10 remote daemon resume progress";
@@ -135,7 +135,7 @@
       }
       {
         label = "resume savepoint ref";
-        needle = "enum ResumeSavepointRef";
+        needle = "struct ResumeSavepointRef";
       }
       {
         label = "savepoint handle decoder";
@@ -148,10 +148,6 @@
       {
         label = "resume resolver";
         needle = "fn resolve_resume_savepoint";
-      }
-      {
-        label = "checkpoint hash parser";
-        needle = "fn parse_blake3_content_hash";
       }
       {
         label = "resume handle scenario payload";
@@ -179,7 +175,7 @@
       }
       {
         label = "resume local-QEMU thin-replay proof";
-        needle = "resume-thin-replay";
+        needle = "resume-campaign-default-path";
       }
       {
         label = "resume terminal configuration report";
@@ -274,12 +270,8 @@
         needle = "struct ResumeRecordingLifecycleLoop";
       }
       {
-        label = "bare checkpoint closure loader";
-        needle = "fn savepoint_store_evidence";
-      }
-      {
         label = "resume planning test";
-        needle = "cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs";
+        needle = "cli_resume_workflow_plans_handles_and_rejects_nonportable_inputs";
       }
       {
         label = "resume execution test";
@@ -320,14 +312,6 @@
       {
         label = "resume long virtual-time test";
         needle = "cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound";
-      }
-      {
-        label = "resume bare hash store loader test";
-        needle = "cli_resume_workflow_executes_local_double_bare_hash_from_store";
-      }
-      {
-        label = "resume bare hash missing index artifact test";
-        needle = "cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/validation.rs" sessionValidation [

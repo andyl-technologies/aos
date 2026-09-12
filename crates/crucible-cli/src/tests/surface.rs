@@ -1032,29 +1032,6 @@ pub(super) fn write_savepoint_handle_fixture(
     Ok(path)
 }
 
-pub(super) fn write_checkpoint_closure_fixture(
-    store_root: &Path,
-    form: &crucible::ScenarioDefForm,
-    schedule: &Schedule,
-) -> Result<crucible::ContentHash, Box<dyn Error>> {
-    let checkpoint = crucible::Configuration {
-        def: form.scenario_def(),
-        schedule: schedule.clone(),
-    }
-    .id();
-    let artifact = crucible::ReproductionArtifact::capture(form, schedule)?;
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let artifact_key = store.put(&artifact.to_compact_binary())?;
-    let frontier = schedule.recorded_virtual_time().unwrap_or_default();
-    let index = store.write_checkpoint_closure_index(checkpoint, artifact_key, frontier)?;
-    let loaded = store.read_checkpoint_closure_index(checkpoint)?;
-    assert_eq!(loaded.checkpoint, checkpoint);
-    assert_eq!(loaded.reproduction_artifact, artifact_key);
-    assert_eq!(loaded.frontier, frontier);
-    assert!(store.exists(&index)?);
-    Ok(artifact_key)
-}
-
 pub(super) fn replay_to_savepoint_schedule(len: usize) -> Schedule {
     Schedule::from_decisions((0..len).map(|index| {
         crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
@@ -1564,7 +1541,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "interactive",
                 "watch",
             ][..],
-            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A savepoint handle / checkpoint content hash (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
+            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A current portable savepoint handle (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
         ),
         (
             "fork",
@@ -1577,12 +1554,12 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "interactive",
                 "watch",
             ][..],
-            "about=Fork a run from a savepoint with a new seed or decision override\nusage=Usage: crucible fork [OPTIONS] <SAVEPOINT>\nsavepoint=The fork point: a savepoint handle / checkpoint hash (07)\noverrides=Override a decision at/after the fork point (05 §3). Repeatable\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nlabel=Label the forked branch\ninteractive=Drive the forked session interactively\nwatch=Stream the live status line (20 §9)\n",
+            "about=Fork a run from a savepoint with a new seed or decision override\nusage=Usage: crucible fork [OPTIONS] <SAVEPOINT>\nsavepoint=The fork point: a current portable savepoint handle (07)\noverrides=Override a decision at/after the fork point (05 §3). Repeatable\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nlabel=Label the forked branch\ninteractive=Drive the forked session interactively\nwatch=Stream the live status line (20 §9)\n",
         ),
         (
             "replay",
             &["artifact", "check", "to", "bisect"][..],
-            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle or checkpoint hash\nbisect=Bisect this artifact against another (24 §5)\n",
+            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle\nbisect=Bisect this artifact against another (24 §5)\n",
         ),
         (
             "search",

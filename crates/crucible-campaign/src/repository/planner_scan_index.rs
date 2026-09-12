@@ -1,8 +1,8 @@
 //! Ordered, authenticated planner positions independent of exploration history.
 //!
-//! New campaign genesis owns an empty index. Request transitions extend it;
-//! proposals, admissions, and coordination steps preserve it. Legacy histories
-//! without the anchor retain their original scan semantics.
+//! Campaign genesis owns an empty index. Request transitions extend it;
+//! proposals, admissions, and coordination steps preserve it. Normal repository
+//! admission rejects a snapshot without the current anchor.
 //! ```text
 //! exploration[planner-scan-index.v1]
 //!   -> branch_point_hash -> request_schema_version -> request_digest -> request
@@ -22,18 +22,14 @@ impl CampaignRepository {
         child: &LoadedSnapshot,
         fact: &CampaignFact,
     ) -> Result<usize, CampaignRepositoryError> {
-        if self
-            .merkle
+        self.merkle
             .get(
                 child.snapshot.roots().exploration,
                 planner_scan_index_anchor_key(),
             )?
-            .is_none()
-        {
-            return Ok(0);
-        }
+            .ok_or_else(|| integrity("current-campaign-planner-scan-index-is-missing"))?;
         let requests = match fact {
-            CampaignFact::BranchRequestIssued(_) | CampaignFact::BranchRequestAccepted { .. } => 1,
+            CampaignFact::BranchRequestAccepted { .. } => 1,
             CampaignFact::PlannerAdvanced(step) => {
                 match self.read_planner_step(step.content_id())?.disposition() {
                     PlannerDisposition::Issue {
@@ -59,13 +55,11 @@ impl CampaignRepository {
         exploration: ContentId,
         requests: &[(BranchRequestId, crate::BranchPointId)],
         publish: bool,
-    ) -> Result<Option<ContentId>, CampaignRepositoryError> {
-        let Some(index) = self
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        let index = self
             .merkle
             .get(exploration, planner_scan_index_anchor_key())?
-        else {
-            return Ok(None);
-        };
+            .ok_or_else(|| integrity("current-campaign-planner-scan-index-is-missing"))?;
         let empty = MerkleMap::empty_content_id()?;
         let mut grouped = BTreeMap::<
             crate::BranchPointId,
@@ -108,7 +102,6 @@ impl CampaignRepository {
             );
         }
         self.update_planner_scan_index(index, &branches, publish)
-            .map(Some)
     }
 
     fn update_planner_scan_index(
@@ -133,13 +126,11 @@ impl CampaignRepository {
         exploration: ContentId,
         after: Option<PlanningScanPosition>,
         limit: usize,
-    ) -> Result<Option<BTreeMap<PlanningScanPosition, u64>>, CampaignRepositoryError> {
-        let Some(index) = self
+    ) -> Result<BTreeMap<PlanningScanPosition, u64>, CampaignRepositoryError> {
+        let index = self
             .merkle
             .get(exploration, planner_scan_index_anchor_key())?
-        else {
-            return Ok(None);
-        };
+            .ok_or_else(|| integrity("current-campaign-planner-scan-index-is-missing"))?;
         let mut positions = BTreeMap::new();
         let mut branch_after = after.map(|position| position.branch_point().as_hash());
         if let Some(after) = after {
@@ -168,7 +159,7 @@ impl CampaignRepository {
                     &mut positions,
                 )?;
                 if positions.len() == limit {
-                    return Ok(Some(positions));
+                    return Ok(positions);
                 }
             }
             let Some(next) = page.next_after() else {
@@ -176,7 +167,7 @@ impl CampaignRepository {
             };
             branch_after = Some(next);
         }
-        Ok(Some(positions))
+        Ok(positions)
     }
 
     fn append_planner_scan_branch(
@@ -239,7 +230,7 @@ fn schema_key(version: u32) -> CampaignHash {
 }
 
 fn schema_from_key(key: CampaignHash) -> Result<u32, CampaignRepositoryError> {
-    for version in 1..=crate::exploration::SMC_BRANCH_REQUEST_SCHEMA_VERSION {
+    for version in 2..=crate::exploration::SMC_BRANCH_REQUEST_SCHEMA_VERSION {
         if key == schema_key(version) {
             return Ok(version);
         }

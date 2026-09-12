@@ -1967,15 +1967,17 @@ mod tests {
             crate::SimDuration { nanos: 20 },
         )]);
         let mut scheduler = crate::SingleScheduler::new(scenario).expect("scenario should build");
-        scheduler.queue_topology_change(crate::SchedulerTopologyChange::new(
-            1,
-            crate::SchedulerTopologyChangeTrigger::LatencyChange,
-            vec![crate::SchedulerLookaheadEdge::new(
-                producer,
-                consumer,
-                crate::SimDuration { nanos: 5 },
-            )],
-        ));
+        scheduler
+            .schedule_topology_change(crate::SchedulerTopologyChange::new(
+                1,
+                crate::SchedulerTopologyChangeTrigger::LatencyChange,
+                vec![crate::SchedulerLookaheadEdge::new(
+                    producer,
+                    consumer,
+                    crate::SimDuration { nanos: 5 },
+                )],
+            ))
+            .expect("future topology change should enqueue");
         scheduler
     }
 

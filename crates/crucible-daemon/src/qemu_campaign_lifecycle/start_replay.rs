@@ -645,11 +645,23 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
         let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
             .map_err(start_replay_guest_selectable_failure)?;
         replies.push((pending, reply, decision.clone(), replayed.clone()));
-        replayed = crucible::step(&replayed, Decision::Selection(decision.clone()));
+        replayed = crucible::try_step(&replayed, Decision::Selection(decision.clone())).map_err(
+            |source| {
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::Configuration(source),
+                ))
+            },
+        )?;
     }
     let mut selection_entries = Vec::new();
     for (pending, reply, decision, parent) in replies {
-        let selected = crucible::step(&parent, Decision::Selection(decision.clone()));
+        let selected = crucible::try_step(&parent, Decision::Selection(decision.clone())).map_err(
+            |source| {
+                AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                    QemuFreshStartReplayError::Configuration(source),
+                ))
+            },
+        )?;
         let entries = lifecycle
             .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
             .map_err(map_start_replay_scheduler_failure)?;

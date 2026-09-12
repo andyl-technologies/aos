@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::*;
-use crate::{ChoiceTag, OverrideDecision, SchedulingPoint};
 
 mod checkpoint;
 pub(super) mod checkpoint_codec;
@@ -21,10 +20,10 @@ mod trace_codec;
 
 pub use error::FaultRuntimeError;
 pub use observation::*;
-use search::parse_search_content_hash;
+pub use search::*;
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 3;
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 4;
 
 const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v1\0";
 
@@ -165,43 +164,6 @@ pub struct BindingRuntimeCheckpoint {
     pub scheduler_cursor: Option<FaultSchedulerCursor>,
     /// Last scheduler cursor whose non-opportunity bindings completed.
     pub boundary_completed_cursor: Option<FaultSchedulerCursor>,
-}
-
-/// One finite search decision exposed by binding evaluation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BindingSearchChoice {
-    /// Stable decision identity.
-    pub id: SearchChoiceId,
-    /// Exact candidate-set identity.
-    pub candidates_digest: ContentHash,
-    /// Number of finite candidates.
-    pub candidate_count: u32,
-    /// Chosen zero-based candidate index, or `None` for the unmodified model result.
-    pub selected_index: Option<u32>,
-    /// Whether a replay/explorer override selected the result.
-    pub overridden: bool,
-}
-
-impl BindingSearchChoice {
-    /// Materializes every finite candidate as a canonical explorer decision.
-    #[must_use]
-    pub fn override_decisions(&self, parent_branch: ContentHash) -> Vec<OverrideDecision> {
-        (0..self.candidate_count)
-            .map(|candidate_index| OverrideDecision {
-                point: SchedulingPoint {
-                    key: format!(
-                        "signal-fault/{}/{}/{}",
-                        parent_branch.to_hex(),
-                        self.id.content_hash().to_hex(),
-                        self.candidates_digest.to_hex()
-                    ),
-                },
-                choice: ChoiceTag {
-                    name: format!("candidate/{candidate_index}"),
-                },
-            })
-            .collect()
-    }
 }
 
 impl BindingRuntimeState {
@@ -443,89 +405,6 @@ impl FaultCapabilityManifest {
             }
         }
         Ok(())
-    }
-}
-
-/// Identity of one finite search decision.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct SearchChoiceId(ContentHash);
-
-impl SearchChoiceId {
-    /// Builds the decision-domain-separated identity required for replay.
-    #[must_use]
-    pub fn new(
-        program: ContentHash,
-        binding: &FaultObjectId,
-        opportunity: Option<ContentHash>,
-        sample: ContentHash,
-        candidates: ContentHash,
-    ) -> Self {
-        let material = format!(
-            "program={};binding={};opportunity={};sample={};candidates={};",
-            program.to_hex(),
-            binding.as_str(),
-            opportunity.map_or_else(|| String::from("none"), |value| value.to_hex()),
-            sample.to_hex(),
-            candidates.to_hex()
-        );
-        Self(ContentHash::from_canonical_material(
-            "crucible.search-choice.v1",
-            &material,
-        ))
-    }
-
-    /// Returns the underlying content identity.
-    #[must_use]
-    pub const fn content_hash(self) -> ContentHash {
-        self.0
-    }
-
-    /// Restores an identity from its authenticated content hash.
-    #[must_use]
-    pub const fn from_content_hash(hash: ContentHash) -> Self {
-        Self(hash)
-    }
-}
-
-/// Concrete explorer result retained for ordinary locked replay.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SearchOverride {
-    /// Chosen zero-based candidate index.
-    pub candidate_index: u32,
-    /// Digest of the exact finite candidate set.
-    pub candidates_digest: ContentHash,
-    /// Parent branch, if this choice forked an earlier search branch.
-    pub parent_branch: Option<ContentHash>,
-}
-
-impl SearchOverride {
-    /// Decodes one canonical signal-fault explorer decision.
-    #[must_use]
-    pub fn from_override_decision(decision: &OverrideDecision) -> Option<(SearchChoiceId, Self)> {
-        let encoded = decision.point.key.strip_prefix("signal-fault/")?;
-        let (encoded_parent, encoded) = encoded.split_once('/')?;
-        let (choice_id, candidates_digest) = encoded.split_once('/')?;
-        if candidates_digest.contains('/') {
-            return None;
-        }
-        let parent_branch = parse_search_content_hash(encoded_parent)?;
-        let candidate_index = decision
-            .choice
-            .name
-            .strip_prefix("candidate/")?
-            .parse()
-            .ok()?;
-        Some((
-            SearchChoiceId::from_content_hash(parse_search_content_hash(choice_id)?),
-            Self {
-                candidate_index,
-                candidates_digest: parse_search_content_hash(candidates_digest)?,
-                parent_branch: Some(parent_branch),
-            },
-        ))
     }
 }
 

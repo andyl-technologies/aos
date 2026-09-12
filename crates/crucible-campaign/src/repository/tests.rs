@@ -22,11 +22,11 @@ use crate::{
     ExecutionRetentionIntent, ExplainCampaignAttemptRequest, ExplorerPolicy, FairnessPolicy,
     GetCampaignFindingObjectRequest, GetCampaignFrontierObjectRequest, GuidanceEvidence,
     GuidanceWeight, InterventionLearningPolicy, MAX_CAMPAIGN_FINDING_QUERY_PAGE_ITEMS,
-    MeasurementSeries, MetricValue, PlannerEngine, PlannerProposalDisposition, PlannerRequest,
-    PlannerResponse, PlannerState, PlannerStepProposal, PlannerSubmission, PlanningBudget,
-    PlanningUsage, PolicyArtifact, ProbabilityModelId, ProgressiveWideningPolicy, PropertyEvidence,
-    PuctPolicy, PurePlannerEngine, QueryCampaignFindingsRequest, QueryCampaignFrontierRequest,
-    RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
+    PlannerEngine, PlannerProposalDisposition, PlannerRequest, PlannerResponse, PlannerState,
+    PlannerStepProposal, PlannerSubmission, PlanningBudget, PlanningUsage, PolicyArtifact,
+    ProbabilityModelId, ProgressiveWideningPolicy, PropertyEvidence, PuctPolicy, PurePlannerEngine,
+    QueryCampaignFindingsRequest, QueryCampaignFrontierRequest, RepositoryCampaignService,
+    RetentionPolicy, ScenarioDefId, StopCondition, WeightedGenerator,
 };
 
 struct AllowCampaignQueries;
@@ -223,29 +223,7 @@ impl MutableRefBackend for ConflictAfterCreateRefBackend {
     }
 }
 
-/// Reconstructs the historical empty exploration root for fixed identity vectors.
-fn legacy_genesis_roots(
-    repository: &CampaignRepository,
-    mut roots: crate::CampaignRoots,
-) -> crate::CampaignRoots {
-    let empty = repository.merkle.empty().expect("empty").content_id();
-    let frontier = repository
-        .merkle
-        .insert(empty, frontier_index_anchor_key(), empty)
-        .expect("legacy frontier");
-    roots.exploration = repository
-        .merkle
-        .insert(
-            frontier.content_id(),
-            branch_request_index_anchor_key(),
-            empty,
-        )
-        .expect("legacy requests")
-        .content_id();
-    roots
-}
-
-fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
+pub(super) fn fixture() -> (CampaignRepository, CampaignLineage, CampaignPolicy) {
     let (repository, lineage, policy, _) = counted_fixture();
     (repository, lineage, policy)
 }
@@ -1027,16 +1005,8 @@ fn admitted_observation_fixture(
             format!("child:{name}").into_bytes(),
         )
         .expect("publish child artifact");
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        "latency".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(7)],
-            MetricValue::Unsigned(7),
-            BTreeSet::new(),
-        )
-        .expect("measurement series"),
-    )]))
-    .expect("measurement set");
+    let measurements =
+        MeasurementSet::test_evaluation(b"latency-7", BTreeSet::new()).expect("measurement set");
     let measurement_id = repository
         .publish_measurement_set(&measurements)
         .expect("publish measurements");
