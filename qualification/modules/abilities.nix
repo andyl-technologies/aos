@@ -75,7 +75,11 @@
     ability-native-image-rollout = ["checks.fleet.ability-native-image-rollout"];
     ability-native-kubernetes = ["checks.fleet.ability-native-kubernetes"];
     ability-native-postgresql = ["checks.fleet.ability-native-postgresql"];
-    ability-native-recovery = ["checks.fleet.ability-native-power-loss"];
+    ability-native-recovery = [
+      "checks.fleet.ability-initrd-activation"
+      "checks.fleet.ability-initrd-handoff-fail-closed"
+      "checks.fleet.ability-native-power-loss"
+    ];
     ability-native-adapter-matrix = nativeAdapterMatrix.requirement.regressions;
   };
   requiredProductionOnly = {

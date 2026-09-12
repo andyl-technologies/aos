@@ -26,6 +26,18 @@
       pkgs.coreutils
       pkgs.ability-package-smoke
     ];
+    aos.abilities.initrdActivationInput = {
+      operations = [
+        {
+          id = "authenticate-image";
+          kind = "authenticate-target-image";
+        }
+        {
+          id = "verify-static-contract";
+          kind = "verify-static-ability-contract";
+        }
+      ];
+    };
     environment.systemPackages = [pkgs.ability-package-smoke];
   };
   system = mkSystem {
@@ -323,9 +335,16 @@ in
                 ]
                 and .schema == "aos.ability.initrd-activation-selection/v1"
                 and .execution_stage == "initrd"
-                and .disposition == "none"
+                and .disposition == "required"
                 and .static_ability_contract_sha256 == $digest
-                and .activation == null
+                and .activation == {
+                  schema:"aos.ability.initrd-activation/v1",
+                  manager:{kind:"boot-substrate",stage:"initrd"},
+                  operations:[
+                    {id:"authenticate-image",kind:"authenticate-target-image"},
+                    {id:"verify-static-contract",kind:"verify-static-ability-contract"}
+                  ]
+                }
               ' "$activation_selection" >/dev/null
             ${pkgs.jq}/bin/jq -cS . "$activation_selection" > canonical-activation.json
             canonical_activation_size=$(stat -c %s canonical-activation.json)

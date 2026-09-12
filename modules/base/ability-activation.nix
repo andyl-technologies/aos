@@ -137,6 +137,55 @@
       else "required";
     activation = config.aos.abilities.initrdActivationInput;
   };
+  initrdActivationOperationType = lib.types.submodule {
+    options = {
+      id = lib.mkOption {
+        type = lib.types.strMatching "[a-z0-9][a-z0-9._-]*";
+        description = "Stable operation identifier within the initrd activation.";
+      };
+      kind = lib.mkOption {
+        type = lib.types.enum [
+          "authenticate-target-image"
+          "verify-static-ability-contract"
+        ];
+        description = "Closed boot-substrate operation executed in the initrd.";
+      };
+    };
+  };
+  initrdActivationType = lib.types.submodule {
+    options = {
+      schema = lib.mkOption {
+        type = lib.types.enum ["aos.ability.initrd-activation/v1"];
+        default = "aos.ability.initrd-activation/v1";
+        description = "Typed initrd activation schema.";
+      };
+      manager = lib.mkOption {
+        type = lib.types.submodule {
+          options = {
+            stage = lib.mkOption {
+              type = lib.types.enum ["initrd"];
+              default = "initrd";
+              description = "Execution stage that owns the manager capability.";
+            };
+            kind = lib.mkOption {
+              type = lib.types.enum ["boot-substrate"];
+              default = "boot-substrate";
+              description = "Closed manager implementation used for early boot.";
+            };
+          };
+        };
+        default = {};
+        description = "Exact initrd-scoped manager selected for every operation.";
+      };
+      operations = lib.mkOption {
+        type = lib.types.listOf initrdActivationOperationType;
+        description = ''
+          Canonically ordered boot-substrate operations. The runtime rejects
+          empty, duplicate, unsorted, or unsupported operation sets.
+        '';
+      };
+    };
+  };
 in {
   options = {
     aos.abilities.activationInput = lib.mkOption {
@@ -151,12 +200,13 @@ in {
     };
 
     aos.abilities.initrdActivationInput = lib.mkOption {
-      type = lib.types.nullOr lib.types.attrs;
+      type = lib.types.nullOr initrdActivationType;
       default = null;
       description = ''
-        Authenticated initrd-stage activation input embedded in the signed
-        initrd. A null value records an explicit no-activation disposition;
-        file absence never authorizes a no-op.
+        Typed, authenticated initrd-stage activation embedded in the signed
+        initrd. Only the closed boot-substrate manager operations are accepted.
+        A null value records an explicit no-activation disposition; file absence
+        never authorizes a no-op.
       '';
     };
 
