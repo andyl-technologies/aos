@@ -7,7 +7,9 @@ use crate::evidence::{EvidenceRecord, GateResult, QualificationReportV1};
 use crate::qualification::QualificationPhase;
 use crate::qualification::claims::{AssuranceLevel, ClaimDisposition};
 use crate::qualification::environment::{Accelerator, Backend};
-use crate::qualification_evidence::{assess_observations, validate_observations};
+use crate::qualification_evidence::{
+    NATIVE_IMAGE_ROLLOUT_REQUIREMENT, assess_observations, validate_observations,
+};
 use crate::verify::tests::{observations, qualification_fixture};
 
 const NOW: &str = "2026-09-01T00:00:02Z";
@@ -25,6 +27,23 @@ fn image_record(records: &mut [EvidenceRecord]) -> &mut EvidenceRecord {
                     .is_some()
         })
         .unwrap()
+}
+
+#[test]
+fn native_image_rollout_case_binds_the_frozen_predecessor() -> Result<()> {
+    let (plan, manifest) = qualification_fixture()?;
+    let case = crate::qualification_evidence::cases(
+        &plan,
+        &manifest,
+        QualificationPhase::Staging,
+    )?
+    .into_iter()
+    .find(|case| case.requirement_id == NATIVE_IMAGE_ROLLOUT_REQUIREMENT)
+    .unwrap();
+
+    assert_eq!(case.predecessor, plan.qualification_predecessor);
+    assert!(!case.subjects.is_empty());
+    Ok(())
 }
 
 #[test]
