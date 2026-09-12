@@ -8,7 +8,7 @@ let
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:3dc7b65b067641fae912cdcc00563438e9638c114e05644dd0515fc9a5a3e27b";
+    "sha256:f2f4174c1b63997d056df99fe7eeb1d07c37a52f88588e03163bc8bf536ea802";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -24,7 +24,7 @@ let
   httpBackend =
     interface
     "aos.http-backend"
-    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    "sha256:36ad13775c5b5d81209fdf1c36a715f482b0a1e389fbfbf587072ffdf0e9147f";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -32,7 +32,7 @@ let
   networkPolicyEffects =
     interface
     "aos.host-network-policy-effects"
-    "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199";
+    "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e";
   storageEffects =
     interface
     "aos.host-storage-effects"

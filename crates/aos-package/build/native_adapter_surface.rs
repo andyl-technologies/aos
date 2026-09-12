@@ -17,7 +17,7 @@ const EXPECTED_METHODS: usize = 47;
 const EXPECTED_SCENARIOS: usize = 28;
 const MAX_SURFACE_BYTES: u64 = 64 * 1024;
 const EXPECTED_SURFACE_DIGEST: &str =
-    "5b1b4ca7befa0d377517209fd113e18c8bee3adcb1e663114af683f20669e959";
+    "4fab681e6945452e47097306b87a7520557d11741cb43ad9b91ae9dc9f8a8148";
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 

@@ -13,7 +13,7 @@ let
   networkPolicyEffects = {
     name = "aos.host-network-policy-effects";
     abi = 1;
-    descriptor = "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199";
+    descriptor = "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e";
   };
   credentialEffects = {
     name = "aos.credential-delivery-effects";
