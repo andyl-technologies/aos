@@ -1243,6 +1243,7 @@ in {
           "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result": {
               "durable-attempt-state-classified": {
                   "kind": "journal-timeline",
+                  "disposition": "reconciled-completed",
                   "detail": (
                       "The durable journal retained one indeterminate Publish and "
                       "settled it through reconciliation without a second effect."
@@ -1266,6 +1267,7 @@ in {
               },
               "at-most-one-resource-owner": {
                   "kind": "ownership-inventory",
+                  "disposition": "reconciled-completed",
                   "detail": (
                       "The managed-configuration catalog selected one exact "
                       "resource marker before and after collection."
@@ -1280,6 +1282,7 @@ in {
               },
               "foreign-resources-unchanged": {
                   "kind": "foreign-resource-snapshot",
+                  "disposition": "reconciled-completed",
                   "detail": (
                       "The independently selected primary configuration retained "
                       "the same mapping and bytes through loss, GC, and recovery."
@@ -1295,6 +1298,7 @@ in {
               },
               "dependent-effects-not-executed": {
                   "kind": "dependency-barrier",
+                  "disposition": "reconciled-completed",
                   "detail": (
                       "The checked reload successor had no journal or boundary "
                       "event before Publish reconciliation completed, then ran "

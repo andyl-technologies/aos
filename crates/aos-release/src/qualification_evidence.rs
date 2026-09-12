@@ -137,8 +137,10 @@ pub const NATIVE_ADAPTER_MATRIX_OBSERVATION_V1: &str =
 const NATIVE_ADAPTER_MATRIX_SCHEMA_V1: &str = "aos.qualification.native-adapter-matrix/v1";
 const NATIVE_ADAPTER_MATRIX_SUBJECT_V1: &str = "aos.qualification.native-adapter-subject/v1";
 const NATIVE_ADAPTER_SURFACE_V1: &str = "aos.qualification.native-adapter-surface/v1";
-const NATIVE_ADAPTER_POSTCONDITION_PROBE_V1: &str =
-    "aos.release.native-adapter-postcondition-probe/v1";
+const NATIVE_ADAPTER_POSTCONDITION_PROBE_V2: &str =
+    "aos.release.native-adapter-postcondition-probe/v2";
+const NATIVE_ADAPTER_CELL_COHORT_SUBJECT_V1: &str =
+    "aos.release.native-adapter-cell-cohort-subject/v1";
 /// Canonical schema for a typed native adapter matrix execution environment.
 pub const NATIVE_ADAPTER_MATRIX_ENVIRONMENT_V1: &str =
     "aos.release.native-adapter-matrix-environment/v1";
@@ -410,6 +412,12 @@ pub struct NativeAdapterPostconditionProbe {
     pub schema_version: String,
     /// Probe class required by the named postcondition.
     pub kind: String,
+    /// Exact matrix cell identity exercised by this probe.
+    pub cell_id: String,
+    /// Digest of the immutable matrix cell exercised by this probe.
+    pub cell_digest: Sha256Digest,
+    /// Scenario-specific terminal or retained-state disposition.
+    pub disposition: String,
     /// Candidate artifact population exercised by the probe.
     pub subject_digest: Sha256Digest,
     /// Canonical identity of the cell's retained dynamic cohort subject.
@@ -418,6 +426,20 @@ pub struct NativeAdapterPostconditionProbe {
     pub observation_digest: Sha256Digest,
     /// Bounded structured facts observed independently of the adapter result.
     pub observations: BTreeMap<String, serde_json::Value>,
+}
+
+/// Exact cell binding around one cohort's dynamic production subject.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeAdapterCellCohortSubject {
+    schema: String,
+    cell_id: String,
+    cell_digest: Sha256Digest,
+    boundary: String,
+    failure: String,
+    candidate: String,
+    predecessor: String,
+    subject: serde_json::Value,
 }
 
 /// Complete observed results for an immutable native adapter matrix.
@@ -1133,6 +1155,7 @@ pub fn validate_native_adapter_matrix_observation(
     }
 
     let mut passed = true;
+    let mut probe_digests = BTreeSet::new();
     for (spec, result) in observation.spec.cells.iter().zip(&observation.cells) {
         if result.id != spec.id {
             bail!("native adapter matrix cells are missing, extra, duplicated, or reordered");
@@ -1181,6 +1204,7 @@ pub fn validate_native_adapter_matrix_observation(
                 if subject_bytes.len() > NATIVE_ADAPTER_MAX_PROBE_BYTES {
                     bail!("native adapter matrix cohort subject exceeds its size bound");
                 }
+                validate_native_adapter_cell_cohort_subject(spec, expected_cell_digest, subject)?;
                 Some(Sha256Digest::of_bytes(subject_bytes))
             }
             None if passing_postconditions.is_empty() => None,
@@ -1192,19 +1216,22 @@ pub fn validate_native_adapter_matrix_observation(
             bail!("unqualified native adapter matrix cells cannot carry passing postconditions");
         }
 
-        let mut probe_digests = BTreeSet::new();
         for (postcondition, probe) in &result.probes {
             let cohort_subject_digest = cohort_subject_digest.ok_or_else(|| {
                 anyhow::anyhow!("native adapter matrix probe lacks its cohort subject")
             })?;
             validate_native_adapter_postcondition_probe(
                 case,
+                spec,
                 postcondition,
                 cohort_subject_digest,
+                expected_cell_digest,
                 probe,
             )?;
             if !probe_digests.insert(probe.observation_digest) {
-                bail!("native adapter matrix postconditions do not have independent probes");
+                bail!(
+                    "native adapter matrix replays a production probe across postconditions or cells"
+                );
             }
         }
         passed &= passing_postconditions.len() == result.postconditions.len();
@@ -1220,14 +1247,21 @@ pub fn validate_native_adapter_matrix_observation(
 
 fn validate_native_adapter_postcondition_probe(
     case: &QualificationCase,
+    cell: &NativeAdapterCellSpec,
     postcondition: &str,
     cohort_subject_digest: Sha256Digest,
+    cell_digest: Sha256Digest,
     probe: &NativeAdapterPostconditionProbe,
 ) -> Result<()> {
     let expected_kind = native_adapter_postcondition_probe_kind(postcondition)
         .ok_or_else(|| anyhow::anyhow!("native adapter matrix postcondition has no probe class"))?;
-    if probe.schema_version != NATIVE_ADAPTER_POSTCONDITION_PROBE_V1
+    let expected_disposition = native_adapter_expected_disposition(cell)
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix scenario has no disposition"))?;
+    if probe.schema_version != NATIVE_ADAPTER_POSTCONDITION_PROBE_V2
         || probe.kind != expected_kind
+        || probe.cell_id != cell.id
+        || probe.cell_digest != cell_digest
+        || probe.disposition != expected_disposition
         || probe.subject_digest != case.subjects_digest
         || probe.cohort_subject_digest != cohort_subject_digest
         || probe.observations.is_empty()
@@ -1247,6 +1281,66 @@ fn validate_native_adapter_postcondition_probe(
         bail!("native adapter matrix postcondition probe digest is invalid");
     }
     Ok(())
+}
+
+fn validate_native_adapter_cell_cohort_subject(
+    cell: &NativeAdapterCellSpec,
+    cell_digest: Sha256Digest,
+    subject: &serde_json::Value,
+) -> Result<()> {
+    let binding: NativeAdapterCellCohortSubject = serde_json::from_value(subject.clone())?;
+    if binding.schema != NATIVE_ADAPTER_CELL_COHORT_SUBJECT_V1
+        || binding.cell_id != cell.id
+        || binding.cell_digest != cell_digest
+        || binding.boundary != cell.boundary
+        || binding.failure != cell.failure
+        || binding.candidate != cell.candidate
+        || binding.predecessor != cell.predecessor
+        || !binding.subject.is_object()
+    {
+        bail!("native adapter matrix cohort subject is bound to another cell");
+    }
+    Ok(())
+}
+
+/// Returns the required scenario disposition for one immutable matrix cell.
+#[must_use]
+pub fn native_adapter_expected_disposition(cell: &NativeAdapterCellSpec) -> Option<&'static str> {
+    let scenario = cell.id.rsplit('/').next()?;
+    match scenario {
+        "interrupt-before-acquisition" => Some("rejected-before-acquisition"),
+        "interrupt-after-acquisition" => Some("unsettled-after-acquisition"),
+        "interrupt-after-durable-intent" => Some("reconciled-after-interruption"),
+        "lose-external-result" => Some("reconciled-completed"),
+        "interrupt-after-durable-outcome" => Some("completed-before-interruption"),
+        "cancel-unsettled-attempt" if cell.recovery.cancel.is_none() => {
+            Some("unsupported-cancellation-retains-ownership")
+        }
+        "cancel-unsettled-attempt" => Some("cancelled-after-reconciliation"),
+        "expire-attempt-deadline" => Some("deadline-exceeded-retains-ownership"),
+        "fail-cleanup" => Some("cleanup-failed-retains-ownership"),
+        "fail-release" => Some("release-failed-retains-ownership"),
+        "revoke-caller-before-acquisition"
+        | "revoke-caller-after-acquisition"
+        | "revoke-caller-before-external-effect"
+        | "revoke-provider-before-acquisition"
+        | "revoke-provider-after-acquisition"
+        | "revoke-provider-before-external-effect"
+        | "revoke-enforcement-before-acquisition"
+        | "revoke-enforcement-after-acquisition"
+        | "revoke-enforcement-before-external-effect"
+        | "revoke-assignment-before-acquisition"
+        | "revoke-assignment-after-acquisition"
+        | "revoke-assignment-before-external-effect" => Some("rejected-before-effect"),
+        "replace-executor-incarnation" => Some("stale-executor-rejected"),
+        "replace-provider-incarnation" => Some("stale-provider-rejected"),
+        "adopt-compatible-state" => Some("compatible-state-adopted"),
+        "reject-unsupported-transfer" => Some("transfer-rejected-before-effect"),
+        "activate-retained-target" => Some("retained-target-activated"),
+        "block-dependent-effect" => Some("dependent-effect-blocked"),
+        "reject-foreign-resource-mutation" => Some("foreign-mutation-rejected"),
+        _ => None,
+    }
 }
 
 fn native_adapter_postcondition_probe_kind(postcondition: &str) -> Option<&'static str> {

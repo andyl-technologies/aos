@@ -8,7 +8,8 @@ import re
 from typing import Any
 
 
-PROBE_SCHEMA = "aos.release.native-adapter-postcondition-probe/v1"
+PROBE_SCHEMA = "aos.release.native-adapter-postcondition-probe/v2"
+CELL_SUBJECT_SCHEMA = "aos.release.native-adapter-cell-cohort-subject/v1"
 POSTCONDITION_KINDS = {
     "durable-attempt-state-classified": "journal-timeline",
     "at-most-one-resource-owner": "ownership-inventory",
@@ -100,6 +101,35 @@ DEPENDENT_EFFECT_BOUNDARY_TIMELINE = [
     ("effect", "effect-returned"),
     ("effect", "effect-outcome-durable"),
 ]
+SCENARIO_DISPOSITIONS = {
+    "interrupt-before-acquisition": "rejected-before-acquisition",
+    "interrupt-after-acquisition": "unsettled-after-acquisition",
+    "interrupt-after-durable-intent": "reconciled-after-interruption",
+    "lose-external-result": "reconciled-completed",
+    "interrupt-after-durable-outcome": "completed-before-interruption",
+    "expire-attempt-deadline": "deadline-exceeded-retains-ownership",
+    "fail-cleanup": "cleanup-failed-retains-ownership",
+    "fail-release": "release-failed-retains-ownership",
+    "revoke-caller-before-acquisition": "rejected-before-effect",
+    "revoke-caller-after-acquisition": "rejected-before-effect",
+    "revoke-caller-before-external-effect": "rejected-before-effect",
+    "revoke-provider-before-acquisition": "rejected-before-effect",
+    "revoke-provider-after-acquisition": "rejected-before-effect",
+    "revoke-provider-before-external-effect": "rejected-before-effect",
+    "revoke-enforcement-before-acquisition": "rejected-before-effect",
+    "revoke-enforcement-after-acquisition": "rejected-before-effect",
+    "revoke-enforcement-before-external-effect": "rejected-before-effect",
+    "revoke-assignment-before-acquisition": "rejected-before-effect",
+    "revoke-assignment-after-acquisition": "rejected-before-effect",
+    "revoke-assignment-before-external-effect": "rejected-before-effect",
+    "replace-executor-incarnation": "stale-executor-rejected",
+    "replace-provider-incarnation": "stale-provider-rejected",
+    "adopt-compatible-state": "compatible-state-adopted",
+    "reject-unsupported-transfer": "transfer-rejected-before-effect",
+    "activate-retained-target": "retained-target-activated",
+    "block-dependent-effect": "dependent-effect-blocked",
+    "reject-foreign-resource-mutation": "foreign-mutation-rejected",
+}
 
 
 def canonical(value: Any) -> bytes:
@@ -141,10 +171,10 @@ def build_cells(
         raise RuntimeError("cohort qualification scope differs from its fixed fixture")
     qualified_cell = specification_cells[QUALIFIED_CELL_ID]
     _validate_cohort_subject(qualified_cell, cohort_subject, cohort_plan_bundle)
-    cohort_subject_digest = sha256(cohort_subject)
 
     observed_cells = []
     postcondition_count = 0
+    probe_digests = set()
     for cell in spec["cells"]:
         submitted = submissions.get(cell["id"])
         names = cell["postconditions"]
@@ -159,12 +189,14 @@ def build_cells(
             }
             probes = {}
         else:
+            bound_subject = _bound_cohort_subject(cell, cohort_subject)
             postconditions, probes = _validated_probes(
-                names,
+                cell,
                 submitted,
                 cohort_subject,
-                cohort_subject_digest,
+                bound_subject,
                 subject_digest,
+                probe_digests,
             )
 
         observation = {
@@ -175,28 +207,34 @@ def build_cells(
         }
         if probes:
             observation["probes"] = probes
-            observation["cohort_subject"] = cohort_subject
+            observation["cohort_subject"] = bound_subject
         observed_cells.append(observation)
 
     return observed_cells, postcondition_count
 
 
 def _validated_probes(
-    postcondition_names: list[str],
+    cell: dict[str, Any],
     submitted: dict[str, Any],
     cohort_subject: dict[str, Any],
-    cohort_subject_digest: str,
+    bound_subject: dict[str, Any],
     subject_digest: str,
+    cohort_probe_digests: set[str],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    postcondition_names = cell["postconditions"]
     if set(submitted) != set(postcondition_names):
         raise RuntimeError("qualified cell lacks an exact postcondition probe set")
+    if bound_subject != _bound_cohort_subject(cell, cohort_subject):
+        raise RuntimeError("cohort subject is bound to another matrix cell")
 
+    cell_digest = sha256(cell)
+    cohort_subject_digest = sha256(bound_subject)
+    expected_disposition = _expected_disposition(cell)
     postconditions = {}
     probes = {}
-    observation_digests = set()
     for name in postcondition_names:
         record = submitted[name]
-        if set(record) != {"kind", "detail", "observations"}:
+        if set(record) != {"kind", "detail", "disposition", "observations"}:
             raise RuntimeError("postcondition probe has unknown or missing fields")
         expected_kind = POSTCONDITION_KINDS.get(name)
         observations = record["observations"]
@@ -204,6 +242,7 @@ def _validated_probes(
             record["kind"] != expected_kind
             or not isinstance(record["detail"], str)
             or not record["detail"].strip()
+            or record["disposition"] != expected_disposition
             or not isinstance(observations, dict)
             or not 1 <= len(observations) <= MAX_PROBE_FACTS
             or any(
@@ -213,16 +252,19 @@ def _validated_probes(
             or len(canonical(observations)) > MAX_PROBE_BYTES
         ):
             raise RuntimeError("postcondition probe is malformed")
-        _validate_probe_facts(name, observations, cohort_subject)
+        _validate_probe_facts(name, observations, cohort_subject, cell)
         observation_digest = sha256(observations)
-        if observation_digest in observation_digests:
-            raise RuntimeError("passing postconditions do not have independent probes")
-        observation_digests.add(observation_digest)
+        if observation_digest in cohort_probe_digests:
+            raise RuntimeError("passing matrix postconditions replay a production probe")
+        cohort_probe_digests.add(observation_digest)
 
         postconditions[name] = {"passed": True, "detail": record["detail"]}
         probes[name] = {
             "schema_version": PROBE_SCHEMA,
             "kind": record["kind"],
+            "cell_id": cell["id"],
+            "cell_digest": cell_digest,
+            "disposition": record["disposition"],
             "subject_digest": subject_digest,
             "cohort_subject_digest": cohort_subject_digest,
             "observation_digest": observation_digest,
@@ -236,8 +278,9 @@ def _validate_probe_facts(
     postcondition: str,
     observations: dict[str, Any],
     cohort_subject: dict[str, Any],
+    cell: dict[str, Any],
 ) -> None:
-    """Checks the independent facts used by the first host-resource cohort."""
+    """Checks semantic facts for one exact matrix postcondition."""
 
     if postcondition == "durable-attempt-state-classified":
         operation = observations.get("operation")
@@ -274,9 +317,15 @@ def _validate_probe_facts(
             raise RuntimeError("journal probe does not prove lost-result reconciliation")
     elif postcondition == "at-most-one-resource-owner":
         if (
-            observations.get("matching-markers") != 1
+            set(observations)
+            != {"resource", "destination", "revision", "matching-markers", "selected-after-gc"}
+            or observations.get("matching-markers") != 1
             or observations.get("selected-after-gc") is not True
             or not isinstance(observations.get("resource"), dict)
+            or not isinstance(observations.get("destination"), str)
+            or not observations["destination"].startswith("/")
+            or not isinstance(observations.get("revision"), str)
+            or not observations["revision"]
         ):
             raise RuntimeError("ownership probe does not prove one retained owner")
     elif postcondition == "foreign-resources-unchanged":
@@ -287,7 +336,16 @@ def _validate_probe_facts(
             observations.get("content-after-recovery"),
         ]
         if (
-            snapshots[0] is None
+            set(observations)
+            != {
+                "resource",
+                "revision",
+                "content-before",
+                "content-unsettled",
+                "content-after-gc",
+                "content-after-recovery",
+            }
+            or snapshots[0] is None
             or any(snapshot != snapshots[0] for snapshot in snapshots[1:])
             or not isinstance(observations.get("resource"), dict)
         ):
@@ -348,6 +406,240 @@ def _validate_probe_facts(
             or observations.get("changed-only-after-recovery") is not True
         ):
             raise RuntimeError("dependency probe does not retain the predecessor result")
+    elif postcondition == "fresh-receiving-authority":
+        predecessor = observations.get("predecessor-authority")
+        candidate = observations.get("candidate-authority")
+        if (
+            set(observations)
+            != {
+                "predecessor-authority",
+                "candidate-authority",
+                "predecessor-incarnation",
+                "candidate-incarnation",
+                "authority-sequence-before",
+                "authority-sequence-after",
+                "fresh",
+            }
+            or not _matches(DIGEST, predecessor)
+            or not _matches(DIGEST, candidate)
+            or predecessor == candidate
+            or not _distinct_nonempty_strings(
+                observations.get("predecessor-incarnation"),
+                observations.get("candidate-incarnation"),
+            )
+            or not _strictly_increasing_nonnegative(
+                observations.get("authority-sequence-before"),
+                observations.get("authority-sequence-after"),
+            )
+            or observations.get("fresh") is not True
+        ):
+            raise RuntimeError("authority probe does not prove a fresh receiving authority")
+    elif postcondition == "compatible-state-adopted":
+        if (
+            set(observations)
+            != {
+                "resource",
+                "compatibility-contract",
+                "predecessor-state",
+                "adopted-state",
+                "adoption-record",
+                "candidate-effect-count",
+                "adopted",
+            }
+            or not isinstance(observations.get("resource"), dict)
+            or not _matches(DIGEST, observations.get("compatibility-contract"))
+            or not _matches(DIGEST, observations.get("predecessor-state"))
+            or observations.get("adopted-state") != observations.get("predecessor-state")
+            or not _matches(DIGEST, observations.get("adoption-record"))
+            or observations.get("candidate-effect-count") != 0
+            or observations.get("adopted") is not True
+        ):
+            raise RuntimeError("adoption probe does not prove compatible state adoption")
+    elif postcondition == "exactly-one-resource-owner":
+        owners = observations.get("owners")
+        if (
+            set(observations)
+            != {"resource", "expected-owner", "owners", "matching-markers"}
+            or not isinstance(observations.get("resource"), dict)
+            or not isinstance(observations.get("expected-owner"), dict)
+            or owners != [observations.get("expected-owner")]
+            or observations.get("matching-markers") != 1
+        ):
+            raise RuntimeError("ownership probe does not prove one exact owner")
+    elif postcondition == "transfer-rejected-before-candidate-effect":
+        if (
+            set(observations)
+            != {
+                "candidate-operation",
+                "rejection",
+                "candidate-effect-count",
+                "rejected-before-effect",
+            }
+            or observations.get("candidate-operation") != _cohort_operation(cohort_subject)
+            or observations.get("rejection") != cell.get("failure")
+            or observations.get("candidate-effect-count") != 0
+            or observations.get("rejected-before-effect") is not True
+        ):
+            raise RuntimeError("transfer probe does not prove pre-effect rejection")
+    elif postcondition == "predecessor-remains-sole-owner":
+        predecessor = observations.get("predecessor-owner")
+        if (
+            set(observations)
+            != {
+                "resource",
+                "predecessor-owner",
+                "owners",
+                "behavior-before",
+                "behavior-after",
+            }
+            or not isinstance(observations.get("resource"), dict)
+            or not isinstance(predecessor, dict)
+            or observations.get("owners") != [predecessor]
+            or observations.get("behavior-before") is None
+            or observations.get("behavior-after") != observations.get("behavior-before")
+        ):
+            raise RuntimeError("predecessor probe does not prove sole retained ownership")
+    elif postcondition == "current-grants-reauthorized":
+        if (
+            set(observations)
+            != {
+                "plan",
+                "retained-grant",
+                "current-grant",
+                "authority-sequence-before",
+                "authority-sequence-after",
+                "reauthorized",
+            }
+            or observations.get("plan") != cohort_subject.get("plan")
+            or not _matches(DIGEST, observations.get("retained-grant"))
+            or not _matches(DIGEST, observations.get("current-grant"))
+            or observations.get("retained-grant") == observations.get("current-grant")
+            or not _strictly_increasing_nonnegative(
+                observations.get("authority-sequence-before"),
+                observations.get("authority-sequence-after"),
+            )
+            or observations.get("reauthorized") is not True
+        ):
+            raise RuntimeError("grant probe does not prove current reauthorization")
+    elif postcondition == "retained-target-identity-preserved":
+        if (
+            set(observations)
+            != {
+                "retained-target",
+                "activated-target",
+                "retained-revision",
+                "activated-revision",
+            }
+            or not isinstance(observations.get("retained-target"), dict)
+            or observations.get("activated-target") != observations.get("retained-target")
+            or not _matches(DIGEST, observations.get("retained-revision"))
+            or observations.get("activated-revision")
+            != observations.get("retained-revision")
+        ):
+            raise RuntimeError("target probe does not preserve retained identity")
+    elif postcondition == "prerequisite-failure-recorded":
+        predecessor = observations.get("predecessor-operation")
+        dependent = observations.get("dependent-operation")
+        edge = observations.get("dependency-edge")
+        if (
+            set(observations)
+            != {
+                "predecessor-operation",
+                "dependent-operation",
+                "dependency-edge",
+                "failure-record",
+                "dependent-effect-count",
+            }
+            or not _operation_key(predecessor)
+            or not _operation_key(dependent)
+            or edge
+            not in [
+                {
+                    "from": {"kind": "operation", "key": predecessor.get("key")},
+                    "to": {"kind": "operation", "key": dependent.get("key")},
+                    "kind": kind,
+                }
+                for kind in ["data", "required-success", "readiness"]
+            ]
+            or not _matches(DIGEST, observations.get("failure-record"))
+            or observations.get("dependent-effect-count") != 0
+        ):
+            raise RuntimeError("prerequisite probe does not prove durable dependent blocking")
+    elif postcondition == "foreign-attempt-rejected-before-mutation":
+        foreign = observations.get("foreign-resource")
+        authorized = observations.get("authorized-resources")
+        if (
+            set(observations)
+            != {
+                "foreign-resource",
+                "attempted-resource",
+                "authorized-resources",
+                "rejection",
+                "mutation-count",
+                "rejected-before-mutation",
+            }
+            or not isinstance(foreign, dict)
+            or observations.get("attempted-resource") != foreign
+            or not isinstance(authorized, list)
+            or foreign in authorized
+            or observations.get("rejection") != cell.get("failure")
+            or observations.get("mutation-count") != 0
+            or observations.get("rejected-before-mutation") is not True
+        ):
+            raise RuntimeError("foreign-resource probe does not prove pre-mutation rejection")
+    else:
+        raise RuntimeError("matrix postcondition has no semantic validator")
+
+
+def _bound_cohort_subject(
+    cell: dict[str, Any], cohort_subject: dict[str, Any]
+) -> dict[str, Any]:
+    """Binds the dynamic production subject to one immutable matrix cell."""
+
+    return {
+        "schema": CELL_SUBJECT_SCHEMA,
+        "cell_id": cell["id"],
+        "cell_digest": sha256(cell),
+        "boundary": cell["boundary"],
+        "failure": cell["failure"],
+        "candidate": cell["candidate"],
+        "predecessor": cell["predecessor"],
+        "subject": cohort_subject,
+    }
+
+
+def _expected_disposition(cell: dict[str, Any]) -> str:
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    if scenario == "cancel-unsettled-attempt":
+        if cell.get("recovery", {}).get("cancel") is None:
+            return "unsupported-cancellation-retains-ownership"
+        return "cancelled-after-reconciliation"
+    try:
+        return SCENARIO_DISPOSITIONS[scenario]
+    except KeyError as error:
+        raise RuntimeError("matrix cell has no expected disposition") from error
+
+
+def _cohort_operation(cohort_subject: dict[str, Any]) -> Any:
+    return cohort_subject.get("operation", cohort_subject.get("publish-operation"))
+
+
+def _operation_key(value: Any) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("key"), dict)
+
+
+def _distinct_nonempty_strings(left: Any, right: Any) -> bool:
+    return (
+        isinstance(left, str)
+        and bool(left)
+        and isinstance(right, str)
+        and bool(right)
+        and left != right
+    )
+
+
+def _strictly_increasing_nonnegative(before: Any, after: Any) -> bool:
+    return _is_nonnegative_int(before) and _is_nonnegative_int(after) and before < after
 
 
 def _validate_cohort_subject(

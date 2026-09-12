@@ -1025,9 +1025,24 @@ fn fixture_evidence(
             .cells
             .iter()
             .map(|cell| {
+                let cell_digest = Sha256Digest::of_bytes(canonical::to_vec(cell)?);
+                let disposition =
+                    aos_release::qualification_evidence::native_adapter_expected_disposition(cell)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("synthetic matrix fixture has an unknown scenario")
+                        })?;
                 let cohort_subject = serde_json::json!({
-                    "schema": "aos.test.native-adapter-cohort-subject/v1",
-                    "cell": cell.id,
+                    "schema": "aos.release.native-adapter-cell-cohort-subject/v1",
+                    "cell_id": cell.id,
+                    "cell_digest": cell_digest,
+                    "boundary": cell.boundary,
+                    "failure": cell.failure,
+                    "candidate": cell.candidate,
+                    "predecessor": cell.predecessor,
+                    "subject": {
+                        "schema": "aos.test.native-adapter-cohort-subject/v1",
+                        "operation": cell.id,
+                    },
                 });
                 let cohort_subject_digest =
                     Sha256Digest::of_bytes(canonical::to_vec(&cohort_subject)?);
@@ -1044,9 +1059,12 @@ fn fixture_evidence(
                         Ok((
                             postcondition.clone(),
                             NativeAdapterPostconditionProbe {
-                                schema_version: "aos.release.native-adapter-postcondition-probe/v1"
+                                schema_version: "aos.release.native-adapter-postcondition-probe/v2"
                                     .into(),
                                 kind: probe_kind(postcondition)?.into(),
+                                cell_id: cell.id.clone(),
+                                cell_digest,
+                                disposition: disposition.into(),
                                 subject_digest: case.subjects_digest,
                                 cohort_subject_digest,
                                 observation_digest,
@@ -1057,7 +1075,7 @@ fn fixture_evidence(
                     .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
                 Ok(NativeAdapterCellObservation {
                     id: cell.id.clone(),
-                    cell_digest: Sha256Digest::of_bytes(canonical::to_vec(cell)?),
+                    cell_digest,
                     environment_digest,
                     cohort_subject: Some(cohort_subject),
                     postconditions: cell

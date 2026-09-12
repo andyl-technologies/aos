@@ -35,6 +35,14 @@ fn probe_kind(postcondition: &str) -> &'static str {
     }
 }
 
+fn disposition(scenario: &str) -> &'static str {
+    match scenario {
+        "interrupt-before-acquisition" => "rejected-before-acquisition",
+        "lose-external-result" => "reconciled-completed",
+        _ => panic!("fixture scenario has no disposition"),
+    }
+}
+
 fn fixture() -> Result<(
     QualificationCase,
     Sha256Digest,
@@ -65,13 +73,25 @@ fn fixture() -> Result<(
             scope: "host-resource".into(),
         }
     };
-    let scenario = |id: &str| NativeAdapterSurfaceScenario {
-        boundary: "before-external-effect".into(),
+    let scenario = |id: &str, boundary: &str, failure: &str| NativeAdapterSurfaceScenario {
+        boundary: boundary.into(),
         candidate: "same".into(),
-        failure: "injected-interruption".into(),
+        failure: failure.into(),
         id: id.into(),
         predecessor: "same".into(),
     };
+    let scenarios = vec![
+        scenario(
+            "interrupt-before-acquisition",
+            "before-acquisition",
+            "injected-interruption",
+        ),
+        scenario(
+            "lose-external-result",
+            "after-external-return",
+            "lost-result",
+        ),
+    ];
     let surface = NativeAdapterSurfaceSpec {
         adapters: vec![
             method(
@@ -91,7 +111,7 @@ fn fixture() -> Result<(
             max_scenarios: 2,
         },
         matrix_schema: "aos.qualification.native-adapter-matrix/v1".into(),
-        scenarios: vec![scenario("interrupt"), scenario("recovery")],
+        scenarios: scenarios.clone(),
         schema: "aos.qualification.native-adapter-surface/v1".into(),
         subject_schema: "aos.qualification.native-adapter-subject/v1".into(),
     };
@@ -106,20 +126,20 @@ fn fixture() -> Result<(
     };
     let cell = |adapter: &str,
                 interface: &NativeAdapterInterfaceIdentity,
-                scenario: &str|
+                scenario: &NativeAdapterSurfaceScenario|
      -> NativeAdapterCellSpec {
         NativeAdapterCellSpec {
-            id: format!("{adapter}/{}/abi-1/apply/{scenario}", interface.name),
+            id: format!("{adapter}/{}/abi-1/apply/{}", interface.name, scenario.id),
             matrix_schema: subject.matrix_schema.clone(),
             adapter: adapter.into(),
             interface: interface.clone(),
             method: "apply".into(),
             effect_class: "mutation".into(),
             scope: "host-resource".into(),
-            boundary: "before-external-effect".into(),
-            failure: "injected-interruption".into(),
-            predecessor: "same".into(),
-            candidate: "same".into(),
+            boundary: scenario.boundary.clone(),
+            failure: scenario.failure.clone(),
+            predecessor: scenario.predecessor.clone(),
+            candidate: scenario.candidate.clone(),
             postconditions: vec![
                 "durable-attempt-state-classified".into(),
                 "at-most-one-resource-owner".into(),
@@ -139,10 +159,10 @@ fn fixture() -> Result<(
         }
     };
     let mut cells = vec![
-        cell("fixture-a", &first_interface, "interrupt"),
-        cell("fixture-a", &first_interface, "recovery"),
-        cell("fixture-z", &second_interface, "interrupt"),
-        cell("fixture-z", &second_interface, "recovery"),
+        cell("fixture-a", &first_interface, &scenarios[0]),
+        cell("fixture-a", &first_interface, &scenarios[1]),
+        cell("fixture-z", &second_interface, &scenarios[0]),
+        cell("fixture-z", &second_interface, &scenarios[1]),
     ];
     cells.sort_by(|left, right| left.id.cmp(&right.id));
     let spec = NativeAdapterMatrixSpec {
@@ -180,9 +200,24 @@ fn fixture() -> Result<(
         .cells
         .iter()
         .map(|cell| {
+            let cell_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(cell)?);
+            let scenario = cell
+                .id
+                .rsplit('/')
+                .next()
+                .expect("fixture cell has a scenario");
             let cohort_subject = serde_json::json!({
-                "schema": "aos.test.native-adapter-cohort-subject/v1",
-                "cell": cell.id,
+                "schema": "aos.release.native-adapter-cell-cohort-subject/v1",
+                "cell_id": cell.id,
+                "cell_digest": cell_digest,
+                "boundary": cell.boundary,
+                "failure": cell.failure,
+                "candidate": cell.candidate,
+                "predecessor": cell.predecessor,
+                "subject": {
+                    "schema": "aos.test.native-adapter-cohort-subject/v1",
+                    "operation": cell.id,
+                },
             });
             let cohort_subject_digest =
                 Sha256Digest::of_bytes(crate::canonical::to_vec(&cohort_subject)?);
@@ -199,9 +234,12 @@ fn fixture() -> Result<(
                     Ok((
                         name.clone(),
                         NativeAdapterPostconditionProbe {
-                            schema_version: "aos.release.native-adapter-postcondition-probe/v1"
+                            schema_version: "aos.release.native-adapter-postcondition-probe/v2"
                                 .into(),
                             kind: probe_kind(name).into(),
+                            cell_id: cell.id.clone(),
+                            cell_digest,
+                            disposition: disposition(scenario).into(),
                             subject_digest: digest("subjects"),
                             cohort_subject_digest,
                             observation_digest,
@@ -212,7 +250,7 @@ fn fixture() -> Result<(
                 .collect::<Result<BTreeMap<_, _>>>()?;
             Ok(NativeAdapterCellObservation {
                 id: cell.id.clone(),
-                cell_digest: Sha256Digest::of_bytes(crate::canonical::to_vec(cell)?),
+                cell_digest,
                 environment_digest,
                 cohort_subject: Some(cohort_subject),
                 postconditions: cell
@@ -509,6 +547,54 @@ fn passing_postconditions_require_independent_subject_bound_probes() -> Result<(
         .kind = "dependency-barrier".into();
     mutations.push(wrong_kind);
 
+    let mut wrong_cell = observation.clone();
+    wrong_cell.cells[0]
+        .probes
+        .get_mut(&first_name)
+        .expect("fixture cell retains its probe")
+        .cell_digest = wrong_cell.cells[1].cell_digest;
+    mutations.push(wrong_cell);
+
+    let mut wrong_cell_id = observation.clone();
+    wrong_cell_id.cells[0]
+        .probes
+        .get_mut(&first_name)
+        .expect("fixture cell retains its probe")
+        .cell_id = wrong_cell_id.cells[1].id.clone();
+    mutations.push(wrong_cell_id);
+
+    let mut wrong_disposition = observation.clone();
+    wrong_disposition.cells[0]
+        .probes
+        .get_mut(&first_name)
+        .expect("fixture cell retains its probe")
+        .disposition = "invented-success".into();
+    mutations.push(wrong_disposition);
+
+    for (field, value) in [
+        ("cell_id", serde_json::json!("foreign-cell")),
+        ("boundary", serde_json::json!("after-acquisition")),
+        ("failure", serde_json::json!("foreign-failure")),
+    ] {
+        let mut wrong_binding = observation.clone();
+        wrong_binding.cells[0]
+            .cohort_subject
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("fixture cell has a bound cohort subject")
+            .insert(field.into(), value);
+        let subject_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(
+            wrong_binding.cells[0]
+                .cohort_subject
+                .as_ref()
+                .expect("fixture cell has a bound cohort subject"),
+        )?);
+        for probe in wrong_binding.cells[0].probes.values_mut() {
+            probe.cohort_subject_digest = subject_digest;
+        }
+        mutations.push(wrong_binding);
+    }
+
     let mut duplicate = observation;
     let first_observations = duplicate.cells[0].probes[&first_name].observations.clone();
     let second_probe = duplicate.cells[0]
@@ -531,6 +617,34 @@ fn passing_postconditions_require_independent_subject_bound_probes() -> Result<(
             .is_err()
         );
     }
+    Ok(())
+}
+
+#[test]
+fn production_probes_cannot_be_replayed_across_cells() -> Result<()> {
+    let (case, environment, mut observation) = fixture()?;
+    let postcondition = "at-most-one-resource-owner";
+    let replayed = observation.cells[0]
+        .probes
+        .get(postcondition)
+        .expect("fixture source cell has its probe")
+        .clone();
+    let target = observation.cells[1]
+        .probes
+        .get_mut(postcondition)
+        .expect("fixture target cell has its probe");
+    target.observation_digest = replayed.observation_digest;
+    target.observations = replayed.observations;
+
+    assert!(
+        validate_native_adapter_matrix_observation(
+            &case,
+            environment,
+            digest("executor"),
+            &observation,
+        )
+        .is_err()
+    );
     Ok(())
 }
 
