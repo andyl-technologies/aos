@@ -1,8 +1,10 @@
 syntax = "proto3";
 package aos.sandbox.local.v1;
 
-// Mandatory envelope for every node-local broker request. Authentication is
-// bound to the Unix socket peer credentials and MAC label outside protobuf.
+// Mandatory envelope for every node-local broker request. Legacy sessions bind
+// peer admission to Unix socket credentials and configured labels. The additive
+// authentication carriers are used only by the exact client-required Broker
+// Session Authentication profile; legacy sessions leave them empty.
 message RequestHeader {
   uint32 protocol_major = 1;
   uint32 protocol_minor = 2;
@@ -41,6 +43,7 @@ message BrokerClientHello {
   repeated Feature required_features = 4;
   uint32 maximum_response_bytes = 5;
   repeated BrokerMethod required_methods = 6;
+  bytes signed_session_hello = 7;
 }
 
 // First and only handshake packet returned by a broker. A non-successful
@@ -53,6 +56,7 @@ message BrokerServerHello {
   uint32 maximum_response_bytes = 5;
   BrokerError error = 6;
   repeated BrokerMethod methods = 7;
+  bytes signed_session_hello = 8;
 }
 
 // Closed node-local method registry. Method tags are compatibility semantics,
@@ -142,6 +146,7 @@ message BrokerRequestEnvelope {
   bytes body = 2;
   repeated BrokerDescriptorEntry descriptors = 3;
   BrokerAuthorizationArtifactsV1 authorization = 4;
+  bytes signed_session_request = 5;
 }
 
 // One response packet. request_id repeats the validated body header ID.
@@ -152,6 +157,7 @@ message BrokerResponseEnvelope {
   repeated BrokerDescriptorEntry descriptors = 4;
   BrokerError error = 5;
   repeated BrokerDescriptorDispositionEntry request_descriptor_dispositions = 6;
+  bytes signed_session_outcome = 7;
 }
 
 message BrokerError {

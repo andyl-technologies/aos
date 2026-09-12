@@ -981,6 +981,136 @@ public scalar observations from activating, consuming, or releasing an
 acquisition. SourceProvider 1.0 and AOSMSP01 retain their exact wire and durable
 formats. Production Create therefore remains closed.
 
+### Broker Session Authentication 1.0 source foundation (inert)
+
+The exact client-required feature is
+`aos.sandbox.authentication.broker-session,1.0`. It has no alias and is never
+selected opportunistically. The generic unauthenticated broker-session API
+rejects it even when locally advertised. No Host, Storage, Mount, Network, or
+controller production path advertises or requires it. Four additive bytes
+fields reserve the carrier without changing a protocol or method version:
+ClientHello field 7, BrokerHello field 8, request field 5, and response field 7.
+Legacy decoders reject every nonempty carrier; empty legacy encodings remain
+byte-identical.
+
+The source-only `aos-sandbox-broker-session-protocol` crate defines exact
+`AOSBSA01 || u16be(1) || purpose || method || reserved[4]=0 || signer[120] ||
+u32be(subject length) || subject || Ed25519 signature[64]` artifacts. The signer
+is authority ID 16, authority generation `u64be`, authority digest 32, key ID
+16, key generation `u64be`, SHA-256 of the raw public key 32, key use, and seven
+zero reserved bytes. Sentinel values, unknown codes, weak keys, trailing or
+noncanonical bytes, and failed strict verification are rejected. Pairwise
+distinct signer references, key IDs, and physical keys are ordered
+ClientHello=1, BrokerHello=2, ClientRecord=3, BrokerOutcome=4. The signer-set
+digest commits the four exact references in that order.
+
+ClientHello's 150-byte subject commits node/boot IDs, broker code (Host=1,
+Storage=2, Mount=3, Network=4), exact version/audience, client process, nonce,
+protected-context digest, and cleared ClientHello digest. BrokerHello's
+182-byte subject adds the analogous broker process/nonce and complete signed
+ClientHello digest while committing the same protected-context digest.
+ClientRecord's 104-byte subject commits session binding, client process,
+C-to-B sequence, request ID, and cleared request digest. BrokerOutcome's
+136-byte subject commits session binding, broker process, B-to-C sequence,
+request ID, complete signed request digest, and cleared response digest. Total
+artifact sizes are 354, 386, 308, and 340 bytes. Hello method is zero; request
+and outcome use the same exact existing BrokerMethod.
+
+Independent terminal-NUL domains cover all four signatures, cleared protobuf
+projections, complete signed hello/request links, signer set, protected
+context, and session binding; variable bytes are `u32be` length-prefixed.
+Projection clears only the containing auth field and requires the received
+protobuf to equal canonical re-encoding with that field restored, closing
+unknown, reordered, duplicate, non-minimal, and trailing fields. Request
+projection commits body, ordered
+contiguous descriptor `(index,role)` entries, and all authorization-quartet
+bytes/presence. Outcome projection commits request ID/method/body, ordered
+response descriptors, complete BrokerError including exact missing-feature
+triple, and ordered dispositions. It adds no sender-claimed kernel-object
+digest; actual SCM identity remains future receiver-derived branded evidence.
+
+Authenticated negotiation accepts only Host/Storage/Network 1.0 and Mount
+2.0. The client-required and broker-advertised feature sets each contain exact
+Broker Session Authentication 1.0 once, the required sets are subsets of the
+advertised sets, and methods remain canonical, protocol/role scoped, and
+feature-conditioned under the existing broker rules. BrokerHello cannot carry
+an error. Response ceilings are 4,096 through 15 MiB and the broker cannot
+exceed the client offer; BrokerHello's nonzero request ceiling cannot exceed
+the protocol maximum. The transcript retains the exact protocol/version,
+audience, required and advertised features/methods, and both negotiated packet
+ceilings. No received feature, digest, or signer reference selects local trust.
+
+Nonces are nonzero and unequal, all identity/protocol/process continuity is
+exact, BrokerHello cross-links the complete ClientHello, and session binding
+commits both complete artifacts client-first. The verified transcript stays
+Provisional until a valid sequence-1 ClientRecord proves possession of the
+separate traffic key. Shape-only local context pins route/domain/protocol/
+version/audience/node/boot, both processes, all four references/raw keys, and
+caller-supplied trust/route/revocation/currentness floors. Its independent
+digest commits that entire fixed context plus the ordered signer-set digest;
+both hellos sign it. All four keys must be active at handshake, and every
+request/outcome classification, including exact replay, first recomputes and
+compares the currently supplied context before selecting the role key. A
+change, revocation, or supersession therefore invalidates live traffic. The
+context is shape/crypto input only and explicitly proves neither protected
+provenance nor authority.
+
+Traffic is direction-local nonzero `u64` stop-and-wait starting at one. Exact
+replay of only the retained outstanding/latest-completed record yields
+no-write evidence; it is not unbounded history. The latest completed request
+and byte-identical complete response remain replayable while the next request
+is outstanding, and each response is checked against its own retained bound.
+A response with an unchanged signed carrier but changed body, error,
+descriptor table, disposition table, or outer request ID is equivocation, not
+exact replay. `u64::MAX` is reserved for exhaustion, making `u64::MAX - 1` the
+last admissible sequence. Changed equal sequence/request ID is equivocation.
+Gaps, rollback, a second outstanding request, and cross-session/protocol/route/
+method/direction transplant fail closed. Every
+authenticated success/error is a signed outcome. Pre-auth malformed input may
+close silently; transport close is not signed Unavailable. Pure verification
+does not persist or advance authority. A method outside the retained negotiated
+protocol set, or missing its client-required traffic feature, fails before
+replay classification.
+
+Authenticated response total is 15 MiB (15,728,640), cleared maximum
+15,728,297. Existing 65,536-byte hello totals leave cleared maxima 65,179 and
+65,147. Ordinary/Host-query/Mount-PrepareCatalog totals are
+1,048,576/1,048,640/1,081,408 and leave cleared maxima
+1,048,265/1,048,329/1,081,097. Auth carrier contributions are respectively
+357, 389, 311, and 343 bytes. Raw requests are capped at the largest legal
+total before protobuf allocation and then at the method-specific and signed
+negotiated ceiling. Each request's response ceiling must be at least 4,096 and
+no greater than the negotiated response ceiling; responses are raw-bounded
+before decode by the minimum of that request bound, the negotiated bound, and
+15 MiB. Where both the latest completed record and a new outstanding request
+exist, the receive adapter may preallocate only through the greater applicable
+retained bound, then must identify the authenticated target and apply that
+record's own bound before semantic use.
+
+Canonical projection validation is not full dispatch validation. The future
+production composite must still enforce method-body/header request ID and
+budget agreement, ancillary descriptor count and exact roles, error/body
+shape, and request-descriptor dispositions before dispatch, authority use, or
+descriptor consumption.
+
+This adds no `AOSBSJ01`, journal API/namespace, chunks, CSPRNG, protected
+loader/private-key service, Linux evidence, descriptor-use permit, production
+advertisement/readiness, orchestration, SourceProvider/Mount acquisition
+change, Nix, or VM work. P0 activation requires request sequence reservation
+atomically companion to owning effect intent and signed-outcome CAS atomically
+companion to effect result, including controller sides. A future helper may
+return records for a caller-owned transaction but must never own the journal;
+each method still needs its own atomic companion proof gate. An ambiguous
+request reservation or result commit must poison use until an exclusive
+authenticated reopen durably resolves it. Reconnect or session replacement
+must not erase or renumber outstanding or indeterminate effects: the owning
+journal must durably query, resolve, or replay them first. The production
+receive adapter must cap allocation before protobuf decode, and the full
+response body/error/descriptor/disposition contract must validate before the
+outcome head advances. Method semantics and every required signed-plan or
+feature condition are inseparable from traffic admission and must pass before
+reservation or dispatch.
+
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and
 the byte-exact original protocol 1.0 `ApplyRuntimeRequest`; its outer request

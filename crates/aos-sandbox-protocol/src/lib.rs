@@ -98,6 +98,13 @@ pub use session::{
 };
 pub use source_binding::{SourceBindingError, SourceRealizationBindingV1};
 
+// Cryptographic session types are re-exported for broker integrations without
+// making the generic unauthenticated session API accept the feature.
+pub use aos_sandbox_broker_session_protocol::{
+    BrokerSessionTrafficStateV1, CryptographicallyVerifiedBrokerRequestV1,
+    ProtectedBrokerSessionVerificationContextV1, VerifiedBrokerSessionTranscriptV1,
+};
+
 use aos_proto::aos::sandbox::local::v1::{
     ApplyGuestExecutionRequest, ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest,
     ApplyStorageRequest, AssignmentFence, Audience, BrokerClientHello, BrokerErrorCode,

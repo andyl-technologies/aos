@@ -23,8 +23,9 @@ use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature,
 };
 use aos_sandbox_core::{
-    DecodeLimits, FeatureRef, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
-    supported_protocol_version, validate_required_features,
+    BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, DecodeLimits, FeatureRef, ProtocolId,
+    ProtocolVersion, RegistryError, negotiate_protocol, supported_protocol_version,
+    validate_required_features,
 };
 use buffa::Message as _;
 
@@ -437,6 +438,7 @@ pub fn negotiate_client_hello(
     if !hello.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
+    reject_legacy_authentication_field(&hello.signed_session_hello)?;
     validate_peer_audience(peer, policy, hello.audience.as_known())?;
 
     let major = u16::try_from(hello.protocol_major)
@@ -449,9 +451,11 @@ pub fn negotiate_client_hello(
     }
 
     validate_canonical_feature_refs(advertised_features)?;
+    reject_authenticated_feature(advertised_features)?;
     validate_canonical_methods(advertised_methods, protocol, "advertised_methods")?;
     let required_features =
         validate_feature_set(&hello.required_features, "hello.required_features")?;
+    reject_authenticated_feature(&required_features)?;
     ensure_feature_subset(&required_features, advertised_features)?;
     let source_acquisition_requested = required_features
         .iter()
@@ -517,6 +521,7 @@ pub fn decode_server_hello(
     if !hello.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
+    reject_legacy_authentication_field(&hello.signed_session_hello)?;
 
     let error = hello
         .error
@@ -547,7 +552,9 @@ pub fn decode_server_hello(
     )?;
 
     validate_canonical_feature_refs(required_features)?;
+    reject_authenticated_feature(required_features)?;
     let advertised_features = validate_feature_set(&hello.features, "server_hello.features")?;
+    reject_authenticated_feature(&advertised_features)?;
     ensure_feature_subset(required_features, &advertised_features)?;
     validate_canonical_methods(required_methods, protocol, "required_methods")?;
     validate_role_methods(audience, required_methods)?;
@@ -605,6 +612,7 @@ pub fn decode_request_envelope(
     if !envelope.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
+    reject_legacy_authentication_field(&envelope.signed_session_request)?;
     let method = validate_method(envelope.method.as_known(), protocol)?;
     let maximum = match method {
         BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => MAXIMUM_HOST_QUERY_PACKET_BYTES,
@@ -1529,6 +1537,7 @@ pub fn decode_response_envelope(
     if !envelope.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
+    reject_legacy_authentication_field(&envelope.signed_session_outcome)?;
     let request_id = exact_nonzero::<16>(&envelope.request_id, "envelope.request_id")?;
     if &request_id != expected_request_id || envelope.method.as_known() != Some(expected_method) {
         return Err(ProtocolValidationError::MethodMismatch);
@@ -1618,6 +1627,7 @@ fn validate_failed_server_hello(hello: &BrokerServerHello) -> Result<(), Protoco
         || !hello.methods.is_empty()
         || hello.maximum_request_bytes != 0
         || hello.maximum_response_bytes != 0
+        || !hello.signed_session_hello.is_empty()
     {
         return Err(ProtocolValidationError::InvalidField(
             "server hello failure shape",
@@ -1906,6 +1916,29 @@ fn validate_canonical_feature_refs(features: &[FeatureRef]) -> Result<(), Protoc
     Ok(())
 }
 
+fn reject_authenticated_feature(features: &[FeatureRef]) -> Result<(), ProtocolValidationError> {
+    if features
+        .iter()
+        .any(|feature| feature.namespace() == BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE)
+    {
+        Err(ProtocolValidationError::InvalidField(
+            "broker session authentication requires the authenticated session API",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn reject_legacy_authentication_field(bytes: &[u8]) -> Result<(), ProtocolValidationError> {
+    if bytes.is_empty() {
+        Ok(())
+    } else {
+        Err(ProtocolValidationError::InvalidField(
+            "broker session authentication field on a legacy session",
+        ))
+    }
+}
+
 fn proto_feature(feature: &FeatureRef) -> aos_proto::aos::sandbox::local::v1::Feature {
     aos_proto::aos::sandbox::local::v1::Feature {
         namespace: feature.namespace().to_owned(),
@@ -1962,6 +1995,126 @@ mod tests {
         ];
         features.sort();
         features
+    }
+
+    #[test]
+    fn legacy_sessions_reject_every_known_authentication_carrier_and_feature() {
+        let signed_plan = feature(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE);
+        let authentication = feature(BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE);
+        let mut advertised = vec![signed_plan.clone(), authentication.clone()];
+        advertised.sort();
+        let methods = [BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME];
+        let base_hello = BrokerClientHello {
+            protocol_major: 1,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: vec![proto_feature(&signed_plan)],
+            maximum_response_bytes: 8192,
+            required_methods: methods.iter().copied().map(Into::into).collect(),
+            ..Default::default()
+        };
+        let legacy_bytes = base_hello.encode_to_vec();
+        let mut explicit_empty = base_hello.clone();
+        explicit_empty.signed_session_hello.clear();
+        assert_eq!(legacy_bytes, explicit_empty.encode_to_vec());
+        assert!(matches!(
+            negotiate_client_hello(
+                &legacy_bytes,
+                peer(),
+                policy(),
+                ProtocolId::HostBroker,
+                &advertised,
+                &methods,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "broker session authentication requires the authenticated session API"
+            ))
+        ));
+
+        let mut client = base_hello;
+        client.signed_session_hello = vec![1];
+        assert!(matches!(
+            negotiate_client_hello(
+                &client.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::HostBroker,
+                std::slice::from_ref(&signed_plan),
+                &methods,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "broker session authentication field on a legacy session"
+            ))
+        ));
+
+        let mut server = BrokerServerHello {
+            protocol_major: 1,
+            features: vec![proto_feature(&signed_plan)],
+            maximum_request_bytes: MAXIMUM_HOST_QUERY_PACKET_BYTES as u32,
+            maximum_response_bytes: 8192,
+            methods: methods.iter().copied().map(Into::into).collect(),
+            signed_session_hello: vec![1],
+            ..Default::default()
+        };
+        assert!(matches!(
+            decode_server_hello(
+                &server.encode_to_vec(),
+                ProtocolId::HostBroker,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                ProtocolVersion::new(1, 0),
+                std::slice::from_ref(&signed_plan),
+                &methods,
+                8192,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "broker session authentication field on a legacy session"
+            ))
+        ));
+        server.signed_session_hello.clear();
+        assert_eq!(server.encode_to_vec(), {
+            let mut copy = server.clone();
+            copy.signed_session_hello = Vec::new();
+            copy.encode_to_vec()
+        });
+
+        let mut request = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        let legacy_request = request.encode_to_vec();
+        request.signed_session_request.clear();
+        assert_eq!(legacy_request, request.encode_to_vec());
+        request.signed_session_request = vec![1];
+        assert!(matches!(
+            decode_request_envelope(&request.encode_to_vec(), ProtocolId::HostBroker, 0),
+            Err(ProtocolValidationError::InvalidField(
+                "broker session authentication field on a legacy session"
+            ))
+        ));
+
+        let mut response = BrokerResponseEnvelope {
+            request_id: vec![1; 16],
+            method: BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME.into(),
+            ..Default::default()
+        };
+        let legacy_response = response.encode_to_vec();
+        response.signed_session_outcome.clear();
+        assert_eq!(legacy_response, response.encode_to_vec());
+        response.signed_session_outcome = vec![1];
+        assert!(matches!(
+            decode_response_envelope(
+                &response.encode_to_vec(),
+                &[1; 16],
+                BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+                &[],
+                0,
+                8192,
+                8192,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "broker session authentication field on a legacy session"
+            ))
+        ));
     }
 
     #[test]

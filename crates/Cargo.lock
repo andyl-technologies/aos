@@ -821,6 +821,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-broker-session-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "aos-sandbox-core",
+ "buffa",
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-core"
 version = "0.1.0"
 dependencies = [
@@ -970,6 +983,7 @@ name = "aos-sandbox-protocol"
 version = "0.1.0"
 dependencies = [
  "aos-proto",
+ "aos-sandbox-broker-session-protocol",
  "aos-sandbox-core",
  "aos-sandbox-source-provider-protocol",
  "buffa",

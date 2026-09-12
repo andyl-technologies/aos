@@ -7802,3 +7802,51 @@ evidence, authoritative manager queries, controller acquisition orchestration,
 Create advertisement, readiness wiring, Nix builds, and VM qualification remain
 open. Accordingly `SBX-MOUNT-01`, `SBX-BPROTO-05`, `SBX-P0-10`, and the broader
 filesystem-view provider/manager integration tasks remain unchecked.
+
+### Broker Session Authentication 1.0 cryptographic/wire foundation
+
+The current source-only increment registers exact client-required feature
+`aos.sandbox.authentication.broker-session,1.0`, reserves its four additive
+protobuf carriers with scoped compatibility checks, and adds the focused
+`aos-sandbox-broker-session-protocol` crate. It supplies the fixed AOSBSA01
+envelope and four pairwise-distinct signer uses, strict Ed25519 verification,
+independent signature/projection/cross-link/signer-set/protected-context/session
+domains, canonical cleared protobuf commitments, exact subject/artifact/carrier
+sizes, and a caller-supplied shape-only context digest signed by both hellos.
+The digest commits exact route/trust/revocation generations and digests,
+identity/protocol/process pins, the ordered signer-set digest, all four raw
+keys/references, and their active/currentness shape. Transcript verification
+requires every key active and retains exact authenticated negotiation:
+Host/Storage/Network 1.0 or Mount 2.0, audience, canonical feature/method sets,
+and signed request/response ceilings. The crate also supplies mutually signed
+hello/session binding checks, a Provisional first-request traffic-key proof,
+pure stop-and-wait sequencing, and latest-record exact replay/equivocation
+failure semantics. Every traffic/replay classification rechecks the current
+protected-context digest and active keys first. Source tests cover all context
+component/key/currentness substitutions, negotiation downgrade and transplant
+cases, exact ordinary/Host-query/Mount-Prepare request ceilings, per-request
+response bounds, 60 independent golden records, and continued
+Host/Storage/Mount/Network/controller inertness.
+
+This advances only the source-level P1 foundation. Generic sessions reject all
+four nonempty known carriers and reject the feature on either negotiation side;
+no production path advertises it. There is no journal format/namespace/commit
+API, protected loader/private-key service, CSPRNG, branded Linux peer/pidfd/
+cgroup/descriptor evidence, descriptor-use permit, per-method atomic companion
+proof, production service/client integration, controller orchestration,
+readiness, Nix build, or VM qualification. Request sequence reservation remains
+to be made atomically companion to owning effect intent and signed-outcome CAS
+atomically companion to effect result on broker and controller sides. An
+ambiguous reservation or result commit must poison the live authority view
+until an exclusive authenticated reopen durably resolves it. Reconnect and
+session replacement must not erase or renumber outstanding or indeterminate
+effects; the owning journal must query, resolve, or replay them first. The
+receive adapter must cap allocation before protobuf decode. Method semantics
+and required signed-plan/feature conditions must pass with traffic admission
+before reservation or dispatch, and complete response body/error/descriptor/
+disposition semantics must pass before advancing the outcome head. Therefore
+`SBX-BPROTO-05`, `SBX-BPROTO-04`, and `SBX-P0-10` remain open, with their Host,
+Storage, Mount, Network, controller, deployment, and qualification dependencies.
+The production composite also remains responsible for method-body/header
+request-ID and budget agreement, ancillary count, exact descriptor roles,
+error/body shape, and disposition validation before effects or descriptor use.

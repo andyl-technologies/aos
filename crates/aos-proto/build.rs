@@ -42,6 +42,26 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     }
     verify_scoped_declarations(
         &source_declarations,
+        "message BrokerClientHello {",
+        &["bytes signed_session_hello = 7;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message BrokerServerHello {",
+        &["bytes signed_session_hello = 8;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message BrokerRequestEnvelope {",
+        &["bytes signed_session_request = 5;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message BrokerResponseEnvelope {",
+        &["bytes signed_session_outcome = 7;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
         "enum RuntimeEffectStatus {",
         &[
             "RUNTIME_EFFECT_STATUS_ABSENT = 1;",
