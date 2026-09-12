@@ -131,7 +131,7 @@ pub(crate) fn persist_phase_receipt(
         return Err(OperationalStateMigrationError::InvalidReceipt);
     }
     let path = directory.path().join(name);
-    directory.write_once(&path, &bytes)?;
+    publish_resumable(directory, &path, &bytes)?;
     let authority = directory
         .open_regular_optional(&path, "pin-receipt")?
         .ok_or(OperationalStateMigrationError::InvalidReceipt)?;
@@ -166,7 +166,6 @@ pub(crate) fn prepare_receipt_directory(
 fn reconcile_receipt_directory(
     directory: &AnchoredDirectory,
 ) -> Result<(), OperationalStateMigrationError> {
-    let mut pending = Vec::new();
     let mut entries = 0usize;
     let valid = [ASSIGNMENT_RECEIPT, PREPARED_RECEIPT];
     let anchored = directory.anchored_path();
@@ -193,16 +192,12 @@ fn reconcile_receipt_directory(
             .iter()
             .any(|receipt| name == format!(".{receipt}.pending"))
         {
-            let authority = directory
-                .open_regular_optional(&entry.path(), "pin-pending-receipt")?
+            directory
+                .open_inventory_file(&entry.path(), "pin-pending-receipt")?
                 .ok_or(OperationalStateMigrationError::InvalidReceipt)?;
-            pending.push(authority);
         } else {
             return Err(OperationalStateMigrationError::InvalidReceipt);
         }
-    }
-    for authority in pending {
-        directory.remove_bound_file(&authority, "remove-pending")?;
     }
     Ok(directory.sync()?)
 }
@@ -227,7 +222,7 @@ pub(crate) fn activate_marker(
         prepared_results,
         MARKER_COMPLETE,
     )?;
-    reconcile_pending_marker(root, &path, &active)?;
+    publish_resumable(root, &path, &active)?;
     let authority = match root.open_regular_optional(&path, "open-marker")? {
         Some(authority) => authority,
         None => {
@@ -255,20 +250,33 @@ pub(crate) fn activate_marker(
     })
 }
 
-fn reconcile_pending_marker(
+fn publish_resumable(
     root: &AnchoredDirectory,
-    marker: &Path,
+    destination: &Path,
     expected: &[u8],
 ) -> Result<(), OperationalStateMigrationError> {
-    let pending_path = root.write_once_pending_path(marker)?;
-    let Some(pending) = root.open_regular_optional(&pending_path, "open-pending-marker")? else {
-        return Ok(());
+    let pending_path = root.write_once_pending_path(destination)?;
+    let pending = root.open_regular_optional(&pending_path, "open-pending-publication")?;
+    if root
+        .open_regular_optional(destination, "open-published-file")?
+        .is_some()
+    {
+        return if pending.is_none() {
+            Ok(())
+        } else {
+            Err(OperationalStateMigrationError::InvalidReceipt)
+        };
+    }
+    let Some(pending) = pending else {
+        return Ok(root.write_once(destination, expected)?);
     };
     let bytes = pending.read_bounded(MAX_RECEIPT_BYTES)?;
     if !expected.starts_with(&bytes) {
         return Err(OperationalStateMigrationError::InvalidReceipt);
     }
-    Ok(root.remove_bound_file(&pending, "remove-pending-marker")?)
+    pending.replace_contents(expected)?;
+    root.rename_noreplace(&pending_path, destination, "publish-completed-pending-file")?;
+    Ok(())
 }
 
 pub(crate) fn finish_marker(
@@ -554,7 +562,7 @@ mod tests {
                 .write_once_pending_path(&marker_path)
                 .expect("pending path");
             let length = expected.len() * fraction / 2;
-            fs::write(pending_path, &expected[..length]).expect("interrupted marker write");
+            fs::write(&pending_path, &expected[..length]).expect("interrupted marker write");
 
             activate_marker(&root_guard, &receipt_guard, &assignment, &prepared)
                 .unwrap_or_else(|error| panic!("resume marker cut {fraction}: {error}"));

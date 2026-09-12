@@ -699,14 +699,18 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
         if observed_generation != expected_generation {
             return Err(StoreError::Incompatible);
         }
-        if disposition == StoreGraphPhysicalRepairDisposition::ReplacedCorrupt {
-            fence.delete_candidate(id)?;
-        }
+        let publication_generation =
+            if disposition == StoreGraphPhysicalRepairDisposition::ReplacedCorrupt {
+                fence.delete_candidate(id)?;
+                fence.visit_inventory(&mut |_| Ok(()))?.generation()
+            } else {
+                observed_generation
+            };
         drop(fence);
 
         let source = BlobHandle::from_bytes(bytes);
         self.backend
-            .repair_put_if_absent(id, &source, expected_generation)?;
+            .repair_put_if_absent(id, &source, publication_generation)?;
         self.backend.read(id, None)?.copy_to(&mut std::io::sink())?;
         Ok(disposition)
     }

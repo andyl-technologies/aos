@@ -522,12 +522,16 @@ enum StoreCommand {
     Ensure(StoreEnsureArgs),
     /// Authenticate every bounded physical placement in one stable generation.
     Verify(StoreVerifyArgs),
-    /// Restore one missing or corrupt physical copy from an authenticated peer.
+    /// Repair one placement or migrate stopped-daemon operational state.
     Repair(StoreRepairArgs),
     /// Plan, cancel, or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
     /// Plan or apply deterministic repacking for one configured packed leaf.
     Repack(StoreRepackArgs),
+}
+
+fn encode_store_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -601,7 +605,7 @@ struct StoreOperationalStateRepairArgs {
     /// Strict owner-only campaign peer policy used by this deployment.
     #[arg(long, value_name = "PATH")]
     policy: PathBuf,
-    /// Acquire this ledger's writer lock and migrate it through v15.
+    /// Acquire this ledger's writer lock and migrate attempt-state records to v15.
     #[arg(long, value_name = "PATH")]
     ledger: PathBuf,
     /// Migrate this namespace through v2 while the writer lock remains held.
