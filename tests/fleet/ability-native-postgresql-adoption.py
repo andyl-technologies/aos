@@ -17,6 +17,9 @@ POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
 POSTGRESQL_REJECTION_EVIDENCE_SCHEMA = (
     "aos.qualification.postgresql-provider-rejection-evidence/v1"
 )
+POSTGRESQL_ORDERED_METHOD_EVIDENCE_SCHEMA = (
+    "aos.qualification.postgresql-ordered-method-evidence/v1"
+)
 
 
 def adoption_package(artifact):
@@ -243,6 +246,47 @@ def postgresql_cohort_subject(bundle, method, bundle_bytes):
     }
 
 
+def postgresql_ordered_method_subject(
+    adoption_bundle,
+    method_bundle,
+    method,
+    evidence_bytes,
+):
+    adoption = adoption_contract(adoption_bundle)
+    authority = method_bundle["transition_authority"]
+    operation = operation_projection(method_bundle, method, adoption["resource"])
+    return {
+        "schema": POSTGRESQL_COHORT_SUBJECT_SCHEMA,
+        "plan": method_bundle["plan"],
+        "evidence-digest": evidence_digest(evidence_bytes),
+        "operation": operation,
+        "dependent-operations": required_success_dependents(
+            method_bundle,
+            operation,
+        ),
+        "resource": adoption["resource"],
+        "resource-interface": adoption["resource_interface"],
+        "source": adoption["source"],
+        "candidate": adoption["candidate"],
+        "authorization-policy-revision": authority[
+            "authorization_policy_revision"
+        ],
+        "current-planning": authority["current_planning"],
+        "desired-planning": authority["desired_planning"],
+        "adoption-authorization": {
+            "authorization-policy-revision": adoption_bundle[
+                "transition_authority"
+            ]["authorization_policy_revision"],
+            "current-planning": adoption_bundle["transition_authority"][
+                "current_planning"
+            ],
+            "desired-planning": adoption_bundle["transition_authority"][
+                "desired_planning"
+            ],
+        },
+    }
+
+
 def postgresql_rejection_subject(activation, policy, evidence_bytes):
     authority = policy["transition_authority"]
     adoption = authority["provider_adoptions"][0]
@@ -329,6 +373,16 @@ def owner_inventory(resource):
 def postgresql_state_snapshot(activation, kind="host-storage"):
     state = resource_states(activation)[kind]
     return state["resource"], evidence_digest(state)
+
+
+def persisted_resource_snapshot(kind, resource):
+    matching = [
+        state
+        for state in all_runtime_states(kind)
+        if state["resource"] == resource
+    ]
+    assert len(matching) == 1, (kind, resource, matching)
+    return evidence_digest(matching[0])
 
 
 def adoption_row_digest(details, secret):
@@ -576,6 +630,69 @@ row_digest_after_incompatible = adoption_row_digest(
     secret_adoption_v1,
 )
 assert foreign_resource_after_incompatible == foreign_resource_adoption_v1
+
+
+def reject_incompatible_adoption_method(method):
+    activation_root = f"/run/postgresql-adoption-incompatible-{method}"
+    authority_root = f"/run/postgresql-authority-adoption-incompatible-{method}"
+    host_path = f"/run/postgresql-host-adoption-incompatible-{method}.nix"
+    activation = generate_postgresql_activation(
+        activation_root,
+        "ability_app",
+        "ability_role",
+        ADOPTION_CREDENTIAL_VERSION,
+        ADOPTION_CONFIGURATION,
+        authority_root,
+        postgresql_artifact="adoption-incompatible",
+        provider_adoption_from="adoption-v1",
+        provider_adoption_current_planning=planning_adoption_v1,
+        provider_adoption_method=method,
+    )
+    provision_postgresql_authority(activation, authority_root)
+    adoption_host(host_path, activation, "adoption-incompatible")
+
+    policy = sidecar_document(activation, "authenticated_policy_set")
+    generation_before = current_generation()
+    ledger_before = runtime.succeed(f"{COREUTILS}/cat {NATIVE_OWNER_LEDGER}")
+    state_before = persistent_state_snapshot()
+    error = switch_postgresql_host(
+        host_path,
+        f"adoption-incompatible-{method}",
+        succeed=False,
+    )
+
+    assert "state-format descriptors are incompatible" in error, error
+    generation_after = current_generation()
+    ledger_after = runtime.succeed(f"{COREUTILS}/cat {NATIVE_OWNER_LEDGER}")
+    state_after = persistent_state_snapshot()
+    assert generation_after == generation_before
+    assert ledger_after == ledger_before
+    assert state_after == state_before
+
+    evidence = canonical_json_bytes({
+        "schema": POSTGRESQL_REJECTION_EVIDENCE_SCHEMA,
+        "activation": activation,
+        "policy": policy,
+        "observation": {
+            "error": error,
+            "generation-before": generation_before,
+            "generation-after": generation_after,
+            "owner-ledger-before": evidence_digest(ledger_before.encode()),
+            "owner-ledger-after": evidence_digest(ledger_after.encode()),
+            "persistent-state-before": evidence_digest(state_before),
+            "persistent-state-after": evidence_digest(state_after),
+            "candidate-effect-count": 0,
+        },
+    })
+    subject = postgresql_rejection_subject(activation, policy, evidence)
+    assert subject["operation"]["method"] == method, subject
+    return subject, evidence
+
+
+additional_incompatible_attempts = {
+    method: reject_incompatible_adoption_method(method)
+    for method in ("observe", "restart", "start", "stop")
+}
 
 # A normal compatible replacement changes both the owner and the real
 # PostgreSQL executable while retaining the cluster identity and SQL data.
@@ -1089,6 +1206,154 @@ journal_digest_adoption_final_v1 = transaction_journal_digest(
     root_adoption_final_v1
 )
 
+# Exercise exact lifecycle methods after the retained provider has settled.
+# The stopped generation keeps the durable cluster state, and the following
+# generation reauthorizes and starts that same resource under current policy.
+unrelated_postgresql_state = next(iter(capacity_reused["postgresql"].values()))
+unrelated_postgresql_resource = unrelated_postgresql_state["resource"]
+unrelated_snapshot_before_followup = persisted_resource_snapshot(
+    "postgresql",
+    unrelated_postgresql_resource,
+)
+
+activation_adoption_stopped = generate_postgresql_activation(
+    "/run/postgresql-adoption-stopped",
+    "ability_app",
+    "ability_role",
+    ADOPTION_CREDENTIAL_VERSION,
+    ADOPTION_CONFIGURATION,
+    "/run/postgresql-authority-adoption-stopped",
+    lifecycle="remove",
+    postgresql_artifact="adoption-v1",
+)
+provision_postgresql_authority(
+    activation_adoption_stopped,
+    "/run/postgresql-authority-adoption-stopped",
+)
+adoption_host(
+    "/run/postgresql-host-adoption-stopped.nix",
+    activation_adoption_stopped,
+    "adoption-v1",
+)
+generation_adoption_stopped = switch_postgresql_host(
+    "/run/postgresql-host-adoption-stopped.nix",
+    "adoption-stopped",
+)
+(
+    transaction_adoption_stopped,
+    root_adoption_stopped,
+    bundle_adoption_stopped,
+    _,
+) = transaction_document(generation_adoption_stopped)
+stopped_postgresql_state = [
+    state
+    for state in all_runtime_states("postgresql")
+    if state["resource"] == resource_adoption_final_v1
+]
+assert len(stopped_postgresql_state) == 1, stopped_postgresql_state
+assert stopped_postgresql_state[0]["details"]["phase"] == "stopped", (
+    stopped_postgresql_state[0]
+)
+owners_adoption_stopped = owner_inventory(resource_adoption_final_v1)
+
+activation_adoption_restarted = generate_postgresql_activation(
+    "/run/postgresql-adoption-restarted",
+    "ability_app",
+    "ability_role",
+    ADOPTION_CREDENTIAL_VERSION,
+    ADOPTION_CONFIGURATION,
+    "/run/postgresql-authority-adoption-restarted",
+    postgresql_artifact="adoption-v1",
+)
+provision_postgresql_authority(
+    activation_adoption_restarted,
+    "/run/postgresql-authority-adoption-restarted",
+)
+adoption_host(
+    "/run/postgresql-host-adoption-restarted.nix",
+    activation_adoption_restarted,
+    "adoption-v1",
+)
+generation_adoption_restarted = switch_postgresql_host(
+    "/run/postgresql-host-adoption-restarted.nix",
+    "adoption-restarted",
+)
+(
+    transaction_adoption_restarted,
+    root_adoption_restarted,
+    bundle_adoption_restarted,
+    _,
+) = transaction_document(generation_adoption_restarted)
+details_adoption_restarted = assert_cluster_layout(
+    resource_states(activation_adoption_restarted)
+)
+assert details_adoption_restarted["data_path"] == (
+    details_adoption_final_v1["data_path"]
+)
+assert_adoption_data(
+    details_adoption_restarted,
+    "/run/postgresql-adoption-restarted/test-only/credential.secret",
+    adoption_system_identifier,
+)
+row_digest_adoption_restarted = adoption_row_digest(
+    details_adoption_restarted,
+    "/run/postgresql-adoption-restarted/test-only/credential.secret",
+)
+owners_adoption_restarted = owner_inventory(resource_adoption_final_v1)
+assert owners_adoption_restarted == owners_adoption_final_v1, (
+    owners_adoption_restarted,
+    owners_adoption_final_v1,
+)
+unrelated_snapshot_after_followup = persisted_resource_snapshot(
+    "postgresql",
+    unrelated_postgresql_resource,
+)
+assert unrelated_snapshot_after_followup == unrelated_snapshot_before_followup
+
+ordered_method_evidence = {}
+ordered_method_subjects = {}
+for method, generation, transaction, root, method_bundle in (
+    (
+        "stop",
+        generation_adoption_stopped,
+        transaction_adoption_stopped,
+        root_adoption_stopped,
+        bundle_adoption_stopped,
+    ),
+    (
+        "start",
+        generation_adoption_restarted,
+        transaction_adoption_restarted,
+        root_adoption_restarted,
+        bundle_adoption_restarted,
+    ),
+):
+    evidence = canonical_json_bytes({
+        "schema": POSTGRESQL_ORDERED_METHOD_EVIDENCE_SCHEMA,
+        "adoption": bundle_adoption_final_v1,
+        "method": method_bundle,
+        "observation": {
+            "adoption-generation": generation_adoption_final_v1,
+            "method-generation": generation,
+            "transaction": transaction,
+            "journal-digest": transaction_journal_digest(root),
+            "resource-state": evidence_digest(
+                stopped_postgresql_state[0]
+                if method == "stop"
+                else resource_states(activation_adoption_restarted)[
+                    "postgresql"
+                ]
+            ),
+        },
+    })
+    ordered_method_evidence[method] = evidence
+    ordered_method_subjects[method] = postgresql_ordered_method_subject(
+        bundle_adoption_final_v1,
+        method_bundle,
+        method,
+        evidence,
+    )
+
 compatible_cell = (
     "postgresql/aos.postgresql-effects/abi-1/materialize/"
     "adopt-compatible-state"
@@ -1542,10 +1807,215 @@ for state_method in ("materialize", "observe"):
         bundle_bytes_adoption_final_v1,
     )
 
+
+POSTGRESQL_PENDING_STATE_SUBJECTS = {}
+POSTGRESQL_PENDING_STATE_EVIDENCE = {}
+POSTGRESQL_PENDING_STATE_PROBES = {}
+
+
+def add_postgresql_ordered_method_cell(method, scenario, base_cell):
+    cell = f"postgresql/aos.postgresql-effects/abi-1/{method}/{scenario}"
+    subject = ordered_method_subjects[method]
+    evidence = ordered_method_evidence[method]
+    probes = deepcopy(NATIVE_ADAPTER_MATRIX_PROBES[base_cell])
+    method_generation = {
+        "stop": generation_adoption_stopped,
+        "start": generation_adoption_restarted,
+    }[method]
+    method_transaction = {
+        "stop": transaction_adoption_stopped,
+        "start": transaction_adoption_restarted,
+    }[method]
+    method_root = {
+        "stop": root_adoption_stopped,
+        "start": root_adoption_restarted,
+    }[method]
+    method_owners = {
+        "stop": owners_adoption_stopped,
+        "start": owners_adoption_restarted,
+    }[method]
+
+    adoption_subject = postgresql_cohort_subject(
+        bundle_adoption_final_v1,
+        "restart",
+        bundle_bytes_adoption_final_v1,
+    )
+    durable = probes["durable-attempt-state-classified"]["observations"]
+    durable.update({
+        "transaction": method_transaction,
+        "plan": subject["plan"],
+        "operation": subject["operation"],
+        "timeline": operation_timeline(
+            method_generation,
+            method_transaction,
+            subject["operation"],
+        ),
+        "record-digest": transaction_journal_digest(method_root),
+        "adoption-operation": adoption_subject["operation"],
+        "adoption-timeline": operation_timeline(
+            generation_adoption_final_v1,
+            transaction_adoption_final_v1,
+            adoption_subject["operation"],
+        ),
+        "adoption-generation": generation_adoption_final_v1,
+        "method-generation": method_generation,
+    })
+    probes["at-most-one-resource-owner"]["observations"] = {
+        "resource": resource_adoption_final_v1,
+        "owners-before": owners_adoption_recovered,
+        "owners-unsettled": owners_adoption_final_v1,
+        "owners-after": method_owners,
+    }
+    probes["foreign-resources-unchanged"]["observations"] = {
+        "resource": unrelated_postgresql_resource,
+        "snapshot-before": unrelated_snapshot_before_followup,
+        "snapshot-after": unrelated_snapshot_after_followup,
+        "unchanged": True,
+    }
+
+    if scenario == "adopt-compatible-state":
+        adoption_authority = subject["adoption-authorization"]
+        probes["fresh-receiving-authority"]["observations"] = {
+            "source-handler-incarnation": subject["source"][
+                "handler_incarnation"
+            ],
+            "candidate-handler-incarnation": subject["candidate"][
+                "handler_incarnation"
+            ],
+            "authorization-policy-revision": adoption_authority[
+                "authorization-policy-revision"
+            ],
+            "current-planning": adoption_authority["current-planning"],
+            "desired-planning": adoption_authority["desired-planning"],
+            "fresh": True,
+        }
+        probes["compatible-state-adopted"]["observations"] = {
+            "resource": resource_adoption_final_v1,
+            "source-state-format": subject["source"]["state_format"],
+            "candidate-state-format": subject["candidate"]["state_format"],
+            "system-identifier-before": adoption_system_identifier,
+            "system-identifier-after": details_adoption_final_v1[
+                "data_system_identifier"
+            ],
+            "row-digest-before": row_digest_adoption_recovered,
+            "row-digest-after": row_digest_adoption_final_v1,
+            "adopted": True,
+        }
+        probes["exactly-one-resource-owner"]["observations"] = {
+            "resource": resource_adoption_final_v1,
+            "expected-owner": owner_adoption_final_v1,
+            "owners": method_owners,
+        }
+    else:
+        probes["current-grants-reauthorized"]["observations"] = {
+            "authorization-policy-revision": subject[
+                "authorization-policy-revision"
+            ],
+            "source-handler-incarnation": subject["source"][
+                "handler_incarnation"
+            ],
+            "candidate-handler-incarnation": subject["candidate"][
+                "handler_incarnation"
+            ],
+            "current-planning": subject["current-planning"],
+            "desired-planning": subject["desired-planning"],
+            "reauthorized": True,
+        }
+        probes["retained-target-identity-preserved"]["observations"] = {
+            "resource": resource_adoption_final_v1,
+            "data-path-before": details_adoption_final_v1["data_path"],
+            "data-path-after": details_adoption_restarted["data_path"],
+            "system-identifier-before": details_adoption_final_v1[
+                "data_system_identifier"
+            ],
+            "system-identifier-after": details_adoption_restarted[
+                "data_system_identifier"
+            ],
+            "row-digest-before": row_digest_adoption_final_v1,
+            "row-digest-after": row_digest_adoption_restarted,
+        }
+        probes["exactly-one-resource-owner"]["observations"] = {
+            "resource": resource_adoption_final_v1,
+            "expected-owner": owner_adoption_final_v1,
+            "owners": method_owners,
+        }
+
+    POSTGRESQL_PENDING_STATE_SUBJECTS[cell] = subject
+    POSTGRESQL_PENDING_STATE_EVIDENCE[cell] = evidence
+    POSTGRESQL_PENDING_STATE_PROBES[cell] = probes
+
+
+for ordered_method in ("start", "stop"):
+    add_postgresql_ordered_method_cell(
+        ordered_method,
+        "adopt-compatible-state",
+        compatible_cell,
+    )
+    add_postgresql_ordered_method_cell(
+        ordered_method,
+        "activate-retained-target",
+        retained_cell,
+    )
+
+
+def add_postgresql_rejection_cell(method, subject, evidence):
+    cell = (
+        f"postgresql/aos.postgresql-effects/abi-1/{method}/"
+        "reject-unsupported-transfer"
+    )
+    probes = deepcopy(NATIVE_ADAPTER_MATRIX_PROBES[incompatible_cell])
+    durable = probes["durable-attempt-state-classified"]["observations"]
+    durable["plan"] = subject["plan"]
+    durable["operation"] = subject["operation"]
+    durable["record-digest"] = evidence_digest(evidence)
+
+    dependent = probes["dependent-effects-not-executed"]["observations"]
+    dependent["predecessor-operation"] = subject["operation"]
+    dependent["dependent-operations"] = subject["dependent-operations"]
+
+    receiving = probes["fresh-receiving-authority"]["observations"]
+    receiving["source-handler-incarnation"] = subject["source"][
+        "handler_incarnation"
+    ]
+    receiving["candidate-handler-incarnation"] = subject["candidate"][
+        "handler_incarnation"
+    ]
+    receiving["authorization-policy-revision"] = subject[
+        "authorization-policy-revision"
+    ]
+    receiving["current-planning"] = subject["current-planning"]
+    receiving["desired-planning"] = subject["desired-planning"]
+
+    rejection = probes[
+        "transfer-rejected-before-candidate-effect"
+    ]["observations"]
+    rejection["candidate-operation"] = subject["operation"]
+    rejection["source-state-format"] = subject["source"]["state_format"]
+    rejection["candidate-state-format"] = subject["candidate"][
+        "state_format"
+    ]
+
+    POSTGRESQL_PENDING_STATE_SUBJECTS[cell] = subject
+    POSTGRESQL_PENDING_STATE_EVIDENCE[cell] = evidence
+    POSTGRESQL_PENDING_STATE_PROBES[cell] = probes
+
+
+for rejection_method, rejection_attempt in additional_incompatible_attempts.items():
+    add_postgresql_rejection_cell(
+        rejection_method,
+        rejection_attempt[0],
+        rejection_attempt[1],
+    )
+
 # Every PostgreSQL probe carries its exact cell operation. Besides binding the
 # provider-specific facts to the method, this prevents replay across cells that
 # share one durable adoption transition.
 for cell_id, probes in NATIVE_ADAPTER_MATRIX_PROBES.items():
     matrix_operation = NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS[cell_id]["operation"]
+    for probe in probes.values():
+        probe["observations"]["matrix-operation"] = matrix_operation
+
+for cell_id, probes in POSTGRESQL_PENDING_STATE_PROBES.items():
+    matrix_operation = POSTGRESQL_PENDING_STATE_SUBJECTS[cell_id]["operation"]
     for probe in probes.values():
         probe["observations"]["matrix-operation"] = matrix_operation
