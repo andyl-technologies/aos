@@ -4,12 +4,14 @@
   mkSystem,
   pkgs,
   guestTools ? false,
+  transitionTransform ? transition: transition,
 }: let
   packageSet = import ../abilities/reference-kubernetes/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     kubernetesRuntime = pkgs.kubectl;
     systemdRuntime = pkgs.aos.packageRuntime;
+    inherit transitionTransform;
   };
 
   orderedPackages = [
@@ -70,11 +72,21 @@
         d /run/credstore/k3s-combined 0700 root root - -
       '';
     };
+
+    systemd.services.aos-kubernetes-matrix-foreign = {
+      description = "Disposable foreign unit for Kubernetes effect qualification";
+      wantedBy = ["multi-user.target"];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+      };
+    };
   };
-  runtimeSystem = mkSystem [
+  runtimeModules = [
     ../../systems/server-test.nix
     runtimeModule
   ];
+  runtimeSystem = mkSystem runtimeModules;
   qualificationSetupBody = ''
     aos.packages.k3s-combined = {
       package = pkgs.k3s-combined;
@@ -84,6 +96,14 @@
     environment.etc."aos/packages/k3s-combined/k3s.env".text = ${builtins.toJSON runtimeModule.environment.etc."aos/packages/k3s-combined/k3s.env".text};
     environment.etc."aos/packages/k3s-combined/addons.json".text = ${builtins.toJSON runtimeModule.environment.etc."aos/packages/k3s-combined/addons.json".text};
     environment.etc."tmpfiles.d/ability-kubernetes.conf".text = ${builtins.toJSON runtimeModule.environment.etc."tmpfiles.d/ability-kubernetes.conf".text};
+    systemd.services.aos-kubernetes-matrix-foreign = {
+      description = "Disposable foreign unit for Kubernetes effect qualification";
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+      };
+    };
   '';
   qualificationExtraClosures =
     packageRoots
@@ -115,6 +135,7 @@ in {
     qualificationExtraClosures
     qualificationCandidateRuntimeCompanions
     qualificationSetupBody
+    runtimeModules
     runtimeSystem
     ;
 
@@ -236,7 +257,12 @@ in {
 
 
       def kubernetes_activation_command(
-          output, replicas, include_longhorn, authority, fault=None
+          output,
+          replicas,
+          include_longhorn,
+          authority,
+          fault=None,
+          lifecycle="full",
       ):
           arguments = [
               FIXTURE,
@@ -248,6 +274,7 @@ in {
           if fault:
               arguments.append(fault)
           arguments.extend(["--operator-authority-output", authority])
+          arguments.extend(["--lifecycle", lifecycle])
           command = " ".join(shlex.quote(argument) for argument in arguments)
           return (
               f"PATH={NIX_BIN}:{COREUTILS} "
@@ -268,12 +295,22 @@ in {
 
 
       def generate_kubernetes_activation(
-          output, replicas, include_longhorn, authority, fault=None
+          output,
+          replicas,
+          include_longhorn,
+          authority,
+          fault=None,
+          lifecycle="full",
       ):
           reset_kubernetes_activation_paths(output, authority)
           runtime.succeed(
               kubernetes_activation_command(
-                  output, replicas, include_longhorn, authority, fault
+                  output,
+                  replicas,
+                  include_longhorn,
+                  authority,
+                  fault,
+                  lifecycle,
               ),
               timeout=1200,
           )
@@ -292,7 +329,7 @@ in {
           )
 
 
-      def write_kubernetes_host(path, activation):
+      def write_kubernetes_host(path, activation, extra_module=""):
           activation_json = json.dumps(activation, separators=(",", ":"))
           desired_packages = " ".join(
               json.dumps(entry["name"]) for entry in REFERENCE_PACKAGES
@@ -305,7 +342,8 @@ in {
               "  aos.abilities.activationInput = builtins.fromJSON "
               + json.dumps(activation_json)
               + ";\n"
-              "}\n"
+              + extra_module
+              + "}\n"
           )
           encoded = base64.b64encode(host_module.encode()).decode()
           runtime.succeed(

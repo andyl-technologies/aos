@@ -4,6 +4,7 @@
   mkSystem,
   pkgs,
   guestTools ? false,
+  transitionTransform ? transition: transition,
 }: let
   packageSet = import ../abilities/reference-nginx/package.nix {
     inherit lib;
@@ -12,6 +13,7 @@
     managedConfigurationRuntime = pkgs.aos.packageRuntime;
     nginxRuntime = pkgs.nginx;
     systemdRuntime = pkgs.aos.packageRuntime;
+    inherit transitionTransform;
   };
   systemdManagerPackage = import ../abilities/reference-systemd-manager/package.nix {
     inherit lib;

@@ -196,6 +196,7 @@ in rec {
   k3sPackage = {
     providerArtifact,
     payloadArtifacts ? [],
+    transitionTransform ? transition: transition,
   }:
     common
     // {
@@ -222,7 +223,8 @@ in rec {
           composeEntry = "compose";
           transitionEntry = "transition";
           ownsResourceKinds = [k3sInterface.name];
-          inherit (import ./_k3s-ability-provider/default.nix) compose transition;
+          inherit (import ./_k3s-ability-provider/default.nix) compose;
+          transition = transitionTransform (import ./_k3s-ability-provider/default.nix).transition;
         };
       };
     };

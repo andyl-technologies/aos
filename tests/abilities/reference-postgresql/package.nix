@@ -8,6 +8,7 @@
   packageRuntime,
   postgresql,
   writeTextFile,
+  transitionTransform ? transition: transition,
 }: let
   contract = import ../../../lib/abilities/postgresql.nix {inherit lib;};
   inherit
@@ -201,7 +202,10 @@
         exports = {
           postgresql = {
             artifact = selectedProviderSource;
-            export = postgresqlExport stateFormat;
+            export = let
+              base = postgresqlExport stateFormat;
+            in
+              base // {transition = transitionTransform base.transition;};
           };
           credential = {
             artifact = packageRuntime;

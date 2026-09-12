@@ -9,19 +9,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
     ProviderState,
 };
 use aos_ability_model::identity::compare_instance_ids;
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
+    AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
     ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
     ExecutionStage, ImplementationKind, InstanceId, InterfaceDocument, InterfaceKey, LocalKey,
     PackageDocument, ProviderImplementation, ProviderImplementationReference, RequestId,
     RequiredFeature, ResourceId, ResourceLifetime, ResourcePermission, RevisionId, ScopePath,
-    VersionedDocument,
+    VersionedDocument, ABILITY_LIMITS_V1,
 };
 use aos_ability_plan::{
     BindingCandidate, CandidateSelection, CompositionError, EnabledProviderSelection,
@@ -44,7 +44,7 @@ use aos_package::config_eval::materialize::PinnedAbilitySidecar;
 use aos_package::config_eval::native_resource_map::{
     NativeOutputLocator, NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
 };
-use aos_package::config_eval::runtime::{RuntimeResolution, resolve_runtime};
+use aos_package::config_eval::runtime::{resolve_runtime, RuntimeResolution};
 use aos_package::platform::native_platform;
 use aos_package::registry::RegistrySet;
 use aos_package::types::ProfileScope;
@@ -66,6 +66,12 @@ const PLANNING_REJECTION_SCHEMA: &str = "aos.test.kubernetes-planning-rejection/
 enum PlanningFault {
     MissingSystemdBootstrap,
     CyclicK3sBootstrap,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FixtureLifecycle {
+    Full,
+    Remove,
 }
 
 impl PlanningFault {
@@ -196,19 +202,34 @@ struct ComposedKubernetes {
 /// Returns an error when package authentication, interface loading, recursive
 /// composition, native qualification, or sidecar retention fails.
 pub(super) fn generate(arguments: &[String]) -> Result<()> {
-    let (fault, authority_argument, authority_index) = match arguments {
-        [_, _, _, flag, _] if flag == "--operator-authority-output" => (None, flag, 4),
-        [_, _, _, fault, flag, _] if flag == "--operator-authority-output" => {
-            (Some(fault.as_str()), flag, 5)
-        }
-        _ => {
-            bail!(
-                "usage: aos-release-fleet-fixture kubernetes-activation OUTPUT CILIUM_REPLICAS INCLUDE_LONGHORN [FAULT] --operator-authority-output AUTHORITY_DIR"
-            );
-        }
+    let Some(authority_flag_index) = arguments
+        .iter()
+        .position(|argument| argument == "--operator-authority-output")
+    else {
+        bail!(
+            "usage: aos-release-fleet-fixture kubernetes-activation OUTPUT CILIUM_REPLICAS INCLUDE_LONGHORN [FAULT] --operator-authority-output AUTHORITY_DIR [--lifecycle full|remove]"
+        );
     };
-    if authority_argument != "--operator-authority-output" {
-        bail!("Kubernetes activation authority flag is invalid");
+    ensure!(
+        matches!(authority_flag_index, 3 | 4)
+            && arguments.len() >= authority_flag_index + 2
+            && (arguments.len() - authority_flag_index - 2) % 2 == 0,
+        "Kubernetes activation arguments are malformed"
+    );
+    let fault = (authority_flag_index == 4).then(|| arguments[3].as_str());
+    let authority_index = authority_flag_index + 1;
+    let mut lifecycle = FixtureLifecycle::Full;
+    for option in arguments[authority_index + 1..].chunks_exact(2) {
+        match option[0].as_str() {
+            "--lifecycle" => {
+                lifecycle = match option[1].as_str() {
+                    "full" => FixtureLifecycle::Full,
+                    "remove" => FixtureLifecycle::Remove,
+                    value => bail!("unknown Kubernetes lifecycle {value:?}"),
+                };
+            }
+            value => bail!("unknown Kubernetes activation option {value:?}"),
+        }
     }
     let output = Path::new(&arguments[0]);
     let cilium_replicas = arguments[1]
@@ -234,6 +255,10 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let (_runtime, verified) = load_verified_packages()?;
     let mut fixture = KubernetesFixture::new(&verified)?;
     let planning_fault = PlanningFault::parse(fault);
+    ensure!(
+        planning_fault.is_none() || lifecycle == FixtureLifecycle::Full,
+        "negative Kubernetes planning fixtures require the full lifecycle"
+    );
     if let Some(planning_fault) = planning_fault {
         fixture.apply_planning_fault(planning_fault)?;
     }
@@ -242,6 +267,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         cilium_replicas,
         include_longhorn,
         fault,
+        lifecycle,
         &mut planning_trace,
     );
     if let Some(planning_fault) = planning_fault {
@@ -681,10 +707,11 @@ impl KubernetesFixture {
         cilium_replicas: u16,
         include_longhorn: bool,
         fault: Option<&str>,
+        lifecycle: FixtureLifecycle,
         planning_trace: &mut Vec<PlanningTraceInput>,
     ) -> std::result::Result<ComposedKubernetes, String> {
         let seed = self
-            .seed(cilium_replicas, include_longhorn, fault)
+            .seed(cilium_replicas, include_longhorn, fault, lifecycle)
             .map_err(|error| error.to_string())?;
         let mut policies = Vec::new();
         loop {
@@ -726,9 +753,23 @@ impl KubernetesFixture {
         cilium_replicas: u16,
         include_longhorn: bool,
         fault: Option<&str>,
+        lifecycle: FixtureLifecycle,
     ) -> Result<DesiredStateDocument> {
         let environment = self.environment.content_digest()?;
         let k3s = instance(&self.environment.environment, "k3s")?;
+        if lifecycle == FixtureLifecycle::Remove {
+            return Ok(DesiredStateDocument {
+                schema: DesiredStateDocument::SCHEMA.to_string(),
+                required_features: Vec::new(),
+                environment,
+                instances: Vec::new(),
+                contributions: Vec::new(),
+                child_requests: Vec::new(),
+                resources: Vec::new(),
+                outputs: Vec::new(),
+                controllers: Vec::new(),
+            });
+        }
         let mut instances = vec![DesiredInstance {
             instance: k3s.clone(),
             package: self.package("ability-reference-k3s")?,
@@ -1038,6 +1079,14 @@ fn load_interface_documents(
 
 fn kubernetes_native_resource_map(composed: &ComposedKubernetes) -> Result<NativeResourceMap> {
     let k3s = instance(&composed.environment.environment, "k3s")?;
+    if !composed
+        .desired_state
+        .instances
+        .iter()
+        .any(|desired| desired.enabled && desired.instance == k3s)
+    {
+        return NativeResourceMap::new(composed.desired_state.content_digest()?, Vec::new());
+    }
     let k3s_interface = fixture_interface(composed, K3S_INTERFACE)?;
     let service_binding = find_binding(composed, &k3s, "systemd-bootstrap")?;
     let service_revision = resource_revision(composed, &k3s, "server-service")?;

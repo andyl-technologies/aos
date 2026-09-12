@@ -3,6 +3,7 @@
   lib,
   mkDerivation,
   rolloutRuntime,
+  transitionTransform ? transition: transition,
 }: let
   inherit (lib.abilities) schemas;
 
@@ -169,7 +170,7 @@
           transitionEntry = "transition";
           ownsResourceKinds = ["aos.ab-image-rollout"];
           compose = rolloutProvider.compose;
-          transition = rolloutProvider.transition;
+          transition = transitionTransform rolloutProvider.transition;
         };
       };
       rollout-effects = {
