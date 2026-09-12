@@ -1525,7 +1525,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
         &repository,
         ref_backend.as_ref(),
         &mut restarted_ledger,
-        None,
+        blob_backend.as_ref(),
         None,
         &blob_admin,
     )
@@ -1544,7 +1544,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
         &repository,
         ref_backend.as_ref(),
         &mut restarted_ledger,
-        None,
+        blob_backend.as_ref(),
         None,
         &blob_admin,
     )

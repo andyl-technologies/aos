@@ -1947,9 +1947,15 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     let (repository, _) = default_run_repository::<io::Error>(graph.clone(), refs.clone())
         .expect("reopen campaign repository for GC planning");
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
-    let prepared =
-        plan_single_host_campaign_gc(&repository, refs.as_ref(), &mut ledger, None, None, &admin)
-            .expect("plan campaign GC");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        graph.as_ref(),
+        None,
+        &admin,
+    )
+    .expect("plan campaign GC");
     assert!(
         prepared
             .candidates()
@@ -1988,7 +1994,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        graph.as_ref(),
         None,
         &admin,
     )

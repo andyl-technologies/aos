@@ -3,7 +3,7 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Cursor, Read};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -250,12 +250,20 @@ fn verification_admin(
             )
         })
         .collect();
-    StoreGraphAdmin {
-        configuration: StoreGraphConfigurationId([0x31; 32]),
-        physical,
-        packed_repack: BTreeMap::new(),
-        s3_multipart_cleanup: BTreeMap::new(),
-    }
+    let fixture = StoreNodeId::new("verification-fixture").expect("valid fixture node");
+    let (_graph, mut admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: fixture.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([(
+            fixture,
+            StoreNodeSpec::Memory {
+                max_logical_bytes: 1,
+            },
+        )]),
+    })
+    .expect("paired verification administration");
+    admin.physical = physical;
+    admin
 }
 
 #[test]
@@ -268,7 +276,7 @@ fn verification_streams_partial_reads_and_reports_canonical_aggregate_evidence()
         .verify_physical_inventory(StoreGraphVerificationLimits::PRODUCTION)
         .expect("stable inventories verify");
 
-    assert_eq!(report.configuration().as_bytes(), [0x31; 32]);
+    assert_eq!(report.configuration(), admin.configuration_id());
     assert_eq!(report.placements(), 2);
     assert_eq!(report.logical_bytes(), 16);
     assert_eq!(

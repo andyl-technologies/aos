@@ -222,20 +222,19 @@ pub use campaign_gc::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
     CampaignGcCandidateManifestVersion, CampaignGcCandidateReason, CampaignGcCandidateSetId,
     CampaignGcCandidateSetSummary, CampaignGcJournalCreateDisposition, CampaignGcJournalError,
-    CampaignGcJournalPhase, CampaignGcJournalTransition, CampaignGcManifestError,
-    CampaignGcPhysicalStore, CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId,
-    CampaignGcPlanVersion, CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest,
-    CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
-    MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
-    MAX_CAMPAIGN_GC_PLAN_BYTES, apply_single_host_campaign_gc,
-    apply_single_host_campaign_gc_with_transfers, plan_single_host_campaign_gc,
-    plan_single_host_campaign_gc_with_transfers,
+    CampaignGcJournalPhase, CampaignGcJournalTransition, CampaignGcManifestError, CampaignGcPlan,
+    CampaignGcPlanError, CampaignGcPlanId, CampaignGcPlanVersion, CampaignGcPlanningError,
+    CampaignGcPreparedPlan, CampaignGcRootManifest, CampaignGcRootSetId,
+    DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
+    MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES, MAX_CAMPAIGN_GC_PLAN_BYTES,
 };
 #[cfg(target_os = "linux")]
-pub use campaign_gc::{
+pub(crate) use campaign_gc::{
     CampaignGcHotCheckpointRoots, apply_single_host_campaign_gc_with_hot_checkpoints,
     plan_single_host_campaign_gc_with_hot_checkpoints,
 };
+#[cfg(test)]
+pub(crate) use campaign_gc::{apply_single_host_campaign_gc, plan_single_host_campaign_gc};
 pub use campaign_loopback::{
     LoopbackCampaignProtocolError, LoopbackCampaignServerError, LoopbackCampaignService,
     LoopbackCampaignServiceError, LoopbackCampaignTimeouts, MAX_CAMPAIGN_REQUESTS_PER_CONNECTION,

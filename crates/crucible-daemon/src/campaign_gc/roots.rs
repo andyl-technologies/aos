@@ -175,6 +175,7 @@ pub(super) struct RootAccumulator {
     pub(super) ordinary: BTreeSet<ContentId>,
     pub(super) provisional: BTreeSet<ContentId>,
     pub(super) direct: BTreeSet<ContentId>,
+    pub(super) pending_write_back: BTreeSet<ContentId>,
     observed: usize,
 }
 
@@ -196,6 +197,12 @@ impl RootAccumulator {
         }
         self.unique.insert(root);
         self.direct.insert(root);
+        Ok(())
+    }
+
+    pub(super) fn insert_pending_write_back(&mut self, root: ContentId) -> Result<(), ()> {
+        self.insert_direct(root)?;
+        self.pending_write_back.insert(root);
         Ok(())
     }
 
