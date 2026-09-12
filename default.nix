@@ -517,6 +517,14 @@
       inherit lib mkSystem pkgs cellId;
     })
   nativeCancellationCells.groups.rollout;
+  nativeCancellationReferenceCohort = import ./tests/fleet/ability-native-cancellation-reference.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeCancellationForegroundCohort = import ./tests/fleet/ability-native-cancellation-foreground.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
   nativeAdapterRoleScenarios = [
     "revoke-caller-before-acquisition"
     "revoke-caller-after-acquisition"
@@ -570,6 +578,8 @@
     ++ nativeCancellationKubernetesCells
     ++ nativeCancellationCells.groups.postgresql
     ++ nativeCancellationSystemdCells
+    ++ nativeCancellationCells.groups.reference
+    ++ nativeCancellationCells.groups.foreground
     ++ nativeCancellationCells.groups.rollout;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
@@ -644,6 +654,18 @@
             qualifiedCells = nativeCancellationSystemdCells;
             inherit (nativeCancellationSystemdCohort) testScript;
             inherit (nativeCancellationSystemdCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "supported-cancellation-reference";
+            qualifiedCells = nativeCancellationCells.groups.reference;
+            inherit (nativeCancellationReferenceCohort) testScript;
+            inherit (nativeCancellationReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "supported-cancellation-foreground";
+            qualifiedCells = nativeCancellationCells.groups.foreground;
+            inherit (nativeCancellationForegroundCohort) testScript;
+            inherit (nativeCancellationForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
         ++ lib.imap (index: cohort: {
