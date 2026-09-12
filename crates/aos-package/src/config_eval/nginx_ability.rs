@@ -56,7 +56,7 @@ use crate::config_eval::native_resource_map::{
 
 const INTERFACE_NAME: &str = "aos.nginx-validation";
 pub(super) const INTERFACE_DESCRIPTOR: &str =
-    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
+    "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6";
 const HANDLER_KEY: &str = "nginx-terminal";
 const ENTRY_POINT: &str = "bin/nginx";
 const REQUEST_SCHEMA: &str = "aos.ability.nginx-request/v3";

@@ -25200,7 +25200,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25235,7 +25235,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25270,7 +25270,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25304,7 +25304,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25337,7 +25337,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25370,7 +25370,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25403,7 +25403,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25436,7 +25436,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25469,7 +25469,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25502,7 +25502,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25535,7 +25535,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25568,7 +25568,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25601,7 +25601,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25635,7 +25635,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25671,7 +25671,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25704,7 +25704,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25737,7 +25737,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25770,7 +25770,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25803,7 +25803,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25836,7 +25836,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25869,7 +25869,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25902,7 +25902,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25935,7 +25935,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25968,7 +25968,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26001,7 +26001,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26034,7 +26034,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26067,7 +26067,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26100,7 +26100,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26133,7 +26133,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26168,7 +26168,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26203,7 +26203,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26237,7 +26237,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26270,7 +26270,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26303,7 +26303,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26336,7 +26336,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26369,7 +26369,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26402,7 +26402,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26435,7 +26435,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26468,7 +26468,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26501,7 +26501,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26534,7 +26534,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26568,7 +26568,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26604,7 +26604,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26637,7 +26637,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26670,7 +26670,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26703,7 +26703,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26736,7 +26736,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26769,7 +26769,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26802,7 +26802,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26835,7 +26835,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26868,7 +26868,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26901,7 +26901,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26934,7 +26934,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26967,7 +26967,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27000,7 +27000,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27033,7 +27033,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27066,7 +27066,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27101,7 +27101,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27136,7 +27136,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27170,7 +27170,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27203,7 +27203,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27236,7 +27236,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27269,7 +27269,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27302,7 +27302,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27335,7 +27335,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27368,7 +27368,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27401,7 +27401,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27434,7 +27434,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27467,7 +27467,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27501,7 +27501,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27537,7 +27537,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27570,7 +27570,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27603,7 +27603,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27636,7 +27636,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27669,7 +27669,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27702,7 +27702,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27735,7 +27735,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27768,7 +27768,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27801,7 +27801,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27834,7 +27834,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27867,7 +27867,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27900,7 +27900,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27933,7 +27933,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27966,7 +27966,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -43893,7 +43893,7 @@
       },
       {
         "abi": 1,
-        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "name": "aos.nginx-validation"
       },
       {
@@ -43921,7 +43921,7 @@
     "method_count": 47,
     "scenario_count": 28,
     "schema": "aos.qualification.native-adapter-subject/v1",
-    "surface_digest": "sha256:7086c44764589e31f56561757c1ee1ecc026e779794d476d47a7e3fc7a2e88f9"
+    "surface_digest": "sha256:5b1b4ca7befa0d377517209fd113e18c8bee3adcb1e663114af683f20669e959"
   },
   "surface": {
     "adapters": [
@@ -44153,7 +44153,7 @@
       {
         "adapter": "nginx-validation",
         "interface_abi": 1,
-        "interface_descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
+        "interface_descriptor": "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6",
         "interface_name": "aos.nginx-validation",
         "methods": [
           {
