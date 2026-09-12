@@ -126,6 +126,37 @@ def start_switch(unit: str, host: str) -> None:
     )
 
 
+def current_runtime_authority(state: dict[str, Any]) -> dict[str, Any]:
+    """Reads the fresh transaction authority used for native dispatch."""
+
+    plan = state["plan"]
+    assert plan.startswith("sha256:") and len(plan) == 71, plan
+    path = (
+        "/run/apm/ability-authority/"
+        + plan.removeprefix("sha256:")
+        + "/"
+        + state["transaction"]
+        + ".json"
+    )
+    document_bytes = runtime.succeed(
+        f"{COREUTILS}/cat {shlex.quote(path)}"
+    ).encode()
+    document = json.loads(document_bytes)
+    assert canonical(document) == document_bytes, path
+    assert document["schema"] in {
+        "aos.ability.current-authority/v1",
+        "aos.ability.current-authority/v2",
+    }, document
+    assert document["plan"] == plan, document
+    if document["schema"] == "aos.ability.current-authority/v2":
+        assert document["transaction"] == state["transaction"], document
+    return {
+        "path": path,
+        "digest": sha256_bytes(document_bytes),
+        "document": document,
+    }
+
+
 def wait_held(
     flight: EffectFlight,
     *,
@@ -395,6 +426,47 @@ def wait_switch_failed(unit: str) -> None:
     assert status != "0", (unit, status)
 
 
+def abort_acquisition(
+    unit: str, flight: EffectFlight, state: dict[str, Any]
+) -> dict[str, Any]:
+    """Aborts an acquisition-held transaction before any provider effect."""
+
+    state["runtime-authority-acquisition"] = current_runtime_authority(state)
+    kill_candidate_runtime()
+    wait_switch_failed(unit)
+    diagnostic = ability_diagnostic(state["generation"], state["transaction"])
+    timeline = timeline_events(diagnostic, state["operation"]["ordinal"])
+    boundaries = operation_boundaries(
+        state["transaction"], state["plan"], state["operation"]["key"]
+    )
+    dependent_timeline = timeline_events(
+        diagnostic, state["dependent"]["ordinal"]
+    )
+    dependent_boundaries = operation_boundaries(
+        state["transaction"], state["plan"], state["dependent"]["key"]
+    )
+    assert len(timeline) == 1, timeline
+    assert timeline[0]["kind"] == "operation-admitted", timeline
+    assert timeline[0]["node-ordinal"] == state["operation"]["ordinal"], timeline
+    assert len(boundaries) == 1, boundaries
+    assert boundaries == [
+        {
+            "transcript-position": boundaries[0]["transcript-position"],
+            "purpose": "effect",
+            "boundary": "resources-acquired",
+        }
+    ], boundaries
+    assert dependent_timeline == [], dependent_timeline
+    assert dependent_boundaries == [], dependent_boundaries
+    return {
+        "timeline": timeline,
+        "boundary-timeline": boundaries,
+        "dependent-timeline": dependent_timeline,
+        "dependent-boundary-timeline": dependent_boundaries,
+        "runtime-authority": state["runtime-authority-acquisition"],
+    }
+
+
 def resume_recovery(sequence: str) -> None:
     """Releases reconciliation when recovery reaches its returned boundary."""
 
@@ -418,22 +490,24 @@ def run_effect_flight(
     on_acquisition: (
         Callable[[dict[str, Any], dict[str, Any]], None] | None
     ) = None,
-) -> None:
+    launch: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
     """Interrupts, restarts, reconciles, and retains one production operation."""
 
     unit = f"ability-effect-{flight.label}.service"
     scenario = flight.cell_id.rsplit("/", 1)[-1]
     selected_boundary = SCENARIO_BOUNDARIES[scenario]
+    start = launch or start_switch
     source_generation = current_generation()
     source_authority = generation_authority(source_generation)
     if selected_boundary == "resources-acquired":
         arm(flight)
-        start_switch(unit, host)
+        start(unit, host)
         held = wait_held(flight)
         state, baseline = acquisition_state(held, flight, observe)
     else:
         baseline_sequence = arm_baseline(flight)
-        start_switch(unit, host)
+        start(unit, host)
         baseline_held = wait_held(
             flight,
             sequence=baseline_sequence,
@@ -456,6 +530,7 @@ def run_effect_flight(
     state["source-generation"] = source_generation
     state["source-authority"] = source_authority
     state["candidate-authority"] = generation_authority(state["generation"])
+    state["runtime-authority-acquisition"] = current_runtime_authority(state)
     if on_acquisition is not None:
         on_acquisition(state, baseline)
     unsettled = observe(state["operation-document"])
@@ -471,6 +546,7 @@ def run_effect_flight(
     runtime.wait_until_succeeds(
         f"{SYSTEMCTL} is-active --quiet aos-activate.service", timeout=900
     )
+    state["runtime-authority-after"] = current_runtime_authority(state)
     after = observe(state["operation-document"])
     diagnostic = ability_diagnostic(state["generation"], state["transaction"])
     timeline = timeline_events(diagnostic, state["operation"]["ordinal"])
@@ -523,3 +599,4 @@ def run_effect_flight(
         state["candidate-authority"],
         observation,
     )
+    return state
