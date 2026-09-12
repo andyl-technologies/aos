@@ -51,6 +51,7 @@ pub mod managed_configuration_ability;
 pub mod materialize;
 mod native_ability_fs;
 mod native_activation;
+pub use native_activation::supported_native_ability_features;
 pub(crate) use native_activation::{
     RetainedNativePreflightError, preflight_retained_manifest, verify_rollout_boot_commit,
 };

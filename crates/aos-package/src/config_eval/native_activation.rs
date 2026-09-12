@@ -145,7 +145,7 @@ pub(super) fn activate_config(
         desired_inputs.policy_set().transition_authority.as_ref(),
     )
     .context("checking source authority before native drift classification")?;
-    let supported_features = supported_features()?;
+    let supported_features = supported_native_ability_features()?;
     let receipt_resources =
         super::ability_store::inventory::provider_adoption_receipt_resources(&params.profile)?;
     let settled_failed_adoptions =
@@ -1025,7 +1025,16 @@ fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
     )
 }
 
-fn supported_features() -> Result<std::collections::BTreeSet<RequiredFeature>> {
+/// Returns the semantic feature set implemented by the native runtime.
+///
+/// Retained plan-bundle consumers use this same set so offline replay cannot
+/// accept semantics that the activation path would reject.
+///
+/// # Errors
+///
+/// Returns an error if a built-in feature name violates the bounded feature
+/// identity contract.
+pub fn supported_native_ability_features() -> Result<std::collections::BTreeSet<RequiredFeature>> {
     [
         aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
         crate::types::FEATURE_ABILITIES_V1,
@@ -1123,9 +1132,12 @@ pub(crate) fn verify_rollout_boot_commit(
     let generation = ProfileScope::System
         .profile_path()
         .join(format!("gen-{generation}"));
-    let source =
-        RetainedAbilityDiagnosticSource::load(generation, transaction, supported_features()?)
-            .context("authenticating retained rollout transaction")?;
+    let source = RetainedAbilityDiagnosticSource::load(
+        generation,
+        transaction,
+        supported_native_ability_features()?,
+    )
+    .context("authenticating retained rollout transaction")?;
     let request = authenticate_single_image_rollout_fragment(source.plan().document())?;
     ensure!(
         source.terminal_result(JournalLimits::default())? == Some(TerminalResult::Succeeded),

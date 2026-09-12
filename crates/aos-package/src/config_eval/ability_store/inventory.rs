@@ -52,6 +52,34 @@ use ownership::{
     operation_provider_identity, retained_provider_owner_for_teardown, selected_provider_owners,
     selected_retained_provider_owners,
 };
+
+/// Resolves one exact operation to its authenticated transferable owner.
+pub(super) fn provider_state_transfer_owner(
+    plan: &CheckedEffectPlan,
+    operation: &aos_ability_model::Operation,
+) -> Result<
+    Option<super::provider_state_transfer::ProviderStateTransferOwner>,
+    GenerationAbilityStoreError,
+> {
+    let Some((owner, handler)) = operation_provider_identity(plan, operation, &[])? else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        super::provider_state_transfer::ProviderStateTransferOwner {
+            provider: owner.provider,
+            package: owner.package,
+            interface: owner.interface,
+            implementation: owner.implementation,
+            state_format: owner.state_format,
+            handler_provider: handler.provider,
+            handler_package: handler.package,
+            handler_interface: handler.interface,
+            handler_implementation: handler.implementation,
+        },
+    ))
+}
+
 #[cfg(test)]
 use ownership::{
     NativeProviderAdoptionReceipt, assignment_from_endpoint, endpoint_matches_selected_owner,

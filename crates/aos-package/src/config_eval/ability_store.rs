@@ -48,6 +48,7 @@ use crate::store::create_config_gc_roots;
 use crate::types::ProfileScope;
 
 pub(crate) mod inventory;
+mod provider_state_transfer;
 mod verification;
 
 pub(crate) use inventory::NativeResourceReservation;
@@ -59,6 +60,11 @@ use inventory::{
     validate_generation_name,
 };
 pub use inventory::{NativeQualifiedResource, NativeResourceInventory};
+pub use provider_state_transfer::{
+    PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA, ProviderStateTransferContract,
+    ProviderStateTransferDisposition, ProviderStateTransferOwner, ProviderStateTransferRejection,
+    ProviderStateTransferRejectionReason, inspect_provider_state_transfer,
+};
 use verification::{AbilityArtifactVerifier, NativeAbilityArtifactVerifier};
 
 const TRANSACTION_ROOT: &str = "ability-transactions";
