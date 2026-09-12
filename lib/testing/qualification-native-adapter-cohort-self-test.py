@@ -1136,7 +1136,7 @@ def main() -> None:
     authority_record = {
         "cell_digest": authority_digest,
         "subject": {
-            "schema": "aos.qualification.authority-revocation-subject/v1",
+            "schema": "aos.qualification.native-adapter-runtime-subject/v1",
             "cell-id": authority_cell["id"],
             "cell-digest": authority_digest,
             "interface": authority_cell["interface"],
@@ -1145,7 +1145,7 @@ def main() -> None:
             "transaction": "authority-fixture",
         },
         "plan_bundle": {
-            "schema": "aos.qualification.authority-revocation-plan/v1",
+            "schema": "aos.qualification.native-adapter-runtime-plan/v1",
             "digest": audit_digest,
             "bytes-sha256": audit_digest,
         },
@@ -1171,24 +1171,92 @@ def main() -> None:
             "foreign-after": "sha256:" + "bb" * 32,
         },
     }
-    authority_spec = {"cells": [*spec["cells"], authority_cell]}
-    authority_audit = {
-        "schema": "aos.qualification.authority-revocation-audit/v1",
-        "matrix_spec_digest": module.sha256(authority_spec),
-        "cells": {authority_cell["id"]: authority_record},
+    control_cell = copy.deepcopy(cell_spec)
+    control_cell.update(
+        {
+            "id": (
+                "managed-configuration/aos.managed-configuration-effects/abi-1/"
+                "publish/cancel-unsettled-attempt"
+            ),
+            "boundary": "cancellation",
+            "failure": "unsupported-cancellation-retains-ownership",
+            "recovery": {
+                "reconcile": control_cell["recovery"]["reconcile"],
+                "cancel": None,
+            },
+        }
+    )
+    control_digest = module.sha256(control_cell)
+    control_record = {
+        "cell_digest": control_digest,
+        "subject": {
+            "schema": "aos.qualification.native-adapter-runtime-subject/v1",
+            "cell-id": control_cell["id"],
+            "cell-digest": control_digest,
+            "interface": control_cell["interface"],
+            "method": control_cell["method"],
+            "plan": "sha256:" + "12" * 32,
+            "transaction": "control-fixture",
+        },
+        "plan_bundle": {
+            "schema": "aos.qualification.native-adapter-runtime-plan/v1",
+            "digest": "sha256:" + "13" * 32,
+            "bytes-sha256": "sha256:" + "13" * 32,
+        },
+        "evidence": {
+            "scenario": "cancel-unsettled-attempt",
+            "classification": "cancellation-unsupported-intervention",
+            "recovery-routes": control_cell["recovery"],
+            "journal": {
+                "digest": "sha256:" + "14" * 32,
+                "head": "sha256:" + "15" * 32,
+                "cancellation-requested": 0,
+                "cancellation-observed": 0,
+                "cancellation-interventions": 1,
+                "dependent-events": 0,
+            },
+            "reservation-ledger": {
+                "digest": "sha256:" + "16" * 32,
+                "acquire-calls": 1,
+                "release-calls": 0,
+                "release-failures": 0,
+                "max-owners": 1,
+                "owners-at-failure": 1,
+                "owners-final": 1,
+                "retained-resources": 1,
+                "cleanup-errors": 0,
+            },
+            "adapter": {
+                "execute-calls": 0,
+                "reconcile-calls": 0,
+                "cancel-calls": 0,
+            },
+            "clock": {"now-millis": 1, "restart-stable-millis": 1},
+            "foreign-before": "sha256:" + "17" * 32,
+            "foreign-after": "sha256:" + "17" * 32,
+        },
     }
-    authority_scope = [*scope, authority_cell["id"]]
+    runtime_spec = {"cells": [*spec["cells"], authority_cell, control_cell]}
+    runtime_audit = {
+        "schema": "aos.qualification.native-adapter-runtime-audit/v1",
+        "matrix_spec_digest": module.sha256(runtime_spec),
+        "cells": {
+            authority_cell["id"]: authority_record,
+            control_cell["id"]: control_record,
+        },
+    }
+    runtime_scope = [*scope, authority_cell["id"], control_cell["id"]]
     authority_cells, authority_count = module.build_cells(
-        authority_spec,
+        runtime_spec,
         probes,
-        authority_scope,
+        runtime_scope,
         {qualified: subject for qualified in scope},
         {qualified: plan_bundle for qualified in scope},
         "sha256:" + "11" * 32,
         "sha256:" + "22" * 32,
-        authority_audit,
+        runtime_audit,
     )
-    assert authority_count == 16
+    assert authority_count == 20
     authority_observations = {
         cell["id"]: cell for cell in authority_cells
     }[authority_cell["id"]]
@@ -1196,15 +1264,22 @@ def main() -> None:
         value["passed"]
         for value in authority_observations["postconditions"].values()
     )
-    rejected_audit = copy.deepcopy(authority_audit)
+    control_observations = {
+        cell["id"]: cell for cell in authority_cells
+    }[control_cell["id"]]
+    assert all(
+        value["passed"]
+        for value in control_observations["postconditions"].values()
+    )
+    rejected_audit = copy.deepcopy(runtime_audit)
     rejected_audit["cells"][authority_cell["id"]]["evidence"][
         "dispatch-calls"
     ] = 1
     try:
         module.build_cells(
-            authority_spec,
+            runtime_spec,
             probes,
-            authority_scope,
+            runtime_scope,
             {qualified: subject for qualified in scope},
             {qualified: plan_bundle for qualified in scope},
             "sha256:" + "11" * 32,
@@ -1215,6 +1290,48 @@ def main() -> None:
         pass
     else:
         raise AssertionError("authority audit accepted an adapter dispatch")
+
+    rejected_control = copy.deepcopy(runtime_audit)
+    rejected_control["cells"][control_cell["id"]]["evidence"]["journal"][
+        "cancellation-interventions"
+    ] = 0
+    try:
+        module.build_cells(
+            runtime_spec,
+            probes,
+            runtime_scope,
+            {qualified: subject for qualified in scope},
+            {qualified: plan_bundle for qualified in scope},
+            "sha256:" + "11" * 32,
+            "sha256:" + "22" * 32,
+            rejected_control,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("runtime audit accepted a missing cancellation intervention")
+
+    supported_control_cell = copy.deepcopy(control_cell)
+    supported_control_cell["failure"] = "cancelled-after-reconciliation"
+    supported_control_cell["recovery"]["cancel"] = "cancel"
+    supported_control_record = copy.deepcopy(control_record)
+    supported_control_digest = module.sha256(supported_control_cell)
+    supported_control_record["cell_digest"] = supported_control_digest
+    supported_control_record["subject"]["cell-digest"] = supported_control_digest
+    supported_control_record["evidence"]["recovery-routes"] = supported_control_cell[
+        "recovery"
+    ]
+    try:
+        module._validated_failure_control_cell(
+            supported_control_cell,
+            supported_control_record,
+            "sha256:" + "11" * 32,
+            set(),
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("runtime audit accepted provider-specific cancellation")
 
     first_cell = cell_spec
     replay_cell = copy.deepcopy(first_cell)

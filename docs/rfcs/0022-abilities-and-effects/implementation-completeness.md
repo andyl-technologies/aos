@@ -97,6 +97,15 @@ does not substitute for an enforcement test; an opaque legacy adapter does not
 establish typed guarantees; one supported provider does not establish semantic
 equivalence for other runtimes.
 
+The candidate runtime audit qualifies the shared failure controls only where
+their semantics do not depend on a provider implementation. It exercises all
+47 method cells for trusted-clock deadline expiry, cleanup failure, and release
+failure, plus the six cancellation cells whose descriptors declare no
+cancellation route. The remaining 41 cancellation cells require direct
+execution of each production provider's cancellation handler and an exact
+provider-specific oracle; routing a cancellation request to a generic callback
+does not complete them.
+
 ## Required end-to-end reference fixture
 
 Maintain one versioned fixture across authoring, source/registry planning,

@@ -483,7 +483,7 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 573 cells and 2,301
+independent published-image cohorts that currently exercise 720 cells and 2,889
 of the 5,687 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -495,11 +495,18 @@ interrupted `restart` reconciliation, and `restart` activation of the retained
 target under current authority. The candidate package runtime also runs all 564
 role-revocation timing cells through the real admission and dispatch fences,
 using the published interface descriptors and a no-dispatch sentinel adapter.
-Each run retains an execution journal, reservation ledger, exact re-loadable
-plan bundle, and an independent foreign-resource sentinel. The other 743 cells
-remain explicit failures, so the mandatory aggregate gate cannot pass. Expand
-the mapping only with exact cell-bound subjects and independent
-provider-specific observations.
+The same candidate runtime proves trusted-clock deadline expiry for every
+method, injected cleanup and release failures for every method, and durable
+unsupported-cancellation intervention for the six methods without a declared
+cancellation route. These 147 cells use runtime-owned controls and never infer
+provider behavior from a generic adapter. Each run retains an execution
+journal, reservation ledger, exact re-loadable plan bundle, and an independent
+foreign-resource sentinel. The 41 cancellation cells with a declared route
+remain explicit failures until each production provider's cancellation handler
+has an exact semantic oracle. A generic indeterminate cancellation callback is
+insufficient. The other 596 cells remain explicit failures, so the mandatory
+aggregate gate cannot pass. Expand the mapping only with exact cell-bound
+subjects and independent provider-specific observations.
 
 Every passing probe carries the exact cell ID and digest, the scenario's
 validated disposition, and the digest of a subject wrapper that binds the

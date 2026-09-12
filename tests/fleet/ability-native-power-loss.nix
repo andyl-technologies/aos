@@ -158,8 +158,8 @@ in {
           "${observerController}/bin/aos-ability-boundary-controller"
       )
       PACKAGE_RUNTIME = ${packageRuntime}
-      AUTHORITY_MATRIX_SPEC = ${builtins.toJSON "${authorityMatrixSpec}/matrix-spec.json"}
-      AUTHORITY_INTERFACE_ROOTS = ${builtins.toJSON (map builtins.toString authorityInterfaceRoots)}
+      RUNTIME_AUDIT_MATRIX_SPEC = ${builtins.toJSON "${authorityMatrixSpec}/matrix-spec.json"}
+      RUNTIME_AUDIT_INTERFACE_ROOTS = ${builtins.toJSON (map builtins.toString authorityInterfaceRoots)}
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       FLOCK = "${pkgs.util-linux}/bin/flock"
@@ -2103,22 +2103,22 @@ in {
               },
           },
       })
-      authority_output = "/var/lib/aos/qualification-authority-revocation.json"
-      authority_arguments = " ".join(
+      runtime_audit_output = "/var/lib/aos/qualification-native-adapter-runtime.json"
+      runtime_audit_arguments = " ".join(
           shlex.quote(value)
           for value in [
-              AUTHORITY_MATRIX_SPEC,
-              authority_output,
-              *AUTHORITY_INTERFACE_ROOTS,
+              RUNTIME_AUDIT_MATRIX_SPEC,
+              runtime_audit_output,
+              *RUNTIME_AUDIT_INTERFACE_ROOTS,
           ]
       )
       runtime.succeed(
           f"{Path(PACKAGE_RUNTIME).parent}/aos-ability-authority-audit "
-          f"{authority_arguments}",
+          f"{runtime_audit_arguments}",
           timeout=1800,
       )
-      NATIVE_ADAPTER_MATRIX_AUTHORITY_AUDIT = json.loads(
-          runtime.succeed(f"{COREUTILS}/cat {shlex.quote(authority_output)}")
+      NATIVE_ADAPTER_MATRIX_RUNTIME_AUDIT = json.loads(
+          runtime.succeed(f"{COREUTILS}/cat {shlex.quote(runtime_audit_output)}")
       )
     '';
   }
