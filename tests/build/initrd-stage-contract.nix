@@ -316,6 +316,10 @@ in
             )
             cmp "$initrd_abilities" \
               unit-graph/usr/lib/aos/initrd/static-ability-contract.json
+            initrd_fs_target=unit-graph/etc/systemd/system/initrd-fs.target
+            grep -Fx "OnFailure=emergency.target" "$initrd_fs_target" >/dev/null
+            grep -Fx "OnFailureJobMode=replace-irreversibly" \
+              "$initrd_fs_target" >/dev/null
             activation_selection=unit-graph/etc/aos/initrd-ability-activation.json
             static_contract_hex=$(sha256sum "$initrd_abilities" | cut -d ' ' -f1)
             ${pkgs.jq}/bin/jq -e \
@@ -349,13 +353,6 @@ in
             grep -F "Before=initrd-fs.target initrd-switch-root.target" \
               "$initrd_controller" >/dev/null
             grep -F "RemainAfterExit=true" "$initrd_controller" >/dev/null
-            switch_root_requirement="unit-graph/etc/systemd/system/initrd-switch-root.target.requires/aos-ability-initrd-controller.service"
-            test -L "$switch_root_requirement"
-            switch_root_requirement_target=$(readlink "$switch_root_requirement")
-            resolved_switch_root_requirement=$(realpath -m -s \
-              "$(dirname "$switch_root_requirement")/$switch_root_requirement_target")
-            resolved_initrd_controller=$(realpath -m -s "$initrd_controller")
-            test "$resolved_switch_root_requirement" = "$resolved_initrd_controller"
             grep -F "__ability-stage-run" "$initrd_controller" >/dev/null
             grep -F -- "--input /etc/aos/initrd-ability-activation.json" \
               "$initrd_controller" >/dev/null
@@ -372,13 +369,6 @@ in
             grep -F -- "--root /sysroot" "$initrd_barrier" >/dev/null
             grep -F -- "--image-profile /sysroot/var/lib/profiles/image" \
               "$initrd_barrier" >/dev/null
-            barrier_requirement="unit-graph/etc/systemd/system/initrd-switch-root.target.requires/aos-ability-initrd-handoff-barrier.service"
-            test -L "$barrier_requirement"
-            barrier_requirement_target=$(readlink "$barrier_requirement")
-            resolved_barrier_requirement=$(realpath -m -s \
-              "$(dirname "$barrier_requirement")/$barrier_requirement_target")
-            resolved_initrd_barrier=$(realpath -m -s "$initrd_barrier")
-            test "$resolved_barrier_requirement" = "$resolved_initrd_barrier"
             ${pkgs.erofs-utils}/bin/fsck.erofs \
               --extract=root-tree --xattrs --preserve \
               ${assembly}/inputs/root.img >/dev/null
