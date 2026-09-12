@@ -23,7 +23,7 @@
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:7ffd8615920764d2e93eb2072c6e822bcf7a0c47622952d3b9c6712cf06380b6";
+    "sha256:64bc590155806e0b69dac2503f44cca63e16dc0603b72fa6602b46d49f135e67";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -39,7 +39,7 @@
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6";
+    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -254,6 +254,15 @@
     optional = [];
   };
 
+  storagePaths = schemas.record {
+    fields = {
+      logs = string;
+      runtime = string;
+      state = string;
+    };
+    optional = [];
+  };
+
   nginxValidationRequest = schemas.record {
     fields = {
       candidate = schemas.boolean;
@@ -261,6 +270,7 @@
         element = credentialView;
         maxItems = 1024;
       };
+      storage_paths = schemas.optional storagePaths;
     };
     optional = [];
   };
@@ -478,6 +488,7 @@ in {
                 consumer_controller_revision = string;
                 consumer_instance = string;
                 consumer_probe = consumerProbe;
+                consumer_storage_paths = storagePaths;
               };
               optional = [];
             };
