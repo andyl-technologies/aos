@@ -9,6 +9,7 @@ mod foreground_process_fixture;
 mod initrd_contract_fixture;
 mod kubernetes_activation_fixture;
 mod postgresql_activation_fixture;
+mod provider_state_transfer_fixture;
 mod rollout_activation_fixture;
 
 use std::env;
@@ -110,6 +111,9 @@ async fn main() -> Result<()> {
         }
         Some("postgresql-authority-provision") => {
             postgresql_activation_fixture::provision_authority(&arguments[1..])
+        }
+        Some("provider-state-transfer-contract") => {
+            provider_state_transfer_fixture::inspect(&arguments[1..])
         }
         Some("initrd-contract") => initrd_contract_fixture::verify(&arguments[1..]),
         Some("image-assembly-contract") => {
