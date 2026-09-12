@@ -48,8 +48,12 @@
         # independently reads the booted UKI, while test-http-server proves
         # package activation across measured configuration generations.
         aos.image.testArtifactRoots = [pkgs.binutils pkgs.test-http-server.expose];
-        aos.image.budgets.maxRootMiB = 640;
+        aos.image.budgets.maxRootMiB = 768;
         aos.image.budgets.maxEspMiB = 640;
+        # Guest-side UKI inspection and policy verification retain binutils,
+        # jq, and diffutils in this fixture's measured runtime closure.
+        aos.image.budgets.maxRuntimeClosureMiB = 912;
+        aos.image.budgets.maxDownloadMiB = 816;
       }
     ];
   };
