@@ -1,9 +1,10 @@
-//! Authenticates and durably records complete Mount resource inventories.
+//! Validates and durably records complete Mount resource inventories.
 //!
-//! Inventory is queried over a one-shot Mount session and accepted only from
-//! the pinned service execution that wrote both the hello and response. The
-//! controller keeps the exact validated query and response as its latest
-//! durable observation. Its controller-state commitment also covers durable
+//! Inventory is queried over a one-shot Mount session. Each record's
+//! kernel-nominated subject must match configured Mount-subject policy, but that
+//! correlation does not identify the actual syscall writer. The controller
+//! keeps the exact validated query and response as its latest durable
+//! observation. Its controller-state commitment also covers durable
 //! view-revision authority, attachment intent, and attachment verification. This
 //! snapshot is evidence for later reconciliation; it does not recreate
 //! descriptor authority or prove attachment readiness.
@@ -53,10 +54,10 @@ const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.transaction.v1\0";
 const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.mount-inventory.controller-state.v1\0";
 
-/// Reports whether an authenticated inventory snapshot committed or replayed.
+/// Reports whether a validated inventory snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MountInventorySnapshotOutcomeV1 {
-    /// The authenticated query and complete response became durable.
+    /// The validated query and complete response became durable.
     Recorded,
     /// Existing durable evidence exactly matches this query or its semantics.
     Replay,
@@ -71,8 +72,9 @@ pub struct MountInventoryClient {
 impl MountInventoryClient {
     /// Connects to Mount's configured filesystem socket before querying.
     ///
-    /// The pathname selects only the channel. The hello and response writers
-    /// must still match the configured UID, GID, and retained service cgroup.
+    /// The pathname selects only the channel. Kernel metadata must nominate the
+    /// configured UID, GID, and retained service cgroup, but it does not prove
+    /// the actual hello or response syscall writer.
     ///
     /// # Errors
     ///
@@ -92,10 +94,10 @@ impl MountInventoryClient {
 
     /// Configures an exclusively owned connected Mount channel before querying.
     ///
-    /// The actual hello and response writers are authenticated through kernel
-    /// record subjects against the configured service UID, GID, and retained
-    /// cgroup. Listener credentials do not establish service identity under
-    /// socket activation.
+    /// Kernel record subjects constrain nominated identities against the
+    /// configured service UID, GID, and retained cgroup. They do not prove the
+    /// actual syscall writers; application-authenticated session/results and
+    /// deployment MAC/capability confinement remain required for qualification.
     ///
     /// # Errors
     ///
@@ -215,7 +217,7 @@ impl MountInventoryClient {
     }
 }
 
-/// Retains the latest exact authenticated Mount inventory after durable commit.
+/// Retains the latest exact validated Mount inventory after durable commit.
 ///
 /// The response is a complete broker resource-table observation. It remains
 /// non-authorizing after restart and must be compared with current controller

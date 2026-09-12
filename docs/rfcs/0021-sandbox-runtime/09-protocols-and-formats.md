@@ -291,8 +291,9 @@ hello and server selection adds an independent nonzero 32-byte CSPRNG nonce.
 The domain-separated SHA-256 transcript over both nonces and every negotiated
 field is echoed in requests and responses, so reconnect and authority-epoch
 substitution fail correlation checks. The transcript is not authentication:
-local transports still authenticate peer credentials and service identity,
-while remote transports require an authenticated, integrity-protected channel.
+local transports correlate kernel-nominated credentials with configured
+service identity but still require application session authentication, while
+remote transports require an authenticated, integrity-protected channel.
 Paths, file descriptors, local credentials, and `CLOCK_BOOTTIME` values are
 not portable protocol fields.
 
@@ -365,8 +366,8 @@ attempt must match a fresh executor timing sample before any observation or
 Apply I/O. The executor receives that owned recovered attempt and never opens
 the controller journal.
 After a crash it queries the broker with the byte-exact original Apply request
-and signed quartet. Authenticated `Pending` and indeterminate transport results
-retain that exact attempt. Only authenticated `Absent` permits reselection: the
+and signed quartet. Validated `Pending` and indeterminate transport results
+retain that exact attempt. Only validated `Absent` permits reselection: the
 reconciler consults current authority, constructs a fresh attenuated attempt,
 and durably replaces the dispatch record before issuing its Apply. A crash at
 that boundary therefore recovers by querying the replacement rather than
@@ -386,7 +387,7 @@ Each durable dispatch also commits the Effect V1 binding digest. Recovery
 reconstructs the selected publication relative to the gate's permanent
 activated publication, not relative to whichever publication is current at
 query time; a same-draft lease renewal may therefore leave historical attempts
-queryable. Current is consulted only for initial selection and authenticated
+queryable. Current is consulted only for initial selection and validated
 `Absent` replacement. A first completion may return any canonical Host
 `RuntimeObservation` whose fence and derived runtime handle match the exact
 persisted Apply; mutable observation fields are not implied to have been
@@ -425,8 +426,9 @@ explicit completion of a recovered pending intent may do so idempotently.
 
 An in-process adapter composes controller and service only when they share one
 trusted computing base; it is not a security boundary and conveys no synthetic
-peer-authentication token. A Unix carrier must authenticate and authorize peer
-credentials and service identity, enforce the negotiated frame ceiling before
+peer-authentication token. A Unix carrier must correlate kernel-nominated
+credentials with configured service identity, separately authenticate and
+authorize its application session, enforce the negotiated frame ceiling before
 allocation, and validate hostile request parts before dispatch. A future
 authenticated remote carrier supplies its own principal and channel security
 to the same semantic handler. Socket paths, credentials, framing, and remote
@@ -436,8 +438,8 @@ identity therefore remain outside the portable ownership protocol.
 
 Producer-output and publisher admission use a distinct local carrier from the
 descriptor-passing broker protocols below. Each accepted record must include
-exactly one kernel-validated `SCM_CREDENTIALS` and one kernel-generated
-`SCM_PIDFD`; `SCM_RIGHTS` is forbidden. The receiver bounds the complete packet
+exactly one kernel-checked `SCM_CREDENTIALS` nomination and one correlated
+kernel-generated `SCM_PIDFD`; `SCM_RIGHTS` is forbidden. The receiver bounds the complete packet
 before allocating its payload. Connection-establisher identity from
 `SO_PEERCRED`/`SO_PEERPIDFD` remains separate from the subject nominated for each
 record. Neither identity alone proves application provenance or a portable
@@ -639,6 +641,161 @@ quartet can later be placed in a distinct authenticated remote wrapper, but the
 local `SOCK_SEQPACKET` framing, peer credentials, and descriptor table are not
 a remote protocol.
 
+SourceProvider protocol 1.0 is an independent exact local process protocol
+between RootMount and a protected source authority. It does not change Mount
+protocol 2.0. Its canonical `AOSSPV01` outer frame fixes `Hello`, `Acquire`,
+`Release`, and `Inventory` methods; the sole required signed-lease-receipts
+feature; and the sole `SourceRoot` descriptor role. Unknown versions, methods,
+features, roles, proof classes, flags, reserved bytes, trailing bytes, and
+oversized records fail closed. The typed decoder binds method, request/response
+phase, signed status envelope, signed body kind, and descriptor contract rather than
+returning an arbitrary frame body. Inventory is capped at 2,048 sorted entries,
+and the decoder checks the complete fixed entry area before allocation.
+Signed subjects use the repository-unique `AOSSPX01` envelope magic, exact
+format version 1, closed purpose and method codes, four zero reserved header
+bytes, the exact 120-byte signer reference with seven zero reserved bytes, a
+bounded big-endian subject length, canonical subject bytes, and one 64-byte
+Ed25519 signature. Purpose codes 1 through 7 are export lease, Acquire receipt,
+Release receipt, Inventory snapshot, RootMount operation request, endpoint
+hello, and provider response status respectively. Purposes 1 through 4 use a
+zero method byte; hello and operation records bind their exact closed method.
+The unrelated sandbox-spec state magic `AOSSPS01` is never
+accepted as a SourceProvider signed envelope.
+
+Before any operation, RootMount sends a signed client hello with a nonzero
+32-byte nonce, its boot and process instance, its exact query key,
+the exact expected provider receipt key and protected route, and its requested
+capabilities. The provider returns a signed server hello with an independent
+nonzero nonce, boot/process/key/route, the digest of the complete signed client
+hello, and advertised capabilities. Advertised capabilities must be a subset
+of both the client request and protected route/trust policy. A session binding
+commits the complete signed hello envelopes. Strict verification of both
+signatures, exact configured keys and route, expected client nonce, common boot,
+capabilities, and shape-checked supplied confinement fields constructs the
+verified signed Stage 2A session model; an unsigned hello grants no session.
+Those public confinement fields do not establish kernel provenance. A future
+branded adapter must supply that evidence from retained kernel objects, and
+production integration must freshly generate each nonce from process-exclusive
+CSPRNG state.
+Every operation re-verifies both stored signed hellos against current RootMount
+and provider trust, requires the complete supplied route snapshot - including
+resource namespace - to equal current protected routing, and binds
+both hello boot IDs to the current verification boot. Rekey, authority-state or
+route replacement, and a new boot invalidate the session before any status is
+accepted or nested result is interpreted.
+
+Acquire requests contain that nonzero session binding, an exact expected
+client-to-provider sequence, exact canonical logical-binding bytes and digest and
+the complete deadline-free canonical Mount `AOSMSEM1` field envelope. The
+prospective template digest is SHA-256 over
+`aos-source-provider-prospective-mount-template-v1\0 || AOSMSEM1-bytes`; the
+SourceProvider decoder checks exact fields 1 through 27, magic, and format
+version, while RootMount remains responsible for producing Mount-canonical
+field values. Request digests are SHA-256 over a separate request domain, the
+closed method code, body length, and canonical request body. Provider
+idempotency is scoped by `(holder signing authority/key, method, request-id)`;
+reusing an ID across methods is a distinct operation because the method is in
+both the digest and signature. Requests never contain a provider endpoint,
+pathname, descriptor integer, verification key, protected route, or
+caller-selected provider identity.
+
+Acquire success carries exactly one `SourceRoot` descriptor by `SCM_RIGHTS`;
+an exact completed replay may redeliver that same realized selection. Every
+other result, every request, Release, and Inventory carries zero descriptors.
+The generic carrier supplies a kernel-authorized nominated record subject, not
+proof of the actual writer: a privileged sender may nominate another subject
+within its kernel authority. Safe use additionally requires a strict signature
+under protected trust, fixed UID/GID/TGID/start-time/cgroup, pidfd liveness,
+hello/process-instance continuity, and capability confinement to the selected
+protected route. Stage 2A shape-checks supplied connection-peer and nominated-
+subject fields for equality and accepts modeled provider-process confinement
+fields as verification inputs. It does not establish their kernel provenance or
+install the kernel observation or routing backend. Provider ingress must apply
+the same signed transcript and independently establish RootMount connection
+peer/record-subject/pidfd/cgroup continuity before executing a request; that
+production adapter is also unavailable in Stage 2A.
+
+Protected trust pins signer authority ID/generation/digest, exact Ed25519 key
+and fingerprint, signature use, active key generation and revocation state,
+proof-class set, provider route, and minimum catalog/resource/selection
+generations. At the exact resource-floor generation, protected trust also pins
+the complete 32-byte resource ID and resource-state digest; different identity
+or equal-generation equivocation fails closed. Verification uses strict Ed25519
+verification and rejects weak keys. The provider chooses a concrete resource only inside the protected
+route's resource namespace; selection generation/digest commits that routing
+decision independently of resource and catalog generations. Resource IDs are
+exactly 32 bytes. The provider resource commitment is SHA-256 over its versioned
+domain followed by resource-namespace digest, resource ID/generation/digest,
+selection generation/digest, and complete proof digest. Later `AOSMSA01` maps
+that value into the Stage-1 `provider_resource_digest` input before Mount mints
+the realization handle; neither caller nor provider chooses that handle.
+
+Every Acquire, Release, and Inventory disposition, including `Pending`,
+`Rejected`, and `Unavailable`, is carried in a provider-signed outer status.
+It binds the method, request ID, digest of the complete signed request envelope,
+status, provider process instance, session binding, exact provider-to-client
+sequence, and commitment to the exact nested-result bytes and descriptor set.
+Transport close is not an authoritative `Unavailable`. A completed Acquire
+descriptor commitment covers the `SourceRoot` role and the supplied modeled
+boot/device/inode/unique-mount-ID/`O_PATH`/directory/read-only observation;
+the future branded adapter must derive those fields from the received
+descriptor. All zero-descriptor statuses commit the canonical empty set. Request and
+response sequences are verified against caller-supplied exact expected values,
+and opaque verified sequencing evidence is returned for external monotonic
+state advancement. A production integration must atomically compare-and-swap
+and durably consume both direction-local sequence values before using a returned
+descriptor; returning opaque evidence does not itself advance replay state.
+Client and server nonces must come from process-exclusive CSPRNG state with
+freshness preserved across restart and fork. Reuse across a session, restart,
+boot, method, key, request, nonce, or sequence therefore fails closed.
+
+Provider receipts bind stable authority, key, catalog, resource, and selection
+generations and digests separately from the ephemeral provider process
+instance. The signed lease digest commits the exact signed lease envelope,
+including signer reference and signature, not only its unsigned subject. The
+closed proof union explicitly carries ZFS storage/version handles, dataset and
+snapshot GUIDs and hold state; local assignment/owner/incarnation/export,
+consumer, workspace, revocation, lease and kernel grant; immutable
+tree/view/publication/catalog/cache/disclosure/materialization/fs-verity and
+writer closure; or best-effort reconstructibility/replica/cutoff/checkpoint,
+lag/access/degraded state. Every class has an orthogonal bounded recursive
+topology/count authority. When covered by the verified signed lease, these are
+authenticated provider claims; the raw proof model and codec do not establish
+backend truth. Hello, protected trust, route, request,
+and proof capabilities must intersect, observed topology may not exceed the
+request, and kernel-coupled live exports require an explicit request and route.
+Topology counts include the root: submount count cannot exceed entries minus
+one, depth cannot exceed either entries or submounts plus one, and depth is
+nonzero. A local-live proof's consumer authority and generation must equal the
+signed request and lease holder.
+
+Composite Acquire verification requires the verified signed Stage 2A session and outer
+status before interpreting any disposition. It requires `issued <= now < expires`, expiry no
+later than the Acquire deadline or current ownership bound, and nonzero duration
+no greater than the requested duration or 86,400 seconds. It checks every
+request/holder/revocation/boot/process/provider/resource/selection/proof and
+descriptor-observation cross-link before returning an opaque verified result.
+The provider receipt, supplied modeled descriptor observation, signed request,
+and caller-supplied current context must name one boot. Production must source
+that context from protected state. The kernel adapter must establish
+that `SourceRoot` is an actual read-only directory opened with `O_PATH`; an
+ordinary directory descriptor is rejected. Stage 2A models this observation but
+does not implement that kernel adapter. Public scalar observation constructors
+validate shape only; the future adapter must issue non-forgeable, adapter-branded
+evidence derived from the received descriptor before production integration.
+Release and Inventory have equivalent signed, holder-scoped composite entry
+points and never transfer descriptors.
+
+The SourceProvider 1.0 foundation alone grants no source authority and opens no
+socket. Mount does not yet expose Acquire, release-acquisition, or acquisition
+inventory methods, has no `AOSMSA01` attempt ledger or provider router, and
+still omits `aos.sandbox.mount.source-acquisition, 1, 0`. Production Create
+therefore remains closed. A later tranche must durably bind an acquisition to
+the prospective Apply digest, populate protected trust/route/session inputs
+from real configuration and kernel observations, verify backend evidence, and
+obtain authoritative positive PID 1 custody evidence before any Active pin or
+Create resource can commit.
+
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and
 the byte-exact original protocol 1.0 `ApplyRuntimeRequest`; its outer request
@@ -690,14 +847,17 @@ strict descendant locator; it is not membership proof. Error responses carry
 no descriptors. The broker retains its proof through the atomic response send
 and rechecks kernel identity and the live query deadline immediately before it.
 
-The controller authenticates the kernel-authorized subject of the actual hello
+The controller checks the kernel-authorized nominated subject of the hello
 response against trusted host-service credentials and a retained service cgroup.
-Subsequent response records must identify that same live execution. Listener
-creator credentials alone do not authenticate the responder under socket
-activation. The controller validates descriptor roles, pidfd liveness, cgroup-v2
-identity, and leader membership using the received objects. Payload PID-1,
-root, and namespace verification remain an authenticated host attestation, not
-facts inferred from descriptor types. This observation does not itself grant
+Subsequent response records must nominate that same live execution. This SCM
+metadata does not prove the actual syscall writer. Application-authenticated
+signed session/results plus deployment MAC and capability confinement remain a
+required behavioral integration. Listener creator credentials alone do not
+authenticate the responder under socket activation. The controller validates
+descriptor roles, pidfd liveness, cgroup-v2 identity, and leader membership
+using the received objects. Payload PID-1, root, and namespace verification
+remain validated Host observations, not facts inferred from descriptor types.
+This observation does not itself grant
 holder mapping, current assignment authority, or permission to deliver a local
 channel; those remain separate controller admission requirements.
 
@@ -739,8 +899,10 @@ header, and negotiated carrier to use exact Host protocol 1.0.
 
 Success transfers the payload pidfd, payload-subtree cgroup, root directory,
 mount namespace, and user namespace in that order. Errors transfer none.
-The Mount client authenticates the actual Host response writer and retains
-that execution with the payload descriptors. It checks exact response bindings,
+The Mount client checks the Host response's kernel-nominated subject and retains
+that subject with the payload descriptors; SCM metadata does not prove the
+actual syscall writer. Application-authenticated signed session/results and
+deployment MAC/capability confinement remain required. It checks exact response bindings,
 descriptor types, live membership, and deadlines. These observations do not
 authorize a mount effect or continuously prove the payload's root/namespace
 selection: Mount admission and the worker's exact-resource checks remain
@@ -777,13 +939,13 @@ The controller exposes Guardian-plan preparation as a narrow executor hook
 whose input is already bound to the selected lease and boot. The default hook
 returns no plan, so Host Launch remains disabled unless a concrete trusted
 signing adapter is installed. The hook starts no units and performs no external
-effect; the exact composite attempt must be committed first. An authenticated
+effect; the exact composite attempt must be committed first. A validated
 `Absent` result repeats current selection, Guardian signing, validation, and
 durable replacement before a new Apply. Transport ambiguity or `Pending` never
 authorizes construction of a different packet.
 
-Mount-broker protocol 2.0 includes `PrepareMountCatalog`. The authenticated node
-controller sends no descriptors and no outer Mount authorization. Its bounded
+Mount-broker protocol 2.0 includes `PrepareMountCatalog`. The node controller
+sends no descriptors and no outer Mount authorization. Its bounded
 body contains a complete prospective `ApplyMountRequest` plus a complete
 authorized Host 1.0 `ObserveMountScope` envelope. The outer request, prospective
 Apply, and Host query must use the same request ID, deadline, and assignment
@@ -819,14 +981,16 @@ The controller accepts only a fence-free prospective Mount body: callers cannot
 supply its assignment, namespace generation, request identity, or deadline. It
 derives those fields and the Host runtime/scope handles from
 `CurrentNamespaceTarget`, requires one request ID and deadline across all three
-layers, and authenticates the actual Mount response writer against the pinned
-service cgroup. The resulting preparation remains memory-only. Controller
+layers, and checks the Mount response's kernel-nominated subject against the
+pinned service cgroup. That SCM metadata does not prove the actual syscall
+writer; signed session/result authentication and deployment MAC/capability
+confinement remain required. The resulting preparation remains memory-only. Controller
 attempt admission consumes and rechecks it, re-verifies the current ownership
 lease, attenuates a local deadline, and commits the exact deadline-free template
 body, deadline-bearing Apply body, authorization packet, catalog commitment,
 and immutable namespace-allocation reference before returning a dispatch token.
 The token retains the live proof and cannot be cloned or recreated from journal
-bytes. On restart, authenticated inventory must first report the exact local
+bytes. On restart, validated inventory must first report the exact local
 request as pending. Catalog-backed actions then reacquire their catalog, and a
 durable packet or catalog digest alone is never descriptor authority.
 
@@ -847,7 +1011,7 @@ body mismatch fails closed without issuing a new operation.
 
 For attachment reconciliation, the caller does not supply even that fence-free
 body. The controller consumes one closed action with its current desired record,
-complete authenticated inventory snapshot, and live target. It derives CREATE
+complete validated inventory snapshot, and live target. It derives CREATE
 from desired state, derives INSTALL and REPLACE from the addressed inventory
 recipe, and reproduces an older inventoried recipe for DETACH and RELEASE while
 carrying the current desired generation and lease. These inputs are rechecked
@@ -865,8 +1029,10 @@ binding. A catalogless release remains durable-before-I/O and receipt-bound;
 only descriptor acquisition is omitted.
 
 The controller's Apply client negotiates exact Mount 2.0 with the
-signed-plan/lease feature and authenticates both the hello and result writers
-against the pinned Mount service execution. First issue sends the packet durably admitted above;
+signed-plan/lease feature and checks both hello and result kernel-nominated
+subjects against configured Mount subject policy. That SCM correlation does
+not prove the actual syscall writers; application-authenticated signed results
+and deployment confinement remain required. First issue sends the packet durably admitted above;
 pending resumption sends the same body and deadline under the exact plan with a
 current lease. Mount admits by request ID plus request digest, refreshes only
 permitted authority on a matching pending effect, resumes its worker without
@@ -883,10 +1049,12 @@ a durable intermediate resource, so authoritative inventory still decides
 retry, adoption, or cleanup.
 
 The controller queries `InventoryMountResources` over a separate one-shot
-Mount 2.0 session with no effect authorization. It authenticates the actual
-hello and response writers, accepts no descriptors, and applies the complete
-resource-table validator before committing the exact query and response in a
-bounded `AOSMTI01` latest-snapshot record. The record also commits the complete
+Mount 2.0 session with no effect authorization. It requires each hello and
+response's kernel-nominated subject to match configured Mount subject policy,
+but that SCM correlation does not identify the actual syscall writer. It
+accepts no descriptors and applies the complete resource-table validator before
+committing the exact query and response in a bounded `AOSMTI01` latest-snapshot
+record. The record also commits the complete
 validated namespace-target, Mount-attempt, and completion set that the query
 postdates. Successive snapshots may advance the Mount journal sequence or
 refresh an unchanged sequence from a new broker process; sequence rollback,
@@ -944,7 +1112,7 @@ desired-generation and namespace-allocation cross-reference and recomputes the
 recipe commitment from historical desired state. A verification commit enters
 journal namespace 17 and advances the Mount inventory controller-state
 commitment under its sole v1 domain, deliberately making its source snapshot
-stale. Only a later authenticated complete inventory that reproduces the exact
+stale. Only a later validated complete inventory that reproduces the exact
 verified installed resource under the same current desired state and live
 target yields `Ready`. A missing resource or changed recipe, assignment,
 revision, boot identity, kernel observation, operation correlation, or other

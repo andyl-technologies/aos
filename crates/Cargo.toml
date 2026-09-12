@@ -35,6 +35,7 @@ members = [
     "aos-filesystem-fuse/tests/fixtures/link-consumer",
     "aos-sandbox-core",
     "aos-sandbox-ownership-protocol",
+    "aos-sandbox-source-provider-protocol",
     "aos-sandbox-protocol",
     "aos-sandbox",
     "aos-sandbox/tests/fixtures/service-journal",
@@ -247,6 +248,7 @@ aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
 aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-guardian = { path = "aos-sandbox-guardian" }
 aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
+aos-sandbox-source-provider-protocol = { path = "aos-sandbox-source-provider-protocol" }
 aos-sandbox-protocol = { path = "aos-sandbox-protocol" }
 aos-sandbox = { path = "aos-sandbox" }
 aos-sandbox-broker = { path = "aos-sandbox-broker" }

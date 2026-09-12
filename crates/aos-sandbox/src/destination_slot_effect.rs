@@ -94,7 +94,7 @@ pub enum DestinationSlotEffectError {
     /// Kernel record-subject validation or packet transfer failed.
     #[error(transparent)]
     Transport(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
-    /// Kernel service identity or retained cgroup validation failed.
+    /// Kernel-nominated subject or retained cgroup validation failed.
     #[error(transparent)]
     Kernel(#[from] aos_sandbox_linux::Error),
     /// Protected effect state or its cross-references are inconsistent.

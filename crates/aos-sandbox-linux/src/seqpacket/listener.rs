@@ -1,4 +1,4 @@
-//! Listener adoption with inherited, pre-enqueue record-subject options.
+//! Listener adoption with inherited, pre-enqueue record-subject reporting.
 //!
 //! Linux 6.18.33 `net/unix/af_unix.c:unix_stream_connect` copies the listener's
 //! `sk_scm_recv_flags` into the pending child before publishing the connection.
@@ -13,6 +13,7 @@
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
+use super::descriptor_subject::DescriptorSubjectSocket;
 use super::{SeqpacketError, SeqpacketSocket, map_kernel_error};
 use crate::uapi;
 
@@ -112,6 +113,27 @@ impl RecordSubjectListener {
             uapi::accept_record_subject_socket(self.fd.as_fd()).map_err(map_kernel_error)?;
         uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
         SeqpacketSocket::from_owned(child)
+    }
+
+    /// Accepts one descriptor-capable child with inherited record subjects.
+    ///
+    /// This has the same pre-enqueue reporting-option guarantee as
+    /// [`Self::accept`], while retaining the bounded `SCM_RIGHTS` carrier used
+    /// by privileged source-provider replies. The reported subject remains a
+    /// kernel-authorized nomination; descriptor roles, writer/session equality,
+    /// and application authority remain higher-level protocol decisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SeqpacketError::WouldBlock`] when the queue is empty and
+    /// [`SeqpacketError::Interrupted`] on interruption. Rejects missing listener
+    /// or child identity options, failed acceptance, or child adoption failure.
+    pub fn accept_descriptor_subject(&mut self) -> Result<DescriptorSubjectSocket, SeqpacketError> {
+        self.validate_current()?;
+        let child =
+            uapi::accept_record_subject_socket(self.fd.as_fd()).map_err(map_kernel_error)?;
+        uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
+        DescriptorSubjectSocket::from_owned(child)
     }
 
     /// Borrows the listener for readiness polling, not competing acceptance or configuration.
@@ -225,6 +247,60 @@ mod tests {
         assert!(uapi::is_cloexec(child.as_fd().expect("child FD")).expect("child CLOEXEC"));
         assert!(uapi::is_cloexec(record.subject().pidfd().as_fd()).expect("subject CLOEXEC"));
         assert!(matches!(listener.accept(), Err(SeqpacketError::WouldBlock)));
+    }
+
+    #[test]
+    fn descriptor_capable_accept_retains_subject_and_exact_rights() {
+        let mut listener = configured_listener();
+        let sender = uapi::connect_seqpacket_listener(listener.as_fd()).expect("connect sender");
+        let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("adopt sender");
+        let file = tempfile::tempfile().expect("source descriptor");
+        sender
+            .send_with_descriptors(b"source", &[file.as_fd()])
+            .expect("send source descriptor");
+
+        let mut child = listener
+            .accept_descriptor_subject()
+            .expect("accept descriptor child");
+        let record = child.receive(128, 1).expect("receive exact descriptor");
+        assert_eq!(record.payload(), b"source");
+        assert_eq!(record.descriptors().len(), 1);
+        assert_eq!(
+            record.subject().credentials().pid().get(),
+            std::process::id()
+        );
+    }
+
+    #[test]
+    fn optional_descriptor_reply_accepts_zero_or_one_but_not_two() {
+        let mut listener = configured_listener();
+        let sender = uapi::connect_seqpacket_listener(listener.as_fd()).expect("connect sender");
+        let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("adopt sender");
+        sender.send(b"error").expect("send descriptor-free error");
+        let mut child = listener
+            .accept_descriptor_subject()
+            .expect("accept descriptor child");
+        assert_eq!(
+            child
+                .receive_optional_descriptor_reply(128)
+                .expect("receive descriptor-free reply")
+                .descriptors()
+                .len(),
+            0
+        );
+
+        let mut listener = configured_listener();
+        let sender = uapi::connect_seqpacket_listener(listener.as_fd()).expect("connect sender");
+        let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("adopt sender");
+        let first = tempfile::tempfile().expect("first descriptor");
+        let second = tempfile::tempfile().expect("second descriptor");
+        sender
+            .send_with_descriptors(b"hostile", &[first.as_fd(), second.as_fd()])
+            .expect("send two descriptors");
+        let mut child = listener
+            .accept_descriptor_subject()
+            .expect("accept hostile child");
+        assert!(child.receive_optional_descriptor_reply(128).is_err());
     }
 
     #[test]

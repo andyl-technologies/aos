@@ -1647,6 +1647,16 @@ mod tests {
             ProtocolId::NetworkBroker
         );
         assert_eq!(BrokerAudience::Guardian.protocol(), ProtocolId::Guardian);
+
+        for audience in [
+            BrokerAudience::Host,
+            BrokerAudience::Mount,
+            BrokerAudience::Storage,
+            BrokerAudience::Network,
+            BrokerAudience::Guardian,
+        ] {
+            assert_ne!(audience.protocol(), ProtocolId::SourceProvider);
+        }
     }
 
     #[test]

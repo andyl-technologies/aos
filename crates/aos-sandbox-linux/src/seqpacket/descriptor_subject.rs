@@ -10,8 +10,10 @@
 //!
 //! The connection establisher is not authenticated as the response service:
 //! socket activation can make that establisher PID 1. Services must instead
-//! authenticate and retain the first accepted response subject, then require
-//! later response subjects to match that same live service execution.
+//! validate the nominated subject against the independently pinned connection
+//! peer and protected service scope, then require later records to preserve the
+//! same live session. A privileged sender may nominate another subject within
+//! its kernel authority, so the carrier does not by itself identify the writer.
 
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
@@ -43,8 +45,8 @@ pub struct DescriptorSubjectSocket {
 impl DescriptorSubjectSocket {
     /// Connects to one normalized absolute filesystem socket.
     ///
-    /// Connection-peer authentication remains an explicit higher-level step;
-    /// this carrier continues to authorize each received record independently.
+    /// Connection-peer correlation remains an explicit higher-level step; this
+    /// carrier reports each record's independent kernel-nominated subject.
     ///
     /// # Errors
     ///
@@ -75,7 +77,7 @@ impl DescriptorSubjectSocket {
     ///
     /// Call this before sending the first request that can trigger a reply.
     /// Previously queued packets without complete subjects are rejected, never
-    /// upgraded into authenticated records. The caller must exclusively own
+    /// upgraded into subject-bearing records. The caller must exclusively own
     /// socket configuration and consumption, including any duplicate descriptors.
     ///
     /// # Errors
@@ -93,7 +95,7 @@ impl DescriptorSubjectSocket {
     /// Returns the process that established this connected channel.
     ///
     /// Socket activation commonly makes this PID 1, so callers must still
-    /// authenticate every response writer through its record subject.
+    /// validate every nominated subject against its protected live session.
     #[must_use]
     pub const fn peer(&self) -> &ConnectionPeerIdentity {
         &self.peer
@@ -354,13 +356,32 @@ impl DescriptorSubjectSocket {
         self.receive_reply_profile(maximum_bytes, 2)
     }
 
+    /// Receives a reply with either no descriptors or exactly one descriptor.
+    ///
+    /// This closed profile supports SourceProvider errors and non-Acquire
+    /// responses without descriptors, and successful Acquire responses with
+    /// exactly one source-root descriptor. The higher-level protocol must bind
+    /// that descriptor to its signed role and receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same bound, subject, transport, and fatal-close errors as
+    /// [`Self::receive`], rejecting every descriptor count except zero and one.
+    pub fn receive_optional_descriptor_reply(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedDescriptorRecord, SeqpacketError> {
+        self.receive_reply_profile(maximum_bytes, 1)
+    }
+
     /// Receives a privileged mount-scope reply with zero or five descriptors.
     ///
     /// The success profile carries a payload pidfd, cgroup, root directory,
     /// mount namespace, and user namespace, in that order. The caller must
-    /// authenticate the response subject and validate the protocol's roles,
-    /// scope, and authority before using any descriptor. This carrier alone
-    /// neither identifies the Host broker nor authorizes namespace entry.
+    /// correlate the response's kernel-nominated subject and separately
+    /// authenticate the application session/result before validating roles,
+    /// scope, and authority or using any descriptor. This carrier alone neither
+    /// identifies the Host broker nor authorizes namespace entry.
     /// Descriptor-free replies are reserved for protocol errors.
     ///
     /// # Errors

@@ -52,7 +52,8 @@ they gate any affected runtime backend.
 - [ ] **SBX-P0-09** Prove strict physical Nix-store domains and document the
   untrusted client or narrowing-proxy contract.
 - [ ] **SBX-P0-10** Select and test enforcing host MAC profiles for every
-  broker, helper, supervisor, and guardian.
+  broker, helper, supervisor, and guardian, including protected signing-key
+  custody and delegated-FD/syscall-writer confinement qualification.
 - [ ] **SBX-P0-11** Record native-mount and candidate-FUSE latency,
   throughput, memory, OOM, and page-cache baselines.
 - [ ] **SBX-P0-12** Prove the OpenSSH forced-command execution plane and all
@@ -112,6 +113,17 @@ they gate any affected runtime backend.
   descriptor-role tables, signed audience-specific authorization plans,
   ownership leases, response ceilings, and observe/inventory dispatch
   (`SBX-BPROTO-01`..`SBX-BPROTO-03`).
+- [ ] **SBX-BPROTO-05** Implement shared Broker Session Authentication 1.0:
+  mutually signed nonce-bearing handshakes, transcript/session binding,
+  direction-local replay fencing, signed outcomes for every status, retained
+  connection-peer/record-subject/pidfd/cgroup continuity, and deployment
+  capability confinement. Production integration must use process-exclusive
+  CSPRNG nonce state, adapter-issued kernel-evidence types that cannot be
+  manufactured from public scalar fields, and atomic durable sequence CAS
+  before descriptor use. Readiness must remain closed until controller, Host,
+  Storage, Mount, and Network integrations and the expanded MAC/key-custody/
+  delegated-FD qualification are complete (`SBX-BPROTO-04`, `SBX-CTRL-03`,
+  `SBX-HOST-01`, `SBX-STOR-01`, `SBX-MOUNT-01`, `SBX-NET-01`, `SBX-P0-10`).
 
 ## P2: durable control and privilege boundaries
 
@@ -349,7 +361,7 @@ completes. The Git history remains authoritative for code details.
   build-enforced additive v1 compatibility floor.
 - `af419c775` — `SBX-BPROTO-01`: separately versioned, fixed-function local
   host, storage, mount, network, guardian, and guest-agent protocols with
-  authenticated envelopes, assignment fences, opaque handles, and inventory.
+  bounded envelopes, assignment fences, opaque handles, and inventory.
 - `729195700` — `SBX-BPROTO-02`: bounded hostile-message decoding, kernel peer
   credential and broker-audience binding, assignment-fence and closed
   descriptor-role validation, and deterministic malformed-message fuzz entry
@@ -378,9 +390,9 @@ completes. The Git history remains authoritative for code details.
 - `393b76e17`..`39dd3381c` — foundation toward `SBX-MOUNT-01`: closed request
   decoding, durable request fencing and replay, descriptor catalogs, detached
   mounts, sealed helper plans, fixed-FD helper spawning, namespace mutation,
-  peer-authenticated daemon ingress, hermetic packaging, and hardened systemd
-  integration. Durable handle identity, exact topology verification, complete
-  session dispatch, and authoritative inventory remain open.
+  kernel-peer-correlated daemon ingress, hermetic packaging, and hardened
+  systemd integration. Durable handle identity, exact topology verification,
+  complete session dispatch, and authoritative inventory remain open.
 - `d9dad8faa`, `25b015ddf` — foundation toward `SBX-BPROTO-04`,
   `SBX-HOST-01`, and `SBX-MOUNT-01`: bounded two-packet session negotiation,
   session-bound method admission, exact empty descriptor tables, canonical
@@ -1383,7 +1395,7 @@ completes. The Git history remains authoritative for code details.
   namespaces into a protected current-resource catalog and authoritative
   current-boot inventory.
 - `0772770f3` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`: the packaged,
-  systemd-activated Network service introduced authenticated read-only
+  systemd-activated Network service introduced validated read-only
   inventory while continuing to withhold Apply. Later `a591dbf84` hard-cuts the
   current Network protocol and state to exact 1.0.
 - `4cb0100c0`, `462567f52` — foundation toward `SBX-NET-01` and `SBX-LIFE-06`:
@@ -1588,7 +1600,7 @@ failed-write regression denies every policy resolver until protected replay.
 Independent implementation and source-boundary reviews found no remaining
 blocker for this persistence increment. `SBX-PUB-02` remains unchecked.
 
-### Authenticated local ingress integration
+### Kernel-subject-correlated local ingress integration
 
 Master through `c6d076d48` is merged in `9ec715cad`. Its exact development
 environment works offline; the merged workspace passes the locked all-target
@@ -1603,7 +1615,8 @@ that enabling options after acceptance cannot establish the necessary
 pre-connection invariant. The RFC's record-subject carrier now explicitly
 requires listener activation (`Accept=no`) and rejects early unconfigured
 connections without invalidating the healthy listener. This is transport
-identity, not a principal registry, source-release decision, or admission grant.
+subject correlation, not a principal registry, source-release decision, or
+admission grant.
 Existing host/mount descriptor-passing transports remain a separate contract.
 
 Their audit also found a numeric-PID reopening gap between `SO_PEERCRED` and
@@ -1807,9 +1820,11 @@ Failed state commits latch the broker unhealthy and retire retained pins.
 The response transfers a closed pidfd/cgroup descriptor pair with bounded
 metadata. Final delivery rechecks the accepted controller, live authority,
 and kernel pins; the descriptor send is nonblocking and never retries stale
-checks. The controller authenticates actual response subjects against trusted
+checks. The controller checks kernel-nominated response subjects against trusted
 host-service configuration, including when the listener creator differs from
-the responder under socket activation. Descriptor validation establishes
+the responder under socket activation. That check does not prove the actual
+syscall writer; application-authenticated signed results and deployment
+confinement remain required. Descriptor validation establishes
 kernel identity and membership; strong payload verification is a host
 attestation, not an inference from descriptor types.
 
@@ -1822,9 +1837,10 @@ the workspace check retains unrelated existing warnings.
 
 The updated `checks.vm.sandbox-local-identity` derivation passes all 380 default
 library tests inside the Nix build sandbox and all 38 selected kernel test
-entries in AOS Linux 6.18.33 x86_64. The new fixtures qualify actual responder
-identity under socket activation and closed descriptor-carrier behavior, not
-the strong payload attestation of a real launched sandbox.
+entries in AOS Linux 6.18.33 x86_64. The new fixtures qualify correlation of a
+kernel-nominated response subject under socket activation and closed
+descriptor-carrier behavior, not actual syscall-writer identity or the strong
+payload attestation of a real launched sandbox.
 End-to-end production runtime provisioning, real strong
 payload handoff qualification, holder-channel delivery/admission, and
 publication effects remain open; this does not complete `SBX-PUB-02`.
@@ -1938,10 +1954,10 @@ increment has not rerun kernel/VM qualification.
 ### Retained runtime-observation request provenance
 
 `ObservedPayloadScope` now retains the exact structurally validated plan, lease,
-and detached signatures sent on its authenticated Host exchange, plus the
-original request's BOOTTIME deadline. Consumers can distinguish lease renewals
-and plan changes even when the echoed assignment fence is unchanged. The
-original host execution and payload pins remain owned by the observation.
+and detached signatures sent on its kernel-subject-correlated Host exchange,
+plus the original request's BOOTTIME deadline. Consumers can distinguish lease
+renewals and plan changes even when the echoed assignment fence is unchanged.
+The original host execution and payload pins remain owned by the observation.
 
 These borrowed artifacts remain untrusted inputs to separate controller
 authorization. Neither retaining them nor rechecking kernel membership proves
@@ -1964,8 +1980,8 @@ Under one exclusive journal borrow it resolves the current Bound holder and
 publication, recovers the exact activated ownership claim, cryptographically
 reverifies the lease and transaction receipt, and verifies the selected Host 1.0
 plan against independently configured trust anchors. The signed plan must grant
-the exact payload-scope query and its request bounds. The real authenticated
-Host exchange alone constructs the non-cloneable `CurrentRuntimeScope`.
+the exact payload-scope query and its request bounds. The validated Host exchange
+alone constructs the non-cloneable `CurrentRuntimeScope`.
 
 The scope retains the complete Host and payload observation. Its fixed deadline
 is bounded by conservative lease expiry (including skew and safety margin),
@@ -2625,8 +2641,10 @@ The Host query reuses the exact current publication plan and ownership lease,
 but only after controller verification finds its distinct RootMount grant.
 Signed authority, the Host payload, and RootMount carriers all use the exact
 protocol 1.0 baseline; the controller and Host now agree on that baseline. The
-Mount client authenticates the actual response writer against a
-trusted service cgroup and accepts no descriptors or outer authorization.
+Mount client checks the response's kernel-nominated subject against a trusted
+service cgroup and accepts no descriptors or outer authorization. This SCM
+check does not prove the actual syscall writer; application-authenticated
+signed results and deployment confinement remained open in that increment.
 
 The volatile result retains its live namespace target, Mount-produced catalog
 commitment, inherited deadline, portable semantic grant identity, and
@@ -2670,7 +2688,7 @@ live preparation; its deadline and all live heads are checked again before use.
 
 This increment performs no Mount socket I/O and does not mark an attachment
 installed or ready. Restart deliberately cannot reconstruct a dispatch token:
-Mount's descriptor catalog is volatile, so recovery still needs authenticated
+Mount's descriptor catalog is volatile, so recovery still needs validated
 inventory, fresh catalog preparation and planning, and an attachment state
 machine capable of adopting or removing broker-proven intermediate mounts.
 
@@ -2681,16 +2699,18 @@ release build, full workspace test phase, configuration evaluation, and system
 structure checks. No live Mount dispatch or attachment VM qualification is
 claimed by this admission-only increment.
 
-### Authenticated Mount Apply and durable success correlation
+### Signed-plan-authorized Mount Apply and durable success correlation
 
 The controller can now transmit an already durable current Mount attempt over a
 single-use exact Mount 1.0 client. The client requires signed-plan/lease
-negotiation, authenticates the actual hello and response writers against the
+negotiation, checks kernel-nominated hello and response subjects against the
 configured service cgroup and credentials, and sends the byte-exact admitted
 authorization packet. Successful `MountResult` decoding rejects unknown fields, inner errors,
 Apply-body substitution, and every mismatched attachment, view, source
 generation, state, or handle. CREATE handle derivation is shared by the
 protocol validator and privileged broker so the two sides cannot drift.
+The subject check did not prove actual syscall writers; signed session/result
+authentication and deployment MAC/capability confinement remained open.
 
 Successful responses enter journal namespace 14 as bounded, digest-protected
 `AOSMTC01` records that cross-reference the exact `AOSMTA01` attempt digest.
@@ -2701,8 +2721,8 @@ access. An exact re-dispatch replays only the same success bytes.
 
 This is success correlation, not attachment readiness. A request can become
 durable inside Mount and then lose its reply or return a retryable backend
-error. Such outcomes remain non-terminal and require the separately
-authenticated resource inventory and attachment desired-state reconciler still
+error. Such outcomes remain non-terminal and require the separately validated
+resource inventory and attachment desired-state reconciler still
 to be implemented; no absence, rollback, or cleanup inference is made from the
 transport result alone.
 
@@ -2716,14 +2736,16 @@ positive evidence here. The hermetic `checks.eval` gate passes its release
 build, full workspace tests, configuration evaluation, and system structure
 checks.
 
-### Authenticated Mount resource inventory snapshot
+### Validated Mount resource inventory snapshot
 
 The controller can now query the complete `InventoryMountResources` table over
-a dedicated Mount 1.0 session. The client authenticates the actual hello and
-response writers against the configured service execution, admits only the
+a dedicated Mount 1.0 session. The client checks kernel-nominated hello and
+response subjects against configured Mount subject policy, admits only the
 closed read-only method with an empty descriptor table, and validates every
 bounded resource, lifecycle, kernel identity, recipe, and replacement
 correlation before the response reaches controller state.
+That SCM check does not prove the actual syscall writers; signed session/result
+authentication and deployment confinement remain required.
 
 The exact query and response become the latest durable `AOSMTI01` snapshot in
 journal namespace 15. Its response ceiling leaves explicit room below the
@@ -2736,7 +2758,7 @@ namespace-target, Mount-attempt, and completion set that existed before the
 query, so a later controller mutation makes the snapshot stale rather than
 letting pre-intent absence masquerade as a current observation.
 
-This increment establishes authenticated durable observation, not a cleanup
+This increment establishes validated durable observation, not a cleanup
 decision or attachment-ready state. Live service exchange and reboot behavior
 still require the Mount namespace VM qualification.
 
@@ -2866,7 +2888,7 @@ caveat rather than represented as a successful full gate.
 ### Plan exact current attachment realization
 
 The controller now combines one exact current attachment desired generation
-with a fresh authenticated Mount inventory and retained live namespace target.
+with a fresh validated Mount inventory and retained live namespace target.
 It rechecks the desired head and inventory commitment on both sides of
 planning, projects durable attempts with their attachment, slot, desired, and
 resource generations, and returns one closed next-step description. Present
@@ -2908,7 +2930,7 @@ so cleanup neither rewrites history nor borrows authority from inventory. Only
 the five Mount effect actions are accepted; observations, conflicts, faults,
 waits, and transactional-service routing fail closed at this boundary.
 
-The workflow retains desired state, the complete authenticated inventory
+The workflow retains desired state, the complete validated inventory
 snapshot, the selected action, and live namespace authority through descriptor
 catalog preparation and separate signed-plan binding. It re-runs the exact
 planner and all currentness checks immediately before durable admission.
@@ -2958,7 +2980,7 @@ desired-state and namespace-allocation cross-reference on replay. The Mount
 inventory controller-state commitment uses the sole current domain v1 and
 includes this namespace, so recording verification necessarily stales its
 source inventory.
-A later authenticated inventory yields `Ready` only when the exact current
+A later validated inventory yields `Ready` only when the exact current
 desired resource reproduces the durable record under the same live target.
 Missing or changed verified state reports a closed verification conflict rather
 than silently recreating or re-verifying the generation. Explicit release and
@@ -2981,7 +3003,7 @@ hermetic rerun passed without changing source or test scope.
 
 The controller can now resume one already admitted attachment Mount operation
 after losing its in-memory dispatch token. Recovery begins only from a current
-attachment reconciliation whose authenticated complete inventory reports the
+attachment reconciliation whose validated complete inventory reports the
 exact local request as pending. It loads the immutable `AOSMTA01` attempt by
 request ID and current namespace-allocation reference, checks the inventory's
 derived or supplied Mount handle, and preserves the original action, Apply body,
@@ -3001,7 +3023,7 @@ dispatch.
 
 Resumption does not write a second controller admission record. It builds a
 volatile envelope containing the exact original plan and Apply request with the
-current lease, then uses the ordinary authenticated Mount client and durable
+current lease, then uses the ordinary kernel-subject-correlating Mount client and durable
 completion path. Mount's request-ID and request-digest idempotency fence resumes
 the pending worker or replays a completed receipt without allocating a second
 resource. If the original deadline has elapsed, recovery remains fail-closed;
@@ -3042,7 +3064,7 @@ references fail before the attachment commit. Restart validation checks every
 historical attachment reference against the immutable view ledger in one
 bounded scan, so an orphaned or rewritten reference blocks reconciliation
 before broker I/O. A view with a present attachment cannot be released. After
-attachment release, view release additionally requires a fresh authenticated
+attachment release, view release additionally requires a fresh validated
 Mount inventory proving that no physical resource for any revision of that
 view remains; the Mount controller-state commitment uses the sole current
 domain v1 and includes the full view-revision namespace.
@@ -3074,7 +3096,7 @@ the attachment's exact consumer. Restart validation checks every historical
 attachment generation against the immutable creation record, so missing,
 rewritten, cross-incarnation, or cross-namespace slot references block ordinary
 reconciliation before broker I/O. A present attachment prevents slot release.
-After any attachment history, release additionally requires fresh authenticated
+After any attachment history, release additionally requires fresh validated
 Mount inventory proving that no physical resource still names the slot. The
 inventory controller-state commitment uses the sole current domain v1 and
 includes the complete slot namespace, so slot creation or release immediately
@@ -3176,7 +3198,7 @@ VM qualification, and end-to-end attachment lifecycle coverage also remain.
 ### Signed Mount destination-slot authority
 
 Exact Mount protocol 1.0 exposes a signed destination-slot effect method and a
-separate peer-authenticated inventory method. Materialization carries the exact
+separate kernel-subject-correlated inventory method. Materialization carries the exact
 canonical sandbox specification, its independently reproduced descriptor, the
 declared slot ID, namespace generation, and current assignment fence. Reaping
 additionally names the exact ready-record digest and preserves the immutable
@@ -3267,7 +3289,7 @@ VM qualification, and end-to-end reconciliation remain.
 
 ### Durable controller destination-slot inventory
 
-The node controller can now authenticate Mount's complete protocol 1.0
+The node controller can now validate Mount's complete protocol 1.0
 destination-slot inventory and retain the exact query and response as its
 latest durable observation. The fixed `AOSDSI01` record commits the request
 identity, complete broker response, and a digest of the controller namespaces
@@ -3313,7 +3335,7 @@ qualification, and end-to-end attachment reconciliation remain.
 The node controller can now carry a reconciled materialize or reap decision
 through exact signed Mount 1.0 dispatch. It derives every portable request
 field from the current logical slot, its retained canonical sandbox
-specification, fresh authenticated destination-slot inventory, and a live
+specification, fresh validated destination-slot inventory, and a live
 namespace target. A separately supplied signed plan must grant those exact
 canonical semantics under the current assignment. Preparation stays volatile
 and non-authorizing until admission rechecks every input and commits the
@@ -3330,8 +3352,8 @@ deadline while allowing only a monotonically newer current ownership lease;
 missing, completed, substituted, expired, or differently correlated state
 fails closed without dispatch.
 
-The dispatch client negotiates only the destination-slot method, authenticates
-the actual Mount hello and response writers against the retained service
+The dispatch client negotiates only the destination-slot method, checks the
+kernel-nominated Mount hello and response subjects against the retained service
 cgroup, and accepts only a terminal receipt for the admitted request and exact
 resource. The controller commits that receipt before returning a live
 completion token. Attempt and completion records participate in the Mount
@@ -3340,6 +3362,8 @@ admission immediately invalidates older planning snapshots. Startup validates
 both new namespaces and all logical, specification, namespace-target, attempt,
 completion, and materialization cross-links. Request identities cannot cross
 between ordinary Mount attempts and destination-slot attempts.
+That subject check did not prove actual syscall writers; signed session/result
+authentication and deployment MAC/capability confinement remained open.
 
 Mount recovery also repairs a stale-boot `Materializing` row whose path was
 already proved absent: it durably rebinds only the same exact operation and
@@ -3574,13 +3598,14 @@ window. No sandbox catalog test failed.
 
 This advances `SBX-CTRL-03`, `SBX-HOST-01`, and `SBX-RT-02`, but does not connect
 the endpoint to the controller. Combined catalog projection still depends on
-production workspace and network realizers and an authenticated privileged
-publication dispatch. Backend readiness, cleanup-authorized identity reclaim,
+production workspace and network realizers and a privileged publication
+dispatch with kernel-subject correlation. Backend readiness, cleanup-authorized
+identity reclaim,
 source-handle materialization, native attachment replay, lease-expiry
 scheduling, internal-reboot anchor handoff, and live namespace VM qualification
 remain open.
 
-### Authenticated Host catalog publication dispatch
+### Kernel-subject-correlated Host catalog publication dispatch
 
 Host protocol 1.0 exposes the protected catalog publisher only to the fixed
 node-controller peer. The request envelope binds one nonzero catalog generation,
@@ -3595,21 +3620,24 @@ the exact visible generation and digest as either a new publication or an
 idempotent replay.
 
 The controller-side one-shot client validates the caller's BOOTTIME deadline,
-negotiates only the new method, and authenticates every Host response through
-kernel record credentials, a retained pidfd, and exact membership in the
-deployment-selected service cgroup. It verifies the same Host execution again
-immediately before transferring the sealed catalog and around the final reply,
+negotiates only the new method, and checks every Host response's nominated
+subject through kernel record credentials, a retained pidfd, and exact membership in the
+deployment-selected service cgroup. It rechecks the same kernel-nominated Host
+subject immediately before transferring the sealed catalog and around the final reply,
 then accepts success only when the descriptor disposition, generation, and
 digest exactly match its draft. Every Host method and its signed semantics use
 the exact 1.0 carrier. The packaged host daemon opens the same protected root
 for its reader and publisher and advertises publication only when that publisher
 is configured.
+This SCM subject correlation does not prove the actual syscall writer; signed
+session/result authentication and deployment confinement remain required.
 
 Focused coverage includes protocol-version and descriptor-role separation,
 bounded request and receipt decoding, canonical Host JSON rejection, sealed-file
 generation and digest matching, protected published/replay receipts, exact 1.0
 Apply compatibility, and a three-MiB in-process catalog transfer that
-authenticates the responding service and verifies the mapped bytes. All 339
+correlates the kernel-nominated service subject and verifies the mapped bytes.
+It does not prove the actual syscall writer. All 339
 hermetic `aos-sandbox` tests pass; its 340th real-cgroup exchange passes in the
 explicit all-feature kernel suite. All 95 `aos-sandbox-host` and 88
 `aos-sandbox-protocol` library tests also pass. Strict all-target/all-feature
@@ -3619,8 +3647,9 @@ targeted Rust formatting, and diff checks pass. The hermetic
 workspace tests, with five skipped, and every system-structure check at
 `/nix/store/hmbrk37j1qgmvgss5wvf5i5rzkqvc8w8-aos-eval-and-system-structure-checks-0`.
 
-This supplies the authenticated privileged dispatch left open by the preceding
-increment and advances `SBX-BPROTO-04`, `SBX-CTRL-03`, and `SBX-HOST-01`. It does
+This supplies the privileged dispatch with kernel-subject correlation left open
+by the preceding increment and advances `SBX-BPROTO-04`, `SBX-CTRL-03`, and
+`SBX-HOST-01`. It does
 not yet build or schedule the complete catalog from production reconciler state:
 combined projection still depends on workspace and network realizers plus the
 existing Mount inventory. Backend readiness, cleanup-authorized identity
@@ -3628,7 +3657,7 @@ reclaim, source-handle materialization, native attachment replay, lease-expiry
 scheduling, internal-reboot anchor handoff, and live namespace VM qualification
 remain open.
 
-### Authenticated Mount attachment-anchor inventory
+### Validated Mount attachment-anchor inventory
 
 Exact Mount protocol 1.0 reports the broker-owned attachment anchor behind every
 current-boot namespace generation that contains a Ready destination slot. Each
@@ -3643,7 +3672,7 @@ handle.
 The Mount broker revalidates each live slot pin and its fixed generation
 directory while it holds the destination-slot store, groups slots only when
 their anchor device and mount identity agree, and binds the response to exact
-Mount 1.0. The controller stores the exact authenticated response in its
+Mount 1.0. The controller stores the exact validated response in its
 existing self-authenticating snapshot record and exposes a logical-generation
 lookup over the validated anchor table. A slot change at the same journal
 sequence or anchor equivocation on the same boot at that sequence fails closed.
@@ -3747,10 +3776,12 @@ continuity, and exact projection into the shared Host catalog schema.
 
 The unprivileged controller now has separate one-shot clients for the Storage
 and Network 1.0 resource methods. Deployment supplies each expected service
-UID, GID, and retained exact cgroup. The client authenticates the actual hello
-writer through kernel record credentials and a live pidfd, rechecks that same
-execution immediately before request transfer, and requires the response writer
-to be the identical process before and after validation. Negotiation admits only
+UID, GID, and retained exact cgroup. The client checks the hello's nominated
+subject through kernel record credentials and a live pidfd, rechecks that same
+subject immediately before request transfer, and requires the response to
+nominate the identical process before and after validation. This SCM correlation
+does not prove the actual syscall writers; signed session/results and deployment
+confinement remain required. Negotiation admits only
 the one authority-free inventory method, and both sessions accept no descriptor
 carrier.
 
@@ -3766,7 +3797,7 @@ socket, descriptor, or mutation permit after restart.
 Per-broker continuity rejects request-ID reuse, journal or catalog-generation
 rollback, same-sequence or same-generation resource equivocation, and one broker
 instance identity appearing across Linux boots. An exact replay is idempotent,
-while a newly authenticated broker process may refresh unchanged resources at
+while a newly correlated broker instance may refresh unchanged resources at
 the same durable boundary. Startup validation rejects malformed, oversized,
 cross-domain, truncated, or digest-substituted records before controller
 reconciliation can proceed.
@@ -3802,8 +3833,8 @@ Catalog publication is now an explicit durable effect. The controller commits
 the complete canonical successor as an `AOSHCR01` pending record before Host
 I/O, including its source snapshot commitments and predecessor catalog digest.
 Recovery returns those exact bytes without consulting newer broker state. Only
-an authenticated Host 1.0 published-or-replayed receipt for the same generation
-and SHA-256 digest atomically advances the pending record to current. Changed,
+an exact validated Host 1.0 published-or-replayed receipt for the same
+generation and SHA-256 digest atomically advances the pending record to current. Changed,
 missing, malformed, unrelated-predecessor, generation-skipping, and oversized
 history fails closed during controller startup. The durable payload ceiling
 reserves the reconciliation wrapper, key, and journal framing beneath the
@@ -4083,7 +4114,7 @@ namespace/veth and policy helper, complete postcondition observation, remaining
 lease/fence/destroy lifecycle transitions, session dispatch, service packaging,
 and controller Apply orchestration are ready.
 
-### Authenticated Network inventory service
+### Kernel-subject-correlated Network inventory service
 
 The authoritative Network catalog is now reachable by the node controller
 through an independently packaged, systemd-activated `aos-netd` service. The
@@ -4093,14 +4124,16 @@ connection, returns the complete physically revalidated catalog, and maps
 private catalog failures to a bounded integrity error without exposing journal
 or pin details. Apply remains absent from negotiation.
 
-Authentication is bound to every record rather than only connection setup.
-Both the hello and request must carry kernel-generated credentials and a pidfd
-for the configured controller UID, GID, exact retained
+Kernel-subject correlation is checked on every record rather than only at
+connection setup. Both the hello and request must carry kernel-generated
+credentials and a pidfd for the configured controller UID, GID, exact retained
 `aos-control.slice/aos-sandboxd.service` cgroup, and same live process. The
-service rechecks that execution before observing the protected catalog and
-again before replying. A fixed `CLOCK_BOOTTIME` exchange deadline bounds idle
-children, while rejected peers and malformed requests cannot terminate the
-listener.
+service rechecks that nominated subject before observing the protected catalog
+and again before replying. These checks do not identify the actual syscall
+writer; application-authenticated signed session/results and deployment
+MAC/capability confinement remain required. A fixed `CLOCK_BOOTTIME` exchange
+deadline bounds idle children, while rejected peers and malformed requests
+cannot terminate the listener.
 
 The deployment gives the controller-owned `0600` Unix sequenced-packet socket
 both identity-reporting options before it becomes reachable. Its explicit send
@@ -4113,7 +4146,7 @@ contract and the configured controller cgroup and protected catalog are live.
 
 Qualification covers the pure module/socket hardening contract, hermetic
 package construction, and a real-cgroup kernel exchange through the production
-controller client. The end-to-end test records the authenticated response as a
+controller client. The end-to-end test records the validated response as a
 durable protected controller snapshot rather than stopping at raw protocol
 bytes. All 40 Network tests and doctests, strict all-target/all-feature
 crate-local Clippy, warnings-as-errors rustdoc, Rust formatting, package build,
@@ -4719,7 +4752,7 @@ An earlier Storage qualification increment added a fixed typed,
 systemd-contained mutation worker. At that iteration, the worker ran as a
 dynamic non-root identity with `CAP_SYS_ADMIN`,
 compiled an independent fixed ZFS argument vector, admitted a closed environment
-and descriptor set, bounded captured output, authenticated the worker exchange,
+and descriptor set, bounded captured output, validated the worker exchange,
 and checked the broker deadline around worker I/O. It also added exact ZFS
 `list`, `get`, and `holds` observation plans, strict worker-local parsers and a
 pre/post-state evaluator, typed observation verbs and results, and a private
@@ -4920,7 +4953,7 @@ fixed roles, authenticates the complete durable attempt and ZFS catalog inside
 the one-shot helper, and requires the helper process to remain in its exact
 reserved cgroup. Ensure uses the descriptor-first `fsopen`/`fsconfig`/`fsmount`
 path. RemoveAndDestroy performs an ordinary unmount and the exact ZFS destroy
-inside the same authenticated worker. A root-owned replay claim precedes the
+inside the same validated worker. A root-owned replay claim precedes the
 first target mutation. Every post-request failure is ambiguous, cancels the
 whole worker cgroup, and is never dispatched again.
 
@@ -6161,7 +6194,7 @@ service domains, or grants the proposed narrow inspection authority.
 
 ### Network worker bpffs boundary qualification (in progress)
 
-The production Network worker now receives one authenticated descriptor-bearing
+The production Network worker now receives one validated descriptor-bearing
 request through the root-owned systemd socket, runs each request in a fresh
 service process, and confines BPF mutation to the plan-derived child beneath
 the host-visible `/sys/fs/bpf/aos/sandbox-network` pin parent. The mount unit
@@ -6261,9 +6294,9 @@ and no Network task checkbox is closed.
 
 ### Network lifecycle-worker admission boundary (in progress)
 
-The newer admission-only source routes an authenticated lifecycle record through
+The newer admission-only source routes a protected lifecycle record through
 the concrete systemd worker exchange. Before accepting target descriptors, the
-broker authenticates the worker process and cgroup, correlates the challenge and
+broker correlates the worker process and cgroup, matches the challenge and
 READY frame, retypes and retains the worker's initial network namespace, and
 fails permanently after any pre-retention error. The worker starts single
 threaded, rejects every unexpected inherited descriptor, disables core dumps,
@@ -6375,7 +6408,7 @@ library Clippy run with kernel-test support and dependency linting disabled,
 and all 24 focused namespace-inspector tests. The fixture executable and VM
 have not run, so none of the intended ext4, fs-verity, bind-mount, or kernel
 outcomes is qualified. Dropping and reopening the in-process store values is
-not a process-restart test. Actual peer and worker-Ready authentication,
+not a process-restart test. Application-session and worker-Ready authentication,
 protected labels, enforcing MAC, production runtime integration, and every
 readiness checkbox remain pending.
 
@@ -6409,8 +6442,10 @@ Commit `6231bcc9f` corrects the pure model for systemd socket activation without
 putting one execution's PID or cgroup inode into static deployment policy.
 Provisioning now names fixed Broker and Inspector roles and their root
 credentials. Inspector-side request admission requires both the connected peer
-and record subject to be independently authenticated as the Broker role and to
-name the same exact process. Broker-side completion treats the connected peer
+and kernel-nominated record subject to match the Broker role and name the same
+exact process. This SCM correlation does not prove the actual syscall writer;
+the application-authenticated session/result and deployment confinement remain
+part of the future adapter. Broker-side completion treats the connected peer
 as the retained boot-local PID 1 manager, while the record subject must be the
 Inspector role.
 
@@ -6794,13 +6829,13 @@ broker capability has been accepted. The narrow independently authenticated
 inspection runtime and its enforcing MAC policy remain unimplemented. Apply
 remains unadvertised and no Network task checkbox is closed.
 
-### Authenticated Network preparation execution and finalization (source-qualified)
+### Validated Network preparation execution and finalization (source-qualified)
 
-Commit `a333267721a065873ecbb1f336a17974fa3b70d4` connects the authenticated
+Commit `a333267721a065873ecbb1f336a17974fa3b70d4` connects the validated
 one-shot preparation worker to the durable operation and namespace catalogs
 without advertising Network Apply. The broker consumes the sole move-only
 effect permit only after durably advancing the exact request from `Prepared` to
-`Ambiguous`. The executor then authenticates the fixed systemd worker exchange,
+`Ambiguous`. The executor then validates the fixed systemd worker exchange,
 binds the resulting namespace and canonical kernel-plan digest into the
 operation journal, and requires exact systemd descriptor-store custody before
 accepting the effect result. A successful result is not released until the
@@ -7171,9 +7206,11 @@ compiler, executor, reconciliation, or broker work, and the audit performs no
 executor timing query or journal write. Only an idle ledger proceeds to fresh
 Mount, destination-slot, Storage, and Network inventories over independent
 bounded sessions. Each pathname is only a channel selector: the clients still
-authenticate hello and response subjects against root UID/GID and the exact
-broker service cgroup. A fully validated fresh observation whose complete
-inventory semantics and controller-state digest match the retained snapshot
+check kernel-nominated hello and response subjects against root UID/GID and the
+exact broker service cgroup. This SCM check does not prove the actual syscall
+writers; signed session/results and deployment confinement remain required. A
+fully validated fresh observation whose complete inventory semantics and
+controller-state digest match the retained snapshot
 reuses that snapshot without another transaction; request-ID, rollback,
 equivocation, boot, generation, and controller-state conflicts are still
 checked before deduplication. Focused 100,000-cycle regressions hold Mount,
@@ -7188,8 +7225,8 @@ separate exact 16,384-row Storage ceiling test proves multi-megabyte unchanged
 snapshots also reuse one transaction. The Host broker remains in
 `system.slice`; the other brokers and controller remain in `aos-control.slice`.
 A complete mutually
-current projection is durably pending before Host I/O and must receive an
-authenticated exact Host confirmation before `READY=1` is emitted.
+current projection is durably pending before Host I/O and must receive an exact
+validated Host confirmation before `READY=1` is emitted.
 
 A root-peer-credential-only Unix ConnectRPC diagnostic socket implements
 read-only `GetNodeCapabilities`. It reports the last complete observation and
@@ -7203,14 +7240,14 @@ signing key or privileged Apply adapter is loaded. This local diagnostic
 endpoint is not the public client API or a coordinator transport. Transient
 broker absence, deadline expiry, interruption, or an explicitly retryable
 broker rejection leaves startup unready and retries. Nonretryable broker
-rejections, authenticated identity or receipt mismatch, malformed protocol or
+rejections, validated identity or receipt mismatch, malformed protocol or
 transport records, entropy failure, and protected journal, ledger,
 inventory-continuity, capacity, or projection corruption terminate the worker
 so systemd can restart it fail closed.
 
 Focused Rust tests cover pending-first ordering, readiness closure, executor-
 free ledger audit, node binding, production journal limits, broker cgroups,
-empty capability advertisement, and diagnostic peer authentication. A Nix
+empty capability advertisement, and diagnostic peer-credential checks. A Nix
 contract pins the evaluated unit placement and hardening plus the source-level
 read-only boundary and offline package build. This increment has not been
 realized as a Nix build or VM and does not qualify any mutation path.
@@ -7600,9 +7637,85 @@ service removal remains `Reaping` until such a restart snapshot proves absence.
 An exact manager-query backend is still required for fresh production source
 admission and prompt terminal removal publication.
 
-The authenticated provider acquisition protocol is also not implemented.
+Production provider-acquisition integration is also not implemented.
 Production advertises neither the source-acquisition feature nor CREATE/Apply
 authority, and cannot create a new Active source pin. This tranche therefore
 qualifies durable state, recovery, inventory, catalog, and cleanup foundations
 only. It does not close `SBX-MOUNT-01`, the production filesystem-view provider
 task, any manager-readback task, or any Nix/VM qualification checkbox.
+
+### Source-provider protocol foundation (in progress)
+
+The transport-neutral SourceProvider 1.0 foundation defines exact canonical
+typed framing; RootMount query and provider lease/receipt signature domains;
+stable authority, 32-byte resource, catalog, protected-route selection, and
+ephemeral process identities; bounded nonzero holder leases and inventories;
+and explicit closed backend proof classes. Protected trust anchors pin exact
+authority/key generations, key use, revocation/supersession, capabilities,
+route, catalog and selection floors, and the exact resource ID/digest at an
+equal resource-floor generation. Signed subjects use the repository-unique
+`AOSSPX01` envelope and reject the unrelated `AOSSPS01` sandbox-spec magic.
+Mutually signed client/server hellos carry independent nonces, exact boot and
+process/key/route identities, requested/advertised capabilities, and the full
+signed client-hello digest. Their complete signed envelopes define the session
+binding. Each signed query carries that binding plus a direction-local sequence;
+every provider response status, including non-success, is independently signed
+and commits the full signed query, session/process/sequence, exact nested bytes,
+and supplied modeled descriptor set. Composite verifiers check that transcript,
+supplied session/route snapshots expected from protected configuration, current
+ownership and time bounds, nested signed
+lease/receipt or inventory, every cross-object correlation, and exact
+descriptor observation before returning opaque results. Acquire success alone
+permits exactly one `SourceRoot`; every request, other status, Release, and
+Inventory permits none. Canonical independent goldens cover the typed wire,
+signatures, proof variants/digests, and completed response envelopes.
+Acquire also requires receipt, descriptor observation, signed request, and a
+supplied current context expected from protected state to name one boot; exact
+read-only-directory and `O_PATH` observation; local-live consumer/holder
+equality; and root-inclusive, internally consistent topology counts. The kernel
+observation adapter remains unimplemented rather than being inferred from the
+descriptor's apparent type.
+Every composite method first revalidates both signed hellos against current
+RootMount/provider trust, requires the session's complete supplied route
+snapshot expected from protected policy - including resource namespace - to
+remain exact, and binds the transcript to the current boot. This applies before
+Complete or noncomplete status and nested-result interpretation.
+
+The Linux carrier can accept descriptor-bearing `SOCK_SEQPACKET` children and
+retain a kernel-authorized nominated credentials/pidfd subject. That subject is
+not by itself the actual writer: privileged senders can nominate within their
+kernel authority. A safe future adapter must supply independently pinned
+connection-peer and record-subject equality, UID/GID/TGID/start-time/cgroup,
+pidfd/session continuity, cryptographic trust, and route confinement to the
+composite verifier. Stage 2A models the Mount-side provider-response direction;
+provider ingress must separately prove the symmetric RootMount query-writer
+session. It defines these contracts without claiming either production
+observation/routing adapter.
+
+`SBX-BPROTO-05` records the repository-wide behavioral P1: existing Host,
+Mount, Storage, and Network local clients validate kernel-authorized nominated
+record subjects, but SCM metadata alone cannot prove the actual syscall writer.
+Each production
+exchange still requires an application-authenticated signed session/result and
+deployment MAC/capability confinement tied to the retained connection and
+record observations. Stage 2A corrects the contract wording only; it does not
+implement or qualify that shared integration. Its readiness depends on all five
+listed integrations—controller, Host, Storage, Mount, and Network—plus
+`SBX-P0-10` MAC, protected key-custody, and delegated-FD/syscall-writer
+confinement qualification.
+
+Production integration must additionally generate both hello nonces from
+process-exclusive CSPRNG state, obtain adapter-issued kernel evidence whose
+provenance cannot be forged through public scalar constructors, and atomically
+compare-and-swap and durably consume both session sequence directions before
+using any received descriptor. These remain explicit `SBX-BPROTO-05` gates;
+the Stage 2A protocol model and opaque sequence evidence do not satisfy them.
+
+This foundation is deliberately inert. No provider socket installation,
+protected route/trust loader, kernel-session adapter, backend proof verifier,
+Storage export mapping, immutable publisher backend, Mount acquisition method,
+or `AOSMSA01` attempt row exists yet. Mount remains exact protocol 2.0 and does
+not advertise `aos.sandbox.mount.source-acquisition, 1, 0`. The current systemd
+adapter also still lacks authoritative manager readback. Consequently this
+work does not enable production Create and does not complete the broader Mount,
+provider, manager-readback, deployment, or qualification tasks.

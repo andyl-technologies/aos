@@ -3,7 +3,8 @@
 //! The receiver measures one complete record with `MSG_PEEK | MSG_TRUNC`,
 //! admits that length against a caller-owned ceiling, and only then allocates
 //! and consumes the record. Every consumed record must carry exactly one
-//! kernel-validated `SCM_CREDENTIALS` and one `SCM_PIDFD`. All other ancillary
+//! kernel-checked `SCM_CREDENTIALS` nomination and one correlated `SCM_PIDFD`.
+//! This metadata does not prove the actual syscall writer. All other ancillary
 //! data is rejected and every received descriptor is closed on every path.
 //!
 //! Adoption separately captures the connection establisher with `SO_PEERCRED`
@@ -13,7 +14,7 @@
 //! therefore remain separate types and neither claims application provenance.
 //! [`RecordSubjectListener`] checks inherited identity options before adopting
 //! accepted children; enabling them after an untrusted peer connects is not an
-//! equivalent authentication boundary.
+//! equivalent record-provenance boundary.
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -69,8 +70,10 @@ impl SeqpacketSocket {
     ///
     /// Returns the controller's bounded receiver and an owned endpoint for
     /// explicit delivery to a provisioned peer. Both ends are nonblocking and
-    /// close-on-exec. Their connection establisher is the creating process;
-    /// authenticate delivered-endpoint writers through each received record.
+    /// close-on-exec. Their connection establisher is the creating process.
+    /// Record subjects are kernel-checked nominations, not authentication of a
+    /// delivered endpoint's actual syscall writer; the application protocol
+    /// and MAC/capability-confined deployment must establish that separately.
     ///
     /// # Errors
     ///
@@ -117,7 +120,7 @@ impl SeqpacketSocket {
         &self.peer
     }
 
-    /// Enables kernel-validated credentials and generated pidfds on records.
+    /// Enables kernel-checked credential nominations and generated pidfds on records.
     ///
     /// This must be called before an untrusted sender can enqueue records.
     /// Use [`RecordSubjectListener`] for externally reachable listeners: this
@@ -171,7 +174,7 @@ impl SeqpacketSocket {
         Ok(())
     }
 
-    /// Receives one exactly sized record and its kernel-authorized subject.
+    /// Receives one exactly sized record and its kernel-checked nominated subject.
     ///
     /// `maximum_bytes` is an admission ceiling, not a buffer size. No
     /// record-sized allocation occurs until the kernel-reported packet length

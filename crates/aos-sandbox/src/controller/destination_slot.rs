@@ -13,7 +13,7 @@ where
     /// Derives a new materialize, rematerialize, or reap request.
     ///
     /// The protocol body is assembled only from protected logical state,
-    /// authenticated inventory, retained canonical specification bytes, and the
+    /// validated inventory, retained canonical specification bytes, and the
     /// supplied current assignment target. No live payload is required, and the
     /// result grants no broker authority.
     ///
@@ -279,9 +279,11 @@ where
 
     /// Dispatches a durable destination-slot packet and records exact success.
     ///
-    /// The Mount response writer is authenticated through kernel record subjects.
-    /// A successful receipt commits before changed logical state can suppress the
-    /// returned live completion token.
+    /// The Mount response carries a kernel-checked nominated subject, which does
+    /// not prove the actual syscall writer. Signed result/session
+    /// authentication and deployment MAC/capability confinement remain
+    /// required. A successful receipt commits before changed logical state can
+    /// suppress the returned live completion token.
     ///
     /// # Errors
     ///

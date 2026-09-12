@@ -397,6 +397,8 @@ pub enum ProtocolId {
     NetworkBroker,
     /// Transport-neutral exclusive ownership authority.
     OwnershipAuthority,
+    /// Root-Mount-to-source-provider descriptor acquisition protocol.
+    SourceProvider,
     /// Per-assignment ownership guardian.
     Guardian,
     /// Authenticated sandbox guest-agent channel.
@@ -434,9 +436,10 @@ impl ProtocolVersion {
 
 /// Negotiates one protocol independently from every other compatibility domain.
 ///
-/// Host, Mount, Storage, Network, and Ownership have single exact baselines.
-/// Other domains retain their existing same-major compatibility policy until
-/// their independent cutovers.
+/// Host, Mount, Storage, Network, Ownership, and SourceProvider have single
+/// exact baselines. SourceProvider's baseline is 1.0; Mount's is 2.0. Other
+/// domains retain their existing same-major compatibility policy until their
+/// independent cutovers.
 ///
 /// # Errors
 ///
@@ -454,6 +457,7 @@ pub fn negotiate_protocol(
             | ProtocolId::StorageBroker
             | ProtocolId::NetworkBroker
             | ProtocolId::OwnershipAuthority
+            | ProtocolId::SourceProvider
     ) {
         offered == local
     } else {
@@ -481,6 +485,7 @@ pub const fn supported_protocol_version(protocol: ProtocolId) -> ProtocolVersion
         ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
         ProtocolId::NetworkBroker => ProtocolVersion::new(1, 0),
         ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 0),
+        ProtocolId::SourceProvider => ProtocolVersion::new(1, 0),
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
@@ -645,6 +650,16 @@ mod tests {
         for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
             assert!(matches!(
                 negotiate_protocol(ProtocolId::OwnershipAuthority, version),
+                Err(RegistryError::IncompatibleProtocol { .. })
+            ));
+        }
+        assert_eq!(
+            negotiate_protocol(ProtocolId::SourceProvider, ProtocolVersion::new(1, 0)),
+            Ok(ProtocolVersion::new(1, 0))
+        );
+        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+            assert!(matches!(
+                negotiate_protocol(ProtocolId::SourceProvider, version),
                 Err(RegistryError::IncompatibleProtocol { .. })
             ));
         }

@@ -1,4 +1,4 @@
-//! Authenticates, records, and reconciles Mount destination-slot inventories.
+//! Validates, records, and reconciles Mount destination-slot inventories.
 //!
 //! The controller stores only the latest complete Mount 2.0 snapshot, which
 //! includes current attachment anchors for Ready slots. Each record binds the
@@ -49,10 +49,10 @@ const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
 const KEY: &[u8] = b"latest";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-inventory.transaction.v1\0";
 
-/// Reports whether an authenticated destination-slot snapshot committed.
+/// Reports whether a validated destination-slot snapshot committed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DestinationSlotInventorySnapshotOutcomeV1 {
-    /// The authenticated query and complete response became durable.
+    /// The validated query and complete response became durable.
     Recorded,
     /// Existing durable evidence exactly matches this query or its semantics.
     Replay,
@@ -131,8 +131,9 @@ pub struct DestinationSlotInventoryClient {
 impl DestinationSlotInventoryClient {
     /// Connects to Mount's configured filesystem socket before querying slots.
     ///
-    /// The pathname selects only the channel. The hello and response writers
-    /// must still match the configured UID, GID, and retained service cgroup.
+    /// The pathname selects only the channel. Kernel metadata must nominate the
+    /// configured UID, GID, and retained service cgroup, but it does not prove
+    /// the actual hello or response syscall writer.
     ///
     /// # Errors
     ///
@@ -152,8 +153,10 @@ impl DestinationSlotInventoryClient {
 
     /// Configures an exclusively owned connected Mount channel before querying.
     ///
-    /// The hello and response writers are authenticated through kernel record
-    /// subjects against the configured service UID, GID, and retained cgroup.
+    /// Kernel record subjects constrain nominated hello and response identities
+    /// against the configured UID, GID, and retained cgroup. They do not prove
+    /// the actual syscall writers; signed session/results and deployment
+    /// MAC/capability confinement remain separately required.
     ///
     /// # Errors
     ///
@@ -275,7 +278,7 @@ impl DestinationSlotInventoryClient {
     }
 }
 
-/// Retains the latest exact authenticated destination-slot inventory.
+/// Retains the latest exact validated destination-slot inventory.
 ///
 /// The response is complete broker state but remains non-authorizing. A caller
 /// must reconcile it with current logical state before preparing any effect.

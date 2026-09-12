@@ -292,7 +292,8 @@ where
     /// Trusted deployment supplies the Host connection, trust anchors, and
     /// protected paired-clock adapter. The selector supplies no assignment,
     /// lease, plan, or cgroup facts; these derive from current protected state
-    /// and an authenticated Host exchange under one exclusive journal borrow.
+    /// and a kernel-subject-correlated Host exchange under one exclusive journal
+    /// borrow.
     /// Success does not issue a channel or authorize publication.
     ///
     /// # Errors
@@ -354,9 +355,10 @@ where
 
     /// Tracks a freshly observed runtime in the protected generation ledger.
     ///
-    /// Consumes the real Host proof. A new execution advances the incarnation's
-    /// generation atomically; another observation of the same execution keeps
-    /// its number. Neither case proves attachment replay or grants readiness.
+    /// Consumes the validated Host observation. A new execution advances the
+    /// incarnation's generation atomically; another observation of the same
+    /// execution keeps its number. Neither case proves attachment replay or
+    /// grants readiness.
     /// The clock must be the protected adapter used for scope acquisition.
     ///
     /// # Errors
@@ -546,7 +548,7 @@ where
     /// and portable specification binding from the retained target. Creation
     /// requires that exact published specification to declare the slot. The
     /// slot carries no path or OS descriptor and grants no Mount authority.
-    /// Release is permanent and waits for attachment intent and authenticated
+    /// Release is permanent and waits for attachment intent and validated
     /// Mount inventory to prove the slot drained.
     ///
     /// # Errors
@@ -848,7 +850,7 @@ where
     ///
     /// Restart cannot reconstruct the returned token because Mount's descriptor
     /// catalog and the retained namespace proof are memory-only. Recovery must
-    /// authenticate broker inventory and repeat preparation before another
+    /// validate broker inventory and repeat preparation before another
     /// effect attempt.
     ///
     /// # Errors
@@ -900,18 +902,20 @@ where
 
     /// Dispatches one already durable current Mount request and records success.
     ///
-    /// The connected client authenticates the actual Mount hello and response
-    /// writers, sends either the admission packet or an exact-plan envelope with
-    /// a current ownership lease and the admitted Apply body, and validates the
-    /// result against that body. A successful receipt is committed before this
-    /// method returns it. Broker rejection or transport loss is not treated as
-    /// proof that no resource exists; recovery requires authoritative Mount
-    /// inventory.
+    /// The connected client validates Mount's kernel-nominated subjects but
+    /// does not thereby prove the actual hello and response syscall writers. It
+    /// still requires signed session/result authentication and deployment
+    /// MAC/capability confinement. It sends either the admission packet or an
+    /// exact-plan envelope with a current ownership lease and the admitted Apply
+    /// body, and validates the result against that body. A successful receipt is
+    /// committed before this method returns it. Broker rejection or transport
+    /// loss is not treated as proof that no resource exists; recovery requires
+    /// authoritative Mount inventory.
     ///
     /// # Errors
     ///
-    /// Rejects stale live authority, substituted durable state, service
-    /// identity or negotiation failure, malformed or mismatched results,
+    /// Rejects stale live authority, substituted durable state, service-subject
+    /// correlation or negotiation failure, malformed or mismatched results,
     /// conflicting completion replay, capacity, and failed durable commits.
     #[cfg(target_os = "linux")]
     pub fn dispatch_current_mount_attempt<T>(
@@ -934,16 +938,18 @@ where
         )
     }
 
-    /// Queries and durably records one authenticated complete Mount inventory.
+    /// Queries and durably records one validated complete Mount inventory.
     ///
-    /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the closed resource-table response, and commits the exact
-    /// request and response before returning the snapshot. The snapshot is
-    /// observation evidence, not descriptor authority or attachment readiness.
+    /// The one-shot client validates kernel-nominated subjects, not proof of the
+    /// actual syscall writers. Signed session/result authentication and
+    /// deployment MAC/capability confinement remain required. It validates the
+    /// closed resource table response and commits the exact request and response
+    /// before returning the snapshot. The snapshot is observation evidence, not
+    /// descriptor authority or attachment readiness.
     ///
     /// # Errors
     ///
-    /// Rejects service identity or negotiation failure, malformed or
+    /// Rejects service-subject correlation or negotiation failure, malformed or
     /// non-monotonic broker inventory, capacity, and failed durable commits.
     #[cfg(target_os = "linux")]
     pub fn record_mount_inventory(
@@ -989,13 +995,15 @@ where
 
     /// Queries and durably records Mount's complete destination-slot inventory.
     ///
-    /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the exact Mount protocol 2.0 response, and commits the exact query
-    /// and response. The resulting snapshot is observation evidence only.
+    /// The one-shot client validates kernel-nominated subjects, not proof of the
+    /// actual syscall writers. Signed session/result authentication and
+    /// deployment MAC/capability confinement remain required. It validates the
+    /// exact Mount 2.0 response and commits the exact query and response. The
+    /// resulting snapshot is observation evidence only.
     ///
     /// # Errors
     ///
-    /// Rejects service identity or negotiation failure, malformed or
+    /// Rejects service-subject correlation or negotiation failure, malformed or
     /// non-monotonic broker inventory, stale controller state, capacity, and
     /// failed durable commits.
     #[cfg(target_os = "linux")]
@@ -1008,14 +1016,16 @@ where
 
     /// Queries and durably records Storage's complete workspace inventory.
     ///
-    /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the exact protocol 1.0 resource snapshot, and commits the
-    /// exact query and response. The resulting snapshot is non-authorizing
-    /// evidence for a later whole-catalog projection.
+    /// The one-shot client validates kernel-nominated subjects, not proof of the
+    /// actual syscall writers. Signed session/result authentication and
+    /// deployment MAC/capability confinement remain required. It validates the
+    /// exact protocol 1.0 resource snapshot and commits the exact query and
+    /// response. The resulting snapshot is non-authorizing evidence for a later
+    /// whole-catalog projection.
     ///
     /// # Errors
     ///
-    /// Rejects service identity or negotiation failure, malformed or
+    /// Rejects service-subject correlation or negotiation failure, malformed or
     /// non-monotonic broker inventory, stale controller state, capacity, and
     /// failed durable commits.
     #[cfg(target_os = "linux")]
@@ -1029,14 +1039,16 @@ where
 
     /// Queries and durably records Network's complete namespace inventory.
     ///
-    /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the exact protocol 1.0 resource snapshot, and commits the
-    /// exact query and response. The resulting snapshot is non-authorizing
-    /// evidence for a later whole-catalog projection.
+    /// The one-shot client validates kernel-nominated subjects, not proof of the
+    /// actual syscall writers. Signed session/result authentication and
+    /// deployment MAC/capability confinement remain required. It validates the
+    /// exact protocol 1.0 resource snapshot and commits the exact query and
+    /// response. The resulting snapshot is non-authorizing evidence for a later
+    /// whole-catalog projection.
     ///
     /// # Errors
     ///
-    /// Rejects service identity or negotiation failure, malformed or
+    /// Rejects service-subject correlation or negotiation failure, malformed or
     /// non-monotonic broker inventory, stale controller state, capacity, and
     /// failed durable commits.
     #[cfg(target_os = "linux")]
@@ -1146,7 +1158,7 @@ where
 
     /// Plans one attachment's next step from current intent and Mount inventory.
     ///
-    /// The desired generation, complete authenticated inventory, exact durable
+    /// The desired generation, complete validated inventory, exact durable
     /// attempt classifications, attachment lease time, and retained namespace
     /// target are rechecked before and after planning. The result is descriptive:
     /// prepare, install, replace, verify, ready, detach, release, wait, fault,
@@ -1182,7 +1194,7 @@ where
     /// The input must be a current reconciliation whose closed action is
     /// `Verify`. The controller binds the desired record, current namespace
     /// allocation and assignment, complete installed Mount resource, and
-    /// authenticated inventory snapshot in one immutable record. This commit
+    /// validated inventory snapshot in one immutable record. This commit
     /// makes that snapshot stale; a subsequent fresh inventory must reproduce
     /// the verified resource before reconciliation reports `Ready`.
     ///
@@ -1212,7 +1224,7 @@ where
 
     /// Reacquires live Mount preparation for one exact pending attachment attempt.
     ///
-    /// The reconciliation must report `Wait` for a broker-authenticated pending
+    /// The reconciliation must report `Wait` for a validated broker-pending
     /// request. Recovery loads that request's immutable durable attempt, preserves
     /// its request ID, deadline, and Apply body, and reacquires the same catalog
     /// commitment. Release remains catalogless. The original deadline is never
@@ -1323,8 +1335,8 @@ where
     /// This transition writes no second admission. It re-verifies the current
     /// ownership lease and exact signed plan, injects the original deadline into
     /// the immutable body, and requires the resulting Apply body to equal the
-    /// admitted bytes exactly. The returned token uses the ordinary authenticated
-    /// dispatch and completion-recording path.
+    /// admitted bytes exactly. The returned token uses the ordinary
+    /// signed-plan-authorized dispatch and completion-recording path.
     ///
     /// # Errors
     ///
@@ -1466,7 +1478,7 @@ where
     ///
     /// Rejects changed desired state or lease status, stale live authority,
     /// substituted durable bytes, and expired deadlines. A resumed token also
-    /// requires its authenticated pending inventory evidence to remain current.
+    /// requires its validated pending inventory evidence to remain current.
     #[cfg(target_os = "linux")]
     pub fn recheck_current_attachment_mount_attempt<T>(
         &mut self,
@@ -1485,13 +1497,16 @@ where
     /// Dispatches one durable plan-derived Mount attempt and records its receipt.
     ///
     /// The desired generation and lease are rechecked around the existing
-    /// authenticated Mount exchange. A successful effect is recorded before a
+    /// validated Mount exchange. This does not establish the actual syscall
+    /// writer without the separately required signed result and confined
+    /// deployment. A successful effect is recorded before a
     /// concurrent stale guard can withhold the live completion token.
     ///
     /// # Errors
     ///
-    /// Rejects stale desired or live authority, service identity and protocol
-    /// failures, substituted results, conflicting completion, and journal errors.
+    /// Rejects stale desired or live authority, service-subject correlation and
+    /// protocol failures, substituted results, conflicting completion, and
+    /// journal errors.
     #[cfg(target_os = "linux")]
     pub fn dispatch_current_attachment_mount_attempt<T>(
         &mut self,

@@ -1,4 +1,8 @@
-//! Retained actual-writer identity across a socket-activated Host exchange.
+//! Retained kernel-nominated subject across a socket-activated Host exchange.
+//!
+//! Credential and pidfd metadata constrain a kernel-authorized nomination; it
+//! does not alone prove the actual syscall writer. Application-authenticated
+//! session/results and deployment MAC/capability confinement remain required.
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::PidFdInfo;

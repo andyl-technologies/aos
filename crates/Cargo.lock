@@ -984,6 +984,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-source-provider-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-storage"
 version = "0.1.0"
 dependencies = [

@@ -1,4 +1,4 @@
-//! Actual response-subject authentication across a delegated activated listener.
+//! Kernel-nominated response-subject correlation across an activated listener.
 //!
 //! Run serially: process spawning can transiently inherit unrelated descriptors.
 //! This tests kernel identity, not the host's strong payload-init attestation.
@@ -49,7 +49,7 @@ impl Drop for ChildGuard {
 }
 
 #[test]
-fn activated_listener_authenticates_actual_responder_not_creator() {
+fn activated_listener_correlates_nominated_responder_not_creator() {
     let directory = tempfile::tempdir().expect("socket directory");
     let path = directory.path().join("host.sock");
     let listener = RecordSubjectListener::bind(&path, 8).expect("parent-created listener");

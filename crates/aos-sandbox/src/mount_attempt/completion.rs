@@ -1,4 +1,4 @@
-//! Authenticates Mount Apply replies and durably records exact success receipts.
+//! Validates Mount Apply replies and durably records exact success receipts.
 //!
 //! The controller transmits only an already durable Apply request. Initial issue
 //! uses its recorded packet; pending recovery may wrap the same body and deadline
@@ -95,10 +95,10 @@ pub struct MountDispatchClient {
 impl MountDispatchClient {
     /// Configures an exclusively owned connected Mount channel before sending.
     ///
-    /// The actual hello and response writers are authenticated through kernel
-    /// record subjects against the configured service UID, GID, and retained
-    /// cgroup. Connection-establisher credentials are not treated as service
-    /// identity under socket activation.
+    /// Kernel record subjects constrain the nominated hello and response
+    /// identities to the configured UID, GID, and retained cgroup; they do not
+    /// prove the actual syscall writers. Application-authenticated session and
+    /// result binding plus deployment MAC/capability confinement remain required.
     ///
     /// # Errors
     ///

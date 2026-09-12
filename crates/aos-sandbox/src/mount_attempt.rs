@@ -110,8 +110,8 @@ pub enum MountAttemptError {
     /// The requested attempt deadline exceeds the prepared operation lifetime.
     #[error("mount attempt deadline exceeds the prepared operation lifetime")]
     Deadline,
-    /// The responding process is not the configured live Mount service execution.
-    #[error("Mount response does not match the pinned Mount service")]
+    /// The response's kernel-nominated subject mismatches configured Mount policy.
+    #[error("Mount response subject does not match configured Mount policy")]
     MountIdentity,
     /// Mount rejected or could not complete the request.
     #[error("Mount rejected the request with {code:?} (retryable: {retryable})")]
@@ -127,7 +127,7 @@ pub enum MountAttemptError {
     /// Kernel record-subject validation or packet transfer failed.
     #[error(transparent)]
     Transport(#[from] SeqpacketError),
-    /// Kernel service identity or cgroup validation failed.
+    /// Kernel-nominated subject or retained cgroup validation failed.
     #[error(transparent)]
     Kernel(#[from] aos_sandbox_linux::Error),
     /// Volatile operation preparation is stale, expired, or otherwise invalid.

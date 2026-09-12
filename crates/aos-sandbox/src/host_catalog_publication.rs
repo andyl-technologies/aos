@@ -1,10 +1,11 @@
-//! Authenticated controller dispatch for complete Host launch catalogs.
+//! Controller dispatch for complete Host launch catalogs.
 //!
 //! Trusted reconciliation constructs one complete canonical catalog and opens
-//! the configured Host socket. The client pins the responding service through
-//! per-record kernel credentials, pidfds, and exact cgroup membership before it
-//! sends the publication. Host protocol 1.0 then returns the generation and
-//! digest of the exact bytes made visible.
+//! the configured Host socket. The client requires each kernel-nominated record
+//! subject to match configured Host subject policy through credentials, pidfds,
+//! and exact cgroup membership before it sends the publication. This does not
+//! identify the actual syscall writer. Host protocol 1.0 then returns the
+//! generation and digest of the exact bytes made visible.
 //!
 //! This module does not derive physical bindings. In particular, accepting a
 //! [`HostCatalogPublicationDraftV1`] does not prove its paths, descriptors, or
@@ -101,13 +102,13 @@ impl HostCatalogPublicationDraftV1 {
     }
 }
 
-/// Pins the expected Host service independently of all socket replies.
+/// Supplies the configured Host record-subject policy for socket replies.
 pub struct HostCatalogServiceIdentity {
-    /// Required kernel-authorized Host service UID.
+    /// Required nominated Host-subject UID.
     pub uid: u32,
-    /// Required kernel-authorized Host service GID.
+    /// Required nominated Host-subject GID.
     pub gid: u32,
-    /// Retained exact Host service cgroup selected by deployment configuration.
+    /// Retained exact Host-subject cgroup selected by deployment configuration.
     pub cgroup: RetainedCgroupAnchor,
 }
 
@@ -120,8 +121,9 @@ pub struct HostCatalogPublicationClient {
 impl HostCatalogPublicationClient {
     /// Connects to Host's configured filesystem socket before publication.
     ///
-    /// The pathname selects only the channel. The hello and response writers
-    /// must still match the configured UID, GID, and retained service cgroup.
+    /// The pathname selects only the channel. Kernel metadata must nominate the
+    /// configured UID, GID, and retained service cgroup, but it does not prove
+    /// the actual hello or response syscall writer.
     ///
     /// # Errors
     ///
@@ -142,8 +144,10 @@ impl HostCatalogPublicationClient {
     /// Configures an exclusively owned connected Host channel before any send.
     ///
     /// The caller selects the service UID, GID, and cgroup from trusted
-    /// deployment configuration. Every reply is authenticated through the
-    /// kernel record subject rather than the delegable connection establisher.
+    /// deployment configuration. Every reply's kernel-nominated subject is
+    /// checked separately from the delegable connection establisher. This does
+    /// not prove the actual syscall writer; signed session/results plus MAC and
+    /// capability confinement remain required for production qualification.
     ///
     /// # Errors
     ///
@@ -290,8 +294,8 @@ pub enum HostCatalogPublicationError {
     /// The request or bounded exchange deadline elapsed or overflowed.
     #[error("Host catalog publication deadline elapsed or clock is invalid")]
     Deadline,
-    /// A response came from an execution other than the configured Host service.
-    #[error("Host catalog response does not match the pinned service")]
+    /// A response's kernel-nominated subject mismatches configured Host policy.
+    #[error("Host catalog response subject does not match configured Host policy")]
     HostIdentity,
     /// Host confirmed a different generation or byte commitment.
     #[error("Host catalog publication receipt differs from the proposed snapshot")]
@@ -316,7 +320,7 @@ pub enum HostCatalogPublicationError {
     /// A polling syscall failed.
     #[error("Host catalog publication I/O failed: {0}")]
     Io(#[from] rustix::io::Errno),
-    /// Kernel service identity or cgroup validation failed.
+    /// Configured service-subject or cgroup correlation failed.
     #[error(transparent)]
     Kernel(#[from] aos_sandbox_linux::Error),
 }
@@ -517,7 +521,7 @@ mod tests {
 
     #[cfg(feature = "kernel-tests")]
     #[test]
-    fn client_authenticates_host_and_confirms_exact_receipt() {
+    fn client_correlates_host_subject_and_confirms_exact_receipt() {
         let draft = HostCatalogPublicationDraftV1::new(vec![b'x'; 3 * 1024 * 1024], 7).unwrap();
         let expected_digest = draft.expected_digest();
         let expected_bytes = u64::try_from(draft.canonical_catalog().len()).unwrap();

@@ -1,13 +1,13 @@
-//! Authenticates and durably records Storage and Network resource inventories.
+//! Validates and durably records Storage and Network resource inventories.
 //!
 //! Each query uses an independent one-shot session at the domain's exact
-//! protocol version: Storage 1.0 or Network 1.0. A response is accepted only
-//! from the configured live broker execution. The controller
-//! records the exact request and complete response in a domain-specific latest
-//! snapshot:
+//! protocol version: Storage 1.0 or Network 1.0. Each response's
+//! kernel-nominated subject must match configured broker-subject policy,
+//! but this does not identify the actual syscall writer. The controller records
+//! the exact request and complete response in a domain-specific latest snapshot:
 //!
 //! ```text
-//! controller state + authenticated query + complete broker response
+//! controller state + validated query + complete broker response
 //!     -> continuity checks
 //!     -> durable Storage or Network latest-snapshot record
 //! ```
@@ -57,22 +57,22 @@ const CONTROLLER_STATE_DOMAIN: &[u8] = b"aos.sandbox.resource-inventory.controll
 const STORAGE_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const NETWORK_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
-/// Reports whether an authenticated broker snapshot committed or replayed.
+/// Reports whether a validated broker snapshot committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceInventorySnapshotOutcomeV1 {
-    /// The authenticated query and complete response became durable.
+    /// The validated query and complete response became durable.
     Recorded,
     /// Existing durable evidence exactly matches this query or its semantics.
     Replay,
 }
 
-/// Pins one expected inventory broker independently of all socket replies.
+/// Supplies one configured inventory record-subject policy for socket replies.
 pub struct ResourceInventoryServiceIdentity {
-    /// Required kernel-authorized service UID.
+    /// Required nominated broker-subject UID.
     pub uid: u32,
-    /// Required kernel-authorized service GID.
+    /// Required nominated broker-subject GID.
     pub gid: u32,
-    /// Retained exact service cgroup selected by deployment configuration.
+    /// Retained exact broker-subject cgroup selected by deployment configuration.
     pub cgroup: RetainedCgroupAnchor,
 }
 
@@ -106,8 +106,10 @@ impl StorageResourceInventoryClient {
 
     /// Configures an exclusively owned Storage channel before querying.
     ///
-    /// The hello and response writers are authenticated through kernel record
-    /// subjects against the configured UID, GID, and retained exact cgroup.
+    /// Kernel record subjects constrain nominated hello and response identities
+    /// against the configured UID, GID, and retained exact cgroup. They do not
+    /// prove actual syscall writers; signed session/results and deployment
+    /// MAC/capability confinement remain separately required.
     ///
     /// # Errors
     ///
@@ -157,8 +159,10 @@ impl NetworkResourceInventoryClient {
 
     /// Configures an exclusively owned Network channel before querying.
     ///
-    /// The hello and response writers are authenticated through kernel record
-    /// subjects against the configured UID, GID, and retained exact cgroup.
+    /// Kernel record subjects constrain nominated hello and response identities
+    /// against the configured UID, GID, and retained exact cgroup. They do not
+    /// prove actual syscall writers; signed session/results and deployment
+    /// MAC/capability confinement remain separately required.
     ///
     /// # Errors
     ///
@@ -178,7 +182,7 @@ impl NetworkResourceInventoryClient {
     }
 }
 
-/// Retains the latest exact authenticated Storage resource inventory.
+/// Retains the latest exact validated Storage resource inventory.
 pub struct DurableStorageResourceInventorySnapshotV1 {
     record: SnapshotRecord,
     inventory: ValidatedStorageInventory,
@@ -228,7 +232,7 @@ impl DurableStorageResourceInventorySnapshotV1 {
     }
 }
 
-/// Retains the latest exact authenticated Network resource inventory.
+/// Retains the latest exact validated Network resource inventory.
 pub struct DurableNetworkResourceInventorySnapshotV1 {
     record: SnapshotRecord,
     inventory: ValidatedNetworkInventory,
@@ -296,8 +300,8 @@ pub enum ResourceInventoryError {
     /// The bounded query deadline elapsed or overflowed.
     #[error("resource inventory deadline elapsed or clock is invalid")]
     Deadline,
-    /// A response came from an execution other than the configured broker.
-    #[error("resource inventory response does not match the pinned broker service")]
+    /// A response's kernel-nominated subject mismatches configured broker policy.
+    #[error("resource inventory response subject does not match configured broker policy")]
     ServiceIdentity,
     /// The broker rejected or could not complete the request.
     #[error(
@@ -315,7 +319,7 @@ pub enum ResourceInventoryError {
     /// Kernel record-subject validation or packet transfer failed.
     #[error(transparent)]
     Transport(#[from] SeqpacketError),
-    /// Kernel service identity or cgroup validation failed.
+    /// Configured service-subject or cgroup correlation failed.
     #[error(transparent)]
     Kernel(#[from] aos_sandbox_linux::Error),
     /// Protected journal provenance, health, or durability failed.

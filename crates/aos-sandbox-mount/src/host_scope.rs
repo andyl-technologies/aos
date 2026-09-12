@@ -1,9 +1,11 @@
-//! Authenticated RootMount acquisition of Host-retained payload descriptors.
+//! RootMount acquisition of Host-retained payload descriptors.
 //!
-//! The Host reply attests the exact retained payload root and namespaces after
-//! signed query admission. Local checks establish descriptor types, live Host
-//! execution, and payload membership. Neither the reply nor its descriptors
-//! authorizes a mount effect without independent Mount admission.
+//! The validated Host reply describes the exact retained payload root and
+//! namespaces after signed query admission. Local checks establish descriptor
+//! types, correlate the kernel-nominated subject with configured Host policy,
+//! and validate payload membership; they do not prove the actual response
+//! syscall writer. Neither the reply nor its descriptors authorizes a mount
+//! effect without independent Mount admission.
 
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt as _;
@@ -38,8 +40,8 @@ const HOST_SERVICE_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
 /// Reports rejected Host exchanges without turning metadata into mount authority.
 #[derive(Debug, thiserror::Error)]
 pub enum HostScopeError {
-    /// The responding process is not the retained root Host service execution.
-    #[error("mount scope reply does not match the retained Host service")]
+    /// The reply's kernel-nominated subject mismatches configured Host policy.
+    #[error("mount scope reply subject does not match configured Host policy")]
     HostIdentity,
     /// The retained payload changed execution or cgroup membership.
     #[error("mount scope payload identity changed")]
@@ -66,7 +68,7 @@ pub enum HostScopeError {
 
 type Result<T> = std::result::Result<T, HostScopeError>;
 
-/// Owns one single-use Host channel with a separately configured service identity.
+/// Owns one single-use Host channel with configured record-subject policy.
 pub struct HostMountScopeClient {
     socket: DescriptorSubjectSocket,
     expected_host: RetainedCgroupAnchor,
@@ -75,8 +77,8 @@ pub struct HostMountScopeClient {
 impl HostMountScopeClient {
     /// Connects to the fixed deployed Host endpoint with bounded nonblocking I/O.
     ///
-    /// The pre-opened cgroup-v2 root selects the fixed Host service independently
-    /// of all caller request bytes and socket replies.
+    /// The pre-opened cgroup-v2 root supplies the configured Host-subject policy
+    /// independently of all caller request bytes and socket replies.
     ///
     /// # Errors
     ///
@@ -118,16 +120,18 @@ impl HostMountScopeClient {
         })
     }
 
-    /// Acquires the exact signed scope without granting permission to mount it.
+    /// Acquires the exact validated scope under a signed query without granting
+    /// permission to mount it.
     ///
     /// The client consumes its connection on all exits. The returned observation
-    /// retains the authenticated Host and payload executions together with all
-    /// five descriptors; persisted metadata cannot reconstruct this proof.
+    /// retains the correlated kernel-nominated Host subject and validated payload
+    /// execution together with all five descriptors; persisted metadata cannot
+    /// reconstruct this proof.
     ///
     /// # Errors
     ///
     /// Rejects non-root requests, invalid signed-artifact carriers, old protocols,
-    /// deadlines, broker denial, Host substitution, replaced payload scopes,
+    /// deadlines, broker denial, Host-subject mismatch, replaced payload scopes,
     /// inexact descriptor roles, or failed kernel checks.
     pub fn observe(
         mut self,
@@ -253,7 +257,7 @@ impl HostMountScopeClient {
     }
 }
 
-/// Retains a Host-attested exact root/namespace scope without Mount authority.
+/// Retains a validated Host-reported exact root/namespace scope without Mount authority.
 pub struct ObservedMountScope {
     host: HostExecution,
     payload: PidFd,
@@ -267,25 +271,25 @@ pub struct ObservedMountScope {
 }
 
 impl ObservedMountScope {
-    /// Returns the exact Host-attested assignment, runtime, and retained scope.
+    /// Returns the exact validated Host-reported assignment, runtime, and retained scope.
     #[must_use]
     pub const fn metadata(&self) -> &ValidatedPayloadScopeResponse {
         &self.metadata
     }
 
-    /// Borrows the Host-attested payload root without granting a mount effect.
+    /// Borrows the validated Host-reported payload root without granting a mount effect.
     #[must_use]
     pub const fn root(&self) -> &BeneathRoot {
         &self.root
     }
 
-    /// Borrows the Host-attested payload mount namespace.
+    /// Borrows the validated Host-reported payload mount namespace.
     #[must_use]
     pub const fn mount_namespace(&self) -> &NamespaceFd {
         &self.mount
     }
 
-    /// Borrows the Host-attested payload user namespace for idmap selection.
+    /// Borrows the validated Host-reported payload user namespace for idmap selection.
     #[must_use]
     pub const fn user_namespace(&self) -> &NamespaceFd {
         &self.user
@@ -315,7 +319,7 @@ impl ObservedMountScope {
         Ok((root, mount, user))
     }
 
-    /// Rechecks the original Host/payload executions and the query deadline.
+    /// Rechecks the nominated Host subject, payload execution, and query deadline.
     ///
     /// This does not refresh ownership, prove that the payload has not changed
     /// its root/namespaces since Host observation, or authorize a Mount effect.

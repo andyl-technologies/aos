@@ -96,8 +96,8 @@ pub enum MountCatalogPreparationError {
     /// Kernel randomness for a fresh request identity is unavailable.
     #[error("mount catalog request entropy is unavailable")]
     EntropyUnavailable,
-    /// The responding process is not the configured live Mount service execution.
-    #[error("mount catalog response does not match the pinned Mount service")]
+    /// A response's kernel-nominated subject mismatches configured Mount policy.
+    #[error("mount catalog response subject does not match configured Mount policy")]
     MountIdentity,
     /// The request or bounded exchange deadline elapsed or overflowed.
     #[error("mount catalog exchange deadline elapsed or clock is invalid")]
@@ -126,7 +126,7 @@ pub enum MountCatalogPreparationError {
     /// Kernel record-subject validation or packet transfer failed.
     #[error(transparent)]
     Transport(#[from] SeqpacketError),
-    /// Kernel service identity or cgroup validation failed.
+    /// Configured service-subject or cgroup correlation failed.
     #[error(transparent)]
     Kernel(#[from] aos_sandbox_linux::Error),
 }
@@ -161,13 +161,13 @@ impl MountCatalogIntentV1 {
     }
 }
 
-/// Pins the expected Mount service independently of all socket replies.
+/// Supplies the configured Mount record-subject policy for socket replies.
 pub struct MountServiceIdentity {
-    /// Required kernel-authorized Mount service UID.
+    /// Required nominated Mount-subject UID.
     pub uid: u32,
-    /// Required kernel-authorized Mount service GID.
+    /// Required nominated Mount-subject GID.
     pub gid: u32,
-    /// Retained exact Mount service cgroup selected by deployment configuration.
+    /// Retained exact Mount-subject cgroup selected by deployment configuration.
     pub cgroup: RetainedCgroupAnchor,
 }
 
@@ -181,9 +181,10 @@ impl MountCatalogClient {
     /// Configures an exclusively owned connected Mount channel before any send.
     ///
     /// The caller selects the service UID, GID, and cgroup from trusted
-    /// deployment configuration. The actual hello and response writers are
-    /// authenticated through kernel record subjects; listener credentials are
-    /// insufficient under socket activation.
+    /// deployment configuration. Kernel record subjects constrain nominated
+    /// identities but do not prove the actual hello or response syscall writer.
+    /// Application-authenticated session/results plus MAC and capability
+    /// confinement remain required for production qualification.
     ///
     /// # Errors
     ///

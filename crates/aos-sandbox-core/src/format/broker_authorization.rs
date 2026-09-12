@@ -244,6 +244,7 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
+        | ProtocolId::SourceProvider
         | ProtocolId::GuestAgent => unreachable!("broker plans use only broker protocols"),
     }
 }
