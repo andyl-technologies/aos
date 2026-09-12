@@ -7,6 +7,7 @@
   managedConfigurationRuntime ? ./providers/managed-configuration,
   nginxRuntime ? ../../../pkgs/networking/_nginx-ability-provider,
   systemdRuntime ? ./providers/systemd,
+  transitionTransform ? transition: transition,
 }: let
   inherit (lib.abilities) schemas;
 
@@ -532,11 +533,28 @@
   credentialProvider = import ./providers/credential/default.nix;
   systemdProvider = import ./providers/systemd/default.nix;
   httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
-  nginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
+  baseNginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
     inherit lib hostResourceRuntime;
     providerArtifact = nginxArtifact;
     runtimeArtifact = nginxRuntime;
   };
+  nginxAbilityPackage =
+    baseNginxAbilityPackage
+    // {
+      exports =
+        baseNginxAbilityPackage.exports
+        // {
+          nginx =
+            baseNginxAbilityPackage.exports.nginx
+            // {
+              export =
+                baseNginxAbilityPackage.exports.nginx.export
+                // {
+                  transition = transitionTransform baseNginxAbilityPackage.exports.nginx.export.transition;
+                };
+            };
+        };
+    };
 in let
   mkPackage = pname: src: abilityPackage:
     mkDerivation {
@@ -641,7 +659,7 @@ in {
             transitionEntry = "transition";
             ownsResourceKinds = [managedConfiguration.name];
             compose = managedConfigurationProvider.compose;
-            transition = managedConfigurationProvider.transition;
+            transition = transitionTransform managedConfigurationProvider.transition;
           };
         };
         managed-configuration-effects = {
@@ -697,7 +715,7 @@ in {
             transitionEntry = "transition";
             ownsResourceKinds = [credentialDelivery.name];
             compose = credentialProvider.compose;
-            transition = credentialProvider.transition;
+            transition = transitionTransform credentialProvider.transition;
           };
         };
         credential-delivery-effects = {
@@ -789,7 +807,7 @@ in {
             transitionEntry = "transition";
             ownsResourceKinds = [systemdService.name];
             compose = systemdProvider.compose;
-            transition = systemdProvider.transition;
+            transition = transitionTransform systemdProvider.transition;
           };
         };
         systemd-service-effects = {

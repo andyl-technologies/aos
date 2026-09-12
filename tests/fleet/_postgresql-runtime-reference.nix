@@ -4,11 +4,13 @@
   mkSystem,
   pkgs,
   guestTools ? false,
+  transitionTransform ? transition: transition,
 }: let
   packageSet = import ../abilities/reference-postgresql/package.nix {
     inherit lib;
     inherit (pkgs) bash coreutils jq mkDerivation postgresql writeTextFile;
     packageRuntime = pkgs.aos.packageRuntime;
+    inherit transitionTransform;
   };
 
   stoppedPostgresqlSource = builtins.toFile "stopped-postgresql.c" ''
@@ -410,7 +412,12 @@ in {
           return destination
 
 
-      def write_postgresql_host(path, activation, desired_package_names=None):
+      def write_postgresql_host(
+          path,
+          activation,
+          desired_package_names=None,
+          extra_module="",
+      ):
           activation_json = json.dumps(activation, separators=(",", ":"))
           selected_packages = (
               REFERENCE_PACKAGES
@@ -436,6 +443,7 @@ in {
               "  aos.abilities.activationInput = builtins.fromJSON "
               + json.dumps(activation_json)
               + ";\n"
+              + extra_module
               + "}\n"
           )
           encoded = base64.b64encode(host_module.encode()).decode()

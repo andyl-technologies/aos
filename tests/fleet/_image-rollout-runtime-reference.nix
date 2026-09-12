@@ -3,11 +3,13 @@
   lib,
   pkgs,
   guestTools ? false,
+  transitionTransform ? transition: transition,
 }: let
   package = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     rolloutRuntime = pkgs.aos.packageRuntime;
+    inherit transitionTransform;
   };
   orderedPackages = [
     {

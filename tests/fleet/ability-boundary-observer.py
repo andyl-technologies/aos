@@ -130,10 +130,23 @@ def load_target() -> dict[str, Any] | None:
     target = json.loads(payload)
     if canonical_bytes(target) != payload:
         raise ValueError("execution-boundary target is not canonical")
-    legacy_fields = {"boundary", "operation_key", "purpose", "sequence"}
-    if set(target) == legacy_fields:
+    operation_key_fields = {"boundary", "operation_key", "purpose", "sequence"}
+    operation_selector_fields = {
+        "boundary",
+        "interface",
+        "method",
+        "provider_key",
+        "purpose",
+        "resource_key",
+        "sequence",
+    }
+    target_fields = set(target)
+    if target_fields == operation_key_fields or target_fields == operation_selector_fields:
         target["action"] = "disconnect"
-    elif set(target) != legacy_fields | {"action"}:
+    elif (
+        target_fields != operation_key_fields | {"action"}
+        and target_fields != operation_selector_fields | {"action"}
+    ):
         raise ValueError("execution-boundary target has unexpected fields")
     if target["action"] not in {"disconnect", "pause"}:
         raise ValueError("execution-boundary target has an unknown action")
@@ -153,7 +166,18 @@ def held_sequence() -> str | None:
 def matches_operation(event: dict[str, Any], target: dict[str, Any]) -> bool:
     """Match only the selected operation identity."""
     operation = event.get("operation", {}).get("operation", {})
-    return operation.get("key") == target["operation_key"]
+    if "operation_key" in target:
+        return operation.get("key") == target["operation_key"]
+
+    resource = operation.get("target", {}).get("resource", {})
+    provider = resource.get("provider", {})
+    interface = operation.get("interface", {})
+    return (
+        interface.get("name") == target["interface"]
+        and operation.get("method") == target["method"]
+        and provider.get("key") == target["provider_key"]
+        and resource.get("key") == target["resource_key"]
+    )
 
 
 def matches_initial_boundary(event: dict[str, Any], target: dict[str, Any]) -> bool:
