@@ -129,14 +129,27 @@
       else toString slot;
   in "d /run/aos-ability-postgresql/${suffix} 2710 aos-ability-pg-${suffix} aos-ability-pg-probe-${suffix} -") (lib.range 0 63);
 
+  initrdActivationInput = config.aos.abilities.initrdActivationInput;
+  serializedInitrdActivation =
+    if initrdActivationInput == null
+    then null
+    else {
+      inherit (initrdActivationInput) schema;
+      manager = {
+        inherit (initrdActivationInput.manager) kind stage;
+      };
+      operations = map (operation: {
+        inherit (operation) id kind;
+      }) initrdActivationInput.operations;
+    };
   initrdActivationSelection = {
     schema = "aos.ability.initrd-activation-selection/v1";
     execution_stage = "initrd";
     disposition =
-      if config.aos.abilities.initrdActivationInput == null
+      if initrdActivationInput == null
       then "none"
       else "required";
-    activation = config.aos.abilities.initrdActivationInput;
+    activation = serializedInitrdActivation;
   };
   initrdActivationOperationType = lib.types.submodule {
     options = {
