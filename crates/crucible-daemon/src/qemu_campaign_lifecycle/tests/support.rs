@@ -1432,10 +1432,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let durable_bytes = prepared
         .canonical_bytes()
         .expect("encode rich prepared result");
-    assert_eq!(
-        crate::crucible_artifact::PreparedSemanticResultVersion::from_payload(&durable_bytes),
-        Some(crate::crucible_artifact::PreparedSemanticResultVersion::V6)
-    );
+    assert!(crate::crucible_artifact::is_current_prepared_result_payload(&durable_bytes));
     let expected_observation = prepared
         .observation()
         .observation()

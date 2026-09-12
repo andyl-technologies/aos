@@ -32,6 +32,16 @@ require_unsealed() {
   test ! -e "$1/BUNDLE-ID" || fail "evidence root is already sealed: $1"
 }
 
+write_checksum_inventory() {
+  root=$1
+  (
+    cd "$root"
+    find . -type f ! -path './attestations/*' ! -path ./SHA256SUMS ! -path ./BUNDLE-ID -print0 |
+      LC_ALL=C sort -z |
+      xargs -0 sha256sum
+  )
+}
+
 declared_secret_found() {
   evidence_file=$1
   redactions=${CAMPAIGN_FLIGHT_REDACTIONS:-}
@@ -275,12 +285,7 @@ seal_flight() {
   done < <(find "$root" -type f -print0)
   test "$secret_found" = false || fail "evidence bundle contained a declared secret"
 
-  (
-    cd "$root"
-    find . -type f ! -path './attestations/*' ! -path ./SHA256SUMS ! -path ./BUNDLE-ID -print0 \
-      | LC_ALL=C sort -z \
-      | xargs -0 sha256sum
-  ) > "$root/SHA256SUMS"
+  write_checksum_inventory "$root" > "$root/SHA256SUMS"
   bundle_sha256=$(sha256sum "$root/SHA256SUMS" | cut -d ' ' -f 1)
   printf 'sha256:%s\n' "$bundle_sha256" > "$root/BUNDLE-ID"
   chmod 600 "$root/SHA256SUMS" "$root/BUNDLE-ID"
@@ -299,12 +304,7 @@ verify_flight() {
 
   verification_manifest=$(mktemp "${TMPDIR:-/tmp}/campaign-flight-verify.XXXXXX")
   trap 'rm -f "$verification_manifest"' EXIT
-  (
-    cd "$root"
-    find . -type f ! -path './attestations/*' ! -path ./SHA256SUMS ! -path ./BUNDLE-ID -print0 \
-      | LC_ALL=C sort -z \
-      | xargs -0 sha256sum
-  ) > "$verification_manifest"
+  write_checksum_inventory "$root" > "$verification_manifest"
   cmp "$root/SHA256SUMS" "$verification_manifest" > /dev/null \
     || fail "evidence file inventory does not match checksum manifest"
   rm -f "$verification_manifest"

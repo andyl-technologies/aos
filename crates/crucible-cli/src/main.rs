@@ -564,7 +564,7 @@ struct StoreRepairArgs {
 enum StoreRepairCommand {
     /// Restore one physical placement from an authenticated peer.
     Placement(StorePlacementRepairArgs),
-    /// Migrate stopped-daemon assignment and prepared-result state.
+    /// Migrate stopped-daemon state; refuse live owners and retry interruptions.
     OperationalState(StoreOperationalStateRepairArgs),
 }
 
@@ -585,7 +585,7 @@ struct StorePlacementRepairArgs {
     /// Maximum logical bytes admitted into the bounded repair buffer.
     #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
     maximum_bytes: u64,
-    /// Exact durable campaign state directory whose owner lock must be free.
+    /// Require this campaign owner lock to be free; refuse a running service.
     #[arg(long, value_name = "PATH")]
     state: PathBuf,
     /// Strict owner-only campaign peer policy used by this deployment.
@@ -601,19 +601,25 @@ struct StoreOperationalStateRepairArgs {
     /// Strict owner-only campaign peer policy used by this deployment.
     #[arg(long, value_name = "PATH")]
     policy: PathBuf,
-    /// Existing assignment-ledger root to migrate through v15.
+    /// Acquire this ledger's writer lock and migrate it through v15.
     #[arg(long, value_name = "PATH")]
     ledger: PathBuf,
-    /// Existing prepared-result namespace to migrate through v2.
+    /// Migrate this namespace through v2 while the writer lock remains held.
     #[arg(long, value_name = "PATH")]
     prepared_results: PathBuf,
-    /// Maximum assignment attempt records admitted in one migration.
+    /// Write provenance here; reuse this exact path when retrying interruption.
+    #[arg(long, value_name = "PATH")]
+    receipt: PathBuf,
+    /// Bound all assignment shard, record, and staging entries.
     #[arg(long, value_name = "COUNT", default_value_t = 1_000_000)]
-    maximum_assignment_records: usize,
-    /// Maximum prepared-result journals admitted in one migration.
-    #[arg(long, value_name = "COUNT", default_value_t = 200_000)]
-    maximum_prepared_journals: usize,
-    /// Maximum bytes admitted for any prepared-result payload.
+    maximum_assignment_entries: usize,
+    /// Bound aggregate assignment record and staging bytes.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
+    maximum_assignment_bytes: u64,
+    /// Bound all journal, lock, staging, and contained file entries.
+    #[arg(long, value_name = "COUNT", default_value_t = 1_000_000)]
+    maximum_prepared_result_entries: usize,
+    /// Bound each journal payload and aggregate inventory proportionally.
     #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
     maximum_prepared_result_bytes: usize,
 }

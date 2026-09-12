@@ -330,6 +330,25 @@ or fork-stage failure. The hook is not a private repair path and must be absent
 or disabled in production artifacts. Operators still observe and recover using
 public surfaces.
 
+The stopped-daemon operational-state drill uses only the public repair command:
+
+```text
+crucible --format jsonl store repair operational-state \
+  --state STATE --policy POLICY --ledger LEDGER \
+  --prepared-results PREPARED_RESULTS --receipt RECEIPT
+```
+
+Stop the service before invoking it. The command refuses a live campaign owner,
+a live assignment writer, malformed or over-budget inventory, an unrelated
+receipt, and any unauthenticated source. It writes authenticated source-to-
+output provenance before replacing records, migrates assignments before
+prepared results while retaining the writer lock, and removes its startup fence
+only after both phases are durable. If power or the process is lost at any
+point, normal daemon startup refuses the active migration. Run the identical
+command with the same receipt path to reconcile bounded staging and resume.
+That retry is idempotent; changing paths or bounds requires operator review of
+the retained receipt rather than deletion of markers or staging by hand.
+
 - **[CMAN-15]** Destructive acceptance MUST exercise every failure class in the
   table on both the constrained host and each backend whose failure semantics it
   targets. Recovery MUST preserve the last authenticated campaign state and

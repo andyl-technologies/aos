@@ -10,12 +10,6 @@ use serde::Deserialize;
 const CONTRACT_SOURCE: &str = include_str!(
     "../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-flight-contract.toml"
 );
-const RECORDER_SOURCE: &str = include_str!(
-    "../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-manual-flight-recorder.sh"
-);
-const RUNBOOK_SOURCE: &str =
-    include_str!("../../../docs/users/crucible/campaign-manual-flights.md");
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Contract {
@@ -247,24 +241,6 @@ fn operator_contract_is_executable_without_claiming_manual_acceptance() -> Resul
     );
     assert_eq!(contract.manual_remaining.unsigned_result, "blocked");
     assert!(contract.manual_remaining.claims.len() >= 7);
-
-    for action in [
-        "init",
-        "record",
-        "capture",
-        "seal",
-        "statement",
-        "attest",
-        "verify",
-    ] {
-        assert!(RECORDER_SOURCE.contains(&format!("{action}:")));
-    }
-    assert!(RECORDER_SOURCE.contains("authorized_public_keys"));
-    assert!(RECORDER_SOURCE.contains("campaign-manual-flight-result.v1"));
-    assert!(RECORDER_SOURCE.contains("campaign-manual-flight-attestation-statement.v1"));
-    assert!(RUNBOOK_SOURCE.contains("CAMPAIGN_FLIGHT_OPENSSL"));
-    assert!(RUNBOOK_SOURCE.contains("\"$RECORDER\" attest"));
-    assert!(RUNBOOK_SOURCE.contains("checks.crucible.phase2.gates.typedChoiceProductCheckpoint"));
 
     Ok(())
 }

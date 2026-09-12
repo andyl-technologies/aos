@@ -2097,12 +2097,10 @@ async fn v25_concurrent_start_from_v24_applies_once_and_reopens() {
         connection.execute_batch(migration).unwrap();
     }
     connection
-        .execute_batch(
-            &format!(
-                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+        .execute_batch(&format!(
+            "CREATE TABLE schema_version(version INTEGER NOT NULL);
                  INSERT INTO schema_version(version) VALUES({gc_index});"
-            ),
-        )
+        ))
         .unwrap();
     drop(connection);
 

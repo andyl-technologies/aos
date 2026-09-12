@@ -1160,11 +1160,24 @@ mod tests {
                 "policy",
                 "ledger",
                 "prepared_results",
-                "maximum_assignment_records",
-                "maximum_prepared_journals",
+                "receipt",
+                "maximum_assignment_entries",
+                "maximum_assignment_bytes",
+                "maximum_prepared_result_entries",
                 "maximum_prepared_result_bytes",
             ])
         );
+        let help = operational.clone().render_long_help().to_string();
+        for required in [
+            "stopped-daemon",
+            "owner lock",
+            "writer lock",
+            "retry",
+            "refuse",
+            "provenance",
+        ] {
+            assert!(help.contains(required), "missing `{required}` in {help}");
+        }
     }
 
     struct GcFixture {

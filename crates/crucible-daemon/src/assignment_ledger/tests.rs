@@ -580,9 +580,9 @@ fn migration_v14_publishing_preserves_the_prepared_result_digest() {
     let mut payload = open_sealed(&encoded, ATTEMPT_STATE_CHECKSUM_DOMAIN)
         .expect("open current publishing state")
         .to_vec();
-    assert_eq!(ATTEMPT_STATE_MAGIC.len(), ATTEMPT_STATE_MAGIC_V14.len());
-    payload[..ATTEMPT_STATE_MAGIC.len()].copy_from_slice(ATTEMPT_STATE_MAGIC_V14);
-    let legacy = seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V14);
+    assert_eq!(ATTEMPT_STATE_MAGIC.len(), legacy_magic(14).len());
+    payload[..ATTEMPT_STATE_MAGIC.len()].copy_from_slice(&legacy_magic(14));
+    let legacy = seal(payload, &legacy_domain(14));
 
     assert!(decode_attempt_state(&legacy).is_err());
     assert_eq!(
@@ -606,7 +606,7 @@ fn assignment_migration_validates_all_records_before_replacement() {
         .expect("create second record parent");
     fs::write(&second_path, b"corrupt attempt record").expect("write corrupt record");
 
-    assert!(ledger.migrate_attempt_records(2).is_err());
+    assert!(ledger.migrate_attempt_records_for_test(2).is_err());
     let unchanged = fs::read(first_path).expect("read unchanged legacy record");
     assert!(decode_attempt_state(&unchanged).is_err());
     assert_eq!(
@@ -635,7 +635,7 @@ fn assignment_migration_resumes_a_mixed_current_and_v14_inventory() {
     write_v14_attempt_state(&ledger, legacy_key, legacy_state);
 
     let summary = ledger
-        .migrate_attempt_records(2)
+        .migrate_attempt_records_for_test(2)
         .expect("resume mixed migration");
     assert_eq!(summary.records, 2);
     assert_eq!(summary.migrated, 1);
@@ -646,6 +646,119 @@ fn assignment_migration_resumes_a_mixed_current_and_v14_inventory() {
     assert_eq!(
         ledger.load_attempt(legacy_key).expect("migrated state"),
         Some(legacy_state)
+    );
+}
+
+#[test]
+fn assignment_migration_reconciles_bounded_orphan_staging() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
+    let request = request(0x31, 0x51, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = publishing_state(&request, 0x71, 0x91);
+    let record = write_v14_attempt_state(&ledger, key, state);
+    let staging = record
+        .parent()
+        .expect("attempt shard")
+        .join(".staging-123-456");
+    fs::write(&staging, b"interrupted staging bytes").expect("stale staging");
+
+    let summary = ledger
+        .migrate_attempt_records_for_test(2)
+        .expect("resume with stale staging");
+    assert_eq!(summary.migrated, 1);
+    assert!(!staging.exists());
+    assert_eq!(
+        ledger.load_attempt(key).expect("migrated state"),
+        Some(state)
+    );
+}
+
+#[test]
+fn assignment_migration_recovers_an_interrupted_destination_write() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
+    let request = request(0x34, 0x54, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = publishing_state(&request, 0x74, 0x94);
+    let record = write_v14_attempt_state(&ledger, key, state);
+    let legacy = fs::read(&record).expect("legacy record");
+    let current = encode_attempt_state(key, state);
+    let receipt_parent = tempfile::tempdir().expect("receipt parent");
+    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+        &receipt_parent.path().join("receipt"),
+    )
+    .expect("receipt directory");
+
+    ledger
+        .migrate_attempt_records(&receipt, 257, u64::MAX)
+        .expect("establish migration receipt");
+    fs::write(&record, legacy).expect("restore legacy record");
+    let staging = record
+        .parent()
+        .expect("attempt shard")
+        .join(".staging-123-456");
+    fs::write(&staging, &current).expect("retain staged current record");
+    fs::write(&record, &current[..current.len() / 2]).expect("interrupt destination write");
+
+    ledger
+        .migrate_attempt_records(&receipt, 257, u64::MAX)
+        .expect("resume interrupted destination write");
+    assert_eq!(
+        ledger.load_attempt(key).expect("current state"),
+        Some(state)
+    );
+    assert!(!staging.exists());
+}
+
+#[test]
+fn runtime_open_rejects_unfenced_assignment_staging() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
+    let request = request(0x32, 0x52, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = publishing_state(&request, 0x72, 0x92);
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(state))
+            .expect("write current record"),
+        AttemptStateCas::Advanced
+    );
+    let record = ledger.attempt_path(key);
+    let staging = record
+        .parent()
+        .expect("attempt shard")
+        .join(".staging-123-456");
+    fs::write(&staging, b"interrupted staging bytes").expect("stale staging");
+    drop(ledger);
+
+    assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
+}
+
+#[test]
+fn assignment_migration_destination_replacement_fails_pinned_commit_check() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
+    let request = request(0x33, 0x53, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let record = write_v14_attempt_state(&ledger, key, publishing_state(&request, 0x73, 0x93));
+    let source = ledger
+        .authority()
+        .open_regular_optional(&record, "pin-test-migration-source")
+        .expect("open source")
+        .expect("source exists");
+    let moved = record.with_extension("moved");
+    fs::rename(&record, &moved).expect("move authenticated destination");
+    fs::write(&record, b"replacement").expect("replace destination");
+
+    assert!(source.replace_contents(b"staged-current").is_err());
+    assert_eq!(
+        fs::read(&record).expect("replacement bytes"),
+        b"replacement"
+    );
+    assert_ne!(
+        fs::read(&moved).expect("moved source bytes"),
+        b"staged-current"
     );
 }
 
@@ -676,12 +789,11 @@ fn write_v14_attempt_state(
     let mut payload = open_sealed(&encoded, ATTEMPT_STATE_CHECKSUM_DOMAIN)
         .expect("open current state")
         .to_vec();
-    payload[..ATTEMPT_STATE_MAGIC.len()].copy_from_slice(ATTEMPT_STATE_MAGIC_V14);
+    payload[..ATTEMPT_STATE_MAGIC.len()].copy_from_slice(&legacy_magic(14));
     let path = ledger.attempt_path(key);
     fs::create_dir_all(path.parent().expect("attempt record parent"))
         .expect("create attempt record parent");
-    fs::write(&path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V14))
-        .expect("write v14 attempt record");
+    fs::write(&path, seal(payload, &legacy_domain(14))).expect("write v14 attempt record");
     path
 }
 
@@ -867,7 +979,7 @@ fn selected_origin_round_trips_and_retains_certificate_resume_and_output_roots()
 fn directory_ledger_rejects_corrupt_bounded_records() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let request = request(0x13, 0x33, 1);
-    let path = {
+    {
         let mut ledger =
             DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
         let record = AssignmentRecord::new(
@@ -884,9 +996,9 @@ fn directory_ledger_rejects_corrupt_bounded_records() {
         ledger
             .publish_assignment(&record)
             .expect("publish assignment");
-        ledger.assignment_path(request.assignment())
-    };
-    fs::write(&path, b"truncated-record").expect("corrupt assignment file");
+        let path = ledger.assignment_path(request.assignment());
+        fs::write(path, b"truncated-record").expect("corrupt assignment file");
+    }
 
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("reopen durable ledger");
     assert!(matches!(
@@ -1191,10 +1303,63 @@ fn directory_retention_inventory_rejects_misplaced_attempt_records() {
     ));
 }
 
+fn legacy_domain(version: u8) -> String {
+    format!("crucible.executor.attempt-state-record.v{version}")
+}
+
+fn legacy_magic(version: u8) -> Vec<u8> {
+    let mut magic = legacy_domain(version).into_bytes();
+    magic.push(0);
+    magic
+}
+
+fn legacy_attempt_payload(
+    version: u8,
+    key: AttemptExecutionKey,
+    state: AttemptRuntimeState,
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(512);
+    payload.extend_from_slice(&legacy_magic(version));
+    push_bytes(&mut payload, key.lineage().to_text().as_bytes());
+    push_bytes(&mut payload, key.attempt().to_text().as_bytes());
+    if version >= 11 {
+        push_bytes(&mut payload, &key.scope().canonical_bytes());
+    }
+    payload.extend_from_slice(&state.execution_basis().as_bytes());
+    if version >= 4 {
+        encode_attempt_origin(&mut payload, state.origin());
+    }
+    payload
+}
+
+fn persist_and_assert_legacy_migration(
+    ledger: &DirectoryAssignmentLedger,
+    key: AttemptExecutionKey,
+    state: AttemptRuntimeState,
+    payload: Vec<u8>,
+    version: u8,
+) {
+    let path = ledger.attempt_path(key);
+    fs::create_dir_all(path.parent().expect("attempt-state parent"))
+        .expect("create legacy attempt-state parent");
+    fs::write(path, seal(payload, &legacy_domain(version))).expect("write legacy attempt state");
+
+    let summary = ledger
+        .migrate_attempt_records_for_test(256)
+        .expect("migrate legacy attempt record");
+    assert_eq!(summary.migrated, 1);
+    assert_eq!(
+        ledger.load_attempt(key).expect("load migrated state"),
+        Some(state)
+    );
+}
+
 #[test]
-fn directory_ledger_migrates_legacy_v1_attempt_state() {
+fn every_legacy_assignment_version_migrates_to_v15() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x15, 0x35, 1);
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
+
+    let request = self::request(0x15, 0x35, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = AttemptRuntimeState::Completed {
         execution_basis: request.execution_basis_digest(),
@@ -1205,38 +1370,15 @@ fn directory_ledger_migrates_legacy_v1_attempt_state() {
         finding_candidate: CompletedFindingCandidate::None,
         prepared_result_digest: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V1);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    let mut payload = legacy_attempt_payload(1, key, state);
     payload.push(1);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x55).as_bytes());
     push_bytes(&mut payload, observation(0x75).to_text().as_bytes());
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V1))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 1);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v2_publishing_state() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x16, 0x36, 1);
+    let request = self::request(0x16, 0x36, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = AttemptRuntimeState::Publishing {
         execution_basis: request.execution_basis_digest(),
@@ -1249,38 +1391,15 @@ fn directory_ledger_migrates_legacy_v2_publishing_state() {
         finding_exact_retention_roots: [None; 3],
         prepared_result_digest: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V2);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    let mut payload = legacy_attempt_payload(2, key, state);
     payload.push(3);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x56).as_bytes());
     push_bytes(&mut payload, observation(0x76).to_text().as_bytes());
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 2);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v3_paused_state_as_initial_origin() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x17, 0x37, 1);
+    let request = self::request(0x17, 0x37, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = AttemptRuntimeState::Paused {
         execution_basis: request.execution_basis_digest(),
@@ -1290,38 +1409,15 @@ fn directory_ledger_migrates_legacy_v3_paused_state_as_initial_origin() {
         checkpoint: checkpoint(0x77),
         promotion_basis: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V3);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
+    let mut payload = legacy_attempt_payload(3, key, state);
     payload.push(6);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x57).as_bytes());
     push_bytes(&mut payload, checkpoint(0x77).to_text().as_bytes());
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 3);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v4_paused_state_with_resume_origin() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x19, 0x39, 1);
+    let request = self::request(0x19, 0x39, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let origin = AttemptExecutionOrigin::ExactCheckpoint {
         assignment: request.assignment(),
@@ -1337,39 +1433,15 @@ fn directory_ledger_migrates_legacy_v4_paused_state_with_resume_origin() {
         checkpoint: checkpoint(0x79),
         promotion_basis: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V4);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, origin);
+    let mut payload = legacy_attempt_payload(4, key, state);
     payload.push(6);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x59).as_bytes());
     push_bytes(&mut payload, checkpoint(0x79).to_text().as_bytes());
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 4);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v5_promotion_without_execution_basis_details() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x1a, 0x3a, 1);
+    let request = self::request(0x1a, 0x3a, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let origin = AttemptExecutionOrigin::Initial;
     let state = AttemptRuntimeState::CheckpointPromoting {
@@ -1381,40 +1453,16 @@ fn directory_ledger_migrates_legacy_v5_promotion_without_execution_basis_details
         promoted_checkpoint: checkpoint(0x7b),
         promotion_basis: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V5);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, origin);
+    let mut payload = legacy_attempt_payload(5, key, state);
     payload.push(7);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x5a).as_bytes());
     push_bytes(&mut payload, checkpoint(0x7a).to_text().as_bytes());
     push_bytes(&mut payload, checkpoint(0x7b).to_text().as_bytes());
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V5))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 5);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v6_state_with_execution_basis_details() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x1d, 0x3d, 1);
+    let request = self::request(0x1d, 0x3d, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let origin = AttemptExecutionOrigin::Initial;
     let promotion_basis =
@@ -1427,40 +1475,16 @@ fn directory_ledger_migrates_legacy_v6_state_with_execution_basis_details() {
         checkpoint: checkpoint(0x7d),
         promotion_basis: Some(promotion_basis),
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V6);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, origin);
+    let mut payload = legacy_attempt_payload(6, key, state);
     payload.push(6);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x5d).as_bytes());
     push_bytes(&mut payload, checkpoint(0x7d).to_text().as_bytes());
     encode_legacy_checkpoint_promotion_basis(&mut payload, promotion_basis);
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V6))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 6);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v7_publishing_state_without_finding_candidate() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x1e, 0x3e, 1);
+    let request = self::request(0x1e, 0x3e, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let origin = AttemptExecutionOrigin::Initial;
     let state = AttemptRuntimeState::Publishing {
@@ -1474,39 +1498,15 @@ fn directory_ledger_migrates_legacy_v7_publishing_state_without_finding_candidat
         finding_exact_retention_roots: [None; 3],
         prepared_result_digest: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V7);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, origin);
+    let mut payload = legacy_attempt_payload(7, key, state);
     payload.push(3);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x5e).as_bytes());
     push_bytes(&mut payload, observation(0x7e).to_text().as_bytes());
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V7))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 7);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v8_candidate_as_pending() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x1f, 0x3f, 1);
+    let request = self::request(0x1f, 0x3f, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let candidate = finding_candidate(0x7f);
     let state = AttemptRuntimeState::Completed {
@@ -1518,42 +1518,16 @@ fn directory_ledger_migrates_legacy_v8_candidate_as_pending() {
         finding_candidate: CompletedFindingCandidate::Pending(candidate),
         prepared_result_digest: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V8);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    let mut payload = legacy_attempt_payload(8, key, state);
     payload.push(1);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x5f).as_bytes());
     push_bytes(&mut payload, observation(0x7f).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(candidate));
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 8);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-    assert_eq!(state.pending_finding_candidate(), Some(candidate));
-    assert!(!state.finding_candidate_acknowledged());
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v9_acknowledged_candidate() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x20, 0x40, 1);
+    let request = self::request(0x20, 0x40, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let candidate = finding_candidate(0x80);
     let state = AttemptRuntimeState::Completed {
@@ -1565,42 +1539,17 @@ fn directory_ledger_migrates_legacy_v9_acknowledged_candidate() {
         finding_candidate: CompletedFindingCandidate::Acknowledged(candidate),
         prepared_result_digest: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V9);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    let mut payload = legacy_attempt_payload(9, key, state);
     payload.push(1);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x60).as_bytes());
     push_bytes(&mut payload, observation(0x80).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(candidate));
     payload.push(1);
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 9);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy attempt state"),
-        Some(state)
-    );
-    assert!(state.finding_candidate_acknowledged());
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v9_promotion_basis_as_execute_mode() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x21, 0x41, 1);
+    let request = self::request(0x21, 0x41, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let promotion_basis =
         CheckpointPromotionExecutionBasis::new(request.resources(), request.retention());
@@ -1612,40 +1561,15 @@ fn directory_ledger_migrates_legacy_v9_promotion_basis_as_execute_mode() {
         checkpoint: checkpoint(0x81),
         promotion_basis: Some(promotion_basis),
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V9);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    let mut payload = legacy_attempt_payload(9, key, state);
     payload.push(6);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x61).as_bytes());
     push_bytes(&mut payload, checkpoint(0x81).to_text().as_bytes());
     encode_legacy_checkpoint_promotion_basis(&mut payload, promotion_basis);
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 9);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy paused state"),
-        Some(state)
-    );
-    assert_eq!(promotion_basis.start_mode(), AttemptStartMode::Execute);
-}
-
-#[test]
-fn directory_ledger_migrates_legacy_v10_materialized_capture_basis_as_semantic() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
     let configuration = configuration(0x91);
     let request = capture_request(0x22, 0x42, 1, configuration);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1662,42 +1586,17 @@ fn directory_ledger_migrates_legacy_v10_materialized_capture_basis_as_semantic()
         checkpoint: checkpoint(0x82),
         promotion_basis: Some(promotion_basis),
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V10);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    let mut payload = legacy_attempt_payload(10, key, state);
     payload.push(6);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x62).as_bytes());
     push_bytes(&mut payload, checkpoint(0x82).to_text().as_bytes());
     encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create legacy attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10))
-        .expect("write legacy attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 10);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load legacy paused state"),
-        Some(state)
-    );
-    assert_eq!(key.scope(), AttemptExecutionScope::Semantic);
-}
-
-#[test]
-fn directory_ledger_migrates_v11_scoped_savepoint_capture_basis() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
     let capture_fact = campaign_fact(0x92);
-    let request = savepoint_capture_request(0x23, 0x43, 1, capture_fact, configuration(0x93));
+    let request = savepoint_capture_request(0x23, 0x43, 1, capture_fact, self::configuration(0x93));
     let key = AttemptExecutionKey::for_request(&request);
     let promotion_basis = CheckpointPromotionExecutionBasis::new_for_start_mode(
         request.resources(),
@@ -1712,47 +1611,16 @@ fn directory_ledger_migrates_v11_scoped_savepoint_capture_basis() {
         checkpoint: checkpoint(0x83),
         promotion_basis: Some(promotion_basis),
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V11);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    push_bytes(&mut payload, &request.execution_scope().canonical_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    let mut payload = legacy_attempt_payload(11, key, state);
     payload.push(6);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x63).as_bytes());
     push_bytes(&mut payload, checkpoint(0x83).to_text().as_bytes());
     encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create v11 attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11))
-        .expect("write v11 attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 11);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load v11 paused state"),
-        Some(state)
-    );
-    assert_eq!(
-        key.scope(),
-        AttemptExecutionScope::SavepointCapture {
-            request: capture_fact,
-        }
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_v12_publishing_state_without_replay_captures() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x71, 0x72, 1);
+    let request = self::request(0x71, 0x72, 1);
     let key = AttemptExecutionKey::for_request(&request);
     let state = AttemptRuntimeState::Publishing {
         execution_basis: request.execution_basis_digest(),
@@ -1765,41 +1633,16 @@ fn directory_ledger_migrates_v12_publishing_state_without_replay_captures() {
         finding_exact_retention_roots: [None; 3],
         prepared_result_digest: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V12);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    push_bytes(&mut payload, &request.execution_scope().canonical_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    let mut payload = legacy_attempt_payload(12, key, state);
     payload.push(3);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x73).as_bytes());
     push_bytes(&mut payload, observation(0x74).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(finding_candidate(0x75)));
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create v12 attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V12))
-        .expect("write v12 attempt state");
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 12);
 
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load v12 publishing state"),
-        Some(state)
-    );
-}
-
-#[test]
-fn directory_ledger_migrates_v13_publishing_state_without_exact_roots() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let request = request(0x76, 0x77, 1);
+    let request = self::request(0x76, 0x77, 1);
     let key = AttemptExecutionKey::for_request(&request);
     let state = AttemptRuntimeState::Publishing {
         execution_basis: request.execution_basis_digest(),
@@ -1812,36 +1655,15 @@ fn directory_ledger_migrates_v13_publishing_state_without_exact_roots() {
         finding_exact_retention_roots: [None; 3],
         prepared_result_digest: None,
     };
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
 
-    let mut payload = Vec::with_capacity(512);
-    payload.extend_from_slice(ATTEMPT_STATE_MAGIC_V13);
-    push_bytes(&mut payload, request.lineage().to_text().as_bytes());
-    push_bytes(&mut payload, request.attempt().to_text().as_bytes());
-    push_bytes(&mut payload, &request.execution_scope().canonical_bytes());
-    payload.extend_from_slice(&request.execution_basis_digest().as_bytes());
-    encode_attempt_origin(&mut payload, AttemptExecutionOrigin::Initial);
+    let mut payload = legacy_attempt_payload(13, key, state);
     payload.push(3);
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x78).as_bytes());
     push_bytes(&mut payload, observation(0x79).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(finding_candidate(0x7a)));
     encode_optional_finding_replay_captures(&mut payload, None);
-    let path = ledger.attempt_path(key);
-    fs::create_dir_all(path.parent().expect("attempt-state parent"))
-        .expect("create v13 attempt-state parent");
-    fs::write(path, seal(payload, ATTEMPT_STATE_CHECKSUM_DOMAIN_V13))
-        .expect("write v13 attempt state");
-
-    let summary = ledger
-        .migrate_attempt_records(1)
-        .expect("migrate legacy attempt record");
-    assert_eq!(summary.migrated, 1);
-
-    assert_eq!(
-        ledger.load_attempt(key).expect("load v13 publishing state"),
-        Some(state)
-    );
+    persist_and_assert_legacy_migration(&ledger, key, state, payload, 13);
 }
 
 #[test]
@@ -1850,7 +1672,7 @@ fn v11_rejects_v12_selected_origin_and_promotion_tags() {
     let key = AttemptExecutionKey::for_request(&request);
 
     let mut selected_origin = Vec::with_capacity(512);
-    selected_origin.extend_from_slice(ATTEMPT_STATE_MAGIC_V11);
+    selected_origin.extend_from_slice(&legacy_magic(11));
     push_bytes(&mut selected_origin, request.lineage().to_text().as_bytes());
     push_bytes(&mut selected_origin, request.attempt().to_text().as_bytes());
     push_bytes(
@@ -1860,14 +1682,14 @@ fn v11_rejects_v12_selected_origin_and_promotion_tags() {
     selected_origin.extend_from_slice(&request.execution_basis_digest().as_bytes());
     selected_origin.push(2);
     assert!(matches!(
-        decode_migratable_attempt_state(&seal(selected_origin, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11,)),
+        decode_migratable_attempt_state(&seal(selected_origin, &legacy_domain(11),)),
         Err(AssignmentLedgerError::Corrupt {
             reason: "attempt-state-origin-unknown-tag"
         })
     ));
 
     let mut selected_promotion = Vec::with_capacity(512);
-    selected_promotion.extend_from_slice(ATTEMPT_STATE_MAGIC_V11);
+    selected_promotion.extend_from_slice(&legacy_magic(11));
     push_bytes(
         &mut selected_promotion,
         request.lineage().to_text().as_bytes(),
@@ -1899,10 +1721,7 @@ fn v11_rejects_v12_selected_origin_and_promotion_tags() {
     selected_promotion.push(1);
     selected_promotion.push(3);
     assert!(matches!(
-        decode_migratable_attempt_state(&seal(
-            selected_promotion,
-            ATTEMPT_STATE_CHECKSUM_DOMAIN_V11,
-        )),
+        decode_migratable_attempt_state(&seal(selected_promotion, &legacy_domain(11),)),
         Err(AssignmentLedgerError::Corrupt {
             reason: "checkpoint-promotion-start-mode-tag"
         })

@@ -30,7 +30,12 @@ use finding_replay::{
     PreparedFindingReplayRecords, RecordedFindingReplay, validate_recorded_replay_configuration,
 };
 use prepared_result::MAX_PREPARED_RESULT_RECORDS;
-pub(crate) use prepared_result::PreparedSemanticResultVersion;
+pub(crate) use prepared_result::is_current_prepared_result_payload;
+pub(crate) use prepared_result::migration::decode as decode_migration_prepared_result;
+#[cfg(test)]
+pub(crate) use prepared_result::migration::{
+    encode as encode_legacy_prepared_result, encode_version_for_test,
+};
 pub use prepared_result::{
     MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
     PreparedSemanticResultCodecError,
