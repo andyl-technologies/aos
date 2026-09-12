@@ -453,6 +453,28 @@
     "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result"
     "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target"
   ];
+  nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeEffectPostgresqlCohort = import ./tests/fleet/ability-native-effect-boundaries-postgresql.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeEffectKubernetesCohort = import ./tests/fleet/ability-native-effect-boundaries-kubernetes.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeEffectRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId;
+      systems = discoverSystems;
+    })
+  nativeEffectBoundaryCells.groups.rollout;
   nativeAdapterRoleScenarios = [
     "revoke-caller-before-acquisition"
     "revoke-caller-after-acquisition"
@@ -496,7 +518,8 @@
     ++ nativeAdapterInterruptionCells
     ++ nativeAdapterRoleCells
     ++ nativeAdapterFailureControlCells
-    ++ nativePostgresqlReplacementCells;
+    ++ nativePostgresqlReplacementCells
+    ++ nativeEffectBoundaryCells.all;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
       mkNativeAbilityScenario
@@ -509,14 +532,40 @@
       checks = qualificationRequirementChecks "ability-native-adapter-matrix";
       matrixSpec = nativeAdapterMatrix.spec;
       matrixQualifiedCells = nativeAdapterQualifiedCells;
-      matrixAdditionalCohorts = [
-        {
-          id = "postgresql-provider-replacement";
-          qualifiedCells = nativePostgresqlReplacementCells;
-          inherit (nativePostgresqlReplacementCohort) testScript;
-          inherit (nativePostgresqlReplacementCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-        }
-      ];
+      matrixAdditionalCohorts =
+        [
+          {
+            id = "postgresql-provider-replacement";
+            qualifiedCells = nativePostgresqlReplacementCells;
+            inherit (nativePostgresqlReplacementCohort) testScript;
+            inherit (nativePostgresqlReplacementCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-effect-boundaries-reference";
+            qualifiedCells = nativeEffectBoundaryCells.groups.reference ++ nativeEffectBoundaryCells.groups.systemdManager;
+            inherit (nativeEffectReferenceCohort) testScript;
+            inherit (nativeEffectReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-effect-boundaries-postgresql";
+            qualifiedCells = nativeEffectBoundaryCells.groups.postgresql;
+            inherit (nativeEffectPostgresqlCohort) testScript;
+            inherit (nativeEffectPostgresqlCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-effect-boundaries-kubernetes";
+            qualifiedCells = nativeEffectBoundaryCells.groups.kubernetes;
+            inherit (nativeEffectKubernetesCohort) testScript;
+            inherit (nativeEffectKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ]
+        ++ lib.imap (index: cohort: {
+          id = "provider-effect-boundary-rollout-${builtins.toString index}";
+          qualifiedCells = [builtins.elemAt nativeEffectBoundaryCells.groups.rollout index];
+          inherit (cohort) testScript;
+          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        })
+        nativeEffectRolloutCohorts;
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
