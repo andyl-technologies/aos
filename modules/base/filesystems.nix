@@ -303,10 +303,9 @@ in {
           wantedBy = ["swap.target"];
           before = ["swap.target"];
           requires = ["dev-disk-by\\x2dpartlabel-swap.device"];
-          after = [
-            "local-fs.target"
-            "dev-disk-by\\x2dpartlabel-swap.device"
-          ];
+          # Mount units wait for swap.target by default, so waiting for
+          # local-fs.target here would close a cycle through /tmp.mount.
+          after = ["dev-disk-by\\x2dpartlabel-swap.device"];
           unitConfig = {
             # The partition only exists after systemd-repart's first-boot run.
             # ConditionPathExists makes the first pre-repart boot a

@@ -611,6 +611,11 @@
       != "no"
     then throw "the initrd /nix overlay must not pull stage-2 default dependencies into switch-root"
     else if
+      builtins.elem
+      "local-fs.target"
+      system.config.systemd.services.cryptswap.after
+    then throw "encrypted swap must not close the mount/swap/local-fs ordering cycle"
+    else if
       !(builtins.elem
         "aos-provisioning-eval.service"
         system.config.boot.initrd.systemd.services.aos-repart.requires)
