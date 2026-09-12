@@ -92,6 +92,23 @@ identities, joins the exact provider and consumer artifacts to a checked ability
 graph, hashes the observed files and output, and verifies the runtime closure
 retains runtime inputs while excluding the build-only tool.
 
+The authority-and-provider-admission row also has a closed, descriptor-derived
+qualification cohort for every native method's foreign-resource rejection and
+RequiredSuccess dependency scenario. Each flight pauses the selected production
+operation after durable intent, changes authority in that provider's real live
+substrate, and resumes through the authenticated native handler. The release
+gate accepts the pair only when the operation rejects before its external
+effect, the exact RequiredSuccess successor has no execution events, and
+independent provider observations show the foreign target and successor state
+unchanged. Observation-only methods additionally retain a downstream mutation
+witness whose state and timeline prove that the graph did not advance. The
+single-machine image-rollout fixture uses a forged logical-resource mapping for
+foreign rejection and a same-machine successor for dependency blocking, while
+retaining independent boot-slot and service observations. Evidence is generated
+inside the freshly booted published image and is bound to the exact matrix cell,
+plan bundle, provider assignment, operation, journal, and live-resource oracle;
+checked-in or host-generated fixture output cannot qualify a release.
+
 The test chapters define the evidence needed for these rows. A schema fixture
 does not substitute for an enforcement test; an opaque legacy adapter does not
 establish typed guarantees; one supported provider does not establish semantic
