@@ -10,7 +10,21 @@
   reference = import ./_ability-runtime-reference.nix {
     inherit lib mkSystem pkgs guestTools effectQualification transitionTransform;
   };
-  containerSystem = mkSystem reference.runtimeModules;
+  observerConfiguration = ''{"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}'';
+  observerClientModule = ''
+    environment.etc."aos/ability-execution-observer.json" = {
+      text = ${builtins.toJSON observerConfiguration};
+      mode = "0600";
+    };
+  '';
+  containerSystem = mkSystem (reference.runtimeModules ++ [
+    {
+      environment.etc."aos/ability-execution-observer.json" = {
+        text = observerConfiguration;
+        mode = "0600";
+      };
+    }
+  ]);
   containerImage = containerSystem.config.system.build.defaultContainer;
   aosSystem = pkgs.stdenv.hostPlatform.system;
   dockerArchive = containerImage.platforms.${aosSystem}.dockerArchive;
@@ -80,6 +94,7 @@ in {
     containerImage
     dockerArchive
     nerdctl
+    observerClientModule
     runtimeModules
     ;
   inherit (reference) packageRoots packageSet qualificationCandidateRuntimeCompanions;
@@ -95,6 +110,7 @@ in {
       FOREGROUND_EFFECT_CONTAINER = "aos-foreground-effect-runtime"
       FOREGROUND_EFFECT_NERDCTL = ${builtins.toJSON nerdctl}
       FOREGROUND_EFFECT_BASH = "${pkgs.bash}/bin/bash"
+      FOREGROUND_OBSERVER_CLIENT_MODULE = ${builtins.toJSON observerClientModule}
 
       runtime.wait_for_unit(
           "aos-foreground-effect-containerd.service", timeout=180
@@ -179,5 +195,15 @@ in {
 
 
       runtime = ForegroundContainerTarget(host_runtime)
+
+      reference_write_activation_host = write_activation_host
+
+
+      def write_activation_host(path, activation, extra_module=""):
+          reference_write_activation_host(
+              path,
+              activation,
+              FOREGROUND_OBSERVER_CLIENT_MODULE + extra_module,
+          )
     '';
 }
