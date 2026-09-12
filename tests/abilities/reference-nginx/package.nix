@@ -112,6 +112,13 @@
     persistentDeleteMethod = null;
   };
 
+  foregroundProcessLifecycle = {
+    stableResourceIdentity = true;
+    releasesEphemeralOnDisable = true;
+    retainsPersistentByDefault = false;
+    persistentDeleteMethod = null;
+  };
+
   aggregation = group: {
     scope = "provider-instance";
     key = "slot";
@@ -154,6 +161,36 @@
   };
 
   optionalRevision = schemas.optional revision;
+
+  foregroundProcessRequest = schemas.record {
+    fields = {
+      arguments = schemas.list {
+        element = schemas.string {
+          maxLength = 4096;
+          syntax = null;
+        };
+        maxItems = 128;
+      };
+      artifact = schemas.artifactReference;
+      entry_point = schemas.string {
+        maxLength = 4096;
+        syntax = null;
+      };
+    };
+    optional = [];
+  };
+
+  foregroundProcessObservation = schemas.record {
+    fields = {
+      process_identity = schemas.optional (schemas.string {
+        maxLength = 1024;
+        syntax = null;
+      });
+      running = schemas.boolean;
+      schema = schemas.enum ["aos.ability.foreground-process-observation/v1"];
+    };
+    optional = [];
+  };
 
   endpoint = schemas.record {
     fields = {
@@ -407,6 +444,17 @@
 
   methodWithOutputs = targetResource: operationFamily: name: outputs:
     (method targetResource operationFamily name) // {inherit outputs;};
+
+  foregroundProcessMethod = operationFamily: name:
+    (method foregroundProcess.name operationFamily name)
+    // {
+      outcome = {
+        completionEvidence = foregroundProcessObservation;
+        observationEvidence = foregroundProcessObservation;
+        supportsRejectedBeforeEffect = true;
+        indeterminate = "reconcile";
+      };
+    };
 
   validationMethod = operationFamily: name:
     (method nginxValidation.name operationFamily name)
@@ -697,14 +745,16 @@ in {
             name = foregroundProcess.name;
             group = "foreground-process";
             handler = "native-foreground-process-v1";
+            requestSchema = foregroundProcessRequest;
+            selectedLifecycle = foregroundProcessLifecycle;
             guarantees = [foregroundProcessSupervisionGuarantee];
             methods = {
-              observe = method foregroundProcess.name {kind = "observe-readiness";} "observe";
-              start = method foregroundProcess.name {
+              observe = foregroundProcessMethod {kind = "observe-readiness";} "observe";
+              start = foregroundProcessMethod {
                 kind = "service-lifecycle";
                 action = "start";
               } "start";
-              stop = method foregroundProcess.name {
+              stop = foregroundProcessMethod {
                 kind = "service-lifecycle";
                 action = "stop";
               } "stop";
@@ -770,18 +820,8 @@ in {
       handlers.native-foreground-process-v1 = {
         artifact = systemdRuntime;
         entryPoint = "libexec/aos-foreground-process-handler-v1";
-        arguments = schemas.boolean;
-        result = schemas.record {
-          fields = {
-            process_identity = schemas.optional (schemas.string {
-              maxLength = 1024;
-              syntax = null;
-            });
-            running = schemas.boolean;
-            schema = schemas.enum ["aos.ability.foreground-process-observation/v1"];
-          };
-          optional = [];
-        };
+        arguments = foregroundProcessRequest;
+        result = foregroundProcessObservation;
       };
       handlers.systemd-terminal = {
         artifact = systemdRuntime;
