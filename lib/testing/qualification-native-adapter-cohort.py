@@ -57,8 +57,11 @@ POSTGRESQL_CELL_IDS = [
     "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
 ]
 QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
-RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v1"
+RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v2"
 RUNTIME_SUBJECT_SCHEMA = "aos.qualification.native-adapter-runtime-subject/v1"
+REPLACEMENT_SUBJECT_SCHEMA = (
+    "aos.qualification.native-adapter-incarnation-replacement-subject/v1"
+)
 RUNTIME_PLAN_SCHEMA = "aos.qualification.native-adapter-runtime-plan/v1"
 INTERRUPTION_AUDIT_SCHEMA = "aos.qualification.interruption-audit/v1"
 INTERRUPTION_SUBJECT_SCHEMA = "aos.qualification.interruption-subject/v1"
@@ -75,13 +78,17 @@ FAILURE_CONTROL_SCENARIOS = {
     "fail-cleanup",
     "fail-release",
 }
+REPLACEMENT_SCENARIOS = {
+    "replace-executor-incarnation",
+    "replace-provider-incarnation",
+}
 
 
 def _runtime_audit_cell(cell: dict[str, Any]) -> bool:
     """Returns whether the shared runtime can qualify this exact matrix cell."""
 
     scenario = cell["id"].rsplit("/", 1)[-1]
-    if scenario in ROLE_SCENARIOS:
+    if scenario in ROLE_SCENARIOS | REPLACEMENT_SCENARIOS:
         return True
     if scenario in FAILURE_CONTROL_SCENARIOS - {"cancel-unsettled-attempt"}:
         return True
@@ -499,9 +506,15 @@ def build_cells(
             for cell in spec["cells"]
             if cell["id"].rsplit("/", 1)[-1] in ROLE_SCENARIOS
         ]
+        runtime_replacement_cells = [
+            cell["id"]
+            for cell in spec["cells"]
+            if cell["id"].rsplit("/", 1)[-1] in REPLACEMENT_SCENARIOS
+        ]
         allowed_cells = [
             *PRIMARY_COHORT_CELL_IDS,
             *runtime_role_cells,
+            *runtime_replacement_cells,
             *runtime_failure_cells,
             *POSTGRESQL_CELL_IDS,
             *effect_boundary_cells,
@@ -567,8 +580,13 @@ def build_cells(
         names = cell["postconditions"]
         postcondition_count += len(names)
         if runtime_record is not None:
-            if cell["id"].rsplit("/", 1)[-1] in ROLE_SCENARIOS:
+            scenario = cell["id"].rsplit("/", 1)[-1]
+            if scenario in ROLE_SCENARIOS:
                 bound_subject, postconditions, probes = _validated_authority_cell(
+                    cell, runtime_record, subject_digest, probe_digests
+                )
+            elif scenario in REPLACEMENT_SCENARIOS:
+                bound_subject, postconditions, probes = _validated_replacement_cell(
                     cell, runtime_record, subject_digest, probe_digests
                 )
             else:
@@ -1004,6 +1022,213 @@ def _validated_authority_cell(
             "observation_digest": observation_digest,
             "observations": facts,
         }
+    return bound_subject, postconditions, probes
+
+
+def _validated_replacement_cell(
+    cell: dict[str, Any],
+    record: dict[str, Any],
+    subject_digest: str,
+    probe_digests: set[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validates an executor or provider incarnation fence and derives its probes."""
+
+    if set(record) != {"cell_digest", "subject", "plan_bundle", "evidence"}:
+        raise RuntimeError("incarnation replacement audit cell is malformed")
+    cell_digest = sha256(cell)
+    subject = record["subject"]
+    plan_bundle = record["plan_bundle"]
+    evidence = record["evidence"]
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    if scenario == "replace-executor-incarnation":
+        expected_runtime_boundary = "ExecutorSessionReplacement"
+        expected_releases = 0
+        expected_owners = 1
+        expected_rejection_kind = "stale-executor-admission"
+        detail = (
+            "The candidate runtime rejected an admitted token from the predecessor "
+            "executor session before adapter dispatch."
+        )
+    elif scenario == "replace-provider-incarnation":
+        expected_runtime_boundary = "ProviderCatalogReplacement"
+        expected_releases = 1
+        expected_owners = 0
+        expected_rejection_kind = "resource-provider-incarnation-precondition"
+        detail = (
+            "The candidate runtime rejected the catalog's independently observed "
+            "replacement provider incarnation before adapter dispatch."
+        )
+    else:
+        raise RuntimeError("incarnation replacement audit names an unsupported scenario")
+
+    primary = subject.get("primary-operation") if isinstance(subject, dict) else None
+    dependent = subject.get("dependent-operation") if isinstance(subject, dict) else None
+    edge = subject.get("dependency-edge") if isinstance(subject, dict) else None
+    primary_key = primary.get("key") if isinstance(primary, dict) else None
+    dependent_key = dependent.get("key") if isinstance(dependent, dict) else None
+    expected_edge = {
+        "from": {"kind": "operation", "key": primary_key},
+        "to": {"kind": "operation", "key": dependent_key},
+        "kind": "required-success",
+    }
+    operations_match = False
+    if isinstance(primary, dict) and isinstance(dependent, dict):
+        dependent_as_primary = dict(dependent)
+        dependent_as_primary["key"] = primary_key
+        preconditions = primary.get("preconditions")
+        operations_match = (
+            primary == dependent_as_primary
+            and primary.get("interface") == cell["interface"]
+            and primary.get("method") == cell["method"]
+            and primary_key != dependent_key
+            and isinstance(preconditions, list)
+            and len(preconditions) == 1
+            and _matches(LOCAL_KEY, preconditions[0].get("expected_incarnation"))
+            and edge == expected_edge
+        )
+
+    if (
+        record.get("cell_digest") != cell_digest
+        or not isinstance(subject, dict)
+        or set(subject)
+        != {
+            "schema",
+            "cell-id",
+            "cell-digest",
+            "interface",
+            "method",
+            "plan",
+            "transaction",
+            "primary-operation",
+            "dependent-operation",
+            "dependency-edge",
+        }
+        or subject.get("schema") != REPLACEMENT_SUBJECT_SCHEMA
+        or subject.get("cell-id") != cell["id"]
+        or subject.get("cell-digest") != cell_digest
+        or subject.get("interface") != cell["interface"]
+        or subject.get("method") != cell["method"]
+        or not operations_match
+        or not _matches(DIGEST, subject.get("plan"))
+        or not _matches(LOCAL_KEY, subject.get("transaction"))
+        or not isinstance(plan_bundle, dict)
+        or set(plan_bundle) != {"schema", "digest", "bytes-sha256"}
+        or plan_bundle.get("schema") != RUNTIME_PLAN_SCHEMA
+        or not _matches(DIGEST, plan_bundle.get("digest"))
+        or plan_bundle.get("bytes-sha256") != plan_bundle.get("digest")
+        or not isinstance(evidence, dict)
+        or set(evidence)
+        != {
+            "role",
+            "authority-boundary",
+            "runtime-boundary",
+            "rejection",
+            "journal",
+            "reservation-ledger",
+            "dispatch-calls",
+            "initial-ready",
+            "blocked-dependent",
+            "foreign-before",
+            "foreign-after",
+        }
+        or evidence.get("role") is not None
+        or evidence.get("authority-boundary") is not None
+        or evidence.get("runtime-boundary") != expected_runtime_boundary
+        or evidence.get("dispatch-calls") != 0
+        or evidence.get("initial-ready") != [primary_key]
+        or evidence.get("blocked-dependent") != dependent_key
+        or not _matches(DIGEST, evidence.get("foreign-before"))
+        or evidence.get("foreign-after") != evidence.get("foreign-before")
+    ):
+        raise RuntimeError("incarnation replacement subject or fence evidence is invalid")
+
+    journal = evidence["journal"]
+    ledger = evidence["reservation-ledger"]
+    rejection = evidence["rejection"]
+    if (
+        not isinstance(journal, dict)
+        or set(journal) != {"digest", "head", "authority-rejections", "effect-outcomes"}
+        or not _matches(DIGEST, journal.get("digest"))
+        or not _matches(DIGEST, journal.get("head"))
+        or journal.get("authority-rejections") != 0
+        or journal.get("effect-outcomes") != 0
+        or not isinstance(ledger, dict)
+        or set(ledger) != {"digest", "acquire-calls", "release-calls", "max-owners", "owners"}
+        or not _matches(DIGEST, ledger.get("digest"))
+        or ledger.get("acquire-calls") != 1
+        or ledger.get("release-calls") != expected_releases
+        or ledger.get("max-owners") != 1
+        or ledger.get("owners") != expected_owners
+        or not isinstance(rejection, dict)
+        or set(rejection) != {"kind", "digest"}
+        or rejection.get("kind") != expected_rejection_kind
+        or not _matches(DIGEST, rejection.get("digest"))
+    ):
+        raise RuntimeError("incarnation replacement durable evidence is invalid")
+
+    bound_subject = _bound_cohort_subject(cell, subject)
+    cohort_subject_digest = sha256(bound_subject)
+    observations = {
+        "durable-attempt-state-classified": {
+            "cell": cell["id"],
+            "transaction": subject["transaction"],
+            "plan": subject["plan"],
+            "journal": journal["digest"],
+            "runtime-boundary": evidence["runtime-boundary"],
+            "rejection-kind": rejection["kind"],
+            "rejection-record": rejection["digest"],
+            "adapter-outcomes": journal["effect-outcomes"],
+        },
+        "at-most-one-resource-owner": {
+            "cell": cell["id"],
+            "ledger": ledger["digest"],
+            "acquire-calls": ledger["acquire-calls"],
+            "release-calls": ledger["release-calls"],
+            "max-owners": ledger["max-owners"],
+            "owners": ledger["owners"],
+        },
+        "foreign-resources-unchanged": {
+            "cell": cell["id"],
+            "snapshot-before": evidence["foreign-before"],
+            "snapshot-after": evidence["foreign-after"],
+            "unchanged": True,
+        },
+        "dependent-effects-not-executed": {
+            "cell": cell["id"],
+            "primary-operation": primary,
+            "dependent-operation": dependent,
+            "dependency-edge": edge,
+            "initial-ready": evidence["initial-ready"],
+            "blocked-dependent": evidence["blocked-dependent"],
+            "dispatch-calls": evidence["dispatch-calls"],
+            "adapter-outcomes": journal["effect-outcomes"],
+            "blocked": True,
+        },
+    }
+    if set(cell["postconditions"]) != set(observations):
+        raise RuntimeError("replacement postconditions differ from its evidence contract")
+
+    postconditions = {}
+    probes = {}
+    for name in cell["postconditions"]:
+        facts = observations[name]
+        observation_digest = sha256(facts)
+        if observation_digest in probe_digests:
+            raise RuntimeError("passing matrix postconditions replay a production probe")
+        probe_digests.add(observation_digest)
+        postconditions[name] = {"passed": True, "detail": detail}
+        probes[name] = {
+            "schema_version": PROBE_SCHEMA,
+            "kind": POSTCONDITION_KINDS[name],
+            "cell_id": cell["id"],
+            "cell_digest": cell_digest,
+            "disposition": "rejected-before-effect",
+            "subject_digest": subject_digest,
+            "cohort_subject_digest": cohort_subject_digest,
+            "observation_digest": observation_digest,
+            "observations": facts,
+        }
+
     return bound_subject, postconditions, probes
 
 

@@ -15,13 +15,15 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, ArtifactReference, ControllerAssignment, DependencyEdge,
-    DependencyKind, ExecutionStage, IndeterminateSemantics, InterfaceDocument, InterfaceKey,
-    LocalKey, MethodDescriptor, MethodReference, Operation, PlanNodeKey, ProviderAssignment,
-    ProviderImplementationReference, ResourceAccess, ResourceId, RetryPolicy, StringSyntax,
-    TransactionId, ValueExpression, ValueSchema, compare_edges, compare_operation_keys,
+    DependencyKind, ExecutionStage, IncarnationId, IndeterminateSemantics, InterfaceDocument,
+    InterfaceKey, LocalKey, MethodDescriptor, MethodReference, Operation, OperationPrecondition,
+    PlanNodeKey,
+    ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId, RetryPolicy,
+    StringSyntax, TransactionId, ValueExpression, ValueSchema, compare_edges,
+    compare_operation_keys,
 };
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CancellationToken,
@@ -38,15 +40,17 @@ use aos_ability_runtime::execution::{
     TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 use aos_ability_runtime::journal::JournalLimits;
+use aos_ability_validate::test_support::{plan_fixture, PlanFixture};
 use aos_ability_validate::CheckedEffectPlan;
-use aos_ability_validate::test_support::{PlanFixture, plan_fixture};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sha2::{Digest as _, Sha256};
 
-const OUTPUT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-audit/v1";
+const OUTPUT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-audit/v2";
 const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-subject/v1";
+const REPLACEMENT_SUBJECT_SCHEMA: &str =
+    "aos.qualification.native-adapter-incarnation-replacement-subject/v1";
 const PLAN_BUNDLE_SCHEMA: &str = "aos.qualification.native-adapter-runtime-plan/v1";
 const ROLE_SCENARIOS: [&str; 12] = [
     "revoke-caller-before-acquisition",
@@ -67,6 +71,10 @@ const FAILURE_CONTROL_SCENARIOS: [&str; 4] = [
     "expire-attempt-deadline",
     "fail-cleanup",
     "fail-release",
+];
+const REPLACEMENT_SCENARIOS: [&str; 2] = [
+    "replace-executor-incarnation",
+    "replace-provider-incarnation",
 ];
 
 #[derive(Deserialize)]
@@ -496,6 +504,7 @@ struct DurableCatalog {
     ledger: PathBuf,
     state: ReservationState,
     fail_releases: usize,
+    observed_provider_incarnation: Option<IncarnationId>,
 }
 
 impl DurableCatalog {
@@ -531,9 +540,11 @@ impl TrustedResourceCatalog for DurableCatalog {
             access.resource.key.as_str().to_string(),
             ResourceAdmissionEvidence::new(
                 access.resource.clone(),
-                context
-                    .expected_provider
-                    .map(|assignment| assignment.incarnation.clone()),
+                self.observed_provider_incarnation.clone().or_else(|| {
+                    context
+                        .expected_provider
+                        .map(|assignment| assignment.incarnation.clone())
+                }),
                 None,
                 AbilityValue::new(json!({"reserved": true})).map_err(io::Error::other)?,
             ),
@@ -672,12 +683,40 @@ fn main() -> Result<()> {
                     "duplicate audit cell"
                 );
             }
+            for scenario_name in REPLACEMENT_SCENARIOS {
+                let cell_id = format!(
+                    "{}/{}/abi-{}/{}/{}",
+                    adapter.adapter,
+                    adapter.interface_name,
+                    adapter.interface_abi,
+                    method.method,
+                    scenario_name,
+                );
+                let cell = matrix_cells
+                    .get(&cell_id)
+                    .with_context(|| format!("matrix lacks replacement cell {cell_id}"))?;
+                validate_cell(cell, adapter, method, scenario_name)?;
+                let audit = run_replacement_cell(
+                    &evidence_root,
+                    &cell_id,
+                    cell,
+                    interface,
+                    descriptor,
+                    method,
+                    scenario_name,
+                )
+                .with_context(|| format!("incarnation-replacement cell {cell_id} failed"))?;
+                ensure!(
+                    cells.insert(cell_id, audit).is_none(),
+                    "duplicate audit cell"
+                );
+            }
         }
     }
 
     ensure!(
-        cells.len() == 756,
-        "expected 756 role-revocation and shared failure-control cells"
+        cells.len() == 856,
+        "expected 856 role-revocation, shared failure-control, and replacement cells"
     );
     let output = AuditOutput {
         schema: OUTPUT_SCHEMA,
@@ -756,6 +795,11 @@ fn run_cell(
 
     let (plan, plan_bundle, operation_key, _dependent_key, observation) =
         checked_plan(interface, descriptor, matrix_method)?;
+    let planned_incarnation = plan
+        .operation(&operation_key)
+        .and_then(|operation| operation.preconditions.first())
+        .and_then(|precondition| precondition.expected_incarnation.clone())
+        .context("checked plan lacks its provider-incarnation precondition")?;
     let transaction_id = TransactionId(LocalKey::new(&format!(
         "authority-{}",
         &digest_bytes(cell_id.as_bytes())[7..23]
@@ -776,6 +820,7 @@ fn run_cell(
         ledger: ledger_path.clone(),
         state: ReservationState::default(),
         fail_releases: 0,
+        observed_provider_incarnation: Some(planned_incarnation),
     };
     catalog.persist()?;
     let revoked = Rc::new(Cell::new(None));
@@ -937,6 +982,247 @@ fn run_cell(
     })
 }
 
+fn run_replacement_cell(
+    evidence_root: &Path,
+    cell_id: &str,
+    cell: &Value,
+    interface: &InterfaceDocument,
+    descriptor: &MethodDescriptor,
+    matrix_method: &MatrixMethod,
+    scenario: &str,
+) -> Result<AuditCell> {
+    let directory =
+        evidence_root.join(digest_bytes(cell_id.as_bytes()).trim_start_matches("sha256:"));
+    fs::create_dir_all(&directory)?;
+    let journal_path = directory.join("execution.journal");
+    let ledger_path = directory.join("reservation-ledger.json");
+    let foreign_path = directory.join("foreign-resource");
+    write_durable(&foreign_path, b"independent-foreign-resource\n")?;
+    let foreign_before = digest_file(&foreign_path)?;
+
+    let (plan, plan_bundle, operation_key, dependent_key, observation) =
+        checked_plan(interface, descriptor, matrix_method)?;
+    let planned_incarnation = plan
+        .operation(&operation_key)
+        .and_then(|operation| operation.preconditions.first())
+        .and_then(|precondition| precondition.expected_incarnation.clone())
+        .context("checked plan lacks its provider-incarnation precondition")?;
+    let transaction_id = TransactionId(LocalKey::new(&format!(
+        "replacement-{}",
+        &digest_bytes(cell_id.as_bytes())[7..23]
+    ))?);
+    let mut store = DurableStore {
+        directory: directory.clone(),
+        plan_bundle,
+        bundle_digest: None,
+    };
+    let mut transaction = Some(ExecutionTransaction::open(
+        &plan,
+        transaction_id.clone(),
+        &journal_path,
+        JournalLimits::default(),
+        &mut store,
+    )?);
+    let observed_provider_incarnation = match scenario {
+        "replace-executor-incarnation" => planned_incarnation,
+        "replace-provider-incarnation" => IncarnationId::new("replacement-provider-incarnation")?,
+        other => bail!("unknown incarnation-replacement scenario {other}"),
+    };
+    let mut catalog = DurableCatalog {
+        ledger: ledger_path.clone(),
+        state: ReservationState::default(),
+        fail_releases: 0,
+        observed_provider_incarnation: Some(observed_provider_incarnation),
+    };
+    catalog.persist()?;
+    let revoked = Rc::new(Cell::new(None));
+    let mut policy = RevocablePolicy { revoked };
+    let mut adapter = NoDispatchAdapter::new(observation);
+    let clock = AuditClock::new(1);
+    let ready = transaction
+        .as_mut()
+        .context("execution transaction is absent")?
+        .schedule_ready(NonZeroUsize::new(2).context("positive batch")?)?;
+    ensure!(
+        ready.len() == 1 && ready[0].operation() == &operation_key,
+        "checked dependency graph did not expose only its source"
+    );
+
+    let (runtime_boundary, rejection_kind, expected_releases, expected_owners) = match scenario {
+        "replace-executor-incarnation" => {
+            let admitted = transaction
+                .as_mut()
+                .context("execution transaction is absent")?
+                .admit(&operation_key, &adapter, &mut catalog, &mut policy, &clock)
+                .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
+            drop(transaction.take());
+            let mut replacement = ExecutionTransaction::open(
+                &plan,
+                transaction_id.clone(),
+                &journal_path,
+                JournalLimits::default(),
+                &mut store,
+            )?;
+            let error = replacement
+                .drive_admitted(
+                    &admitted,
+                    &mut adapter,
+                    &mut policy,
+                    &clock,
+                    &CancellationToken::default(),
+                )
+                .expect_err("a replacement executor accepted its predecessor's token");
+            ensure!(
+                matches!(error, ExecutionError::StaleAdmission),
+                "executor replacement produced an unexpected runtime error"
+            );
+            drop(replacement);
+            drop(admitted);
+
+            (
+                "ExecutorSessionReplacement",
+                "stale-executor-admission",
+                0,
+                1,
+            )
+        }
+        "replace-provider-incarnation" => {
+            let failure = transaction
+                .as_mut()
+                .context("execution transaction is absent")?
+                .admit(&operation_key, &adapter, &mut catalog, &mut policy, &clock)
+                .expect_err("stale provider incarnation was admitted");
+            ensure!(
+                matches!(failure.error(), AdmissionError::StalePrecondition(_)),
+                "provider replacement produced an unexpected admission error"
+            );
+
+            (
+                "ProviderCatalogReplacement",
+                "resource-provider-incarnation-precondition",
+                1,
+                0,
+            )
+        }
+        other => bail!("unknown incarnation-replacement scenario {other}"),
+    };
+
+    ensure!(
+        adapter.calls() == 0,
+        "replacement fence allowed adapter dispatch"
+    );
+    ensure!(
+        catalog.state.acquire_calls == 1,
+        "replacement did not acquire once"
+    );
+    ensure!(
+        catalog.state.release_calls == expected_releases,
+        "replacement release count differs"
+    );
+    ensure!(catalog.state.max_owners == 1, "ownership was not exclusive");
+    ensure!(
+        catalog.state.owners == expected_owners,
+        "replacement final ownership differs"
+    );
+
+    let rejection_path = directory.join("incarnation-rejection.json");
+    write_durable(
+        &rejection_path,
+        &canonical_bytes(&json!({
+            "schema": "aos.qualification.native-adapter-incarnation-rejection/v1",
+            "cell-id": cell_id,
+            "plan": plan.id(),
+            "transaction": transaction_id,
+            "kind": rejection_kind,
+        }))?,
+    )?;
+
+    drop(transaction.take());
+    let snapshot =
+        CheckedExecutionJournalSnapshot::read(&plan, &journal_path, JournalLimits::default())?;
+    let authority_rejections = count_events(&snapshot, |event| {
+        matches!(event, ExecutionEventKind::AuthorityRejected { .. })
+    });
+    let effect_outcomes = count_events(&snapshot, |event| {
+        matches!(
+            event,
+            ExecutionEventKind::EffectCompleted { .. }
+                | ExecutionEventKind::EffectRejectedBeforeEffect { .. }
+                | ExecutionEventKind::EffectIndeterminate { .. }
+        )
+    });
+    ensure!(
+        authority_rejections == 0,
+        "replacement invented authority revocation"
+    );
+    ensure!(
+        effect_outcomes == 0,
+        "replacement reports an adapter outcome"
+    );
+    let foreign_after = digest_file(&foreign_path)?;
+    ensure!(foreign_before == foreign_after, "foreign sentinel changed");
+
+    let cell_digest = digest_value(cell)?;
+    let bundle_digest = store
+        .bundle_digest
+        .context("plan bundle was not retained")?;
+    let subject = json!({
+        "schema": REPLACEMENT_SUBJECT_SCHEMA,
+        "cell-id": cell_id,
+        "cell-digest": cell_digest,
+        "interface": interface.interface_key()?,
+        "method": matrix_method.method,
+        "plan": plan.id(),
+        "transaction": transaction_id,
+        "primary-operation": plan.operation(&operation_key).context("primary operation vanished")?,
+        "dependent-operation": plan.operation(&dependent_key).context("dependent operation vanished")?,
+        "dependency-edge": {
+            "from": PlanNodeKey::Operation { key: operation_key.clone() },
+            "to": PlanNodeKey::Operation { key: dependent_key.clone() },
+            "kind": DependencyKind::RequiredSuccess,
+        },
+    });
+    let retained_bundle = fs::read(directory.join("plan-bundle.json"))?;
+    let evidence = json!({
+        "role": Value::Null,
+        "authority-boundary": Value::Null,
+        "runtime-boundary": runtime_boundary,
+        "rejection": {
+            "kind": rejection_kind,
+            "digest": digest_file(&rejection_path)?,
+        },
+        "journal": {
+            "digest": digest_file(&journal_path)?,
+            "head": snapshot.head_digest(),
+            "authority-rejections": authority_rejections,
+            "effect-outcomes": effect_outcomes,
+        },
+        "reservation-ledger": {
+            "digest": digest_file(&ledger_path)?,
+            "acquire-calls": catalog.state.acquire_calls,
+            "release-calls": catalog.state.release_calls,
+            "max-owners": catalog.state.max_owners,
+            "owners": catalog.state.owners,
+        },
+        "dispatch-calls": adapter.calls(),
+        "initial-ready": [operation_key],
+        "blocked-dependent": dependent_key,
+        "foreign-before": foreign_before,
+        "foreign-after": foreign_after,
+    });
+
+    Ok(AuditCell {
+        cell_digest,
+        subject,
+        plan_bundle: json!({
+            "schema": PLAN_BUNDLE_SCHEMA,
+            "digest": format!("{bundle_digest}"),
+            "bytes-sha256": digest_bytes(&retained_bundle),
+        }),
+        evidence,
+    })
+}
+
 fn run_failure_control_cell(
     evidence_root: &Path,
     cell_id: &str,
@@ -959,6 +1245,11 @@ fn run_failure_control_cell(
 
     let (plan, plan_bundle, operation_key, dependent_key, observation) =
         checked_plan(interface, descriptor, matrix_method)?;
+    let planned_incarnation = plan
+        .operation(&operation_key)
+        .and_then(|operation| operation.preconditions.first())
+        .and_then(|precondition| precondition.expected_incarnation.clone())
+        .context("checked plan lacks its provider-incarnation precondition")?;
     let transaction_id = TransactionId(LocalKey::new(&format!(
         "control-{}",
         &digest_bytes(cell_id.as_bytes())[7..23]
@@ -979,6 +1270,7 @@ fn run_failure_control_cell(
         ledger: ledger_path.clone(),
         state: ReservationState::default(),
         fail_releases: 0,
+        observed_provider_incarnation: Some(planned_incarnation),
     };
     catalog.persist()?;
     let revoked = Rc::new(Cell::new(None));
@@ -1333,6 +1625,10 @@ fn checked_plan(
 
     let input = AbilityValue::new(minimal_value(&descriptor.parameters, &fixture)?)?;
     let interface_key = fixture.effect_plan.operations[0].interface.clone();
+    let planned_incarnation = fixture.binding_inputs.environment.providers[0]
+        .incarnation
+        .clone()
+        .context("fixture provider lacks an incarnation")?;
     let reconcile = if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
         Some(MethodReference {
             interface: interface_key.clone(),
@@ -1350,6 +1646,11 @@ fn checked_plan(
     operation.inputs = ValueExpression::Literal { value: input };
     operation.accesses[0].resource = operation.target.resource.clone();
     operation.accesses[0].mode = access;
+    operation.preconditions = vec![OperationPrecondition {
+        resource: operation.target.resource.clone(),
+        expected_revision: None,
+        expected_incarnation: Some(planned_incarnation),
+    }];
     operation.recovery.retry = RetryPolicy::Disabled;
     operation.recovery.reconcile = reconcile;
     operation.recovery.cancel = None;
@@ -1709,4 +2010,61 @@ fn write_durable(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
         File::open(parent)?.sync_all()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacement_sessions_reject_before_dispatch() -> Result<()> {
+        let interface = aos_ability_model::builtin::systemd_manager_interface()?;
+        let method = MatrixMethod {
+            method: "observe".to_string(),
+            effect_class: "observation".to_string(),
+            reconcile: Some("observe".to_string()),
+            cancel: Some("observe".to_string()),
+        };
+        let descriptor = interface
+            .interface
+            .methods
+            .get(&LocalKey::new("observe")?)
+            .context("built-in interface lacks observe")?;
+        let temporary = tempfile::tempdir()?;
+
+        for (scenario_name, expected_rejection) in [
+            ("replace-executor-incarnation", "stale-executor-admission"),
+            (
+                "replace-provider-incarnation",
+                "resource-provider-incarnation-precondition",
+            ),
+        ] {
+            let cell_id =
+                format!("systemd-manager/aos.systemd-manager/abi-1/observe/{scenario_name}");
+            let cell = json!({
+                "id": cell_id,
+                "interface": interface.interface_key()?,
+                "method": "observe",
+                "scenario": scenario_name,
+            });
+            let root = temporary.path().join(scenario_name);
+            fs::create_dir_all(&root)?;
+
+            let audit = run_replacement_cell(
+                &root,
+                &cell_id,
+                &cell,
+                &interface,
+                descriptor,
+                &method,
+                scenario_name,
+            )?;
+
+            assert_eq!(audit.evidence["dispatch-calls"], 0);
+            assert_eq!(audit.evidence["rejection"]["kind"], expected_rejection);
+            assert_eq!(audit.subject["dependency-edge"]["kind"], "required-success");
+        }
+
+        Ok(())
+    }
 }

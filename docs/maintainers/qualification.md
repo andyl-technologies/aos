@@ -483,7 +483,7 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 1,055 cells and 4,229
+independent published-image cohorts that currently exercise 1,155 cells and 4,629
 of the 6,050 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -495,6 +495,14 @@ interrupted `restart` reconciliation, and `restart` activation of the retained
 target under current authority. The candidate package runtime also runs all 600
 role-revocation timing cells through the real admission and dispatch fences,
 using the published interface descriptors and a no-dispatch sentinel adapter.
+It also covers all 50 executor-incarnation and all 50 provider-incarnation
+replacement cells. Executor replacement presents an admitted predecessor token
+to the reopened transaction and requires the candidate runtime's session fence
+to reject it as stale. Provider replacement uses the catalog's independent live
+incarnation observation to violate the checked operation precondition and
+requires rejection before dispatch. Every replacement plan includes a real
+required-success dependent, including the observation-only methods, and proves
+that the initial scheduler exposes only the primary operation.
 The same candidate runtime proves trusted-clock deadline expiry for every
 method, injected cleanup and release failures for every method, and durable
 unsupported-cancellation intervention for the six methods without a declared
@@ -530,7 +538,7 @@ substrate independently of the execution journal. Foreground flights run system
 activation and dispatch inside the OCI container and bind receipts to the live
 PID, process group, ownership token, cgroup, and namespaces. The four effect
 cells already covered by the primary and PostgreSQL cohorts are not duplicated.
-The other 345 cells remain explicit failures, so the mandatory
+The other 245 cells remain explicit failures, so the mandatory
 aggregate gate cannot pass. Expand the mapping only with exact cell-bound
 subjects and independent provider-specific observations.
 

@@ -544,6 +544,15 @@
       builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterRoleScenarios)
     nativeAdapterMatrix.cells
   );
+  nativeAdapterReplacementScenarios = [
+    "replace-executor-incarnation"
+    "replace-provider-incarnation"
+  ];
+  nativeAdapterReplacementCells = map (cell: cell.id) (
+    builtins.filter (cell:
+      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterReplacementScenarios)
+    nativeAdapterMatrix.cells
+  );
   nativeAdapterFailureControlScenarios = [
     "cancel-unsettled-attempt"
     "expire-attempt-deadline"
@@ -568,6 +577,7 @@
       nativeAdapterPrimaryCells
       ++ nativeAdapterInterruptionCells
       ++ nativeAdapterRoleCells
+      ++ nativeAdapterReplacementCells
       ++ nativeAdapterFailureControlCells
       ++ nativePostgresqlReplacementCells
       ++ nativeEffectBoundaryCells.groups.reference
@@ -594,9 +604,9 @@
       0
       selected;
   in
-    assert builtins.length selected == 1055;
-    assert builtins.length (lib.unique selected) == 1055;
-    assert postconditions == 4229; selected;
+    assert builtins.length selected == 1155;
+    assert builtins.length (lib.unique selected) == 1155;
+    assert postconditions == 4629; selected;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
       mkNativeAbilityScenario

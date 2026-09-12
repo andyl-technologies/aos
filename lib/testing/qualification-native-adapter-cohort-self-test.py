@@ -1242,16 +1242,142 @@ def main() -> None:
             "foreign-after": "sha256:" + "17" * 32,
         },
     }
-    runtime_spec = {"cells": [*spec["cells"], authority_cell, control_cell]}
+    replacement_primary = copy.deepcopy(subject["publish-operation"])
+    replacement_primary["preconditions"] = [
+        {
+            "resource": replacement_primary["target"]["resource"],
+            "expected_revision": None,
+            "expected_incarnation": "planned-provider-incarnation",
+        }
+    ]
+    replacement_dependent = copy.deepcopy(replacement_primary)
+    replacement_dependent["key"] = {
+        "scope": ["audit"],
+        "key": "matrix-dependent",
+    }
+    replacement_edge = {
+        "from": {"kind": "operation", "key": replacement_primary["key"]},
+        "to": {"kind": "operation", "key": replacement_dependent["key"]},
+        "kind": "required-success",
+    }
+    provider_cell = copy.deepcopy(authority_cell)
+    provider_cell.update(
+        {
+            "id": (
+                "managed-configuration/aos.managed-configuration-effects/abi-1/"
+                "publish/replace-provider-incarnation"
+            ),
+            "boundary": "recovery",
+            "failure": "stale-provider-rejected",
+            "candidate": "new-provider-incarnation",
+            "predecessor": "in-flight",
+        }
+    )
+    provider_digest = module.sha256(provider_cell)
+    provider_record = {
+        "cell_digest": provider_digest,
+        "subject": {
+            "schema": (
+                "aos.qualification.native-adapter-incarnation-replacement-subject/v1"
+            ),
+            "cell-id": provider_cell["id"],
+            "cell-digest": provider_digest,
+            "interface": provider_cell["interface"],
+            "method": provider_cell["method"],
+            "plan": "sha256:" + "31" * 32,
+            "transaction": "provider-fixture",
+            "primary-operation": replacement_primary,
+            "dependent-operation": replacement_dependent,
+            "dependency-edge": replacement_edge,
+        },
+        "plan_bundle": {
+            "schema": "aos.qualification.native-adapter-runtime-plan/v1",
+            "digest": "sha256:" + "32" * 32,
+            "bytes-sha256": "sha256:" + "32" * 32,
+        },
+        "evidence": {
+            "role": None,
+            "authority-boundary": None,
+            "runtime-boundary": "ProviderCatalogReplacement",
+            "rejection": {
+                "kind": "resource-provider-incarnation-precondition",
+                "digest": "sha256:" + "33" * 32,
+            },
+            "journal": {
+                "digest": "sha256:" + "34" * 32,
+                "head": "sha256:" + "35" * 32,
+                "authority-rejections": 0,
+                "effect-outcomes": 0,
+            },
+            "reservation-ledger": {
+                "digest": "sha256:" + "36" * 32,
+                "acquire-calls": 1,
+                "release-calls": 1,
+                "max-owners": 1,
+                "owners": 0,
+            },
+            "dispatch-calls": 0,
+            "initial-ready": [replacement_primary["key"]],
+            "blocked-dependent": replacement_dependent["key"],
+            "foreign-before": "sha256:" + "37" * 32,
+            "foreign-after": "sha256:" + "37" * 32,
+        },
+    }
+    executor_cell = copy.deepcopy(provider_cell)
+    executor_cell.update(
+        {
+            "id": (
+                "managed-configuration/aos.managed-configuration-effects/abi-1/"
+                "publish/replace-executor-incarnation"
+            ),
+            "failure": "stale-executor-rejected",
+            "candidate": "new-executor-incarnation",
+        }
+    )
+    executor_record = copy.deepcopy(provider_record)
+    executor_digest = module.sha256(executor_cell)
+    executor_record["cell_digest"] = executor_digest
+    executor_record["subject"].update(
+        {
+            "cell-id": executor_cell["id"],
+            "cell-digest": executor_digest,
+            "transaction": "executor-fixture",
+        }
+    )
+    executor_record["evidence"]["runtime-boundary"] = "ExecutorSessionReplacement"
+    executor_record["evidence"]["rejection"] = {
+        "kind": "stale-executor-admission",
+        "digest": "sha256:" + "38" * 32,
+    }
+    executor_record["evidence"]["reservation-ledger"].update(
+        {"release-calls": 0, "owners": 1}
+    )
+    runtime_spec = {
+        "cells": [
+            *spec["cells"],
+            authority_cell,
+            provider_cell,
+            executor_cell,
+            control_cell,
+        ]
+    }
     runtime_audit = {
-        "schema": "aos.qualification.native-adapter-runtime-audit/v1",
+        "schema": "aos.qualification.native-adapter-runtime-audit/v2",
         "matrix_spec_digest": module.sha256(runtime_spec),
         "cells": {
             authority_cell["id"]: authority_record,
+            provider_cell["id"]: provider_record,
+            executor_cell["id"]: executor_record,
             control_cell["id"]: control_record,
         },
     }
-    runtime_scope = [*scope, authority_cell["id"], control_cell["id"]]
+    runtime_scope = [
+        *scope,
+        authority_cell["id"],
+        provider_cell["id"],
+        executor_cell["id"],
+        control_cell["id"],
+    ]
     authority_cells, authority_count = module.build_cells(
         runtime_spec,
         probes,
@@ -1262,7 +1388,7 @@ def main() -> None:
         "sha256:" + "22" * 32,
         runtime_audit,
     )
-    assert authority_count == 20
+    assert authority_count == 28
     authority_observations = {
         cell["id"]: cell for cell in authority_cells
     }[authority_cell["id"]]
@@ -1277,6 +1403,14 @@ def main() -> None:
         value["passed"]
         for value in control_observations["postconditions"].values()
     )
+    for replacement_cell in [provider_cell, executor_cell]:
+        replacement_observations = {
+            cell["id"]: cell for cell in authority_cells
+        }[replacement_cell["id"]]
+        assert all(
+            value["passed"]
+            for value in replacement_observations["postconditions"].values()
+        )
     rejected_audit = copy.deepcopy(runtime_audit)
     rejected_audit["cells"][authority_cell["id"]]["evidence"][
         "dispatch-calls"
@@ -1296,6 +1430,46 @@ def main() -> None:
         pass
     else:
         raise AssertionError("authority audit accepted an adapter dispatch")
+
+    rejected_provider = copy.deepcopy(runtime_audit)
+    rejected_provider["cells"][provider_cell["id"]]["evidence"]["rejection"][
+        "kind"
+    ] = "fresh-authority-revoked"
+    try:
+        module.build_cells(
+            runtime_spec,
+            probes,
+            runtime_scope,
+            {qualified: subject for qualified in scope},
+            {qualified: plan_bundle for qualified in scope},
+            "sha256:" + "11" * 32,
+            "sha256:" + "22" * 32,
+            rejected_provider,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("provider replacement accepted another rejection kind")
+
+    rejected_graph = copy.deepcopy(runtime_audit)
+    rejected_graph["cells"][executor_cell["id"]]["subject"]["dependency-edge"][
+        "kind"
+    ] = "ordering-only"
+    try:
+        module.build_cells(
+            runtime_spec,
+            probes,
+            runtime_scope,
+            {qualified: subject for qualified in scope},
+            {qualified: plan_bundle for qualified in scope},
+            "sha256:" + "11" * 32,
+            "sha256:" + "22" * 32,
+            rejected_graph,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("executor replacement accepted a non-blocking graph")
 
     rejected_control = copy.deepcopy(runtime_audit)
     rejected_control["cells"][control_cell["id"]]["evidence"]["journal"][
@@ -1446,7 +1620,7 @@ def main() -> None:
         combined_runtime_audit,
         interruption_audit,
     )
-    assert combined_count == 24
+    assert combined_count == 32
     interruption_observation = {
         cell["id"]: cell for cell in combined_cells
     }[interruption_cell["id"]]
