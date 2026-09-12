@@ -14,6 +14,14 @@ CONTINUE = f"{BOUNDARY_ROOT}/continue.json"
 EVENTS = f"{BOUNDARY_ROOT}/events.jsonl"
 HELD_EVENT = f"{BOUNDARY_ROOT}/held-event.json"
 TARGET = f"{BOUNDARY_ROOT}/target.json"
+OBSERVATION_METHODS = {
+    "acquire",
+    "observe",
+    "observe-boot",
+    "observe-health",
+    "observe-manager",
+    "read",
+}
 
 
 @dataclass(frozen=True)
@@ -156,37 +164,41 @@ def transaction_state(
         for edge in outgoing
         for ordinal, operation in enumerate(effect["operations"])
         if operation["key"] == edge["to"]["key"]
-        and operation["interface"] == foreign["interface"]
-        and operation["method"] == foreign["method"]
     ]
-    assert len(dependents) == 1, dependents
+    assert dependents, dependents
+    dependents.sort(key=lambda candidate: canonical(candidate[2]["key"]))
     edge, dependent_ordinal, dependent = dependents[0]
     dependent_identity = project_operation(dependent, dependent_ordinal)
 
     witness_identity = None
     if flight.observation:
-        witness_targets = set()
-        frontier = {dependent["key"]}
-        while frontier:
-            source = frontier.pop()
-            reached = {
-                candidate["to"]["key"]
-                for candidate in effect["edges"]
-                if candidate["from"] == {"kind": "operation", "key": source}
-                and candidate["kind"] == "required-success"
-                and candidate["to"]["kind"] == "operation"
-            }
-            frontier.update(reached - witness_targets)
-            witness_targets.update(reached)
-        witnesses = [
-            project_operation(operation, ordinal)
-            for ordinal, operation in enumerate(effect["operations"])
-            if operation["key"] in witness_targets
-            and operation["method"] not in {"acquire", "observe", "read"}
-        ]
-        assert witnesses, witnesses
-        witnesses.sort(key=lambda operation: canonical(operation["key"]))
-        witness_identity = witnesses[0]
+        if dependent["method"] not in OBSERVATION_METHODS:
+            witness_identity = dependent_identity
+        else:
+            witness_targets = set()
+            frontier = {dependent["key"]}
+            while frontier:
+                source = frontier.pop()
+                reached = {
+                    candidate["to"]["key"]
+                    for candidate in effect["edges"]
+                    if candidate["from"] == {"kind": "operation", "key": source}
+                    and candidate["kind"] == "required-success"
+                    and candidate["to"]["kind"] == "operation"
+                }
+                frontier.update(reached - witness_targets)
+                witness_targets.update(reached)
+            witnesses = [
+                project_operation(operation, ordinal)
+                for ordinal, operation in enumerate(effect["operations"])
+                if operation["key"] in witness_targets
+                and operation["method"] not in OBSERVATION_METHODS
+            ]
+            if witnesses:
+                witnesses.sort(key=lambda operation: canonical(operation["key"]))
+                witness_identity = witnesses[0]
+            else:
+                witness_identity = dependent_identity
 
     return {
         "generation": generation,
@@ -230,6 +242,7 @@ def run_provider_flight(
     flight: ProviderFlight,
     host: str,
     evidence_builder: Any,
+    observe_sentinel: Any | None = None,
 ) -> None:
     """Injects foreign ownership and retains the rejected pair."""
 
@@ -250,13 +263,16 @@ def run_provider_flight(
     foreign_before = PROVIDER_ORACLES.observe_exact(
         flight.adapter, state["foreign"], flight.mapping
     )
-    successor_before = PROVIDER_ORACLES.observe_exact(
-        flight.adapter, state["dependent"], flight.mapping
+    successor_before = PROVIDER_ORACLES.observe_operation(
+        state["dependent"], flight.mapping
     )
     witness_before = (
         None
         if state["witness"] is None
         else PROVIDER_ORACLES.observe_operation(state["witness"], flight.mapping)
+    )
+    sentinel_before = (
+        None if observe_sentinel is None else observe_sentinel(state, flight.mapping)
     )
     write_canonical(CONTINUE, {"sequence": flight.label})
     runtime.wait_until_succeeds(
@@ -288,13 +304,16 @@ def run_provider_flight(
     foreign_after = PROVIDER_ORACLES.observe_exact(
         flight.adapter, state["foreign"], flight.mapping
     )
-    successor_after = PROVIDER_ORACLES.observe_exact(
-        flight.adapter, state["dependent"], flight.mapping
+    successor_after = PROVIDER_ORACLES.observe_operation(
+        state["dependent"], flight.mapping
     )
     witness_after = (
         None
         if state["witness"] is None
         else PROVIDER_ORACLES.observe_operation(state["witness"], flight.mapping)
+    )
+    sentinel_after = (
+        None if observe_sentinel is None else observe_sentinel(state, flight.mapping)
     )
     journal_bytes = runtime.succeed(
         f"{COREUTILS}/cat {shlex.quote(state['root'] + '/execution.journal')}"
@@ -333,6 +352,16 @@ def run_provider_flight(
                 before=witness_before["live"],
                 after=witness_after["live"],
                 live=witness_before["owner-count"] > 0,
+            )
+        ),
+        sentinel=(
+            None
+            if sentinel_before is None
+            else PROVIDER_EVIDENCE.LiveOracle(
+                resource=sentinel_before["resource"],
+                before=sentinel_before["live"],
+                after=sentinel_after["live"],
+                live=sentinel_before["owner-count"] > 0,
             )
         ),
     )

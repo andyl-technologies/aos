@@ -314,6 +314,7 @@ def assert_provider_negative_validator(module, template_cell):
                 "live": True,
             },
             "blocked-witness": None,
+            "provider-sentinel": None,
         },
     }
 
@@ -330,6 +331,94 @@ def assert_provider_negative_validator(module, template_cell):
         pass
     else:
         raise AssertionError("provider-negative validator accepted an unlinked route")
+
+    foreground_cell = copy.deepcopy(cell)
+    foreground_cell.update(
+        {
+            "id": (
+                "foreground-process/aos.foreground-process/abi-1/"
+                "start/reject-foreign-resource-mutation"
+            ),
+            "adapter": "foreground-process",
+            "interface": {
+                "name": "aos.foreground-process",
+                "abi": 1,
+                "descriptor": "sha256:" + "11" * 32,
+            },
+            "method": "start",
+        }
+    )
+    foreground_digest = module.sha256(foreground_cell)
+    foreground_record = copy.deepcopy(record)
+    foreground_record["cell_digest"] = foreground_digest
+    foreground_record["subject"].update(
+        {
+            "cell-id": foreground_cell["id"],
+            "cell-digest": foreground_digest,
+            "adapter": foreground_cell["adapter"],
+            "interface": foreground_cell["interface"],
+            "method": foreground_cell["method"],
+        }
+    )
+    foreground_foreign = copy.deepcopy(foreign_operation)
+    foreground_foreign["interface"] = foreground_cell["interface"]
+    foreground_foreign["method"] = foreground_cell["method"]
+    foreground_dependent = copy.deepcopy(dependent_operation)
+    foreground_dependent["interface"] = foreground_cell["interface"]
+    foreground_dependent["method"] = foreground_cell["method"]
+    foreground_plan = foreground_record["plan_bundle"]
+    foreground_plan["foreign-operation"] = foreground_foreign
+    foreground_plan["dependent-operation"] = foreground_dependent
+    foreground_plan["required-success"] = {
+        "from": foreground_foreign,
+        "to": foreground_dependent,
+        "kind": "required-success",
+    }
+    foreground_evidence = foreground_record["evidence"]
+    foreground_evidence["provider-route"].update(
+        {
+            "adapter": foreground_cell["adapter"],
+            "interface": foreground_cell["interface"],
+            "method": foreground_cell["method"],
+            "handler": "foreground-process-terminal",
+            "entry-point": "libexec/aos-foreground-process-handler-v1",
+        }
+    )
+    foreground_evidence["journal"]["foreign-operation"] = foreground_foreign
+    foreground_evidence["journal"]["dependent-operation"] = foreground_dependent
+    for field, resource in [
+        ("foreign-resource", foreign_resource),
+        ("blocked-successor", successor_resource),
+    ]:
+        foreground_evidence[field].update(
+            {"kind": "foreground-process", "resource": resource}
+        )
+    foreground_evidence["provider-sentinel"] = {
+        "kind": "foreground-process",
+        "resource": {"provider": "fixture", "key": "independent-process"},
+        "before": snapshot,
+        "after": snapshot,
+        "unchanged": True,
+        "live": True,
+    }
+
+    module._validated_provider_negative_cell(
+        foreground_cell, foreground_record, "sha256:" + "81" * 32, set()
+    )
+    changed_sentinel = copy.deepcopy(foreground_record)
+    changed_sentinel["evidence"]["provider-sentinel"]["after"] = (
+        "sha256:" + "82" * 32
+    )
+    try:
+        module._validated_provider_negative_cell(
+            foreground_cell, changed_sentinel, "sha256:" + "81" * 32, set()
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("foreground validator accepted a changed process sentinel")
+
+    return cell, record
 
 
 def assert_rollout_provider_negative_validator(module, template_cell):
@@ -1463,7 +1552,9 @@ def main() -> None:
         probe["cell_digest"] for probe in cell_observation["probes"].values()
     } == {module.sha256(cell_spec)}
     assert_semantic_validators(module, subject, cell_spec, observations)
-    assert_provider_negative_validator(module, cell_spec)
+    provider_negative_cell, provider_negative_record = (
+        assert_provider_negative_validator(module, cell_spec)
+    )
     assert_rollout_provider_negative_validator(module, cell_spec)
     assert_negative_semantic_validators(module, subject, cell_spec)
     assert_postgresql_cohort(module)
@@ -1943,7 +2034,11 @@ def main() -> None:
         },
     }
     combined_spec = {
-        "cells": [*runtime_spec["cells"], interruption_cell]
+        "cells": [
+            *runtime_spec["cells"],
+            interruption_cell,
+            provider_negative_cell,
+        ]
     }
     interruption_audit = {
         "schema": "aos.qualification.interruption-audit/v1",
@@ -1952,10 +2047,18 @@ def main() -> None:
     }
     combined_runtime_audit = copy.deepcopy(runtime_audit)
     combined_runtime_audit["matrix_spec_digest"] = module.sha256(combined_spec)
+    provider_negative_audit = {
+        "schema": module.PROVIDER_NEGATIVE_AUDIT_SCHEMA,
+        "matrix_spec_digest": module.sha256(combined_spec),
+        "cells": {
+            provider_negative_cell["id"]: provider_negative_record,
+        },
+    }
     combined_scope = [
         *scope,
         interruption_cell["id"],
         *runtime_scope[len(scope) :],
+        provider_negative_cell["id"],
     ]
     combined_cells, combined_count = module.build_cells(
         combined_spec,
@@ -1967,8 +2070,9 @@ def main() -> None:
         "sha256:" + "22" * 32,
         combined_runtime_audit,
         interruption_audit,
+        provider_negative_audit,
     )
-    assert combined_count == 32
+    assert combined_count == 37
     interruption_observation = {
         cell["id"]: cell for cell in combined_cells
     }[interruption_cell["id"]]

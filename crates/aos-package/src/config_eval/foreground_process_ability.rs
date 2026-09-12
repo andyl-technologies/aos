@@ -704,6 +704,13 @@ impl TrustedAdapter for NativeForegroundProcessAdapter {
         if control.is_cancelled() {
             return EffectDisposition::RejectedBeforeEffect(self.failure.clone());
         }
+        if let Err(error) = self.supervisor.observe(&request.spec) {
+            return if error.kind() == io::ErrorKind::InvalidData {
+                EffectDisposition::RejectedBeforeEffect(self.failure.clone())
+            } else {
+                EffectDisposition::Indeterminate(self.failure.clone())
+            };
+        }
         match self.apply(request, control) {
             Ok(observed) => EffectDisposition::Completed(self.record(observed)),
             Err(_) => EffectDisposition::Indeterminate(self.failure.clone()),
@@ -1642,6 +1649,53 @@ mod tests {
                 .expect("absence remains observable")
                 .running
         );
+    }
+
+    #[test]
+    fn adapter_rejects_changed_foreground_authority_before_effect() {
+        let temporary = tempfile::tempdir().expect("temporary directory is available");
+        let state_root = temporary.path().join("state");
+        let spec = sleep_spec("foreign-authority");
+        let assignment = foreground_assignment(&spec.artifact);
+        let mut adapter = NativeForegroundProcessAdapter::new(assignment, &state_root)
+            .expect("foreground adapter is valid");
+        adapter
+            .supervisor
+            .start(&spec, &TestControl)
+            .expect("owned process starts before authority changes");
+        let state_path = adapter
+            .supervisor
+            .state_path(&spec.resource)
+            .expect("state path is derivable");
+        let mut state = read_state(&state_path)
+            .expect("state is readable")
+            .expect("started process has a receipt");
+        let original_state = state.clone();
+        state.request.resource.key =
+            LocalKey::new("foreign-authority").expect("foreign key is valid");
+        write_state(&state_path, &state).expect("foreign receipt is durable");
+        let request = ForegroundProcessRequest {
+            durable: ForegroundDurableRequest::new(ForegroundAction::Start, &spec),
+            spec: spec.clone(),
+        };
+
+        assert!(matches!(
+            adapter.execute(&request, &TestControl),
+            EffectDisposition::RejectedBeforeEffect(_)
+        ));
+
+        write_state(&state_path, &original_state).expect("owned receipt is restored");
+        assert!(
+            adapter
+                .supervisor
+                .observe(&spec)
+                .expect("restored process remains observable")
+                .running
+        );
+        adapter
+            .supervisor
+            .stop(&spec, &TestControl)
+            .expect("foreground process stops during cleanup");
     }
 
     #[test]

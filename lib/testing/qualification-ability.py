@@ -1592,14 +1592,18 @@ class Scenario:
                 if not isinstance(cohort_runtime_audit, dict) or not isinstance(
                     cohort_runtime_audit.get("cells"), dict
                 ):
-                    raise RuntimeError("matrix cohort retained a malformed runtime audit")
+                    raise RuntimeError(
+                        "matrix cohort retained a malformed runtime audit"
+                    )
                 runtime_cells = cohort_runtime_audit["cells"]
             interruption_cells: dict[str, Any] = {}
             if cohort_interruption_audit is not None:
                 if not isinstance(cohort_interruption_audit, dict) or not isinstance(
                     cohort_interruption_audit.get("cells"), dict
                 ):
-                    raise RuntimeError("matrix cohort retained a malformed interruption audit")
+                    raise RuntimeError(
+                        "matrix cohort retained a malformed interruption audit"
+                    )
                 interruption_cells = cohort_interruption_audit["cells"]
             provider_negative_cells: dict[str, Any] = {}
             if cohort_provider_negative_audit is not None:
@@ -1629,7 +1633,11 @@ class Scenario:
                 or not isinstance(evidence_map, dict)
                 or any(not isinstance(value, bytes) for value in evidence_map.values())
                 or set(cohort_probes)
-                & (set(runtime_cells) | set(interruption_cells) | set(provider_negative_cells))
+                & (
+                    set(runtime_cells)
+                    | set(interruption_cells)
+                    | set(provider_negative_cells)
+                )
                 or set(runtime_cells) & set(interruption_cells)
                 or set(runtime_cells) & set(provider_negative_cells)
                 or set(interruption_cells) & set(provider_negative_cells)
@@ -1666,7 +1674,9 @@ class Scenario:
                 if interruption_audit is not None or not isinstance(
                     cohort_interruption_audit, dict
                 ):
-                    raise RuntimeError("matrix cohorts repeat or malformed interruption audit")
+                    raise RuntimeError(
+                        "matrix cohorts repeat or malformed interruption audit"
+                    )
                 interruption_audit = cohort_interruption_audit
             if cohort_provider_negative_audit is not None:
                 if not isinstance(cohort_provider_negative_audit, dict):
