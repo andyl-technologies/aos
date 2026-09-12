@@ -1207,13 +1207,19 @@ def main() -> None:
             "scenario": "cancel-unsettled-attempt",
             "classification": "cancellation-unsupported-intervention",
             "recovery-routes": control_cell["recovery"],
+            "fixture-recovery-routes": {
+                "reconcile": control_cell["method"],
+                "cancel": None,
+            },
             "journal": {
                 "digest": "sha256:" + "14" * 32,
                 "head": "sha256:" + "15" * 32,
                 "cancellation-requested": 0,
                 "cancellation-observed": 0,
                 "cancellation-interventions": 1,
-                "dependent-events": 0,
+                "deadline-aborts": 0,
+                "dependent-effect-events": 0,
+                "dependent-settlements": 1,
             },
             "reservation-ledger": {
                 "digest": "sha256:" + "16" * 32,
