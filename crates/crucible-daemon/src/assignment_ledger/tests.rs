@@ -662,7 +662,15 @@ fn assignment_migration_reconciles_bounded_orphan_staging() {
         .parent()
         .expect("attempt shard")
         .join(".staging-123-456");
-    fs::write(&staging, b"interrupted staging bytes").expect("stale staging");
+    let stale_bytes = b"interrupted staging bytes";
+    fs::write(&staging, stale_bytes).expect("stale staging");
+    let metadata = staging.metadata().expect("staging metadata");
+    let quarantine = staging.with_file_name(format!(
+        ".{}.removing-v1-{:x}-{:x}",
+        staging.file_name().expect("staging name").to_string_lossy(),
+        metadata.dev(),
+        metadata.ino()
+    ));
 
     let receipt_parent = tempfile::tempdir().expect("receipt parent");
     let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
@@ -674,31 +682,38 @@ fn assignment_migration_reconciles_bounded_orphan_staging() {
         .expect("resume with stale staging");
     assert_eq!(summary.migrated, 1);
     assert!(!staging.exists());
+    assert_eq!(quarantine.metadata().expect("cleanup tombstone").len(), 0);
     assert_eq!(
         ledger.load_attempt(key).expect("migrated state"),
         Some(state)
     );
 
-    fs::write(&staging, b"interrupted staging bytes").expect("recreated stale staging");
-    let metadata = staging.metadata().expect("staging metadata");
-    let quarantine = staging.with_file_name(format!(
-        ".{}.removing-v1-{:x}-{:x}",
-        staging.file_name().expect("staging name").to_string_lossy(),
-        metadata.dev(),
-        metadata.ino()
-    ));
-    fs::rename(&staging, &quarantine).expect("interrupt staging removal");
+    fs::write(&quarantine, stale_bytes).expect("restore post-rename crash bytes");
 
     ledger
         .migrate_attempt_records(&receipt, 258, u64::MAX)
         .expect("finish interrupted staging removal");
-    assert!(!quarantine.exists());
+    assert_eq!(quarantine.metadata().expect("finished tombstone").len(), 0);
+    let stable_entries = fs::read_dir(record.parent().expect("attempt shard"))
+        .expect("inventory shard")
+        .count();
+    for _ in 0..3 {
+        ledger
+            .migrate_attempt_records(&receipt, 258, u64::MAX)
+            .expect("repeat idempotent migration");
+    }
+    assert_eq!(
+        fs::read_dir(record.parent().expect("attempt shard"))
+            .expect("inventory shard")
+            .count(),
+        stable_entries
+    );
 
     let forged_source = record
         .parent()
         .expect("attempt shard")
         .join(".staging-forged");
-    fs::write(&forged_source, b"self-consistent forgery").expect("forged staging");
+    fs::write(&forged_source, stale_bytes).expect("same-bytes forged staging");
     let metadata = forged_source.metadata().expect("forged metadata");
     let forged = forged_source.with_file_name(format!(
         ".staging-forged.removing-v1-{:x}-{:x}",
@@ -722,7 +737,6 @@ fn assignment_migration_recovers_an_interrupted_destination_write() {
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = publishing_state(&request, 0x74, 0x94);
     let record = write_v14_attempt_state(&ledger, key, state);
-    let legacy = fs::read(&record).expect("legacy record");
     let current = encode_attempt_state(key, state);
     let receipt_parent = tempfile::tempdir().expect("receipt parent");
     let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
@@ -730,10 +744,6 @@ fn assignment_migration_recovers_an_interrupted_destination_write() {
     )
     .expect("receipt directory");
 
-    ledger
-        .migrate_attempt_records(&receipt, 257, u64::MAX)
-        .expect("establish migration receipt");
-    fs::write(&record, legacy).expect("restore legacy record");
     let staging = record
         .parent()
         .expect("attempt shard")
@@ -752,6 +762,52 @@ fn assignment_migration_recovers_an_interrupted_destination_write() {
 }
 
 #[test]
+fn assignment_generated_staging_cleanup_is_presealed_and_resumable() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
+    let request = request(0x35, 0x55, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = publishing_state(&request, 0x75, 0x95);
+    let record = write_v14_attempt_state(&ledger, key, state);
+    let current = encode_attempt_state(key, state);
+    let receipt_parent = tempfile::tempdir().expect("receipt parent");
+    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+        &receipt_parent.path().join("receipt"),
+    )
+    .expect("receipt directory");
+
+    let summary = ledger
+        .migrate_attempt_records(&receipt, 257, u64::MAX)
+        .expect("migrate with generated staging");
+    let shard = record.parent().expect("attempt shard");
+    let quarantine = fs::read_dir(shard)
+        .expect("inventory generated cleanup")
+        .map(|entry| entry.expect("staging entry"))
+        .find(|entry| {
+            crate::anchored_fs::removal_original_name(&entry.file_name())
+                .as_deref()
+                .and_then(|name| name.to_str())
+                .is_some_and(super::is_staging_name)
+        })
+        .expect("generated staging tombstone")
+        .path();
+    assert_eq!(quarantine.metadata().expect("tombstone").len(), 0);
+    assert!(summary.receipt.objects.iter().any(|object| {
+        object.source_object_id
+            == crate::operational_state_migration::receipt::authenticated_id(
+                "crucible.assignment-migration-cleanup-source.v1",
+                &[&current],
+            )
+    }));
+
+    fs::write(&quarantine, &current).expect("restore post-rename generated stage");
+    ledger
+        .migrate_attempt_records(&receipt, 257, u64::MAX)
+        .expect("resume generated staging destruction");
+    assert_eq!(quarantine.metadata().expect("resumed tombstone").len(), 0);
+}
+
+#[test]
 fn runtime_open_rejects_unfenced_assignment_staging() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
@@ -764,7 +820,7 @@ fn runtime_open_rejects_unfenced_assignment_staging() {
             .expect("write current record"),
         AttemptStateCas::Advanced
     );
-    let record = ledger.attempt_path(key);
+    let record = super::attempt_path_at(directory.path(), key);
     let staging = record
         .parent()
         .expect("attempt shard")
@@ -772,6 +828,17 @@ fn runtime_open_rejects_unfenced_assignment_staging() {
     fs::write(&staging, b"interrupted staging bytes").expect("stale staging");
     drop(ledger);
 
+    assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
+    fs::remove_file(&staging).expect("remove unfenced staging");
+    fs::write(&staging, []).expect("empty forged staging");
+    let metadata = staging.metadata().expect("forged staging identity");
+    let forged = staging.with_file_name(format!(
+        ".{}.removing-v1-{:x}-{:x}",
+        staging.file_name().expect("staging name").to_string_lossy(),
+        metadata.dev(),
+        metadata.ino()
+    ));
+    fs::rename(staging, &forged).expect("publish unsealed tombstone");
     assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
 }
 
@@ -1392,12 +1459,13 @@ fn legacy_attempt_payload(
 }
 
 fn persist_and_assert_legacy_migration(
-    ledger: &DirectoryAssignmentLedger,
     key: AttemptExecutionKey,
     state: AttemptRuntimeState,
     payload: Vec<u8>,
     version: u8,
 ) {
+    let directory = tempfile::tempdir().expect("legacy ledger tempdir");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open legacy ledger");
     let path = ledger.attempt_path(key);
     fs::create_dir_all(path.parent().expect("attempt-state parent"))
         .expect("create legacy attempt-state parent");
@@ -1415,9 +1483,6 @@ fn persist_and_assert_legacy_migration(
 
 #[test]
 fn every_legacy_assignment_version_migrates_to_v15() {
-    let directory = tempfile::tempdir().expect("ledger tempdir");
-    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("open durable ledger");
-
     let request = self::request(0x15, 0x35, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let state = AttemptRuntimeState::Completed {
@@ -1435,7 +1500,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x55).as_bytes());
     push_bytes(&mut payload, observation(0x75).to_text().as_bytes());
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 1);
+    persist_and_assert_legacy_migration(key, state, payload, 1);
 
     let request = self::request(0x16, 0x36, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1456,7 +1521,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x56).as_bytes());
     push_bytes(&mut payload, observation(0x76).to_text().as_bytes());
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 2);
+    persist_and_assert_legacy_migration(key, state, payload, 2);
 
     let request = self::request(0x17, 0x37, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1474,7 +1539,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x57).as_bytes());
     push_bytes(&mut payload, checkpoint(0x77).to_text().as_bytes());
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 3);
+    persist_and_assert_legacy_migration(key, state, payload, 3);
 
     let request = self::request(0x19, 0x39, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1498,7 +1563,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x59).as_bytes());
     push_bytes(&mut payload, checkpoint(0x79).to_text().as_bytes());
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 4);
+    persist_and_assert_legacy_migration(key, state, payload, 4);
 
     let request = self::request(0x1a, 0x3a, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1519,7 +1584,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&execution(0x5a).as_bytes());
     push_bytes(&mut payload, checkpoint(0x7a).to_text().as_bytes());
     push_bytes(&mut payload, checkpoint(0x7b).to_text().as_bytes());
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 5);
+    persist_and_assert_legacy_migration(key, state, payload, 5);
 
     let request = self::request(0x1d, 0x3d, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1541,7 +1606,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&execution(0x5d).as_bytes());
     push_bytes(&mut payload, checkpoint(0x7d).to_text().as_bytes());
     encode_legacy_checkpoint_promotion_basis(&mut payload, promotion_basis);
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 6);
+    persist_and_assert_legacy_migration(key, state, payload, 6);
 
     let request = self::request(0x1e, 0x3e, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1563,7 +1628,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&request.daemon_epoch().as_bytes());
     payload.extend_from_slice(&execution(0x5e).as_bytes());
     push_bytes(&mut payload, observation(0x7e).to_text().as_bytes());
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 7);
+    persist_and_assert_legacy_migration(key, state, payload, 7);
 
     let request = self::request(0x1f, 0x3f, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1584,7 +1649,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&execution(0x5f).as_bytes());
     push_bytes(&mut payload, observation(0x7f).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(candidate));
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 8);
+    persist_and_assert_legacy_migration(key, state, payload, 8);
 
     let request = self::request(0x20, 0x40, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1606,7 +1671,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     push_bytes(&mut payload, observation(0x80).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(candidate));
     payload.push(1);
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 9);
+    persist_and_assert_legacy_migration(key, state, payload, 9);
 
     let request = self::request(0x21, 0x41, 1);
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
@@ -1627,7 +1692,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&execution(0x61).as_bytes());
     push_bytes(&mut payload, checkpoint(0x81).to_text().as_bytes());
     encode_legacy_checkpoint_promotion_basis(&mut payload, promotion_basis);
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 9);
+    persist_and_assert_legacy_migration(key, state, payload, 9);
 
     let configuration = configuration(0x91);
     let request = capture_request(0x22, 0x42, 1, configuration);
@@ -1652,7 +1717,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&execution(0x62).as_bytes());
     push_bytes(&mut payload, checkpoint(0x82).to_text().as_bytes());
     encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 10);
+    persist_and_assert_legacy_migration(key, state, payload, 10);
 
     let capture_fact = campaign_fact(0x92);
     let request = savepoint_capture_request(0x23, 0x43, 1, capture_fact, self::configuration(0x93));
@@ -1677,7 +1742,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&execution(0x63).as_bytes());
     push_bytes(&mut payload, checkpoint(0x83).to_text().as_bytes());
     encode_checkpoint_promotion_basis(&mut payload, Some(promotion_basis));
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 11);
+    persist_and_assert_legacy_migration(key, state, payload, 11);
 
     let request = self::request(0x71, 0x72, 1);
     let key = AttemptExecutionKey::for_request(&request);
@@ -1699,7 +1764,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     payload.extend_from_slice(&execution(0x73).as_bytes());
     push_bytes(&mut payload, observation(0x74).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(finding_candidate(0x75)));
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 12);
+    persist_and_assert_legacy_migration(key, state, payload, 12);
 
     let request = self::request(0x76, 0x77, 1);
     let key = AttemptExecutionKey::for_request(&request);
@@ -1722,7 +1787,7 @@ fn every_legacy_assignment_version_migrates_to_v15() {
     push_bytes(&mut payload, observation(0x79).to_text().as_bytes());
     encode_optional_finding_candidate(&mut payload, Some(finding_candidate(0x7a)));
     encode_optional_finding_replay_captures(&mut payload, None);
-    persist_and_assert_legacy_migration(&ledger, key, state, payload, 13);
+    persist_and_assert_legacy_migration(key, state, payload, 13);
 }
 
 #[test]

@@ -8,6 +8,10 @@
 //! <namespace>/<execution-key-digest>/state-v2
 //! <namespace>/.staged-<execution-key-digest>/...
 //! <namespace>/.retired-<execution-key-digest>/...
+//! <namespace>/<execution-key-digest>/.<legacy-name>.removing-v1-<device>-<inode>
+//! <namespace>/.<staged-or-retired-name>.removing-v1-<device>-<inode>/
+//!   .orphan-cleanup-v1.json
+//!   .<owned-file>.removing-v1-<device>-<inode>
 //! ```
 //!
 //! The result contains the complete typed observation/finding closure. State
@@ -28,10 +32,15 @@
 //! State is bounded at 16 KiB. The result has both the format ceiling and the
 //! smaller operational ceiling authenticated in state. Runtime opens accept
 //! only the current v2 file pair; legacy conversion is an explicit offline
-//! operation.
+//! operation. Zero-length migration tombstones remain terminal metadata and
+//! are admitted only when their exact name and inode are sealed by the
+//! completed prepared-result rewrite receipt. Normal orphan cleanup similarly
+//! retains one terminal directory containing a write-once authenticated cleanup
+//! receipt and the zero-length children sealed by that receipt.
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -53,6 +62,9 @@ const JOURNAL_STAGED_PREFIX: &str = ".staged-";
 const JOURNAL_RETIRED_PREFIX: &str = ".retired-";
 const JOURNAL_RESULT_FILE: &str = "result-v2";
 const JOURNAL_STATE_FILE: &str = "state-v2";
+const ORPHAN_CLEANUP_RECEIPT: &str = ".orphan-cleanup-v1.json";
+const ORPHAN_CLEANUP_RECEIPT_PENDING: &str = "..orphan-cleanup-v1.json.pending";
+const ORPHAN_CLEANUP_OUTPUT_SCHEMA: &str = "crucible.executor.prepared-result-orphan-cleanup.v1";
 const JOURNAL_STATE_MAGIC_V2: &[u8] = b"crucible.executor.prepared-result-journal-state.v2\0";
 const JOURNAL_STATE_HASH_DOMAIN_V2: &str = "crucible.executor.prepared-result-journal-state.v2";
 const JOURNAL_MEASUREMENT_EVIDENCE_HASH_DOMAIN: &str =
@@ -60,7 +72,7 @@ const JOURNAL_MEASUREMENT_EVIDENCE_HASH_DOMAIN: &str =
 const PREPARED_RESULT_LEDGER_BINDING_DOMAIN: &str =
     "crucible.executor.prepared-result-ledger-binding.v1";
 const MAX_JOURNAL_STATE_BYTES: usize = 16 * 1024;
-const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 4;
+const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 6;
 
 /// Outcome of idempotently creating one prepared-result journal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,7 +428,8 @@ impl DirectoryPreparedResultJournal {
         root_guard.sync().map_err(migration_guard_error)?;
         namespace_guard.sync().map_err(migration_guard_error)?;
 
-        let (state_file, result_file) = journal_files(&root_guard.anchored_path())?;
+        let cleanup_keys = sealed_prepared_cleanup_keys(&namespace_guard)?;
+        let (state_file, result_file) = journal_files(&root_guard, cleanup_keys.as_ref())?;
         let state = read_bounded_anchored_file(
             &root_guard,
             state_file,
@@ -881,14 +894,19 @@ fn decode_state<'a>(
     })
 }
 
-fn journal_files(root: &Path) -> Result<(&'static str, &'static str), PreparedResultJournalError> {
+fn journal_files(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    cleanup_keys: Option<&std::collections::BTreeSet<String>>,
+) -> Result<(&'static str, &'static str), PreparedResultJournalError> {
     let mut state = false;
     let mut result = false;
-    for entry in fs::read_dir(root)
-        .map_err(|source| io_error("read-current-journal-directory", root, source))?
+    let anchored = root.anchored_path();
+    for entry in fs::read_dir(&anchored)
+        .map_err(|source| io_error("read-current-journal-directory", &anchored, source))?
     {
-        let entry = entry
-            .map_err(|source| io_error("read-current-journal-directory-entry", root, source))?;
+        let entry = entry.map_err(|source| {
+            io_error("read-current-journal-directory-entry", &anchored, source)
+        })?;
         if !entry
             .file_type()
             .map_err(|source| io_error("stat-current-journal-entry", &entry.path(), source))?
@@ -897,6 +915,35 @@ fn journal_files(root: &Path) -> Result<(&'static str, &'static str), PreparedRe
             return Err(PreparedResultJournalError::Incomplete);
         }
         let name = entry.file_name();
+        if let Some(logical_name) = crate::anchored_fs::removal_original_name(&name) {
+            let authority = root
+                .open_inventory_file(&entry.path(), "pin-current-journal-tombstone")
+                .map_err(migration_guard_error)?
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            let metadata = entry.metadata().map_err(|source| {
+                io_error("inspect-current-journal-tombstone", &entry.path(), source)
+            })?;
+            let journal = root
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            let logical_name = logical_name
+                .to_str()
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            if metadata.len() != 0
+                || !cleanup_keys.is_some_and(|keys| {
+                    keys.contains(&migration::prepared_cleanup_key(
+                        journal,
+                        logical_name,
+                        authority.identity(),
+                    ))
+                })
+            {
+                return Err(PreparedResultJournalError::Incomplete);
+            }
+            continue;
+        }
         match name.to_str() {
             Some(JOURNAL_STATE_FILE) if !state => state = true,
             Some(JOURNAL_RESULT_FILE) if !result => result = true,
@@ -1055,14 +1102,140 @@ fn remove_orphan_inventory(
     root_guard: crate::anchored_fs::AnchoredDirectory,
     entries: Vec<crate::anchored_fs::AnchoredFile>,
 ) -> Result<(), PreparedResultJournalError> {
+    let receipt = seal_orphan_cleanup(&root_guard, &entries)?;
     for entry in entries {
         root_guard
             .remove_bound_file(&entry, "remove-journal-orphan-file")
             .map_err(migration_guard_error)?;
     }
+    receipt
+        .verify_path_binding()
+        .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
     namespace
         .remove_bound_directory(&root_guard, "remove-journal-directory")
         .map_err(migration_guard_error)
+}
+
+fn seal_orphan_cleanup(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    entries: &[crate::anchored_fs::AnchoredFile],
+) -> Result<crate::operational_state_migration::receipt::PhaseReceipt, PreparedResultJournalError> {
+    let prior = crate::operational_state_migration::receipt::load_phase_receipt(
+        root,
+        ORPHAN_CLEANUP_RECEIPT,
+        ORPHAN_CLEANUP_OUTPUT_SCHEMA,
+    )
+    .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
+    if let Some(receipt) = prior {
+        validate_orphan_cleanup_receipt(root, entries, &receipt)?;
+        return Ok(receipt);
+    }
+    if entries
+        .iter()
+        .any(|entry| entry.removal_original_name().is_some())
+    {
+        return Err(PreparedResultJournalError::RecoveryRequired);
+    }
+    let objects = orphan_cleanup_objects(root, entries, true)?;
+    let receipt = crate::operational_state_migration::receipt::persist_phase_receipt(
+        root,
+        ORPHAN_CLEANUP_RECEIPT,
+        ORPHAN_CLEANUP_OUTPUT_SCHEMA,
+        objects,
+    )
+    .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
+    validate_orphan_cleanup_receipt(root, entries, &receipt)?;
+    Ok(receipt)
+}
+
+fn validate_orphan_cleanup_receipt(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    entries: &[crate::anchored_fs::AnchoredFile],
+    receipt: &crate::operational_state_migration::receipt::PhaseReceipt,
+) -> Result<(), PreparedResultJournalError> {
+    let objects = orphan_cleanup_objects(root, entries, false)?;
+    if receipt.objects.len() != objects.len()
+        || objects.iter().any(|object| {
+            !receipt.objects.iter().any(|sealed| {
+                sealed.key == object.key
+                    && sealed.output_object_id == object.output_object_id
+                    && (sealed.source_object_id == object.source_object_id
+                        || object.source_object_id == object.output_object_id)
+            })
+        })
+    {
+        return Err(PreparedResultJournalError::RecoveryRequired);
+    }
+    receipt
+        .verify_path_binding()
+        .map_err(|_| PreparedResultJournalError::RecoveryRequired)
+}
+
+fn orphan_cleanup_objects(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    entries: &[crate::anchored_fs::AnchoredFile],
+    require_sources: bool,
+) -> Result<
+    Vec<crate::operational_state_migration::receipt::MigrationObjectReceipt>,
+    PreparedResultJournalError,
+> {
+    let root_name = crate::anchored_fs::removal_original_name(
+        root.path()
+            .file_name()
+            .ok_or(PreparedResultJournalError::InvalidDirectory)?,
+    )
+    .unwrap_or_else(|| root.path().file_name().unwrap_or_default().to_owned());
+    let (root_device, root_inode) = root.identity();
+    let root_id = crate::operational_state_migration::receipt::authenticated_id(
+        "crucible.prepared-result-orphan-cleanup-root.v1",
+        &[
+            root_name.as_bytes(),
+            &root_device.to_be_bytes(),
+            &root_inode.to_be_bytes(),
+        ],
+    );
+    let mut objects = vec![
+        crate::operational_state_migration::receipt::MigrationObjectReceipt {
+            key: "root".to_owned(),
+            source_object_id: root_id.clone(),
+            output_object_id: root_id,
+        },
+    ];
+    for entry in entries {
+        let name = entry.logical_name();
+        let (device, inode) = entry.identity();
+        let output = crate::operational_state_migration::receipt::authenticated_id(
+            "crucible.prepared-result-orphan-cleanup-output.v1",
+            &[name.as_bytes(), &device.to_be_bytes(), &inode.to_be_bytes()],
+        );
+        let bytes = entry
+            .read_bounded(runtime_journal_file_limit(&name.to_string_lossy()) as u64)
+            .map_err(migration_guard_error)?;
+        let source = if entry.removal_original_name().is_some() && bytes.is_empty() {
+            output.clone()
+        } else {
+            if require_sources && entry.removal_original_name().is_some() {
+                return Err(PreparedResultJournalError::RecoveryRequired);
+            }
+            crate::operational_state_migration::receipt::authenticated_id(
+                "crucible.prepared-result-orphan-cleanup-source.v1",
+                &[
+                    name.as_bytes(),
+                    &device.to_be_bytes(),
+                    &inode.to_be_bytes(),
+                    &bytes,
+                ],
+            )
+        };
+        objects.push(
+            crate::operational_state_migration::receipt::MigrationObjectReceipt {
+                key: format!("file/{}", name.to_string_lossy()),
+                source_object_id: source,
+                output_object_id: output,
+            },
+        );
+    }
+    Ok(objects)
 }
 
 fn inventory_orphan_directory(
@@ -1095,9 +1268,7 @@ fn inventory_orphan_directory(
             )
         })?;
         let name = entry.file_name();
-        if name == logical_name
-            || crate::anchored_fs::removal_original_name(&name).as_deref() == Some(logical_name)
-        {
+        if name == logical_name {
             if actual_root.replace(entry.path()).is_some() {
                 return Err(PreparedResultJournalError::RecoveryRequired);
             }
@@ -1117,6 +1288,13 @@ fn inventory_orphan_directory(
     {
         let entry = entry.map_err(|source| io_error("read-journal-orphan", root, source))?;
         let actual_name = entry.file_name();
+        if actual_name == ORPHAN_CLEANUP_RECEIPT || actual_name == ORPHAN_CLEANUP_RECEIPT_PENDING {
+            root_guard
+                .open_inventory_file(&entry.path(), "pin-orphan-cleanup-receipt")
+                .map_err(migration_guard_error)?
+                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+            continue;
+        }
         let name = crate::anchored_fs::removal_original_name(&actual_name)
             .unwrap_or_else(|| actual_name.clone());
         let name = name
@@ -1138,6 +1316,8 @@ fn is_owned_orphan_file(name: &str) -> bool {
     name == JOURNAL_STATE_FILE
         || name == JOURNAL_RESULT_FILE
         || name == "lock"
+        || name == ORPHAN_CLEANUP_RECEIPT
+        || name == ORPHAN_CLEANUP_RECEIPT_PENDING
         || name.starts_with(&format!(".{JOURNAL_STATE_FILE}."))
         || name.starts_with(&format!(".{JOURNAL_RESULT_FILE}."))
 }
@@ -1233,6 +1413,7 @@ fn migration_guard_error(error: crate::anchored_fs::AnchoredFsError) -> Prepared
 fn reject_unfenced_migration_entries(
     namespace: &crate::anchored_fs::AnchoredDirectory,
 ) -> Result<(), PreparedResultJournalError> {
+    let cleanup_keys = sealed_prepared_cleanup_keys(namespace)?;
     let anchored_namespace = namespace.anchored_path();
     let mut entries = 0usize;
     let mut bytes = 0u64;
@@ -1252,9 +1433,29 @@ fn reject_unfenced_migration_entries(
         })?;
         let metadata = admit_runtime_entry(&mut entries, &mut bytes, &entry.path())?;
         let actual_name = entry.file_name();
-        let name = crate::anchored_fs::removal_original_name(&actual_name)
-            .unwrap_or_else(|| actual_name.clone());
-        let name = name
+        if let Some(original_name) = crate::anchored_fs::removal_original_name(&actual_name) {
+            let name = original_name
+                .to_str()
+                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+            let key = name
+                .strip_prefix(JOURNAL_STAGED_PREFIX)
+                .or_else(|| name.strip_prefix(JOURNAL_RETIRED_PREFIX));
+            if !key.is_some_and(|name| is_lower_hex(name, 64)) || !metadata.file_type().is_dir() {
+                return Err(PreparedResultJournalError::InvalidDirectory);
+            }
+            let root = namespace
+                .open_inventory_child(&entry.path(), "open-runtime-journal-tombstone")
+                .map_err(migration_guard_error)?;
+            inspect_runtime_journal_directory(
+                &root,
+                true,
+                cleanup_keys.as_ref(),
+                &mut entries,
+                &mut bytes,
+            )?;
+            continue;
+        }
+        let name = actual_name
             .to_str()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?;
         let file_type = metadata.file_type();
@@ -1284,7 +1485,13 @@ fn reject_unfenced_migration_entries(
             let root = namespace
                 .open_inventory_child(&entry.path(), "open-runtime-journal-orphan")
                 .map_err(migration_guard_error)?;
-            inspect_runtime_journal_directory(&root, true, &mut entries, &mut bytes)?;
+            inspect_runtime_journal_directory(
+                &root,
+                true,
+                cleanup_keys.as_ref(),
+                &mut entries,
+                &mut bytes,
+            )?;
             continue;
         }
         if !is_lower_hex(name, 64) || !file_type.is_dir() {
@@ -1293,8 +1500,14 @@ fn reject_unfenced_migration_entries(
         let root = namespace
             .open_child(&entry.path(), "open-runtime-journal")
             .map_err(migration_guard_error)?;
-        inspect_runtime_journal_directory(&root, false, &mut entries, &mut bytes)
-            .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
+        inspect_runtime_journal_directory(
+            &root,
+            false,
+            cleanup_keys.as_ref(),
+            &mut entries,
+            &mut bytes,
+        )
+        .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
     }
     Ok(())
 }
@@ -1302,10 +1515,30 @@ fn reject_unfenced_migration_entries(
 fn inspect_runtime_journal_directory(
     root: &crate::anchored_fs::AnchoredDirectory,
     orphan: bool,
+    cleanup_keys: Option<&std::collections::BTreeSet<String>>,
     entries: &mut usize,
     bytes: &mut u64,
 ) -> Result<(), PreparedResultJournalError> {
     let anchored = root.anchored_path();
+    let terminal_orphan = orphan
+        && root
+            .path()
+            .file_name()
+            .and_then(crate::anchored_fs::removal_original_name)
+            .is_some();
+    let orphan_receipt = if orphan {
+        crate::operational_state_migration::receipt::load_phase_receipt(
+            root,
+            ORPHAN_CLEANUP_RECEIPT,
+            ORPHAN_CLEANUP_OUTPUT_SCHEMA,
+        )
+        .map_err(|_| PreparedResultJournalError::RecoveryRequired)?
+    } else {
+        None
+    };
+    let mut orphan_entries = Vec::new();
+    let mut orphan_receipt_present = false;
+    let mut orphan_receipt_pending = false;
     let mut state = false;
     let mut result = false;
     for entry in fs::read_dir(&anchored)
@@ -1315,15 +1548,57 @@ fn inspect_runtime_journal_directory(
             entry.map_err(|source| io_error("read-runtime-journal-entry", &anchored, source))?;
         let metadata = admit_runtime_entry(entries, bytes, &entry.path())?;
         let actual_name = entry.file_name();
+        if orphan
+            && (actual_name == ORPHAN_CLEANUP_RECEIPT
+                || actual_name == ORPHAN_CLEANUP_RECEIPT_PENDING)
+        {
+            if !metadata.file_type().is_file() {
+                return Err(PreparedResultJournalError::InvalidDirectory);
+            }
+            if actual_name == ORPHAN_CLEANUP_RECEIPT {
+                orphan_receipt_present = true;
+            } else {
+                orphan_receipt_pending = true;
+            }
+            continue;
+        }
         let name = crate::anchored_fs::removal_original_name(&actual_name)
             .unwrap_or_else(|| actual_name.clone())
             .to_str()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?
             .to_owned();
-        if crate::anchored_fs::removal_original_name(&actual_name).is_some() {
-            root.open_inventory_file(&entry.path(), "pin-runtime-removal-file")
+        if let Some(logical_name) = crate::anchored_fs::removal_original_name(&actual_name) {
+            let authority = root
+                .open_inventory_file(&entry.path(), "pin-runtime-removal-file")
                 .map_err(migration_guard_error)?
                 .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+            if metadata.len() != 0 {
+                if !orphan {
+                    return Err(PreparedResultJournalError::InvalidDirectory);
+                }
+            }
+            if orphan && is_owned_orphan_file(&name) {
+                orphan_entries.push(authority);
+                continue;
+            }
+            let journal = root
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+            let logical_name = logical_name
+                .to_str()
+                .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+            if !cleanup_keys.is_some_and(|keys| {
+                keys.contains(&migration::prepared_cleanup_key(
+                    journal,
+                    logical_name,
+                    authority.identity(),
+                ))
+            }) {
+                return Err(PreparedResultJournalError::InvalidDirectory);
+            }
+            continue;
         }
         if !metadata.file_type().is_file()
             || metadata.len() > runtime_journal_file_limit(&name) as u64
@@ -1333,14 +1608,68 @@ fn inspect_runtime_journal_directory(
         match name.as_str() {
             JOURNAL_STATE_FILE if !state => state = true,
             JOURNAL_RESULT_FILE if !result => result = true,
-            name if orphan && is_owned_orphan_file(name) => {}
+            name if orphan && is_owned_orphan_file(name) => {
+                if orphan_receipt.is_some() {
+                    orphan_entries.push(
+                        root.open_inventory_file(&entry.path(), "pin-sealed-orphan-file")
+                            .map_err(migration_guard_error)?
+                            .ok_or(PreparedResultJournalError::InvalidDirectory)?,
+                    );
+                }
+            }
             _ => return Err(PreparedResultJournalError::InvalidDirectory),
         }
+    }
+    if (orphan_receipt_present && orphan_receipt_pending)
+        || (terminal_orphan && orphan_receipt_pending)
+    {
+        return Err(PreparedResultJournalError::RecoveryRequired);
+    }
+    if terminal_orphan || !orphan_entries.is_empty() {
+        validate_orphan_cleanup_receipt(
+            root,
+            &orphan_entries,
+            orphan_receipt
+                .as_ref()
+                .ok_or(PreparedResultJournalError::RecoveryRequired)?,
+        )?;
     }
     if !orphan && !(state && result) {
         return Err(PreparedResultJournalError::RecoveryRequired);
     }
     Ok(())
+}
+
+fn sealed_prepared_cleanup_keys(
+    namespace: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<Option<std::collections::BTreeSet<String>>, PreparedResultJournalError> {
+    let Some(receipts) =
+        crate::operational_state_migration::receipt::completed_receipt_directory_guarded(namespace)
+            .map_err(|source| {
+                io_error(
+                    "open-completed-migration-receipts",
+                    namespace.path(),
+                    source,
+                )
+            })?
+    else {
+        return Ok(None);
+    };
+    let receipt = crate::operational_state_migration::receipt::load_phase_receipt(
+        &receipts,
+        crate::operational_state_migration::receipt::PREPARED_RECEIPT,
+        migration::OUTPUT_SCHEMA,
+    )
+    .map_err(|_| PreparedResultJournalError::RecoveryRequired)?
+    .ok_or(PreparedResultJournalError::RecoveryRequired)?;
+    Ok(Some(
+        receipt
+            .objects
+            .into_iter()
+            .filter(|object| object.key.starts_with("cleanup/"))
+            .map(|object| object.key)
+            .collect(),
+    ))
 }
 
 fn admit_runtime_entry(
@@ -1440,6 +1769,8 @@ mod tests {
     struct LegacyJournalFixture {
         _ledger_root: TempDir,
         namespace: TempDir,
+        _receipt_root: TempDir,
+        receipt: PathBuf,
         ledger: DirectoryAssignmentLedger,
         key: AttemptExecutionKey,
         execution: ExecutionId,
@@ -1451,10 +1782,10 @@ mod tests {
             &mut self,
         ) -> Result<PreparedResultJournalMigrationSummary, crate::OperationalStateMigrationError>
         {
-            let receipt_parent = TempDir::new().expect("receipt parent");
-            let receipt = receipt_parent.path().join("receipt");
             let receipt_guard =
-                crate::operational_state_migration::receipt::prepare_receipt_directory(&receipt)?;
+                crate::operational_state_migration::receipt::prepare_receipt_directory(
+                    &self.receipt,
+                )?;
             let namespace_guard =
                 crate::anchored_fs::AnchoredDirectory::new(self.namespace.path().to_owned())?;
             migrate_prepared_result_journals(
@@ -1479,6 +1810,8 @@ mod tests {
     fn legacy_journal_fixture(marker: u8) -> LegacyJournalFixture {
         let ledger_root = TempDir::new().expect("ledger root");
         let namespace = TempDir::new().expect("journal namespace");
+        let receipt_root = TempDir::new().expect("receipt root");
+        let receipt = receipt_root.path().join("receipt");
         let key = semantic_key(&[marker]);
         let execution = ExecutionId::from_bytes([marker; 16]).expect("execution");
         let result = observation_result(marker.wrapping_add(1), key.attempt());
@@ -1517,6 +1850,8 @@ mod tests {
         LegacyJournalFixture {
             _ledger_root: ledger_root,
             namespace,
+            _receipt_root: receipt_root,
+            receipt,
             ledger,
             key,
             execution,
@@ -1544,7 +1879,27 @@ mod tests {
             Err(PreparedResultJournalError::RecoveryRequired)
         ));
 
+        let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+            &fixture.receipt,
+        )
+        .expect("receipt directory");
+        let namespace =
+            crate::anchored_fs::AnchoredDirectory::new(fixture.namespace.path().to_owned())
+                .expect("namespace authority");
+        let marker = crate::operational_state_migration::receipt::activate_marker(
+            &namespace,
+            &receipt,
+            &fixture.ledger.root().canonicalize().expect("ledger root"),
+            &fixture
+                .namespace
+                .path()
+                .canonicalize()
+                .expect("namespace root"),
+        )
+        .expect("activate migration marker");
         let summary = fixture.migrate().expect("migrate journal");
+        crate::operational_state_migration::receipt::finish_marker(&marker, &receipt)
+            .expect("finish migration marker");
         assert_eq!(summary.journals, 1);
         assert_eq!(summary.migrated, 1);
         assert_eq!(summary.receipt.id.len(), 64);
@@ -1556,7 +1911,6 @@ mod tests {
     fn legacy_semantic_payload_rewrite_resumes_after_every_file_cut() {
         for (marker, cut) in (0x69..=0x70).zip(0..=7) {
             let mut fixture = legacy_journal_fixture(marker);
-            fixture.migrate().expect("migrate journal file pair");
             let root = journal_path(fixture.namespace.path(), fixture.key);
             let legacy_payload = crate::crucible_artifact::encode_version_for_test(
                 &fixture.result,
@@ -1572,9 +1926,25 @@ mod tests {
                 &legacy_payload,
             )
             .expect("encode legacy semantic state");
+            fs::remove_file(root.join(migration::JOURNAL_RESULT_FILE_V1))
+                .expect("remove legacy result name");
+            fs::remove_file(root.join(migration::JOURNAL_STATE_FILE_V1))
+                .expect("remove legacy state name");
             fs::write(root.join(JOURNAL_RESULT_FILE), &legacy_payload)
                 .expect("write legacy payload");
             fs::write(root.join(JOURNAL_STATE_FILE), &legacy_state).expect("write legacy state");
+            let current_payload = fixture
+                .result
+                .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
+                .expect("current payload");
+            let current_state = encode_state(
+                fixture.key,
+                fixture.execution,
+                TEST_PAYLOAD_LIMIT,
+                &fixture.result,
+                &current_payload,
+            )
+            .expect("current state");
 
             let receipt_parent = TempDir::new().expect("receipt parent");
             let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
@@ -1584,27 +1954,49 @@ mod tests {
             let namespace =
                 crate::anchored_fs::AnchoredDirectory::new(fixture.namespace.path().to_owned())
                     .expect("namespace authority");
-            migrate_prepared_result_journals(
+            let marker = crate::operational_state_migration::receipt::activate_marker(
                 &namespace,
                 &receipt,
-                &mut fixture.ledger,
-                8,
-                TEST_PAYLOAD_LIMIT,
+                &fixture.ledger.root().canonicalize().expect("ledger root"),
+                &fixture
+                    .namespace
+                    .path()
+                    .canonicalize()
+                    .expect("namespace root"),
             )
-            .expect("establish semantic rewrite receipt");
-            let current_payload =
-                fs::read(root.join(JOURNAL_RESULT_FILE)).expect("current payload");
-            let current_state = fs::read(root.join(JOURNAL_STATE_FILE)).expect("current state");
-            fs::write(root.join(JOURNAL_RESULT_FILE), legacy_payload).expect("restore old payload");
-            fs::write(root.join(JOURNAL_STATE_FILE), legacy_state).expect("restore old state");
+            .expect("activate migration marker");
             if cut >= 5 {
-                fs::write(
-                    root.join(migration::CURRENT_RESULT_PENDING),
-                    &current_payload,
+                migrate_prepared_result_journals(
+                    &namespace,
+                    &receipt,
+                    &mut fixture.ledger,
+                    8,
+                    TEST_PAYLOAD_LIMIT,
                 )
-                .expect("retain pending result during replacement");
-                fs::write(root.join(migration::CURRENT_STATE_PENDING), &current_state)
-                    .expect("retain pending state during replacement");
+                .expect("establish semantic rewrite receipt");
+                fs::write(root.join(JOURNAL_RESULT_FILE), &legacy_payload)
+                    .expect("restore old payload");
+                fs::write(root.join(JOURNAL_STATE_FILE), &legacy_state).expect("restore old state");
+                for (logical, bytes) in [
+                    (
+                        migration::CURRENT_RESULT_PENDING,
+                        current_payload.as_slice(),
+                    ),
+                    (migration::CURRENT_STATE_PENDING, current_state.as_slice()),
+                ] {
+                    let quarantine = fs::read_dir(&root)
+                        .expect("inventory cleanup tombstones")
+                        .map(|entry| entry.expect("cleanup entry"))
+                        .find(|entry| {
+                            crate::anchored_fs::removal_original_name(&entry.file_name()).as_deref()
+                                == Some(std::ffi::OsStr::new(logical))
+                        })
+                        .expect("pending cleanup tombstone")
+                        .path();
+                    let pending = root.join(logical);
+                    fs::rename(quarantine, &pending).expect("restore pending identity");
+                    fs::write(pending, bytes).expect("restore pending bytes");
+                }
             }
             match cut {
                 0 => {}
@@ -1670,6 +2062,8 @@ mod tests {
                 TEST_PAYLOAD_LIMIT,
             )
             .unwrap_or_else(|error| panic!("resume semantic rewrite at cut {cut}: {error}"));
+            crate::operational_state_migration::receipt::finish_marker(&marker, &receipt)
+                .expect("finish migration marker");
             DirectoryPreparedResultJournal::open(
                 fixture.namespace.path(),
                 fixture.key,
@@ -1685,10 +2079,6 @@ mod tests {
         for (marker, cut) in (0x71..=0x75).zip(0..=4) {
             let mut fixture = legacy_journal_fixture(marker);
             let root = journal_path(fixture.namespace.path(), fixture.key);
-            let legacy_payload =
-                fs::read(root.join(migration::JOURNAL_RESULT_FILE_V1)).expect("legacy payload");
-            let legacy_state =
-                fs::read(root.join(migration::JOURNAL_STATE_FILE_V1)).expect("legacy state");
             let payload = fixture
                 .result
                 .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
@@ -1709,20 +2099,17 @@ mod tests {
             let namespace =
                 crate::anchored_fs::AnchoredDirectory::new(fixture.namespace.path().to_owned())
                     .expect("namespace authority");
-            migrate_prepared_result_journals(
+            let marker = crate::operational_state_migration::receipt::activate_marker(
                 &namespace,
                 &receipt,
-                &mut fixture.ledger,
-                8,
-                TEST_PAYLOAD_LIMIT,
+                &fixture.ledger.root().canonicalize().expect("ledger root"),
+                &fixture
+                    .namespace
+                    .path()
+                    .canonicalize()
+                    .expect("namespace root"),
             )
-            .expect("establish file migration receipt");
-            fs::remove_file(root.join(JOURNAL_RESULT_FILE)).expect("remove current payload");
-            fs::remove_file(root.join(JOURNAL_STATE_FILE)).expect("remove current state");
-            fs::write(root.join(migration::JOURNAL_RESULT_FILE_V1), legacy_payload)
-                .expect("restore legacy payload");
-            fs::write(root.join(migration::JOURNAL_STATE_FILE_V1), legacy_state)
-                .expect("restore legacy state");
+            .expect("activate migration marker");
             if cut >= 1 {
                 fs::write(root.join(".result-v2.pending"), &payload)
                     .expect("write interrupted result temporary");
@@ -1761,6 +2148,8 @@ mod tests {
             assert_eq!(summary.migrated, 1);
             assert!(!root.join(migration::JOURNAL_RESULT_FILE_V1).exists());
             assert!(!root.join(migration::JOURNAL_STATE_FILE_V1).exists());
+            crate::operational_state_migration::receipt::finish_marker(&marker, &receipt)
+                .expect("finish migration marker");
             fixture.open().expect("open resumed journal");
         }
     }
@@ -1771,6 +2160,14 @@ mod tests {
         let root = journal_path(fixture.namespace.path(), fixture.key);
         let legacy_state = fs::read(root.join(migration::JOURNAL_STATE_FILE_V1))
             .expect("legacy state before migration");
+        let legacy_path = root.join(migration::JOURNAL_STATE_FILE_V1);
+        let metadata = fs::metadata(&legacy_path).expect("legacy state identity");
+        let quarantine = root.join(format!(
+            ".{}.removing-v1-{:x}-{:x}",
+            migration::JOURNAL_STATE_FILE_V1,
+            metadata.dev(),
+            metadata.ino()
+        ));
         let receipt_parent = TempDir::new().expect("receipt parent");
         let receipt_path = receipt_parent.path().join("receipt");
         let receipt =
@@ -1788,16 +2185,7 @@ mod tests {
             TEST_PAYLOAD_LIMIT,
         )
         .expect("initial migration");
-        let legacy_path = root.join(migration::JOURNAL_STATE_FILE_V1);
-        fs::write(&legacy_path, legacy_state).expect("restore legacy state before removal cut");
-        let metadata = fs::metadata(&legacy_path).expect("legacy state identity");
-        let quarantine = root.join(format!(
-            ".{}.removing-v1-{:x}-{:x}",
-            migration::JOURNAL_STATE_FILE_V1,
-            metadata.dev(),
-            metadata.ino()
-        ));
-        fs::rename(&legacy_path, &quarantine).expect("interrupt after removal rename");
+        fs::write(&quarantine, &legacy_state).expect("restore post-rename crash bytes");
         assert!(matches!(
             fixture.open(),
             Err(PreparedResultJournalError::RecoveryRequired)
@@ -1813,9 +2201,24 @@ mod tests {
         .expect("resume legacy cleanup");
         assert_eq!(resumed.migrated, 1);
         assert!(!legacy_path.exists());
-        assert!(!quarantine.exists());
+        assert_eq!(quarantine.metadata().expect("cleanup tombstone").len(), 0);
+        let stable_entries = fs::read_dir(&root).expect("journal inventory").count();
+        for _ in 0..3 {
+            migrate_prepared_result_journals(
+                &namespace,
+                &receipt,
+                &mut fixture.ledger,
+                8,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .expect("repeat idempotent journal migration");
+        }
+        assert_eq!(
+            fs::read_dir(&root).expect("journal inventory").count(),
+            stable_entries
+        );
 
-        fs::write(&legacy_path, b"self-consistent forgery").expect("forged legacy state");
+        fs::write(&legacy_path, &legacy_state).expect("same-bytes forged legacy state");
         let metadata = fs::metadata(&legacy_path).expect("forged legacy identity");
         let forged = root.join(format!(
             ".{}.removing-v1-{:x}-{:x}",
@@ -2011,6 +2414,43 @@ mod tests {
                 DirectoryPreparedResultJournal::artifacts_present(namespace.path(), key).is_err()
             );
         }
+    }
+
+    #[test]
+    fn runtime_rejects_an_unsealed_zero_length_migration_tombstone() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let key = semantic_key(b"unsealed-tombstone");
+        let execution = ExecutionId::from_bytes([0x4d; 16]).expect("execution");
+        let (journal, _) = DirectoryPreparedResultJournal::create(
+            namespace.path(),
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            observation_result(0x5d, key.attempt()),
+        )
+        .expect("create current journal");
+        let legacy = journal.root().join(migration::JOURNAL_STATE_FILE_V1);
+        fs::write(&legacy, []).expect("empty forged legacy state");
+        let metadata = legacy.metadata().expect("forged identity");
+        let forged = journal.root().join(format!(
+            ".{}.removing-v1-{:x}-{:x}",
+            migration::JOURNAL_STATE_FILE_V1,
+            metadata.dev(),
+            metadata.ino()
+        ));
+        fs::rename(legacy, &forged).expect("publish forged tombstone");
+        drop(journal);
+
+        assert!(
+            DirectoryPreparedResultJournal::open(
+                namespace.path(),
+                key,
+                execution,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .is_err()
+        );
+        assert!(forged.exists());
     }
 
     #[test]
@@ -2423,6 +2863,96 @@ mod tests {
             assert!(staged.exists());
             assert!(moved.exists());
         }
+    }
+
+    #[test]
+    fn orphan_cleanup_tombstone_is_sealed_bounded_and_idempotent() {
+        let namespace = TempDir::new().expect("journal namespace");
+        let key = semantic_key(b"sealed-orphan");
+        let staged = staged_path(namespace.path(), key);
+        fs::create_dir(&staged).expect("empty staged directory");
+        let namespace_guard = crate::anchored_fs::AnchoredDirectory::new(
+            namespace
+                .path()
+                .canonicalize()
+                .expect("canonical namespace"),
+        )
+        .expect("namespace authority");
+        let (root_guard, entries) = inventory_orphan_directory(&namespace_guard, &staged)
+            .expect("inventory empty orphan")
+            .expect("empty orphan exists");
+        let objects =
+            orphan_cleanup_objects(&root_guard, &entries, true).expect("orphan cleanup objects");
+        crate::operational_state_migration::receipt::persist_phase_receipt(
+            &root_guard,
+            ORPHAN_CLEANUP_RECEIPT,
+            ORPHAN_CLEANUP_OUTPUT_SCHEMA,
+            objects,
+        )
+        .expect("complete receipt before simulated cut");
+        let receipt = staged.join(ORPHAN_CLEANUP_RECEIPT);
+        let pending = staged.join(ORPHAN_CLEANUP_RECEIPT_PENDING);
+        fs::rename(&receipt, &pending).expect("interrupt receipt publication");
+        let bytes = fs::read(&pending).expect("read pending receipt");
+        fs::write(&pending, &bytes[..bytes.len() / 2]).expect("partial receipt write");
+        drop(root_guard);
+        drop(namespace_guard);
+
+        let first = DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(
+            namespace.path(),
+            key,
+        )
+        .expect("seal empty orphan cleanup");
+        assert!(first.staged_removed);
+        let cardinality = fs::read_dir(namespace.path())
+            .expect("count terminal entries")
+            .count();
+        for _ in 0..3 {
+            assert_eq!(
+                DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(
+                    namespace.path(),
+                    key,
+                )
+                .expect("repeat sealed cleanup"),
+                PreparedResultJournalCleanupDisposition::default()
+            );
+            assert_eq!(
+                fs::read_dir(namespace.path())
+                    .expect("recount terminal entries")
+                    .count(),
+                cardinality
+            );
+        }
+        open_runtime_namespace(namespace.path()).expect("sealed tombstone is runtime-safe");
+
+        let logical = staged.file_name().expect("staged name");
+        let tombstone = fs::read_dir(namespace.path())
+            .expect("find terminal tombstone")
+            .map(|entry| entry.expect("terminal entry"))
+            .find(|entry| {
+                crate::anchored_fs::removal_original_name(&entry.file_name()).as_deref()
+                    == Some(logical)
+            })
+            .expect("terminal tombstone")
+            .path();
+        let moved_parent = TempDir::new().expect("moved tombstone parent");
+        let moved = moved_parent.path().join("terminal-tombstone");
+        fs::rename(&tombstone, &moved).expect("move authenticated tombstone");
+        fs::create_dir(&staged).expect("replacement directory");
+        fs::copy(
+            moved.join(ORPHAN_CLEANUP_RECEIPT),
+            staged.join(ORPHAN_CLEANUP_RECEIPT),
+        )
+        .expect("copy authenticated bytes to new inode");
+        let metadata = staged.metadata().expect("replacement identity");
+        let forged = staged.with_file_name(format!(
+            ".{}.removing-v1-{:x}-{:x}",
+            logical.to_string_lossy(),
+            metadata.dev(),
+            metadata.ino()
+        ));
+        fs::rename(&staged, forged).expect("publish self-consistent forged tombstone");
+        assert!(open_runtime_namespace(namespace.path()).is_err());
     }
 
     fn semantic_key(marker: &[u8]) -> AttemptExecutionKey {

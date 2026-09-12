@@ -1,16 +1,13 @@
 //! Directory-fd anchored filesystem authority.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{
-    AtFlags, Mode, OFlags, RenameFlags, ResolveFlags, mkdirat, open, openat2, renameat_with,
-    unlinkat,
-};
+use rustix::fs::{Mode, OFlags, RenameFlags, ResolveFlags, mkdirat, open, openat2, renameat_with};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -76,6 +73,15 @@ pub(crate) struct AnchoredFile {
 }
 
 impl AnchoredFile {
+    pub(crate) fn identity(&self) -> (u64, u64) {
+        (self.device, self.inode)
+    }
+
+    pub(crate) fn logical_name(&self) -> std::ffi::OsString {
+        self.removal_original_name()
+            .unwrap_or_else(|| self.name.clone())
+    }
+
     pub(crate) fn removal_original_name(&self) -> Option<std::ffi::OsString> {
         removal_identity(&self.name)
             .filter(|(_, device, inode)| *device == self.device && *inode == self.inode)
@@ -156,13 +162,14 @@ impl AnchoredFile {
     }
 
     fn remove_after_validation(&self, operation: &'static str) -> Result<(), AnchoredFsError> {
-        self.remove_after_validation_with(operation, || Ok(()))
+        self.remove_after_validation_with(operation, || Ok(()), || Ok(()))
     }
 
     fn remove_after_validation_with(
         &self,
         operation: &'static str,
         after_rename: impl FnOnce() -> Result<(), AnchoredFsError>,
+        before_destroy: impl FnOnce() -> Result<(), AnchoredFsError>,
     ) -> Result<(), AnchoredFsError> {
         if removal_identity(&self.name).is_some() {
             if self.removal_original_name().is_none() {
@@ -170,12 +177,9 @@ impl AnchoredFile {
                     path: self.path.clone(),
                 });
             }
-            unlinkat(&self.parent, &self.name, AtFlags::empty())
-                .map_err(|source| self.io_error(operation, source))?;
-            return self
-                .parent
-                .sync_all()
-                .map_err(|source| anchored_io("sync-directory", &self.path, source));
+            before_destroy()?;
+            self.destroy_contents(operation)?;
+            return self.verify_path_binding();
         }
         let mut quarantine = std::ffi::OsString::from(".");
         quarantine.push(&self.name);
@@ -221,11 +225,42 @@ impl AnchoredFile {
             });
         }
 
-        unlinkat(&self.parent, &quarantine, AtFlags::empty())
-            .map_err(|source| self.io_error(operation, source))?;
-        self.parent
-            .sync_all()
-            .map_err(|source| anchored_io("sync-directory", &self.path, source))
+        before_destroy()?;
+        self.destroy_contents(operation)?;
+        let descriptor = openat2(
+            &self.parent,
+            &quarantine,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+        )
+        .map_err(|source| self.io_error(operation, source))?;
+        let metadata = File::from(descriptor)
+            .metadata()
+            .map_err(|source| anchored_io(operation, &self.path, source))?;
+        if metadata.is_file() && metadata.dev() == self.device && metadata.ino() == self.inode {
+            Ok(())
+        } else {
+            Err(AnchoredFsError::DirectoryReplaced {
+                path: self.path.clone(),
+            })
+        }
+    }
+
+    fn destroy_contents(&self, operation: &'static str) -> Result<(), AnchoredFsError> {
+        use std::os::unix::io::AsRawFd;
+
+        // Linux cannot unlink by file descriptor. Zeroing the retained inode
+        // makes the destructive effect identity-bound; the authenticated,
+        // deterministic quarantine name remains as a bounded tombstone.
+        let descriptor = PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()));
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&descriptor)
+            .map_err(|source| anchored_io(operation, &self.path, source))?;
+        file.set_len(0)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| anchored_io(operation, &self.path, source))
     }
 
     fn open_for_write(&self) -> Result<File, AnchoredFsError> {
@@ -260,6 +295,10 @@ impl AnchoredFile {
 }
 
 impl AnchoredDirectory {
+    pub(crate) fn identity(&self) -> (u64, u64) {
+        (self.device, self.inode)
+    }
+
     pub(crate) fn new(path: PathBuf) -> Result<Self, AnchoredFsError> {
         let descriptor = open(
             &path,
@@ -492,6 +531,15 @@ impl AnchoredDirectory {
         child: &AnchoredDirectory,
         operation: &'static str,
     ) -> Result<(), AnchoredFsError> {
+        self.remove_bound_directory_with(child, operation, || Ok(()))
+    }
+
+    fn remove_bound_directory_with(
+        &self,
+        child: &AnchoredDirectory,
+        operation: &'static str,
+        after_validation: impl FnOnce() -> Result<(), AnchoredFsError>,
+    ) -> Result<(), AnchoredFsError> {
         self.verify_path_binding()?;
         child.verify_path_binding()?;
         let (parent, name) = self.open_parent(&child.path, operation)?;
@@ -501,11 +549,8 @@ impl AnchoredDirectory {
                     path: child.path.clone(),
                 });
             }
-            unlinkat(&parent, &name, AtFlags::REMOVEDIR)
-                .map_err(|source| self.io_error(operation, &child.path, source))?;
-            return parent
-                .sync_all()
-                .map_err(|source| anchored_io("sync-directory", &child.path, source));
+            after_validation()?;
+            return child.verify_path_binding();
         }
 
         let mut quarantine = std::ffi::OsString::from(".");
@@ -529,11 +574,8 @@ impl AnchoredDirectory {
                 path: child.path.clone(),
             });
         }
-        unlinkat(&parent, &quarantine, AtFlags::REMOVEDIR)
-            .map_err(|source| self.io_error(operation, &child.path, source))?;
-        parent
-            .sync_all()
-            .map_err(|source| anchored_io("sync-directory", &child.path, source))
+        after_validation()?;
+        quarantined.verify_path_binding()
     }
 
     pub(crate) fn create_directory(
@@ -812,7 +854,10 @@ mod tests {
                 .remove_bound_file(&resumed, "resume-removal")
                 .expect("finish removal");
             assert!(!path.exists());
-            assert!(!quarantine.exists());
+            assert_eq!(
+                fs::metadata(&quarantine).expect("removal tombstone").len(),
+                0
+            );
         }
 
         let root = TempDir::new().expect("forged root");
@@ -839,10 +884,14 @@ mod tests {
 
         assert!(
             pinned
-                .remove_after_validation_with("remove-state", || {
-                    fs::write(&path, b"occupied")
-                        .map_err(|source| anchored_io("occupy-restore-name", &path, source))
-                })
+                .remove_after_validation_with(
+                    "remove-state",
+                    || {
+                        fs::write(&path, b"occupied")
+                            .map_err(|source| anchored_io("occupy-restore-name", &path, source))
+                    },
+                    || Ok(())
+                )
                 .is_err()
         );
         assert_eq!(fs::read(&path).expect("occupied name"), b"occupied");
@@ -856,5 +905,70 @@ mod tests {
                     .to_string_lossy()
                     .contains(".removing-v1-"))
         );
+    }
+
+    #[test]
+    fn bound_removal_never_destroys_a_post_validation_substitution() {
+        let root = TempDir::new().expect("root");
+        let path = root.path().join("state");
+        fs::write(&path, b"same bytes").expect("pinned file");
+        let guard = AnchoredDirectory::new(root.path().to_owned()).expect("root guard");
+        let pinned = guard
+            .open_regular_optional(&path, "pin-state")
+            .expect("open state")
+            .expect("state exists");
+        let quarantine = root.path().join(format!(
+            ".state.removing-v1-{:x}-{:x}",
+            pinned.device, pinned.inode
+        ));
+        let moved = root.path().join("moved-quarantine");
+
+        assert!(
+            pinned
+                .remove_after_validation_with(
+                    "remove-state",
+                    || Ok(()),
+                    || {
+                        fs::rename(&quarantine, &moved).map_err(|source| {
+                            anchored_io("move-validated-quarantine", &quarantine, source)
+                        })?;
+                        fs::write(&quarantine, b"same bytes").map_err(|source| {
+                            anchored_io("replace-validated-quarantine", &quarantine, source)
+                        })?;
+                        Ok(())
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read(&quarantine).expect("replacement"), b"same bytes");
+        assert_eq!(fs::metadata(&moved).expect("destroyed target").len(), 0);
+
+        let child = root.path().join("child");
+        fs::create_dir(&child).expect("child");
+        let child_guard = guard.open_child(&child, "pin-child").expect("child guard");
+        let child_quarantine = root.path().join(format!(
+            ".child.removing-v1-{:x}-{:x}",
+            child_guard.device, child_guard.inode
+        ));
+        let moved_child = root.path().join("moved-child-quarantine");
+        assert!(
+            guard
+                .remove_bound_directory_with(&child_guard, "remove-child", || {
+                    fs::rename(&child_quarantine, &moved_child).map_err(|source| {
+                        anchored_io("move-validated-child-quarantine", &child_quarantine, source)
+                    })?;
+                    fs::create_dir(&child_quarantine).map_err(|source| {
+                        anchored_io(
+                            "replace-validated-child-quarantine",
+                            &child_quarantine,
+                            source,
+                        )
+                    })?;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(child_quarantine.is_dir());
+        assert!(moved_child.is_dir());
     }
 }

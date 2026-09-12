@@ -16,11 +16,18 @@
 //!   retention-state-v1
 //!   assignments/<two-hex>/<assignment-id-hex>
 //!   attempts/<two-hex>/<attempt-key-hash>
+//!   attempts/<two-hex>/.staging-*.removing-v1-<device>-<inode>
 //! ```
+//!
+//! The final form is a zero-length migration tombstone. Runtime inventory
+//! admits it only when its exact logical name and physical identity are sealed
+//! by the completed assignment rewrite receipt.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1585,7 +1592,7 @@ impl DirectoryAssignmentLedger {
         {
             return Err(corrupt("operational-state-migration-active"));
         }
-        validate_runtime_attempt_inventory(&storage_root)?;
+        validate_runtime_attempt_inventory(&storage_root, &authority)?;
         sync_directory(&storage_root)?;
         let retention_state = load_or_create_retention_state(&storage_root)?;
         Ok(Self {
@@ -1646,7 +1653,7 @@ impl DirectoryAssignmentLedger {
             return Err(corrupt("operational-state-migration-active"));
         }
         if !permit_migration {
-            validate_runtime_attempt_inventory(&storage_root)?;
+            validate_runtime_attempt_inventory(&storage_root, &authority)?;
         }
         let retention_path = storage_root.join(RETENTION_STATE_FILE);
         let retention_bytes = read_optional_with_limit(
@@ -1739,9 +1746,10 @@ impl DirectoryAssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
     ) -> Result<(), AssignmentLedgerError> {
-        let complete = visit_directory_attempt_states_bounded(
+        let complete = visit_directory_attempt_states_bounded_with_authority(
             &self.authority.anchored_path(),
             usize::MAX,
+            &self.authority,
             visitor,
         )?;
         if !complete {
@@ -1821,12 +1829,27 @@ pub fn visit_directory_attempt_states_bounded(
     maximum: usize,
     visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
 ) -> Result<bool, AssignmentLedgerError> {
+    let authority =
+        crate::anchored_fs::AnchoredDirectory::new(root.to_owned()).map_err(|error| {
+            let (operation, path, source) = error.into_io_parts("open-ledger-inventory-root");
+            io_error(operation, &path, source)
+        })?;
+    visit_directory_attempt_states_bounded_with_authority(root, maximum, &authority, visitor)
+}
+
+fn visit_directory_attempt_states_bounded_with_authority(
+    root: &Path,
+    maximum: usize,
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+) -> Result<bool, AssignmentLedgerError> {
     visit_bounded_ledger_inventory(
         root,
         maximum,
         crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES,
         u64::MAX,
         false,
+        Some(authority),
         &mut |entry| {
             let AttemptInventoryEntry::Record(path) = entry else {
                 return Ok(());
@@ -1843,26 +1866,86 @@ pub fn visit_directory_attempt_states_bounded(
     )
 }
 
-fn validate_runtime_attempt_inventory(root: &Path) -> Result<(), AssignmentLedgerError> {
+fn validate_runtime_attempt_inventory(
+    root: &Path,
+    authority: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<(), AssignmentLedgerError> {
     let maximum = crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES;
-    if visit_bounded_ledger_inventory(root, maximum, maximum, u64::MAX, false, &mut |entry| {
-        let AttemptInventoryEntry::Record(path) = entry else {
-            return Ok(());
-        };
-        let bytes = read_optional_bounded(path)?
-            .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
-        decode_attempt_state(&bytes).map(|_| ())
-    })? {
+    if visit_bounded_ledger_inventory(
+        root,
+        maximum,
+        maximum,
+        u64::MAX,
+        false,
+        Some(authority),
+        &mut |entry| {
+            let AttemptInventoryEntry::Record(path) = entry else {
+                return Ok(());
+            };
+            let bytes = read_optional_bounded(path)?
+                .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
+            decode_attempt_state(&bytes).map(|_| ())
+        },
+    )? {
         Ok(())
     } else {
         Err(corrupt("runtime-attempt-inventory-limit"))
     }
 }
 
+const ATTEMPT_MIGRATION_OUTPUT_SCHEMA: &str = "crucible.executor.attempt-state-record.v15";
+
+fn sealed_assignment_cleanup_keys(
+    guard: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<Option<std::collections::BTreeSet<String>>, AssignmentLedgerError> {
+    let Some(receipts) =
+        crate::operational_state_migration::receipt::completed_receipt_directory_guarded(guard)
+            .map_err(|source| {
+                io_error("open-completed-migration-receipts", guard.path(), source)
+            })?
+    else {
+        return Ok(None);
+    };
+    let receipt = crate::operational_state_migration::receipt::load_phase_receipt(
+        &receipts,
+        crate::operational_state_migration::receipt::ASSIGNMENT_RECEIPT,
+        ATTEMPT_MIGRATION_OUTPUT_SCHEMA,
+    )
+    .map_err(|_| corrupt("assignment-migration-receipt"))?
+    .ok_or_else(|| corrupt("assignment-migration-receipt-missing"))?;
+    Ok(Some(
+        receipt
+            .objects
+            .into_iter()
+            .filter(|object| object.key.starts_with("cleanup/"))
+            .map(|object| object.key)
+            .collect(),
+    ))
+}
+
+fn attempt_cleanup_key(
+    shard: &std::ffi::OsStr,
+    name: &std::ffi::OsStr,
+    device: u64,
+    inode: u64,
+) -> String {
+    let identity = crate::operational_state_migration::receipt::authenticated_id(
+        "crucible.assignment-migration-cleanup.v1",
+        &[
+            shard.as_bytes(),
+            name.as_bytes(),
+            &device.to_be_bytes(),
+            &inode.to_be_bytes(),
+        ],
+    );
+    format!("cleanup/{identity}")
+}
+
 enum AttemptInventoryEntry<'a> {
     Record(&'a Path),
     Staging(&'a Path),
     Removal(&'a Path),
+    Tombstone,
 }
 
 fn visit_bounded_ledger_inventory(
@@ -1871,8 +1954,16 @@ fn visit_bounded_ledger_inventory(
     maximum_entries: usize,
     maximum_bytes: u64,
     permit_staging: bool,
+    authority: Option<&crate::anchored_fs::AnchoredDirectory>,
     visitor: &mut dyn FnMut(AttemptInventoryEntry<'_>) -> Result<(), AssignmentLedgerError>,
 ) -> Result<bool, AssignmentLedgerError> {
+    let cleanup_keys = if permit_staging {
+        None
+    } else {
+        sealed_assignment_cleanup_keys(
+            authority.ok_or_else(|| corrupt("ledger-inventory-authority-missing"))?,
+        )?
+    };
     let mut pending = vec![root.to_owned()];
     let mut entries = 0usize;
     let mut bytes = 0u64;
@@ -1947,13 +2038,29 @@ fn visit_bounded_ledger_inventory(
                             visitor(AttemptInventoryEntry::Record(&path))?;
                         } else if permit_staging && is_staging_name(name) {
                             visitor(AttemptInventoryEntry::Staging(&path))?;
-                        } else if permit_staging
-                            && removal
-                                .as_deref()
-                                .and_then(|name| name.to_str())
-                                .is_some_and(is_staging_name)
+                        } else if removal
+                            .as_deref()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(is_staging_name)
                         {
-                            visitor(AttemptInventoryEntry::Removal(&path))?;
+                            if permit_staging {
+                                visitor(AttemptInventoryEntry::Removal(&path))?;
+                            } else if metadata.len() == 0
+                                && cleanup_keys.as_ref().is_some_and(|keys| {
+                                    removal.as_deref().is_some_and(|logical_name| {
+                                        keys.contains(&attempt_cleanup_key(
+                                            shard,
+                                            logical_name,
+                                            metadata.dev(),
+                                            metadata.ino(),
+                                        ))
+                                    })
+                                })
+                            {
+                                visitor(AttemptInventoryEntry::Tombstone)?;
+                            } else {
+                                return Err(corrupt("attempt-root-record-shape"));
+                            }
                         } else {
                             return Err(corrupt("attempt-root-record-shape"));
                         }

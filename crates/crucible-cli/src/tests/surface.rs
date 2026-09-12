@@ -1644,7 +1644,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         (
             "store",
             &[][..],
-            "about=Inspect or maintain a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.status=Describe one exact admitted store graph without accessing object bytes\ncommand.ensure=Read and authenticate one complete object without repair or promotion\ncommand.verify=Authenticate every bounded physical placement in one stable generation\ncommand.repair=Restore one missing or corrupt physical copy from an authenticated peer\ncommand.gc=Plan, cancel, or apply stopped-owner campaign-store garbage collection\ncommand.repack=Plan or apply deterministic repacking for one configured packed leaf\n",
+            "about=Inspect or maintain a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.status=Describe one exact admitted store graph without accessing object bytes\ncommand.ensure=Read and authenticate one complete object without repair or promotion\ncommand.verify=Authenticate every bounded physical placement in one stable generation\ncommand.repair=Repair one placement or migrate stopped-daemon operational state\ncommand.gc=Plan, cancel, or apply stopped-owner campaign-store garbage collection\ncommand.repack=Plan or apply deterministic repacking for one configured packed leaf\n",
         ),
         (
             "debug",
