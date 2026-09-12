@@ -436,7 +436,9 @@
     qualificationImage = true;
   };
   nativeAdapterPrimaryCells = [
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-intent"
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-outcome"
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
     "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/block-dependent-effect"
   ];

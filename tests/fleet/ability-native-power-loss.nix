@@ -424,16 +424,16 @@ in {
               ), (assignment, after_assignments[key])
 
 
-      def arm_boundary(sequence):
+      def arm_boundary(sequence, boundary="effect-returned", purpose="effect"):
           runtime.succeed(
               f"{COREUTILS}/rm -f {shlex.quote(HELD_EVENT)} "
               f"{shlex.quote(RESUMED_EVENT)} {shlex.quote(CONTINUE)}"
           )
           write_canonical(TARGET, {
               "action": "disconnect",
-              "boundary": "effect-returned",
+              "boundary": boundary,
               "operation_key": PUBLISH_OPERATION,
-              "purpose": "effect",
+              "purpose": purpose,
               "sequence": sequence,
           })
 
@@ -515,6 +515,7 @@ in {
           sequence,
           expected_boundary="effect-returned",
           expected_operation=PUBLISH_OPERATION,
+          expected_purpose="effect",
       ):
           runtime.wait_until_succeeds(
               f"test -s {shlex.quote(HELD_EVENT)}", timeout=120
@@ -523,7 +524,7 @@ in {
           event = held["event"]
           assert held["sequence"] == sequence, held
           assert event["boundary"] == expected_boundary, held
-          assert event["purpose"] == "effect", held
+          assert event["purpose"] == expected_purpose, held
           assert event["operation"]["operation"]["key"] == expected_operation, held
           assert event["cancelled"] is False, held
           if OBSERVER_FORWARD_ENABLED:
@@ -556,7 +557,7 @@ in {
           return resumed
 
 
-      def transaction_at_boundary(held):
+      def transaction_at_boundary(held, completed=False):
           generation = current_generation()
           transaction = held["event"]["transaction"]
           plan = held["event"]["operation"]["plan"]
@@ -602,7 +603,7 @@ in {
           ]
           kinds = [event["kind"] for event in target_events]
           assert "effect-started" in kinds, (kinds, diagnostic)
-          assert "effect-completed" not in kinds, (kinds, diagnostic)
+          assert ("effect-completed" in kinds) == completed, (kinds, diagnostic)
           assert not any(kind.startswith("reconciled-") for kind in kinds), (
               kinds,
               diagnostic,
@@ -846,6 +847,9 @@ in {
           ordinal,
           operation_identity,
           sequence,
+          expected_kinds=None,
+          expected_boundaries=None,
+          continuation_required=True,
       ):
           record = read_json(
               f"/var/lib/profiles/system/gen-{generation}/activation.json"
@@ -863,31 +867,37 @@ in {
           ))
           target_events = timeline_events(diagnostic, ordinal)
           kinds = [event["kind"] for event in target_events]
-          assert kinds == [
-              "operation-admitted",
-              "effect-started",
-              "operation-admitted",
-              "reconciliation-started",
-              "reconciled-completed",
-          ], (kinds, diagnostic)
+          if expected_kinds is None:
+              expected_kinds = [
+                  "operation-admitted",
+                  "effect-started",
+                  "operation-admitted",
+                  "reconciliation-started",
+                  "reconciled-completed",
+              ]
+          assert kinds == expected_kinds, (kinds, diagnostic)
           sequences = [event["sequence"] for event in target_events]
           assert sequences == sorted(set(sequences)), target_events
           assert operation_identity["method"] == "publish", operation_identity
 
           observed = boundary_events(transaction, plan)
-          assert [
+          observed_boundaries = [
               (event["purpose"], event["boundary"])
               for event in observed
-          ] == [
-              ("effect", "effect-intent-durable"),
-              ("effect", "effect-returned"),
-              ("reconcile", "reconciliation-intent-durable"),
-              ("reconcile", "reconciliation-returned"),
-              ("reconcile", "reconciliation-outcome-durable"),
-          ], observed
+          ]
+          if expected_boundaries is None:
+              expected_boundaries = [
+                  ("effect", "effect-intent-durable"),
+                  ("effect", "effect-returned"),
+                  ("reconcile", "reconciliation-intent-durable"),
+                  ("reconcile", "reconciliation-returned"),
+                  ("reconcile", "reconciliation-outcome-durable"),
+              ]
+          assert observed_boundaries == expected_boundaries, observed
           positions = [event["transcript-position"] for event in observed]
           assert positions == sorted(set(positions)), observed
-          assert read_json(CONTINUE) == {"sequence": sequence}
+          if continuation_required:
+              assert read_json(CONTINUE) == {"sequence": sequence}
 
 
       print("waiting for the observer-enabled reference VM")
@@ -1375,6 +1385,251 @@ in {
       ), (process_boundary_events, dependent_boundary_events_after_recovery)
       process_authority = current_authority(process_state[1], process_state[2])
 
+      crash_cases = [
+          {
+              "scenario": "interrupt-after-durable-intent",
+              "boundary": "effect-intent-durable",
+              "response": "gamma-intent",
+              "completed_at_boundary": False,
+              "reconciliation_expected": True,
+              "expected_kinds": [
+                  "operation-admitted",
+                  "effect-started",
+                  "operation-admitted",
+                  "reconciliation-started",
+                  "reconciled-safe-to-retry",
+                  "operation-admitted",
+                  "effect-started",
+                  "effect-completed",
+              ],
+              "expected_boundaries": [
+                  ("effect", "effect-intent-durable"),
+                  ("reconcile", "reconciliation-intent-durable"),
+                  ("reconcile", "reconciliation-returned"),
+                  ("reconcile", "reconciliation-outcome-durable"),
+                  ("effect", "effect-intent-durable"),
+                  ("effect", "effect-returned"),
+                  ("effect", "effect-outcome-durable"),
+              ],
+          },
+          {
+              "scenario": "interrupt-after-durable-outcome",
+              "boundary": "effect-outcome-durable",
+              "response": "gamma-outcome",
+              "completed_at_boundary": True,
+              "reconciliation_expected": False,
+              "expected_kinds": [
+                  "operation-admitted",
+                  "effect-started",
+                  "effect-completed",
+              ],
+              "expected_boundaries": [
+                  ("effect", "effect-intent-durable"),
+                  ("effect", "effect-returned"),
+                  ("effect", "effect-outcome-durable"),
+              ],
+          },
+      ]
+      crash_results = {}
+      for case in crash_cases:
+          scenario = case["scenario"]
+          print(f"interrupting the package runtime for {scenario}")
+          activation = generate_activation_fixture(
+              f"{BOUNDARY_ROOT}/activation-{scenario}",
+              "alpha-v1",
+              case["response"],
+              f"{BOUNDARY_ROOT}/authority-{scenario}",
+          )
+          provision_operator_authority(
+              activation, f"{BOUNDARY_ROOT}/authority-{scenario}"
+          )
+          host = f"{BOUNDARY_ROOT}/host-{scenario}.nix"
+          write_activation_host(host, activation, OBSERVER_HOST_MODULE)
+          persist_fixture_file(host)
+          prior_generation = current_generation()
+          prior_route = route_body("gamma.example", 18082)
+          foreign_before, foreign_content_before_case = (
+              assert_managed_configuration_selected(activation, "nginx-primary")
+          )
+          recovery_drop_in = disable_automatic_activation_recovery()
+          arm_boundary(scenario, case["boundary"])
+          start_switch(f"ability-boundary-{scenario}.service", host, scenario)
+
+          held = held_boundary(scenario, case["boundary"])
+          state = transaction_at_boundary(
+              held, completed=case["completed_at_boundary"]
+          )
+          dependency = required_success_dependent(state[4], state[5])
+          journal_before_loss = runtime.succeed(
+              f"{COREUTILS}/sha256sum "
+              f"{shlex.quote(state[3] + '/execution.journal')}"
+          ).split()[0]
+          diagnostic_before = json.loads(runtime.succeed(
+              f"{AOS} --json ability diagnostic "
+              f"/var/lib/profiles/system/gen-{state[0]} "
+              f"{shlex.quote(state[1])}"
+          ))
+          dependent_before = timeline_events(diagnostic_before, dependency[0])
+          dependent_boundaries_before = boundary_events(
+              state[1], state[2], dependency[1]["key"]
+          )
+          assert dependent_before == [], (scenario, dependent_before)
+          assert dependent_boundaries_before == [], (
+              scenario,
+              dependent_boundaries_before,
+          )
+          route_before_recovery = route_body("gamma.example", 18082)
+          assert route_before_recovery == prior_route, (
+              scenario,
+              prior_route,
+              route_before_recovery,
+          )
+          selected_unsettled = None
+          if case["completed_at_boundary"]:
+              selected_unsettled, selected_content_unsettled = (
+                  assert_managed_configuration_selected(
+                      activation, "nginx-secondary"
+                  )
+              )
+              assert case["response"] in selected_content_unsettled, (
+                  scenario,
+                  selected_unsettled,
+              )
+          foreign_unsettled, foreign_content_unsettled_case = (
+              assert_managed_configuration_selected(activation, "nginx-primary")
+          )
+          assert foreign_unsettled == foreign_before
+          assert foreign_content_unsettled_case == foreign_content_before_case
+
+          kill_exact_activation_runtime()
+          wait_switch(f"ability-boundary-{scenario}.service", False)
+          runtime.wait_until_succeeds(
+              f"{SYSTEMCTL} is-failed --quiet aos-activate.service", timeout=120
+          )
+
+          generations = [prior_generation, state[0]]
+          assert len(set(generations)) == 2, (scenario, generations)
+          inventory_before_gc = retained_path_inventory(generations)
+          store_paths = retained_store_paths(generations, state[3])
+          assert_store_paths_exist(store_paths)
+          clean_unresolved = json.loads(runtime.succeed(
+              f"{APM} --json clean --system --generations --keep 1",
+              timeout=600,
+          ))
+          retained_unresolved = clean_unresolved["configuration"][
+              "generations_after"
+          ]
+          assert prior_generation in retained_unresolved, clean_unresolved
+          assert state[0] in retained_unresolved, clean_unresolved
+          runtime.succeed(f"{APM} gc", timeout=600)
+          assert retained_path_inventory(generations) == inventory_before_gc
+          assert_store_paths_exist(store_paths)
+          if selected_unsettled is not None:
+              selected_after_unsettled_gc, selected_content_after_unsettled_gc = (
+                  assert_managed_configuration_selected(
+                      activation, "nginx-secondary"
+                  )
+              )
+              assert selected_after_unsettled_gc == selected_unsettled
+              assert selected_content_after_unsettled_gc == selected_content_unsettled
+          foreign_after_gc, foreign_content_after_gc_case = (
+              assert_managed_configuration_selected(activation, "nginx-primary")
+          )
+          assert foreign_after_gc == foreign_before
+          assert foreign_content_after_gc_case == foreign_content_before_case
+
+          resume_activation_recovery(recovery_drop_in)
+          if case["reconciliation_expected"]:
+              resumed_boundary(scenario, state[1], state[2])
+              release_reconciliation(scenario)
+          runtime.wait_until_succeeds(
+              f"{SYSTEMCTL} is-active --quiet aos-activate.service", timeout=600
+          )
+          runtime.wait_until_succeeds(
+              "systemctl is-active --quiet nginx-nginx-secondary.service",
+              timeout=300,
+          )
+          assert_recovered(
+              *state,
+              scenario,
+              expected_kinds=case["expected_kinds"],
+              expected_boundaries=case["expected_boundaries"],
+              continuation_required=case["reconciliation_expected"],
+          )
+          route_after_recovery = route_body("gamma.example", 18082)
+          assert case["response"] in route_after_recovery, (
+              scenario,
+              route_after_recovery,
+          )
+          selected_after_recovery, selected_content_after_recovery = (
+              assert_managed_configuration_selected(
+                  activation, "nginx-secondary"
+              )
+          )
+          foreign_after, foreign_content_after_case = (
+              assert_managed_configuration_selected(activation, "nginx-primary")
+          )
+          assert foreign_after == foreign_before
+          assert foreign_content_after_case == foreign_content_before_case
+          runtime.succeed(f"{APM} gc", timeout=600)
+          selected_after_gc, selected_content_after_gc_case = (
+              assert_managed_configuration_selected(
+                  activation, "nginx-secondary"
+              )
+          )
+          assert selected_after_gc == selected_after_recovery
+          assert selected_content_after_gc_case == selected_content_after_recovery
+
+          diagnostic_after = json.loads(runtime.succeed(
+              f"{AOS} --json ability diagnostic "
+              f"/var/lib/profiles/system/gen-{state[0]} "
+              f"{shlex.quote(state[1])}"
+          ))
+          publish_timeline = timeline_events(diagnostic_after, state[5])
+          publish_boundaries = boundary_events(state[1], state[2])
+          dependent_after = timeline_events(diagnostic_after, dependency[0])
+          dependent_boundaries_after = boundary_events(
+              state[1], state[2], dependency[1]["key"]
+          )
+          assert [event["kind"] for event in dependent_after] == [
+              "operation-admitted",
+              "effect-started",
+              "effect-completed",
+          ], (scenario, dependent_after)
+          assert [
+              (event["purpose"], event["boundary"])
+              for event in dependent_boundaries_after
+          ] == [
+              ("effect", "effect-intent-durable"),
+              ("effect", "effect-returned"),
+              ("effect", "effect-outcome-durable"),
+          ], (scenario, dependent_boundaries_after)
+          assert publish_timeline[-1]["sequence"] < dependent_after[0]["sequence"]
+          assert (
+              publish_boundaries[-1]["transcript-position"]
+              < dependent_boundaries_after[0]["transcript-position"]
+          )
+          crash_results[scenario] = {
+              "state": state,
+              "dependency": dependency,
+              "journal-before-loss": journal_before_loss,
+              "publish-timeline": publish_timeline,
+              "publish-boundaries": publish_boundaries,
+              "dependent-before": dependent_before,
+              "dependent-boundaries-before": dependent_boundaries_before,
+              "dependent-after": dependent_after,
+              "dependent-boundaries-after": dependent_boundaries_after,
+              "route-before-recovery": route_before_recovery,
+              "route-after-recovery": route_after_recovery,
+              "selected-after-gc": selected_after_gc,
+              "foreign-before": foreign_before,
+              "foreign-content-before": foreign_content_before_case,
+              "foreign-content-unsettled": foreign_content_unsettled_case,
+              "foreign-content-after-gc": foreign_content_after_gc_case,
+              "foreign-content-after-recovery": foreign_content_after_case,
+          }
+
+
       # Repeat the same real boundary, then remove power from the whole guest.
       # The relaunch keeps the writable disk and metadata channel, while the
       # next boot supplies a fresh systemd manager and admission decision.
@@ -1402,7 +1657,12 @@ in {
           activation_power, "nginx-secondary"
       )
       assert "gamma-power" in selected_power_content, selected_power
-      assert_route("gamma.example", 18082, "app-c", "gamma-process")
+      assert_route(
+          "gamma.example",
+          18082,
+          "app-c",
+          crash_cases[-1]["response"],
+      )
       boot_id_before = runtime.succeed(
           f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id"
       ).strip()
@@ -1465,129 +1725,173 @@ in {
       ).encode() == power_state[4]
       assert_route("gamma.example", 18082, "app-c", "gamma-power")
 
-      lost_result_cell = (
-          "managed-configuration/aos.managed-configuration-effects/abi-1/"
-          "publish/lose-external-result"
-      )
-      foreign_resource_cell = (
-          "managed-configuration/aos.managed-configuration-effects/abi-1/"
-          "publish/reject-foreign-resource-mutation"
-      )
-      blocked_dependent_cell = (
-          "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
-          "reload/block-dependent-effect"
-      )
-      NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS = {
-          lost_result_cell: process_dependency[3],
-          foreign_resource_cell: negative_dependency[3],
-          blocked_dependent_cell: negative_dependency[3],
+      crash_results["lose-external-result"] = {
+          "state": process_state,
+          "dependency": process_dependency,
+          "journal-before-loss": pending_journal_before_maintenance.split()[0],
+          "publish-timeline": process_timeline,
+          "publish-boundaries": process_boundary_events,
+          "dependent-before": dependent_timeline_before_completion,
+          "dependent-boundaries-before": dependent_boundaries_before_completion,
+          "dependent-after": dependent_timeline_after_recovery,
+          "dependent-boundaries-after": dependent_boundary_events_after_recovery,
+          "route-before-recovery": dependent_route_while_unsettled,
+          "route-after-recovery": dependent_route_after_recovery,
+          "selected-after-gc": selected_after_gc,
+          "foreign-before": foreign_mapping_before,
+          "foreign-content-before": foreign_content_before,
+          "foreign-content-unsettled": foreign_content_unsettled,
+          "foreign-content-after-gc": foreign_content_after_gc,
+          "foreign-content-after-recovery": foreign_content_after_recovery,
       }
-      NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES = {
-          lost_result_cell: process_state[4],
-          foreign_resource_cell: negative_state[4],
-          blocked_dependent_cell: negative_state[4],
+
+      crash_dispositions = {
+          "interrupt-after-durable-intent": "reconciled-after-interruption",
+          "lose-external-result": "reconciled-completed",
+          "interrupt-after-durable-outcome": "completed-before-interruption",
       }
-      NATIVE_ADAPTER_MATRIX_PROBES = {
-          lost_result_cell: {
+      interruption_indexes = {
+          "interrupt-after-durable-intent": 0,
+          "lose-external-result": 1,
+          "interrupt-after-durable-outcome": 2,
+      }
+
+
+      def crash_probes(scenario, result):
+          state = result["state"]
+          dependency = result["dependency"]
+          publish_timeline = result["publish-timeline"]
+          publish_boundaries = result["publish-boundaries"]
+          dependent_after = result["dependent-after"]
+          dependent_boundaries_after = result["dependent-boundaries-after"]
+          disposition = crash_dispositions[scenario]
+          selected = result["selected-after-gc"]
+          foreign = result["foreign-before"]
+
+          return {
               "durable-attempt-state-classified": {
                   "kind": "journal-timeline",
-                  "disposition": "reconciled-completed",
+                  "disposition": disposition,
                   "detail": (
-                      "The durable journal retained one indeterminate Publish and "
-                      "settled it through reconciliation without a second effect."
+                      "The native journal retained the exact interrupted Publish "
+                      "boundary and recovered it without exposing its successor early."
                   ),
                   "observations": {
-                      "transaction": process_state[1],
-                      "plan": process_state[2],
-                      "operation": process_state[6],
-                      "journal-before-loss": pending_journal_before_maintenance.split()[0],
-                      "timeline": process_timeline,
-                      "boundary-timeline": boundary_timeline(
-                          process_boundary_events
-                      ),
-                      "effect-return-position": process_boundary_events[1][
-                          "transcript-position"
-                      ],
-                      "reconciliation-return-position": process_boundary_events[3][
+                      "transaction": state[1],
+                      "plan": state[2],
+                      "operation": state[6],
+                      "journal-before-loss": result["journal-before-loss"],
+                      "timeline": publish_timeline,
+                      "boundary-timeline": boundary_timeline(publish_boundaries),
+                      "interruption-position": publish_boundaries[
+                          interruption_indexes[scenario]
+                      ]["transcript-position"],
+                      "settlement-position": publish_boundaries[-1][
                           "transcript-position"
                       ],
                   },
               },
               "at-most-one-resource-owner": {
                   "kind": "ownership-inventory",
-                  "disposition": "reconciled-completed",
+                  "disposition": disposition,
                   "detail": (
                       "The managed-configuration catalog selected one exact "
                       "resource marker before and after collection."
                   ),
                   "observations": {
-                      "resource": selected_process["resource"],
-                      "destination": selected_process["qualification"]["destination"],
-                      "revision": selected_process["revision"],
+                      "resource": selected["resource"],
+                      "destination": selected["qualification"]["destination"],
+                      "revision": selected["revision"],
                       "matching-markers": 1,
-                      "selected-after-gc": selected_after_gc == selected_process,
+                      "selected-after-gc": True,
                   },
               },
               "foreign-resources-unchanged": {
                   "kind": "foreign-resource-snapshot",
-                  "disposition": "reconciled-completed",
+                  "disposition": disposition,
                   "detail": (
                       "The independently selected primary configuration retained "
                       "the same mapping and bytes through loss, GC, and recovery."
                   ),
                   "observations": {
-                      "resource": foreign_mapping_before["resource"],
-                      "revision": foreign_mapping_before["revision"],
-                      "content-before": foreign_content_before,
-                      "content-unsettled": foreign_content_unsettled,
-                      "content-after-gc": foreign_content_after_gc,
-                      "content-after-recovery": foreign_content_after_recovery,
+                      "resource": foreign["resource"],
+                      "revision": foreign["revision"],
+                      "content-before": result["foreign-content-before"],
+                      "content-unsettled": result["foreign-content-unsettled"],
+                      "content-after-gc": result["foreign-content-after-gc"],
+                      "content-after-recovery": result[
+                          "foreign-content-after-recovery"
+                      ],
                   },
               },
               "dependent-effects-not-executed": {
                   "kind": "dependency-barrier",
-                  "disposition": "reconciled-completed",
+                  "disposition": disposition,
                   "detail": (
                       "The checked reload successor had no journal or boundary "
-                      "event before Publish reconciliation completed, then ran "
+                      "event before Publish recovery settled, then ran "
                       "once and changed the consumer route."
                   ),
                   "observations": {
-                      "publish-operation": process_state[6],
-                      "dependent-operation": process_dependency[1],
-                      "dependency-edge": process_dependency[2],
-                      "timeline-before-completion": (
-                          dependent_timeline_before_completion
-                      ),
+                      "publish-operation": state[6],
+                      "dependent-operation": dependency[1],
+                      "dependency-edge": dependency[2],
+                      "timeline-before-completion": result["dependent-before"],
                       "effect-boundaries-before-completion": boundary_timeline(
-                          dependent_boundaries_before_completion
+                          result["dependent-boundaries-before"]
                       ),
-                      "publish-reconciled-sequence": publish_reconciled[0][
-                          "sequence"
-                      ],
-                      "publish-reconciliation-return-position": (
-                          process_boundary_events[3]["transcript-position"]
+                      "publish-settlement-sequence": publish_timeline[-1]["sequence"],
+                      "publish-settlement-position": (
+                          publish_boundaries[-1]["transcript-position"]
                       ),
-                      "timeline-after-recovery": (
-                          dependent_timeline_after_recovery
-                      ),
+                      "timeline-after-recovery": dependent_after,
                       "effect-boundary-timeline": boundary_timeline(
-                          dependent_boundary_events_after_recovery
+                          dependent_boundaries_after
                       ),
                       "dependent-effect-return-position": (
-                          dependent_boundary_events_after_recovery[1][
-                              "transcript-position"
-                          ]
+                          dependent_boundaries_after[1]["transcript-position"]
                       ),
-                      "route-while-unsettled": dependent_route_while_unsettled,
-                      "route-after-recovery": dependent_route_after_recovery,
+                      "route-while-unsettled": result["route-before-recovery"],
+                      "route-after-recovery": result["route-after-recovery"],
                       "changed-only-after-recovery": (
-                          dependent_route_while_unsettled
-                          != dependent_route_after_recovery
+                          result["route-before-recovery"]
+                          != result["route-after-recovery"]
                       ),
                   },
               },
-          },
+          }
+
+
+      matrix_cell_prefix = (
+          "managed-configuration/aos.managed-configuration-effects/abi-1/"
+          "publish/"
+      )
+      foreign_resource_cell = matrix_cell_prefix + "reject-foreign-resource-mutation"
+      blocked_dependent_cell = (
+          "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+          "reload/block-dependent-effect"
+      )
+      NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS = {
+          matrix_cell_prefix + scenario: result["dependency"][3]
+          for scenario, result in crash_results.items()
+      }
+      NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS.update({
+          foreign_resource_cell: negative_dependency[3],
+          blocked_dependent_cell: negative_dependency[3],
+      })
+      NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES = {
+          matrix_cell_prefix + scenario: result["state"][4]
+          for scenario, result in crash_results.items()
+      }
+      NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES.update({
+          foreign_resource_cell: negative_state[4],
+          blocked_dependent_cell: negative_state[4],
+      })
+      NATIVE_ADAPTER_MATRIX_PROBES = {
+          matrix_cell_prefix + scenario: crash_probes(scenario, result)
+          for scenario, result in crash_results.items()
+      }
+      NATIVE_ADAPTER_MATRIX_PROBES.update({
           foreign_resource_cell: {
               "durable-attempt-state-classified": {
                   "kind": "journal-timeline",
@@ -1767,7 +2071,7 @@ in {
                   },
               },
           },
-      }
+      })
     '';
   }
   // lib.optionalAttrs qualificationImage {

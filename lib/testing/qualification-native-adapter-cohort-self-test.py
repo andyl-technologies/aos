@@ -29,8 +29,8 @@ def rejected(module, spec, probes, scope, subject, plan_bundle):
             spec,
             probes,
             scope,
-            {scope[0]: subject},
-            {scope[0]: plan_bundle},
+            {cell_id: subject for cell_id in scope},
+            {cell_id: plan_bundle for cell_id in scope},
             "sha256:" + "11" * 32,
             "sha256:" + "22" * 32,
         )
@@ -52,7 +52,7 @@ def assert_semantic_validators(module, subject, cell, observations):
     cases = {
         "durable-attempt-state-classified": (
             observations["durable-attempt-state-classified"],
-            ("effect-return-position", 12),
+            ("interruption-position", 12),
         ),
         "at-most-one-resource-owner": (
             observations["at-most-one-resource-owner"],
@@ -830,8 +830,8 @@ def main() -> None:
                     "boundary": "reconciliation-outcome-durable",
                 },
             ],
-            "effect-return-position": 11,
-            "reconciliation-return-position": 13,
+            "interruption-position": 11,
+            "settlement-position": 14,
         },
         "at-most-one-resource-owner": {
             "resource": {"provider": "fixture", "key": "configuration"},
@@ -870,8 +870,8 @@ def main() -> None:
             },
             "timeline-before-completion": [],
             "effect-boundaries-before-completion": [],
-            "publish-reconciled-sequence": 8,
-            "publish-reconciliation-return-position": 13,
+            "publish-settlement-sequence": 8,
+            "publish-settlement-position": 13,
             "timeline-after-recovery": [
                 {"sequence": 9, "kind": "operation-admitted", "node-ordinal": 2},
                 {"sequence": 10, "kind": "effect-started", "node-ordinal": 2},
@@ -974,35 +974,153 @@ def main() -> None:
             for name in names
         }
     }
+    scope = [
+        module.QUALIFIED_CELL_PREFIX + scenario
+        for scenario in module.QUALIFIED_CRASH_SCENARIOS
+    ]
+    scenarios = {
+        "interrupt-after-durable-intent": {
+            "boundary": "after-durable-intent",
+            "failure": "injected-interruption",
+            "disposition": "reconciled-after-interruption",
+        },
+        "interrupt-after-durable-outcome": {
+            "boundary": "after-durable-outcome",
+            "failure": "injected-interruption",
+            "disposition": "completed-before-interruption",
+        },
+    }
+    for scenario, scenario_spec in scenarios.items():
+        scenario_cell_id = module.QUALIFIED_CELL_PREFIX + scenario
+        scenario_cell = copy.deepcopy(spec["cells"][0])
+        scenario_cell.update(
+            {
+                "id": scenario_cell_id,
+                "boundary": scenario_spec["boundary"],
+                "failure": scenario_spec["failure"],
+            }
+        )
+        spec["cells"].append(scenario_cell)
+
+        scenario_observations = copy.deepcopy(observations)
+        durable = scenario_observations["durable-attempt-state-classified"]
+        expected_timeline = module.EXPECTED_ATTEMPT_TIMELINES[scenario]
+        expected_boundaries = module.EXPECTED_ATTEMPT_BOUNDARIES[scenario]
+        offset = 20 if scenario == "interrupt-after-durable-intent" else 40
+        durable["transaction"] = "transaction-" + scenario
+        durable["journal-before-loss"] = (
+            "66" if scenario == "interrupt-after-durable-intent" else "77"
+        ) * 32
+        durable["timeline"] = [
+            {"sequence": offset + index, "kind": kind, "node-ordinal": 5}
+            for index, kind in enumerate(expected_timeline)
+        ]
+        durable["boundary-timeline"] = [
+            {
+                "transcript-position": offset + index,
+                "purpose": purpose,
+                "boundary": boundary,
+            }
+            for index, (purpose, boundary) in enumerate(expected_boundaries)
+        ]
+        interruption_index = {
+            "interrupt-after-durable-intent": 0,
+            "interrupt-after-durable-outcome": 2,
+        }[scenario]
+        durable["interruption-position"] = durable["boundary-timeline"][
+            interruption_index
+        ]["transcript-position"]
+        durable["settlement-position"] = durable["boundary-timeline"][-1][
+            "transcript-position"
+        ]
+
+        ownership = scenario_observations["at-most-one-resource-owner"]
+        ownership["revision"] = "revision-" + scenario
+        foreign = scenario_observations["foreign-resources-unchanged"]
+        for field in [
+            "content-before",
+            "content-unsettled",
+            "content-after-gc",
+            "content-after-recovery",
+        ]:
+            foreign[field] = "unchanged-" + scenario
+        dependency = scenario_observations["dependent-effects-not-executed"]
+        dependency["publish-settlement-sequence"] = durable["timeline"][-1][
+            "sequence"
+        ]
+        dependency["publish-settlement-position"] = durable[
+            "boundary-timeline"
+        ][-1]["transcript-position"]
+        dependent_offset = offset + len(expected_timeline) + 2
+        dependency["timeline-after-recovery"] = [
+            {
+                "sequence": dependent_offset + index,
+                "kind": kind,
+                "node-ordinal": 2,
+            }
+            for index, kind in enumerate(module.DEPENDENT_EFFECT_TIMELINE)
+        ]
+        dependency["effect-boundary-timeline"] = [
+            {
+                "transcript-position": dependent_offset + index,
+                "purpose": purpose,
+                "boundary": boundary,
+            }
+            for index, (purpose, boundary) in enumerate(
+                module.DEPENDENT_EFFECT_BOUNDARY_TIMELINE
+            )
+        ]
+        dependency["dependent-effect-return-position"] = dependency[
+            "effect-boundary-timeline"
+        ][1]["transcript-position"]
+        dependency["route-while-unsettled"] = "predecessor-" + scenario
+        dependency["route-after-recovery"] = "candidate-" + scenario
+        probes[scenario_cell_id] = {
+            name: {
+                "kind": module.POSTCONDITION_KINDS[name],
+                "detail": f"independent {scenario} {name} probe passed",
+                "disposition": scenario_spec["disposition"],
+                "observations": scenario_observations[name],
+            }
+            for name in names
+        }
+
+    spec["cells"].sort(key=lambda cell: cell["id"])
     cells, count = module.build_cells(
         spec,
         probes,
-        [cell_id],
-        {cell_id: subject},
-        {cell_id: plan_bundle},
+        scope,
+        {qualified: subject for qualified in scope},
+        {qualified: plan_bundle for qualified in scope},
         "sha256:" + "11" * 32,
         "sha256:" + "22" * 32,
     )
-    assert count == 4
-    assert all(value["passed"] for value in cells[0]["postconditions"].values())
-    assert set(cells[0]["probes"]) == set(names)
-    assert cells[0]["cohort_subject"]["subject"] == subject
-    assert cells[0]["cohort_subject"]["cell_id"] == cell_id
-    assert cells[0]["cohort_subject"]["cell_digest"] == module.sha256(spec["cells"][0])
+    assert count == 12
+    qualified_cells = {cell["id"]: cell for cell in cells}
+    assert all(
+        all(value["passed"] for value in qualified_cells[qualified]["postconditions"].values())
+        for qualified in scope
+    )
+    cell_observation = qualified_cells[cell_id]
+    cell_spec = next(cell for cell in spec["cells"] if cell["id"] == cell_id)
+    assert set(cell_observation["probes"]) == set(names)
+    assert cell_observation["cohort_subject"]["subject"] == subject
+    assert cell_observation["cohort_subject"]["cell_id"] == cell_id
+    assert cell_observation["cohort_subject"]["cell_digest"] == module.sha256(cell_spec)
     assert {
-        probe["cohort_subject_digest"] for probe in cells[0]["probes"].values()
-    } == {module.sha256(cells[0]["cohort_subject"])}
+        probe["cohort_subject_digest"] for probe in cell_observation["probes"].values()
+    } == {module.sha256(cell_observation["cohort_subject"])}
     assert {
-        probe["cell_id"] for probe in cells[0]["probes"].values()
+        probe["cell_id"] for probe in cell_observation["probes"].values()
     } == {cell_id}
     assert {
-        probe["cell_digest"] for probe in cells[0]["probes"].values()
-    } == {module.sha256(spec["cells"][0])}
-    assert_semantic_validators(module, subject, spec["cells"][0], observations)
-    assert_negative_semantic_validators(module, subject, spec["cells"][0])
+        probe["cell_digest"] for probe in cell_observation["probes"].values()
+    } == {module.sha256(cell_spec)}
+    assert_semantic_validators(module, subject, cell_spec, observations)
+    assert_negative_semantic_validators(module, subject, cell_spec)
     assert_postgresql_cohort(module)
 
-    first_cell = spec["cells"][0]
+    first_cell = cell_spec
     replay_cell = copy.deepcopy(first_cell)
     replay_cell["id"] = replay_cell["id"].replace(
         "managed-configuration/", "foreign-adapter/", 1
@@ -1079,13 +1197,13 @@ def main() -> None:
             mutated_subject["dependent-operation"], path, replacement
         )
         mutated_probes = probes_for_subject(mutated_subject)
-        rejected(module, spec, mutated_probes, [cell_id], mutated_subject, plan_bundle)
+        rejected(module, spec, mutated_probes, scope, mutated_subject, plan_bundle)
 
     def rejected_publish_operation(path, replacement):
         mutated_subject = copy.deepcopy(subject)
         replace_nested(mutated_subject["publish-operation"], path, replacement)
         mutated_probes = probes_for_subject(mutated_subject)
-        rejected(module, spec, mutated_probes, [cell_id], mutated_subject, plan_bundle)
+        rejected(module, spec, mutated_probes, scope, mutated_subject, plan_bundle)
 
     def rejected_author(role, field, replacement):
         mutated_subject = copy.deepcopy(subject)
@@ -1098,7 +1216,7 @@ def main() -> None:
             author["implementation-descriptor"] = replacement
             operation["key"]["scope"][1] = replacement.removeprefix("sha256:")
         mutated_probes = probes_for_subject(mutated_subject)
-        rejected(module, spec, mutated_probes, [cell_id], mutated_subject, plan_bundle)
+        rejected(module, spec, mutated_probes, scope, mutated_subject, plan_bundle)
 
     rejected_dependent_operation(("key", "scope", 0), "foreign")
     rejected_dependent_operation(("key", "scope", 1), "77" * 32)
@@ -1135,7 +1253,7 @@ def main() -> None:
     malformed_transaction[cell_id]["durable-attempt-state-classified"][
         "observations"
     ]["transaction"] = "not/a/local-key"
-    rejected(module, spec, malformed_transaction, [cell_id], subject, plan_bundle)
+    rejected(module, spec, malformed_transaction, scope, subject, plan_bundle)
 
     malformed_plan_subject = copy.deepcopy(subject)
     malformed_plan_subject["plan"] = "sha256:short"
@@ -1143,58 +1261,58 @@ def main() -> None:
     malformed_plan[cell_id]["durable-attempt-state-classified"]["observations"][
         "plan"
     ] = malformed_plan_subject["plan"]
-    rejected(module, spec, malformed_plan, [cell_id], malformed_plan_subject, plan_bundle)
+    rejected(module, spec, malformed_plan, scope, malformed_plan_subject, plan_bundle)
 
     substituted_plan = copy.deepcopy(probes)
     substituted_plan[cell_id]["durable-attempt-state-classified"][
         "observations"
     ]["plan"] = "sha256:" + "77" * 32
-    rejected(module, spec, substituted_plan, [cell_id], subject, plan_bundle)
+    rejected(module, spec, substituted_plan, scope, subject, plan_bundle)
 
     malformed_bundle_subject = copy.deepcopy(subject)
     malformed_bundle_subject["plan-bundle-digest"] = "sha256:" + "aa" * 32
-    rejected(module, spec, probes, [cell_id], malformed_bundle_subject, plan_bundle)
+    rejected(module, spec, probes, scope, malformed_bundle_subject, plan_bundle)
 
     malformed_journal = copy.deepcopy(probes)
     malformed_journal[cell_id]["durable-attempt-state-classified"][
         "observations"
     ]["journal-before-loss"] = "sha256:" + "55" * 32
-    rejected(module, spec, malformed_journal, [cell_id], subject, plan_bundle)
+    rejected(module, spec, malformed_journal, scope, subject, plan_bundle)
 
     foreign_scope = ["foreign/aos.interface/abi-1/publish/lose-external-result"]
     rejected(module, spec, probes, foreign_scope, subject, plan_bundle)
 
     missing = copy.deepcopy(probes)
     del missing[cell_id][names[0]]
-    rejected(module, spec, missing, [cell_id], subject, plan_bundle)
+    rejected(module, spec, missing, scope, subject, plan_bundle)
 
     wrong_kind = copy.deepcopy(probes)
     wrong_kind[cell_id][names[0]]["kind"] = "ownership-inventory"
-    rejected(module, spec, wrong_kind, [cell_id], subject, plan_bundle)
+    rejected(module, spec, wrong_kind, scope, subject, plan_bundle)
 
     wrong_disposition = copy.deepcopy(probes)
     wrong_disposition[cell_id][names[0]]["disposition"] = "invented-success"
-    rejected(module, spec, wrong_disposition, [cell_id], subject, plan_bundle)
+    rejected(module, spec, wrong_disposition, scope, subject, plan_bundle)
 
     unknown = copy.deepcopy(probes)
     unknown[cell_id][names[0]]["claimed"] = True
-    rejected(module, spec, unknown, [cell_id], subject, plan_bundle)
+    rejected(module, spec, unknown, scope, subject, plan_bundle)
 
     duplicate = copy.deepcopy(probes)
     duplicate[cell_id][names[1]]["observations"] = duplicate[cell_id][names[0]][
         "observations"
     ]
-    rejected(module, spec, duplicate, [cell_id], subject, plan_bundle)
+    rejected(module, spec, duplicate, scope, subject, plan_bundle)
 
     null_observation = copy.deepcopy(probes)
     null_observation[cell_id][names[0]]["observations"] = {"probe": None}
-    rejected(module, spec, null_observation, [cell_id], subject, plan_bundle)
+    rejected(module, spec, null_observation, scope, subject, plan_bundle)
 
     false_barrier = copy.deepcopy(probes)
     false_barrier[cell_id]["dependent-effects-not-executed"]["observations"][
         "changed-only-after-recovery"
     ] = False
-    rejected(module, spec, false_barrier, [cell_id], subject, plan_bundle)
+    rejected(module, spec, false_barrier, scope, subject, plan_bundle)
 
     reordered_timeline = copy.deepcopy(probes)
     timeline = reordered_timeline[cell_id]["durable-attempt-state-classified"][
@@ -1204,26 +1322,26 @@ def main() -> None:
         timeline[3]["kind"],
         timeline[1]["kind"],
     )
-    rejected(module, spec, reordered_timeline, [cell_id], subject, plan_bundle)
+    rejected(module, spec, reordered_timeline, scope, subject, plan_bundle)
 
     reordered_boundaries = copy.deepcopy(probes)
     boundary = reordered_boundaries[cell_id]["durable-attempt-state-classified"][
         "observations"
     ]["boundary-timeline"]
     boundary[1], boundary[3] = boundary[3], boundary[1]
-    rejected(module, spec, reordered_boundaries, [cell_id], subject, plan_bundle)
+    rejected(module, spec, reordered_boundaries, scope, subject, plan_bundle)
 
     early_dependent = copy.deepcopy(probes)
     early_dependent[cell_id]["dependent-effects-not-executed"]["observations"][
         "timeline-before-completion"
     ] = [{"sequence": 8, "kind": "operation-admitted", "node-ordinal": 2}]
-    rejected(module, spec, early_dependent, [cell_id], subject, plan_bundle)
+    rejected(module, spec, early_dependent, scope, subject, plan_bundle)
 
     wrong_dependent_ordinal = copy.deepcopy(probes)
     wrong_dependent_ordinal[cell_id]["dependent-effects-not-executed"][
         "observations"
     ]["dependent-operation"]["ordinal"] = 8
-    rejected(module, spec, wrong_dependent_ordinal, [cell_id], subject, plan_bundle)
+    rejected(module, spec, wrong_dependent_ordinal, scope, subject, plan_bundle)
 
 
 if __name__ == "__main__":

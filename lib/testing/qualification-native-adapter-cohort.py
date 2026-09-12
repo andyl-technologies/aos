@@ -31,12 +31,16 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}").fullmatch
 RAW_DIGEST = re.compile(r"[0-9a-f]{64}").fullmatch
 MAX_PROBE_FACTS = 32
 MAX_PROBE_BYTES = 64 * 1024
-MANAGED_CONFIGURATION_CELL_ID = (
-    "managed-configuration/aos.managed-configuration-effects/abi-1/"
-    "publish/lose-external-result"
+QUALIFIED_CELL_PREFIX = (
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/"
+)
+QUALIFIED_CRASH_SCENARIOS = (
+    "interrupt-after-durable-intent",
+    "lose-external-result",
+    "interrupt-after-durable-outcome",
 )
 PRIMARY_COHORT_CELL_IDS = [
-    MANAGED_CONFIGURATION_CELL_ID,
+    *(QUALIFIED_CELL_PREFIX + scenario for scenario in QUALIFIED_CRASH_SCENARIOS),
     (
         "managed-configuration/aos.managed-configuration-effects/abi-1/"
         "publish/reject-foreign-resource-mutation"
@@ -115,6 +119,45 @@ LOST_RESULT_BOUNDARY_TIMELINE = [
     ("reconcile", "reconciliation-returned"),
     ("reconcile", "reconciliation-outcome-durable"),
 ]
+INTERRUPTED_INTENT_TIMELINE = [
+    "operation-admitted",
+    "effect-started",
+    "operation-admitted",
+    "reconciliation-started",
+    "reconciled-safe-to-retry",
+    "operation-admitted",
+    "effect-started",
+    "effect-completed",
+]
+INTERRUPTED_INTENT_BOUNDARY_TIMELINE = [
+    ("effect", "effect-intent-durable"),
+    ("reconcile", "reconciliation-intent-durable"),
+    ("reconcile", "reconciliation-returned"),
+    ("reconcile", "reconciliation-outcome-durable"),
+    ("effect", "effect-intent-durable"),
+    ("effect", "effect-returned"),
+    ("effect", "effect-outcome-durable"),
+]
+DURABLE_OUTCOME_TIMELINE = [
+    "operation-admitted",
+    "effect-started",
+    "effect-completed",
+]
+DURABLE_OUTCOME_BOUNDARY_TIMELINE = [
+    ("effect", "effect-intent-durable"),
+    ("effect", "effect-returned"),
+    ("effect", "effect-outcome-durable"),
+]
+EXPECTED_ATTEMPT_TIMELINES = {
+    "interrupt-after-durable-intent": INTERRUPTED_INTENT_TIMELINE,
+    "lose-external-result": LOST_RESULT_TIMELINE,
+    "interrupt-after-durable-outcome": DURABLE_OUTCOME_TIMELINE,
+}
+EXPECTED_ATTEMPT_BOUNDARIES = {
+    "interrupt-after-durable-intent": INTERRUPTED_INTENT_BOUNDARY_TIMELINE,
+    "lose-external-result": LOST_RESULT_BOUNDARY_TIMELINE,
+    "interrupt-after-durable-outcome": DURABLE_OUTCOME_BOUNDARY_TIMELINE,
+}
 DEPENDENT_EFFECT_TIMELINE = [
     "operation-admitted",
     "effect-started",
@@ -336,7 +379,7 @@ def _validate_probe_facts(
         )
         return
 
-    scenario = cell["id"].rsplit("/", 1)[-1]
+    scenario = _cell_scenario(cell)
     if postcondition == "durable-attempt-state-classified":
         operation = observations.get("operation")
         timeline = observations.get("timeline")
@@ -399,8 +442,8 @@ def _validate_probe_facts(
             "operation",
             "timeline",
             "boundary-timeline",
-            "effect-return-position",
-            "reconciliation-return-position",
+            "interruption-position",
+            "settlement-position",
         }
         if (
             set(observations) != expected_fields
@@ -410,17 +453,17 @@ def _validate_probe_facts(
             or not _matches(RAW_DIGEST, observations.get("journal-before-loss"))
             or operation != cohort_subject["publish-operation"]
             or not _is_exact_timeline(
-                timeline, LOST_RESULT_TIMELINE, operation.get("ordinal")
+                timeline, EXPECTED_ATTEMPT_TIMELINES.get(scenario), operation.get("ordinal")
             )
             or not _is_exact_boundary_timeline(
-                boundary_timeline, LOST_RESULT_BOUNDARY_TIMELINE
+                boundary_timeline, EXPECTED_ATTEMPT_BOUNDARIES.get(scenario)
             )
-            or observations.get("effect-return-position")
-            != boundary_timeline[1]["transcript-position"]
-            or observations.get("reconciliation-return-position")
-            != boundary_timeline[3]["transcript-position"]
+            or observations.get("interruption-position")
+            != _interruption_position(scenario, boundary_timeline)
+            or observations.get("settlement-position")
+            != boundary_timeline[-1]["transcript-position"]
         ):
-            raise RuntimeError("journal probe does not prove lost-result reconciliation")
+            raise RuntimeError("journal probe does not prove exact crash recovery")
     elif postcondition == "at-most-one-resource-owner":
         if scenario in {
             "block-dependent-effect",
@@ -564,8 +607,8 @@ def _validate_probe_facts(
             "dependency-edge",
             "timeline-before-completion",
             "effect-boundaries-before-completion",
-            "publish-reconciled-sequence",
-            "publish-reconciliation-return-position",
+            "publish-settlement-sequence",
+            "publish-settlement-position",
             "timeline-after-recovery",
             "effect-boundary-timeline",
             "dependent-effect-return-position",
@@ -591,12 +634,12 @@ def _validate_probe_facts(
             or not _is_exact_boundary_timeline(
                 boundary_after, DEPENDENT_EFFECT_BOUNDARY_TIMELINE
             )
-            or not _is_nonnegative_int(observations.get("publish-reconciled-sequence"))
-            or observations["publish-reconciled-sequence"] >= timeline_after[0]["sequence"]
+            or not _is_nonnegative_int(observations.get("publish-settlement-sequence"))
+            or observations["publish-settlement-sequence"] >= timeline_after[0]["sequence"]
             or not _is_nonnegative_int(
-                observations.get("publish-reconciliation-return-position")
+                observations.get("publish-settlement-position")
             )
-            or observations["publish-reconciliation-return-position"]
+            or observations["publish-settlement-position"]
             >= boundary_after[0]["transcript-position"]
             or observations.get("dependent-effect-return-position")
             != boundary_after[1]["transcript-position"]
@@ -1069,6 +1112,28 @@ def endpoint_identity(endpoint: dict[str, Any]) -> dict[str, Any]:
         "implementation": endpoint["implementation"],
         "state_format": endpoint["state_format"],
     }
+
+
+def _cell_scenario(cell: dict[str, Any]) -> str:
+    """Returns the scenario suffix carried by an exact matrix cell."""
+
+    return cell["id"].rsplit("/", 1)[-1]
+
+
+def _interruption_position(
+    scenario: str, boundary_timeline: list[dict[str, Any]]
+) -> Any:
+    """Selects the exact transcript position where the process was killed."""
+
+    indexes = {
+        "interrupt-after-durable-intent": 0,
+        "lose-external-result": 1,
+        "interrupt-after-durable-outcome": 2,
+    }
+    try:
+        return boundary_timeline[indexes[scenario]]["transcript-position"]
+    except (IndexError, KeyError, TypeError) as error:
+        raise RuntimeError("matrix crash scenario has no interruption boundary") from error
 
 
 def _bound_cohort_subject(
