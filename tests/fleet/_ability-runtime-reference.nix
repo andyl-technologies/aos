@@ -13,6 +13,11 @@
     nginxRuntime = pkgs.nginx;
     systemdRuntime = pkgs.aos.packageRuntime;
   };
+  systemdManagerPackage = import ../abilities/reference-systemd-manager/package.nix {
+    inherit lib;
+    inherit (pkgs) mkDerivation;
+    packageRuntime = pkgs.aos.packageRuntime;
+  };
 
   orderedPackages = [
     {
@@ -34,6 +39,10 @@
     {
       name = "ability-reference-systemd";
       package = packageSet.systemd;
+    }
+    {
+      name = "ability-reference-systemd-manager";
+      package = systemdManagerPackage;
     }
   ];
 
@@ -60,6 +69,21 @@
     ../../systems/server-test.nix
     {
       environment.systemPackages = [pkgs.nginx pkgs.openssl pkgs.python3 reloadWrapper];
+      systemd.services = let
+        matrixUnit = name: {
+          description = "Disposable ${name} native systemd-manager fixture";
+          serviceConfig = {
+            Type = "simple";
+            ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+            ExecReload = "${pkgs.coreutils}/bin/touch /run/${name}.reloaded";
+          };
+        };
+      in {
+        aos-matrix-primary = matrixUnit "aos-matrix-primary";
+        aos-matrix-secondary = matrixUnit "aos-matrix-secondary";
+        aos-matrix-witness = matrixUnit "aos-matrix-witness";
+        aos-matrix-foreign = matrixUnit "aos-matrix-foreign";
+      };
       environment.etc."tmpfiles.d/ability-reference.conf".text = ''
         d /var/lib/aos 0700 root root - -
         d /var/lib/aos/ability-reference 0700 root root - -
@@ -80,11 +104,14 @@
         d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
       '';
       systemd.services = lib.genAttrs ["app-a" "app-b" "app-c"] (application: let
-        port = {
-          app-a = 19001;
-          app-b = 19002;
-          app-c = 19003;
-        }.${application};
+        port =
+          {
+            app-a = 19001;
+            app-b = 19002;
+            app-c = 19003;
+          }.${
+            application
+          };
       in {
         description = "Reference HTTP backend ${application}";
         wantedBy = ["multi-user.target"];
@@ -117,6 +144,21 @@
       d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
       d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
     ''};
+    systemd.services = let
+      matrixUnit = name: {
+        description = "Disposable ''${name} native systemd-manager fixture";
+        serviceConfig = {
+          Type = "simple";
+          ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+          ExecReload = "${pkgs.coreutils}/bin/touch /run/''${name}.reloaded";
+        };
+      };
+    in {
+      aos-matrix-primary = matrixUnit "aos-matrix-primary";
+      aos-matrix-secondary = matrixUnit "aos-matrix-secondary";
+      aos-matrix-witness = matrixUnit "aos-matrix-witness";
+      aos-matrix-foreign = matrixUnit "aos-matrix-foreign";
+    };
   '';
   qualificationExtraClosures =
     packageRoots
@@ -147,6 +189,7 @@
     }) [
       "ability-reference-managed-configuration"
       "ability-reference-systemd"
+      "ability-reference-systemd-manager"
     ];
 in {
   inherit
@@ -311,6 +354,8 @@ in {
           lifecycle="full",
           tls_version=None,
           tls_bundle=None,
+          systemd_manager_method=None,
+          systemd_manager_revision=None,
       ):
           tls_arguments = ""
           if tls_version is not None or tls_bundle is not None:
@@ -321,6 +366,18 @@ in {
               tls_arguments = (
                   f" --tls-version {shlex.quote(tls_version)}"
                   f" --tls-bundle {shlex.quote(tls_bundle)}"
+              )
+          systemd_manager_arguments = ""
+          if systemd_manager_method is not None or systemd_manager_revision is not None:
+              assert (
+                  systemd_manager_method is not None
+                  and systemd_manager_revision is not None
+              ), (systemd_manager_method, systemd_manager_revision)
+              systemd_manager_arguments = (
+                  " --systemd-manager-method "
+                  f"{shlex.quote(systemd_manager_method)}"
+                  " --systemd-manager-revision "
+                  f"{shlex.quote(systemd_manager_revision)}"
               )
           runtime.succeed(
               f"{COREUTILS}/rm -rf {shlex.quote(output)} "
@@ -355,7 +412,8 @@ in {
               f"{shlex.quote(primary_response)} "
               f"{shlex.quote(secondary_response)} --operator-authority-output "
               f"{shlex.quote(authority_staging)} --lifecycle "
-              f"{shlex.quote(lifecycle)}{tls_arguments}",
+              f"{shlex.quote(lifecycle)}{tls_arguments}"
+              f"{systemd_manager_arguments}",
               timeout=1200,
           )
           return json.loads(runtime.succeed(
