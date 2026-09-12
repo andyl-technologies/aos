@@ -24,7 +24,10 @@ use super::exposed_units::{
 };
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
-use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
+use super::profile::meta::{
+    delete_meta, list_meta, snapshot_profile_meta_to_generation,
+    validate_ordinary_profile_ability_state,
+};
 use super::registry::store_path_hash;
 use super::store::closure_paths;
 use super::types::InstalledMeta;
@@ -107,16 +110,19 @@ async fn run_inner(
     let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
+    let installed = list_meta(&inspect_profile)?;
+    validate_ordinary_profile_ability_state(&installed)
+        .context("admitting retained package state for removal")?;
 
     // Step 2: Find installed packages matching the requested names.
-    let to_remove = find_installed(&inspect_profile, packages)?;
+    let to_remove = select_installed_for_removal(&installed, packages)?;
 
     // Step 3: Collect hashes to remove.
     let mut remove_hashes = root_hashes_for_installed(&to_remove);
 
     // Step 4: If --autoremove, also find orphaned auto-installed deps.
     let orphans = if auto_remove {
-        find_orphans(&inspect_profile, &remove_hashes).await?
+        find_orphans(&installed, &remove_hashes).await?
     } else {
         Vec::new()
     };
@@ -224,10 +230,13 @@ pub async fn run_autoremove(
     let current_gen = inspect_profile
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
+    let installed = list_meta(&inspect_profile)?;
+    validate_ordinary_profile_ability_state(&installed)
+        .context("admitting retained package state for autoremove")?;
 
     // Step 2: Find orphaned packages.
     let empty_exclude: HashSet<String> = HashSet::new();
-    let orphans = find_orphans(&inspect_profile, &empty_exclude).await?;
+    let orphans = find_orphans(&installed, &empty_exclude).await?;
 
     if orphans.is_empty() {
         if printer.mode() == OutputMode::Json {
@@ -386,14 +395,6 @@ fn installed_meta_json(meta: &InstalledMeta) -> serde_json::Value {
     })
 }
 
-/// Find installed metadata entries matching package names.
-///
-/// Returns the matching entries. Errors on any name not found in the profile.
-fn find_installed(profile: &Profile, names: &[String]) -> Result<Vec<InstalledMeta>> {
-    let all = list_meta(profile)?;
-    select_installed_for_removal(&all, names)
-}
-
 /// Select installed entries that should be removed for requested package names.
 ///
 /// Explicit entries are profile roots the user intentionally installed. If an
@@ -458,14 +459,14 @@ fn select_installed_for_removal(
 /// An orphan is a package with `explicit=false` that would not be needed
 /// after removing the packages in `pending_remove_hashes`.
 async fn find_orphans(
-    profile: &Profile,
+    installed: &[InstalledMeta],
     pending_remove_hashes: &HashSet<String>,
 ) -> Result<Vec<InstalledMeta>> {
-    let all = list_meta(profile)?;
-    let needed_hashes = needed_hashes_for_remaining_explicit(&all, pending_remove_hashes).await?;
+    let needed_hashes =
+        needed_hashes_for_remaining_explicit(installed, pending_remove_hashes).await?;
 
     Ok(find_orphans_from_meta(
-        &all,
+        installed,
         pending_remove_hashes,
         &needed_hashes,
     ))
@@ -812,7 +813,9 @@ mod tests {
         .unwrap();
         write_meta(&profile, "ghi789", &sample_installed("jq", "ghi789", true)).unwrap();
 
-        let found = find_installed(&profile, &["curl".into(), "jq".into()]).unwrap();
+        let installed = list_meta(&profile).unwrap();
+        let found =
+            select_installed_for_removal(&installed, &["curl".into(), "jq".into()]).unwrap();
         assert_eq!(found.len(), 2);
 
         let names: HashSet<String> = found
@@ -836,7 +839,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = find_installed(&profile, &["nonexistent".into()]);
+        let installed = list_meta(&profile).unwrap();
+        let result = select_installed_for_removal(&installed, &["nonexistent".into()]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("nonexistent"), "error was: {err}");
@@ -1018,7 +1022,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let profile = test_profile(&tmp);
 
-        let result = find_installed(&profile, &["curl".into()]);
+        let installed = list_meta(&profile).unwrap();
+        let result = select_installed_for_removal(&installed, &["curl".into()]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("curl"), "error was: {err}");

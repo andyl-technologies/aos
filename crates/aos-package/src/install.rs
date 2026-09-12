@@ -49,7 +49,8 @@ use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
+    delete_meta, list_meta, snapshot_profile_meta_to_generation,
+    validate_ordinary_profile_ability_state, write_meta,
 };
 use super::provenance;
 use super::registry::{RegistrySet, keys, store_path_hash};
@@ -195,6 +196,8 @@ async fn run_inner(
 
     let inspect_profile = Profile::open_readonly(config.scope);
     let installed = list_meta(&inspect_profile)?;
+    validate_ordinary_profile_ability_state(&installed)
+        .context("admitting retained package state for install")?;
     if require_installed || reinstall {
         ensure_reinstall_targets_installed(packages, &installed)?;
     }

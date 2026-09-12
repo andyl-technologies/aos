@@ -20,7 +20,7 @@ use super::config::ApmConfig;
 use super::exposed_units::{rebuild_generation_expose_roots, reconcile_system_profile};
 use super::platform::native_platform;
 use super::profile::Profile;
-use super::profile::meta::{self, list_meta};
+use super::profile::meta::{self, list_meta, validate_ordinary_profile_ability_state};
 use super::registry::RegistrySet;
 use super::types::{AbilityPackageMeta, ConfigGeneration, ProfileScope, ReactivationPlan};
 use aos_core::output::{OutputMode, Printer};
@@ -146,6 +146,8 @@ pub async fn run(
 ) -> Result<()> {
     let json_mode = printer.mode() == OutputMode::Json;
     let inspect_profile = Profile::open_readonly(config.scope);
+    let installed = list_meta(&inspect_profile)?;
+    validate_ordinary_profile_ability_state(&installed)?;
 
     // Must have a current generation to roll back from.
     let current = match inspect_profile.current_generation()? {
@@ -176,6 +178,7 @@ pub async fn run(
             None => bail!("no previous generation to roll back to"),
         }
     };
+    validate_ordinary_generation_ability_state(target)?;
 
     // Show what we are about to do.
     if !json_mode {
@@ -267,6 +270,20 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Validates retained package snapshots before a generation can be selected.
+fn validate_ordinary_generation_ability_state(
+    generation: &super::profile::Generation,
+) -> Result<()> {
+    let mut retained = Vec::new();
+    for (hash, _) in generation.roots()? {
+        if let Some(installed) = meta::read_generation_meta(generation, &hash)? {
+            retained.push(installed);
+        }
+    }
+
+    validate_ordinary_profile_ability_state(&retained)
 }
 
 fn verify_target_ability_packages(
@@ -570,7 +587,11 @@ fn describe_root(registries: &RegistrySet, hash: &str, target: &std::path::Path)
 #[cfg(test)]
 mod tests {
     use crate::profile::Profile;
-    use crate::types::{AbilityPackageMeta, ConfigGeneration, ProfileScope, ReactivationPlan};
+    use crate::profile::meta::{snapshot_profile_meta_to_generation, write_meta};
+    use crate::types::{
+        AbilityPackageMeta, ApmMeta, ConfigGeneration, FEATURE_ABILITY_EFFECTS_V1, InstalledMeta,
+        ProfileScope, ReactivationPlan,
+    };
     use tempfile::TempDir;
 
     fn test_profile(tmp: &TempDir) -> Profile {
@@ -594,6 +615,61 @@ mod tests {
             artifacts: Vec::new(),
             provenance: "provenance/a/ability.intoto.jsonl".to_string(),
         }
+    }
+
+    fn installed_meta_with_ability(ability: AbilityPackageMeta) -> InstalledMeta {
+        InstalledMeta {
+            store_path: "/nix/store/11111111111111111111111111111111-owner".to_string(),
+            pushed_at: 1,
+            pushed_by: "apm".to_string(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: 1,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: "owner".to_string(),
+                version: "1.0.0".to_string(),
+                explicit: true,
+                registry: "test-reg".to_string(),
+                installed_at: "2026-09-11T00:00:00Z".to_string(),
+                held: false,
+                source_drv: String::new(),
+                source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                config_module: None,
+                documentation: None,
+                ability: Some(ability),
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
+            }),
+        }
+    }
+
+    #[test]
+    fn rollback_rejects_structured_effects_in_retained_generation() {
+        let tmp = TempDir::new().unwrap();
+        let profile = test_profile(&tmp);
+        let generation = profile.new_generation().unwrap();
+        let hash = "11111111111111111111111111111111";
+        let mut ability =
+            ability_meta("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-owner-abilities");
+        ability.activation_mode = "structured-effects".to_string();
+        let installed = installed_meta_with_ability(ability);
+        std::fs::create_dir_all(generation.path.join("usr")).unwrap();
+        std::os::unix::fs::symlink(
+            &installed.store_path,
+            generation.path.join("usr").join(hash),
+        )
+        .unwrap();
+        write_meta(&profile, hash, &installed).unwrap();
+        snapshot_profile_meta_to_generation(&profile, &generation).unwrap();
+
+        let error = super::validate_ordinary_generation_ability_state(&generation)
+            .expect_err("rollback must reject an unsupported retained activation owner");
+
+        assert!(error.to_string().contains(FEATURE_ABILITY_EFFECTS_V1));
     }
 
     #[test]

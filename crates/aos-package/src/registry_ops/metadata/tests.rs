@@ -14,12 +14,13 @@ use crate::registry_ops::test_support::{
 };
 use crate::types::{
     AbilityPackageMeta, AttestationMeta, DocumentationArtifactMeta, ExposeMeta,
-    FEATURE_ABILITIES_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
-    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
-    FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
-    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
-    PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
+    FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
+    FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
+    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
+    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
+    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryUkiEntry, SbatEntry,
+    UkiSlot,
 };
 use std::fs;
 use std::path::Path;
@@ -166,6 +167,25 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         );
     }
     assert_eq!(platform.ability.as_ref(), Some(&ability));
+
+    let mut structured_ability = ability;
+    structured_ability.activation_mode = "structured-effects".to_string();
+    let structured_recorded =
+        record_ability_output(&recorded, "demo", "1", "x86_64-linux", &structured_ability)
+            .expect("record structured ability output");
+    let structured = crate::registry::parse::parse_package_file(&structured_recorded)
+        .expect("parse structured package metadata");
+    let structured_platform = &structured.versions[0].platforms["x86_64-linux"];
+    for features in [
+        structured_platform.requires_features.as_slice(),
+        structured_platform.references.requires_features(),
+    ] {
+        assert!(
+            features
+                .iter()
+                .any(|feature| feature == FEATURE_ABILITY_EFFECTS_V1)
+        );
+    }
 }
 
 #[test]

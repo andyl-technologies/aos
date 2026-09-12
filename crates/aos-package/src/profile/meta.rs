@@ -26,7 +26,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{Generation, Profile, atomic_write};
 use crate::registry::{RegistrySet, store_path_hash};
-use crate::types::{ApmMeta, InstalledMeta};
+use crate::types::{ApmMeta, FEATURE_ABILITY_EFFECTS_V1, InstalledMeta};
 
 // ---------------------------------------------------------------------------
 // Write / read / delete individual metadata entries
@@ -207,6 +207,45 @@ pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledMeta>> {
     }
 
     Ok(results)
+}
+
+/// Validates persisted ability metadata before an ordinary profile mutation.
+///
+/// Ordinary package commands do not own structured lifecycle effects. This
+/// retained-state gate prevents them from carrying, replacing, or removing a
+/// package whose activation belongs to the native ability dispatcher.
+///
+/// # Errors
+///
+/// Returns an error when retained ability metadata is malformed or requires
+/// structured effect activation.
+pub(crate) fn validate_ordinary_profile_ability_state(installed: &[InstalledMeta]) -> Result<()> {
+    for installed_meta in installed {
+        let Some(apm) = &installed_meta.apm else {
+            continue;
+        };
+        let Some(ability) = &apm.ability else {
+            continue;
+        };
+
+        if ability.activation_mode == "structured-effects" {
+            bail!(
+                "installed package '{}@{}' requires unsupported registry feature '{}'; refusing ordinary package mutation",
+                apm.name,
+                apm.version,
+                FEATURE_ABILITY_EFFECTS_V1,
+            );
+        }
+
+        crate::ability_package::validate_ability_package_meta(ability).with_context(|| {
+            format!(
+                "validating retained ability metadata for installed package '{}@{}'",
+                apm.name, apm.version
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 /// Find all metadata entries from a specific registry.
@@ -450,7 +489,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    use crate::types::ProfileScope;
+    use crate::types::{AbilityPackageMeta, ProfileScope};
 
     fn test_profile(tmp: &TempDir) -> Profile {
         Profile::open_at(tmp.path().to_path_buf(), ProfileScope::User).unwrap()
@@ -483,6 +522,26 @@ mod tests {
                 bpf_lsm: None,
                 attestation: Default::default(),
             }),
+        }
+    }
+
+    fn ability_meta(activation_mode: &str) -> AbilityPackageMeta {
+        AbilityPackageMeta {
+            store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1,
+            references: Vec::new(),
+            manifest_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            manifest_size: 1,
+            package_digest:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            activation_mode: activation_mode.to_string(),
+            artifacts: Vec::new(),
+            provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
         }
     }
 
@@ -521,6 +580,27 @@ mod tests {
 
         let result = read_meta(&profile, "nonexistent").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn ordinary_profile_mutations_accept_contracts_only_ability_state() {
+        let mut installed = sample_meta("demo", "aos-core", true, false);
+        installed.apm.as_mut().unwrap().ability = Some(ability_meta("contracts-only"));
+
+        validate_ordinary_profile_ability_state(&[installed])
+            .expect("contracts-only metadata has no lifecycle owner");
+    }
+
+    #[test]
+    fn ordinary_profile_mutations_reject_structured_effect_state() {
+        let mut installed = sample_meta("demo", "aos-core", true, false);
+        installed.apm.as_mut().unwrap().ability = Some(ability_meta("structured-effects"));
+
+        let error = validate_ordinary_profile_ability_state(&[installed])
+            .expect_err("ordinary package mutations must not bypass structured activation");
+
+        assert!(error.to_string().contains(FEATURE_ABILITY_EFFECTS_V1));
+        assert!(error.to_string().contains("demo@1.0"));
     }
 
     // 3. delete_meta removes the file

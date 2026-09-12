@@ -5057,7 +5057,7 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
 /// Load all enabled registries from the scope's metadata cache.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Validate a downloaded sysroot's Secure Boot facts against the registry's
