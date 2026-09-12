@@ -30,6 +30,271 @@ def rejected(action) -> None:
     raise AssertionError("mutated cancellation evidence was accepted")
 
 
+def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
+    """Checks the image route, physical oracle, digests, and probe uniqueness."""
+
+    interface = {
+        "name": "aos.ab-image-rollout-effects",
+        "abi": 1,
+        "descriptor": digest("a"),
+    }
+    binding = {"environment": "rollout", "key": "terminal"}
+    resource = {"provider": "rollout", "key": "machine"}
+    target = {
+        "interface": interface,
+        "resource": resource,
+        "operations": ["drain"],
+        "lifetime": "persistent",
+    }
+    operation_key = {"scope": ["rollout"], "key": "drain"}
+    dependent_key = {"scope": ["rollout"], "key": "dependent"}
+    operation = {
+        "key": operation_key,
+        "binding": binding,
+        "interface": interface,
+        "method": "drain",
+        "target": target,
+        "recovery": {"cancel": {"interface": interface, "method": "drain"}},
+    }
+    dependent = {
+        **operation,
+        "key": dependent_key,
+    }
+    implementation = {
+        "descriptor": digest("b"),
+        "artifact": {
+            "content": digest("c"),
+            "store_path": "/nix/store/rollout-provider",
+            "nar_hash": digest("d"),
+            "closure": digest("e"),
+        },
+        "handler": "native-ab-image-rollout-v1",
+    }
+    edge = {
+        "from": {"kind": "operation", "key": operation_key},
+        "to": {"kind": "operation", "key": dependent_key},
+        "kind": "required-success",
+    }
+    bundle = {
+        "schema": "aos.ability.plan-bundle/v1",
+        "plan": digest("f"),
+        "desired": {
+            "snapshot": {
+                "resolution": {
+                    "binding_document": {
+                        "bindings": [
+                            {"id": binding, "implementation": implementation}
+                        ]
+                    }
+                }
+            }
+        },
+        "current": None,
+        "transition_authority": None,
+        "transition": {
+            "effect_document": {
+                "operations": [operation, dependent],
+                "edges": [edge],
+            }
+        },
+    }
+    mapping = {
+        "resource": resource,
+        "revision": digest("0"),
+        "owner_package": digest("1"),
+        "binding": binding,
+        "implementation": implementation,
+        "qualification": {"kind": "image-rollout"},
+    }
+    policy = {
+        "schema": "aos.ability.authenticated-policy-set/v3",
+        "policies": [],
+        "native_resource_map": {
+            "schema": "aos.ability.native-resource-map/v3",
+            "desired_state": digest("2"),
+            "entries": [mapping],
+        },
+    }
+    policy_bytes = cancellation.canonical(policy)
+    authority = {
+        "generation": 8,
+        "manifest-path": "/var/lib/profiles/system/gen-8/manifest.json",
+        "policy-pin": {
+            "store_path": "/nix/store/rollout-policy",
+            "document": "policy.json",
+            "document_sha256": effect.sha256_bytes(policy_bytes),
+            "document_size": len(policy_bytes),
+        },
+        "policy-document": policy,
+    }
+    cell_id = (
+        "image-rollout/aos.ab-image-rollout-effects/abi-1/"
+        "drain/cancel-unsettled-attempt"
+    )
+    cell = {
+        "id": cell_id,
+        "adapter": "image-rollout",
+        "effect_class": "mutation",
+        "interface": interface,
+        "method": "drain",
+        "boundary": "provider-effect",
+        "failure": "process-termination",
+        "candidate": "new",
+        "predecessor": "same",
+        "recovery": {"cancel": "drain"},
+        "postconditions": list(cohort.POSTCONDITION_KINDS)[:4],
+    }
+    matrix_spec = {"schema": "aos.test.matrix/v1", "cells": [cell]}
+    owner = {"count": 1, "identities": [{"resource": resource}]}
+    live = {
+        "kind": "image-rollout",
+        "filesystem": {
+            "kind": "filesystem",
+            "entries": [
+                {
+                    "path": "/var/lib/profiles/image/state.json",
+                    "metadata": "regular file|0|0|600|1|now|now",
+                    "digest": digest("3").removeprefix("sha256:"),
+                },
+                {
+                    "path": "/var/lib/profiles/image/ability-rollouts/fixture/state.json",
+                    "metadata": "regular file|0|0|600|1|now|now",
+                    "digest": digest("4").removeprefix("sha256:"),
+                },
+            ],
+        },
+        "hook-state": {"kind": "filesystem", "entries": []},
+        "kernel-command-line": "root=PARTUUID=fixture",
+    }
+    foreign = {
+        "adapter": "systemd-manager",
+        "resource": {"provider": "rollout", "key": "foreign-service"},
+        "observation": {"kind": "systemd", "units": []},
+    }
+    observation = cancellation.CancellationObservation(
+        transaction="rollout-cancel-flight",
+        switch_process=456,
+        operation_key=operation_key,
+        journal_before_signal="8" * 64,
+        timeline=[
+            {"sequence": 1, "kind": "operation-admitted", "node-ordinal": 0},
+            {"sequence": 2, "kind": "effect-started", "node-ordinal": 0},
+            {"sequence": 3, "kind": "cancellation-started", "node-ordinal": 0},
+            {"sequence": 4, "kind": "cancellation-indeterminate", "node-ordinal": 0},
+        ],
+        boundary_timeline=[
+            {"transcript-position": index, "purpose": purpose, "boundary": boundary}
+            for index, (purpose, boundary) in enumerate(
+                cancellation.CANCELLATION_BOUNDARIES
+            )
+        ],
+        owner_before=owner,
+        owner_unsettled=owner,
+        owner_after=owner,
+        live_before=live,
+        live_unsettled=live,
+        live_after=live,
+        foreign_before=foreign,
+        foreign_unsettled=foreign,
+        foreign_after=foreign,
+        dependent_operation={
+            "key": dependent_key,
+            "ordinal": 1,
+            "interface": interface,
+            "method": "drain",
+            "target": target,
+        },
+        dependent_before=[],
+        dependent_after=[],
+        dependent_boundaries=[],
+    )
+    builder = cancellation.CancellationEvidence(matrix_spec, [cell_id])
+    builder.retain(
+        cell_id, cancellation.canonical(bundle), authority, authority, observation
+    )
+    subjects, bundles, probes = builder.finish()
+    subject = subjects[cell_id]
+    records = probes[cell_id]
+
+    cohort._validate_cancellation_subject(cell, subject, bundles[cell_id], matrix_spec)
+    for postcondition, record in records.items():
+        cohort._validate_cancellation_probe_facts(
+            postcondition, record["observations"], subject, cell
+        )
+    probe_digests = {
+        cohort.sha256(record["observations"]) for record in records.values()
+    }
+    assert len(probe_digests) == len(records)
+    bound_subject = cohort._bound_cohort_subject(cell, subject)
+    observed_probe_digests = set()
+    cohort._validated_probes(
+        cell,
+        records,
+        subject,
+        bound_subject,
+        digest("5"),
+        observed_probe_digests,
+    )
+    rejected(
+        lambda: cohort._validated_probes(
+            cell,
+            records,
+            subject,
+            bound_subject,
+            digest("5"),
+            observed_probe_digests,
+        )
+    )
+
+    for field in ("handler-entry-point", "cell-digest", "plan-bundle-digest"):
+        mutation = copy.deepcopy(subject)
+        mutation[field] = digest("9")
+        rejected(
+            lambda mutation=mutation: cohort._validate_cancellation_subject(
+                cell, mutation, bundles[cell_id], matrix_spec
+            )
+        )
+    wrong_handler = copy.deepcopy(subject)
+    wrong_handler["provider-implementation"]["handler"] = "foreign-handler"
+    rejected(
+        lambda: cohort._validate_cancellation_subject(
+            cell, wrong_handler, bundles[cell_id], matrix_spec
+        )
+    )
+    wrong_route = copy.deepcopy(subject)
+    wrong_route["cancel-route"]["method"] = "hold"
+    rejected(
+        lambda: cohort._validate_cancellation_subject(
+            cell, wrong_route, bundles[cell_id], matrix_spec
+        )
+    )
+    for mutation in ("kind", "filesystem"):
+        wrong_live = copy.deepcopy(
+            records["durable-attempt-state-classified"]["observations"]
+        )
+        if mutation == "kind":
+            wrong_live["live-after"]["kind"] = "filesystem"
+        else:
+            wrong_live["live-after"]["filesystem"]["entries"] = []
+        rejected(
+            lambda wrong_live=wrong_live: cohort._validate_cancellation_probe_facts(
+                "durable-attempt-state-classified", wrong_live, subject, cell
+            )
+        )
+
+    duplicate_probe = copy.deepcopy(
+        records["foreign-resources-unchanged"]["observations"]
+    )
+    duplicate_probe.update(
+        records["durable-attempt-state-classified"]["observations"]
+    )
+    rejected(
+        lambda: cohort._validate_cancellation_probe_facts(
+            "foreign-resources-unchanged", duplicate_probe, subject, cell
+        )
+    )
+
+
 def main() -> None:
     """Builds one exact production-shaped cancellation and rejects mutations."""
 
@@ -260,6 +525,8 @@ def main() -> None:
             "dependent-effects-not-executed", wrong_dependency, subject, cell
         )
     )
+
+    validate_image_rollout_case(cohort, effect, cancellation, digest)
 
 
 if __name__ == "__main__":

@@ -46,7 +46,9 @@ let
     resources = [
       {
         inherit resource;
-        revision = revisionFor request;
+        # The selector is part of qualification desired state, so every exact
+        # method produces a distinct update transition and plan identity.
+        revision = revisionFor context.configuration;
       }
     ];
     outputs = [

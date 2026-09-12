@@ -440,9 +440,29 @@ def rollout_snapshot(
 ) -> dict[str, Any]:
     """Reads durable rollout state, boot entries, and the running kernel command line."""
 
+    roots = [
+        "/var/lib/profiles/image/state.json",
+        "/var/lib/profiles/image/ability-rollouts",
+        "/boot/loader/loader.conf",
+        "/boot/loader/entries",
+        "/boot/EFI/.aos-rollout-retention",
+    ]
+    paths = []
+    for root in roots:
+        paths.extend(
+            runtime.succeed(
+                f"if test -e {shlex.quote(root)}; then "
+                f"{FIND} {shlex.quote(root)} -xdev -maxdepth 4 "
+                r"\( -type f -o -type l \) -print; fi"
+            ).splitlines()
+        )
+    paths = sorted(set(paths))
+    if not 1 <= len(paths) <= 512:
+        raise RuntimeError("rollout physical-state inventory is absent or unbounded")
+
     return {
         "kind": "image-rollout",
-        "filesystem": exact_filesystem_snapshot(operation, documents),
+        "filesystem": filesystem_snapshot(paths),
         "hook-state": filesystem_snapshot([
             "/var/lib/aos-test/drained-boot-id",
             "/var/lib/aos-test/health-observations",

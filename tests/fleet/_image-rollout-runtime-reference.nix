@@ -57,17 +57,6 @@
       originalRuntime = pkgs.aos.packageRuntime;
     }
   ];
-in {
-  inherit
-    drainHook
-    healthHook
-    orderedPackages
-    package
-    packageRoots
-    qualificationCandidateRuntimeCompanions
-    qualificationSetupBody
-    ;
-
   extraClosures =
     packageRoots
     ++ [
@@ -81,6 +70,19 @@ in {
       drainHook
       healthHook
     ];
+in {
+  inherit
+    drainHook
+    healthHook
+    orderedPackages
+    package
+    packageRoots
+    qualificationCandidateRuntimeCompanions
+    qualificationSetupBody
+    extraClosures
+    ;
+
+  qualificationExtraClosures = extraClosures;
 
   testPrelude =
     # python

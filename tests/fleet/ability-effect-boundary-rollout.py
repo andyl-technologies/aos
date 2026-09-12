@@ -186,10 +186,12 @@ def rollout_host(request: dict[str, Any], mode: str, label: str) -> str:
     return path
 
 
-def settle_initial_rollout(request: dict[str, Any], label: str) -> None:
+def settle_initial_rollout(
+    request: dict[str, Any], label: str, mode: str = "rollout"
+) -> None:
     """Completes one healthy rollout so a later retirement is authorized."""
 
-    host = rollout_host(request, "desired", label)
+    host = rollout_host(request, mode, label)
     boot_id = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
     try:
         runtime.succeed(
@@ -208,6 +210,59 @@ def settle_initial_rollout(request: dict[str, Any], label: str) -> None:
         f"{JQ} -e '.active_rollout == null and .last_rollout.status == \"succeeded\"' "
         f"{IMAGE_STATE}",
         timeout=900,
+    )
+
+
+def run_rollout_cancellation_cell(cell_id: str, evidence_builder: Any) -> None:
+    """Cancels one exact image method against authenticated published images."""
+
+    adapter, interface, _, method, scenario = cell_id.split("/")
+    if adapter != "image-rollout" or scenario != "cancel-unsettled-attempt":
+        raise RuntimeError(f"rollout cancellation received foreign cell {cell_id!r}")
+
+    runtime.wait_until_succeeds(
+        f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=420
+    )
+    runtime.wait_until_succeeds(
+        f"{SYSTEMCTL} is-active --quiet multi-user.target", timeout=420
+    )
+    runtime.assert_published_image("predecessor")
+    publish_rollout_package()
+    runtime.stage_published_candidate()
+    candidate = stage_candidate()
+    request = rollout_request(candidate)
+
+    baseline_label = "rollout-cancel-baseline"
+    runtime.expect_published_image("candidate")
+    settle_initial_rollout(
+        request, baseline_label, mode="qualification-rollout"
+    )
+    runtime.assert_published_image("candidate")
+
+    if method == "retire":
+        deadline = request["retention_expires_at_millis"] // 1000 + 1
+        runtime.succeed(f"{DATE} -s @{deadline}")
+
+    label = "rollout-cancel-" + method.replace("-", "_")
+    host = rollout_host(request, f"qualification-{method}", label)
+    flight = EFFECT_FLIGHT.EffectFlight(
+        cell_id=cell_id,
+        interface=interface,
+        method=method,
+        provider_key="image-rollout",
+        resource_key="machine",
+        label=label,
+    )
+
+    def observe(operation: dict[str, Any]) -> dict[str, Any]:
+        foreign = {
+            "adapter": "systemd-manager",
+            "operation": foreign_systemd_operation(operation),
+        }
+        return EFFECT_ORACLES.observe_resource(cell_id, operation, foreign)
+
+    EFFECT_FLIGHT.run_cancellation_flight(
+        flight, host, evidence_builder, observe
     )
 
 
@@ -246,7 +301,7 @@ def run_rollout_cell(cell_id: str, evidence_builder: Any) -> None:
     else:
         if method in {"hold", "withdraw"}:
             runtime.succeed(f"{COREUTILS}/touch /var/lib/aos-test/rollout-health-fail")
-        host = rollout_host(request, "desired", label)
+        host = rollout_host(request, "rollout", label)
 
     flight = EFFECT_FLIGHT.EffectFlight(
         cell_id=cell_id,
