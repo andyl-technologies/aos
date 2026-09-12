@@ -180,8 +180,61 @@ def _effect_boundary_cell(cell: dict[str, Any]) -> bool:
         and cell["id"] not in PRIMARY_COHORT_CELL_IDS
         and cell["id"] not in POSTGRESQL_CELL_IDS
     )
-
-
+PROVIDER_NEGATIVE_AUDIT_SCHEMA = (
+    "aos.qualification.native-adapter-provider-negative-audit/v1"
+)
+PROVIDER_NEGATIVE_SUBJECT_SCHEMA = (
+    "aos.qualification.native-adapter-provider-negative-subject/v1"
+)
+PROVIDER_NEGATIVE_PLAN_SCHEMA = (
+    "aos.qualification.native-adapter-provider-negative-plan/v1"
+)
+PROVIDER_NEGATIVE_SCENARIOS = {
+    "block-dependent-effect",
+    "reject-foreign-resource-mutation",
+}
+PROVIDER_ORACLE_KINDS = {
+    "credential-delivery": "credential-view",
+    "host-network-policy": "nft-policy",
+    "host-storage": "storage-tree",
+    "image-rollout": "boot-slot",
+    "kubernetes-object": "kubernetes-object",
+    "managed-configuration": "managed-file",
+    "network-endpoint": "loopback-listener",
+    "nginx-validation": "nginx-association",
+    "postgresql": "postgresql-cluster",
+    "systemd-bootstrap": "systemd-unit",
+    "systemd-manager": "systemd-unit",
+    "systemd-service-legacy": "systemd-unit",
+}
+PROVIDER_ADAPTER_BY_INTERFACE = {
+    "aos.credential-delivery-effects": "credential-delivery",
+    "aos.host-network-policy-effects": "host-network-policy",
+    "aos.host-storage-effects": "host-storage",
+    "aos.ab-image-rollout-effects": "image-rollout",
+    "aos.kubernetes-object-effects": "kubernetes-object",
+    "aos.managed-configuration-effects": "managed-configuration",
+    "aos.network-endpoint-effects": "network-endpoint",
+    "aos.nginx-validation": "nginx-validation",
+    "aos.postgresql-effects": "postgresql",
+    "aos.systemd-provider-bootstrap": "systemd-bootstrap",
+    "aos.systemd-manager": "systemd-manager",
+    "aos.systemd-service-effects": "systemd-service-legacy",
+}
+PROVIDER_ENTRY_POINTS = {
+    "credential-delivery": "libexec/aos-credential-delivery-handler-v1",
+    "host-network-policy": "libexec/aos-host-network-policy-handler-v1",
+    "host-storage": "libexec/aos-host-storage-handler-v1",
+    "image-rollout": "libexec/aos-ab-image-rollout-handler-v1",
+    "kubernetes-object": "libexec/aos-kubernetes-object-handler-v1",
+    "managed-configuration": "bin/.aos-package-runtime-unwrapped",
+    "network-endpoint": "libexec/aos-network-endpoint-handler-v1",
+    "nginx-validation": "bin/nginx",
+    "postgresql": "libexec/aos-postgresql-handler-v1",
+    "systemd-bootstrap": "bin/.aos-package-runtime-unwrapped",
+    "systemd-manager": "libexec/aos-systemd-manager-handler-v1",
+    "systemd-service-legacy": "bin/.aos-package-runtime-unwrapped",
+}
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
 POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
     "aos.qualification.postgresql-provider-replacement-cohort-subject/v1"
@@ -449,6 +502,7 @@ def build_cells(
     environment_digest: str,
     runtime_audit: dict[str, Any] | None = None,
     interruption_audit: dict[str, Any] | None = None,
+    provider_negative_audit: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds all cell observations and proves every positive claim is expected."""
 
@@ -470,7 +524,20 @@ def build_cells(
     interruption_cells = interruption_audit.get("cells")
     if not isinstance(interruption_cells, dict):
         raise RuntimeError("interruption audit cells are malformed")
-    submitted_cells = set(submissions) | set(runtime_cells) | set(interruption_cells)
+    provider_negative_audit = provider_negative_audit or {
+        "schema": PROVIDER_NEGATIVE_AUDIT_SCHEMA,
+        "matrix_spec_digest": "sha256:" + "0" * 64,
+        "cells": {},
+    }
+    provider_negative_cells = provider_negative_audit.get("cells")
+    if not isinstance(provider_negative_cells, dict):
+        raise RuntimeError("provider-negative audit cells are malformed")
+    submitted_cells = (
+        set(submissions)
+        | set(runtime_cells)
+        | set(interruption_cells)
+        | set(provider_negative_cells)
+    )
     if submitted_cells != set(expected_qualified_cells):
         raise RuntimeError("cohort probe cells differ from its explicit qualification scope")
     if len(set(expected_qualified_cells)) != len(expected_qualified_cells):
@@ -538,20 +605,43 @@ def build_cells(
             *before_acquisition_cells,
             *allowed_cells[insertion:],
         ]
-
+    if provider_negative_cells:
+        already_qualified_provider_negative = {
+            "managed-configuration/aos.managed-configuration-effects/abi-1/"
+            "publish/reject-foreign-resource-mutation",
+            "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+            "reload/block-dependent-effect",
+        }
+        allowed_cells = [
+            *allowed_cells,
+            *[
+                cell["id"]
+                for cell in spec["cells"]
+                if cell["id"].rsplit("/", 1)[-1]
+                in PROVIDER_NEGATIVE_SCENARIOS
+                and cell["id"] not in already_qualified_provider_negative
+            ],
+        ]
     ordered_expected_cells = [
         cell_id
         for cell_id in expected_qualified_cells
         if cell_id not in supported_cancellation_cells
     ]
     ordered_allowed_cells = [
-        cell_id for cell_id in allowed_cells if cell_id not in supported_cancellation_cells
+        cell_id
+        for cell_id in allowed_cells
+        if cell_id not in supported_cancellation_cells
     ]
+
     if (
         not expected_qualified_cells
         or any(cell_id not in allowed_cells for cell_id in expected_qualified_cells)
         or ordered_expected_cells
-        != [cell_id for cell_id in ordered_allowed_cells if cell_id in ordered_expected_cells]
+        != [
+            cell_id
+            for cell_id in ordered_allowed_cells
+            if cell_id in ordered_expected_cells
+        ]
     ):
         raise RuntimeError("cohort qualification scope differs from its fixed fixture")
     if set(cohort_subjects) != set(submissions):
@@ -569,6 +659,11 @@ def build_cells(
         _validate_runtime_audit(runtime_audit, spec, specification_cells)
     if has_interruption_audit:
         _validate_interruption_audit(interruption_audit, spec, specification_cells)
+    if provider_negative_cells:
+        _validate_provider_negative_audit(
+            provider_negative_audit, spec, specification_cells
+        )
+
 
     observed_cells = []
     postcondition_count = 0
@@ -577,6 +672,7 @@ def build_cells(
         submitted = submissions.get(cell["id"])
         runtime_record = runtime_cells.get(cell["id"])
         interruption_record = interruption_cells.get(cell["id"])
+        provider_negative_record = provider_negative_cells.get(cell["id"])
         names = cell["postconditions"]
         postcondition_count += len(names)
         if runtime_record is not None:
@@ -599,6 +695,15 @@ def build_cells(
                 interruption_record,
                 subject_digest,
                 probe_digests,
+            )
+        elif provider_negative_record is not None:
+            bound_subject, postconditions, probes = (
+                _validated_provider_negative_cell(
+                    cell,
+                    provider_negative_record,
+                    subject_digest,
+                    probe_digests,
+                )
             )
         elif submitted is None:
             postconditions = {
@@ -867,6 +972,659 @@ def _validate_runtime_audit(
         or set(audit.get("cells", {})) != expected
     ):
         raise RuntimeError("runtime audit differs from the closed control cohort")
+
+
+def _provider_negative_cell_ids(
+    specification_cells: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Returns the closed dependency/foreign scope not owned by the legacy pair."""
+
+    excluded = {
+        (
+            "managed-configuration/aos.managed-configuration-effects/abi-1/"
+            "publish/reject-foreign-resource-mutation"
+        ),
+        (
+            "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+            "reload/block-dependent-effect"
+        ),
+    }
+    return {
+        cell_id
+        for cell_id in specification_cells
+        if cell_id.rsplit("/", 1)[-1] in PROVIDER_NEGATIVE_SCENARIOS
+        and cell_id not in excluded
+    }
+
+
+def _validate_provider_negative_audit(
+    audit: dict[str, Any],
+    spec: dict[str, Any],
+    specification_cells: dict[str, dict[str, Any]],
+) -> None:
+    """Checks the provider-flight envelope against the realized matrix scope."""
+
+    expected = _provider_negative_cell_ids(specification_cells)
+    if (
+        set(audit) != {"schema", "matrix_spec_digest", "cells"}
+        or audit.get("schema") != PROVIDER_NEGATIVE_AUDIT_SCHEMA
+        or audit.get("matrix_spec_digest") != sha256(spec)
+        or set(audit.get("cells", {})) != expected
+        or not expected
+    ):
+        raise RuntimeError("provider-negative audit differs from its closed matrix cohort")
+
+
+def _validated_provider_negative_cell(
+    cell: dict[str, Any],
+    record: dict[str, Any],
+    subject_digest: str,
+    probe_digests: set[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validates one provider flight and derives its five exact probes."""
+
+    if record.get("mode") in {"rollout-dependency", "rollout-map-validation"}:
+        return _validated_rollout_provider_negative_cell(
+            cell, record, subject_digest, probe_digests
+        )
+    if set(record) != {"cell_digest", "subject", "plan_bundle", "evidence"}:
+        raise RuntimeError("provider-negative audit cell is malformed")
+    cell_digest = sha256(cell)
+    if record.get("cell_digest") != cell_digest:
+        raise RuntimeError("provider-negative audit cell digest differs")
+
+    subject = record.get("subject")
+    plan_bundle = record.get("plan_bundle")
+    evidence = record.get("evidence")
+    if not all(isinstance(value, dict) for value in [subject, plan_bundle, evidence]):
+        raise RuntimeError("provider-negative audit record has malformed documents")
+
+    scenario = _cell_scenario(cell)
+    adapter = cell["adapter"]
+    expected_oracle = PROVIDER_ORACLE_KINDS.get(adapter)
+    expected_subject = {
+        "schema": PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
+        "cell-id": cell["id"],
+        "cell-digest": cell_digest,
+        "adapter": adapter,
+        "interface": cell["interface"],
+        "method": cell["method"],
+        "scenario": scenario,
+        "plan": subject.get("plan"),
+        "transaction": subject.get("transaction"),
+        "flight": subject.get("flight"),
+    }
+    if (
+        subject != expected_subject
+        or scenario not in PROVIDER_NEGATIVE_SCENARIOS
+        or expected_oracle is None
+        or not _matches(DIGEST, subject.get("plan"))
+        or not _matches(LOCAL_KEY, subject.get("transaction"))
+        or not _matches(LOCAL_KEY, subject.get("flight"))
+    ):
+        raise RuntimeError("provider-negative audit subject differs from its matrix cell")
+
+    required_edge = plan_bundle.get("required-success")
+    if (
+        set(plan_bundle)
+        != {
+            "schema",
+            "digest",
+            "plan",
+            "foreign-operation",
+            "dependent-operation",
+            "required-success",
+            "behavioral-witness",
+        }
+        or plan_bundle.get("schema") != PROVIDER_NEGATIVE_PLAN_SCHEMA
+        or not _matches(DIGEST, plan_bundle.get("digest"))
+        or plan_bundle.get("plan") != subject["plan"]
+        or not isinstance(plan_bundle.get("foreign-operation"), dict)
+        or not isinstance(plan_bundle.get("dependent-operation"), dict)
+        or required_edge
+        != {
+            "from": plan_bundle.get("foreign-operation"),
+            "to": plan_bundle.get("dependent-operation"),
+            "kind": "required-success",
+        }
+    ):
+        raise RuntimeError(
+            "provider-negative plan does not retain one exact required-success edge"
+        )
+
+    foreign_operation = plan_bundle["foreign-operation"]
+    dependent_operation = plan_bundle["dependent-operation"]
+    behavioral_witness = plan_bundle["behavioral-witness"]
+    if not all(
+        _provider_negative_operation(operation)
+        for operation in [foreign_operation, dependent_operation]
+    ):
+        raise RuntimeError("provider-negative plan operations are malformed")
+    expected_cell_operation = (
+        foreign_operation
+        if scenario == "reject-foreign-resource-mutation"
+        else dependent_operation
+    )
+    if (
+        expected_cell_operation.get("interface") != cell["interface"]
+        or expected_cell_operation.get("method") != cell["method"]
+        or foreign_operation.get("method") != dependent_operation.get("method")
+        or foreign_operation.get("interface") != dependent_operation.get("interface")
+        or foreign_operation.get("resource") == dependent_operation.get("resource")
+    ):
+        raise RuntimeError("provider-negative paired operations differ from the exact cell")
+    if cell["effect_class"] == "observation":
+        if (
+            not isinstance(behavioral_witness, dict)
+            or behavioral_witness.get("resource") is None
+            or behavioral_witness.get("resource") == foreign_operation.get("resource")
+        ):
+            raise RuntimeError("observation cell lacks its distinct mutation witness")
+    elif behavioral_witness is not None:
+        raise RuntimeError("mutation cell unexpectedly carries a behavioral witness")
+
+    if set(evidence) != {
+        "provider-route",
+        "boundary",
+        "journal",
+        "ownership",
+        "foreign-resource",
+        "blocked-successor",
+        "blocked-witness",
+    }:
+        raise RuntimeError("provider-negative evidence has unexpected fields")
+    provider_route = evidence.get("provider-route")
+    journal = evidence.get("journal")
+    ownership = evidence.get("ownership")
+    foreign = evidence.get("foreign-resource")
+    successor = evidence.get("blocked-successor")
+    blocked_witness = evidence.get("blocked-witness")
+    expected_foreign_timeline = [
+        "operation-admitted",
+        "effect-started",
+        "rejected-before-effect",
+    ]
+    if not all(
+        isinstance(value, dict)
+        for value in [provider_route, journal, ownership, foreign, successor]
+    ):
+        raise RuntimeError("provider-negative evidence has malformed facts")
+    if (
+        set(provider_route)
+        != {
+            "adapter",
+            "interface",
+            "method",
+            "candidate-linked",
+            "artifact",
+            "handler",
+            "entry-point",
+        }
+        or provider_route.get("adapter") != adapter
+        or provider_route.get("interface") != cell["interface"]
+        or provider_route.get("method") != cell["method"]
+        or provider_route.get("candidate-linked") is not True
+        or not _matches(DIGEST, provider_route.get("artifact"))
+        or not _matches(LOCAL_KEY, provider_route.get("handler"))
+        or provider_route.get("entry-point") != PROVIDER_ENTRY_POINTS[adapter]
+        or evidence.get("boundary")
+        != "after-durable-intent-before-external-effect"
+    ):
+        raise RuntimeError("provider-negative evidence does not bind the candidate route")
+    if (
+        set(journal)
+        != {
+            "digest",
+            "failure-record",
+            "foreign-operation",
+            "foreign-timeline",
+            "dependent-operation",
+            "dependent-timeline",
+            "behavioral-witness",
+            "witness-timeline",
+            "classified",
+        }
+        or not _matches(DIGEST, journal.get("digest"))
+        or not _matches(DIGEST, journal.get("failure-record"))
+        or journal.get("foreign-operation") != foreign_operation
+        or journal.get("dependent-operation") != dependent_operation
+        or [event.get("kind") for event in journal.get("foreign-timeline", [])]
+        != expected_foreign_timeline
+        or any(
+            set(event) != {"sequence", "kind", "node-ordinal"}
+            for event in journal.get("foreign-timeline", [])
+        )
+        or journal.get("dependent-timeline") != []
+        or journal.get("behavioral-witness") != behavioral_witness
+        or journal.get("witness-timeline") != []
+        or journal.get("classified") != "foreign-authority-rejected"
+    ):
+        raise RuntimeError("provider-negative journal does not prove exact blocking")
+    if ownership != {
+        "foreign-owner-count-before": 1,
+        "foreign-owner-count-after": 1,
+        "candidate-owner-count": 0,
+        "maximum-owner-count": 1,
+    }:
+        raise RuntimeError("provider-negative ownership is not exclusive")
+    for label, oracle, operation, must_be_live in [
+        ("foreign", foreign, foreign_operation, True),
+        ("successor", successor, dependent_operation, False),
+    ]:
+        if (
+            set(oracle)
+            != {"kind", "resource", "before", "after", "unchanged", "live"}
+            or oracle.get("kind") != expected_oracle
+            or oracle.get("resource") != operation.get("resource")
+            or not _matches(DIGEST, oracle.get("before"))
+            or oracle.get("after") != oracle.get("before")
+            or oracle.get("unchanged") is not True
+            or not isinstance(oracle.get("live"), bool)
+            or (must_be_live and oracle.get("live") is not True)
+        ):
+            raise RuntimeError(
+                f"provider-negative {label} oracle is not exact and live"
+            )
+    if behavioral_witness is None:
+        if blocked_witness is not None:
+            raise RuntimeError("mutation cell unexpectedly reports a blocked witness")
+    elif (
+        not isinstance(blocked_witness, dict)
+        or set(blocked_witness)
+        != {"kind", "resource", "before", "after", "unchanged", "live"}
+        or blocked_witness.get("kind")
+        != PROVIDER_ORACLE_KINDS.get(
+            PROVIDER_ADAPTER_BY_INTERFACE.get(
+                behavioral_witness.get("interface", {}).get("name")
+            )
+        )
+        or blocked_witness.get("resource") != behavioral_witness.get("resource")
+        or not _matches(DIGEST, blocked_witness.get("before"))
+        or blocked_witness.get("before") != blocked_witness.get("after")
+        or blocked_witness.get("unchanged") is not True
+        or not isinstance(blocked_witness.get("live"), bool)
+    ):
+        raise RuntimeError("observation cell does not prove mutation-witness nonexecution")
+
+    bound_subject = {
+        "schema": CELL_SUBJECT_SCHEMA,
+        "cell": {
+            "id": cell["id"],
+            "digest": cell_digest,
+            "boundary": cell["boundary"],
+            "failure": cell["failure"],
+            "candidate": cell["candidate"],
+            "predecessor": cell["predecessor"],
+        },
+        "subject": subject,
+    }
+    cohort_subject_digest = sha256(bound_subject)
+    scenario_probe = (
+        "prerequisite-failure-recorded"
+        if scenario == "block-dependent-effect"
+        else "foreign-attempt-rejected-before-mutation"
+    )
+    observations = {
+        "durable-attempt-state-classified": journal,
+        "at-most-one-resource-owner": ownership,
+        "foreign-resources-unchanged": foreign,
+        "dependent-effects-not-executed": successor,
+        scenario_probe: {
+            "boundary": evidence["boundary"],
+            "failure-record": journal["failure-record"],
+            "provider-route": provider_route,
+            "foreign-operation": foreign_operation,
+            "dependent-operation": dependent_operation,
+            "dependent-timeline": journal["dependent-timeline"],
+            "behavioral-witness": behavioral_witness,
+            "witness-timeline": journal["witness-timeline"],
+            "blocked-witness": blocked_witness,
+        },
+    }
+    if set(observations) != set(cell["postconditions"]):
+        raise RuntimeError("provider-negative evidence differs from cell postconditions")
+
+    postconditions = {}
+    probes = {}
+    for name in cell["postconditions"]:
+        observation = observations[name]
+        observation_digest = sha256(
+            {
+                "schema": PROBE_SCHEMA,
+                "cell": cell_digest,
+                "postcondition": name,
+                "subject": cohort_subject_digest,
+                "candidate-subject": subject_digest,
+                "observations": observation,
+            }
+        )
+        if observation_digest in probe_digests:
+            raise RuntimeError("passing matrix postconditions replay a provider probe")
+        probe_digests.add(observation_digest)
+        postconditions[name] = {
+            "passed": True,
+            "detail": "candidate-linked provider flight satisfied exact postcondition",
+        }
+        probes[name] = {
+            "schema": PROBE_SCHEMA,
+            "kind": POSTCONDITION_KINDS[name],
+            "disposition": SCENARIO_DISPOSITIONS[scenario],
+            "observation_digest": observation_digest,
+            "cohort_subject_digest": cohort_subject_digest,
+        }
+
+    return bound_subject, postconditions, probes
+
+
+def _validated_rollout_provider_negative_cell(
+    cell: dict[str, Any],
+    record: dict[str, Any],
+    subject_digest: str,
+    probe_digests: set[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validates rollout's same-machine dependency or map-collision evidence."""
+
+    if (
+        set(record)
+        != {"mode", "cell_digest", "subject", "plan_bundle", "evidence"}
+        or cell.get("adapter") != "image-rollout"
+        or record.get("cell_digest") != sha256(cell)
+    ):
+        raise RuntimeError("rollout provider-negative record is malformed")
+    mode = record["mode"]
+    scenario = _cell_scenario(cell)
+    if (mode, scenario) not in {
+        ("rollout-dependency", "block-dependent-effect"),
+        ("rollout-map-validation", "reject-foreign-resource-mutation"),
+    }:
+        raise RuntimeError("rollout provider-negative mode differs from its cell")
+
+    subject = record["subject"]
+    plan = record["plan_bundle"]
+    evidence = record["evidence"]
+    expected_subject = {
+        "schema": PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
+        "cell-id": cell["id"],
+        "cell-digest": sha256(cell),
+        "adapter": "image-rollout",
+        "interface": cell["interface"],
+        "method": cell["method"],
+        "scenario": scenario,
+        "plan": subject.get("plan"),
+        "transaction": subject.get("transaction"),
+        "flight": subject.get("flight"),
+    }
+    if (
+        subject != expected_subject
+        or not _matches(DIGEST, subject.get("plan"))
+        or not _matches(LOCAL_KEY, subject.get("transaction"))
+        or not _matches(LOCAL_KEY, subject.get("flight"))
+    ):
+        raise RuntimeError("rollout provider-negative subject is not exact")
+
+    expected_plan_fields = {
+        "schema",
+        "digest",
+        "plan",
+        "foreign-operation",
+        "dependent-operation",
+        "required-success",
+        "behavioral-witness",
+    }
+    foreign = plan.get("foreign-operation")
+    dependent = plan.get("dependent-operation")
+    witness = plan.get("behavioral-witness")
+    if (
+        set(plan) != expected_plan_fields
+        or plan.get("schema") != PROVIDER_NEGATIVE_PLAN_SCHEMA
+        or not _matches(DIGEST, plan.get("digest"))
+        or plan.get("plan") != subject["plan"]
+        or not isinstance(foreign, dict)
+        or not isinstance(dependent, dict)
+        or not _provider_negative_operation(foreign)
+        or not _provider_negative_operation(dependent)
+        or plan.get("required-success")
+        != {"from": foreign, "to": dependent, "kind": "required-success"}
+        or foreign.get("interface") != cell["interface"]
+        or dependent.get("interface") != cell["interface"]
+        or foreign.get("method") != cell["method"]
+        or dependent.get("method") != cell["method"]
+    ):
+        raise RuntimeError("rollout provider-negative plan is not exact")
+    same_machine = foreign.get("resource") == dependent.get("resource")
+    if same_machine != (mode == "rollout-dependency"):
+        raise RuntimeError("rollout resource relationship differs from its scenario")
+    if cell["effect_class"] == "observation":
+        if (
+            not isinstance(witness, dict)
+            or not _provider_negative_operation(witness)
+            or witness.get("method") not in {
+                "drain",
+                "hold",
+                "prepare",
+                "retain",
+                "retire",
+                "select",
+                "withdraw",
+            }
+        ):
+            raise RuntimeError("rollout observation lacks a real mutation witness")
+    elif witness is not None:
+        raise RuntimeError("rollout mutation unexpectedly has a witness")
+
+    if set(evidence) != {
+        "provider-route",
+        "boundary",
+        "classification",
+        "ownership",
+        "foreign-resource",
+        "blocked-successor",
+        "blocked-witness",
+    }:
+        raise RuntimeError("rollout provider-negative evidence has unexpected fields")
+    route = evidence["provider-route"]
+    expected_route = {
+        "adapter": "image-rollout",
+        "interface": cell["interface"],
+        "method": cell["method"],
+        "candidate-linked": True,
+        "artifact": route.get("artifact"),
+        "handler": route.get("handler"),
+        "entry-point": PROVIDER_ENTRY_POINTS["image-rollout"],
+    }
+    if (
+        route != expected_route
+        or not _matches(DIGEST, route.get("artifact"))
+        or not _matches(LOCAL_KEY, route.get("handler"))
+    ):
+        raise RuntimeError("rollout provider route is not candidate-linked")
+
+    classification = evidence["classification"]
+    ownership = evidence["ownership"]
+    if mode == "rollout-dependency":
+        expected_boundary = "after-durable-intent-before-external-effect"
+        if (
+            set(classification)
+            != {
+                "kind",
+                "digest",
+                "failure-record",
+                "predecessor-timeline",
+                "dependent-timeline",
+                "witness-timeline",
+                "classified",
+            }
+            or classification.get("kind") != "execution-journal"
+            or not _matches(DIGEST, classification.get("digest"))
+            or not _matches(DIGEST, classification.get("failure-record"))
+            or [
+                event.get("kind")
+                for event in classification.get("predecessor-timeline", [])
+            ]
+            != ["operation-admitted", "effect-started", "rejected-before-effect"]
+            or classification.get("dependent-timeline") != []
+            or classification.get("witness-timeline") != []
+            or classification.get("classified") != "boot-slot-authority-rejected"
+            or ownership
+            != {
+                "machine-owner-count-before": 1,
+                "machine-owner-count-after": 1,
+                "candidate-owner-count": 0,
+                "maximum-owner-count": 1,
+            }
+        ):
+            raise RuntimeError("rollout dependency classification is incomplete")
+    else:
+        expected_boundary = "native-resource-map-validation"
+        if (
+            set(classification)
+            != {
+                "kind",
+                "digest",
+                "attempted-map-digest",
+                "failure-record",
+                "classified",
+                "dependent-timeline",
+                "witness-timeline",
+            }
+            or classification.get("kind") != "native-resource-map-validation"
+            or not all(
+                _matches(DIGEST, classification.get(field))
+                for field in ["digest", "attempted-map-digest", "failure-record"]
+            )
+            or classification.get("classified") != "foreign-authority-rejected"
+            or classification.get("dependent-timeline") != []
+            or classification.get("witness-timeline") != []
+            or ownership
+            != {
+                "machine-owner-count-before": 1,
+                "machine-owner-count-after": 1,
+                "forged-owner-count": 0,
+                "maximum-owner-count": 1,
+            }
+        ):
+            raise RuntimeError("rollout map-collision classification is incomplete")
+    if evidence.get("boundary") != expected_boundary:
+        raise RuntimeError("rollout provider-negative boundary differs")
+
+    foreign_oracle = evidence["foreign-resource"]
+    successor_oracle = evidence["blocked-successor"]
+    witness_oracle = evidence["blocked-witness"]
+    for label, oracle, kind in [
+        ("foreign", foreign_oracle, "systemd-unit"),
+        ("successor", successor_oracle, "boot-slot"),
+    ]:
+        if (
+            not isinstance(oracle, dict)
+            or set(oracle)
+            != {"kind", "resource", "before", "after", "unchanged", "live"}
+            or oracle.get("kind") != kind
+            or not _matches(DIGEST, oracle.get("before"))
+            or oracle.get("after") != oracle.get("before")
+            or oracle.get("unchanged") is not True
+            or oracle.get("live") is not True
+        ):
+            raise RuntimeError(f"rollout {label} oracle is not live and unchanged")
+    if successor_oracle.get("resource") != dependent.get("resource"):
+        raise RuntimeError("rollout successor oracle names another machine")
+    if foreign_oracle.get("resource") == foreign.get(
+        "resource"
+    ) or foreign_oracle.get("resource") == dependent.get("resource"):
+        raise RuntimeError("rollout foreign sentinel is not independently owned")
+    if witness is None:
+        if witness_oracle is not None:
+            raise RuntimeError("rollout mutation unexpectedly reports a witness oracle")
+    elif (
+        not isinstance(witness_oracle, dict)
+        or witness_oracle.get("kind") != "boot-slot"
+        or witness_oracle.get("resource") != witness.get("resource")
+        or witness_oracle.get("before") != witness_oracle.get("after")
+        or witness_oracle.get("unchanged") is not True
+        or witness_oracle.get("live") is not True
+    ):
+        raise RuntimeError("rollout mutation witness was not independently blocked")
+
+    bound_subject = {
+        "schema": CELL_SUBJECT_SCHEMA,
+        "cell": {
+            "id": cell["id"],
+            "digest": sha256(cell),
+            "boundary": cell["boundary"],
+            "failure": cell["failure"],
+            "candidate": cell["candidate"],
+            "predecessor": cell["predecessor"],
+        },
+        "subject": subject,
+    }
+    cohort_subject_digest = sha256(bound_subject)
+    scenario_probe = (
+        "prerequisite-failure-recorded"
+        if scenario == "block-dependent-effect"
+        else "foreign-attempt-rejected-before-mutation"
+    )
+    observations = {
+        "durable-attempt-state-classified": classification,
+        "at-most-one-resource-owner": ownership,
+        "foreign-resources-unchanged": foreign_oracle,
+        "dependent-effects-not-executed": {
+            "successor": successor_oracle,
+            "witness": witness_oracle,
+        },
+        scenario_probe: {
+            "boundary": evidence["boundary"],
+            "provider-route": route,
+            "classification": classification,
+            "foreign-operation": foreign,
+            "dependent-operation": dependent,
+            "behavioral-witness": witness,
+        },
+    }
+    if set(observations) != set(cell["postconditions"]):
+        raise RuntimeError("rollout evidence differs from cell postconditions")
+
+    postconditions = {}
+    probes = {}
+    for name in cell["postconditions"]:
+        observation = observations[name]
+        observation_digest = sha256(
+            {
+                "schema": PROBE_SCHEMA,
+                "cell": sha256(cell),
+                "postcondition": name,
+                "subject": cohort_subject_digest,
+                "candidate-subject": subject_digest,
+                "observations": observation,
+            }
+        )
+        if observation_digest in probe_digests:
+            raise RuntimeError("passing rollout postconditions replay a provider probe")
+        probe_digests.add(observation_digest)
+        postconditions[name] = {
+            "passed": True,
+            "detail": "candidate-linked rollout flight satisfied exact postcondition",
+        }
+        probes[name] = {
+            "schema": PROBE_SCHEMA,
+            "kind": POSTCONDITION_KINDS[name],
+            "disposition": SCENARIO_DISPOSITIONS[scenario],
+            "observation_digest": observation_digest,
+            "cohort_subject_digest": cohort_subject_digest,
+        }
+    return bound_subject, postconditions, probes
+
+
+def _provider_negative_operation(value: Any) -> bool:
+    """Checks the exact operation identity retained by provider flights."""
+
+    return (
+        isinstance(value, dict)
+        and set(value) == {"key", "ordinal", "interface", "method", "resource"}
+        and _operation_key(value)
+        and _is_nonnegative_int(value.get("ordinal"))
+        and isinstance(value.get("interface"), dict)
+        and isinstance(value.get("method"), str)
+        and isinstance(value.get("resource"), dict)
+    )
 
 
 def _validated_authority_cell(

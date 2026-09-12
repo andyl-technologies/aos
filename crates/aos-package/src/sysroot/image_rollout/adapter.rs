@@ -457,6 +457,17 @@ impl<P: NativeAbRolloutPlatform> TrustedAdapter for NativeAbRolloutAdapter<P> {
         if control.is_cancelled() {
             return EffectDisposition::RejectedBeforeEffect(request.rejection.clone());
         }
+        if self
+            .backend
+            .preflight_operation(
+                &request.durable.request,
+                &request.durable.method,
+                self.platform.now_millis(),
+            )
+            .is_err()
+        {
+            return EffectDisposition::RejectedBeforeEffect(request.rejection.clone());
+        }
         match self.execute_request(&request.durable, control) {
             Ok(Some(record)) => EffectDisposition::Completed(record),
             Ok(None) | Err(_) => EffectDisposition::Indeterminate(request.rejection.clone()),

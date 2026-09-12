@@ -544,6 +544,13 @@ impl TrustedAdapter for NativeManagedConfigurationAdapter {
         if control.is_cancelled() {
             return EffectDisposition::RejectedBeforeEffect(self.failure.clone());
         }
+        if let Err(error) = classify_owned_revision(&request.resource) {
+            return if error.kind() == io::ErrorKind::InvalidData {
+                EffectDisposition::RejectedBeforeEffect(self.failure.clone())
+            } else {
+                EffectDisposition::Indeterminate(self.failure.clone())
+            };
+        }
         match execute_request(request) {
             Ok(()) => EffectDisposition::Completed(self.success.clone()),
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
