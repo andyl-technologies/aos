@@ -2321,15 +2321,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
     let storage_paths = ValueSchema::Record {
         fields: ["logs", "runtime", "state"]
             .into_iter()
-            .map(|name| {
-                (
-                    key(name),
-                    ValueSchema::String {
-                        max_length: 4096,
-                        syntax: None,
-                    },
-                )
-            })
+            .map(|name| (key(name), string_schema()))
             .collect(),
         optional_fields: Vec::new(),
     };
@@ -2707,7 +2699,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.managed-configuration"].descriptor,
-        digest_from_hex("64bc590155806e0b69dac2503f44cca63e16dc0603b72fa6602b46d49f135e67")
+        digest_from_hex("3dc7b65b067641fae912cdcc00563438e9638c114e05644dd0515fc9a5a3e27b")
     );
     assert_eq!(
         interfaces["aos.credential-delivery"].descriptor,

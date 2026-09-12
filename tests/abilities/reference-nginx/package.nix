@@ -23,7 +23,7 @@
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:64bc590155806e0b69dac2503f44cca63e16dc0603b72fa6602b46d49f135e67";
+    "sha256:3dc7b65b067641fae912cdcc00563438e9638c114e05644dd0515fc9a5a3e27b";
   credentialDelivery =
     interface
     "aos.credential-delivery"
