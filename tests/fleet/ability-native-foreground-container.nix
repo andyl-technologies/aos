@@ -12,11 +12,12 @@
   reference = import ./_ability-runtime-reference.nix {
     inherit lib mkSystem pkgs;
   };
-  containerSystem = mkSystem (reference.runtimeModules ++ [
+  containerSystem = mkSystem [
+    ../../systems/server.nix
     {
-      environment.systemPackages = reference.packageRoots ++ [pkgs.aos.testSupport];
+      environment.systemPackages = reference.packageRoots ++ [pkgs.nginx];
     }
-  ]);
+  ];
   containerImage = containerSystem.config.system.build.defaultContainer;
   aosSystem = pkgs.stdenv.hostPlatform.system;
   dockerArchive = containerImage.platforms.${aosSystem}.dockerArchive;
@@ -101,6 +102,7 @@ in {
         "--volume /var/lib/ability-reference-registry:/var/lib/ability-reference-registry:ro "
         "--volume /var/lib/apm:/var/lib/apm:rw "
         "--volume /var/cache/apm:/var/cache/apm:rw "
+        "--volume ${pkgs.aos.testSupport}:${pkgs.aos.testSupport}:ro "
         "aos:latest ${pkgs.coreutils}/bin/sleep infinity",
         timeout=120,
     )
