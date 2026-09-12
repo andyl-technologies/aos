@@ -1650,7 +1650,7 @@ Pending write-back IDs enter the same single-host GC root manifest as refs and
 assignment-ledger roots. Planning inventories them under the transfer fence;
 apply reacquires that fence, requires the exact manifest identity, and retains
 the fence through candidate deletion. No separate generation field is needed
-in the v1 GC plan header because the exact root-manifest identity binds the
+in the v2 GC plan header because the exact root-manifest identity binds the
 complete active set and the held fence excludes changes during apply.
 Each pending ID is a direct exact-object root because the journal owns its
 transfer independently; this includes internal Merkle nodes whose root-relative
@@ -1785,7 +1785,7 @@ closure. Explicit journal clear reclaims its bounded namespace but is not
 required for liveness correctness. Apply reacquires both fences and recomputes
 the exact root manifest before deletion. The manifest identity plus held fences
 binds the complete selected checkpoint set; no additional selection-generation
-field is required in the v1 GC header.
+field is required in the v2 GC header.
 
 On the single-host executor, the lineage-qualified operational assignment
 ledger is the owner of result-publication roots. It streams the expected
@@ -1825,8 +1825,8 @@ An error after the state advance is conservative because it only invalidates an
 older plan. The memory ledger uses a process-local hash-chain generation for its
 ephemeral backend instance.
 
-The registered `crucible.campaign.gc-root-manifest` and
-`crucible.campaign.gc-candidate-manifest` schemas v1 are streamed external
+The registered `crucible.campaign.gc-root-manifest` v1 and
+`crucible.campaign.gc-candidate-manifest` v2 schemas are streamed external
 administrative records. Each admits at most 64,000,000 entries, matching the
 complete campaign-closure work bound. A root manifest deduplicates roots and
 orders them by `(ContentId.kind ASCII tag, schema version as an unsigned
@@ -1839,73 +1839,14 @@ repeated root_count times:
     content_id_length:u16be || canonical_content_id_utf8
 ```
 
+Let `M` be the complete canonical root-manifest bytes above. Its 32-byte
+manifest hash is `BLAKE3(BE64(len(D)) || D || M)`, where `D` is
+`crucible.campaign.gc-root-manifest.v1`.
+
 A candidate manifest names exact physical
 `(backend_id, ContentId, logical_length)` placements rather than ambiguous
 logical IDs. Entries are unique and ordered first by backend ASCII bytes, then
 by the same ContentId tuple. Its canonical layout is:
-
-```text
-"crucible.campaign.gc-candidate-manifest.v1\0"
-candidate_count:u64be
-repeated candidate_count times:
-    backend_length:u16be || backend_utf8
-    content_id_length:u16be || canonical_content_id_utf8
-    logical_length:u64be
-```
-
-For either manifest, let `D` be respectively
-`crucible.campaign.gc-root-manifest.v1` or
-`crucible.campaign.gc-candidate-manifest.v1`, and let `M` be the complete
-canonical bytes above. Its 32-byte manifest hash is
-`BLAKE3(BE64(len(D)) || D || M)`. Decoders enforce the entry limit before
-allocation proportional to a claimed count, bound every individual string,
-require strict order and exact EOF, and recompute terminal candidate count and
-logical-byte totals.
-
-The registered `crucible.campaign.gc-plan` schema v1 is the bounded immutable
-header that composes these independently fenced inputs. It does not embed the
-potentially large root set or candidate list. Instead it binds their separately
-authenticated canonical manifest hashes and terminal counters. Its canonical
-binary layout is:
-
-```text
-"crucible.campaign.gc-plan.v1\0"
-store_graph_hash[32]
-root_set_manifest_hash[32]
-ref_generation[32] || ref_count:u64be
-ledger_generation[32] || attempt_count:u64be
-    || observation_root_count:u64be || checkpoint_root_count:u64be
-candidate_manifest_hash[32] || candidate_count:u64be || candidate_bytes:u64be
-physical_inventory_count:u16be
-repeated physical_inventory_count times:
-    backend_length:u16be || backend_utf8[backend_length]
-    || blob_generation[32] || object_count:u64be || logical_bytes:u64be
-```
-
-The physical list contains 1 through 256 entries in strictly increasing backend
-identifier order. An identifier is 1 through 64 ASCII bytes from letters,
-digits, `.`, `_`, and `-`. The complete header is at most 64 KiB. Counts are
-checked for overflow; operational roots cannot outnumber attempt records, and
-candidate placements/bytes cannot exceed the summed physical inventory. Its
-identity is
-`CampaignHash::derive("crucible.campaign.gc-plan.v1", canonical_header)`.
-Changing any store-graph, root-manifest, candidate-manifest, blob, ref, or ledger
-basis therefore changes the plan identity. The daemon's non-destructive
-single-host planner now fences and inventories the complete ref namespace,
-assignment ledger, hot-checkpoint fallback catalog, and pending write-back
-transfers, deduplicates their logical roots, authenticates their union
-through the campaign repository's semantic, generic-envelope, Merkle, and
-opaque-leaf closure verifier, then inventories each named physical leaf. Every
-placement whose logical ID is absent from that authenticated reachable set is
-written into the candidate manifest. A physical capability must report the same
-backend identifier configured by the maintenance owner, and physical inputs are
-strictly ordered. Any incomplete visitor prefix is discarded. Because apply
-later revalidates every generation, mutations between these non-destructive
-phases only make the plan stale; they cannot authorize deletion.
-
-Policy-aware planning uses additive v2 encodings; the v1 bytes, hash domains,
-decoder, and unreachable-only semantics remain frozen. The v2 candidate
-manifest is identical through `logical_length`, followed by an explicit reason:
 
 ```text
 "crucible.campaign.gc-candidate-manifest.v2\0"
@@ -1919,13 +1860,15 @@ repeated candidate_count times:
         required_backend_length:u16be || required_backend_utf8
 ```
 
-Its hash uses the v2 magic and
-`crucible.campaign.gc-candidate-manifest.v2` domain. The v2 plan retains the v1
-field order and bounds, changes the magic and identity domain to
-`crucible.campaign.gc-plan.v2`, and inserts
-`physical_storage_identity[32]` immediately before each physical inventory
-generation. Journal admission requires the plan and candidate-manifest versions
-to match exactly.
+Its hash uses the same construction with the complete candidate-manifest bytes
+and `crucible.campaign.gc-candidate-manifest.v2` as `D`. Decoders for both
+manifests enforce the entry limit before allocation proportional to a claimed
+count, bound every individual string, require strict order and exact EOF, and
+recompute terminal candidate count and logical-byte totals.
+
+The bounded immutable plan header composes the independently fenced inputs
+without embedding the potentially large root set or candidate list. It binds
+their authenticated canonical manifest hashes and terminal counters:
 
 ```text
 "crucible.campaign.gc-plan.v2\0"
@@ -1942,6 +1885,31 @@ repeated physical_inventory_count times:
     || object_count:u64be || logical_bytes:u64be
 ```
 
+The physical list contains 1 through 256 entries in strictly increasing backend
+identifier order. An identifier is 1 through 64 ASCII bytes from letters,
+digits, `.`, `_`, and `-`. The complete header is at most 64 KiB. Counts are
+checked for overflow; operational roots cannot outnumber attempt records, and
+candidate placements/bytes cannot exceed the summed physical inventory. Its
+identity is
+`CampaignHash::derive("crucible.campaign.gc-plan.v2", canonical_header)`.
+Changing any store-graph, root-manifest, candidate-manifest, blob, ref, or ledger
+basis therefore changes the plan identity. Normal journal admission accepts
+only the v2 plan and candidate formats; earlier bytes fail closed as unsupported
+schemas.
+
+The daemon's non-destructive single-host planner fences and inventories the
+complete ref namespace, assignment ledger, hot-checkpoint fallback catalog,
+and pending write-back transfers, deduplicates their logical roots,
+authenticates their union through the campaign repository's semantic,
+generic-envelope, Merkle, and opaque-leaf closure verifier, then inventories
+each named physical leaf. Every placement whose logical ID is absent from that
+authenticated reachable set is written into the candidate manifest. A
+physical capability must report the same backend identifier configured by the
+maintenance owner, and physical inputs are strictly ordered. Any incomplete
+visitor prefix is discarded. Because apply later revalidates every generation,
+mutations between these non-destructive phases only make the plan stale; they
+cannot authorize deletion.
+
 Every physical leaf derives its storage identity from its inventory instance
 (persisted for durable leaves and process-local for memory) using
 `BLAKE3("crucible.content-store.physical-storage-identity.v1" || instance[32])`.
@@ -1955,7 +1923,7 @@ cache edge marks its cache subtree `Cache` and preserves the source subtree's
 incoming role. A tier marks its configured write child with the incoming role
 and every other child `Cache`. A write-back edge marks staging `Cache` and
 preserves the incoming role for its destination. Any independently required
-path dominates a cache role. A reachable cache placement becomes a v2 candidate
+path dominates a cache role. A reachable cache placement becomes a candidate
 only when its physical identity occurs once, a matching required placement has
 a different identity that also occurs once, and the required placement
 authenticates to EOF between matching complete inventory generations. Ambiguous
@@ -1976,7 +1944,7 @@ checksum[32]
 
 `checksum` is `CampaignHash::derive(
 "crucible.campaign.gc-journal-state.v1", preceding_state_bytes)`. Journal
-creation writes and fsyncs `plan-v1`, `roots-v1`, and `candidates-v1`, then
+creation writes and fsyncs `plan-v2`, `roots-v1`, and `candidates-v2`, then
 publishes checksummed `state-v1` by write-fsync-rename-directory-fsync and
 fsyncs the containing parent. Reopen locks the directory, re-fsyncs visible
 directory metadata, strictly decodes all records, recomputes the plan/manifest
@@ -2088,7 +2056,7 @@ fence needed by that apply step. The assignment ledger likewise provides one
 exclusive, persistent generation over its combined operational root inventory.
 The fixed hot-checkpoint fallback catalog supplies an independently fenced,
 restart-authenticated operational root inventory; its exact contents are bound
-by the root manifest rather than a new field in the v1 plan header.
+by the root manifest rather than a separate plan-header field.
 The single-host durable managed-pool owner creates a catalog record before a
 source enters the hot tier, retains the record when that source becomes a cold
 exact/thin fallback, and removes it only through an explicit conditional
@@ -2102,7 +2070,7 @@ Directory, compressed-directory, encrypted-directory,
 compressed-encrypted-directory, and packed generations survive restart; memory
 generations are process-local and monotonic for their
 ephemeral backend instance. These primitives remain held by the daemon maintenance owner. The
-canonical bounded v1 plan header now binds these
+canonical bounded v2 plan header now binds these
 generations to constructed root and candidate manifests, and the external
 journal durably owns their exact bytes and apply phase. No campaign
 repository, planner, executor, or ordinary store-graph handle receives the
