@@ -479,6 +479,39 @@
       systems = discoverSystems;
     })
   nativeEffectBoundaryCells.groups.rollout;
+  nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeCancellationKubernetesCells = let
+    selected =
+      nativeCancellationCells.groups.kubernetes
+      ++ builtins.filter (
+        cellId: builtins.head (lib.splitString "/" cellId) == "systemd-bootstrap"
+      )
+      nativeCancellationCells.groups.systemd;
+  in
+    assert builtins.length selected == 5; selected;
+  nativeCancellationSystemdCells = let
+    selected =
+      builtins.filter (
+        cellId: builtins.head (lib.splitString "/" cellId) != "systemd-bootstrap"
+      )
+      nativeCancellationCells.groups.systemd;
+  in
+    assert builtins.length selected == 4; selected;
+  nativeCancellationKubernetesCohort = import ./tests/fleet/ability-native-cancellation-kubernetes.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeCancellationPostgresqlCohort = import ./tests/fleet/ability-native-cancellation-postgresql.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
   nativeAdapterRoleScenarios = [
     "revoke-caller-before-acquisition"
     "revoke-caller-after-acquisition"
@@ -523,7 +556,15 @@
     ++ nativeAdapterRoleCells
     ++ nativeAdapterFailureControlCells
     ++ nativePostgresqlReplacementCells
-    ++ nativeEffectBoundaryCells.all;
+    ++ nativeEffectBoundaryCells.groups.reference
+    ++ nativeEffectBoundaryCells.groups.systemdManager
+    ++ nativeEffectBoundaryCells.groups.postgresql
+    ++ nativeEffectBoundaryCells.groups.kubernetes
+    ++ nativeEffectBoundaryCells.groups.rollout
+    ++ nativeEffectBoundaryCells.groups.foreground
+    ++ nativeCancellationKubernetesCells
+    ++ nativeCancellationCells.groups.postgresql
+    ++ nativeCancellationSystemdCells;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
       mkNativeAbilityScenario
@@ -576,6 +617,24 @@
             qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
             inherit (nativeEffectForegroundCohort) testScript;
             inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-cancellation-kubernetes";
+            qualifiedCells = nativeCancellationKubernetesCells;
+            inherit (nativeCancellationKubernetesCohort) testScript;
+            inherit (nativeCancellationKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-cancellation-postgresql";
+            qualifiedCells = nativeCancellationCells.groups.postgresql;
+            inherit (nativeCancellationPostgresqlCohort) testScript;
+            inherit (nativeCancellationPostgresqlCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-cancellation-systemd";
+            qualifiedCells = nativeCancellationSystemdCells;
+            inherit (nativeCancellationSystemdCohort) testScript;
+            inherit (nativeCancellationSystemdCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ];
       inherit (nativeAdapterMatrixCohort) testScript;
