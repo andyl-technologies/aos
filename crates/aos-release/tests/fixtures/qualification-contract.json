@@ -141,7 +141,14 @@
         "consumer-scoped-access-and-independent-service-observation",
         "aggregate-publication-reload-and-unchanged-input-no-op",
         "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state",
-        "rollback-revalidates-and-retains-transaction-evidence"
+        "rollback-revalidates-and-retains-transaction-evidence",
+        "typed-opaque-tls-credential-version-delivery-and-validation-binding",
+        "independent-served-certificate-observation-matches-declared-version",
+        "missing-credential-and-invalid-certificate-reject-with-live-target-preserved",
+        "tls-private-key-sentinel-absent-from-durable-and-rendered-records",
+        "credential-renewal-reloads-and-serves-new-version",
+        "selected-tls-generation-and-credential-view-survive-gc-and-reboot",
+        "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
       ],
       "id": "ability-native-activation",
       "invalidated_by": [
@@ -161,7 +168,7 @@
     },
     {
       "checks": [
-        "native-adapter-matrix-v1-sha256-a85c1a9b633eb4a4b04821f0373f8c6d95a22930e09df56cbcd70d89b4859b04",
+        "native-adapter-matrix-v1-sha256-9064a8557457de9eafae4cad104a837a0d2905487fe4b6954a57bd0cc015615d",
         "stage-specific-manager-and-foreground-contracts-with-unqualified-container-cells"
       ],
       "id": "ability-native-adapter-matrix",

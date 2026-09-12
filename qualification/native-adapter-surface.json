@@ -228,7 +228,7 @@
     {
       "adapter": "nginx-validation",
       "interface_abi": 1,
-      "interface_descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+      "interface_descriptor": "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6",
       "interface_name": "aos.nginx-validation",
       "methods": [
         {

@@ -8,11 +8,11 @@ let
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:771c63c0fe1730c0592b49c14600a115b2c842d5b363d66158b918ccd051ee3d";
+    "sha256:7ffd8615920764d2e93eb2072c6e822bcf7a0c47622952d3b9c6712cf06380b6";
   credentialDelivery =
     interface
     "aos.credential-delivery"
-    "sha256:d282faba1d3a1afd3ed7b2cde885331d8c2cf94f9b7968eb88987cffae852a3b";
+    "sha256:e8c5924bd71f8c018958430a91907c662e09af55221d2c94a758dc4a1377d44f";
   systemdService =
     interface
     "aos.systemd-service"
@@ -21,6 +21,14 @@ let
     interface
     "aos.nginx-validation"
     "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6";
+  endpointEffects =
+    interface
+    "aos.network-endpoint-effects"
+    "sha256:6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a";
+  networkPolicyEffects =
+    interface
+    "aos.host-network-policy-effects"
+    "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199";
   systemdEffects =
     interface
     "aos.systemd-service-effects"
@@ -44,6 +52,12 @@ let
     name = "aos.foreground-process-supervision";
     version = 1;
     descriptor = "sha256:b213e3c6ef28e4930a1091296e28fbfddde9f539d2daeb0287edfe955047311a";
+  };
+
+  loopbackIngressGuarantee = {
+    name = "aos.guarantee.loopback-tcp-ingress-enforcement";
+    version = 1;
+    descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
   };
 
   # Recovery conservatively charges a full interrupted call. Four call-sized
@@ -153,6 +167,12 @@ let
     then throw "nginx consumer probe must use the IPv4 loopback address"
     else if probe.port < 1024 || probe.port > 65535
     then throw "nginx consumer probe port is outside the unprivileged TCP range"
+    else if (probe ? tls_port) != (probe ? tls_credential_path)
+    then throw "nginx TLS endpoint and credential path must be declared together"
+    else if probe ? tls_port && (probe.tls_port < 1024 || probe.tls_port > 65535)
+    then throw "nginx TLS port is outside the unprivileged TCP range"
+    else if probe ? tls_credential_path && builtins.match "/var/lib/aos/ability-runtime/credentials/[0-9a-f]{64}-[0-9a-f]{64}\\.view" probe.tls_credential_path == null
+    then throw "nginx TLS credential path is outside the protected runtime view"
     else probe;
 
   validateExecutionStrategy = stage: strategy:
@@ -176,6 +196,12 @@ let
     then throw "nginx contribution response identity does not match its authorized slot"
     else if !validResponseContent virtualHost.response_content
     then throw "nginx contribution response content is invalid"
+    else if virtualHost.tls && !(virtualHost ? credential_version)
+    then throw "nginx TLS contribution requires an opaque credential version"
+    else if virtualHost.tls && builtins.match "sha256:[0-9a-f]{64}" virtualHost.credential_version == null
+    then throw "nginx TLS credential version is not canonical"
+    else if !virtualHost.tls && virtualHost ? credential_version
+    then throw "nginx cleartext contribution must not declare a credential version"
     else virtualHost;
 
   compose = context: let
@@ -203,6 +229,12 @@ let
       builtins.filter
       (virtualHost: virtualHost.tls or false)
       virtualHosts;
+    tlsVersions = builtins.attrNames (builtins.listToAttrs (builtins.map
+      (virtualHost: {
+        name = virtualHost.credential_version;
+        value = true;
+      })
+      tlsHosts));
 
     executionStage = context.provider.environment.stage;
     executionStrategy = validateExecutionStrategy executionStage consumerProbe.execution_strategy;
@@ -228,8 +260,42 @@ let
           foregroundProcessSupervisionGuarantee
         ];
     usesTls = tlsHosts != [];
+    credentialVersion =
+      if !usesTls
+      then null
+      else if builtins.length tlsVersions != 1
+      then throw "nginx TLS virtual hosts must select one credential version"
+      else if !(consumerProbe ? tls_port && consumerProbe ? tls_credential_path)
+      then throw "nginx TLS service requires an endpoint and protected credential path"
+      else builtins.head tlsVersions;
+    listeners =
+      [
+        {
+          name = "http";
+          port = consumerProbe.port;
+        }
+      ]
+      ++ (
+        if usesTls
+        then [
+          {
+            name = "tls";
+            port = consumerProbe.tls_port;
+          }
+        ]
+        else []
+      );
+    endpointRequest =
+      (childRequest context scope "endpoint" endpointEffects)
+      // {methods = ["materialize" "observe" "release"];};
+    networkPolicyRequest =
+      (childRequest context scope "network-policy" networkPolicyEffects)
+      // {
+        methods = ["apply" "observe" "remove"];
+        guarantees = [loopbackIngressGuarantee];
+      };
     requests =
-      [configurationRequest]
+      [configurationRequest endpointRequest networkPolicyRequest]
       ++ (
         if usesTls
         then [credentialRequest]
@@ -278,6 +344,7 @@ let
         then
           lowerContribution context credentialRequest "credentials" {
             hosts = builtins.map (virtualHost: virtualHost.host) tlsHosts;
+            version = credentialVersion;
           }
         else []
       )
@@ -286,6 +353,50 @@ let
         then []
         else lowerContribution context serviceRequest "services" serviceValue
       );
+    endpointContract = listener: {
+      address = consumerProbe.address;
+      port = listener.port;
+      transport = "tcp";
+    };
+    endpointRevision = listener: "sha256:${builtins.hashString "sha256" (builtins.toJSON (endpointContract listener))}";
+    endpointResource = listener: {
+      provider = context.provider;
+      key = "${listener.name}-endpoint-${builtins.toString listener.port}";
+    };
+    policyResource = listener: {
+      provider = context.provider;
+      key = "${listener.name}-network-policy-${builtins.toString listener.port}";
+    };
+    listenerResources =
+      builtins.concatMap
+      (listener: [
+        {
+          resource = endpointResource listener;
+          revision = endpointRevision listener;
+        }
+        {
+          resource = policyResource listener;
+          revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
+            direction = "ingress";
+            endpoint_revision = endpointRevision listener;
+            protocol = "tcp";
+          })}";
+        }
+      ])
+      listeners;
+    ownedResources =
+      [
+        {
+          resource = {
+            provider = context.provider;
+            key = "virtual-hosts";
+          };
+          revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
+            inherit consumerProbe virtualHosts;
+          })}";
+        }
+      ]
+      ++ listenerResources;
   in {
     schema = "aos.ability.composition-fragment/v1";
     requests =
@@ -303,15 +414,7 @@ let
         else request)
       requests;
     inherit contributions;
-    resources = [
-      {
-        resource = {
-          provider = context.provider;
-          key = "virtual-hosts";
-        };
-        revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON virtualHosts)}";
-      }
-    ];
+    resources = ownedResources;
     outputs =
       projectMapEntry context configurationBinding managedConfiguration "configuration" "published-configurations" nginx "configuration"
       ++ projectMapEntry context credentialBinding credentialDelivery "credentials" "credential-views" nginx "credential-view"
@@ -331,18 +434,16 @@ let
           };
         }
       ];
-    controllers = [
-      {
-        resource = {
-          provider = context.provider;
-          key = "virtual-hosts";
-        };
+    controllers =
+      builtins.map
+      (entry: {
+        inherit (entry) resource;
         controller = {
           provider = context.provider;
           group = "nginx";
         };
-      }
-    ];
+      })
+      ownedResources;
   };
 in {
   inherit compose;
@@ -408,6 +509,13 @@ in {
       if binding == null
       then []
       else changesThrough binding;
+    changesForRequest = requestKey: expectedInterface: requiredMethods: let
+      requestBindings = bindingsFor requestKey expectedInterface requiredMethods;
+      resources = builtins.concatMap resourcesGrantedBy (builtins.map (entry: entry.binding) requestBindings);
+    in
+      builtins.filter
+      (change: builtins.elem change.resource resources)
+      context.changes;
     createdOrUpdated =
       builtins.filter
       (change:
@@ -422,12 +530,21 @@ in {
     credentialChanged = createdOrUpdated credentialChanges;
     credentialRemoved = builtins.filter (change: change.kind == "remove") credentialChanges;
     serviceChanged = createdOrUpdated (changesThrough service);
+    endpointChanges = changesForRequest "endpoint" endpointEffects ["materialize" "observe" "release"];
+    networkPolicyChanges = changesForRequest "network-policy" networkPolicyEffects ["apply" "observe" "remove"];
+    endpointAvailable = builtins.filter (change: change.kind != "remove") endpointChanges;
+    endpointRemoved = builtins.filter (change: change.kind == "remove") endpointChanges;
+    networkPolicyAvailable = builtins.filter (change: change.kind != "remove") networkPolicyChanges;
+    networkPolicyRemoved = builtins.filter (change: change.kind == "remove") networkPolicyChanges;
+    endpointChanged = createdOrUpdated endpointChanges;
+    networkPolicyChanged = createdOrUpdated networkPolicyChanges;
     owned =
       builtins.filter
       (change: change.resource.provider == context.provider)
       context.changes;
-    retained = builtins.filter (change: change.kind != "remove") owned;
-    removed = builtins.filter (change: change.kind == "remove") owned;
+    virtualHostChanges = builtins.filter (change: change.resource.key == "virtual-hosts") owned;
+    retained = builtins.filter (change: change.kind != "remove") virtualHostChanges;
+    removed = builtins.filter (change: change.kind == "remove") virtualHostChanges;
     serviceAction =
       if
         builtins.any
@@ -454,7 +571,11 @@ in {
           || change.kind == "reconcile-divergent")
         credentialChanges
       else [];
-    needsConvergence = needsValidation || serviceChanged != [];
+    needsConvergence =
+      needsValidation
+      || serviceChanged != []
+      || endpointChanged != []
+      || networkPolicyChanged != [];
     needsAssociation =
       needsConvergence
       || builtins.any
@@ -525,6 +646,220 @@ in {
       if builtins.length controllers == 1
       then (builtins.head controllers).controller
       else throw "nginx transition requires one resource controller";
+    terminalFor = authorityRole: requestKey: expectedInterface: resource: method: access: let
+      selected =
+        builtins.filter
+        (entry:
+          entry.authority.role
+          == authorityRole
+          && (
+            if authorityRole == "desired"
+            then
+              entry.binding.request.consumer
+              == context.provider
+              && entry.binding.request.key == requestKey
+            else
+              entry.authority.source_request.consumer
+              == context.provider
+              && entry.authority.source_request.key == requestKey
+          )
+          && entry.binding.interface == expectedInterface
+          && builtins.elem method entry.binding.caller_grant.methods
+          && builtins.length (builtins.filter
+            (permission:
+              permission.resource
+              == resource
+              && (
+                permission.access
+                == access
+                || (access == "read" && permission.access == "exclusive-write")
+              )
+              && builtins.elem method permission.operations)
+            entry.binding.caller_grant.resources)
+          == 1)
+        context.authorized_bindings;
+    in
+      if builtins.length selected == 1
+      then (builtins.head selected).binding
+      else throw "nginx transition requires one authorized ${authorityRole} ${requestKey}.${method} binding for ${resource.key}";
+    literal = value: {
+      source = "literal";
+      inherit value;
+    };
+    object = fields: {
+      source = "object";
+      inherit fields;
+    };
+    operationResult = operation: output: {
+      source = "operation-result";
+      reference = {
+        producer = node operation;
+        inherit output;
+      };
+    };
+    listenerFromResource = kind: resource: let
+      matched = builtins.match "(http|tls)-${kind}-([0-9]+)" resource.key;
+    in
+      if matched == null
+      then throw "nginx transition received malformed ${kind} resource '${resource.key}'"
+      else {
+        name = builtins.elemAt matched 0;
+        port = builtins.fromJSON (builtins.elemAt matched 1);
+      };
+    endpointResourceForPolicy = resource: {
+      inherit (resource) provider;
+      key = builtins.replaceStrings ["-network-policy-"] ["-endpoint-"] resource.key;
+    };
+    changeFor = changes: resource: let
+      selected = builtins.filter (change: change.resource == resource) changes;
+    in
+      if builtins.length selected == 1
+      then builtins.head selected
+      else throw "nginx transition requires exactly one visible change for ${resource.key}";
+    selectedAction = change: mutation: observation:
+      if
+        builtins.elem change.kind [
+          "create"
+          "update"
+          "reconcile-stopped"
+          "reconcile-divergent"
+        ]
+      then mutation
+      else if change.kind == "unchanged"
+      then observation
+      else throw "nginx transition cannot provision ${change.resource.key} from '${change.kind}'";
+    nativeOperation = {
+      authorityRole,
+      requestKey,
+      expectedInterface,
+      resource,
+      method,
+      family,
+      phase,
+      inputPhase,
+      inputs,
+      access,
+    }: let
+      binding = terminalFor authorityRole requestKey expectedInterface resource method access;
+    in {
+      key = scopedKey "${method}-${resource.key}";
+      branch_context = [];
+      binding = binding.id;
+      authority = "caller";
+      interface = binding.interface;
+      inherit method family phase inputs;
+      input_phase = inputPhase;
+      target = {
+        interface = binding.interface;
+        inherit resource;
+        operations = [method];
+        lifetime = "instance";
+      };
+      preconditions = [];
+      accesses = [
+        {
+          inherit resource;
+          mode = access;
+        }
+      ];
+      controller = controllerFor resource;
+      deadline = operationDeadline;
+      recovery = {
+        retry = {
+          kind = "bounded";
+          max_attempts = 2;
+          backoff_millis = 0;
+        };
+        reconcile = {
+          interface = binding.interface;
+          inherit method;
+        };
+        cancel = {
+          interface = binding.interface;
+          inherit method;
+        };
+        compensate = null;
+      };
+    };
+    endpointOperation = authorityRole: change: let
+      listener = listenerFromResource "endpoint" change.resource;
+      method =
+        if authorityRole == "teardown"
+        then "release"
+        else selectedAction change "materialize" "observe";
+    in
+      nativeOperation {
+        inherit authorityRole method;
+        requestKey = "endpoint";
+        expectedInterface = endpointEffects;
+        resource = change.resource;
+        family = {
+          kind = "network-endpoint";
+          action = method;
+        };
+        phase =
+          if authorityRole == "teardown"
+          then "converging"
+          else "preparing";
+        inputPhase = "planning";
+        inputs = literal {
+          address = "127.0.0.1";
+          inherit (listener) port;
+          transport = "tcp";
+        };
+        access =
+          if method == "observe"
+          then "read"
+          else "exclusive-write";
+      };
+    networkPolicyOperation = authorityRole: change: let
+      endpointResource = endpointResourceForPolicy change.resource;
+      endpointChange = changeFor endpointChanges endpointResource;
+      endpointMethod =
+        if authorityRole == "teardown"
+        then "release"
+        else selectedAction endpointChange "materialize" "observe";
+      method =
+        if authorityRole == "teardown"
+        then "remove"
+        else selectedAction change "apply" "observe";
+    in
+      nativeOperation {
+        inherit authorityRole method;
+        requestKey = "network-policy";
+        expectedInterface = networkPolicyEffects;
+        resource = change.resource;
+        family = {
+          kind = "host-network-policy";
+          action = method;
+        };
+        phase =
+          if authorityRole == "teardown"
+          then "converging"
+          else "publishing";
+        inputPhase =
+          if authorityRole == "teardown"
+          then "planning"
+          else "runtime";
+        inputs =
+          if authorityRole == "teardown"
+          then
+            literal {
+              direction = "ingress";
+              endpoint = null;
+              protocol = "tcp";
+            }
+          else
+            object {
+              direction = literal "ingress";
+              endpoint = operationResult "${endpointMethod}-${endpointResource.key}" "endpoint";
+              protocol = literal "tcp";
+            };
+        access =
+          if method == "observe"
+          then "read"
+          else "exclusive-write";
+      };
     validate = change: {
       key = scopedKey "validate-${change.resource.key}";
       branch_context = [];
@@ -862,6 +1197,61 @@ in {
         kind = "required-success";
       })
       removed;
+    endpointOperations =
+      if needsConvergence
+      then builtins.map (endpointOperation "desired") endpointAvailable
+      else [];
+    networkPolicyOperations =
+      if needsConvergence
+      then builtins.map (networkPolicyOperation "desired") networkPolicyAvailable
+      else [];
+    endpointPolicyEdges =
+      if needsConvergence
+      then
+        builtins.concatMap
+        (change: let
+          endpointResource = endpointResourceForPolicy change.resource;
+          endpointChange = changeFor endpointChanges endpointResource;
+          endpointMethod = selectedAction endpointChange "materialize" "observe";
+          policyMethod = selectedAction change "apply" "observe";
+        in [
+          {
+            from = node "${endpointMethod}-${endpointResource.key}";
+            to = node "${policyMethod}-${change.resource.key}";
+            kind = "data";
+          }
+          {
+            from = node "${policyMethod}-${change.resource.key}";
+            to = node "${serviceAction}-${serviceResource.key}";
+            kind = "required-success";
+          }
+        ])
+        networkPolicyAvailable
+      else [];
+    endpointReleaseOperations = builtins.map (endpointOperation "teardown") endpointRemoved;
+    networkPolicyRemoveOperations = builtins.map (networkPolicyOperation "teardown") networkPolicyRemoved;
+    networkTeardownEdges =
+      builtins.concatMap
+      (change: let
+        endpointResource = endpointResourceForPolicy change.resource;
+        endpointChange = changeFor endpointChanges endpointResource;
+        exposureClosedBy =
+          if removed != []
+          then "stop-${serviceResource.key}"
+          else "observe-${serviceResource.key}";
+      in [
+        {
+          from = node exposureClosedBy;
+          to = node "remove-${change.resource.key}";
+          kind = "required-success";
+        }
+        {
+          from = node "remove-${change.resource.key}";
+          to = node "release-${endpointChange.resource.key}";
+          kind = "required-success";
+        }
+      ])
+      networkPolicyRemoved;
     dependencyRank = kind:
       builtins.getAttr kind {
         data = 0;
@@ -905,6 +1295,10 @@ in {
             then associationChanges
             else []
           ))
+          ++ endpointOperations
+          ++ networkPolicyOperations
+          ++ endpointReleaseOperations
+          ++ networkPolicyRemoveOperations
           ++ (builtins.map record associationChanges)
           ++ (builtins.map release removed)
           ++ (
@@ -922,7 +1316,13 @@ in {
       merges = [];
       edges =
         builtins.sort edgeLess
-        (convergenceEdges ++ credentialOnlyEdges ++ teardownEdges);
+        (
+          convergenceEdges
+          ++ credentialOnlyEdges
+          ++ endpointPolicyEdges
+          ++ teardownEdges
+          ++ networkTeardownEdges
+        );
       exports = [];
       imports = builtins.sort importLess (
         configurationImports

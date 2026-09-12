@@ -68,7 +68,7 @@ const TERMINAL_PROVIDER_INSTANCE: &str = "postgresql-terminal";
 const CREDENTIAL_SOURCE_ROOT: &str = "/var/lib/aos/ability-runtime/credential-sources";
 const MAX_CLUSTERS: usize = 64;
 const MAX_CREDENTIAL_RECORD_BYTES: u64 = 64 * 1024;
-const MAX_CREDENTIAL_SECRET_BYTES: u64 = 16 * 1024;
+const MAX_CREDENTIAL_SECRET_BYTES: u64 = 64 * 1024;
 
 const CONTROL_FAULTS: &[&str] = &[
     "hold-quarantine-after-start",
@@ -1922,6 +1922,16 @@ pub(super) fn provision_authority(arguments: &[String]) -> Result<()> {
         .to_string_lossy()
         .into_owned()])?;
 
+    provision_credential_authority(staging)
+}
+
+/// Provisions credential source records staged by a native fixture.
+///
+/// # Errors
+///
+/// Returns an error when a staged source is unsafe, noncanonical, or differs
+/// from an immutable source already installed under the protected runtime root.
+pub(super) fn provision_credential_authority(staging: &Path) -> Result<()> {
     let credential_staging = staging.join("credential-sources");
     if !credential_staging.try_exists()? {
         return Ok(());
@@ -1988,8 +1998,6 @@ fn provision_credential_source(
     ensure!(
         !secret.is_empty()
             && secret.len() <= MAX_CREDENTIAL_SECRET_BYTES as usize
-            && secret.ends_with(b"\n")
-            && !secret[..secret.len() - 1].contains(&b'\n')
             && Sha256Digest::of_bytes(&secret) == record.content_digest,
         "credential source secret differs from its record"
     );

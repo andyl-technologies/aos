@@ -6,7 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
 use anyhow::{Context, Result};
-use aos_ability_model::builtin::{credential_delivery_effects_interface, credential_view_schema};
+use aos_ability_model::builtin::{
+    credential_delivery_effects_interface, credential_view_schema, host_network_policy_interface,
+    host_network_policy_loopback_tcp_ingress_guarantee, network_endpoint_interface,
+};
 use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
     ProviderState,
@@ -193,17 +196,41 @@ impl ReferenceFixture {
                 });
             }
         }
+        let loopback_ingress = host_network_policy_loopback_tcp_ingress_guarantee()?;
         for nginx in ["nginx-main", "nginx-one", "nginx-two"] {
-            providers.push(ProviderInventory {
-                provider: instance(&environment_id, nginx),
-                interface: interfaces["aos.nginx-validation"].clone(),
-                implementation: terminal_implementations["aos.nginx-validation"].clone(),
-                state: ProviderState::Available,
-                incarnation: Some(IncarnationId::new("reference-nginx-terminal")?),
-                guarantees: Vec::new(),
-            });
+            let provider = instance(&environment_id, nginx);
+            for interface_name in [
+                "aos.nginx-validation",
+                "aos.network-endpoint-effects",
+                "aos.host-network-policy-effects",
+            ] {
+                providers.push(ProviderInventory {
+                    provider: provider.clone(),
+                    interface: interfaces[interface_name].clone(),
+                    implementation: terminal_implementations[interface_name].clone(),
+                    state: ProviderState::Available,
+                    incarnation: Some(IncarnationId::new(&format!(
+                        "reference-{nginx}-{}-terminal",
+                        interface_name.replace('.', "-")
+                    ))?),
+                    guarantees: if interface_name == "aos.host-network-policy-effects" {
+                        vec![loopback_ingress.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                });
+            }
         }
-        providers.sort_by(|left, right| left.provider.cmp(&right.provider));
+        providers.sort_by(|left, right| {
+            left.provider
+                .cmp(&right.provider)
+                .then_with(|| left.interface.cmp(&right.interface))
+                .then_with(|| {
+                    left.implementation
+                        .descriptor
+                        .cmp(&right.implementation.descriptor)
+                })
+        });
         let environment = EnvironmentDocument {
             schema: EnvironmentDocument::SCHEMA.to_string(),
             required_features: Vec::new(),
@@ -299,6 +326,15 @@ impl Deployment<'_> {
                 guarantees: Vec::new(),
                 lifetime: ResourceLifetime::Instance,
             });
+            let mut contribution = serde_json::json!({
+                "host": route.host,
+                "response_content": route.response,
+                "response_identity": route.application,
+                "tls": route.tls,
+            });
+            if route.tls {
+                contribution["credential_version"] = serde_json::json!(reference_tls_version());
+            }
             contributions.push(Contribution {
                 request,
                 aggregate: AggregateId {
@@ -307,12 +343,7 @@ impl Deployment<'_> {
                 },
                 slot: app_instance.key.clone(),
                 grant: BindingId(candidate),
-                value: value(serde_json::json!({
-                    "host": route.host,
-                    "response_content": route.response,
-                    "response_identity": route.application,
-                    "tls": route.tls,
-                })),
+                value: value(contribution),
             });
         }
         for nginx in &self.nginx_instances {
@@ -444,7 +475,7 @@ impl Deployment<'_> {
         let interface = request.accepted_interfaces[0].clone();
         let terminal = matches!(
             request.id.key.as_str(),
-            "effects" | "validation-terminal" | "service-terminal"
+            "effects" | "validation-terminal" | "service-terminal" | "endpoint" | "network-policy"
         );
         let (provider, provider_package, implementation, resources, contributions) = if terminal {
             let provider = if request.id.key.as_str() == "service-terminal" {
@@ -566,6 +597,12 @@ impl Deployment<'_> {
             resources: provider_resources,
         };
 
+        let guarantees = if interface.name.as_str() == "aos.host-network-policy-effects" {
+            vec![host_network_policy_loopback_tcp_ingress_guarantee().unwrap()]
+        } else {
+            Vec::new()
+        };
+
         BindingCandidate {
             key: binding_key(&request.id),
             request: request.id.clone(),
@@ -575,7 +612,7 @@ impl Deployment<'_> {
             implementation,
             caller_grant,
             provider_grant,
-            guarantees: Vec::new(),
+            guarantees,
             policy_revision: self.fixture.policy_revision,
             lifetime: ResourceLifetime::Instance,
             mediation_allowed: true,
@@ -1626,7 +1663,7 @@ fn assert_initial_effect_pipeline(
         )
         .unwrap();
     let effect = transition.checked_effect().document();
-    assert_eq!(effect.operations.len(), 6);
+    assert_eq!(effect.operations.len(), 8);
 
     let operation = |method: &str| {
         effect
@@ -1641,7 +1678,11 @@ fn assert_initial_effect_pipeline(
     let start = operation("start");
     let observe = operation("observe");
     let record = operation("record");
-    for recoverable in [prepare, validate, publish, observe, record] {
+    let endpoint = operation("materialize");
+    let policy = operation("apply");
+    for recoverable in [
+        prepare, validate, publish, observe, record, endpoint, policy,
+    ] {
         assert_recovery_method(recoverable, recoverable.method.as_str());
     }
     assert!(start.recovery.reconcile.is_none());
@@ -1667,6 +1708,18 @@ fn assert_initial_effect_pipeline(
     assert!(edge_exists(&publish.key, &start.key));
     assert!(edge_exists(&start.key, &observe.key));
     assert!(edge_exists(&observe.key, &record.key));
+    assert!(effect.edges.iter().any(|edge| {
+        edge.from
+            == PlanNodeKey::Operation {
+                key: endpoint.key.clone(),
+            }
+            && edge.to
+                == PlanNodeKey::Operation {
+                    key: policy.key.clone(),
+                }
+            && edge.kind == DependencyKind::Data
+    }));
+    assert!(edge_exists(&policy.key, &start.key));
 }
 
 fn assert_update_pipeline(
@@ -1692,12 +1745,19 @@ fn assert_update_pipeline(
         .iter()
         .map(|operation| operation.method.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(methods.len(), 6);
+    assert_eq!(methods.len(), 8);
     assert!(methods.contains(&"prepare"));
     assert!(methods.contains(&"validate"));
     assert!(methods.contains(&"publish"));
     assert!(methods.contains(&"record"));
     assert!(methods.contains(&"observe"));
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| **method == "observe")
+            .count(),
+        3
+    );
     assert_eq!(
         methods.iter().filter(|method| **method == "reload").count(),
         1,
@@ -1755,9 +1815,15 @@ fn assert_stopped_service_repair(
         .iter()
         .map(|operation| operation.method.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(methods.len(), 3);
+    assert_eq!(methods.len(), 5);
     assert!(methods.contains(&"start"));
-    assert!(methods.contains(&"observe"));
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| **method == "observe")
+            .count(),
+        3
+    );
     assert!(methods.contains(&"record"));
     assert!(!methods.contains(&"prepare"));
     assert!(!methods.contains(&"validate"));
@@ -1783,7 +1849,7 @@ fn assert_disable_pipeline(
         )
         .unwrap();
     let operations = &transition.checked_effect().document().operations;
-    assert_eq!(operations.len(), 3);
+    assert_eq!(operations.len(), 5);
     let stop = operations
         .iter()
         .filter(|operation| {
@@ -1819,6 +1885,41 @@ fn assert_disable_pipeline(
                 && edge.kind == DependencyKind::RequiredSuccess
         }));
     }
+
+    let policy_remove = operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                &operation.family,
+                OperationFamily::HostNetworkPolicy {
+                    action: NetworkPolicyAction::Remove
+                }
+            )
+        })
+        .unwrap();
+    let endpoint_release = operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                &operation.family,
+                OperationFamily::NetworkEndpoint {
+                    action: NetworkEndpointAction::Release
+                }
+            )
+        })
+        .unwrap();
+    assert_operation_edge(
+        transition.checked_effect().document(),
+        stop[0],
+        policy_remove,
+        DependencyKind::RequiredSuccess,
+    );
+    assert_operation_edge(
+        transition.checked_effect().document(),
+        policy_remove,
+        endpoint_release,
+        DependencyKind::RequiredSuccess,
+    );
 }
 
 fn assert_recovery_method(operation: &Operation, method: &str) {
@@ -2164,8 +2265,22 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                     maximum: 65535,
                 },
             ),
+            (
+                key("tls_credential_path"),
+                ValueSchema::String {
+                    max_length: 4096,
+                    syntax: None,
+                },
+            ),
+            (
+                key("tls_port"),
+                ValueSchema::Integer {
+                    minimum: 1024,
+                    maximum: 65535,
+                },
+            ),
         ]),
-        optional_fields: Vec::new(),
+        optional_fields: vec![key("tls_credential_path"), key("tls_port")],
     };
     let nginx_request = ValueSchema::Record {
         fields: BTreeMap::from([
@@ -2185,8 +2300,15 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                 },
             ),
             (key("tls"), ValueSchema::Boolean),
+            (
+                key("credential_version"),
+                ValueSchema::String {
+                    max_length: 71,
+                    syntax: None,
+                },
+            ),
         ]),
-        optional_fields: Vec::new(),
+        optional_fields: vec![key("credential_version")],
     };
     let nginx_validation_request = ValueSchema::Record {
         fields: BTreeMap::from([
@@ -2202,6 +2324,8 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         optional_fields: Vec::new(),
     };
     let mut documents = vec![
+        network_endpoint_interface().unwrap(),
+        host_network_policy_interface().unwrap(),
         interface_document(
             "aos.nginx",
             nginx_request.clone(),
@@ -2276,13 +2400,22 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         interface_document(
             "aos.credential-delivery",
             ValueSchema::Record {
-                fields: BTreeMap::from([(
-                    key("hosts"),
-                    ValueSchema::List {
-                        element: Box::new(string_schema()),
-                        max_items: 1024,
-                    },
-                )]),
+                fields: BTreeMap::from([
+                    (
+                        key("hosts"),
+                        ValueSchema::List {
+                            element: Box::new(string_schema()),
+                            max_items: 1024,
+                        },
+                    ),
+                    (
+                        key("version"),
+                        ValueSchema::String {
+                            max_length: 71,
+                            syntax: None,
+                        },
+                    ),
+                ]),
                 optional_fields: Vec::new(),
             },
             vec![(
@@ -2540,15 +2673,15 @@ fn reference_source_interface_descriptors_are_stable() {
 fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     assert_eq!(
         interfaces["aos.nginx"].descriptor,
-        digest_from_hex("5d368e34482c6e2bea67626aa86cbc8b0ab882644009835d77de312c77333c88")
+        digest_from_hex("9528cf4f6b14102dd6164602bd698e7e4caac000ea1620cab11f1456d39208f1")
     );
     assert_eq!(
         interfaces["aos.managed-configuration"].descriptor,
-        digest_from_hex("771c63c0fe1730c0592b49c14600a115b2c842d5b363d66158b918ccd051ee3d")
+        digest_from_hex("7ffd8615920764d2e93eb2072c6e822bcf7a0c47622952d3b9c6712cf06380b6")
     );
     assert_eq!(
         interfaces["aos.credential-delivery"].descriptor,
-        digest_from_hex("d282faba1d3a1afd3ed7b2cde885331d8c2cf94f9b7968eb88987cffae852a3b")
+        digest_from_hex("e8c5924bd71f8c018958430a91907c662e09af55221d2c94a758dc4a1377d44f")
     );
     assert_eq!(
         interfaces["aos.credential-delivery-effects"].descriptor,
@@ -2561,6 +2694,14 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     assert_eq!(
         interfaces["aos.nginx-validation"].descriptor,
         digest_from_hex("c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6")
+    );
+    assert_eq!(
+        interfaces["aos.network-endpoint-effects"].descriptor,
+        digest_from_hex("6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a")
+    );
+    assert_eq!(
+        interfaces["aos.host-network-policy-effects"].descriptor,
+        digest_from_hex("13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199")
     );
     assert_eq!(
         interfaces["aos.managed-configuration-effects"].descriptor,
@@ -2765,11 +2906,42 @@ fn nginx_consumer_probe(nginx: &InstanceId) -> AbilityValue {
     } else {
         18081
     };
+    let tls_port = if nginx.key.as_str() == "nginx-two" {
+        18444
+    } else {
+        18443
+    };
     value(serde_json::json!({
         "address": "127.0.0.1",
         "execution_strategy": "systemd-manager",
         "port": port,
+        "tls_credential_path": reference_tls_path(nginx),
+        "tls_port": tls_port,
     }))
+}
+
+fn reference_tls_version() -> String {
+    digest(91).to_string()
+}
+
+fn reference_tls_path(nginx: &InstanceId) -> String {
+    let resource = ResourceId {
+        provider: lower_provider(&nginx.environment, "credential"),
+        key: key(&format!("{}-credential-view", nginx.key)),
+    };
+    let resource_digest =
+        Sha256Digest::of_canonical("aos.ability.native-host-resource/v1", &resource)
+            .unwrap()
+            .hex();
+    let view_key = serde_json::json!({
+        "resource": resource,
+        "version": reference_tls_version(),
+    });
+    let version_digest =
+        Sha256Digest::of_canonical("aos.ability.credential-view-key/v1", &view_key)
+            .unwrap()
+            .hex();
+    format!("/var/lib/aos/ability-runtime/credentials/{resource_digest}-{version_digest}.view")
 }
 
 fn instance(environment: &EnvironmentId, name: &str) -> InstanceId {

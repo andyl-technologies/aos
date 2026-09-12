@@ -8,15 +8,30 @@
   nativeAdapterMatrix = import ./_native-adapter-matrix.nix {inherit lib;};
   containerExecutionMatrix = import ./_container-execution-matrix.nix {inherit lib;};
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
+  # This cohort exercises credential delivery and host systemd. It makes no
+  # ingress-policy ordering or authority-revocation claim until those paths
+  # are present in the VM scenario. Sandbox view isolation, lease fencing, and
+  # container-local management also require their production providers.
+  hostSystemdNginxTlsChecks = [
+    "typed-opaque-tls-credential-version-delivery-and-validation-binding"
+    "independent-served-certificate-observation-matches-declared-version"
+    "missing-credential-and-invalid-certificate-reject-with-live-target-preserved"
+    "tls-private-key-sentinel-absent-from-durable-and-rendered-records"
+    "credential-renewal-reloads-and-serves-new-version"
+    "selected-tls-generation-and-credential-view-survive-gc-and-reboot"
+    "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
+  ];
   requiredChecks = {
-    ability-native-activation = [
-      "authenticated-package-policy-and-operator-authority"
-      "exact-interface-binding-effect-plan-and-artifact-identities"
-      "consumer-scoped-access-and-independent-service-observation"
-      "aggregate-publication-reload-and-unchanged-input-no-op"
-      "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state"
-      "rollback-revalidates-and-retains-transaction-evidence"
-    ];
+    ability-native-activation =
+      [
+        "authenticated-package-policy-and-operator-authority"
+        "exact-interface-binding-effect-plan-and-artifact-identities"
+        "consumer-scoped-access-and-independent-service-observation"
+        "aggregate-publication-reload-and-unchanged-input-no-op"
+        "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state"
+        "rollback-revalidates-and-retains-transaction-evidence"
+      ]
+      ++ hostSystemdNginxTlsChecks;
     ability-native-image-rollout = [
       "advisory-exact-candidate-staging-without-selection-or-reboot"
       "authenticated-rollout-plan-and-exact-native-request"

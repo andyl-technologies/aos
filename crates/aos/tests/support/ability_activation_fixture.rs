@@ -6,12 +6,18 @@
 //! desired and policy documents used by the VM activation path.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::num::NonZeroU32;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
+use aos_ability_model::builtin::{
+    credential_delivery_effects_interface, host_network_policy_interface,
+    host_network_policy_loopback_tcp_ingress_guarantee, network_endpoint_interface,
+};
 use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
     ProviderState,
@@ -52,7 +58,10 @@ use aos_package::config_eval::runtime::{RuntimeResolution, resolve_runtime};
 use aos_package::platform::native_platform;
 use aos_package::registry::RegistrySet;
 use aos_package::types::ProfileScope;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+const CREDENTIAL_SOURCE_ROOT: &str = "/var/lib/aos/ability-runtime/credential-sources";
+const MAX_TLS_BUNDLE_BYTES: u64 = 64 * 1024;
 
 const PACKAGE_NAMES: [&str; 5] = [
     "ability-reference-nginx-consumer",
@@ -83,6 +92,28 @@ struct ComposedReference {
     desired_state: DesiredStateDocument,
     policies: Vec<ResolutionPolicyDocument>,
     bindings: Vec<aos_ability_model::Binding>,
+}
+
+#[derive(Clone, Debug)]
+struct ReferenceTls {
+    version: String,
+    bundle: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialSourceRecord {
+    schema: String,
+    resource: ResourceId,
+    version: String,
+    source_path: String,
+    content_digest: Sha256Digest,
+}
+
+#[derive(Serialize)]
+struct CredentialSourceKey<'a> {
+    resource: &'a ResourceId,
+    version: &'a str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,24 +164,48 @@ impl ReferenceLifecycle {
 /// Returns an error when registry package authentication, restricted Nix
 /// evaluation, planning, native qualification, or sidecar retention fails.
 pub(super) fn generate(arguments: &[String]) -> Result<()> {
-    if !matches!(arguments.len(), 5 | 7)
+    if arguments.len() < 5
         || arguments[3] != "--operator-authority-output"
-        || (arguments.len() == 7 && arguments[5] != "--lifecycle")
+        || (arguments.len() - 5) % 2 != 0
     {
         bail!(
-            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO]"
+            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO] [--tls-version VERSION --tls-bundle PATH]"
         );
     }
     let output = Path::new(&arguments[0]);
     let primary_response = &arguments[1];
     let secondary_response = &arguments[2];
     let authority_output = Path::new(&arguments[4]);
-    let lifecycle = arguments
-        .get(6)
-        .map(String::as_str)
-        .map(ReferenceLifecycle::parse)
-        .transpose()?
-        .unwrap_or(ReferenceLifecycle::Full);
+    let mut lifecycle = ReferenceLifecycle::Full;
+    let mut tls_version = None;
+    let mut tls_bundle = None;
+    for option in arguments[5..].chunks_exact(2) {
+        match option[0].as_str() {
+            "--lifecycle" => lifecycle = ReferenceLifecycle::parse(&option[1])?,
+            "--tls-version" => tls_version = Some(option[1].clone()),
+            "--tls-bundle" => tls_bundle = Some(PathBuf::from(&option[1])),
+            unknown => bail!("unknown reference activation option {unknown:?}"),
+        }
+    }
+    let tls = match (tls_version, tls_bundle) {
+        (Some(version), Some(bundle)) => {
+            let parsed_version =
+                Sha256Digest::parse(&version).context("parsing TLS credential version")?;
+            ensure!(
+                parsed_version.to_string() == version,
+                "TLS credential version must be a canonical SHA-256 digest"
+            );
+            let metadata = fs::symlink_metadata(&bundle)
+                .with_context(|| format!("reading TLS bundle metadata {}", bundle.display()))?;
+            ensure!(
+                metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_TLS_BUNDLE_BYTES,
+                "TLS bundle must be a nonempty regular file no larger than {MAX_TLS_BUNDLE_BYTES} bytes"
+            );
+            Some(ReferenceTls { version, bundle })
+        }
+        (None, None) => None,
+        _ => bail!("TLS credential version and bundle must be provided together"),
+    };
     ensure!(
         authority_output != output,
         "operator authority output must be separate from the activation descriptor output"
@@ -172,7 +227,16 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         .with_context(|| format!("creating ability fixture output {}", output.display()))?;
     let (_runtime, packages) = load_verified_packages()?;
     let fixture = ReferenceFixture::new(&packages)?;
-    let composed = fixture.compose(primary_response, secondary_response, lifecycle)?;
+    let composed = fixture.compose(
+        primary_response,
+        secondary_response,
+        lifecycle,
+        tls.as_ref(),
+    )?;
+
+    if let Some(tls) = &tls {
+        stage_tls_credentials(authority_output, &composed, tls)?;
+    }
 
     let native_resource_map = reference_native_resource_map(&composed)?;
     let platform_policy = reference_platform_policy(&composed);
@@ -236,7 +300,12 @@ pub(super) fn provision_authority(arguments: &[String]) -> Result<()> {
     OperatorPolicyAuthorityStore::open()
         .context("opening protected operator policy authority store")?
         .provision(&record)
-        .context("provisioning protected operator policy authority")
+        .context("provisioning protected operator policy authority")?;
+
+    let staging = path
+        .parent()
+        .context("operator policy authority record has no staging directory")?;
+    super::postgresql_activation_fixture::provision_credential_authority(staging)
 }
 
 pub(super) fn write_operator_authority(
@@ -254,6 +323,83 @@ pub(super) fn write_operator_authority(
     let path = output.join(format!("{digest_hex}.json"));
     fs::write(&path, bytes)
         .with_context(|| format!("writing operator policy authority {}", path.display()))?;
+    Ok(())
+}
+
+fn stage_tls_credentials(
+    authority_output: &Path,
+    composed: &ComposedReference,
+    tls: &ReferenceTls,
+) -> Result<()> {
+    let secret = fs::read(&tls.bundle)
+        .with_context(|| format!("reading TLS credential bundle {}", tls.bundle.display()))?;
+    ensure!(
+        !secret.is_empty() && secret.len() as u64 <= MAX_TLS_BUNDLE_BYTES,
+        "TLS credential bundle is outside the supported size range"
+    );
+
+    let provider = lower_provider(&composed.environment.environment, "credential")?;
+    let resources = composed
+        .desired_state
+        .resources
+        .iter()
+        .filter(|revision| revision.resource.provider == provider)
+        .collect::<Vec<_>>();
+    ensure!(
+        !resources.is_empty(),
+        "TLS deployment produced no credential resources"
+    );
+
+    let staging_root = authority_output.join("credential-sources");
+    fs::create_dir_all(&staging_root)?;
+    for revision in resources {
+        ensure!(
+            revision.revision.0.to_string() == tls.version,
+            "credential resource revision differs from its declared TLS version"
+        );
+        let resource = &revision.resource;
+        let resource_digest =
+            Sha256Digest::of_canonical("aos.ability.native-host-resource/v1", resource)?.hex();
+        let source_digest = Sha256Digest::of_canonical(
+            "aos.ability.credential-source-key/v1",
+            &CredentialSourceKey {
+                resource,
+                version: &tls.version,
+            },
+        )?
+        .hex();
+        let source_path =
+            format!("{CREDENTIAL_SOURCE_ROOT}/{resource_digest}/{source_digest}.secret");
+        let record = CredentialSourceRecord {
+            schema: "aos.ability.credential-source/v1".to_string(),
+            resource: resource.clone(),
+            version: tls.version.clone(),
+            source_path,
+            content_digest: Sha256Digest::of_bytes(&secret),
+        };
+        let resource_root = staging_root.join(resource_digest);
+        fs::create_dir_all(&resource_root)?;
+        write_private_file(
+            &resource_root.join(format!("{source_digest}.json")),
+            &aos_contract::canonical::to_vec(&record)?,
+        )?;
+        write_private_file(
+            &resource_root.join(format!("{source_digest}.secret")),
+            &secret,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("creating protected fixture file {}", path.display()))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -386,25 +532,47 @@ impl ReferenceFixture {
                 });
             }
         }
+        let loopback_ingress = host_network_policy_loopback_tcp_ingress_guarantee()?;
         for name in ["nginx-main", "nginx-secondary"] {
-            providers.push(ProviderInventory {
-                provider: instance(&environment_id, name)?,
-                interface: interfaces
-                    .get("aos.nginx-validation")
-                    .context("missing nginx validation interface")?
-                    .clone(),
-                implementation: terminal_implementations
-                    .get("aos.nginx-validation")
-                    .context("missing nginx validation implementation")?
-                    .clone(),
-                state: ProviderState::Available,
-                incarnation: Some(aos_ability_model::IncarnationId::new(&format!(
-                    "reference-{name}-terminal"
-                ))?),
-                guarantees: Vec::new(),
-            });
+            let provider = instance(&environment_id, name)?;
+            for interface_name in [
+                "aos.nginx-validation",
+                "aos.network-endpoint-effects",
+                "aos.host-network-policy-effects",
+            ] {
+                providers.push(ProviderInventory {
+                    provider: provider.clone(),
+                    interface: interfaces
+                        .get(interface_name)
+                        .with_context(|| format!("missing {interface_name} interface"))?
+                        .clone(),
+                    implementation: terminal_implementations
+                        .get(interface_name)
+                        .with_context(|| format!("missing {interface_name} implementation"))?
+                        .clone(),
+                    state: ProviderState::Available,
+                    incarnation: Some(aos_ability_model::IncarnationId::new(&format!(
+                        "reference-{name}-{}-terminal",
+                        interface_name.replace('.', "-")
+                    ))?),
+                    guarantees: if interface_name == "aos.host-network-policy-effects" {
+                        vec![loopback_ingress.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                });
+            }
         }
-        providers.sort_by(|left, right| left.provider.cmp(&right.provider));
+        providers.sort_by(|left, right| {
+            left.provider
+                .cmp(&right.provider)
+                .then_with(|| left.interface.cmp(&right.interface))
+                .then_with(|| {
+                    left.implementation
+                        .descriptor
+                        .cmp(&right.implementation.descriptor)
+                })
+        });
 
         let evaluator = RestrictedAbilityEvaluator::new(
             required_environment("AOS_NIX_INSTANTIATE")?,
@@ -450,8 +618,9 @@ impl ReferenceFixture {
         primary_response: &str,
         secondary_response: &str,
         lifecycle: ReferenceLifecycle,
+        tls: Option<&ReferenceTls>,
     ) -> Result<ComposedReference> {
-        let seed = self.seed(primary_response, secondary_response, lifecycle)?;
+        let seed = self.seed(primary_response, secondary_response, lifecycle, tls)?;
         let mut policies = Vec::new();
         loop {
             match RecursiveComposer::new(&self.context).compose(
@@ -483,30 +652,52 @@ impl ReferenceFixture {
         primary_response: &str,
         secondary_response: &str,
         lifecycle: ReferenceLifecycle,
+        tls: Option<&ReferenceTls>,
     ) -> Result<DesiredStateDocument> {
         let environment = self.environment.content_digest()?;
         let nginx_main = instance(&self.environment.environment, "nginx-main")?;
         let nginx_secondary = instance(&self.environment.environment, "nginx-secondary")?;
+        let configuration = |instance: &str, port: u16, tls_port: u16| -> Result<AbilityValue> {
+            let mut configuration = serde_json::json!({
+                "address": "127.0.0.1",
+                "execution_strategy": "systemd-manager",
+                "port": port,
+            });
+            if let Some(tls) = tls {
+                let resource = ResourceId {
+                    provider: lower_provider(&self.environment.environment, "credential")?,
+                    key: key(&format!("{instance}-credential-view"))?,
+                };
+                let resource_digest =
+                    Sha256Digest::of_canonical("aos.ability.native-host-resource/v1", &resource)?
+                        .hex();
+                let version_digest = Sha256Digest::of_canonical(
+                    "aos.ability.credential-view-key/v1",
+                    &CredentialSourceKey {
+                        resource: &resource,
+                        version: &tls.version,
+                    },
+                )?
+                .hex();
+                configuration["tls_port"] = serde_json::json!(tls_port);
+                configuration["tls_credential_path"] = serde_json::json!(format!(
+                    "/var/lib/aos/ability-runtime/credentials/{resource_digest}-{version_digest}.view"
+                ));
+            }
+            AbilityValue::new(configuration).map_err(Into::into)
+        };
         let mut instances = vec![
             DesiredInstance {
                 instance: nginx_main.clone(),
                 package: self.nginx_package,
                 enabled: lifecycle.enables_main(),
-                configuration: Some(AbilityValue::new(serde_json::json!({
-                    "address": "127.0.0.1",
-                    "execution_strategy": "systemd-manager",
-                    "port": 18081,
-                }))?),
+                configuration: Some(configuration("nginx-main", 18081, 18443)?),
             },
             DesiredInstance {
                 instance: nginx_secondary.clone(),
                 package: self.nginx_package,
                 enabled: true,
-                configuration: Some(AbilityValue::new(serde_json::json!({
-                    "address": "127.0.0.1",
-                    "execution_strategy": "systemd-manager",
-                    "port": 18082,
-                }))?),
+                configuration: Some(configuration("nginx-secondary", 18082, 18444)?),
             },
         ];
         let mut child_requests = Vec::new();
@@ -543,6 +734,15 @@ impl ReferenceFixture {
                 guarantees: Vec::new(),
                 lifetime: ResourceLifetime::Instance,
             });
+            let mut value = serde_json::json!({
+                "host": host,
+                "response_content": content,
+                "response_identity": application.key.as_str(),
+                "tls": tls.is_some(),
+            });
+            if let Some(tls) = tls {
+                value["credential_version"] = serde_json::json!(tls.version);
+            }
             contributions.push(Contribution {
                 request: request.clone(),
                 aggregate: AggregateId {
@@ -551,12 +751,7 @@ impl ReferenceFixture {
                 },
                 slot: application.key.clone(),
                 grant: BindingId(binding_key(&request)?),
-                value: AbilityValue::new(serde_json::json!({
-                    "host": host,
-                    "response_content": content,
-                    "response_identity": application.key.as_str(),
-                    "tls": false,
-                }))?,
+                value: AbilityValue::new(value)?,
             });
         }
         instances.sort_by(|left, right| left.instance.cmp(&right.instance));
@@ -645,7 +840,7 @@ impl ReferenceFixture {
             .clone();
         let terminal = matches!(
             request.id.key.as_str(),
-            "effects" | "validation-terminal" | "service-terminal"
+            "effects" | "validation-terminal" | "service-terminal" | "endpoint" | "network-policy"
         );
         let (provider, provider_package, implementation, resources, contributions) = if terminal {
             let provider = if request.id.key.as_str() == "service-terminal" {
@@ -775,6 +970,11 @@ impl ReferenceFixture {
                 })
                 .collect(),
         };
+        let guarantees = if interface.name.as_str() == "aos.host-network-policy-effects" {
+            vec![host_network_policy_loopback_tcp_ingress_guarantee()?]
+        } else {
+            Vec::new()
+        };
         Ok(BindingCandidate {
             key: binding_key(&request.id)?,
             request: request.id.clone(),
@@ -784,7 +984,7 @@ impl ReferenceFixture {
             implementation,
             caller_grant,
             provider_grant,
-            guarantees: Vec::new(),
+            guarantees,
             policy_revision: self.policy_revision,
             lifetime: ResourceLifetime::Instance,
             mediation_allowed: true,
@@ -817,6 +1017,7 @@ impl ReferenceFixture {
 fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeResourceMap> {
     let environment = &composed.environment.environment;
     let configuration_provider = lower_provider(environment, "configuration")?;
+    let credential_provider = lower_provider(environment, "credential")?;
     let service_provider = lower_provider(environment, "service")?;
     let mut mappings = Vec::new();
 
@@ -912,6 +1113,64 @@ fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeR
         };
 
         mappings.extend([configuration, service, validation]);
+
+        let credential_key = format!("{name}-credential-view");
+        if composed.desired_state.resources.iter().any(|revision| {
+            revision.resource.provider == credential_provider
+                && revision.resource.key.as_str() == credential_key
+        }) {
+            let credential = native_mapping(
+                composed,
+                &credential_provider,
+                &credential_key,
+                &credential_provider,
+                "effects",
+                NativeResourceQualification::CredentialDelivery {
+                    view: credential_key.clone(),
+                },
+            )?;
+            mappings.push(credential);
+        }
+
+        for revision in composed
+            .desired_state
+            .resources
+            .iter()
+            .filter(|revision| revision.resource.provider == nginx)
+        {
+            let resource_key = revision.resource.key.as_str();
+            if resource_key.contains("-endpoint-") {
+                let port = resource_key
+                    .rsplit_once('-')
+                    .context("nginx endpoint resource has no port")?
+                    .1
+                    .parse::<u16>()
+                    .context("nginx endpoint resource has an invalid port")?;
+                mappings.push(native_mapping(
+                    composed,
+                    &nginx,
+                    resource_key,
+                    &nginx,
+                    "endpoint",
+                    NativeResourceQualification::NetworkEndpoint {
+                        address: "127.0.0.1".to_string(),
+                        port,
+                        transport: "tcp".to_string(),
+                    },
+                )?);
+            } else if resource_key.contains("-network-policy-") {
+                mappings.push(native_mapping(
+                    composed,
+                    &nginx,
+                    resource_key,
+                    &nginx,
+                    "network-policy",
+                    NativeResourceQualification::HostNetworkPolicy {
+                        policy: resource_key.to_string(),
+                    },
+                )?);
+            }
+        }
     }
 
     NativeResourceMap::new(composed.desired_state.content_digest()?, mappings)
@@ -1192,8 +1451,22 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                     maximum: 65535,
                 },
             ),
+            (
+                key("tls_credential_path")?,
+                ValueSchema::String {
+                    max_length: 4096,
+                    syntax: None,
+                },
+            ),
+            (
+                key("tls_port")?,
+                ValueSchema::Integer {
+                    minimum: 1024,
+                    maximum: 65535,
+                },
+            ),
         ]),
-        optional_fields: Vec::new(),
+        optional_fields: vec![key("tls_credential_path")?, key("tls_port")?],
     };
     let nginx_request = ValueSchema::Record {
         fields: BTreeMap::from([
@@ -1213,10 +1486,19 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                 },
             ),
             (key("tls")?, ValueSchema::Boolean),
+            (
+                key("credential_version")?,
+                ValueSchema::String {
+                    max_length: 71,
+                    syntax: None,
+                },
+            ),
         ]),
-        optional_fields: Vec::new(),
+        optional_fields: vec![key("credential_version")?],
     };
     let mut documents = vec![
+        network_endpoint_interface()?,
+        host_network_policy_interface()?,
         interface_document(
             "aos.nginx",
             nginx_request.clone(),
@@ -1274,24 +1556,28 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
         interface_document(
             "aos.credential-delivery",
             ValueSchema::Record {
-                fields: BTreeMap::from([(
-                    key("hosts")?,
-                    ValueSchema::List {
-                        element: Box::new(string_schema()),
-                        max_items: 1024,
-                    },
-                )]),
+                fields: BTreeMap::from([
+                    (
+                        key("hosts")?,
+                        ValueSchema::List {
+                            element: Box::new(string_schema()),
+                            max_items: 1024,
+                        },
+                    ),
+                    (
+                        key("version")?,
+                        ValueSchema::String {
+                            max_length: 71,
+                            syntax: None,
+                        },
+                    ),
+                ]),
                 optional_fields: Vec::new(),
             },
             None,
             vec![("credential-views", resource_map_schema())],
         )?,
-        interface_document(
-            "aos.credential-delivery-effects",
-            ValueSchema::Boolean,
-            None,
-            Vec::new(),
-        )?,
+        credential_delivery_effects_interface()?,
         interface_document(
             "aos.systemd-service",
             ValueSchema::Record {
@@ -1352,6 +1638,7 @@ fn interface_document(
     outputs: Vec<(&str, ValueSchema)>,
 ) -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(name)?;
+    let validation_parameters = nginx_validation_request_schema()?;
     let methods = reference_method_families(name)
         .into_iter()
         .map(|(method, operation_family)| {
@@ -1359,7 +1646,11 @@ fn interface_document(
                 key(method)?,
                 MethodDescriptor {
                     operation_family,
-                    parameters: ValueSchema::Boolean,
+                    parameters: if name == "aos.nginx-validation" {
+                        validation_parameters.clone()
+                    } else {
+                        ValueSchema::Boolean
+                    },
                     target_resource: interface_name.clone(),
                     outputs: BTreeMap::new(),
                     permitted_operations: vec![key(method)?],
@@ -1422,9 +1713,50 @@ fn interface_document(
     })
 }
 
+fn nginx_validation_request_schema() -> Result<ValueSchema> {
+    let credential_view = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                key("path")?,
+                ValueSchema::String {
+                    max_length: 4096,
+                    syntax: None,
+                },
+            ),
+            (
+                key("version")?,
+                ValueSchema::String {
+                    max_length: 71,
+                    syntax: None,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
+    Ok(ValueSchema::Record {
+        fields: BTreeMap::from([
+            (key("candidate")?, ValueSchema::Boolean),
+            (
+                key("credential_views")?,
+                ValueSchema::List {
+                    element: Box::new(credential_view),
+                    max_items: 1024,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    })
+}
+
 fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)> {
     match name {
         "aos.credential-delivery-effects" => vec![
+            (
+                "acquire",
+                OperationFamily::Credential {
+                    action: CredentialAction::Acquire,
+                },
+            ),
             (
                 "deliver",
                 OperationFamily::Credential {

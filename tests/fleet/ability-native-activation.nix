@@ -11,7 +11,7 @@
   };
 in {
   name = "ability-native-activation";
-  timeout = 3600;
+  timeout = 5400;
   bootTimeout = 600;
 
   machines.runtime = {
@@ -128,6 +128,23 @@ in {
           return diagnostic
 
 
+      def assert_secret_redacted(generation, sentinel):
+          for transaction in retained_transactions(generation):
+              diagnostic = assert_redacted_diagnostic(generation, transaction)
+              assert sentinel not in json.dumps(
+                  diagnostic, sort_keys=True, separators=(",", ":")
+              ), diagnostic
+          runtime.fail(
+              f"{GREP} -R -F -- {shlex.quote(sentinel)} "
+              f"/var/lib/profiles/system/gen-{generation}/ability-transactions "
+              "/var/lib/aos/ability-runtime/nginx "
+              "/var/lib/aos/ability-runtime/managed-configuration"
+          )
+          runtime.fail(
+              f"journalctl --no-pager | {GREP} -F -- {shlex.quote(sentinel)}"
+          )
+
+
       def native_transaction_documents(generation, transaction):
           transaction_root = (
               f"/var/lib/profiles/system/gen-{generation}/ability-transactions/"
@@ -227,6 +244,44 @@ in {
               f"{COREUTILS}/cat {shlex.quote(terminal_path)}"
           ))
           assert terminal["terminal"] == "settled-failure", terminal
+
+
+      def assert_prepublication_failure(
+          generation, transaction, failed_method, forbidden_methods
+      ):
+          bundle, diagnostic = native_transaction_documents(generation, transaction)
+          operations = bundle["transition"]["effect_document"]["operations"]
+          failed_ordinals = {
+              ordinal
+              for ordinal, operation in enumerate(operations)
+              if operation["method"] == failed_method
+          }
+          assert failed_ordinals, (failed_method, operations)
+          settled_ordinals = {
+              event["node_ordinal"]
+              for event in diagnostic["timeline"]["events"]
+              if event["kind"] == "settled-failure"
+          }
+          assert failed_ordinals & settled_ordinals, (
+              failed_ordinals,
+              settled_ordinals,
+              diagnostic,
+          )
+          forbidden_ordinals = {
+              ordinal
+              for ordinal, operation in enumerate(operations)
+              if operation["method"] in forbidden_methods
+          }
+          completed_ordinals = {
+              event["node_ordinal"]
+              for event in diagnostic["timeline"]["events"]
+              if event["kind"] == "effect-completed"
+          }
+          assert forbidden_ordinals.isdisjoint(completed_ordinals), (
+              forbidden_ordinals,
+              completed_ordinals,
+              diagnostic,
+          )
 
 
       def assert_completed_native_disable(generation, transaction, instance):
@@ -690,6 +745,262 @@ in {
       assert_completed_native_disable(
           generation_v6, next(iter(transactions_v6)), "nginx-main"
       )
+
+      # A TLS generation cannot enter candidate validation without its typed
+      # credential source. The currently selected HTTP service remains live.
+      tls_bundle_v1, tls_certificate_v1, tls_fingerprint_v1 = create_tls_bundle(
+          "/run/ability-tls-v1", "alpha.example", 2201
+      )
+      tls_version_v1 = "sha256:" + runtime.succeed(
+          f"{COREUTILS}/sha256sum {shlex.quote(tls_bundle_v1)}"
+      ).split()[0]
+      activation_tls_v1 = generate_activation_fixture(
+          "/run/ability-activation-tls-v1",
+          "alpha-tls-v1",
+          "gamma-tls-v1",
+          "/run/ability-authority-tls-v1",
+          tls_version=tls_version_v1,
+          tls_bundle=tls_bundle_v1,
+      )
+      runtime.succeed(
+          f"{COREUTILS}/mv /run/ability-authority-tls-v1/credential-sources "
+          "/run/ability-credential-sources-withheld"
+      )
+      provision_operator_authority(
+          activation_tls_v1, "/run/ability-authority-tls-v1"
+      )
+      write_activation_host("/run/ability-host-tls-v1.nix", activation_tls_v1)
+      status, stdout, stderr = runtime.execute(
+          f"{APM} switch --from /run/ability-host-tls-v1.nix "
+          "--eval-root /run/ability-eval-tls-missing",
+          timeout=600,
+      )
+      assert status == 6, (status, stdout, stderr)
+      missing_generation = current_generation()
+      missing_record = json.loads(runtime.succeed(
+          f"{COREUTILS}/cat "
+          f"/var/lib/profiles/system/gen-{missing_generation}/activation.json"
+      ))
+      assert_prepublication_failure(
+          missing_generation,
+          missing_record["native_ability_transaction"],
+          "deliver",
+          {"validate", "publish", "start", "reload"},
+      )
+      assert_route("gamma.example", 18082, "app-c", "gamma-v3")
+      assert_tls_route_absent("alpha.example", 18443)
+
+      runtime.succeed(
+          f"{COREUTILS}/mv /run/ability-credential-sources-withheld "
+          "/run/ability-authority-tls-v1/credential-sources"
+      )
+      provision_operator_authority(
+          activation_tls_v1, "/run/ability-authority-tls-v1"
+      )
+      generation_tls_v1 = switch_host(
+          "/run/ability-host-tls-v1.nix", "tls-v1"
+      )
+      runtime.wait_until_succeeds(
+          "systemctl is-active --quiet nginx-nginx-main.service", timeout=120
+      )
+      assert (
+          tls_route_body("alpha.example", 18443, tls_certificate_v1)
+          == "app-a:alpha-tls-v1\n"
+      )
+      assert (
+          tls_route_body("gamma.example", 18444, tls_certificate_v1)
+          == "app-c:gamma-tls-v1\n"
+      )
+      assert (
+          served_certificate_fingerprint("alpha.example", 18443)
+          == tls_fingerprint_v1
+      )
+      assert (
+          served_certificate_fingerprint("gamma.example", 18444)
+          == tls_fingerprint_v1
+      )
+      tls_reload_calls_v1 = runtime.succeed(
+          f"{COREUTILS}/cat /run/ability-nginx-reload.calls"
+      )
+      repeated_tls_generation = switch_host(
+          "/run/ability-host-tls-v1.nix", "tls-v1-no-op"
+      )
+      assert repeated_tls_generation == generation_tls_v1
+      assert runtime.succeed(
+          f"{COREUTILS}/cat /run/ability-nginx-reload.calls"
+      ) == tls_reload_calls_v1
+      assert (
+          served_certificate_fingerprint("alpha.example", 18443)
+          == tls_fingerprint_v1
+      )
+
+      # A private-key body fragment must remain absent from durable plans,
+      # journals, terminal records, diagnostics, and rendered configuration.
+      secret_sentinel = runtime.succeed(
+          f"{GAWK} '/BEGIN PRIVATE KEY/ {{ getline; print; exit }}' "
+          f"{shlex.quote(tls_bundle_v1)}"
+      ).strip()
+      assert len(secret_sentinel) > 20, secret_sentinel
+      assert_secret_redacted(generation_tls_v1, secret_sentinel)
+
+      main_tls_view = runtime.succeed(
+          f"{GAWK} '/ssl_certificate / {{ value=$2; sub(/;$/, \"\", value); "
+          "print value; exit }}' /var/lib/aos/ability-reference/nginx-main.conf"
+      ).strip()
+      secondary_tls_view = runtime.succeed(
+          f"{GAWK} '/ssl_certificate / {{ value=$2; sub(/;$/, \"\", value); "
+          "print value; exit }}' /var/lib/aos/ability-reference/nginx-secondary.conf"
+      ).strip()
+      runtime.succeed(f"test -r {shlex.quote(main_tls_view)}")
+      runtime.succeed(f"test -r {shlex.quote(secondary_tls_view)}")
+
+      # Malformed renewed material is rejected by nginx before publication.
+      # Both running workers continue to serve the prior certificate.
+      invalid_bundle = "/run/ability-tls-invalid/server.pem"
+      runtime.succeed(
+          f"{COREUTILS}/mkdir -p /run/ability-tls-invalid && "
+          f"{COREUTILS}/printf '%s\\n' 'invalid TLS credential sentinel' "
+          f"> {invalid_bundle}"
+      )
+      invalid_version = "sha256:" + runtime.succeed(
+          f"{COREUTILS}/sha256sum {invalid_bundle}"
+      ).split()[0]
+      activation_tls_invalid = generate_activation_fixture(
+          "/run/ability-activation-tls-invalid",
+          "alpha-invalid",
+          "gamma-invalid",
+          "/run/ability-authority-tls-invalid",
+          tls_version=invalid_version,
+          tls_bundle=invalid_bundle,
+      )
+      provision_operator_authority(
+          activation_tls_invalid, "/run/ability-authority-tls-invalid"
+      )
+      write_activation_host(
+          "/run/ability-host-tls-invalid.nix", activation_tls_invalid
+      )
+      status, stdout, stderr = runtime.execute(
+          f"{APM} switch --from /run/ability-host-tls-invalid.nix "
+          "--eval-root /run/ability-eval-tls-invalid",
+          timeout=600,
+      )
+      assert status == 6, (status, stdout, stderr)
+      invalid_generation = current_generation()
+      invalid_record = json.loads(runtime.succeed(
+          f"{COREUTILS}/cat "
+          f"/var/lib/profiles/system/gen-{invalid_generation}/activation.json"
+      ))
+      assert_prepublication_failure(
+          invalid_generation,
+          invalid_record["native_ability_transaction"],
+          "validate",
+          {"publish", "start", "reload"},
+      )
+      assert_secret_redacted(invalid_generation, "invalid TLS credential sentinel")
+      assert (
+          tls_route_body("alpha.example", 18443, tls_certificate_v1)
+          == "app-a:alpha-tls-v1\n"
+      )
+      assert (
+          served_certificate_fingerprint("alpha.example", 18443)
+          == tls_fingerprint_v1
+      )
+      runtime.succeed(f"test -r {shlex.quote(main_tls_view)}")
+      runtime.succeed(f"test -r {shlex.quote(secondary_tls_view)}")
+      runtime.succeed(
+          f"{APM} rollback --system --generation {generation_tls_v1}",
+          timeout=600,
+      )
+
+      # Renewal delivers another opaque version, validates that exact view,
+      # reloads nginx, and exposes the new certificate before readiness passes.
+      tls_bundle_v2, tls_certificate_v2, tls_fingerprint_v2 = create_tls_bundle(
+          "/var/lib/ability-tls-v2", "alpha.example", 2202
+      )
+      tls_version_v2 = "sha256:" + runtime.succeed(
+          f"{COREUTILS}/sha256sum {shlex.quote(tls_bundle_v2)}"
+      ).split()[0]
+      assert tls_version_v2 != tls_version_v1
+      activation_tls_v2 = generate_activation_fixture(
+          "/run/ability-activation-tls-v2",
+          "alpha-tls-v1",
+          "gamma-tls-v1",
+          "/run/ability-authority-tls-v2",
+          tls_version=tls_version_v2,
+          tls_bundle=tls_bundle_v2,
+      )
+      provision_operator_authority(
+          activation_tls_v2, "/run/ability-authority-tls-v2"
+      )
+      write_activation_host("/run/ability-host-tls-v2.nix", activation_tls_v2)
+      generation_tls_v2 = switch_host(
+          "/run/ability-host-tls-v2.nix", "tls-v2-renewal"
+      )
+      assert (
+          tls_route_body("alpha.example", 18443, tls_certificate_v2)
+          == "app-a:alpha-tls-v1\n"
+      )
+      assert (
+          served_certificate_fingerprint("alpha.example", 18443)
+          == tls_fingerprint_v2
+      )
+
+      # The selected generation and protected credential view survive garbage
+      # collection and recovery from durable boot metadata.
+      runtime.succeed(f"{NIX_BIN}/nix-collect-garbage", timeout=600)
+      runtime.reboot_without_metadata()
+      runtime.wait_until_succeeds(
+          "systemctl is-active --quiet nginx-nginx-main.service", timeout=300
+      )
+      assert current_generation() == generation_tls_v2
+      assert (
+          served_certificate_fingerprint("alpha.example", 18443)
+          == tls_fingerprint_v2
+      )
+
+      # Disabling a TLS owner stops it before releasing its protected view.
+      # The independent secondary service retains the same declared version.
+      activation_tls_disable = generate_activation_fixture(
+          "/run/ability-activation-tls-disable",
+          "unused-tls-disable",
+          "gamma-tls-v1",
+          "/run/ability-authority-tls-disable",
+          lifecycle="disable-main",
+          tls_version=tls_version_v2,
+          tls_bundle=tls_bundle_v2,
+      )
+      provision_operator_authority(
+          activation_tls_disable, "/run/ability-authority-tls-disable"
+      )
+      write_activation_host(
+          "/run/ability-host-tls-disable.nix", activation_tls_disable
+      )
+      switch_host("/run/ability-host-tls-disable.nix", "tls-disable-main")
+      runtime.fail("systemctl is-active --quiet nginx-nginx-main.service")
+      runtime.fail(f"test -e {shlex.quote(main_tls_view)}")
+      assert_tls_route_absent("alpha.example", 18443)
+      assert (
+          served_certificate_fingerprint("gamma.example", 18444)
+          == tls_fingerprint_v2
+      )
+
+      # Removing TLS from the retained secondary service reloads cleartext
+      # configuration before releasing the final credential view.
+      activation_clear = generate_activation_fixture(
+          "/run/ability-activation-clear-final",
+          "alpha-clear-final",
+          "gamma-clear-final",
+          "/run/ability-authority-clear-final",
+          lifecycle="disable-main",
+      )
+      provision_operator_authority(
+          activation_clear, "/run/ability-authority-clear-final"
+      )
+      write_activation_host("/run/ability-host-clear-final.nix", activation_clear)
+      switch_host("/run/ability-host-clear-final.nix", "clear-final")
+      runtime.fail(f"test -e {shlex.quote(secondary_tls_view)}")
+      assert_tls_route_absent("gamma.example", 18444)
+      assert_route("gamma.example", 18082, "app-c", "gamma-clear-final")
     '';
   }
   // lib.optionalAttrs qualificationImage {

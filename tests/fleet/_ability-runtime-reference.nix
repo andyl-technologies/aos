@@ -8,6 +8,7 @@
   packageSet = import ../abilities/reference-nginx/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
+    credentialRuntime = pkgs.aos.packageRuntime;
     managedConfigurationRuntime = pkgs.aos.packageRuntime;
     nginxRuntime = pkgs.nginx;
     systemdRuntime = pkgs.aos.packageRuntime;
@@ -58,7 +59,7 @@
   runtimeModules = [
     ../../systems/server-test.nix
     {
-      environment.systemPackages = [pkgs.nginx reloadWrapper];
+      environment.systemPackages = [pkgs.nginx pkgs.openssl reloadWrapper];
       environment.etc."tmpfiles.d/ability-reference.conf".text = ''
         d /var/lib/aos 0700 root root - -
         d /var/lib/aos/ability-reference 0700 root root - -
@@ -103,9 +104,11 @@
       pkgs.findutils
       pkgs.gawk
       pkgs.git
+      pkgs.grep
       pkgs.jq
       pkgs.nginx
       pkgs.nix
+      pkgs.openssl
       pkgs.util-linux
       reloadWrapper
     ];
@@ -173,10 +176,12 @@ in {
       FIXTURE = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture"
       FIND = "${pkgs.findutils}/bin/find"
       GIT = "${pkgs.git}/bin/git"
+      GREP = "${pkgs.grep}/bin/grep"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_BIN = "${pkgs.nix}/bin"
       NIX_INSTANTIATE = "${pkgs.nix}/bin/nix-instantiate"
       NGINX = "${pkgs.nginx}/bin/nginx"
+      OPENSSL = "${pkgs.openssl}/bin/openssl"
       PRLIMIT = "${pkgs.util-linux}/bin/prlimit"
       RELOAD_WRAPPER = "${reloadWrapper}/bin/ability-nginx-reload"
 
@@ -279,7 +284,19 @@ in {
           secondary_response,
           authority_staging,
           lifecycle="full",
+          tls_version=None,
+          tls_bundle=None,
       ):
+          tls_arguments = ""
+          if tls_version is not None or tls_bundle is not None:
+              assert tls_version is not None and tls_bundle is not None, (
+                  tls_version,
+                  tls_bundle,
+              )
+              tls_arguments = (
+                  f" --tls-version {shlex.quote(tls_version)}"
+                  f" --tls-bundle {shlex.quote(tls_bundle)}"
+              )
           runtime.succeed(
               f"{COREUTILS}/rm -rf {shlex.quote(output)} "
               f"{shlex.quote(authority_staging)}"
@@ -297,12 +314,36 @@ in {
               f"{shlex.quote(primary_response)} "
               f"{shlex.quote(secondary_response)} --operator-authority-output "
               f"{shlex.quote(authority_staging)} --lifecycle "
-              f"{shlex.quote(lifecycle)}",
+              f"{shlex.quote(lifecycle)}{tls_arguments}",
               timeout=1200,
           )
           return json.loads(runtime.succeed(
               f"{COREUTILS}/cat {shlex.quote(output + '/activation.json')}"
           ))
+
+
+      def create_tls_bundle(root, common_name, serial):
+          runtime.succeed(f"{COREUTILS}/rm -rf {shlex.quote(root)}")
+          runtime.succeed(f"{COREUTILS}/mkdir -p {shlex.quote(root)}")
+          key = f"{root}/server.key"
+          certificate = f"{root}/server.crt"
+          bundle = f"{root}/server.pem"
+          runtime.succeed(
+              f"{OPENSSL} req -x509 -newkey rsa:2048 -nodes -days 30 "
+              f"-set_serial {serial} -subj {shlex.quote('/CN=' + common_name)} "
+              "-addext "
+              f"{shlex.quote('subjectAltName=DNS:alpha.example,DNS:beta.example,DNS:gamma.example')} "
+              f"-keyout {shlex.quote(key)} -out {shlex.quote(certificate)}"
+          )
+          runtime.succeed(
+              f"{COREUTILS}/cat {shlex.quote(certificate)} {shlex.quote(key)} "
+              f"> {shlex.quote(bundle)}"
+          )
+          fingerprint = runtime.succeed(
+              f"{OPENSSL} x509 -in {shlex.quote(certificate)} -noout "
+              "-fingerprint -sha256"
+          ).strip().split("=", 1)[1].replace(":", "").lower()
+          return bundle, certificate, fingerprint
 
 
       def provision_operator_authority(activation, authority_staging):
@@ -395,6 +436,33 @@ in {
               f"{CURL} --fail --silent "
               f"-H {shlex.quote('Host: ' + host)} http://127.0.0.1:{port}/"
           )
+
+
+      def tls_route_body(host, port, certificate):
+          return runtime.succeed(
+              f"{CURL} --fail --silent --cacert {shlex.quote(certificate)} "
+              f"--resolve {shlex.quote(f'{host}:{port}:127.0.0.1')} "
+              f"{shlex.quote(f'https://{host}:{port}/')}"
+          )
+
+
+      def assert_tls_route_absent(host, port):
+          runtime.fail(
+              f"{CURL} --fail --silent --insecure "
+              f"--resolve {shlex.quote(f'{host}:{port}:127.0.0.1')} "
+              f"{shlex.quote(f'https://{host}:{port}/')}"
+          )
+
+
+      def served_certificate_fingerprint(host, port):
+          command = (
+              f"{OPENSSL} s_client -connect 127.0.0.1:{port} "
+              f"-servername {shlex.quote(host)} </dev/null 2>/dev/null "
+              f"| {OPENSSL} x509 -noout -fingerprint -sha256"
+          )
+          return runtime.succeed(command).strip().split("=", 1)[1].replace(
+              ":", ""
+          ).lower()
 
 
       def assert_consumer_observation(activation):
