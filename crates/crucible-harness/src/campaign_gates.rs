@@ -9,7 +9,7 @@
 /// The executable contract attached to an RFC-0020 gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CampaignGateContract {
-    /// One or more isolable Cargo targets wired to a Nix check.
+    /// One or more isolable Cargo targets or product flights wired to a Nix check.
     Automated {
         /// Cargo targets that jointly implement the contract.
         targets: &'static [CampaignGateTarget],
@@ -53,6 +53,11 @@ pub enum CampaignGateTargetKind {
         /// Whether the flight must opt into intentionally ignored tests.
         ignored: bool,
     },
+    /// A Nix flight that builds and executes a product-level acceptance runner.
+    NixFlight {
+        /// Repository-relative Nix source that implements the flight.
+        nix_source: &'static str,
+    },
 }
 
 /// One exact library selector and its defining source file.
@@ -64,10 +69,10 @@ pub struct LibraryExactSelector {
     pub name: &'static str,
 }
 
-/// One isolable Cargo target in an automated campaign gate.
+/// One isolable target in an automated campaign gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignGateTarget {
-    /// Cargo package that owns the target.
+    /// Workspace package that owns the target or product runner.
     pub package: &'static str,
     /// Exact target and invocation kind.
     pub kind: CampaignGateTargetKind,
@@ -447,7 +452,17 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         &[integration_target("crucible-campaign", "gate_typed_choice")],
         "checks.crucible.phase2.gates.typedChoice",
     ),
-    unsupported("gate:typed-choice-product-checkpoint", "crucible-daemon"),
+    automated(
+        "gate:typed-choice-product-checkpoint",
+        "crucible-daemon",
+        &[CampaignGateTarget {
+            package: "crucible-qemu",
+            kind: CampaignGateTargetKind::NixFlight {
+                nix_source: "tests/crucible/phase2-qemu-live-selectable-product.nix",
+            },
+        }],
+        "checks.crucible.phase2.gates.typedChoiceProductCheckpoint",
+    ),
     component_automated(
         "gate:world-fork-atomicity",
         "crucible-daemon",
