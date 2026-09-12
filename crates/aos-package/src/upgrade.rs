@@ -32,7 +32,8 @@ use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
+    delete_meta, list_meta, snapshot_profile_meta_to_generation,
+    validate_ordinary_profile_ability_state, write_meta,
 };
 use super::registry::{RegistrySet, store_path_hash};
 use super::remove::retained_installed_indexes;
@@ -108,6 +109,8 @@ pub async fn run(
     printer.step(1, 7, "Loading installed packages...");
     let inspect_profile = Profile::open_readonly(config.scope);
     let installed = list_meta(&inspect_profile)?;
+    validate_ordinary_profile_ability_state(&installed)
+        .context("admitting retained package state for upgrade")?;
 
     // Step 2: Load registries from cache.
     printer.step(2, 7, "Loading registries...");

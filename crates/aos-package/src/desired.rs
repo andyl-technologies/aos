@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::config::ApmConfig;
 use crate::install;
 use crate::profile::Profile;
-use crate::profile::meta::list_meta;
+use crate::profile::meta::{list_meta, validate_ordinary_profile_ability_state};
 use crate::remove;
 use crate::resolve;
 use crate::sysroot_lock::IgnoreSysrootLock;
@@ -108,6 +108,8 @@ pub async fn reconcile_from_file(
     let desired = desired_file.packages;
     let profile = Profile::open_readonly(config.scope);
     let installed_before_meta = list_meta(&profile)?;
+    validate_ordinary_profile_ability_state(&installed_before_meta)
+        .context("admitting retained package state for desired-state reconciliation")?;
     let installed_before = explicit_installed_packages_from_meta(&installed_before_meta);
 
     let additions = desired
