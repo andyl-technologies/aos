@@ -65,7 +65,7 @@ pub enum AbilityContractData<'a> {
 #[derive(Clone, Debug)]
 pub enum CheckedAbilityContract {
     /// Retains a checked package companion contract.
-    PackageSource(CheckedPackageContract),
+    PackageSource(Box<CheckedPackageContract>),
     /// Retains a checked static artifact contract.
     Static(CheckedStaticAbilityContract),
 }
@@ -100,6 +100,7 @@ pub fn validate_ability_contract(
             manifest,
             retained_interfaces,
         } => package_contract::validate_package_contract(manifest, retained_interfaces)
+            .map(Box::new)
             .map(CheckedAbilityContract::PackageSource)
             .map_err(AbilityContractValidationError::PackageSource),
         AbilityContractData::Static {
