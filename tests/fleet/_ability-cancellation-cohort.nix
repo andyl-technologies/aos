@@ -23,13 +23,13 @@ import ./_ability-effect-boundary-cohort.nix {
     extraClosures
     qualificationSetupBody
     ;
-  domainScript = ''
+  evidenceSetup = ''
     CANCELLATION_BUILDER = CANCELLATION_EVIDENCE.CancellationEvidence(
         MATRIX_SPEC, COHORT_CELLS
     )
-
-    ${domainScript}
-
+  '';
+  inherit domainScript;
+  evidenceFinish = ''
     (
         NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS,
         NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES,

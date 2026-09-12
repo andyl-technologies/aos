@@ -10,6 +10,18 @@
   extraRuntimeModules ? [],
   extraClosures ? [],
   qualificationSetupBody ? "",
+  evidenceSetup ? ''
+    EFFECT_BUILDER = EFFECT_EVIDENCE.EffectBoundaryEvidence(
+        MATRIX_SPEC, COHORT_CELLS
+    )
+  '',
+  evidenceFinish ? ''
+    (
+        NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS,
+        NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES,
+        NATIVE_ADAPTER_MATRIX_PROBES,
+    ) = EFFECT_BUILDER.finish()
+  '',
 }: let
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   matrixSpec = pkgs.writeTextFile {
@@ -155,17 +167,11 @@ in {
 
       MATRIX_SPEC = json.loads(Path(MATRIX_SPEC_PATH).read_text())
       COHORT_CELLS = json.loads(Path(COHORT_CELLS_PATH).read_text())
-      EFFECT_BUILDER = EFFECT_EVIDENCE.EffectBoundaryEvidence(
-          MATRIX_SPEC, COHORT_CELLS
-      )
+      ${evidenceSetup}
 
       ${domainScript}
 
-      (
-          NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS,
-          NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES,
-          NATIVE_ADAPTER_MATRIX_PROBES,
-      ) = EFFECT_BUILDER.finish()
+      ${evidenceFinish}
     '';
 
   qualification = {
