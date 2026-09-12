@@ -11,6 +11,7 @@
   inherit (lib.abilities) schemas;
 
   nginxArtifact = ../../../pkgs/networking/_nginx-ability-provider;
+  nginxProvider = import nginxArtifact;
   managedConfigurationArtifact = ./providers/managed-configuration;
   credentialArtifact = ./providers/credential;
   systemdArtifact = ./providers/systemd;
@@ -40,6 +41,10 @@
     interface
     "aos.nginx-validation"
     "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6";
+  httpBackend =
+    interface
+    "aos.http-backend"
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -85,6 +90,11 @@
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
     version = 1;
     descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
+  };
+  loopbackEgressGuarantee = lib.abilities.guarantee {
+    name = "aos.guarantee.loopback-tcp-egress-enforcement";
+    version = 1;
+    descriptor = "sha256:91fc94f9ff09a955256a2a86d1df6df00e1635c8fc035e2f68e262cbc29dcd53";
   };
 
   lifecycle = {
@@ -174,7 +184,7 @@
   networkPolicyRequest = requiredEndpoint:
     schemas.record {
       fields = {
-        direction = schemas.enum ["ingress"];
+        direction = schemas.enum ["egress" "ingress"];
         endpoint =
           if requiredEndpoint
           then endpoint
@@ -325,13 +335,33 @@
         syntax = null;
       };
       response_identity = localKeyString;
+      proxy_backend = schemas.boolean;
       tls = schemas.boolean;
       credential_version = schemas.string {
         maxLength = 71;
         syntax = null;
       };
     };
-    optional = ["credential_version"];
+    optional = ["credential_version" "proxy_backend"];
+  };
+
+  managedVirtualHost = schemas.record {
+    fields = {
+      backend_endpoint = endpoint;
+      host = string;
+      response_content = schemas.string {
+        maxLength = 256;
+        syntax = null;
+      };
+      response_identity = localKeyString;
+      proxy_backend = schemas.boolean;
+      tls = schemas.boolean;
+      credential_version = schemas.string {
+        maxLength = 71;
+        syntax = null;
+      };
+    };
+    optional = ["backend_endpoint" "credential_version" "proxy_backend"];
   };
 
   recoverableMethods = ["acquire" "deliver" "observe" "prepare" "publish" "record" "release" "stop" "validate"];
@@ -466,6 +496,27 @@ in {
   consumer = mkPackage "ability-reference-nginx-consumer" nginxArtifact {
     activationMode = "contracts-only";
     requirements.nginx = required nginxInterface;
+    ownership = [];
+    exports.http-backend = {
+      artifact = nginxArtifact;
+      export = lib.abilities.define {
+        interface = httpBackend.name;
+        abi = httpBackend.abi;
+        requestSchema = schemas.boolean;
+        configurationSchema = endpoint;
+        outputs.endpoint = output endpoint;
+        methods = {};
+        inherit lifecycle;
+        guarantees = [];
+        aggregation = aggregation "backend";
+        requires = {};
+        composeEntry = "backendCompose";
+        transitionEntry = "backendTransition";
+        ownsResourceKinds = [];
+        compose = nginxProvider.backendCompose;
+        transition = nginxProvider.backendTransition;
+      };
+    };
   };
 
   nginx = mkPackage "ability-reference-nginx" nginxArtifact nginxAbilityPackage;
@@ -481,7 +532,7 @@ in {
             requestSchema = schemas.record {
               fields = {
                 virtualHosts = schemas.list {
-                  element = virtualHost;
+                  element = managedVirtualHost;
                   maxItems = 1024;
                 };
                 consumer_content_revision = string;

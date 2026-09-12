@@ -8,6 +8,7 @@ use std::num::NonZeroU32;
 use anyhow::{Context, Result};
 use aos_ability_model::builtin::{
     credential_delivery_effects_interface, credential_view_schema, host_network_policy_interface,
+    host_network_policy_loopback_tcp_egress_guarantee,
     host_network_policy_loopback_tcp_ingress_guarantee, network_endpoint_interface,
 };
 use aos_ability_model::document::{
@@ -196,7 +197,10 @@ impl ReferenceFixture {
                 });
             }
         }
-        let loopback_ingress = host_network_policy_loopback_tcp_ingress_guarantee()?;
+        let policy_guarantees = vec![
+            host_network_policy_loopback_tcp_egress_guarantee()?,
+            host_network_policy_loopback_tcp_ingress_guarantee()?,
+        ];
         for nginx in ["nginx-main", "nginx-one", "nginx-two"] {
             let provider = instance(&environment_id, nginx);
             for interface_name in [
@@ -214,7 +218,7 @@ impl ReferenceFixture {
                         interface_name.replace('.', "-")
                     ))?),
                     guarantees: if interface_name == "aos.host-network-policy-effects" {
-                        vec![loopback_ingress.clone()]
+                        policy_guarantees.clone()
                     } else {
                         Vec::new()
                     },
@@ -317,7 +321,11 @@ impl Deployment<'_> {
                 instance: app_instance.clone(),
                 package: self.fixture.consumer_package,
                 enabled: true,
-                configuration: None,
+                configuration: Some(value(serde_json::json!({
+                    "address": "127.0.0.1",
+                    "port": backend_port(route.application),
+                    "transport": "tcp",
+                }))),
             });
             requests.push(BindingRequest {
                 id: request.clone(),
@@ -330,6 +338,7 @@ impl Deployment<'_> {
                 "host": route.host,
                 "response_content": route.response,
                 "response_identity": route.application,
+                "proxy_backend": true,
                 "tls": route.tls,
             });
             if route.tls {
@@ -450,6 +459,27 @@ impl Deployment<'_> {
                 lifetime: ResourceLifetime::Instance,
             })
             .collect::<Vec<_>>();
+        enabled_providers.extend(
+            desired
+                .instances
+                .iter()
+                .filter(|instance| {
+                    instance.enabled && instance.package == self.fixture.consumer_package
+                })
+                .map(|instance| EnabledProviderSelection {
+                    instance: instance.instance.clone(),
+                    interface: self.fixture.interfaces["aos.http-backend"].clone(),
+                    implementation: self.fixture.implementations["aos.http-backend"].clone(),
+                    provider_grant: AuthorityGrant {
+                        principal: instance.instance.clone(),
+                        methods: Vec::new(),
+                        contributions: Vec::new(),
+                        resources: Vec::new(),
+                    },
+                    policy_revision: self.fixture.policy_revision,
+                    lifetime: ResourceLifetime::Instance,
+                }),
+        );
         enabled_providers.sort_by(|left, right| left.instance.cmp(&right.instance));
 
         ResolutionPolicyDocument {
@@ -529,6 +559,17 @@ impl Deployment<'_> {
                 Vec::new(),
                 contributions,
             )
+        } else if interface == self.fixture.interfaces["aos.http-backend"] {
+            let application = request.id.scope.as_slice().last().unwrap();
+            let provider = instance(&self.fixture.environment.environment, application.as_str());
+
+            (
+                provider,
+                self.fixture.consumer_package,
+                self.fixture.implementations["aos.http-backend"].clone(),
+                Vec::new(),
+                Vec::new(),
+            )
         } else {
             let suffix = request.id.key.as_str();
             let name = lower_interface_name(suffix);
@@ -598,7 +639,10 @@ impl Deployment<'_> {
         };
 
         let guarantees = if interface.name.as_str() == "aos.host-network-policy-effects" {
-            vec![host_network_policy_loopback_tcp_ingress_guarantee().unwrap()]
+            vec![
+                host_network_policy_loopback_tcp_egress_guarantee().unwrap(),
+                host_network_policy_loopback_tcp_ingress_guarantee().unwrap(),
+            ]
         } else {
             Vec::new()
         };
@@ -690,8 +734,9 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
     let rendered = rendered_configuration(&composed.outcome.desired_state, &nginx_main);
     assert!(rendered.contains("server_name alpha.example;"));
     assert!(rendered.contains("server_name beta.example;"));
-    assert!(rendered.contains("return 200 \"app-a:alpha-v1\\n\";"));
-    assert!(rendered.contains("return 200 \"app-b:beta-v1\\n\";"));
+    assert!(rendered.contains("proxy_pass http://127.0.0.1:19001;"));
+    assert!(rendered.contains("proxy_pass http://127.0.0.1:19002;"));
+    assert!(!rendered.contains("return 200"));
     assert_eq!(rendered.matches("listen 443 ssl;").count(), 0);
     assert!(matches!(
         &nginx_output(
@@ -722,9 +767,8 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
     let rendered = rendered_configuration(&updated_state, &nginx_main);
     assert!(rendered.contains("alpha.example"));
     assert!(rendered.contains("beta.example"));
-    assert!(!rendered.contains("app-a:alpha-v1"));
-    assert!(rendered.contains("return 200 \"app-a:alpha-v2\\n\";"));
-    assert!(rendered.contains("return 200 \"app-b:beta-v1\\n\";"));
+    assert!(rendered.contains("proxy_pass http://127.0.0.1:19001;"));
+    assert!(rendered.contains("proxy_pass http://127.0.0.1:19002;"));
 
     updated.fixture.observe_applied_state(&updated_state);
     let seed = updated.seed(true);
@@ -2248,6 +2292,31 @@ fn lower_binding<'a>(
 }
 
 fn interface_documents() -> Vec<InterfaceDocument> {
+    let endpoint = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                key("address"),
+                ValueSchema::String {
+                    max_length: 15,
+                    syntax: None,
+                },
+            ),
+            (
+                key("port"),
+                ValueSchema::Integer {
+                    minimum: 1024,
+                    maximum: 65535,
+                },
+            ),
+            (
+                key("transport"),
+                ValueSchema::StringEnum {
+                    values: vec!["tcp".to_string()],
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
     let consumer_probe = ValueSchema::Record {
         fields: BTreeMap::from([
             (
@@ -2307,6 +2376,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                     syntax: Some(StringSyntax::LocalKeyV1),
                 },
             ),
+            (key("proxy_backend"), ValueSchema::Boolean),
             (key("tls"), ValueSchema::Boolean),
             (
                 key("credential_version"),
@@ -2316,7 +2386,24 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                 },
             ),
         ]),
-        optional_fields: vec![key("credential_version")],
+        optional_fields: vec![key("credential_version"), key("proxy_backend")],
+    };
+    let managed_nginx_request = match &nginx_request {
+        ValueSchema::Record {
+            fields,
+            optional_fields,
+        } => {
+            let mut fields = fields.clone();
+            fields.insert(key("backend_endpoint"), endpoint.clone());
+            let mut optional_fields = optional_fields.clone();
+            optional_fields.push(key("backend_endpoint"));
+            optional_fields.sort();
+            ValueSchema::Record {
+                fields,
+                optional_fields,
+            }
+        }
+        _ => unreachable!("nginx request is a record"),
     };
     let storage_paths = ValueSchema::Record {
         fields: ["logs", "runtime", "state"]
@@ -2347,6 +2434,11 @@ fn interface_documents() -> Vec<InterfaceDocument> {
     let mut documents = vec![
         network_endpoint_interface().unwrap(),
         host_network_policy_interface().unwrap(),
+        interface_document(
+            "aos.http-backend",
+            ValueSchema::Boolean,
+            vec![("endpoint", endpoint.clone(), ValueVisibility::Protected)],
+        ),
         interface_document(
             "aos.nginx",
             nginx_request.clone(),
@@ -2395,7 +2487,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                     (
                         key("virtualHosts"),
                         ValueSchema::List {
-                            element: Box::new(nginx_request),
+                            element: Box::new(managed_nginx_request),
                             max_items: 1024,
                         },
                     ),
@@ -2498,6 +2590,12 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         .unwrap()
         .interface
         .configuration = Some(consumer_probe);
+    documents
+        .iter_mut()
+        .find(|document| document.interface.name.as_str() == "aos.http-backend")
+        .unwrap()
+        .interface
+        .configuration = Some(endpoint);
     let nginx_validation = documents
         .iter_mut()
         .find(|document| document.interface.name.as_str() == "aos.nginx-validation")
@@ -2842,6 +2940,15 @@ fn nginx_resource(nginx: &InstanceId) -> ResourceId {
     ResourceId {
         provider: nginx.clone(),
         key: key("virtual-hosts"),
+    }
+}
+
+fn backend_port(application: &str) -> u16 {
+    match application {
+        "app-a" => 19001,
+        "app-b" => 19002,
+        "app-c" => 19003,
+        _ => panic!("unknown reference backend application"),
     }
 }
 

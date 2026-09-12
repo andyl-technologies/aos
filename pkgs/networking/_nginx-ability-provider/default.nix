@@ -21,6 +21,10 @@ let
     interface
     "aos.nginx-validation"
     "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6";
+  httpBackend =
+    interface
+    "aos.http-backend"
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -62,6 +66,11 @@ let
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
     version = 1;
     descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
+  };
+  loopbackEgressGuarantee = {
+    name = "aos.guarantee.loopback-tcp-egress-enforcement";
+    version = 1;
+    descriptor = "sha256:91fc94f9ff09a955256a2a86d1df6df00e1635c8fc035e2f68e262cbc29dcd53";
   };
 
   # Recovery conservatively charges a full interrupted call. Four call-sized
@@ -166,6 +175,39 @@ let
     && builtins.stringLength content <= 256
     && builtins.match "[-A-Za-z0-9._:/ ]+" content != null;
 
+  validateBackendEndpoint = endpoint:
+    if endpoint.address != "127.0.0.1"
+    then throw "HTTP backend must use the IPv4 loopback address"
+    else if endpoint.port < 1024 || endpoint.port > 65535
+    then throw "HTTP backend port is outside the unprivileged TCP range"
+    else if endpoint.transport != "tcp"
+    then throw "HTTP backend must use TCP"
+    else endpoint;
+
+  backendCompose = context: let
+    endpoint = validateBackendEndpoint context.configuration;
+  in {
+    schema = "aos.ability.composition-fragment/v1";
+    requests = [];
+    contributions = [];
+    resources = [];
+    outputs = [
+      {
+        aggregate = {
+          provider = context.provider;
+          group = "backend";
+        };
+        interface = context.interface;
+        port = "endpoint";
+        value = {
+          source = "literal";
+          value = endpoint;
+        };
+      }
+    ];
+    controllers = [];
+  };
+
   validateConsumerProbe = probe:
     if probe.address != "127.0.0.1"
     then throw "nginx consumer probe must use the IPv4 loopback address"
@@ -247,6 +289,47 @@ let
       })
       tlsHosts));
 
+    backendRequestFor = contribution:
+      childRequest
+      context
+      (scope ++ [contribution.slot])
+      "backend"
+      httpBackend
+      [];
+    proxyContributions = builtins.filter
+      (contribution: contribution.value.proxy_backend or false)
+      context.contributions;
+    backendRequests = builtins.map backendRequestFor proxyContributions;
+    backendEndpointFor = contribution: let
+      request = backendRequestFor contribution;
+      binding = bindingFor context request;
+      selected = outputFrom context binding httpBackend "backend" "endpoint";
+    in
+      if binding == null || selected == []
+      then null
+      else if builtins.length selected != 1
+      then throw "nginx backend binding produced an ambiguous endpoint"
+      else let
+        expression = (builtins.head selected).value;
+      in
+        if expression.source != "literal"
+        then throw "nginx backend endpoint must be available during planning"
+        else validateBackendEndpoint expression.value;
+    resolvedVirtualHosts = builtins.map
+      (contribution: let
+        virtualHost = validateVirtualHost contribution;
+      in
+        virtualHost
+        // (
+          if virtualHost.proxy_backend or false
+          then {backend_endpoint = backendEndpointFor contribution;}
+          else {}
+        ))
+      context.contributions;
+    backendsReady = builtins.all
+      (virtualHost: !(virtualHost.proxy_backend or false) || virtualHost.backend_endpoint != null)
+      resolvedVirtualHosts;
+
     executionStage = context.provider.environment.stage;
     executionStrategy = validateExecutionStrategy executionStage consumerProbe.execution_strategy;
     usesSystemd = executionStrategy == "systemd-manager";
@@ -303,7 +386,7 @@ let
       (childRequest context scope "network-policy" networkPolicyEffects [])
       // {
         methods = ["apply" "observe" "remove"];
-        guarantees = [loopbackIngressGuarantee];
+        guarantees = [loopbackEgressGuarantee loopbackIngressGuarantee];
       };
     storageRequest =
       (childRequest context scope "storage" storageEffects [])
@@ -321,7 +404,8 @@ let
         then []
         else [serviceRequest]
       )
-      ++ [serviceTerminalRequest storageRequest validationRequest];
+      ++ [serviceTerminalRequest storageRequest validationRequest]
+      ++ backendRequests;
     validationRequestWithMethod = validationRequest // {methods = ["record" "release" "validate"];};
     serviceTerminalRequestWithMethods =
       serviceTerminalRequest
@@ -338,7 +422,7 @@ let
       if serviceRequest == null
       then null
       else bindingFor context serviceRequest;
-    configurationRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON virtualHosts)}";
+    configurationRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON resolvedVirtualHosts)}";
     serviceValue = {
       configuration_revision = configurationRevision;
       consumer_endpoint = "${consumerProbe.address}:${builtins.toString consumerProbe.port}";
@@ -348,14 +432,18 @@ let
     };
     serviceRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON serviceValue)}";
     contributions =
-      lowerContribution context configurationRequest "configuration" {
-        inherit virtualHosts;
-        consumer_content_revision = configurationRevision;
-        consumer_controller_revision = serviceRevision;
-        consumer_instance = builtins.toJSON context.provider;
-        consumer_probe = consumerProbe;
-        consumer_storage_paths = storagePaths;
-      }
+      (
+        if backendsReady
+        then lowerContribution context configurationRequest "configuration" {
+          virtualHosts = resolvedVirtualHosts;
+          consumer_content_revision = configurationRevision;
+          consumer_controller_revision = serviceRevision;
+          consumer_instance = builtins.toJSON context.provider;
+          consumer_probe = consumerProbe;
+          consumer_storage_paths = storagePaths;
+        }
+        else []
+      )
       ++ (
         if usesTls
         then
@@ -421,6 +509,35 @@ let
         }
       ])
       listeners;
+    backendResources =
+      builtins.concatMap
+      (contribution: let
+        endpoint = backendEndpointFor contribution;
+        endpointRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON endpoint)}";
+      in
+        if endpoint == null
+        then []
+        else [
+          {
+            resource = {
+              provider = context.provider;
+              key = "backend-${contribution.slot}-endpoint-${builtins.toString endpoint.port}";
+            };
+            revision = endpointRevision;
+          }
+          {
+            resource = {
+              provider = context.provider;
+              key = "backend-${contribution.slot}-network-policy-${builtins.toString endpoint.port}";
+            };
+            revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
+              direction = "egress";
+              endpoint_revision = endpointRevision;
+              protocol = "tcp";
+            })}";
+          }
+        ])
+      proxyContributions;
     ownedResources =
       [
         {
@@ -429,11 +546,12 @@ let
             key = "virtual-hosts";
           };
           revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
-            inherit consumerProbe virtualHosts;
+            inherit consumerProbe resolvedVirtualHosts;
           })}";
         }
       ]
       ++ listenerResources
+      ++ backendResources
       ++ storageResources;
   in {
     schema = "aos.ability.composition-fragment/v1";
@@ -483,8 +601,22 @@ let
       })
       ownedResources;
   };
+
+  backendTransition = _context: {
+    schema = "aos.ability.transition-fragment/v1";
+    operations = [];
+    decisions = [];
+    merges = [];
+    edges = [];
+    exports = [];
+    imports = [];
+    links = [];
+    handoffs = [];
+    provider_readiness = [];
+    obligations = [];
+  };
 in {
-  inherit compose;
+  inherit backendCompose backendTransition compose;
 
   transition = context: let
     storageScope = builtins.substring 0 32 (builtins.hashString "sha256" (builtins.toJSON context.provider));
@@ -744,7 +876,7 @@ in {
       };
     };
     listenerFromResource = kind: resource: let
-      matched = builtins.match "(http|tls)-${kind}-([0-9]+)" resource.key;
+      matched = builtins.match "(http|tls|backend-[-A-Za-z0-9._]+)-${kind}-([0-9]+)" resource.key;
     in
       if matched == null
       then throw "nginx transition received malformed ${kind} resource '${resource.key}'"
@@ -756,6 +888,10 @@ in {
       inherit (resource) provider;
       key = builtins.replaceStrings ["-network-policy-"] ["-endpoint-"] resource.key;
     };
+    policyDirection = resource:
+      if builtins.match "backend-.*-network-policy-[0-9]+" resource.key != null
+      then "egress"
+      else "ingress";
     storagePurpose = resource: let
       matched = builtins.match "(logs|runtime|state)-storage" resource.key;
     in
@@ -932,13 +1068,13 @@ in {
           if authorityRole == "teardown"
           then
             literal {
-              direction = "ingress";
+              direction = policyDirection change.resource;
               endpoint = null;
               protocol = "tcp";
             }
           else
             object {
-              direction = literal "ingress";
+              direction = literal (policyDirection change.resource);
               endpoint = operationResult "${endpointMethod}-${endpointResource.key}" "endpoint";
               protocol = literal "tcp";
             };
@@ -1354,6 +1490,23 @@ in {
         ])
         networkPolicyAvailable
       else [];
+    backendCommunicationEdges =
+      if needsConvergence
+      then
+        builtins.map
+        (change: let
+          endpointResource = endpointResourceForPolicy change.resource;
+          endpointChange = changeFor endpointChanges endpointResource;
+          endpointMethod = selectedAction endpointChange "materialize" "observe";
+        in {
+          from = node "${endpointMethod}-${endpointResource.key}";
+          to = node "observe-${serviceResource.key}";
+          kind = "communication";
+        })
+        (builtins.filter
+          (change: policyDirection change.resource == "egress")
+          networkPolicyAvailable)
+      else [];
     endpointReleaseOperations = builtins.map (endpointOperation "teardown") endpointRemoved;
     networkPolicyRemoveOperations = builtins.map (networkPolicyOperation "teardown") networkPolicyRemoved;
     storageReleaseOperations = builtins.map (storageOperation "teardown") storageRemoved;
@@ -1460,6 +1613,7 @@ in {
           convergenceEdges
           ++ validationOnlyEdges
           ++ endpointPolicyEdges
+          ++ backendCommunicationEdges
           ++ storageValidationEdges
           ++ teardownEdges
           ++ networkTeardownEdges

@@ -38,6 +38,14 @@ pub const HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_SEMANTICS: &str = "
 /// Identifies the exact bytes of the v1 loopback-only TCP ingress guarantee semantic.
 pub const HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_DESCRIPTOR: &str =
     "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
+/// Names loopback-only TCP egress enforcement supplied by the native policy handler.
+pub const HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_NAME: &str =
+    "aos.guarantee.loopback-tcp-egress-enforcement";
+/// Defines the exact v1 loopback-only TCP egress guarantee semantic.
+pub const HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_SEMANTICS: &str = "A successful apply installs a host policy that admits TCP egress to the requested endpoint only through its 127.0.0.1 address and concrete port. A successful observe proves that exact rule remains active. Neither operation admits egress to that port through a non-loopback address.";
+/// Identifies the exact bytes of the v1 loopback-only TCP egress guarantee semantic.
+pub const HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_DESCRIPTOR: &str =
+    "sha256:91fc94f9ff09a955256a2a86d1df6df00e1635c8fc035e2f68e262cbc29dcd53";
 
 /// Builds the exact public host network-policy interface.
 ///
@@ -46,7 +54,9 @@ pub const HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_DESCRIPTOR: &str =
 /// Returns an error only if a built-in identifier violates the identity grammar.
 pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(HOST_NETWORK_POLICY_INTERFACE_NAME)?;
-    let enforcement = host_network_policy_loopback_tcp_ingress_guarantee()?;
+    let ingress_enforcement = host_network_policy_loopback_tcp_ingress_guarantee()?;
+    let egress_enforcement = host_network_policy_loopback_tcp_egress_guarantee()?;
+    let enforcement = vec![egress_enforcement.clone(), ingress_enforcement.clone()];
     let active_output = OutputDescriptor {
         schema: ValueSchema::Boolean,
         phase: ValuePhase::Runtime,
@@ -107,7 +117,7 @@ pub fn host_network_policy_interface() -> Result<InterfaceDocument> {
             persistent_delete_method: None,
         },
     )?;
-    document.interface.guarantees = vec![enforcement];
+    document.interface.guarantees = enforcement;
 
     Ok(document)
 }
@@ -124,6 +134,22 @@ pub fn host_network_policy_loopback_tcp_ingress_guarantee() -> Result<GuaranteeK
             .ok_or_else(|| anyhow::anyhow!("invalid built-in guarantee version"))?,
         descriptor: Sha256Digest::parse(
             HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_DESCRIPTOR,
+        )?,
+    })
+}
+
+/// Returns the exact loopback-only TCP egress enforcement guarantee key.
+///
+/// # Errors
+///
+/// Returns an error only if the built-in name or descriptor violates its grammar.
+pub fn host_network_policy_loopback_tcp_egress_guarantee() -> Result<GuaranteeKey> {
+    Ok(GuaranteeKey {
+        name: InterfaceName::new(HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_NAME)?,
+        version: NonZeroU32::new(1)
+            .ok_or_else(|| anyhow::anyhow!("invalid built-in guarantee version"))?,
+        descriptor: Sha256Digest::parse(
+            HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_DESCRIPTOR,
         )?,
     })
 }
@@ -188,7 +214,7 @@ fn host_network_policy_request_schema(require_endpoint: bool) -> Result<ValueSch
             (
                 LocalKey::new("direction")?,
                 ValueSchema::StringEnum {
-                    values: vec!["ingress".to_string()],
+                    values: vec!["egress".to_string(), "ingress".to_string()],
                 },
             ),
             (endpoint.clone(), endpoint_schema),
@@ -225,7 +251,7 @@ fn guaranteed_policy_method(
     parameters: ValueSchema,
     evidence: ValueSchema,
     outputs: BTreeMap<LocalKey, OutputDescriptor>,
-    guarantee: GuaranteeKey,
+    guarantees: Vec<GuaranteeKey>,
 ) -> Result<(LocalKey, crate::MethodDescriptor)> {
     let (key, mut method) = resource_method(
         interface,
@@ -235,7 +261,7 @@ fn guaranteed_policy_method(
         evidence,
         outputs,
     )?;
-    method.guarantees = vec![guarantee];
+    method.guarantees = guarantees;
 
     Ok((key, method))
 }

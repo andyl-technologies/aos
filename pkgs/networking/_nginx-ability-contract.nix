@@ -28,6 +28,10 @@
     interface
     "aos.nginx-validation"
     "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6";
+  httpBackend =
+    interface
+    "aos.http-backend"
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
   systemdServiceEffects =
     interface
     "aos.systemd-service-effects"
@@ -65,6 +69,11 @@
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
     version = 1;
     descriptor = "sha256:6b12b1c4db768f272434c6e43ca8c484887fc0fa3a51be2ae2784982325c2092";
+  };
+  loopbackEgressGuarantee = lib.abilities.guarantee {
+    name = "aos.guarantee.loopback-tcp-egress-enforcement";
+    version = 1;
+    descriptor = "sha256:91fc94f9ff09a955256a2a86d1df6df00e1635c8fc035e2f68e262cbc29dcd53";
   };
 
   lifecycle = {
@@ -159,7 +168,7 @@
   networkPolicyRequest = requiredEndpoint:
     schemas.record {
       fields = {
-        direction = schemas.enum ["ingress"];
+        direction = schemas.enum ["egress" "ingress"];
         endpoint =
           if requiredEndpoint
           then endpoint
@@ -263,13 +272,14 @@
         syntax = null;
       };
       response_identity = localKeyString;
+      proxy_backend = schemas.boolean;
       tls = schemas.boolean;
       credential_version = schemas.string {
         maxLength = 71;
         syntax = null;
       };
     };
-    optional = ["credential_version"];
+    optional = ["credential_version" "proxy_backend"];
   };
 
   method = targetResource: operationFamily: name: {
@@ -385,6 +395,13 @@ in {
           aggregation = aggregation "nginx";
           requires = {
             configuration = required managedConfiguration;
+            backend = requirement httpBackend [] "advisory" {
+              outputs.endpoint = {
+                address = "127.0.0.1";
+                port = 65535;
+                transport = "tcp";
+              };
+            };
             credential = requirement credentialDelivery [] "advisory" {
               outputs.credential-views = {};
             };
@@ -393,7 +410,7 @@ in {
               methodRequirementWithGuarantees
               networkPolicyEffects
               ["apply" "observe" "remove"]
-              [loopbackIngressGuarantee];
+              [loopbackEgressGuarantee loopbackIngressGuarantee];
             service = required systemdService;
             service-terminal =
               requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
