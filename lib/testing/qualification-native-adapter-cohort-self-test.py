@@ -38,6 +38,145 @@ def rejected(module, spec, probes, scope, subject, plan_bundle):
     raise AssertionError("mutated cohort probe was accepted")
 
 
+def assert_semantic_validators(module, subject, cell, observations):
+    """Exercises every postcondition validator with positive and negative facts."""
+
+    predecessor = subject["publish-operation"]
+    dependent = subject["dependent-operation"]
+    resource = {"provider": "fixture", "key": "resource"}
+    predecessor_owner = {"controller": "predecessor", "incarnation": "old"}
+    candidate_owner = {"controller": "candidate", "incarnation": "new"}
+    digest = lambda byte: "sha256:" + byte * 64
+
+    cases = {
+        "durable-attempt-state-classified": (
+            observations["durable-attempt-state-classified"],
+            ("effect-return-position", 12),
+        ),
+        "at-most-one-resource-owner": (
+            observations["at-most-one-resource-owner"],
+            ("matching-markers", 2),
+        ),
+        "foreign-resources-unchanged": (
+            observations["foreign-resources-unchanged"],
+            ("content-after-recovery", "changed"),
+        ),
+        "dependent-effects-not-executed": (
+            observations["dependent-effects-not-executed"],
+            ("changed-only-after-recovery", False),
+        ),
+        "fresh-receiving-authority": (
+            {
+                "predecessor-authority": digest("1"),
+                "candidate-authority": digest("2"),
+                "predecessor-incarnation": "old",
+                "candidate-incarnation": "new",
+                "authority-sequence-before": 7,
+                "authority-sequence-after": 8,
+                "fresh": True,
+            },
+            ("fresh", False),
+        ),
+        "compatible-state-adopted": (
+            {
+                "resource": resource,
+                "compatibility-contract": digest("3"),
+                "predecessor-state": digest("4"),
+                "adopted-state": digest("4"),
+                "adoption-record": digest("5"),
+                "candidate-effect-count": 0,
+                "adopted": True,
+            },
+            ("candidate-effect-count", 1),
+        ),
+        "exactly-one-resource-owner": (
+            {
+                "resource": resource,
+                "expected-owner": candidate_owner,
+                "owners": [candidate_owner],
+                "matching-markers": 1,
+            },
+            ("owners", []),
+        ),
+        "transfer-rejected-before-candidate-effect": (
+            {
+                "candidate-operation": predecessor,
+                "rejection": "lost-result",
+                "candidate-effect-count": 0,
+                "rejected-before-effect": True,
+            },
+            ("candidate-effect-count", 1),
+        ),
+        "predecessor-remains-sole-owner": (
+            {
+                "resource": resource,
+                "predecessor-owner": predecessor_owner,
+                "owners": [predecessor_owner],
+                "behavior-before": "served-old-revision",
+                "behavior-after": "served-old-revision",
+            },
+            ("behavior-after", "served-new-revision"),
+        ),
+        "current-grants-reauthorized": (
+            {
+                "plan": subject["plan"],
+                "retained-grant": digest("6"),
+                "current-grant": digest("7"),
+                "authority-sequence-before": 12,
+                "authority-sequence-after": 13,
+                "reauthorized": True,
+            },
+            ("reauthorized", False),
+        ),
+        "retained-target-identity-preserved": (
+            {
+                "retained-target": resource,
+                "activated-target": resource,
+                "retained-revision": digest("8"),
+                "activated-revision": digest("8"),
+            },
+            ("activated-revision", digest("9")),
+        ),
+        "prerequisite-failure-recorded": (
+            {
+                "predecessor-operation": predecessor,
+                "dependent-operation": dependent,
+                "dependency-edge": {
+                    "from": {"kind": "operation", "key": predecessor["key"]},
+                    "to": {"kind": "operation", "key": dependent["key"]},
+                    "kind": "required-success",
+                },
+                "failure-record": digest("a"),
+                "dependent-effect-count": 0,
+            },
+            ("dependent-effect-count", 1),
+        ),
+        "foreign-attempt-rejected-before-mutation": (
+            {
+                "foreign-resource": resource,
+                "attempted-resource": resource,
+                "authorized-resources": [],
+                "rejection": "lost-result",
+                "mutation-count": 0,
+                "rejected-before-mutation": True,
+            },
+            ("mutation-count", 1),
+        ),
+    }
+
+    assert set(cases) == set(module.POSTCONDITION_KINDS)
+    for name, (valid, mutation) in cases.items():
+        module._validate_probe_facts(name, valid, subject, cell)
+
+        invalid = copy.deepcopy(valid)
+        invalid[mutation[0]] = mutation[1]
+        try:
+            module._validate_probe_facts(name, invalid, subject, cell)
+        except RuntimeError:
+            continue
+        raise AssertionError(f"{name} semantic validator accepted false facts")
+
+
 def main() -> None:
     """Checks exact success and representative scope/probe mutations."""
 
@@ -102,9 +241,19 @@ def main() -> None:
         "cells": [
             {
                 "id": cell_id,
+                "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+                "adapter": "managed-configuration",
                 "interface": interface,
                 "method": "publish",
+                "effect_class": "mutation",
+                "scope": "host-filesystem",
+                "boundary": "after-external-return",
+                "failure": "lost-result",
+                "predecessor": "same",
+                "candidate": "same",
                 "postconditions": names,
+                "recovery": {"reconcile": "observe", "cancel": "cancel"},
+                "invalidated_by": ["subject", "policy", "executor", "environment"],
             }
         ]
     }
@@ -296,6 +445,7 @@ def main() -> None:
             name: {
                 "kind": module.POSTCONDITION_KINDS[name],
                 "detail": f"independent {name} probe passed",
+                "disposition": "reconciled-completed",
                 "observations": observations[name],
             }
             for name in names
@@ -313,10 +463,61 @@ def main() -> None:
     assert count == 4
     assert all(value["passed"] for value in cells[0]["postconditions"].values())
     assert set(cells[0]["probes"]) == set(names)
-    assert cells[0]["cohort_subject"] == subject
+    assert cells[0]["cohort_subject"]["subject"] == subject
+    assert cells[0]["cohort_subject"]["cell_id"] == cell_id
+    assert cells[0]["cohort_subject"]["cell_digest"] == module.sha256(spec["cells"][0])
     assert {
         probe["cohort_subject_digest"] for probe in cells[0]["probes"].values()
-    } == {module.sha256(subject)}
+    } == {module.sha256(cells[0]["cohort_subject"])}
+    assert {
+        probe["cell_id"] for probe in cells[0]["probes"].values()
+    } == {cell_id}
+    assert {
+        probe["cell_digest"] for probe in cells[0]["probes"].values()
+    } == {module.sha256(spec["cells"][0])}
+    assert_semantic_validators(module, subject, spec["cells"][0], observations)
+
+    first_cell = spec["cells"][0]
+    replay_cell = copy.deepcopy(first_cell)
+    replay_cell["id"] = replay_cell["id"].replace(
+        "managed-configuration/", "foreign-adapter/", 1
+    )
+    shared_probe_digests = set()
+    module._validated_probes(
+        first_cell,
+        probes[cell_id],
+        subject,
+        module._bound_cohort_subject(first_cell, subject),
+        "sha256:" + "11" * 32,
+        shared_probe_digests,
+    )
+    try:
+        module._validated_probes(
+            replay_cell,
+            probes[cell_id],
+            subject,
+            module._bound_cohort_subject(first_cell, subject),
+            "sha256:" + "11" * 32,
+            set(),
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a cohort subject bound to another cell was accepted")
+
+    try:
+        module._validated_probes(
+            replay_cell,
+            probes[cell_id],
+            subject,
+            module._bound_cohort_subject(replay_cell, subject),
+            "sha256:" + "11" * 32,
+            shared_probe_digests,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a production probe replayed across cells was accepted")
 
     def replace_nested(value, path, replacement):
         target = value
@@ -445,6 +646,10 @@ def main() -> None:
     wrong_kind = copy.deepcopy(probes)
     wrong_kind[cell_id][names[0]]["kind"] = "ownership-inventory"
     rejected(module, spec, wrong_kind, [cell_id], subject, plan_bundle)
+
+    wrong_disposition = copy.deepcopy(probes)
+    wrong_disposition[cell_id][names[0]]["disposition"] = "invented-success"
+    rejected(module, spec, wrong_disposition, [cell_id], subject, plan_bundle)
 
     unknown = copy.deepcopy(probes)
     unknown[cell_id][names[0]]["claimed"] = True

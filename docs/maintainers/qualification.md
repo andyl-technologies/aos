@@ -455,9 +455,9 @@ be provisioned before a campaign. All source regression groups are exposed at
 `checks.qualification.<requirement-id>` and `checks.qualification.all`.
 
 The RFC-0022 native ability gates are `ability-native-activation`,
-`ability-native-kubernetes`, `ability-native-postgresql`,
-`ability-native-recovery`, and `ability-native-adapter-matrix`. They use
-release scope so each staging case
+`ability-native-image-rollout`, `ability-native-kubernetes`,
+`ability-native-postgresql`, `ability-native-recovery`, and
+`ability-native-adapter-matrix`. They use release scope so each staging case
 binds the complete finalized non-control artifact set, including the exact
 package, provider, handler, and image records carried by the release. A change
 to the case subjects, qualification policy, executor, or environment
@@ -465,7 +465,7 @@ invalidates its observation.
 
 `qualification/native-adapter-surface.json` is the canonical version-1 source
 for the adapter matrix. The `aos-package` build validates its closed limits and
-compiles the same 11-adapter, 38-method table used by dispatcher and
+compiles the same 12-adapter, 47-method table used by dispatcher and
 host-resource preflight. Its exact canonical digest is pinned by both the Rust
 generator and Nix policy; changing the surface requires a deliberate schema and
 digest update. Each method records its full interface key (name, ABI, and
@@ -473,23 +473,31 @@ descriptor), authority scope, mutation or observation class, and exact
 reconcile and cancellation routes.
 Qualification expands those methods over 28 durability, revocation, upgrade,
 adoption, retained-target, dependency, and foreign-resource scenarios.
-The resulting 1,064 cells retain every dimension, full interface key, and exact
-surface digest.
+The resulting 1,316 cells and 5,687 postconditions retain every dimension, full
+interface key, and exact surface digest.
 Their mandatory postconditions include durable classification, one resource
 owner, dependent nonexecution after failure, and independent confirmation that
 foreign resources did not change. Adoption, unsupported transfer, and retained
 target cells add fresh-authority and exact-owner requirements.
 
-All matrix cells currently require a production VM observation. Their source
-regressions exercise contract closure but remain marked separately and never
-satisfy those cells. The x86 release executor therefore has no
-`ability-native-adapter-matrix` scenario yet: requesting that mandatory case
-fails because the scenario is missing. Add that mapping only when its runner
-executes every referenced cell against the frozen release subjects and emits
-independent provider-specific observations.
+All matrix cells require a production VM observation. Their source regressions
+exercise contract closure but remain marked separately and never satisfy those
+cells. The x86 release executor maps `ability-native-adapter-matrix` to a
+production cohort that currently exercises one managed-configuration `publish`
+lost-result cell and four of the 5,687 postconditions. The other 1,315 cells
+remain explicit failures, so the mandatory aggregate gate cannot pass. Expand
+the mapping only with exact cell-bound subjects and independent
+provider-specific observations.
+
+Every passing probe carries the exact cell ID and digest, the scenario's
+validated disposition, and the digest of a subject wrapper that binds the
+dynamic cohort subject to the cell's boundary, failure, candidate, and
+predecessor dimensions. The verifier rejects an observation digest reused by
+any other postcondition or cell in the matrix.
 
 The established scenario `regressions` fields point to
 `checks.fleet.ability-native-activation`,
+`checks.fleet.ability-native-image-rollout`,
 `checks.fleet.ability-native-kubernetes`,
 `checks.fleet.ability-native-postgresql`, and
 `checks.fleet.ability-native-power-loss`. Those derivations establish
@@ -498,10 +506,12 @@ release admission still requires fresh executor observations for the exact
 frozen release subjects and acceptance checks. The x86 fleet topology also
 does not claim direct aarch64 execution.
 
-The x86 release executor maps the four implemented policy IDs to native
-ability scenarios. Each scenario selects the exact finalized server QCOW2,
-slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
-downloaded release case.
+The x86 release executor maps five implemented policy IDs to native ability
+scenarios: activation, adapter matrix, Kubernetes, PostgreSQL, and recovery.
+The production-only image-rollout requirement remains unmapped until an
+eligible production executor is provisioned. Each mapped scenario selects the
+exact finalized server QCOW2, slot-A UKI, metadata, unsigned assembly, and
+finalized-set objects from the downloaded release case.
 It verifies their byte identities and cross-bindings, extracts the UKI's initrd,
 and checks the embedded static ability contract before booting that QCOW2 with
 KVM, UEFI Secure Boot, and a software TPM. It then confirms through the guest's
@@ -534,7 +544,7 @@ the published `aos`, `apm`, `apr`, and package runtime paths in the guest. The
 recovery case also observes fresh host authority and resource incarnations
 after reboot. Each scenario writes a fresh canonical report in the private
 executor attempt. No precreated report under
-`/run/aos-release/qualification-reports` can satisfy these three staging cases.
+`/run/aos-release/qualification-reports` can satisfy these mapped staging cases.
 
 The runner reads a canonical v2 executor request on stdin. It verifies every
 anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
