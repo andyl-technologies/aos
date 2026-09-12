@@ -225,6 +225,11 @@ impl ForegroundProcessSupervisor {
         let pid = rustix::process::Pid::from_raw(identity.pid as i32)
             .ok_or_else(|| invalid("foreground process PID is zero"))?;
         let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())?;
+        if ProcessIdentity::read(identity.pid, &command, &confinement, &token)? != identity {
+            return Err(invalid(
+                "foreground process identity changed before termination",
+            ));
+        }
         rustix::process::kill_process_group(pid, rustix::process::Signal::TERM)?;
         if !wait_for_group_exit(identity.process_group, control)? {
             rustix::process::kill_process_group(pid, rustix::process::Signal::KILL)?;
@@ -815,9 +820,14 @@ impl QualifiedCommand {
         let artifact = fs::canonicalize(&spec.artifact.store_path)?;
         let executable = artifact.join(&spec.entry_point);
         let observed_executable = fs::canonicalize(&executable)?;
-        if !executable.starts_with(&artifact) || !executable.is_file() {
+        let observed_metadata = fs::metadata(&observed_executable)?;
+        use std::os::unix::fs::MetadataExt as _;
+        if !observed_executable.starts_with(&artifact)
+            || !observed_metadata.is_file()
+            || observed_metadata.mode() & 0o111 == 0
+        {
             return Err(invalid(
-                "foreground executable escapes its authenticated artifact",
+                "foreground entry point is outside its authenticated artifact or is not executable",
             ));
         }
         Ok(Self {
@@ -1067,6 +1077,12 @@ fn ensure_private_directory(path: &Path) -> Result<(), io::Error> {
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(invalid("foreground state path is not a real directory"));
         }
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.uid() != rustix::process::getuid().as_raw() || metadata.mode() & 0o077 != 0 {
+            return Err(invalid(
+                "foreground state directory is not private to the supervisor user",
+            ));
+        }
         return Ok(());
     }
     fs::create_dir_all(path)?;
@@ -1293,6 +1309,43 @@ mod tests {
             .expect("original process remains owned");
     }
 
+    #[test]
+    fn supervisor_rejects_state_visible_to_other_users() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temporary = tempfile::tempdir().expect("temporary directory is available");
+        let state_root = temporary.path().join("state");
+        fs::create_dir(&state_root).expect("state root is created");
+        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o755))
+            .expect("state permissions are changed");
+
+        let error = match ForegroundProcessSupervisor::new(state_root) {
+            Ok(_) => panic!("shared state root must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn qualified_command_rejects_artifact_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary directory is available");
+        let artifact = temporary.path().join("artifact");
+        fs::create_dir(&artifact).expect("artifact directory is created");
+        symlink(find_executable("sleep"), artifact.join("sleep"))
+            .expect("escaping executable symlink is created");
+        let mut spec = sleep_spec("symlink-escape");
+        spec.artifact.store_path = artifact.to_string_lossy().into_owned();
+        spec.entry_point = "sleep".to_string();
+
+        let error = match QualifiedCommand::new(&spec) {
+            Ok(_) => panic!("artifact-local symlink escape must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
     fn sleep_spec(label: &str) -> ForegroundProcessResourceSpec {
         let executable = find_executable("sleep");
         let store_path = store_root(&executable);
@@ -1327,10 +1380,18 @@ mod tests {
     }
 
     fn find_executable(name: &str) -> PathBuf {
-        std::env::split_paths(&std::env::var_os("PATH").expect("PATH is set"))
+        let candidate = std::env::split_paths(&std::env::var_os("PATH").expect("PATH is set"))
             .map(|directory| directory.join(name))
             .find(|candidate| candidate.is_file())
-            .expect("sleep exists in the hermetic test PATH")
+            .expect("sleep exists in the hermetic test PATH");
+        let artifact = store_root(
+            &candidate
+                .canonicalize()
+                .expect("sleep resolves to its canonical executable"),
+        );
+        let executable = artifact.join("bin").join(name);
+        assert!(executable.is_file(), "sleep is exposed by its artifact");
+        executable
     }
 
     fn store_root(path: &Path) -> PathBuf {
