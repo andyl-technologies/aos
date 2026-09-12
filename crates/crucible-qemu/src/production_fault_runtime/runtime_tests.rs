@@ -199,6 +199,10 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
     let expected = SearchOverride {
         candidate_index: 1,
         candidates_digest: choice.candidates_digest,
+        candidate: choice
+            .candidate_semantics
+            .candidate(1)
+            .expect("fixture candidate must exist"),
         parent_branch: Some(ContentHash::from_bytes(b"campaign-parent")),
     };
     let mut replay = ProductionFaultRuntime::new_with_search_overrides(

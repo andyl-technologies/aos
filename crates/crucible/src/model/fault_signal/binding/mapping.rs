@@ -44,6 +44,37 @@ pub enum MappedEffectParameter {
 }
 
 impl MappedEffectParameter {
+    /// Returns the stable campaign-facing parameter identifier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Probability => "probability",
+            Self::DurationNanos => "duration-nanos",
+            Self::BitsPerSecond => "bits-per-second",
+            Self::BytesPerSecond => "bytes-per-second",
+            Self::OperationsPerSecond => "operations-per-second",
+            Self::CapacityRatio => "capacity-ratio",
+            Self::SignedOffset => "signed-offset",
+            Self::UnsignedCount => "unsigned-count",
+        }
+    }
+
+    /// Parses one stable campaign-facing parameter identifier.
+    #[must_use]
+    pub fn from_key(value: &str) -> Option<Self> {
+        match value {
+            "probability" => Some(Self::Probability),
+            "duration-nanos" => Some(Self::DurationNanos),
+            "bits-per-second" => Some(Self::BitsPerSecond),
+            "bytes-per-second" => Some(Self::BytesPerSecond),
+            "operations-per-second" => Some(Self::OperationsPerSecond),
+            "capacity-ratio" => Some(Self::CapacityRatio),
+            "signed-offset" => Some(Self::SignedOffset),
+            "unsigned-count" => Some(Self::UnsignedCount),
+            _ => None,
+        }
+    }
+
     pub(super) fn accepts(self, shape: &SignalShape) -> bool {
         match self {
             Self::Probability => {
