@@ -69,7 +69,7 @@ impl CampaignGcApplyReport {
         self.unreachable_candidates
     }
 
-    /// Returns completed reachable read-through cache deletions.
+    /// Returns completed reachable cache deletions.
     #[must_use]
     pub const fn reachable_cache_candidates(self) -> u64 {
         self.reachable_cache_candidates
@@ -525,8 +525,7 @@ where
 {
     let mut authenticated = std::collections::BTreeSet::new();
     for candidate in journal.candidates().iter() {
-        let CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } =
-            candidate.reason()
+        let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
         else {
             continue;
         };
@@ -541,7 +540,7 @@ where
             .and_then(|graph| graph.retention(kind));
         if !current_reachable.contains(&candidate.id())
             || candidate.backend() == required_backend
-            || cache_role != Some(StoreGraphPhysicalRetention::ReadThroughCache)
+            || cache_role != Some(StoreGraphPhysicalRetention::Cache)
             || source_role != Some(StoreGraphPhysicalRetention::Required)
         {
             return Err(CampaignGcApplyError::CandidatePolicyChanged {
@@ -624,7 +623,7 @@ where
                 )?;
                 rolling[cache_index] = updated;
             }
-            CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } => {
+            CampaignGcCandidateReason::ReachableCache { required_backend } => {
                 let source_index = physical_index(physical, required_backend)?;
                 let cache_identity = validate_unique_policy_identity(
                     journal,

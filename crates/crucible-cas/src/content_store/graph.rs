@@ -493,8 +493,12 @@ struct StoreGraphPackedRepackAuthority {
 /// Graph-derived retention role for one physical boundary and object kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StoreGraphPhysicalRetention {
-    /// The boundary is reachable only through a read-through cache edge.
-    ReadThroughCache,
+    /// The boundary is reachable only through a reconstructible cache edge.
+    ///
+    /// This includes a read-through cache, a non-write tier, or write-back
+    /// staging. Policy-aware GC may remove such a placement only after it
+    /// authenticates an independent required placement of the same object.
+    Cache,
     /// At least one independently authoritative graph path reaches the boundary.
     Required,
 }
@@ -649,8 +653,9 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
 
     /// Returns this boundary's graph-derived role for one admitted object kind.
     ///
-    /// Transparent wrappers preserve their incoming role. A read-through cache
-    /// edge changes a required path to cache-only, while its source preserves
+    /// Transparent wrappers preserve their incoming role. Read-through cache,
+    /// non-write tier, and write-back staging edges are cache-only, while the
+    /// authoritative source, write tier, and write-back destination preserve
     /// the incoming role. If another path independently reaches the same node,
     /// [`StoreGraphPhysicalRetention::Required`] dominates.
     #[must_use]
@@ -1649,13 +1654,20 @@ fn derive_physical_retention(
                     .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::RouteCoverage))?;
                 push(child, role);
             }
-            StoreNodeSpec::Tiered { tiers, .. } => {
-                for child in tiers {
-                    push(child, role);
+            StoreNodeSpec::Tiered {
+                tiers, write_tier, ..
+            } => {
+                for (index, child) in tiers.iter().enumerate() {
+                    let child_role = if index == *write_tier {
+                        role
+                    } else {
+                        StoreGraphPhysicalRetention::Cache
+                    };
+                    push(child, child_role);
                 }
             }
             StoreNodeSpec::ReadThrough { cache, source } => {
-                push(cache, StoreGraphPhysicalRetention::ReadThroughCache);
+                push(cache, StoreGraphPhysicalRetention::Cache);
                 push(source, role);
             }
             StoreNodeSpec::WriteThrough { children } => {
@@ -1668,7 +1680,7 @@ fn derive_physical_retention(
                 destination,
                 ..
             } => {
-                push(staging, role);
+                push(staging, StoreGraphPhysicalRetention::Cache);
                 push(destination, role);
             }
         }
