@@ -516,14 +516,20 @@ struct StoreArgs {
 enum StoreCommand {
     /// Describe one exact admitted store graph without accessing object bytes.
     Status(StoreStatusArgs),
-    /// Authenticate one complete content-addressed object through the graph.
+    /// Read and authenticate one complete object without repair or promotion.
     Ensure(StoreEnsureArgs),
     /// Authenticate every bounded physical placement in one stable generation.
     Verify(StoreVerifyArgs),
+    /// Repair one placement or migrate stopped-daemon operational state.
+    Repair(StoreRepairArgs),
     /// Plan, cancel, or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
     /// Plan or apply deterministic repacking for one configured packed leaf.
     Repack(StoreRepackArgs),
+}
+
+fn encode_store_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -548,6 +554,76 @@ struct StoreEnsureArgs {
     /// Strict composed repository-store deployment file.
     #[arg(long = "in", value_name = "STORE")]
     deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreRepairArgs {
+    #[command(subcommand)]
+    command: StoreRepairCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreRepairCommand {
+    /// Restore one physical placement from an authenticated peer.
+    Placement(StorePlacementRepairArgs),
+    /// Migrate stopped-daemon state; refuse live owners and retry interruptions.
+    OperationalState(StoreOperationalStateRepairArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StorePlacementRepairArgs {
+    /// Exact canonical content ID to repair.
+    #[arg(value_name = "CONTENT_ID")]
+    content: String,
+    /// Strict composed repository-store deployment file.
+    #[arg(long = "in", value_name = "STORE")]
+    deployment: PathBuf,
+    /// Exact physical node that supplies authenticated bytes.
+    #[arg(long, value_name = "NODE")]
+    source: String,
+    /// Exact physical node whose placement may be replaced.
+    #[arg(long, value_name = "NODE")]
+    target: String,
+    /// Maximum logical bytes admitted into the bounded repair buffer.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
+    maximum_bytes: u64,
+    /// Require this campaign owner lock to be free; refuse a running service.
+    #[arg(long, value_name = "PATH")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "PATH")]
+    policy: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreOperationalStateRepairArgs {
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "PATH")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "PATH")]
+    policy: PathBuf,
+    /// Acquire this ledger's writer lock and migrate attempt-state records to v15.
+    #[arg(long, value_name = "PATH")]
+    ledger: PathBuf,
+    /// Migrate payloads to v6 and journal state to v2 while holding the writer lock.
+    #[arg(long, value_name = "PATH")]
+    prepared_results: PathBuf,
+    /// Write provenance here; reuse this exact path when retrying interruption.
+    #[arg(long, value_name = "PATH")]
+    receipt: PathBuf,
+    /// Bound all assignment shard, record, and staging entries.
+    #[arg(long, value_name = "COUNT", default_value_t = 1_000_000)]
+    maximum_assignment_entries: usize,
+    /// Bound aggregate assignment record and staging bytes.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
+    maximum_assignment_bytes: u64,
+    /// Bound all journal, lock, staging, and contained file entries.
+    #[arg(long, value_name = "COUNT", default_value_t = 1_000_000)]
+    maximum_prepared_result_entries: usize,
+    /// Bound each journal payload and aggregate inventory proportionally.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
+    maximum_prepared_result_bytes: usize,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -2475,6 +2551,8 @@ mod cli_run_save;
 mod cli_store;
 #[path = "cli/campaign/repack.rs"]
 mod cli_store_repack;
+#[path = "cli/store_repair.rs"]
+mod cli_store_repair;
 #[path = "cli/triage_debug.rs"]
 mod cli_triage_debug;
 #[path = "cli/verify_serve.rs"]

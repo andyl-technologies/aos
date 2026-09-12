@@ -109,6 +109,7 @@ pub use vm_lifecycle::{
     AuthenticatedProductionCheckpointCodecFixture,
     build_authenticated_production_checkpoint_codec_fixture,
     build_raw_production_checkpoint_codec_fixture,
+    build_streaming_production_checkpoint_codec_fixture,
 };
 pub use vm_lifecycle::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,

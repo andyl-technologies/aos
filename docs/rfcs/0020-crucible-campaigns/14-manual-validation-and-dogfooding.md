@@ -330,6 +330,33 @@ or fork-stage failure. The hook is not a private repair path and must be absent
 or disabled in production artifacts. Operators still observe and recover using
 public surfaces.
 
+The stopped-daemon operational-state drill uses only the public repair command:
+
+```text
+crucible --format jsonl store repair operational-state \
+  --state STATE --policy POLICY --ledger LEDGER \
+  --prepared-results PREPARED_RESULTS --receipt RECEIPT
+```
+
+Stop the service before invoking it. The command refuses a live campaign owner,
+a live assignment writer, malformed or over-budget inventory, an unrelated
+receipt, and any unauthenticated source. It writes authenticated source-to-
+output provenance before replacing records, migrates assignment attempt-state
+records before prepared results while retaining the writer lock, and appends an
+authenticated completion record to its startup fence only after both phases are
+durable. Migration file cleanup renames each source to a bounded
+identity-bearing name and truncates the retained file descriptor; the
+authenticated zero-length file remains as terminal state. Normal journal
+orphan cleanup retains a terminal directory containing its authenticated
+receipt and zero-length child tombstones. Receipts bind the original directory
+and child identities, and the namespace admits at most one terminal staged or
+retired directory per execution key. If power or the process is lost at any
+point, normal daemon startup refuses the active migration. Run the identical
+command with the same receipt path. It reconciles bounded staging and removal
+state before resuming. That retry is idempotent;
+changing paths or bounds requires operator review of the retained receipt
+rather than deletion of markers or staging by hand.
+
 - **[CMAN-15]** Destructive acceptance MUST exercise every failure class in the
   table on both the constrained host and each backend whose failure semantics it
   targets. Recovery MUST preserve the last authenticated campaign state and
@@ -492,7 +519,7 @@ Manual validation begins before the final CLI phase:
 | --- | --- |
 | Phase 0 | Tabletop of the lifecycle, destructive drill, claims, and evidence manifest |
 | Phase 1 | Offline create/inspect/derive/stale-command/pause snapshot flight using canonical objects and linear ancestry |
-| Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies. The automated `checks.crucible.phase2.qemuLiveSelectableProduct` exact-restore flight is a prerequisite, not a substitute for the signed operator record. |
+| Phase 2 | Real guest registers choices, blocks for selections, rejects mismatch, and replays replies. The automated `checks.crucible.phase2.gates.typedChoiceProductCheckpoint` exact-restore flight is a prerequisite, not a substitute for the signed operator record. |
 | Phase 3 | Human cross-check of guest markers, modeled network evidence, metric windows, objectives, and finding evidence |
 | Phase 4 | Direct/RPC component equivalence plus local operator flight through lazy widening, additive finite branching, edge deduplication, backpressure, independent coordinator/executor restart, steering, and explanation |
 | Phase 5 | Hibernate/resume, composed-backend outage, tier promotion/eviction, packing/repacking, archival transfer, import, corruption, pin, and store-wide GC flights |

@@ -1,6 +1,7 @@
 //! Durable assignment, attempt-state, and retention-state codecs.
 
 use super::*;
+use rustix::fs::{Mode, OFlags, open};
 
 pub(super) fn encode_assignment_record(record: &AssignmentRecord) -> Vec<u8> {
     let request = record.request.canonical_bytes();
@@ -162,7 +163,7 @@ pub(super) fn decode_attempt_state(
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
     let scope = AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = decode_attempt_origin(&mut cursor)?;
+    let origin = decode_attempt_origin(&mut cursor, true)?;
     let tag = cursor.byte()?;
     let daemon_epoch = DaemonEpoch::from_bytes(cursor.fixed()?)?;
     let execution = ExecutionId::from_bytes(cursor.fixed()?)?;
@@ -207,6 +208,12 @@ pub(super) fn decode_attempt_state(
             daemon_epoch,
             execution,
         },
+        8 => AttemptRuntimeState::TerminalFailure {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+        },
         3 => AttemptRuntimeState::Publishing {
             execution_basis,
             origin,
@@ -237,7 +244,7 @@ pub(super) fn decode_attempt_state(
             daemon_epoch,
             execution,
             checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-            promotion_basis: decode_checkpoint_promotion_basis(&mut cursor)?,
+            promotion_basis: decode_checkpoint_promotion_basis(&mut cursor, true, true, true)?,
         },
         7 => AttemptRuntimeState::CheckpointPromoting {
             execution_basis,
@@ -246,13 +253,7 @@ pub(super) fn decode_attempt_state(
             execution,
             source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
             promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-            promotion_basis: decode_checkpoint_promotion_basis(&mut cursor)?,
-        },
-        8 => AttemptRuntimeState::TerminalFailure {
-            execution_basis,
-            origin,
-            daemon_epoch,
-            execution,
+            promotion_basis: decode_checkpoint_promotion_basis(&mut cursor, true, true, true)?,
         },
         _ => return Err(corrupt("attempt-state-unknown-tag")),
     };
@@ -439,6 +440,9 @@ pub(super) fn encode_checkpoint_promotion_basis(
 
 pub(super) fn decode_checkpoint_promotion_basis(
     cursor: &mut RecordCursor<'_>,
+    has_start_mode: bool,
+    has_savepoint_capture: bool,
+    has_selected_savepoint: bool,
 ) -> Result<Option<CheckpointPromotionExecutionBasis>, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(None),
@@ -455,21 +459,31 @@ pub(super) fn decode_checkpoint_promotion_basis(
                 2 => ExecutionRetentionIntent::RetainAlways,
                 _ => return Err(corrupt("checkpoint-promotion-retention-tag")),
             };
-            let start_mode = match cursor.byte()? {
-                0 => AttemptStartMode::Execute,
-                1 => AttemptStartMode::CaptureMaterializedStart {
-                    configuration: parse_typed(cursor.bytes()?, ConfigurationArtifactId::parse)?,
-                },
-                2 => AttemptStartMode::SavepointCapture {
-                    request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                    configuration: parse_typed(cursor.bytes()?, ConfigurationArtifactId::parse)?,
-                },
-                3 => AttemptStartMode::SelectedSavepoint {
-                    snapshot: parse_typed(cursor.bytes()?, CampaignSnapshotId::parse)?,
-                    selection: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                    request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                },
-                _ => return Err(corrupt("checkpoint-promotion-start-mode-tag")),
+            let start_mode = if has_start_mode {
+                match cursor.byte()? {
+                    0 => AttemptStartMode::Execute,
+                    1 => AttemptStartMode::CaptureMaterializedStart {
+                        configuration: parse_typed(
+                            cursor.bytes()?,
+                            ConfigurationArtifactId::parse,
+                        )?,
+                    },
+                    2 if has_savepoint_capture => AttemptStartMode::SavepointCapture {
+                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                        configuration: parse_typed(
+                            cursor.bytes()?,
+                            ConfigurationArtifactId::parse,
+                        )?,
+                    },
+                    3 if has_selected_savepoint => AttemptStartMode::SelectedSavepoint {
+                        snapshot: parse_typed(cursor.bytes()?, CampaignSnapshotId::parse)?,
+                        selection: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                    },
+                    _ => return Err(corrupt("checkpoint-promotion-start-mode-tag")),
+                }
+            } else {
+                AttemptStartMode::Execute
             };
             Ok(Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
                 resources, retention, start_mode,
@@ -524,6 +538,7 @@ pub(super) fn encode_attempt_origin(payload: &mut Vec<u8>, origin: AttemptExecut
 
 pub(super) fn decode_attempt_origin(
     cursor: &mut RecordCursor<'_>,
+    has_selected_savepoint: bool,
 ) -> Result<AttemptExecutionOrigin, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(AttemptExecutionOrigin::Initial),
@@ -533,7 +548,7 @@ pub(super) fn decode_attempt_origin(
             prior_execution: ExecutionId::from_bytes(cursor.fixed()?)?,
             checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
         }),
-        2 => {
+        2 if has_selected_savepoint => {
             let certificate = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
             let request = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
             let source_attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
@@ -667,11 +682,11 @@ pub(super) struct RecordCursor<'a> {
 }
 
 impl<'a> RecordCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
+    pub(super) const fn new(bytes: &'a [u8]) -> Self {
         Self { remaining: bytes }
     }
 
-    fn take(&mut self, length: usize) -> Result<&'a [u8], AssignmentLedgerError> {
+    pub(super) fn take(&mut self, length: usize) -> Result<&'a [u8], AssignmentLedgerError> {
         if self.remaining.len() < length {
             return Err(corrupt("record-truncated"));
         }
@@ -680,22 +695,22 @@ impl<'a> RecordCursor<'a> {
         Ok(value)
     }
 
-    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], AssignmentLedgerError> {
+    pub(super) fn fixed<const N: usize>(&mut self) -> Result<[u8; N], AssignmentLedgerError> {
         self.take(N)?
             .try_into()
             .map_err(|_| corrupt("record-fixed-width"))
     }
 
-    fn byte(&mut self) -> Result<u8, AssignmentLedgerError> {
+    pub(super) fn byte(&mut self) -> Result<u8, AssignmentLedgerError> {
         Ok(self.fixed::<1>()?[0])
     }
 
-    fn bytes(&mut self) -> Result<&'a [u8], AssignmentLedgerError> {
+    pub(super) fn bytes(&mut self) -> Result<&'a [u8], AssignmentLedgerError> {
         let length = u32::from_be_bytes(self.fixed()?) as usize;
         self.take(length)
     }
 
-    fn require(&mut self, expected: &[u8]) -> Result<(), AssignmentLedgerError> {
+    pub(super) fn require(&mut self, expected: &[u8]) -> Result<(), AssignmentLedgerError> {
         if self.take(expected.len())? == expected {
             Ok(())
         } else {
@@ -703,7 +718,7 @@ impl<'a> RecordCursor<'a> {
         }
     }
 
-    fn finish(self) -> Result<(), AssignmentLedgerError> {
+    pub(super) fn finish(self) -> Result<(), AssignmentLedgerError> {
         if self.remaining.is_empty() {
             Ok(())
         } else {
@@ -864,30 +879,6 @@ pub(super) fn require_existing_directory(path: &Path) -> Result<(), AssignmentLe
         return Err(corrupt("existing-root-not-directory"));
     }
     Ok(())
-}
-
-pub(super) fn open_existing_writer_lock(path: &Path) -> Result<File, AssignmentLedgerError> {
-    let file = File::from(
-        open(
-            path,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|source| {
-            io_error(
-                "open-writer-lock",
-                path,
-                std::io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?,
-    );
-    let metadata = file
-        .metadata()
-        .map_err(|source| io_error("inspect-writer-lock", path, source))?;
-    if !metadata.file_type().is_file() {
-        return Err(corrupt("writer-lock-not-regular-file"));
-    }
-    Ok(file)
 }
 
 pub(super) fn sync_directory(path: &Path) -> Result<(), AssignmentLedgerError> {

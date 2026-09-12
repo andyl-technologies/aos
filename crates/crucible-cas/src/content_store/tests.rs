@@ -23,6 +23,7 @@ use super::memory::{MemoryBlobBackend, MemoryRefBackend};
 use super::*;
 
 mod support;
+mod verification_and_physical_repair;
 
 use support::*;
 
@@ -1690,69 +1691,6 @@ fn streaming_sources_are_reopenable_and_length_checked() {
         enormous.read_all(u64::MAX),
         Err(StoreError::Quota)
     ));
-}
-
-#[test]
-fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
-    let temp = TempDir::new().expect("temporary directory");
-    let root = node_id("root");
-    let router = node_id("router");
-    let mirror = node_id("mirror");
-    let directory = node_id("directory");
-    let memory = node_id("memory");
-    let graph = StoreGraph::build(StoreGraphConfig {
-        root: root.clone(),
-        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
-        nodes: BTreeMap::from([
-            (
-                root,
-                StoreNodeSpec::Verified {
-                    child: router.clone(),
-                },
-            ),
-            (
-                router,
-                StoreNodeSpec::Routed {
-                    routes: BTreeMap::from([(ObjectKind::CampaignFact, mirror.clone())]),
-                },
-            ),
-            (
-                mirror,
-                StoreNodeSpec::WriteThrough {
-                    children: vec![directory.clone(), memory.clone()],
-                },
-            ),
-            (
-                directory,
-                StoreNodeSpec::Directory {
-                    root: temp.path().join("objects"),
-                },
-            ),
-            (
-                memory,
-                StoreNodeSpec::Memory {
-                    max_logical_bytes: 1024 * 1024,
-                },
-            ),
-        ]),
-    })
-    .expect("valid mirror graph");
-    let bytes = vec![0x5a; 128 * 1024];
-    let opens = Arc::new(AtomicUsize::new(0));
-    let bytes_read = Arc::new(AtomicUsize::new(0));
-    let source = BlobHandle::new(Arc::new(CountingSource {
-        bytes: Arc::from(bytes.clone()),
-        opens: opens.clone(),
-        bytes_read: bytes_read.clone(),
-    }));
-    let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
-    let receipt = graph
-        .put_if_absent(id, &source)
-        .expect("mirrored streaming put");
-
-    assert_eq!(receipt.placements.len(), 2);
-    assert_eq!(opens.load(Ordering::SeqCst), 3);
-    assert_eq!(bytes_read.load(Ordering::SeqCst), bytes.len() * 3);
 }
 
 #[test]
