@@ -75,7 +75,13 @@ use crate::types::{
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads};
 
+mod activatability;
 pub(crate) mod image_rollout;
+
+pub use activatability::{
+    ActivatabilityReason, ActivatabilityReasonCode, RETAINED_ACTIVATABILITY_SCHEMA,
+    RetainedActivatabilityReport, RetainedActivationMode, RetainedTargetKind,
+};
 
 use image_rollout::{
     is_qualified_image_rollout, preflight_image_selection, qualified_rollout_record,
@@ -1214,33 +1220,48 @@ pub async fn rollback_system(
     printer: &Printer,
 ) -> Result<()> {
     let profile_path = ProfileScope::System.profile_path();
+    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
+    let switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     if list {
         let state = load_generation_state_readonly(&profile_path)?;
+        let running = running_image_generation()?;
+        let reports = state
+            .generations
+            .iter()
+            .map(|generation| {
+                activatability::configuration(config, &profile_path, generation, &running)
+            })
+            .collect::<Vec<_>>();
+        if printer.mode() == OutputMode::Json {
+            let bytes = aos_contract::canonical::to_vec(&reports)?;
+            printer.raw(std::str::from_utf8(&bytes)?);
+            return Ok(());
+        }
         if state.generations.is_empty() {
             printer.info("No system generations.");
         } else {
             printer.header("Configuration generations:");
-            for sysgen in &state.generations {
+            for (sysgen, report) in state.generations.iter().zip(&reports) {
                 let marker = if sysgen.number == state.current {
                     " (current)"
                 } else {
                     ""
                 };
+                let status = activatability_label(report);
                 printer.plain(&format!(
-                    "  gen-{}: image-gen-{}, ABI {}, {} [{}]{}",
+                    "  gen-{}: image-gen-{}, ABI {}, {} [{}]{} {}",
                     sysgen.number,
                     sysgen.image_gen_parent,
                     sysgen.module_abi_pinned,
                     sysgen.manifest_hash,
                     sysgen.created_at,
                     marker,
+                    status,
                 ));
             }
         }
         return Ok(());
     }
-    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
-    let switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     let mut state = load_generation_state(&profile_path)?;
 
     let current = state
@@ -1273,6 +1294,12 @@ pub async fn rollback_system(
         current.number, target.number,
     ));
 
+    let running_image = running_image_generation()?;
+    let activatability =
+        activatability::configuration(config, &profile_path, &target, &running_image);
+    print_activatability(&activatability, printer)?;
+    activatability.require_activatable()?;
+
     if dry_run {
         printer.info("Dry run -- no changes made.");
         return Ok(());
@@ -1282,7 +1309,7 @@ pub async fn rollback_system(
         .join(IMAGE_STATE_FILE)
         .is_file()
     {
-        let running_image = running_image_generation()?;
+        let running_image = running_image;
         let running_abi = running_image.module_abi;
         match target.reactivation_plan(running_abi)? {
             ReactivationPlan::DirectReactivate => {
@@ -1397,6 +1424,33 @@ pub async fn rollback_system(
     }
 
     bail!("image generation state is absent; refusing config rollback through legacy state")
+}
+
+fn activatability_label(report: &RetainedActivatabilityReport) -> String {
+    if report.is_activatable() {
+        return "[activatable]".to_string();
+    }
+    let codes = report
+        .reasons()
+        .iter()
+        .map(|reason| format!("{:?}", reason.code))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[blocked: {codes}]")
+}
+
+fn print_activatability(report: &RetainedActivatabilityReport, printer: &Printer) -> Result<()> {
+    if printer.mode() == OutputMode::Json {
+        let bytes = report.canonical_bytes()?;
+        printer.raw(std::str::from_utf8(&bytes)?);
+    } else if report.is_activatable() {
+        printer.info("Retained target is currently activatable.");
+    } else {
+        for reason in report.reasons() {
+            printer.warning(&format!("{:?}: {}", reason.code, reason.detail));
+        }
+    }
+    Ok(())
 }
 
 /// Copies a store tree into the persistent overlay upper using an atomic
@@ -2743,8 +2797,23 @@ pub async fn rollback_image_generation(
 ) -> Result<()> {
     let profile = Path::new(IMAGE_PROFILE_DIR);
     let mut state = load_image_generation_state_pub(profile)?;
+    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
+    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     if list {
-        for image in &state.generations {
+        let system_profile = ProfileScope::System.profile_path();
+        let reports = state
+            .generations
+            .iter()
+            .map(|generation| {
+                activatability::image(profile, &system_profile, generation, transition_mode, drain)
+            })
+            .collect::<Vec<_>>();
+        if printer.mode() == OutputMode::Json {
+            let bytes = aos_contract::canonical::to_vec(&reports)?;
+            printer.raw(std::str::from_utf8(&bytes)?);
+            return Ok(());
+        }
+        for (image, report) in state.generations.iter().zip(&reports) {
             let running = if image.number == state.running {
                 " (running)"
             } else {
@@ -2756,14 +2825,18 @@ pub async fn rollback_image_generation(
                 ""
             };
             printer.plain(&format!(
-                "  image-gen-{}: {} {} [{}]{}{}",
-                image.number, image.package_name, image.version, image.uki_path, running, default
+                "  image-gen-{}: {} {} [{}]{}{} {}",
+                image.number,
+                image.package_name,
+                image.version,
+                image.uki_path,
+                running,
+                default,
+                activatability_label(report),
             ));
         }
         return Ok(());
     }
-    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
-    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
     state = load_image_generation_state_pub(profile)?;
     let target = match generation {
         Some(number) => state
@@ -2782,6 +2855,11 @@ pub async fn rollback_image_generation(
     };
     let entry_id = resolve_installed_uki_entry(Path::new("/boot"), &target.uki_path)
         .with_context(|| format!("resolving image generation {} UKI", target.number))?;
+    let system_profile = ProfileScope::System.profile_path();
+    let activatability =
+        activatability::image(profile, &system_profile, &target, transition_mode, drain);
+    print_activatability(&activatability, printer)?;
+    activatability.require_activatable()?;
     if dry_run {
         printer.info(&format!(
             "Would set image generation {} ({}) as the durable next boot.",
@@ -2790,7 +2868,6 @@ pub async fn rollback_image_generation(
         return Ok(());
     }
     let qualified_rollout = is_qualified_image_rollout(transition_mode, drain);
-    let system_profile = ProfileScope::System.profile_path();
     preflight_image_selection(
         profile,
         &system_profile,

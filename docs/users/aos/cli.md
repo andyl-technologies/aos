@@ -93,9 +93,10 @@ aos doc
 `aos build zlib` builds `pkgs.zlib`; it does not install a package on the
 running host. Use `apm install zlib` for that operation.
 
-`aos ability` inspects checked portable plans, bounded private deployment
-views, retained native execution records, and realized artifact-consumption
-evidence. It does not activate a plan or authenticate a deployment connection.
+`aos ability` inspects and compares checked portable plans, previews typed
+reverse-use removal effects, builds bounded private deployment views, and reads
+retained native execution or realized artifact-consumption evidence. It does
+not activate a plan or authenticate a deployment connection.
 See [Inspect ability plans and retained execution](ability-inspection.md) for
 the current commands, provenance limits, and disclosure rules.
 

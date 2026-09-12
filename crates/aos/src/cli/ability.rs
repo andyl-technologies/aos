@@ -15,6 +15,53 @@ pub enum AbilityCommand {
     Diagnostic(AbilityDiagnosticArgs),
     /// Render or browse a bounded desired/observed operator view
     Operator(AbilityOperatorArgs),
+    /// Classify semantic changes between two checked deployment plans
+    Compare(AbilityCompareArgs),
+    /// Preview consumers and transitions affected by removing one graph subject
+    RemovalPreview(AbilityRemovalPreviewArgs),
+}
+
+#[derive(Args)]
+pub struct AbilityCompareArgs {
+    /// Read the earlier canonical inspection bundle from this file
+    pub before: PathBuf,
+
+    /// Read the later canonical inspection bundle from this file
+    pub after: PathBuf,
+
+    /// Match the earlier bundle against this independent digest
+    #[arg(long, value_name = "SHA256")]
+    pub before_digest: Option<String>,
+
+    /// Match the later bundle against this independent digest
+    #[arg(long, value_name = "SHA256")]
+    pub after_digest: Option<String>,
+
+    /// Compare the later plan with this authenticated observation overlay
+    #[arg(long, value_name = "FILE")]
+    pub observation: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct AbilityRemovalPreviewArgs {
+    /// Read the canonical inspection bundle from this file
+    pub bundle: PathBuf,
+
+    /// Read the canonical typed node identity from this JSON file
+    #[arg(long, value_name = "FILE")]
+    pub target: PathBuf,
+
+    /// Match the bundle against this independent digest
+    #[arg(long, value_name = "SHA256")]
+    pub expected_digest: Option<String>,
+
+    /// Bound reverse traversal by this edge depth
+    #[arg(long, default_value_t = 8)]
+    pub max_depth: usize,
+
+    /// Bound the complete removal closure to this many nodes
+    #[arg(long, default_value_t = 256)]
+    pub max_nodes: usize,
 }
 
 #[derive(Args)]

@@ -460,6 +460,80 @@ fn operator_cli_exports_a_single_focus_with_separate_observed_state()
 }
 
 #[test]
+fn compare_cli_emits_semantic_classifications() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let before_path = workspace.path().join("before.json");
+    let after_path = workspace.path().join("after.json");
+    let before = checked_effect_plan();
+    let mut fixture = plan_fixture();
+    fixture.effect_plan.operations[0].inputs = aos_ability_model::ValueExpression::Literal {
+        value: aos_ability_model::AbilityValue::new(serde_json::Value::Bool(false))?,
+    };
+    let after = fixture.validate()?;
+    write_bundle(&before_path, &before)?;
+    write_bundle(&after_path, &after)?;
+
+    let output = run(
+        workspace.path(),
+        &[
+            "--json",
+            "ability",
+            "compare",
+            path_text(&before_path)?,
+            path_text(&after_path)?,
+        ],
+    )?;
+
+    assert!(output.status.success(), "{}", stderr(&output)?);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(value["schema"], "aos.ability.semantic-comparison/v1");
+    assert_eq!(value["runtime_affecting"], true);
+    assert!(
+        value["classifications"]
+            .as_array()
+            .is_some_and(|values| { values.iter().any(|value| value == "transition-strategy") })
+    );
+    Ok(())
+}
+
+#[test]
+fn removal_preview_cli_reports_reverse_use_blockers() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    let bundle_path = workspace.path().join("inspection.json");
+    let target_path = workspace.path().join("target.json");
+    let plan = checked_effect_plan();
+    let provider = plan.binding_plan().bindings()[0].provider.clone();
+    write_bundle(&bundle_path, &plan)?;
+    std::fs::write(
+        &target_path,
+        aos_contract::canonical::to_vec(&NodeKey::Provider(provider))?,
+    )?;
+
+    let output = run(
+        workspace.path(),
+        &[
+            "--json",
+            "ability",
+            "removal-preview",
+            path_text(&bundle_path)?,
+            "--target",
+            path_text(&target_path)?,
+        ],
+    )?;
+
+    assert!(output.status.success(), "{}", stderr(&output)?);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(value["schema"], "aos.ability.removal-preview/v1");
+    assert_eq!(value["blocked"], true);
+    assert!(value["impacts"].as_array().is_some_and(|impacts| {
+        impacts
+            .iter()
+            .any(|impact| impact["relation"] == "selects-provider")
+    }));
+    Ok(())
+}
+
+#[test]
 fn query_flag_rejects_noncanonical_input() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = tempfile::tempdir()?;
     let bundle_path = workspace.path().join("inspection.json");
