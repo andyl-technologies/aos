@@ -90,9 +90,77 @@ def _runtime_audit_cell(cell: dict[str, Any]) -> bool:
         scenario == "cancel-unsettled-attempt"
         and cell.get("recovery", {}).get("cancel") is None
     )
+
+
+EFFECT_BOUNDARY_SCENARIOS = {
+    "interrupt-after-acquisition",
+    "interrupt-after-durable-intent",
+    "lose-external-result",
+    "interrupt-after-durable-outcome",
+}
+EFFECT_BOUNDARY_ATTEMPT_TIMELINES = {
+    "interrupt-after-acquisition": [
+        "operation-admitted",
+        "operation-admitted",
+        "effect-started",
+        "effect-completed",
+    ],
+    "interrupt-after-durable-intent": [
+        "operation-admitted",
+        "effect-started",
+        "operation-admitted",
+        "reconciliation-started",
+        "reconciled-safe-to-retry",
+        "operation-admitted",
+        "effect-started",
+        "effect-completed",
+    ],
+    "lose-external-result": [
+        "operation-admitted",
+        "effect-started",
+        "operation-admitted",
+        "reconciliation-started",
+        "reconciled-completed",
+    ],
+    "interrupt-after-durable-outcome": [
+        "operation-admitted",
+        "effect-started",
+        "effect-completed",
+    ],
+}
+EFFECT_BOUNDARY_ADAPTER_GROUPS = [
+    {
+        "credential-delivery",
+        "host-network-policy",
+        "host-storage",
+        "managed-configuration",
+        "network-endpoint",
+        "nginx-validation",
+        "systemd-service-legacy",
+    },
+    {"systemd-manager"},
+    {"postgresql"},
+    {"kubernetes-object", "systemd-bootstrap"},
+    {"image-rollout"},
+]
+
+
+def _effect_boundary_cell(cell: dict[str, Any]) -> bool:
+    """Returns whether the cell belongs to the provider-effect interruption cohort."""
+
+    return (
+        cell["id"].rsplit("/", 1)[-1] in EFFECT_BOUNDARY_SCENARIOS
+        and cell["id"] not in PRIMARY_COHORT_CELL_IDS
+        and cell["id"] not in POSTGRESQL_CELL_IDS
+    )
+
+
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
 POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
     "aos.qualification.postgresql-provider-replacement-cohort-subject/v1"
+)
+EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA = (
+    "aos.qualification.native-adapter-effect-cohort-subject/v1"
 )
 POSTGRESQL_REJECTION_EVIDENCE_SCHEMA = (
     "aos.qualification.postgresql-provider-rejection-evidence/v1"
@@ -299,6 +367,12 @@ def build_cells(
     if any(cell_id not in specification_cells for cell_id in submitted_cells):
         raise RuntimeError("cohort submitted a probe outside the exact matrix surface")
     allowed_cells = QUALIFIED_CELL_IDS
+    effect_boundary_cells = [
+        cell["id"]
+        for adapters in EFFECT_BOUNDARY_ADAPTER_GROUPS
+        for cell in spec["cells"]
+        if cell["adapter"] in adapters and _effect_boundary_cell(cell)
+    ]
     if has_runtime_audit:
         runtime_failure_cells = [
             cell["id"]
@@ -316,7 +390,11 @@ def build_cells(
             *runtime_role_cells,
             *runtime_failure_cells,
             *POSTGRESQL_CELL_IDS,
+            *effect_boundary_cells,
         ]
+    else:
+        allowed_cells = [*allowed_cells, *effect_boundary_cells]
+
     if has_interruption_audit:
         before_acquisition_cells = [
             cell["id"]
@@ -1122,6 +1200,11 @@ def _validate_probe_facts(
 
     if cohort_subject.get("schema") == POSTGRESQL_COHORT_SUBJECT_SCHEMA:
         _validate_postgresql_probe_facts(
+            postcondition, observations, cohort_subject, cell
+        )
+        return
+    if cohort_subject.get("schema") == EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA:
+        _validate_effect_boundary_probe_facts(
             postcondition, observations, cohort_subject, cell
         )
         return
@@ -1951,7 +2034,309 @@ def _validate_cohort_subject(
         _validate_postgresql_cohort_subject(cell, subject, evidence_bytes)
         return
 
+    if isinstance(subject, dict) and subject.get("schema") == EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA:
+        _validate_effect_boundary_subject(cell, subject, evidence_bytes)
+        return
+
     _validate_managed_configuration_subject(cell, subject, evidence_bytes)
+
+
+def _validate_effect_boundary_subject(
+    cell: dict[str, Any], subject: Any, plan_bundle_bytes: Any
+) -> None:
+    """Rebuilds an effect-boundary subject from its canonical production plan."""
+
+    bundle = _canonical_evidence(plan_bundle_bytes, "effect-boundary plan bundle")
+    try:
+        if bundle.get("schema") != "aos.ability.plan-bundle/v1":
+            raise RuntimeError("effect-boundary evidence has another plan schema")
+        if not isinstance(subject, dict) or set(subject) != {
+            "schema",
+            "plan",
+            "plan-bundle-digest",
+            "adapter",
+            "operation",
+            "dependent-operation",
+            "dependency-edge",
+            "provider-implementation",
+        }:
+            raise RuntimeError("effect-boundary subject is malformed")
+        effect = bundle["transition"]["effect_document"]
+        operation = subject["operation"]
+        matches = [
+            _project_operation(candidate, ordinal)
+            for ordinal, candidate in enumerate(effect["operations"])
+            if _project_operation(candidate, ordinal) == operation
+        ]
+        if len(matches) != 1:
+            raise RuntimeError("effect-boundary operation is absent or ambiguous")
+        dependents = _required_success_dependents(effect, operation)
+        dependent = subject["dependent-operation"]
+        if dependent not in dependents:
+            raise RuntimeError("effect-boundary successor is not RequiredSuccess")
+        implementations = {}
+        for state in (bundle.get("desired"), bundle.get("current")):
+            if state is None:
+                continue
+            for binding in state["snapshot"]["resolution"]["binding_document"][
+                "bindings"
+            ]:
+                if binding["id"] == effect["operations"][operation["ordinal"]]["binding"]:
+                    implementation = binding["implementation"]
+                    implementations[canonical(implementation)] = implementation
+        if len(implementations) != 1:
+            raise RuntimeError("effect-boundary terminal implementation is ambiguous")
+        implementation = next(iter(implementations.values()))
+    except RuntimeError:
+        raise
+    except (AttributeError, KeyError, TypeError) as error:
+        raise RuntimeError("effect-boundary plan evidence is malformed") from error
+
+    expected_edge = {
+        "from": {"kind": "operation", "key": operation["key"]},
+        "to": {"kind": "operation", "key": dependent["key"]},
+        "kind": "required-success",
+    }
+    if (
+        subject["schema"] != EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA
+        or subject["plan"] != bundle["plan"]
+        or subject["plan-bundle-digest"]
+        != "sha256:" + hashlib.sha256(plan_bundle_bytes).hexdigest()
+        or subject["adapter"] != cell["adapter"]
+        or operation["interface"] != cell["interface"]
+        or operation["method"] != cell["method"]
+        or operation["target"]["interface"] != cell["interface"]
+        or subject["dependency-edge"] != expected_edge
+        or expected_edge not in effect["edges"]
+        or subject["provider-implementation"] != implementation
+        or not implementation.get("handler")
+    ):
+        raise RuntimeError("effect-boundary subject differs from its production plan")
+
+
+def _validate_effect_boundary_probe_facts(
+    postcondition: str,
+    observations: dict[str, Any],
+    subject: dict[str, Any],
+    cell: dict[str, Any],
+) -> None:
+    """Validates independently observed facts for actual provider effects."""
+
+    scenario = _cell_scenario(cell)
+    expected_boundary = {
+        "interrupt-after-acquisition": "resources-acquired",
+        "interrupt-after-durable-intent": "effect-intent-durable",
+        "lose-external-result": "effect-returned",
+        "interrupt-after-durable-outcome": "effect-outcome-durable",
+    }.get(scenario)
+    if expected_boundary is None:
+        raise RuntimeError("effect-boundary cohort names another scenario")
+
+    if postcondition == "durable-attempt-state-classified":
+        expected_fields = {
+            "transaction",
+            "plan",
+            "operation",
+            "provider-implementation",
+            "journal-before-loss",
+            "timeline",
+            "boundary-timeline",
+            "interruption-position",
+            "settlement-sequence",
+            "settlement-position",
+        }
+        boundaries = observations.get("boundary-timeline")
+        interruption = observations.get("interruption-position")
+        timeline = observations.get("timeline")
+        expected_timeline = EFFECT_BOUNDARY_ATTEMPT_TIMELINES[scenario]
+        if (
+            set(observations) != expected_fields
+            or not _matches(LOCAL_KEY, observations.get("transaction"))
+            or observations.get("plan") != subject["plan"]
+            or observations.get("operation") != subject["operation"]
+            or observations.get("provider-implementation")
+            != subject["provider-implementation"]
+            or not _matches(RAW_DIGEST, observations.get("journal-before-loss"))
+            or not _is_ordered_operation_timeline(
+                timeline, subject["operation"]["ordinal"]
+            )
+            or [event.get("kind") for event in timeline or []]
+            != expected_timeline
+            or not _is_ordered_boundary_timeline(boundaries)
+            or not any(
+                entry["transcript-position"] == interruption
+                and entry["purpose"] == "effect"
+                and entry["boundary"] == expected_boundary
+                for entry in boundaries
+            )
+            or observations.get("settlement-sequence") != timeline[-1]["sequence"]
+            or observations.get("settlement-position")
+            != boundaries[-1]["transcript-position"]
+        ):
+            raise RuntimeError("effect-boundary journal facts are invalid")
+    elif postcondition == "at-most-one-resource-owner":
+        if (
+            set(observations)
+            != {
+                "resource",
+                "owner-baseline",
+                "owner-unsettled",
+                "owner-after",
+                "one-owner-throughout",
+                "live-observation-baseline",
+                "live-observation-unsettled",
+                "live-observation-after",
+                "live-digest-baseline",
+                "live-digest-unsettled",
+                "live-digest-after",
+                "external-effect-returned",
+                "mutation-observed-before-loss",
+            }
+            or observations.get("resource") != subject["operation"]["target"]["resource"]
+            or not all(
+                _single_owner_inventory(observations.get(field))
+                for field in ("owner-baseline", "owner-unsettled", "owner-after")
+            )
+            or any(
+                owner.get("resource")
+                != subject["operation"]["target"]["resource"]
+                for inventory in (
+                    observations.get("owner-baseline"),
+                    observations.get("owner-unsettled"),
+                    observations.get("owner-after"),
+                )
+                for owner in inventory["identities"]
+            )
+            or observations.get("one-owner-throughout") is not True
+            or observations.get("live-digest-baseline")
+            != sha256(observations.get("live-observation-baseline"))
+            or observations.get("live-digest-unsettled")
+            != sha256(observations.get("live-observation-unsettled"))
+            or observations.get("live-digest-after")
+            != sha256(observations.get("live-observation-after"))
+            or observations.get("external-effect-returned")
+            is not (
+                scenario
+                in {"lose-external-result", "interrupt-after-durable-outcome"}
+            )
+            or observations.get("mutation-observed-before-loss")
+            is not (
+                observations.get("live-digest-baseline")
+                != observations.get("live-digest-unsettled")
+            )
+            or (
+                cell["effect_class"] == "mutation"
+                and observations.get("mutation-observed-before-loss")
+                is not observations.get("external-effect-returned")
+            )
+        ):
+            raise RuntimeError("effect-boundary ownership facts are invalid")
+    elif postcondition == "foreign-resources-unchanged":
+        if (
+            set(observations)
+            != {
+                "resource",
+                "snapshot-baseline",
+                "snapshot-unsettled",
+                "snapshot-after",
+                "unchanged",
+            }
+            or not isinstance(observations.get("resource"), dict)
+            or not (
+                observations.get("snapshot-baseline")
+                == observations.get("snapshot-unsettled")
+                == observations.get("snapshot-after")
+            )
+            or observations.get("unchanged") is not True
+        ):
+            raise RuntimeError("effect-boundary foreign-resource facts are invalid")
+    elif postcondition == "dependent-effects-not-executed":
+        before = observations.get("timeline-before-settlement")
+        after = observations.get("timeline-after-settlement")
+        boundary_after = observations.get("boundary-timeline-after-settlement")
+        if (
+            set(observations)
+            != {
+                "operation",
+                "dependent-operation",
+                "dependency-edge",
+                "timeline-before-settlement",
+                "timeline-after-settlement",
+                "boundary-timeline-after-settlement",
+                "blocked",
+                "settlement-sequence",
+                "settlement-position",
+            }
+            or observations.get("operation") != subject["operation"]
+            or observations.get("dependent-operation") != subject["dependent-operation"]
+            or observations.get("dependency-edge") != subject["dependency-edge"]
+            or before != []
+            or not _is_ordered_operation_timeline(
+                after, subject["dependent-operation"]["ordinal"]
+            )
+            or not _is_ordered_boundary_timeline(boundary_after)
+            or after[0]["sequence"] <= observations.get("settlement-sequence", -1)
+            or boundary_after[0]["transcript-position"]
+            <= observations.get("settlement-position", -1)
+            or observations.get("blocked") is not True
+        ):
+            raise RuntimeError("effect-boundary dependency facts are invalid")
+    else:
+        raise RuntimeError("effect-boundary cohort carries another postcondition")
+
+
+def _is_ordered_operation_timeline(value: Any, ordinal: int) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    sequences = []
+    for event in value:
+        if (
+            not isinstance(event, dict)
+            or set(event) != {"sequence", "kind", "node-ordinal"}
+            or event.get("node-ordinal") != ordinal
+            or not _is_nonnegative_int(event.get("sequence"))
+            or not isinstance(event.get("kind"), str)
+            or not event["kind"]
+        ):
+            return False
+        sequences.append(event["sequence"])
+    return sequences == sorted(set(sequences))
+
+
+def _single_owner_inventory(inventory: Any) -> bool:
+    """Validates one bounded authoritative ownership inventory."""
+
+    if not isinstance(inventory, dict):
+        return False
+    if set(inventory) != {"count", "identities"}:
+        return False
+    if inventory["count"] not in {0, 1}:
+        return False
+    if (
+        not isinstance(inventory["identities"], list)
+        or len(inventory["identities"]) != inventory["count"]
+        or any(not isinstance(identity, dict) for identity in inventory["identities"])
+    ):
+        return False
+    return True
+
+
+def _is_ordered_boundary_timeline(value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    positions = []
+    for event in value:
+        if (
+            not isinstance(event, dict)
+            or set(event) != {"transcript-position", "purpose", "boundary"}
+            or not _is_nonnegative_int(event.get("transcript-position"))
+            or event.get("purpose") not in {"effect", "reconcile", "cancel"}
+            or not isinstance(event.get("boundary"), str)
+            or not event["boundary"]
+        ):
+            return False
+        positions.append(event["transcript-position"])
+    return positions == sorted(set(positions))
 
 
 def _validate_managed_configuration_subject(

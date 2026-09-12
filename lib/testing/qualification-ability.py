@@ -855,17 +855,31 @@ class Scenario:
         patch_root = self.work / "candidate-companions"
         patch_root.mkdir()
         patched_paths = []
-        seen_names: set[str] = set()
+        seen_bindings: dict[tuple[str, str], dict[str, str]] = {}
         for binding in RUNTIME_COMPANIONS:
             required = {"name", "primary", "abilities", "originalRuntime"}
-            if set(binding) != required or binding["name"] in seen_names:
+            identity = (binding.get("name"), binding.get("abilities"))
+            if set(binding) != required:
                 raise RuntimeError("candidate runtime companion binding is malformed")
-            seen_names.add(binding["name"])
+            duplicate = seen_bindings.get(identity)
+            if duplicate is not None:
+                if duplicate != binding:
+                    raise RuntimeError(
+                        "candidate runtime companion identity is ambiguous"
+                    )
+                continue
+            seen_bindings[identity] = binding
             require_distinct_predecessor_runtime(
                 binding["originalRuntime"], artifact["store_path"]
             )
 
-            destination = patch_root / f"{binding['name']}-candidate-abilities"
+            abilities_suffix = hashlib.sha256(
+                binding["abilities"].encode()
+            ).hexdigest()[:16]
+            destination = (
+                patch_root
+                / f"{binding['name']}-{abilities_suffix}-candidate-abilities"
+            )
             self._patch_companion(binding, artifact, destination)
             added = NAR.run(
                 [self.candidate_closure.nix_store, "--add", str(destination)],

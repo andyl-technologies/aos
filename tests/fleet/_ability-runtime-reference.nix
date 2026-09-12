@@ -189,7 +189,9 @@
       abilities = entry.package.abilities;
       originalRuntime = pkgs.aos.packageRuntime;
     }) [
+      "ability-reference-nginx"
       "ability-reference-managed-configuration"
+      "ability-reference-credential"
       "ability-reference-systemd"
       "ability-reference-systemd-manager"
     ];
