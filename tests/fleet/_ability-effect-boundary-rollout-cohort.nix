@@ -9,6 +9,7 @@
   imageLifecycle = import ./system-image-rollback.nix {
     inherit lib mkSystem pkgs systems;
     extraFixtureModules = [observerModule];
+    extraTestArtifactRoots = [pkgs.python3];
   };
   image = imageLifecycle.abilityRolloutFixture;
   rollout = import ./_image-rollout-runtime-reference.nix {
