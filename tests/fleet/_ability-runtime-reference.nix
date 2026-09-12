@@ -81,12 +81,32 @@
             ExecReload = "${pkgs.coreutils}/bin/touch /run/${name}.reloaded";
           };
         };
-      in {
-        aos-matrix-primary = matrixUnit "aos-matrix-primary";
-        aos-matrix-secondary = matrixUnit "aos-matrix-secondary";
-        aos-matrix-witness = matrixUnit "aos-matrix-witness";
-        aos-matrix-foreign = matrixUnit "aos-matrix-foreign";
-      };
+        applicationService = application: let
+          port =
+            {
+              app-a = 19001;
+              app-b = 19002;
+              app-c = 19003;
+            }.${
+              application
+            };
+        in {
+          description = "Reference HTTP backend ${application}";
+          wantedBy = ["multi-user.target"];
+          after = ["systemd-tmpfiles-setup.service"];
+          serviceConfig = {
+            ExecStart = "${pkgs.python3}/bin/python3 -m http.server ${builtins.toString port} --bind 127.0.0.1 --directory /var/lib/aos/ability-reference/backends/${application}";
+            Restart = "on-failure";
+          };
+        };
+      in
+        {
+          aos-matrix-primary = matrixUnit "aos-matrix-primary";
+          aos-matrix-secondary = matrixUnit "aos-matrix-secondary";
+          aos-matrix-witness = matrixUnit "aos-matrix-witness";
+          aos-matrix-foreign = matrixUnit "aos-matrix-foreign";
+        }
+        // lib.genAttrs ["app-a" "app-b" "app-c"] applicationService;
       environment.etc."tmpfiles.d/ability-reference.conf".text = ''
         d /var/lib/aos 0700 root root - -
         d /var/lib/aos/ability-reference 0700 root root - -
@@ -106,27 +126,19 @@
         d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
         d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
       '';
-      systemd.services = lib.genAttrs ["app-a" "app-b" "app-c"] (application: let
-        port =
-          {
-            app-a = 19001;
-            app-b = 19002;
-            app-c = 19003;
-          }.${
-            application
-          };
-      in {
-        description = "Reference HTTP backend ${application}";
-        wantedBy = ["multi-user.target"];
-        after = ["systemd-tmpfiles-setup.service"];
-        serviceConfig = {
-          ExecStart = "${pkgs.python3}/bin/python3 -m http.server ${builtins.toString port} --bind 127.0.0.1 --directory /var/lib/aos/ability-reference/backends/${application}";
-          Restart = "on-failure";
-        };
-      });
     }
   ];
   runtimeSystem = mkSystem runtimeModules;
+  qualificationMatrixUnit = name: ''
+    systemd.services.${name} = {
+      description = "Disposable ${name} native systemd-manager fixture";
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+        ExecReload = "${pkgs.coreutils}/bin/touch /run/${name}.reloaded";
+      };
+    };
+  '';
   qualificationSetupBody = ''
     environment.etc."tmpfiles.d/ability-reference.conf".text = ${builtins.toJSON ''
       d /var/lib/aos 0700 root root - -
@@ -147,22 +159,13 @@
       d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
       d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
     ''};
-    systemd.services = let
-      matrixUnit = name: {
-        description = "Disposable ''${name} native systemd-manager fixture";
-        serviceConfig = {
-          Type = "simple";
-          ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
-          ExecReload = "${pkgs.coreutils}/bin/touch /run/''${name}.reloaded";
-        };
-      };
-    in {
-      aos-matrix-primary = matrixUnit "aos-matrix-primary";
-      aos-matrix-secondary = matrixUnit "aos-matrix-secondary";
-      aos-matrix-witness = matrixUnit "aos-matrix-witness";
-      aos-matrix-foreign = matrixUnit "aos-matrix-foreign";
-    };
-  '';
+  ''
+  + lib.concatMapStrings qualificationMatrixUnit [
+    "aos-matrix-primary"
+    "aos-matrix-secondary"
+    "aos-matrix-witness"
+    "aos-matrix-foreign"
+  ];
   qualificationExtraClosures =
     packageRoots
     ++ [
@@ -361,7 +364,14 @@ in {
           tls_bundle=None,
           systemd_manager_method=None,
           systemd_manager_revision=None,
+          execution_stage="host",
       ):
+          assert execution_stage in {"host", "application-container"}, (
+              execution_stage
+          )
+          execution_stage_arguments = (
+              " --execution-stage " + shlex.quote(execution_stage)
+          )
           tls_arguments = ""
           if tls_version is not None or tls_bundle is not None:
               assert tls_version is not None and tls_bundle is not None, (
@@ -418,7 +428,7 @@ in {
               f"{shlex.quote(secondary_response)} --operator-authority-output "
               f"{shlex.quote(authority_staging)} --lifecycle "
               f"{shlex.quote(lifecycle)}{tls_arguments}"
-              f"{systemd_manager_arguments}",
+              f"{systemd_manager_arguments}{execution_stage_arguments}",
               timeout=1200,
           )
           return json.loads(runtime.succeed(

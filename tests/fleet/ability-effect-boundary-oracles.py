@@ -18,6 +18,10 @@ PROVIDER_ORACLES = {
         "roots": ["/var/lib/aos/ability-runtime/credentials"],
         "live": "filesystem",
     },
+    "foreground-process": {
+        "roots": ["/var/lib/aos/ability-runtime/foreground-process"],
+        "live": "foreground-process",
+    },
     "host-network-policy": {
         "roots": ["/var/lib/aos/ability-runtime/network-policy"],
         "live": "network",
@@ -211,6 +215,8 @@ def live_observation(adapter: str, operation: dict[str, Any]) -> dict[str, Any]:
         return postgresql_snapshot(operation, documents)
     if kind == "rollout":
         return rollout_snapshot(operation, documents)
+    if kind == "foreground-process":
+        return foreground_process_snapshot(operation, documents)
     raise RuntimeError(f"unknown provider oracle {kind!r}")
 
 
@@ -442,6 +448,84 @@ def rollout_snapshot(
             "/var/lib/aos-test/health-observations",
         ]),
         "kernel-command-line": runtime.succeed(f"{COREUTILS}/cat /proc/cmdline").strip(),
+    }
+
+
+def foreground_process_snapshot(
+    operation: dict[str, Any], documents: list[tuple[str, Any]]
+) -> dict[str, Any]:
+    """Authenticates a receipt against the exact live process confinement."""
+
+    matching = [
+        (path, document)
+        for path, document in documents
+        if document.get("schema") == "aos.ability.foreground-process-state/v1"
+    ]
+    if len(matching) > 1:
+        raise RuntimeError("foreground resource has multiple durable receipts")
+    if not matching:
+        return {
+            "kind": "foreground-process",
+            "receipt": None,
+            "process": None,
+        }
+
+    path, receipt = matching[0]
+    request = receipt.get("request")
+    if not isinstance(request, dict) or request.get("resource") != operation["target"]["resource"]:
+        raise RuntimeError("foreground receipt names another logical resource")
+    identity = receipt.get("identity")
+    if identity is None:
+        process = None
+    else:
+        pid = identity.get("pid")
+        process_group = identity.get("process_group")
+        if (
+            not isinstance(pid, int)
+            or pid <= 0
+            or not isinstance(process_group, int)
+            or process_group != pid
+        ):
+            raise RuntimeError("foreground receipt has an invalid process identity")
+        prefix = f"/proc/{pid}"
+        ownership = receipt.get("ownership_token")
+        if not isinstance(ownership, str) or not ownership:
+            raise RuntimeError("foreground receipt lacks an ownership token")
+        environment = runtime.succeed(
+            f"{COREUTILS}/tr '\\000' '\\n' < {shlex.quote(prefix + '/environ')}"
+        ).splitlines()
+        if f"AOS_FOREGROUND_PROCESS_OWNERSHIP={ownership}" not in environment:
+            raise RuntimeError("live foreground process lacks the exact ownership token")
+        process = {
+            "identity": identity,
+            "executable": runtime.succeed(
+                f"{COREUTILS}/readlink {shlex.quote(prefix + '/exe')}"
+            ).strip(),
+            "command-line": runtime.succeed(
+                f"{COREUTILS}/tr '\\000' '\\n' < {shlex.quote(prefix + '/cmdline')}"
+            ).splitlines(),
+            "cgroup": runtime.succeed(
+                f"{COREUTILS}/cat {shlex.quote(prefix + '/cgroup')}"
+            ).strip(),
+            "namespaces": {
+                namespace: runtime.succeed(
+                    f"{COREUTILS}/readlink "
+                    f"{shlex.quote(prefix + '/ns/' + namespace)}"
+                ).strip()
+                for namespace in ["mnt", "net", "pid", "user"]
+            },
+            "ownership-token-digest": hashlib.sha256(
+                ownership.encode()
+            ).hexdigest(),
+        }
+    return {
+        "kind": "foreground-process",
+        "receipt": {
+            "path": path,
+            "digest": hashlib.sha256(canonical(receipt)).hexdigest(),
+            "document": receipt,
+        },
+        "process": process,
     }
 
 
