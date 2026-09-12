@@ -691,6 +691,26 @@ in {
   systemd = mkPackage "ability-reference-systemd" systemdArtifact (common
     // {
       exports = {
+        foreground-process = {
+          artifact = systemdRuntime;
+          export = terminalExport {
+            name = foregroundProcess.name;
+            group = "foreground-process";
+            handler = "native-foreground-process-v1";
+            guarantees = [foregroundProcessSupervisionGuarantee];
+            methods = {
+              observe = method foregroundProcess.name {kind = "observe-readiness";} "observe";
+              start = method foregroundProcess.name {
+                kind = "service-lifecycle";
+                action = "start";
+              } "start";
+              stop = method foregroundProcess.name {
+                kind = "service-lifecycle";
+                action = "stop";
+              } "stop";
+            };
+          };
+        };
         systemd-service = {
           artifact = systemdArtifact;
           export = lib.abilities.define {
@@ -745,6 +765,22 @@ in {
               } "stop";
             };
           };
+        };
+      };
+      handlers.native-foreground-process-v1 = {
+        artifact = systemdRuntime;
+        entryPoint = "libexec/aos-foreground-process-handler-v1";
+        arguments = schemas.boolean;
+        result = schemas.record {
+          fields = {
+            process_identity = schemas.optional (schemas.string {
+              maxLength = 1024;
+              syntax = null;
+            });
+            running = schemas.boolean;
+            schema = schemas.enum ["aos.ability.foreground-process-observation/v1"];
+          };
+          optional = [];
         };
       };
       handlers.systemd-terminal = {

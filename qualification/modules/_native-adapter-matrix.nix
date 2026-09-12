@@ -7,6 +7,7 @@
   invalidatedBy ? ["subject" "policy" "executor" "environment"],
   regressions ? [
     "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
     "checks.fleet.ability-native-postgresql"
@@ -20,12 +21,13 @@
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   allowedRegressions = [
     "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
-  expectedSurfaceDigest = "e6a2431b0f00a40b9e10376271c8bd0d9d0a9845b8a929140aeca1fefc20d4a2";
+  expectedSurfaceDigest = "ab49c07a42c33d0a4c64532031497ea1f9a07b41bcbe22164a4106cdeb614ae7";
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0
@@ -40,8 +42,8 @@
     schema = "aos.qualification.native-adapter-subject/v1";
     matrix_schema = "aos.qualification.native-adapter-matrix/v1";
     surface_digest = "sha256:${surfaceDigest}";
-    adapter_count = 12;
-    method_count = 47;
+    adapter_count = 13;
+    method_count = 50;
     scenario_count = 28;
     interfaces = builtins.sort (left: right: builtins.lessThan left.name right.name) (
       map (adapter: {
@@ -152,6 +154,7 @@
     && digest adapter.interface_descriptor
     && builtins.elem adapter.scope [
       "bootstrap-manager"
+      "application-container-process"
       "host-filesystem"
       "host-manager"
       "host-machine"
@@ -196,12 +199,12 @@
     && surface.subject_schema == "aos.qualification.native-adapter-subject/v1"
     && surface.limits
     == {
-      max_adapters = 12;
-      max_methods = 47;
+      max_adapters = 13;
+      max_methods = 50;
       max_scenarios = 28;
     }
-    && builtins.length surface.adapters == 12
-    && builtins.length adapterMethods == 47
+    && builtins.length surface.adapters == 13
+    && builtins.length adapterMethods == 50
     && builtins.length surface.scenarios == 28
     && unique (map (adapter: adapter.adapter) surface.adapters)
     && unique (map (adapter: "${adapter.interface_name}/abi-${toString adapter.interface_abi}/${adapter.interface_descriptor}") surface.adapters)

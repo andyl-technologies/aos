@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {"environment":{"schema":"aos.ability.environment/v1","...":"..."},"schema":"aos.ability.activation-desired/v1","seed":{"schema":"aos.ability.desired-state/v1","...":"..."}}
-//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v3"},"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v3","transition_authority":null}
+//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v4"},"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v3","transition_authority":null}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1117,6 +1117,7 @@ fn validate_mapping_outputs(
             );
         }
         NativeResourceQualification::AbImageRollout { .. }
+        | NativeResourceQualification::ForegroundProcess { .. }
         | NativeResourceQualification::CredentialDelivery { .. }
         | NativeResourceQualification::NetworkEndpoint { .. }
         | NativeResourceQualification::HostStorage { .. }
@@ -1445,6 +1446,7 @@ fn resolved_native_execution_inputs<'a>(
             Some(mapped_reference(resource_reference, desired_state)?),
         )),
         NativeResourceQualification::AbImageRollout { .. }
+        | NativeResourceQualification::ForegroundProcess { .. }
         | NativeResourceQualification::CredentialDelivery { .. }
         | NativeResourceQualification::NetworkEndpoint { .. }
         | NativeResourceQualification::HostStorage { .. }
@@ -1487,6 +1489,18 @@ fn physical_claim(qualification: &NativeResourceQualification) -> (&'static str,
         NativeResourceQualification::AbImageRollout { .. } => {
             ("ab-image-rollout", "machine".to_string(), false)
         }
+        NativeResourceQualification::ForegroundProcess {
+            artifact,
+            entry_point,
+            arguments,
+        } => (
+            "foreground-process",
+            Sha256Digest::of_bytes(
+                format!("{}:{entry_point}:{arguments:?}", artifact.content).as_bytes(),
+            )
+            .to_string(),
+            false,
+        ),
         NativeResourceQualification::ManagedConfiguration { destination, .. } => {
             ("managed-configuration", destination.clone(), true)
         }
@@ -1626,6 +1640,7 @@ fn is_native_interface(interface: &str) -> bool {
             | aos_ability_model::builtin::HOST_NETWORK_POLICY_INTERFACE_NAME
             | aos_ability_model::builtin::POSTGRESQL_EFFECTS_INTERFACE_NAME
             | aos_ability_model::builtin::AB_IMAGE_ROLLOUT_INTERFACE_NAME
+            | aos_ability_model::builtin::FOREGROUND_PROCESS_INTERFACE_NAME
             | "aos.nginx-validation"
     )
 }
@@ -1639,6 +1654,9 @@ fn qualification_supports_interface(
         (
             NativeResourceQualification::AbImageRollout { .. },
             aos_ability_model::builtin::AB_IMAGE_ROLLOUT_INTERFACE_NAME
+        ) | (
+            NativeResourceQualification::ForegroundProcess { .. },
+            aos_ability_model::builtin::FOREGROUND_PROCESS_INTERFACE_NAME
         ) | (
             NativeResourceQualification::ManagedConfiguration { .. },
             "aos.managed-configuration-effects"
@@ -1686,6 +1704,7 @@ fn mapped_resource_reference<'a>(
             resource_reference, ..
         } => resource_reference,
         NativeResourceQualification::AbImageRollout { .. }
+        | NativeResourceQualification::ForegroundProcess { .. }
         | NativeResourceQualification::NginxValidation { .. }
         | NativeResourceQualification::CredentialDelivery { .. }
         | NativeResourceQualification::NetworkEndpoint { .. }

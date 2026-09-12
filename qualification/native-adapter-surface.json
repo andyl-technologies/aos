@@ -28,6 +28,33 @@
       "scope": "host-resource"
     },
     {
+      "adapter": "foreground-process",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:6f692d35d41280a0b0f88a370e9d02584f5d4a870555953255e8cc9ceacba882",
+      "interface_name": "aos.foreground-process",
+      "methods": [
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "start",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "stop",
+          "reconcile": "observe"
+        }
+      ],
+      "scope": "application-container-process"
+    },
+    {
       "adapter": "host-network-policy",
       "interface_abi": 1,
       "interface_descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
@@ -392,8 +419,8 @@
     }
   ],
   "limits": {
-    "max_adapters": 12,
-    "max_methods": 47,
+    "max_adapters": 13,
+    "max_methods": 50,
     "max_scenarios": 28
   },
   "matrix_schema": "aos.qualification.native-adapter-matrix/v1",

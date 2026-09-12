@@ -360,7 +360,7 @@ pub(crate) fn preflight_retained_manifest(
     .context("checking current authority for retained native bindings")
     .map_err(RetainedNativePreflightError::CurrentAuthority)?;
 
-    let systemd = systemd_connection()
+    let systemd = systemd_connection_for_activation(&activation)
         .context("opening the live host provider capability")
         .map_err(RetainedNativePreflightError::Provider)?;
     NativeDispatcher::new(&activation, &packages, systemd)
@@ -624,7 +624,7 @@ fn reconcile_native_drift(
     source
         .reauthorize(operator_authority)
         .context("reauthorizing operator policy before drift classification")?;
-    let systemd = systemd_connection()?;
+    let systemd = systemd_connection_for_activation(&source)?;
     let mut dispatcher = NativeDispatcher::new(&source, packages, systemd)
         .context("constructing the native drift classifier")?;
     let observation_session = NativeObservationSession::open(
@@ -859,7 +859,7 @@ fn execute_native_transition(
 ) -> Result<TerminalResult> {
     let cancellation = super::native_cancellation::NativeCancellationGuard::install()
         .context("installing native activation cancellation listeners")?;
-    let systemd = systemd_connection()?;
+    let systemd = systemd_connection_for_activation(&activation)?;
     let mut dispatcher = NativeDispatcher::new(&activation, &packages, systemd)
         .context("constructing native dispatcher")?;
     let mut session = NativeAbilitySession::open_with_switch_lock(
@@ -1083,6 +1083,22 @@ fn systemd_connection() -> Result<Arc<aos_systemd::SystemdManagerConnection>> {
     .context("timing out while connecting to systemd")?
     .context("connecting to the host systemd manager")?;
     Ok(Arc::new(connection))
+}
+
+fn systemd_connection_for_activation(
+    activation: &SpecializedAbilityActivation,
+) -> Result<Option<Arc<aos_systemd::SystemdManagerConnection>>> {
+    let stage = activation
+        .plan()
+        .binding_plan()
+        .environment()
+        .environment
+        .stage;
+    if stage == aos_ability_model::ExecutionStage::ApplicationContainer {
+        Ok(None)
+    } else {
+        systemd_connection().map(Some)
+    }
 }
 
 fn new_transaction_id() -> Result<TransactionId> {
