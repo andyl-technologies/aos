@@ -79,6 +79,8 @@
             inherit buildTools constructionPerl;
             package = finish (call (directory + "/cross-glibc.nix") ({perl = constructionPerl;} // libcBuildOverrides));
             runtimePerl = exports.perl;
+            runtimeShell = "${exports.bash}/bin/bash";
+            constructionShell = "${privateTools.bash}/bin/bash";
           }
         else finish privateTools.crossGlibc;
       binutils = finish (call binutilsSource {

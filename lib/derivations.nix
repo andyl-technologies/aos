@@ -47,6 +47,14 @@
     ;
   hardening = import ./hardening.nix;
 
+  unique = values:
+    builtins.foldl' (
+      accumulated: value:
+        if builtins.elem value accumulated
+        then accumulated
+        else accumulated ++ [value]
+    ) [] values;
+
   # Attach evaluation-only fixed-output identity without changing the
   # derivation's builder environment or store identity.
   annotateFixedOutput = drv: contract:
@@ -633,6 +641,8 @@
   #   buildDeps;       — build-time dependencies (nativeBuildInputs equivalent)
   #   runtimeDeps;     — runtime dependencies (buildInputs equivalent)
   #   propagatedDeps;  — propagated dependencies (propagatedBuildInputs equivalent)
+  #   dependencySearchDeps;      — dependencies searched by the host compiler
+  #   buildDependencySearchDeps; — dependencies searched by build compilers
   #   phases;          — ordered list of { name; script; } records
   #   meta;            — package metadata
   #   update;          — primitive maintenance metadata (evaluation only)
@@ -650,6 +660,8 @@
     buildDeps ? [],
     runtimeDeps ? [],
     propagatedDeps ? [],
+    dependencySearchDeps ? null,
+    buildDependencySearchDeps ? null,
     phases ? defaultPhases,
     meta ? {},
     storeDir ? "/nix/store",
@@ -722,6 +734,46 @@
     ...
   }: let
     useStructuredAttrs = outputChecks != null;
+    mergeAllowed = inherited: perOutput:
+      if inherited == null
+      then perOutput
+      else if perOutput == null
+      then inherited
+      else builtins.filter (value: builtins.elem value perOutput) inherited;
+    mergeOutputCheck = output: let
+      packageCheck = outputChecks.${output} or {};
+      mergedAllowedRequisites = mergeAllowed allowedRequisites (packageCheck.allowedRequisites or null);
+      mergedAllowedReferences = mergeAllowed allowedReferences (packageCheck.allowedReferences or null);
+    in
+      packageCheck
+      // {
+        disallowedRequisites = unique (
+          disallowedRequisites ++ (packageCheck.disallowedRequisites or [])
+        );
+        disallowedReferences = unique (
+          disallowedReferences ++ (packageCheck.disallowedReferences or [])
+        );
+      }
+      // (
+        if mergedAllowedRequisites == null
+        then {}
+        else {allowedRequisites = mergedAllowedRequisites;}
+      )
+      // (
+        if mergedAllowedReferences == null
+        then {}
+        else {allowedReferences = mergedAllowedReferences;}
+      );
+    effectiveOutputChecks =
+      if !useStructuredAttrs
+      then null
+      else
+        builtins.listToAttrs (
+          builtins.map (output: {
+            name = output;
+            value = mergeOutputCheck output;
+          }) (unique (outputs ++ builtins.attrNames outputChecks))
+        );
     # Accept either `name` (direct) or `pname` (computed as pname-version).
     name =
       args.name
@@ -741,6 +793,14 @@
     directDeps = buildDeps ++ runtimeDeps ++ propagatedDeps;
     allBuildDeps = collectPropagated directDeps directDeps;
     nativeBuildClosure = collectPropagated buildDeps buildDeps;
+    dependencySearchClosure =
+      if dependencySearchDeps == null
+      then allBuildDeps
+      else collectPropagated dependencySearchDeps dependencySearchDeps;
+    buildDependencySearchClosure =
+      if buildDependencySearchDeps == null
+      then nativeBuildClosure
+      else collectPropagated buildDependencySearchDeps buildDependencySearchDeps;
 
     # Prepend patch phase if patches are provided
     patchPhase = {
@@ -812,6 +872,8 @@
       "buildDeps"
       "runtimeDeps"
       "propagatedDeps"
+      "dependencySearchDeps"
+      "buildDependencySearchDeps"
       "phases"
       "meta"
       "storeDir"
@@ -984,11 +1046,12 @@
               mesonFlags
               ;
 
-            # Dependency search paths — include buildDeps so build-time
-            # libraries (e.g. elfutils for the kernel's objtool) are found.
-            C_INCLUDE_PATH = makeIncPath allBuildDeps;
-            CPLUS_INCLUDE_PATH = makeIncPath allBuildDeps;
-            LIBRARY_PATH = makeLibPath allBuildDeps;
+            # The primary search paths belong to the compiler producing host
+            # outputs. Cross stdenvs provide separate build-machine paths for
+            # native generators compiled through CC_FOR_BUILD.
+            C_INCLUDE_PATH = makeIncPath dependencySearchClosure;
+            CPLUS_INCLUDE_PATH = makeIncPath dependencySearchClosure;
+            LIBRARY_PATH = makeLibPath dependencySearchClosure;
 
             # Inject -Wl,-rpath for runtime dep lib dirs so binaries can find
             # shared libraries at runtime without LD_LIBRARY_PATH.
@@ -998,7 +1061,7 @@
               collectPropagated (runtimeDeps ++ propagatedDeps) (runtimeDeps ++ propagatedDeps)
             );
             PKG_CONFIG_PATH = builtins.concatStringsSep ":" (
-              builtins.map (d: "${builtins.toString d}/lib/pkgconfig") allBuildDeps
+              builtins.map (d: "${builtins.toString d}/lib/pkgconfig") dependencySearchClosure
             );
 
             # Store the dependencies for runtime reference
@@ -1015,6 +1078,20 @@
             # wrapper falls back to its baked-in default policy.
             AOS_HARDENING_ENABLE = hardeningEnableStr;
           }
+          # Native derivations keep their historical environment. Cross
+          # stdenvs opt into the additional build-machine search variables.
+          // (
+            if buildDependencySearchDeps != null
+            then {
+              AOS_BUILD_C_INCLUDE_PATH = makeIncPath buildDependencySearchClosure;
+              AOS_BUILD_CPLUS_INCLUDE_PATH = makeIncPath buildDependencySearchClosure;
+              AOS_BUILD_LIBRARY_PATH = makeLibPath buildDependencySearchClosure;
+              PKG_CONFIG_PATH_FOR_BUILD = builtins.concatStringsSep ":" (
+                builtins.map (d: "${builtins.toString d}/lib/pkgconfig") buildDependencySearchClosure
+              );
+            }
+            else {}
+          )
           # Reference-control blacklists. Empty list = no constraint, so
           # unconditional inclusion is safe. Under __structuredAttrs the
           # top-level disallowed* attrs are inert and trigger a Nix
@@ -1043,7 +1120,7 @@
             if useStructuredAttrs
             then {
               __structuredAttrs = true;
-              inherit outputChecks;
+              outputChecks = effectiveOutputChecks;
             }
             else {}
           )

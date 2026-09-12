@@ -47,7 +47,33 @@
       }
     ];
   };
+  referencePolicyProbe = pkgs.mkDerivation {
+    pname = "aos-structured-attrs-reference-policy-probe";
+    version = "0";
+    src = null;
+    outputs = ["out" "dev"];
+    disallowedReferences = [firstRuntimeInput];
+    outputChecks = {
+      out.disallowedReferences = [secondRuntimeInput];
+      dev.allowedReferences = [];
+    };
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out" "$dev"
+          echo policy > "$out/value"
+          echo development > "$dev/value"
+        '';
+      }
+    ];
+  };
+  mergedChecks = referencePolicyProbe.drvAttrs.outputChecks;
 in
+  assert builtins.elem firstRuntimeInput mergedChecks.out.disallowedReferences;
+  assert builtins.elem secondRuntimeInput mergedChecks.out.disallowedReferences;
+  assert builtins.elem firstRuntimeInput mergedChecks.dev.disallowedReferences;
+  assert mergedChecks.dev.allowedReferences == [];
   pkgs.mkDerivation {
     pname = "aos-structured-attrs-export-check";
     version = "0";
@@ -57,7 +83,7 @@ in
     outputChecks = {};
     dontStrip = true;
     dontNukeRefs = true;
-    buildDeps = [scrubProbe];
+    buildDeps = [scrubProbe referencePolicyProbe];
 
     phases = [
       {

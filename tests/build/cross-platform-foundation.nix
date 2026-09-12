@@ -104,11 +104,28 @@
     dontNukeRefs = true;
   };
 
-  dependencyRoleProbe = pkgs.lib.mkDerivation {
+  nativeBuildRuntime = pkgs.lib.mkDerivation {
+    pname = "native-build-runtime-probe";
+    version = "0";
+    buildDeps = [pkgs.coreutils];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/include"
+          printf '#define NATIVE_BUILD_PROBE 1\n' > "$out/include/native-build-probe.h"
+        '';
+      }
+    ];
+    dontStrip = true;
+    dontPatchELF = true;
+    dontNukeRefs = true;
+  };
+
+  dependencyRoleProbe = x86.pkgs.mkDerivation {
     pname = "darwin-dependency-role-probe";
     version = "0";
-    hostPlatform = x86Darwin;
-    buildDeps = [pkgs.coreutils];
+    buildDeps = [pkgs.coreutils nativeBuildRuntime];
     runtimeDeps = [targetRuntime];
     phases = [
       {
@@ -120,7 +137,7 @@
               exit 1
               ;;
           esac
-          case ":$LD_LIBRARY_PATH:" in
+          case ":''${LD_LIBRARY_PATH:-}:" in
             *":${targetRuntime}/lib:"*)
               echo "Darwin runtime dependency leaked into Linux loader path" >&2
               exit 1
@@ -133,6 +150,28 @@
               exit 1
               ;;
           esac
+          case ":$C_INCLUDE_PATH:" in
+            *":${nativeBuildRuntime}/include:"*)
+              echo "native build headers leaked into Darwin target include path" >&2
+              exit 1
+              ;;
+          esac
+          case ":$AOS_BUILD_C_INCLUDE_PATH:" in
+            *":${nativeBuildRuntime}/include:"*) ;;
+            *)
+              echo "native build headers missing from build compiler include path" >&2
+              exit 1
+              ;;
+          esac
+          case ":$AOS_BUILD_C_INCLUDE_PATH:" in
+            *":${targetRuntime}/include:"*)
+              echo "Darwin target headers leaked into native build include path" >&2
+              exit 1
+              ;;
+          esac
+
+          printf '#include <probe.h>\n' | "$CC" -E -x c - >/dev/null
+          printf '#include <native-build-probe.h>\n' | "$CC_FOR_BUILD" -E -x c - >/dev/null
 
           mkdir -p "$out"
           printf 'PASS\n' > "$out/result"

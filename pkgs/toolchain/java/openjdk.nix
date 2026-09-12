@@ -27,6 +27,14 @@
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
+  buildTarget =
+    if isDarwinCross || isLinuxArmCross
+    then "images"
+    else "bootcycle-images";
+  jdkImage =
+    if isDarwinCross || isLinuxArmCross
+    then "build/*/images/jdk"
+    else "build/*/bootcycle-build/images/jdk";
   buildTools =
     if isDarwinCross
     then buildPackages
@@ -460,7 +468,7 @@ in
             sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
           done
 
-          make images JOBS=$NIX_BUILD_CORES
+          make ${buildTarget} JOBS=$NIX_BUILD_CORES
         '';
       }
       {
@@ -469,7 +477,7 @@ in
           if isDarwinCross
           then ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
             test -x "$out/bin/java"
             test -x "$out/bin/javac"
             test -f "$out/lib/server/libjvm.dylib"
@@ -478,7 +486,7 @@ in
           ''
           else ''
             mkdir -p $out
-            cp -a build/*/images/jdk/* $out/
+            cp -a ${jdkImage}/* $out/
 
             # Patch ELF binaries with the correct dynamic linker and rpath
             INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")

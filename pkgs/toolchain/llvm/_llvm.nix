@@ -317,8 +317,9 @@ in
                 REAL_CC=$(cat "$BT/nix-support/orig-cc")
                 REAL_LIBC=$(cat "$BT/nix-support/orig-libc")
                 REAL_LIBC_DEV=$(cat "$BT/nix-support/orig-libc-dev")
-                GCC_DIR=$(echo "$REAL_CC"/lib/gcc/x86_64-unknown-linux-gnu/*)
-                mkdir -p build/clang-cfg
+                GCC_DIR=$(echo "$REAL_CC"/lib/gcc/${stdenv.hostPlatform.config}/*)
+                CLANG_CONFIG_DIR="$out/etc/clang"
+                mkdir -p "$CLANG_CONFIG_DIR"
                 ${
                   if needsGccIteratorCompat
                   then ''
@@ -339,7 +340,7 @@ in
                   ''
                   else ""
                 }
-                DL=$(echo "$REAL_LIBC"/lib/ld-linux-x86-64.so.*)
+                DL=$(cat "$BT/nix-support/dynamic-linker")
                 {
                   ${
                   if needsGccIteratorCompat
@@ -355,14 +356,17 @@ in
                   echo "-idirafter"
                   echo "$REAL_LIBC_DEV/include"
                   echo "-B$REAL_LIBC/lib"
+                  echo "-B$REAL_CC/bin"
                   echo "-B$GCC_DIR"
                   echo "-L$REAL_LIBC/lib"
                   echo "-L$REAL_CC/lib"
                   echo "-L$REAL_CC/lib64"
+                  echo "-L$out/lib/${stdenv.hostPlatform.config}"
                   echo "-Wl,-dynamic-linker=$DL"
                   echo "-Wl,-rpath,$REAL_LIBC/lib"
                   echo "-Wl,-rpath,$REAL_CC/lib"
-                } > build/clang-cfg/x86_64-unknown-linux-gnu.cfg
+                  echo "-Wl,-rpath,$out/lib/${stdenv.hostPlatform.config}"
+                } > "$CLANG_CONFIG_DIR/${stdenv.hostPlatform.config}.cfg"
               ''
               else ""
             }
@@ -413,7 +417,7 @@ in
               if enabledRuntimes != [] && !stdenv.isCross
               then ''
                 -DDEFAULT_SYSROOT=/ \
-                -DCLANG_CONFIG_FILE_SYSTEM_DIR=$PWD/build/clang-cfg \
+                -DCLANG_CONFIG_FILE_SYSTEM_DIR=$out/etc/clang \
               ''
               else ""
             } \
@@ -444,14 +448,17 @@ in
 
           ''
           + (
-            if stdenv.isCross && stdenv.hostPlatform.isLinux
+            if enabledRuntimes != [] && stdenv.hostPlatform.isLinux
             then ''
               # libc++ depends on its sibling libc++abi, but the C toolchain's
               # injected RUNPATH only names external dependencies. Each runtime
               # must resolve siblings itself: a consumer's RUNPATH is not inherited
               # when the dynamic loader follows indirect DT_NEEDED entries.
               runtime_dir="$out/lib/${stdenv.hostPlatform.config}"
-              for runtime_library in "$runtime_dir"/*.so.*; do
+              for runtime_library in \
+                "$runtime_dir"/libc++.so.* \
+                "$runtime_dir"/libc++abi.so.* \
+                "$runtime_dir"/libunwind.so.*; do
                 if [ ! -f "$runtime_library" ] || [ -L "$runtime_library" ]; then
                   continue
                 fi
@@ -500,6 +507,33 @@ in
                [ ! -f "$out/include/llvm/Passes/PassPlugin.h" ]; then
               ln -s ../Plugins/PassPlugin.h "$out/include/llvm/Passes/PassPlugin.h"
             fi
+
+            ${
+              if enabledRuntimes != [] && !stdenv.isCross
+              then ''
+                grep -Fq "$out/etc/clang" "$out/include/clang/Config/config.h"
+                if grep -Fq '/build/' "$out/include/clang/Config/config.h"; then
+                  echo "installed Clang configuration contains a build-directory path" >&2
+                  exit 1
+                fi
+
+                runtime_dir="$out/lib/${stdenv.hostPlatform.config}"
+                "${bootstrapTools}/bin/readelf" -d "$runtime_dir/libc++.so.1.0" \
+                  | grep -F "$runtime_dir" >/dev/null
+
+                printf 'int main(void) { return 0; }\n' > "$TMPDIR/clang-output-probe.c"
+                PATH="$out/bin" "$out/bin/clang" \
+                  "$TMPDIR/clang-output-probe.c" -o "$TMPDIR/clang-output-probe"
+                "$TMPDIR/clang-output-probe"
+
+                printf '#include <string>\nint main() { return std::string("aos") == "aos" ? 0 : 1; }\n' \
+                  > "$TMPDIR/clang-libcxx-probe.cc"
+                PATH="$out/bin" "$out/bin/clang++" -stdlib=libc++ \
+                  "$TMPDIR/clang-libcxx-probe.cc" -o "$TMPDIR/clang-libcxx-probe"
+                "$TMPDIR/clang-libcxx-probe"
+              ''
+              else ""
+            }
           '';
       }
     ];
