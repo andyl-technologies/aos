@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use crate::cli_campaign_store::{
     MAX_STORE_VERIFY_LOGICAL_BYTES, MAX_STORE_VERIFY_PLACEMENTS,
-    load_campaign_repository_store_observational, load_campaign_store_graph,
+    load_campaign_repository_store_observational, load_campaign_store_graph_observational,
     verify_campaign_store_inventory,
 };
 
@@ -58,6 +58,9 @@ pub(super) fn run_store_invocation(cli: &Cli, args: &StoreArgs) -> Result<(), Cl
         StoreCommand::Status(status) => run_store_status(status, cli.output_format())?,
         StoreCommand::Ensure(ensure) => run_store_ensure(ensure, cli.output_format())?,
         StoreCommand::Verify(verify) => run_store_verify(verify, cli.output_format())?,
+        StoreCommand::Repair(repair) => {
+            crate::cli_store_repair::run_store_repair(repair, cli.output_format())?
+        }
         StoreCommand::Gc(gc) => run_campaign_store_gc(gc, cli.output_format())?,
         StoreCommand::Repack(repack) => {
             crate::cli_store_repack::run_store_repack(repack, cli.output_format())?
@@ -150,7 +153,7 @@ struct CampaignStoreGcRequiredCopyReport {
 }
 
 fn run_store_status(args: &StoreStatusArgs, format: OutputFormat) -> Result<String, CliError> {
-    let graph = load_campaign_store_graph(&args.deployment)?;
+    let graph = load_campaign_store_graph_observational(&args.deployment)?;
     let report = store_status_report(&graph);
     render_store_status(&report, format)
 }
@@ -158,7 +161,7 @@ fn run_store_status(args: &StoreStatusArgs, format: OutputFormat) -> Result<Stri
 fn run_store_ensure(args: &StoreEnsureArgs, format: OutputFormat) -> Result<String, CliError> {
     let content = ContentId::parse(&args.content)
         .map_err(|error| usage_error(format!("invalid content ID: {error}")))?;
-    let graph = load_campaign_store_graph(&args.deployment)?;
+    let graph = load_campaign_store_graph_observational(&args.deployment)?;
     let handle = graph
         .read(content, None)
         .map_err(|error| maintenance_error(format!("store ensure read failed: {error}")))?;
@@ -841,7 +844,10 @@ mod tests {
     use std::fs::{self, Permissions};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    use crucible_cas::content_store::{BlobHandle, DirectoryRefBackend, ObjectKind, RefStoreAdmin};
+    use crucible_cas::content_store::{
+        BlobHandle, BlobStoreAdmin, DirectoryBlobBackend, DirectoryRefBackend, ObjectKind,
+        RefStoreAdmin,
+    };
     use tempfile::TempDir;
 
     use super::*;
@@ -849,13 +855,11 @@ mod tests {
     #[test]
     fn store_status_ensure_and_verify_authenticate_one_graph_and_inventory() {
         let fixture = GcFixture::new();
-        let graph = load_campaign_store_graph(&fixture.store).expect("load inspection graph");
         let bytes = b"authenticated store ensure fixture";
         let content = ContentId::for_bytes(ObjectKind::Scenario, 1, bytes);
-        graph
+        DirectoryBlobBackend::new("primary", &fixture.objects)
             .put_if_absent(content, &BlobHandle::from_bytes(bytes.to_vec()))
             .expect("publish ensure fixture");
-        drop(graph);
 
         let status = run_store_status(
             &StoreStatusArgs {
@@ -1101,6 +1105,9 @@ mod tests {
         assert!(store.find_subcommand("status").is_some());
         assert!(store.find_subcommand("ensure").is_some());
         assert!(store.find_subcommand("verify").is_some());
+        let repair = store
+            .find_subcommand("repair")
+            .expect("store repair command");
         let repack = store
             .find_subcommand("repack")
             .expect("store repack command");
@@ -1116,6 +1123,24 @@ mod tests {
             .filter(|id| *id != "help")
             .collect::<BTreeSet<_>>();
         assert_eq!(repack_ids, BTreeSet::from(["store", "node", "plan"]));
+        let repair_ids = repair
+            .get_arguments()
+            .filter(|argument| !argument.is_global_set())
+            .map(|argument| argument.get_id().as_str())
+            .filter(|id| *id != "help")
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            repair_ids,
+            BTreeSet::from([
+                "content",
+                "deployment",
+                "source",
+                "target",
+                "maximum_bytes",
+                "state",
+                "policy",
+            ])
+        );
     }
 
     struct GcFixture {
@@ -1221,6 +1246,14 @@ root = {objects:?}
                 DirectoryAssignmentLedger::open(self.state.join("executor-ledger"))
                     .expect("initialize fixture ledger"),
             );
+            let primary = DirectoryBlobBackend::new("primary", &self.objects);
+            let mut inventory = primary
+                .acquire_inventory_fence()
+                .expect("initialize fixture physical inventory fence");
+            inventory
+                .visit_inventory(&mut |_| Ok(()))
+                .expect("initialize fixture physical inventory state");
+            drop(inventory);
             verify_campaign_store_inventory(&self.store)
                 .expect("initialize fixture physical inventory state");
             let refs = DirectoryRefBackend::new(self.root.join("refs"));

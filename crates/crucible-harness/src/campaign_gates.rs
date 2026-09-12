@@ -280,7 +280,12 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-destructive-recovery-contract.toml",
         "checks.crucible.phase9.gates.campaignDestructiveRecoveryContract",
     ),
-    unsupported("gate:campaign-dogfood", "crucible-cli"),
+    manual(
+        "gate:campaign-dogfood",
+        "crucible-cli",
+        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-flight-contract.toml",
+        "checks.crucible.phase9.gates.campaignOperatorFlightContract",
+    ),
     automated(
         "gate:campaign-model",
         "crucible-campaign",
@@ -299,7 +304,12 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         )],
         "checks.crucible.phase4.gates.campaignMutationScaling",
     ),
-    unsupported("gate:campaign-operator-acceptance", "crucible-cli"),
+    manual(
+        "gate:campaign-operator-acceptance",
+        "crucible-cli",
+        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-flight-contract.toml",
+        "checks.crucible.phase9.gates.campaignOperatorFlightContract",
+    ),
     component_automated(
         "gate:campaign-replay",
         "crucible-campaign",
