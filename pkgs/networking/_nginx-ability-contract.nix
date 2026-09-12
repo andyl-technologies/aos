@@ -40,6 +40,10 @@
     interface
     "aos.network-endpoint-effects"
     "sha256:6b4d345ab4350917a04b770f0ac4b82888ffe6ef7e647caa9fe94ccb9f9dac6a";
+  storageEffects =
+    interface
+    "aos.host-storage-effects"
+    "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
   networkPolicyEffects =
     interface
     "aos.host-network-policy-effects"
@@ -138,6 +142,11 @@
     syntax = "local-key-v1";
   };
 
+  resourcePath = schemas.string {
+    maxLength = 4096;
+    syntax = null;
+  };
+
   endpoint = schemas.record {
     fields = {
       address = schemas.string {
@@ -161,6 +170,16 @@
         maximum = 65535;
       };
       transport = schemas.enum ["tcp"];
+    };
+    optional = [];
+  };
+
+  storageRequest = schemas.record {
+    fields = {
+      cluster = localKeyString;
+      lifetime = schemas.enum ["instance" "persistent"];
+      owner = schemas.enum ["postgresql-slot" "root"];
+      purpose = localKeyString;
     };
     optional = [];
   };
@@ -196,6 +215,15 @@
     {
       endpoint = schemas.optional endpoint;
       owned = schemas.boolean;
+    };
+
+  storageObservation =
+    revisionedObservation
+    (schemas.enum ["aos.ability.host-storage-observation/v1"])
+    {
+      attached = schemas.boolean;
+      exists = schemas.boolean;
+      path = resourcePath;
     };
 
   networkPolicyObservation =
@@ -314,6 +342,20 @@
     };
   };
 
+  storageEffectMethod = operationFamily: name: outputs: {
+    targetResource = storageEffects.name;
+    inherit operationFamily outputs;
+    parameters = storageRequest;
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = storageObservation;
+      observationEvidence = storageObservation;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+
   networkPolicyEffectMethod = operationFamily: name: parameters: outputs: guarantees: {
     targetResource = networkPolicyEffects.name;
     inherit operationFamily parameters outputs guarantees;
@@ -411,6 +453,7 @@ in {
               networkPolicyEffects
               ["apply" "observe" "remove"]
               [loopbackEgressGuarantee loopbackIngressGuarantee];
+            storage = methodRequirement storageEffects ["ensure" "observe" "release"];
             service = required systemdService;
             service-terminal =
               requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
@@ -511,6 +554,37 @@ in {
           };
         }
         // hostResourceRuntimeAttrs;
+
+      storage =
+        {
+          export = terminalExport {
+            name = storageEffects.name;
+            group = "storage";
+            handler = "native-host-storage-v1";
+            requestSchema = storageRequest;
+            methods = {
+              ensure =
+                storageEffectMethod {
+                  kind = "host-storage";
+                  action = "ensure";
+                } "ensure" {
+                  path = runtimeMethodOutput resourcePath;
+                };
+              observe =
+                storageEffectMethod {
+                  kind = "host-storage";
+                  action = "observe";
+                } "observe" {
+                  path = runtimeMethodOutput resourcePath;
+                };
+              release = storageEffectMethod {
+                kind = "host-storage";
+                action = "release";
+              } "release" {};
+            };
+          };
+        }
+        // hostResourceRuntimeAttrs;
     };
 
   handlers =
@@ -536,6 +610,13 @@ in {
           entryPoint = "libexec/aos-host-network-policy-handler-v1";
           arguments = networkPolicyRequest false;
           result = networkPolicyObservation;
+        }
+        // hostResourceRuntimeAttrs;
+      native-host-storage-v1 =
+        {
+          entryPoint = "libexec/aos-host-storage-handler-v1";
+          arguments = storageRequest;
+          result = storageObservation;
         }
         // hostResourceRuntimeAttrs;
     };

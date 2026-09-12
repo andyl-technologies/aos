@@ -17,7 +17,8 @@ use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::builtin::{
     credential_delivery_effects_interface, host_network_policy_interface,
     host_network_policy_loopback_tcp_egress_guarantee,
-    host_network_policy_loopback_tcp_ingress_guarantee, network_endpoint_interface,
+    host_network_policy_loopback_tcp_ingress_guarantee, host_storage_interface,
+    network_endpoint_interface,
 };
 use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
@@ -543,6 +544,7 @@ impl ReferenceFixture {
                 "aos.nginx-validation",
                 "aos.network-endpoint-effects",
                 "aos.host-network-policy-effects",
+                "aos.host-storage-effects",
             ] {
                 providers.push(ProviderInventory {
                     provider: provider.clone(),
@@ -1625,6 +1627,7 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
     let mut documents = vec![
         network_endpoint_interface()?,
         host_network_policy_interface()?,
+        host_storage_interface()?,
         interface_document(
             "aos.http-backend",
             ValueSchema::Boolean,
