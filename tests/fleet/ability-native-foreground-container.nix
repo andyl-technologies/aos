@@ -21,6 +21,8 @@
   containerImage = containerSystem.config.system.build.defaultContainer;
   aosSystem = pkgs.stdenv.hostPlatform.system;
   dockerArchive = containerImage.platforms.${aosSystem}.dockerArchive;
+  ociPlatform =
+    "${containerImage.config.platform.os}/${containerImage.config.platform.architecture}";
   containerdPath = lib.concatStringsSep ":" [
     "${pkgs.containerd}/bin"
     "${pkgs.runc}/sbin"
@@ -64,7 +66,7 @@ in {
 
   machines.runtime = {
     system = runtimeSystem;
-    extraClosures = [dockerArchive pkgs.curl pkgs.nerdctl];
+    extraClosures = reference.extraClosures ++ [dockerArchive pkgs.curl pkgs.nerdctl];
     memoryMiB = 3072;
     varSizeMiB = 6144;
   };
@@ -76,7 +78,11 @@ in {
 
     runtime.wait_for_unit("aos-foreground-containerd.service", timeout=120)
     publish_reference_packages()
-    runtime.succeed("${nerdctl} load --input ${dockerArchive}/image.docker.tar", timeout=360)
+    # The containerd transfer API requires exactly one platform for unpacking.
+    runtime.succeed(
+        "${nerdctl} load --platform ${ociPlatform} --input ${dockerArchive}/image.docker.tar",
+        timeout=360,
+    )
     runtime.succeed(textwrap.dedent(r"""
       install -d -m 0755 /var/lib/aos-foreground-nginx
       cat > /var/lib/aos-foreground-nginx/nginx.conf <<'EOF'
