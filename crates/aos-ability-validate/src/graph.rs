@@ -14,7 +14,9 @@ use aos_contract::Sha256Digest;
 
 use crate::ValidationErrors;
 use crate::authority::{InvocationAuthorizationError, authorize_invocation};
-use crate::binding::{prepare_binding_candidates, validate_binding_document};
+use crate::binding::{
+    prepare_binding_candidates, validate_binding_document, validate_package_contract,
+};
 use crate::effect::validate_effect_document;
 use crate::error::push_diagnostic;
 use crate::schema::{SchemaPath, validate_schema_definition};
@@ -24,6 +26,20 @@ use crate::schema::{SchemaPath, validate_schema_definition};
 pub struct ValidationContext {
     supported_features: BTreeSet<RequiredFeature>,
     interfaces: Arc<BTreeMap<InterfaceKey, InterfaceDocument>>,
+}
+
+/// Retains one package document after semantic validation.
+#[derive(Clone, Debug)]
+pub struct CheckedPackageDocument {
+    document: PackageDocument,
+}
+
+impl CheckedPackageDocument {
+    /// Returns the exact canonical package document that was validated.
+    #[must_use]
+    pub const fn document(&self) -> &PackageDocument {
+        &self.document
+    }
 }
 
 impl ValidationContext {
@@ -144,6 +160,25 @@ impl ValidationContext {
     #[must_use]
     pub fn interface(&self, key: &InterfaceKey) -> Option<&InterfaceDocument> {
         self.interfaces.get(key)
+    }
+
+    /// Validates one package contract against its retained public interfaces.
+    ///
+    /// Interfaces named only by unresolved requirements may be absent because
+    /// publication cannot assume a future deployment's provider catalog.
+    /// Exported and implemented interfaces must be present and exact.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics when the package envelope, ordering,
+    /// feature negotiation, exports, implementations, handlers, ownership, or
+    /// locally resolvable requirement semantics are invalid.
+    pub fn validate_package_contract(
+        &self,
+        document: PackageDocument,
+    ) -> Result<CheckedPackageDocument, ValidationErrors> {
+        validate_package_contract(self, document)
+            .map(|document| CheckedPackageDocument { document })
     }
 
     pub(crate) fn interface_catalog(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {

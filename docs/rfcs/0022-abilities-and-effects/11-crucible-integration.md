@@ -40,7 +40,9 @@ single-host Crucible campaigns, is **open, draft, and not merged** at the
 revision reviewed for this section:
 `e6387cab973e5de6e1c55d57f59a588cd1424392`. The links below pin that revision so
 pending features cannot be mistaken for facilities in this RFC's master
-baseline. All AOS ability integration described here is itself proposed work.
+baseline. The baseline guest adapter and its release qualification are now
+implemented. Typed choices, structured measurements, durable campaigns, and
+hot-fork acceleration remain contingent on PR #194 and its own qualification.
 
 | Integration feature | Crucible dependency | Availability rule |
 | --- | --- | --- |
@@ -177,19 +179,19 @@ exact restore or thin replay is sufficient for the initial integration.
 
 ## First integration and acceptance
 
-Start with one real nginx update and independent response/state probes. Exercise
-one precisely defined interruption boundary, retain the partial outcome, and
-reproduce its recovery through a supported generic Crucible path. Add typed
-choice exploration and structured measurements only when their PR #194
-dependencies are available and qualified.
+The baseline integration exercises a real nginx update with independent
+response/state probes, records a defined interruption boundary, retains the
+partial outcome, and reproduces recovery through the supported generic
+Crucible path. Typed choice exploration and structured measurements are added
+only when their PR #194 dependencies are available and qualified.
 
-Acceptance must demonstrate that the normal executor works with integration
-disabled; enabled tests reject missing required declarations; assertions and
-probes detect a deliberately introduced violation; reached fault boundaries
-and selections are recorded; replay reconstructs the same opportunity and
-outcome; and the AOS inspector explains findings from retained records.
-Pending-request restart/restore and campaign pause/resume require their own
-dependent flights. Hot fork is not a prerequisite for this first integration.
+Baseline acceptance demonstrates that the normal executor works with
+integration disabled; enabled tests reject missing required declarations;
+assertions and probes detect a deliberately introduced violation; reached
+fault boundaries and selections are recorded; replay reconstructs the same
+opportunity and outcome; and the AOS inspector explains findings from retained
+records. Pending-request restart/restore and campaign pause/resume require
+their own dependent flights. Hot fork is not a prerequisite for the baseline.
 
 Use the existing release qualification and evidence rules. Crucible's generic
 assertion semantics and verdict evaluation remain Apache host-side; QEMU/plugin

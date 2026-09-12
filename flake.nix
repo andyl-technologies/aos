@@ -86,6 +86,7 @@
       oci = import ./lib/build/oci {
         inherit (coordinator) lib;
         inherit (coordinator.pkgs) mkDerivation coreutils findutils gzip jq tar;
+        abilityContractValidator = coordinator.pkgs.aos-ability-contract-validator;
       };
     in
       import ./lib/containers/multi-platform.nix {

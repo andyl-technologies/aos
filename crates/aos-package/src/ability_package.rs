@@ -44,7 +44,7 @@ use crate::types::{
     validate_attestation_provenance_ref,
 };
 
-mod catalog;
+pub(crate) mod catalog;
 pub(crate) mod retention;
 
 pub use catalog::VerifiedAbilityPlanningCatalog;

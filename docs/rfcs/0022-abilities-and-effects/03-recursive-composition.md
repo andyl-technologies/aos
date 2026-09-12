@@ -74,8 +74,10 @@ context. Other topologies need an explicit endpoint binding and corresponding
 rendering. Names above stand for exact instance-qualified identities, not
 unrestricted global attribute paths.
 
-The following is a proposed authoring shape, not executable against the current
-AOS library. Type values and rendering functions denote package-owned schema
+The following illustrates the authoring model implemented by `lib.abilities`.
+It intentionally abbreviates the concrete `requestSchema`, `outputs`,
+`methods`, lifecycle, and entry-point fields used by executable package
+definitions. Type values and rendering functions denote package-owned schema
 and pure rendering helpers. It shows the desired-state facet; credential
 binding and transition operations follow below.
 
@@ -338,13 +340,15 @@ validation; it is not converted into shell execution.
 
 The shape above abbreviates the method schemas and helper signatures; the
 detailed implementation and execution contracts fix their required semantics.
-A vertical prototype must demonstrate schema agreement
-between Nix and Rust, checked symbolic result references, multi-consumer
-aggregation, conditional lower requirements, bounded expansion, provenance
-through module merging, and provider-authored transition construction.
+The checked-in reference implementation demonstrates schema agreement between
+Nix and Rust, checked symbolic result references, multi-consumer aggregation,
+conditional lower requirements, bounded expansion, provenance through module
+merging, and provider-authored transition construction. The production nginx
+reference composes through separately authored configuration, credential,
+network, and systemd providers.
 
 In particular, arbitrary Nix functions cannot be statically proven to implement
 their declarations. Authenticated source, restricted evaluation, normalized
-output validation, and runtime enforcement remain necessary. The API is ready
-to stabilize only after one real nginx export composes through separately
-authored configuration and systemd providers without hidden special cases.
+output validation, and runtime enforcement remain necessary. Continued
+stabilization depends on maintaining those shared contracts and qualification
+gates rather than adding a special nginx path.

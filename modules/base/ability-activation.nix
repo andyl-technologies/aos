@@ -9,6 +9,7 @@
   oci = import ../../lib/build/oci {
     inherit lib;
     inherit (buildPkgs) mkDerivation coreutils findutils gzip jq tar;
+    abilityContractValidator = buildPkgs.aos-ability-contract-validator;
   };
   bootPlatform =
     if pkgs.stdenv.hostPlatform.system == "x86_64-linux"

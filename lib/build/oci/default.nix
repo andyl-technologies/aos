@@ -7,6 +7,7 @@
 ##! oci = import ./lib/build/oci {
 ##!   inherit lib;
 ##!   inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+##!   abilityContractValidator = pkgs.aos-ability-contract-validator;
 ##! };
 ##! ```
 ##!
@@ -21,6 +22,7 @@
   gzip,
   jq,
   tar,
+  abilityContractValidator,
 }: let
   common = import ./common.nix {inherit lib;};
   baseDependencies = {
@@ -53,7 +55,9 @@ in rec {
     inherit lib mkDerivation coreutils jq;
   };
   mkEvidenceLayout = import ./evidence-layout.nix baseDependencies;
-  mkStaticAbilityContract = import ./static-ability-contract.nix baseDependencies;
+  mkStaticAbilityContract = import ./static-ability-contract.nix (
+    baseDependencies // {inherit abilityContractValidator;}
+  );
 
   # Short aliases are useful to call sites while the long names preserve the
   # RFC vocabulary at the public boundary.

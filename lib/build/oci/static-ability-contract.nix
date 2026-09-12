@@ -13,6 +13,7 @@
   gzip,
   jq,
   tar,
+  abilityContractValidator,
   common,
 }: {
   platform ? null,
@@ -60,7 +61,8 @@
     if
       lib.all (entry:
         builtins.isAttrs entry
-        && (entry.manifest.passthru.abilityPackage or false))
+        && (entry.manifest.passthru.abilityPackage or false)
+        && (entry.manifest.passthru.abilitySemanticValidator or null) == abilityContractValidator)
       packages
       && lib.all (entry:
         builtins.toString entry.payload
@@ -120,14 +122,27 @@
   );
   executionStageArgument =
     if executionStage == null
-    then ""
+    then "-"
     else executionStage;
+  validationPlatformArguments =
+    if platformMode
+    then
+      lib.concatMapStringsSep " " lib.escapeShellArg [
+        checkedPlatform.os
+        checkedPlatform.architecture
+        (
+          if checkedPlatform.variant == null
+          then "-"
+          else checkedPlatform.variant
+        )
+      ]
+    else "";
 in
   builtins.deepSeq validated (mkDerivation {
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils jq];
+    buildDeps = [abilityContractValidator coreutils jq];
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
     outputChecks.out = {};
@@ -157,6 +172,8 @@ in
             for manifest_path in ${inputArguments}; do
               manifest="$manifest_path/package.json"
               test -f "$manifest"
+              ${abilityContractValidator}/bin/aos-ability-contract-validator \
+                package-source "$manifest" "$manifest_path/interfaces"
               expected_payload=$(jq -er \
                 --arg manifest "$manifest_path" '
                   [.packages[] | select(.manifest == $manifest) | .payload]
@@ -373,6 +390,12 @@ in
           fi
           truncate -s "$((size - 1))" "$out/contract.with-newline.json"
           mv "$out/contract.with-newline.json" "$out/contract.json"
+
+          ${abilityContractValidator}/bin/aos-ability-contract-validator \
+            static-contract "$out/contract.json" \
+            ${lib.escapeShellArg artifactClass} \
+            ${lib.escapeShellArg executionStageArgument} \
+            ${validationPlatformArguments}
 
           contract_size=$(stat -c %s "$out/contract.json")
           contract_hex=$(sha256sum "$out/contract.json" | cut -d ' ' -f 1)

@@ -428,6 +428,7 @@ let
   # under a Darwin platform key.
   buildOnly = [
     "ability-package-smoke"
+    "aos-ability-contract-validator"
     "aos-hub-dialect-tests"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"

@@ -917,6 +917,26 @@ pub(crate) async fn publish_canonical_ability_output(
     resolve_publish_platform(&companion.path, Some(platform))?;
     let manifest_bytes = read_package_manifest(&companion.path)?;
     let package_document = decode_package_manifest(&manifest_bytes)?;
+    let interface_bytes = package_document
+        .exports
+        .iter()
+        .map(|export| {
+            let path = Path::new(&companion.path)
+                .join("interfaces")
+                .join(format!("{}.json", export.interface.descriptor.hex()));
+            crate::ability_package::catalog::read_bounded_regular_file(
+                &path,
+                "ability interface document",
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    aos_ability_validate::validate_ability_contract(
+        aos_ability_validate::AbilityContractData::PackageSource {
+            manifest: &manifest_bytes,
+            retained_interfaces: &interface_bytes,
+        },
+    )
+    .context("validating ability companion with the shared semantic validator")?;
     if package_document.package.name.as_str() != package {
         bail!(
             "ability manifest package '{}' does not match release package '{package}'",

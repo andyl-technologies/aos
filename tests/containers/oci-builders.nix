@@ -11,6 +11,7 @@
   oci = import ../../lib/build/oci {
     inherit lib;
     inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    abilityContractValidator = pkgs.aos-ability-contract-validator;
   };
 
   base = pkgs.runCommand "oci-builder-fixture-base" {} ''
@@ -225,6 +226,27 @@
     references = ["aos-fixture:latest"];
   };
   tryBuilder = value: builtins.tryEval (builtins.deepSeq value true);
+  uncheckedAbilityCompanion =
+    pkgs.ability-package-smoke.abilities
+    // {
+      passthru = builtins.removeAttrs pkgs.ability-package-smoke.abilities.passthru [
+        "abilitySemanticValidator"
+      ];
+    };
+  omittedSemanticValidation = tryBuilder (oci.mkStaticAbilityContract {
+    pname = "oci-omitted-semantic-validation-eval";
+    platform = {
+      architecture = "amd64";
+      os = "linux";
+    };
+    packages = [
+      {
+        payload = pkgs.ability-package-smoke;
+        manifest = uncheckedAbilityCompanion;
+      }
+    ];
+    runtimeRoots = [application pkgs.ability-package-smoke];
+  });
   swappedAbilityCompanion = tryBuilder (oci.mkStaticAbilityContract {
     pname = "oci-swapped-ability-companion-eval";
     platform = {
@@ -364,6 +386,7 @@
   assert !missingFilePayload.success;
   assert !ambiguousFilePayload.success;
   assert !hostFileSource.success;
+  assert !omittedSemanticValidation.success;
   assert !swappedAbilityCompanion.success;
   assert !absentAbilityPayload.success;
   assert !wrongPlatformContract.success;
@@ -388,6 +411,7 @@ in
       pkgs.grep
       pkgs.jq
       pkgs.tar
+      pkgs.aos-ability-contract-validator
       baseLayerA
       baseLayerB
       applicationDelta
@@ -418,6 +442,20 @@ in
           }
 
           ${oci.common.realizedStorePolicyScript}
+
+          mkdir -p invalid-ability/interfaces
+          cp ${pkgs.ability-package-smoke.abilities}/interfaces/*.json invalid-ability/interfaces/
+          jq -cS \
+            '.exports[0].implementation = "sha256:0000000000000000000000000000000000000000000000000000000000000000"' \
+            ${pkgs.ability-package-smoke.abilities}/package.json \
+            > invalid-ability/package.with-newline.json
+          invalid_size=$(stat -c %s invalid-ability/package.with-newline.json)
+          truncate -s "$((invalid_size - 1))" invalid-ability/package.with-newline.json
+          mv invalid-ability/package.with-newline.json invalid-ability/package.json
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            package-source invalid-ability/package.json invalid-ability/interfaces 2>/dev/null; then
+            fail "canonical package bypassed the shared Rust semantic validator"
+          fi
 
           validate_disjoint_layer_inventories \
             policy-valid \

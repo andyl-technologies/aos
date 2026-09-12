@@ -8,6 +8,7 @@ license.workspace = true
 test-support = []
 
 [dependencies]
+anyhow = { workspace = true }
 aos-ability-model = { workspace = true }
 aos-contract = { workspace = true }
 serde = { workspace = true }
