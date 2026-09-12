@@ -12,7 +12,9 @@ use crucible_campaign::{
 };
 
 use super::SignalFaultSelectableError;
-use crate::model::{BindingSearchCandidateSemantics, MappedEffectParameter};
+use crate::model::{
+    BindingSearchCandidateSemantics, MappedEffectParameter, parse_canonical_candidate_index,
+};
 
 const SIGNAL_FAULT_DOMAIN_VERSION: u32 = 1;
 const SIGNAL_FAULT_OUTCOME_DECLARATION: &str = "signal-fault-event-outcome";
@@ -191,7 +193,8 @@ pub(super) fn parse_candidate_semantics(
 ) -> Result<ParsedCandidateSemantics, SignalFaultSelectableError> {
     let mut parts = choice_name.split('/');
     if parts.next() != Some("candidate")
-        || parts.next().and_then(|value| value.parse::<usize>().ok()) != Some(expected_index)
+        || parts.next().and_then(parse_canonical_candidate_index)
+            != u32::try_from(expected_index).ok()
     {
         return Err(SignalFaultSelectableError::NonDenseCandidates);
     }

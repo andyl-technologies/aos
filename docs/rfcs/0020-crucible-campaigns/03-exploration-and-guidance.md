@@ -898,14 +898,15 @@ mapping mutation seams without turning every signal sample into a branch.
   high-rate opportunities is to select model parameters and sample keyed
   outcomes, then promote a bounded interesting window for exact branching.
 
-The implemented promotion-normalization boundary accepts at most 4,096 exact
+The implemented promotion-normalization boundary accepts at most 4,095 exact
 signal-fault candidates from one `SearchRuntimeFrontier`. The candidates MUST
 be the dense ordered sequence for one search-choice ID, candidate-set digest,
 parent configuration, virtual-time coordinate, and typed candidate semantics.
 Outcome searches use the Boolean campaign domain. Transition and parameter
 searches use stable discrete identities derived from their canonical object or
 typed-value content and add one final alternative for an unmodified model
-result. The standardized environment adapter is
+result, keeping the resulting domain within the shared 4,096-alternative cap.
+The standardized environment adapter is
 `crucible.signal-fault-search.v1`; the opportunity coordinate retains the exact
 parent and candidate-set digest, while its instance retains the frontier time.
 
