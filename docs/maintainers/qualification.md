@@ -483,11 +483,13 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to a
-production cohort that currently exercises one managed-configuration `publish`
-lost-result cell and four of the 5,687 postconditions. The other 1,315 cells
-remain explicit failures, so the mandatory aggregate gate cannot pass. Expand
-the mapping only with exact cell-bound subjects and independent
-provider-specific observations.
+production cohort that currently exercises three cells and fourteen of the
+5,687 postconditions. It covers managed-configuration `publish` lost-result
+recovery, managed-configuration `publish` rejection of an independently
+injected foreign resource, and required-success blocking of the corresponding
+legacy systemd `reload`. The other 1,313 cells remain explicit failures, so the
+mandatory aggregate gate cannot pass. Expand the mapping only with exact
+cell-bound subjects and independent provider-specific observations.
 
 Every passing probe carries the exact cell ID and digest, the scenario's
 validated disposition, and the digest of a subject wrapper that binds the

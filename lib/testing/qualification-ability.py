@@ -1206,16 +1206,18 @@ class Scenario:
         submissions = self.fixture_namespace.get("NATIVE_ADAPTER_MATRIX_PROBES")
         if not isinstance(submissions, dict):
             raise RuntimeError("matrix cohort did not retain its production probes")
-        cohort_subject = self.fixture_namespace.get(
-            "NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT"
+        cohort_subjects = self.fixture_namespace.get(
+            "NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS"
         )
-        if not isinstance(cohort_subject, dict):
-            raise RuntimeError("matrix cohort did not retain its exact operation subject")
-        cohort_plan_bundle = self.fixture_namespace.get(
-            "NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE"
+        if not isinstance(cohort_subjects, dict):
+            raise RuntimeError("matrix cohort did not retain its exact operation subjects")
+        cohort_plan_bundles = self.fixture_namespace.get(
+            "NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES"
         )
-        if not isinstance(cohort_plan_bundle, bytes):
-            raise RuntimeError("matrix cohort did not retain its exact plan bundle")
+        if not isinstance(cohort_plan_bundles, dict) or any(
+            not isinstance(bundle, bytes) for bundle in cohort_plan_bundles.values()
+        ):
+            raise RuntimeError("matrix cohort did not retain its exact plan bundles")
 
         qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
         qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
@@ -1233,7 +1235,7 @@ class Scenario:
             "predecessor_manifest_digest": self.case["predecessor"][
                 "manifest_digest"
             ],
-            "cohort": "host-resource-managed-configuration-publish-v1",
+            "cohort": "host-resource-managed-configuration-negative-v2",
             "qemu": {
                 "name": "qemu",
                 "version": "qemu-" + qemu_match.group(1),
@@ -1263,7 +1265,7 @@ class Scenario:
             },
             "harness": {
                 "name": "native-adapter-host-resource-cohort",
-                "version": "cohort-v1",
+                "version": "cohort-v2",
                 "digest": sha256_file(FIXTURE_SCRIPT),
             },
         }
@@ -1272,8 +1274,8 @@ class Scenario:
             self.matrix_spec,
             submissions,
             MATRIX_QUALIFIED_CELLS,
-            cohort_subject,
-            cohort_plan_bundle,
+            cohort_subjects,
+            cohort_plan_bundles,
             self.case["subjects_digest"],
             environment_digest,
         )

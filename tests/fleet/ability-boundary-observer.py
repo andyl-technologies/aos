@@ -1,12 +1,13 @@
 """Protected test controller for native execution-boundary fault injection.
 
 The controller acknowledges canonical events until the root-owned target
-selects an effect-returned Publish boundary. It durably records that event and
-holds the connection open, leaving the fleet-test driver to kill either the
-package process or its QEMU machine at the real effect/outcome boundary. On
-recovery, it similarly holds the returned reconciliation observation until the
-driver publishes a digest-independent continue marker. This exposes fresh
-admission and real reconciliation before either result becomes durable.
+selects one operation boundary. A disconnect target durably records that event
+and holds the connection open while the fleet driver kills the package process
+or QEMU machine. A pause target resumes only after the driver publishes its
+sequence marker, which permits a controlled live-resource ownership change at
+the real post-intent boundary. Recovery likewise holds the returned
+reconciliation observation until release. The controls never select an adapter
+result or bypass authorization.
 """
 
 import hashlib
@@ -128,8 +129,13 @@ def load_target() -> dict[str, Any] | None:
     target = json.loads(payload)
     if canonical_bytes(target) != payload:
         raise ValueError("execution-boundary target is not canonical")
-    if set(target) != {"boundary", "operation_key", "purpose", "sequence"}:
+    legacy_fields = {"boundary", "operation_key", "purpose", "sequence"}
+    if set(target) == legacy_fields:
+        target["action"] = "disconnect"
+    elif set(target) != legacy_fields | {"action"}:
         raise ValueError("execution-boundary target has unexpected fields")
+    if target["action"] not in {"disconnect", "pause"}:
+        raise ValueError("execution-boundary target has an unknown action")
     return target
 
 
@@ -211,6 +217,32 @@ def hold_until_peer_loss(
             continue
 
 
+def pause_until_continued(
+    connection: socket.socket,
+    event: dict[str, Any],
+    payload: bytes,
+    sequence: str,
+) -> None:
+    """Publish one held boundary and resume only after the driver releases it."""
+    replace_canonical(
+        HELD_EVENT,
+        {
+            "event": event,
+            "event_digest": event_digest(payload),
+            "sequence": sequence,
+        },
+    )
+    while continued_sequence() != sequence:
+        connection.settimeout(0.2)
+        try:
+            if not connection.recv(1):
+                return
+            raise ValueError("paused execution-boundary peer sent unexpected bytes")
+        except TimeoutError:
+            continue
+    acknowledge(connection, payload)
+
+
 def continued_sequence() -> str | None:
     """Return the sequence the root-owned driver has released."""
     try:
@@ -268,8 +300,13 @@ def serve_connection(connection: socket.socket) -> None:
 
         target = load_target()
         if target is not None and matches_initial_boundary(event, target):
-            hold_until_peer_loss(connection, event, payload, target["sequence"])
-            return
+            if target["action"] == "pause":
+                pause_until_continued(
+                    connection, event, payload, target["sequence"]
+                )
+            else:
+                hold_until_peer_loss(connection, event, payload, target["sequence"])
+                return
         if target is not None and matches_recovery_boundary(event, target):
             hold_until_continued(connection, event, payload, target["sequence"])
             continue

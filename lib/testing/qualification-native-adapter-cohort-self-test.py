@@ -28,8 +28,8 @@ def rejected(module, spec, probes, scope, subject, plan_bundle):
             spec,
             probes,
             scope,
-            subject,
-            plan_bundle,
+            {scope[0]: subject},
+            {scope[0]: plan_bundle},
             "sha256:" + "11" * 32,
             "sha256:" + "22" * 32,
         )
@@ -175,6 +175,133 @@ def assert_semantic_validators(module, subject, cell, observations):
         except RuntimeError:
             continue
         raise AssertionError(f"{name} semantic validator accepted false facts")
+
+
+def assert_negative_semantic_validators(module, subject, base_cell):
+    """Exercises the production dependency and foreign-resource proof shapes."""
+
+    publish = subject["publish-operation"]
+    dependent = subject["dependent-operation"]
+    cause_timeline = [
+        {"sequence": 7, "kind": "operation-admitted", "node-ordinal": 5},
+        {"sequence": 8, "kind": "effect-started", "node-ordinal": 5},
+        {"sequence": 9, "kind": "rejected-before-effect", "node-ordinal": 5},
+    ]
+    boundaries = [
+        {
+            "transcript-position": 20,
+            "purpose": "effect",
+            "boundary": "effect-intent-durable",
+        },
+        {
+            "transcript-position": 21,
+            "purpose": "effect",
+            "boundary": "effect-returned",
+        },
+        {
+            "transcript-position": 22,
+            "purpose": "effect",
+            "boundary": "effect-outcome-durable",
+        },
+    ]
+    edge = {
+        "from": {"kind": "operation", "key": publish["key"]},
+        "to": {"kind": "operation", "key": dependent["key"]},
+        "kind": "required-success",
+    }
+
+    foreign_cell = copy.deepcopy(base_cell)
+    foreign_cell["id"] = foreign_cell["id"].replace(
+        "lose-external-result", "reject-foreign-resource-mutation"
+    )
+    foreign_cell["failure"] = "foreign-authority-rejected"
+    foreign_facts = {
+        "durable-attempt-state-classified": {
+            "transaction": "transaction-negative",
+            "plan": subject["plan"],
+            "operation": publish,
+            "timeline": cause_timeline,
+            "cause-operation": publish,
+            "cause-timeline": cause_timeline,
+            "boundary-timeline": boundaries,
+            "failure-record": "aa" * 32,
+            "classified": True,
+        },
+        "at-most-one-resource-owner": {
+            "resource": publish["target"]["resource"],
+            "owner-count-before": 1,
+            "owner-count-after": 1,
+            "one-owner-throughout": True,
+            "owner-evidence-before": "foreign-marker",
+            "owner-evidence-after": "foreign-marker",
+        },
+        "foreign-resources-unchanged": {
+            "resource": {"provider": "fixture", "key": "independent"},
+            "snapshot-before": "unchanged",
+            "snapshot-after": "unchanged",
+            "unchanged": True,
+        },
+        "dependent-effects-not-executed": {
+            "predecessor-operation": publish,
+            "dependent-operation": dependent,
+            "dependency-edge": edge,
+            "dependent-timeline": [],
+            "dependent-effect-boundaries": [],
+            "behavior-before": "baseline",
+            "behavior-after": "baseline",
+            "blocked": True,
+        },
+        "foreign-attempt-rejected-before-mutation": {
+            "foreign-resource": {"provider": "fixture", "key": "foreign"},
+            "attempted-resource": {"provider": "fixture", "key": "foreign"},
+            "authorized-resources": [publish["target"]["resource"]],
+            "rejection": "foreign-authority-rejected",
+            "mutation-count": 0,
+            "rejected-before-mutation": True,
+        },
+    }
+    for name, facts in foreign_facts.items():
+        module._validate_probe_facts(name, facts, subject, foreign_cell)
+
+    blocked_cell = copy.deepcopy(base_cell)
+    blocked_cell["id"] = (
+        "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+        "reload/block-dependent-effect"
+    )
+    blocked_cell["interface"] = dependent["interface"]
+    blocked_cell["method"] = "reload"
+    blocked_cell["failure"] = "prerequisite-failed"
+    blocked_facts = copy.deepcopy(foreign_facts)
+    blocked_facts.pop("foreign-attempt-rejected-before-mutation")
+    blocked_facts["durable-attempt-state-classified"]["operation"] = dependent
+    blocked_facts["durable-attempt-state-classified"]["timeline"] = []
+    blocked_facts["at-most-one-resource-owner"]["resource"] = dependent["target"][
+        "resource"
+    ]
+    blocked_facts["foreign-resources-unchanged"]["cell"] = blocked_cell["id"]
+    blocked_facts["dependent-effects-not-executed"]["cell"] = blocked_cell["id"]
+    blocked_facts["prerequisite-failure-recorded"] = {
+        "predecessor-operation": publish,
+        "dependent-operation": dependent,
+        "dependency-edge": edge,
+        "failure-record": "sha256:" + "bb" * 32,
+        "dependent-effect-count": 0,
+    }
+    for name, facts in blocked_facts.items():
+        module._validate_probe_facts(name, facts, subject, blocked_cell)
+
+    false_block = copy.deepcopy(blocked_facts["dependent-effects-not-executed"])
+    false_block["dependent-timeline"] = [
+        {"sequence": 10, "kind": "operation-admitted", "node-ordinal": 2}
+    ]
+    try:
+        module._validate_probe_facts(
+            "dependent-effects-not-executed", false_block, subject, blocked_cell
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("dependency validator accepted an executed dependent")
 
 
 def main() -> None:
@@ -455,8 +582,8 @@ def main() -> None:
         spec,
         probes,
         [cell_id],
-        subject,
-        plan_bundle,
+        {cell_id: subject},
+        {cell_id: plan_bundle},
         "sha256:" + "11" * 32,
         "sha256:" + "22" * 32,
     )
@@ -476,6 +603,7 @@ def main() -> None:
         probe["cell_digest"] for probe in cells[0]["probes"].values()
     } == {module.sha256(spec["cells"][0])}
     assert_semantic_validators(module, subject, spec["cells"][0], observations)
+    assert_negative_semantic_validators(module, subject, spec["cells"][0])
 
     first_cell = spec["cells"][0]
     replay_cell = copy.deepcopy(first_cell)
