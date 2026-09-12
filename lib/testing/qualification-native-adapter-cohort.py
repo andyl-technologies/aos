@@ -161,6 +161,7 @@ EFFECT_BOUNDARY_ADAPTER_GROUPS = [
     {"postgresql"},
     {"kubernetes-object", "systemd-bootstrap"},
     {"image-rollout"},
+    {"foreground-process"},
 ]
 
 

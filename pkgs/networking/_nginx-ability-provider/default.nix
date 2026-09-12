@@ -1682,6 +1682,7 @@ in rec {
     fragment = transition context;
     witnessedInterfaces = [
       endpointEffects.name
+      foregroundProcess.name
       storageEffects.name
       nginxValidation.name
     ];
