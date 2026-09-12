@@ -94,7 +94,8 @@ pub const FEATURE_ABILITIES_V1: &str = "abilities-v1";
 ///
 /// The ordinary package reader deliberately does not advertise this feature
 /// until every direct package mutation path dispatches structured lifecycle
-/// effects or rejects the package before publication.
+/// effects. Contracts-only ability metadata remains safe to install because
+/// it carries no activation owner.
 pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
 
 /// Names the retained derivation output containing an ability manifest.
@@ -119,6 +120,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_UKI_SLOTS_V1,
     FEATURE_RECOVERY_UKIS_V1,
     FEATURE_NATIVE_IMAGE_ROLLOUT_V1,
+    FEATURE_ABILITIES_V1,
 ];
 
 const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
@@ -674,9 +676,10 @@ pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
 
 /// Validates package metadata for an ability-aware trusted consumer.
 ///
-/// Release authoring and structured configuration evaluation both understand
-/// authenticated ability metadata. This capability does not grant ordinary
-/// install, upgrade, removal, or rollback paths permission to consume
+/// Release authoring and structured configuration evaluation understand
+/// authenticated effect metadata in addition to the contracts-only metadata
+/// accepted by ordinary package readers. This capability does not grant
+/// ordinary install, upgrade, removal, or rollback paths permission to consume
 /// structured effects they do not yet dispatch.
 ///
 /// # Errors
@@ -6499,38 +6502,43 @@ provenance = "provenance/firewall.jsonl"
     }
 
     #[test]
-    fn release_author_accepts_ability_features_while_package_readers_fail_closed() {
+    fn package_readers_accept_contracts_but_reject_structured_effects() {
         let mut meta = sample_package_meta();
         meta.requires_features = vec![
             FEATURE_ATTESTATION_V1.to_string(),
             FEATURE_ABILITIES_V1.to_string(),
-            FEATURE_ABILITY_EFFECTS_V1.to_string(),
         ];
-        meta.ability = Some(structured_ability_meta());
+        let mut ability = structured_ability_meta();
+        ability.activation_mode = "contracts-only".to_string();
+        meta.ability = Some(ability);
         meta.attestation.provenance =
             Some("provenance/f/firewall/x86_64-linux/package.intoto.jsonl".to_string());
 
+        validate_supported_package_meta(&meta)
+            .expect("ordinary readers can retain authenticated contracts-only abilities");
         validate_ability_aware_package_meta(&meta)
-            .expect("the release author validates authenticated structured abilities");
+            .expect("the ability-aware reader accepts contracts-only abilities");
 
-        let package_reader_error = validate_supported_package_meta(&meta)
-            .expect_err("ordinary package mutation paths do not advertise ability effects");
-        assert!(
-            package_reader_error
-                .to_string()
-                .contains(FEATURE_ABILITIES_V1)
-        );
-
-        let contracts_only_error = validate_supported_package_meta_with(
+        let pre_ability_error = validate_supported_package_meta_with(
             &meta,
             PACKAGE_META_FORMAT,
             &[FEATURE_ATTESTATION_V1],
         )
         .expect_err("a reader predating ability metadata must reject the feature gate");
+        assert!(pre_ability_error.to_string().contains(FEATURE_ABILITIES_V1));
+
+        meta.requires_features
+            .push(FEATURE_ABILITY_EFFECTS_V1.to_string());
+        meta.ability = Some(structured_ability_meta());
+
+        validate_ability_aware_package_meta(&meta)
+            .expect("the ability-aware reader accepts authenticated structured effects");
+        let package_reader_error = validate_supported_package_meta(&meta)
+            .expect_err("ordinary package mutation paths do not advertise ability effects");
         assert!(
-            contracts_only_error
+            package_reader_error
                 .to_string()
-                .contains(FEATURE_ABILITIES_V1)
+                .contains(FEATURE_ABILITY_EFFECTS_V1)
         );
 
         let structured_effects_error = validate_supported_package_meta_with(

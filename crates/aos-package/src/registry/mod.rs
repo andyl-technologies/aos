@@ -811,7 +811,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn write_ability_package(tmp: &TempDir, registry: &str, package: &str) {
+    fn write_ability_package(tmp: &TempDir, registry: &str, package: &str, activation_mode: &str) {
         let directory = tmp
             .path()
             .join(registry)
@@ -831,7 +831,7 @@ pub(crate) mod tests {
             manifest_sha256: format!("sha256:{}", "2".repeat(64)),
             manifest_size: 1,
             package_digest: format!("sha256:{}", "3".repeat(64)),
-            activation_mode: "structured-effects".to_string(),
+            activation_mode: activation_mode.to_string(),
             artifacts: Vec::new(),
             provenance: format!("provenance/a/{package}/x86_64-linux/package.ability.intoto.jsonl"),
         };
@@ -850,7 +850,7 @@ pub(crate) mod tests {
     fn config_evaluation_loads_ability_metadata_without_broadening_package_readers() {
         let tmp = TempDir::new().unwrap();
         let config = registry_config("aos-core", 500);
-        write_ability_package(&tmp, &config.name, "ability-web");
+        write_ability_package(&tmp, &config.name, "ability-web", "structured-effects");
 
         let package_error = Registry::load(tmp.path(), &config, "x86_64-linux").unwrap_err();
         assert!(
@@ -858,10 +858,10 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("loading registry 'aos-core'")
         );
-        assert!(format!("{package_error:#}").contains("abilities-v1"));
+        assert!(format!("{package_error:#}").contains("ability-effects-v1"));
 
         let ordinary_error = RegistrySet::load(tmp.path(), &[&config], "x86_64-linux").unwrap_err();
-        assert!(format!("{ordinary_error:#}").contains("abilities-v1"));
+        assert!(format!("{ordinary_error:#}").contains("ability-effects-v1"));
 
         let ability_aware =
             RegistrySet::load_for_config_evaluation(tmp.path(), &[&config], "x86_64-linux")
@@ -875,11 +875,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn ordinary_loading_accepts_contracts_only_ability_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let config = registry_config("aos-core", 500);
+        write_ability_package(&tmp, &config.name, "ability-reference", "contracts-only");
+
+        let registries =
+            RegistrySet::load_for_package_operations(tmp.path(), &[&config], "x86_64-linux")
+                .unwrap();
+        let (_, package) = registries.resolve("ability-reference").unwrap();
+
+        assert_eq!(
+            package.ability.as_ref().unwrap().activation_mode,
+            "contracts-only"
+        );
+    }
+
+    #[test]
     fn ordinary_loading_never_bypasses_unsupported_metadata_to_a_lower_registry() {
         let tmp = TempDir::new().unwrap();
         let higher = registry_config("structured", 600);
         let lower = registry_config("legacy", 500);
-        write_ability_package(&tmp, &higher.name, "curl");
+        write_ability_package(&tmp, &higher.name, "curl", "structured-effects");
         let _ = make_registry(&tmp, &lower.name, lower.priority, &[("curl", CURL_TOML)]);
 
         let error = RegistrySet::load_for_package_operations(
@@ -889,7 +906,10 @@ pub(crate) mod tests {
         )
         .unwrap_err();
 
-        assert!(format!("{error:#}").contains("abilities-v1"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("ability-effects-v1"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -907,7 +927,7 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let higher = registry_config("higher", 500);
         let lower = registry_config("lower", 400);
-        write_ability_package(&tmp, &lower.name, "ability-web");
+        write_ability_package(&tmp, &lower.name, "ability-web", "structured-effects");
 
         let invalid_directory = tmp.path().join(&higher.name).join("packages").join("a");
         fs::create_dir_all(&invalid_directory).unwrap();
