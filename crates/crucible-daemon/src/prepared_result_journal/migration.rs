@@ -22,6 +22,7 @@ const JOURNAL_STATE_MAGIC_V1: &[u8] = b"crucible.executor.prepared-result-journa
 const JOURNAL_STATE_HASH_DOMAIN_V1: &str = "crucible.executor.prepared-result-journal-state.v1";
 pub(super) const CURRENT_RESULT_PENDING: &str = ".result-v2.pending";
 pub(super) const CURRENT_STATE_PENDING: &str = ".state-v2.pending";
+pub(super) const OUTPUT_SCHEMA: &str = "crucible.executor.prepared-result-journal.v2";
 
 pub(super) fn migrate_prepared_result_journals(
     namespace: &AnchoredDirectory,
@@ -30,7 +31,6 @@ pub(super) fn migrate_prepared_result_journals(
     maximum_entries: usize,
     maximum_payload_bytes: usize,
 ) -> Result<PreparedResultJournalMigrationSummary, OperationalStateMigrationError> {
-    const OUTPUT_SCHEMA: &str = "crucible.executor.prepared-result-journal.v2";
     let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
     let inventory = inventory_namespace(namespace, maximum_entries, maximum_payload_bytes)?;
     let existing = load_phase_receipt(receipt_guard, PREPARED_RECEIPT, OUTPUT_SCHEMA)?;
@@ -38,21 +38,18 @@ pub(super) fn migrate_prepared_result_journals(
 
     // Retain every per-key lock and child directory authority through cleanup.
     for journal in inventory {
-        if (journal.files.pending_state.is_some()
-            || journal.files.pending_result.is_some()
-            || !journal.files.removals.is_empty())
-            && existing.is_none()
-        {
+        if !journal.files.removals.is_empty() && existing.is_none() {
             return Err(OperationalStateMigrationError::InvalidReceipt);
         }
         let source_version = journal.files.source_version()?;
+        let mut files = journal.files;
         let (source, recovery_destinations) =
             match read_migration_journal(&journal.root, maximum_payload_bytes, source_version) {
                 Ok(source) => (source, None),
                 Err(_)
                     if source_version == MigrationJournalVersion::V2
-                        && journal.files.pending_state.is_some()
-                        && journal.files.pending_result.is_some()
+                        && files.pending_state.is_some()
+                        && files.pending_result.is_some()
                         && existing.is_some() =>
                 {
                     let source = read_migration_journal_files(
@@ -86,18 +83,17 @@ pub(super) fn migrate_prepared_result_journals(
         let namespace_lock = acquire_namespace_lock(&namespace.anchored_path(), source.key)?;
         validate_ledger_binding(ledger, &source)?;
 
-        let current =
-            if source_version == MigrationJournalVersion::V1 && journal.files.current_complete() {
-                let current = read_migration_journal(
-                    &journal.root,
-                    maximum_payload_bytes,
-                    MigrationJournalVersion::V2,
-                )?;
-                validate_equivalent_journals(&source, &current)?;
-                Some(current)
-            } else {
-                None
-            };
+        let current = if source_version == MigrationJournalVersion::V1 && files.current_complete() {
+            let current = read_migration_journal(
+                &journal.root,
+                maximum_payload_bytes,
+                MigrationJournalVersion::V2,
+            )?;
+            validate_equivalent_journals(&source, &current)?;
+            Some(current)
+        } else {
+            None
+        };
         let output_id = current
             .as_ref()
             .map(|journal| Ok(journal.object_id.clone()))
@@ -115,15 +111,74 @@ pub(super) fn migrate_prepared_result_journals(
                 object.source_object_id.clone()
             }
             Some(_) => return Err(OperationalStateMigrationError::InvalidReceipt),
-            None if journal.files.legacy_partial() => {
+            None if files.legacy_partial() => {
                 return Err(OperationalStateMigrationError::InvalidReceipt);
             }
             None => current_id,
         };
+
+        if source.version == MigrationJournalVersion::V2 && !source.payload_current {
+            let payload = source
+                .result
+                .canonical_bytes_with_limit(maximum_payload_bytes)
+                .map_err(PreparedResultJournalError::from)?;
+            let state = encode_state(
+                source.key,
+                source.execution,
+                maximum_payload_bytes,
+                &source.result,
+                &payload,
+            )?;
+            for (path, bytes, slot) in [
+                (
+                    journal.root.path().join(CURRENT_RESULT_PENDING),
+                    payload.as_slice(),
+                    &mut files.pending_result,
+                ),
+                (
+                    journal.root.path().join(CURRENT_STATE_PENDING),
+                    state.as_slice(),
+                    &mut files.pending_state,
+                ),
+            ] {
+                if let Some(authority) = slot.as_ref() {
+                    let staged = authority.read_bounded(bytes.len() as u64)?;
+                    if !bytes.starts_with(&staged) {
+                        return Err(OperationalStateMigrationError::InvalidReceipt);
+                    }
+                    if let Some(receipt) = &existing {
+                        let journal = hex(source.key.storage_digest().as_bytes());
+                        let candidate = prepared_cleanup_receipt(
+                            &journal,
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .ok_or(OperationalStateMigrationError::InvalidReceipt)?,
+                            authority,
+                            bytes,
+                        );
+                        if !receipt.objects.contains(&candidate) {
+                            return Err(OperationalStateMigrationError::InvalidReceipt);
+                        }
+                    }
+                    authority.replace_contents(bytes)?;
+                } else {
+                    if existing.is_some() {
+                        return Err(OperationalStateMigrationError::InvalidReceipt);
+                    }
+                    write_pending(&journal.root, &path, bytes)?;
+                    *slot = Some(
+                        journal
+                            .root
+                            .open_regular_optional(&path, "pin-staged-current-file")?
+                            .ok_or(PreparedResultJournalError::Incomplete)?,
+                    );
+                }
+            }
+        }
         migrations.push(JournalMigration {
             source,
             root: journal.root,
-            files: journal.files,
+            files,
             receipt: MigrationObjectReceipt {
                 key,
                 source_object_id: source_id,
@@ -228,19 +283,18 @@ impl JournalMigration {
             if !self.files.current_state {
                 publish_resumable(&self.root, &root.join(JOURNAL_STATE_FILE), &state)?;
             }
-        } else if !self.source.payload_current {
+        } else if self.source.version == MigrationJournalVersion::V2 && !self.source.payload_current
+        {
             let (payload, state) = self.current_pair(maximum_payload_bytes)?;
-            let result_pending = root.join(CURRENT_RESULT_PENDING);
-            let state_pending = root.join(CURRENT_STATE_PENDING);
-            write_pending(&self.root, &result_pending, &payload)?;
-            write_pending(&self.root, &state_pending, &state)?;
             let result_pending_authority = self
-                .root
-                .open_regular_optional(&result_pending, "pin-staged-current-result")?
+                .files
+                .pending_result
+                .as_ref()
                 .ok_or(PreparedResultJournalError::Incomplete)?;
             let state_pending_authority = self
-                .root
-                .open_regular_optional(&state_pending, "pin-staged-current-state")?
+                .files
+                .pending_state
+                .as_ref()
                 .ok_or(PreparedResultJournalError::Incomplete)?;
             self.source.result_authority.replace_contents(&payload)?;
             self.source.state_authority.replace_contents(&state)?;
@@ -325,15 +379,27 @@ impl JournalMigration {
             ),
         ] {
             if let Some(authority) = authority {
-                receipts.push(self.cleanup_receipt(name, &authority.read_bounded(maximum)?));
+                receipts.push(self.cleanup_receipt(
+                    name,
+                    authority,
+                    &authority.read_bounded(maximum)?,
+                ));
             }
         }
-        if (self.source.version == MigrationJournalVersion::V1 && !self.files.current_complete())
-            || !self.source.payload_current
-        {
+        if self.source.version == MigrationJournalVersion::V2 && !self.source.payload_current {
             let (payload, state) = self.current_pair(maximum_payload_bytes)?;
-            receipts.push(self.cleanup_receipt(CURRENT_RESULT_PENDING, &payload));
-            receipts.push(self.cleanup_receipt(CURRENT_STATE_PENDING, &state));
+            let result = self
+                .files
+                .pending_result
+                .as_ref()
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            let state_authority = self
+                .files
+                .pending_state
+                .as_ref()
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            receipts.push(self.cleanup_receipt(CURRENT_RESULT_PENDING, result, &payload));
+            receipts.push(self.cleanup_receipt(CURRENT_STATE_PENDING, state_authority, &state));
         }
         Ok(receipts)
     }
@@ -344,6 +410,25 @@ impl JournalMigration {
         maximum_payload_bytes: usize,
     ) -> Result<(), OperationalStateMigrationError> {
         let (payload, state) = self.current_pair(maximum_payload_bytes)?;
+        for (name, authority, maximum) in [
+            (
+                JOURNAL_STATE_FILE_V1,
+                self.files.legacy_state.as_ref(),
+                MAX_JOURNAL_STATE_BYTES as u64,
+            ),
+            (
+                JOURNAL_RESULT_FILE_V1,
+                self.files.legacy_result.as_ref(),
+                maximum_payload_bytes as u64,
+            ),
+        ] {
+            if let Some(authority) = authority {
+                let bytes = authority.read_bounded(maximum)?;
+                if !self.cleanup_receipt_is_sealed(receipt, name, authority, &bytes, false) {
+                    return Err(OperationalStateMigrationError::InvalidReceipt);
+                }
+            }
+        }
         for (name, authority, expected) in [
             (
                 CURRENT_RESULT_PENDING,
@@ -359,9 +444,7 @@ impl JournalMigration {
             if let Some(authority) = authority {
                 let bytes = authority.read_bounded(expected.len() as u64)?;
                 if !expected.starts_with(&bytes)
-                    || !receipt
-                        .objects
-                        .contains(&self.cleanup_receipt(name, expected))
+                    || !self.cleanup_receipt_is_sealed(receipt, name, authority, expected, false)
                 {
                     return Err(OperationalStateMigrationError::InvalidReceipt);
                 }
@@ -379,10 +462,14 @@ impl JournalMigration {
                 CURRENT_STATE_PENDING => state.as_slice(),
                 _ => bytes.as_slice(),
             };
-            if !expected.starts_with(&bytes)
-                || !receipt
-                    .objects
-                    .contains(&self.cleanup_receipt(&removal.logical_name, expected))
+            if (!bytes.is_empty() && !expected.starts_with(&bytes))
+                || !self.cleanup_receipt_is_sealed(
+                    receipt,
+                    &removal.logical_name,
+                    &removal.authority,
+                    expected,
+                    bytes.is_empty(),
+                )
             {
                 return Err(OperationalStateMigrationError::InvalidReceipt);
             }
@@ -390,19 +477,66 @@ impl JournalMigration {
         Ok(())
     }
 
-    fn cleanup_receipt(&self, name: &str, bytes: &[u8]) -> MigrationObjectReceipt {
+    fn cleanup_receipt(
+        &self,
+        name: &str,
+        authority: &AnchoredFile,
+        bytes: &[u8],
+    ) -> MigrationObjectReceipt {
         let key = hex(self.source.key.storage_digest().as_bytes());
-        MigrationObjectReceipt {
-            key: format!("cleanup/{key}/{name}"),
-            source_object_id: authenticated_id(
-                "crucible.prepared-result-migration-cleanup-source.v1",
-                &[bytes],
-            ),
-            output_object_id: authenticated_id(
-                "crucible.prepared-result-migration-cleanup-output.v1",
-                &[b"absent"],
-            ),
-        }
+        prepared_cleanup_receipt(&key, name, authority, bytes)
+    }
+
+    fn cleanup_receipt_is_sealed(
+        &self,
+        receipt: &crate::operational_state_migration::receipt::PhaseReceipt,
+        name: &str,
+        authority: &AnchoredFile,
+        expected: &[u8],
+        destroyed: bool,
+    ) -> bool {
+        let candidate = self.cleanup_receipt(name, authority, expected);
+        receipt.objects.iter().any(|sealed| {
+            sealed.key == candidate.key
+                && sealed.output_object_id == candidate.output_object_id
+                && (destroyed || sealed == &candidate)
+        })
+    }
+}
+
+pub(super) fn prepared_cleanup_key(
+    journal: &str,
+    name: &str,
+    (device, inode): (u64, u64),
+) -> String {
+    let identity = authenticated_id(
+        "crucible.prepared-result-migration-cleanup.v1",
+        &[
+            journal.as_bytes(),
+            name.as_bytes(),
+            &device.to_be_bytes(),
+            &inode.to_be_bytes(),
+        ],
+    );
+    format!("cleanup/{identity}")
+}
+
+fn prepared_cleanup_receipt(
+    journal: &str,
+    name: &str,
+    authority: &AnchoredFile,
+    bytes: &[u8],
+) -> MigrationObjectReceipt {
+    MigrationObjectReceipt {
+        key: prepared_cleanup_key(journal, name, authority.identity()),
+        source_object_id: authenticated_id(
+            "crucible.prepared-result-migration-cleanup-source.v1",
+            &[bytes],
+        ),
+        output_object_id: authenticated_id(
+            "crucible.prepared-result-migration-cleanup-output.v1",
+            &[b"absent"],
+        ),
     }
 }
 

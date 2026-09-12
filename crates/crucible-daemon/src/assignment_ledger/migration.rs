@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use crate::OperationalStateMigrationError;
@@ -230,13 +229,15 @@ struct ValidatedAttemptMigration {
     path: PathBuf,
     source: AnchoredFile,
     current_bytes: Option<Vec<u8>>,
-    staging: Option<AnchoredFile>,
+    staging: Option<StaleAttemptStaging>,
     receipt: MigrationObjectReceipt,
 }
 
+#[derive(Debug)]
 struct StaleAttemptStaging {
     authority: AnchoredFile,
     receipt: MigrationObjectReceipt,
+    destroyed: bool,
 }
 
 pub(super) fn migrate_attempt_records(
@@ -245,10 +246,13 @@ pub(super) fn migrate_attempt_records(
     maximum_entries: usize,
     maximum_bytes: u64,
 ) -> Result<AssignmentMigrationSummary, OperationalStateMigrationError> {
-    const OUTPUT_SCHEMA: &str = "crucible.executor.attempt-state-record.v15";
     let root_guard = ledger.authority();
     let anchored_root = root_guard.anchored_path();
-    let existing = load_phase_receipt(receipt_guard, ASSIGNMENT_RECEIPT, OUTPUT_SCHEMA)?;
+    let existing = load_phase_receipt(
+        receipt_guard,
+        ASSIGNMENT_RECEIPT,
+        ATTEMPT_MIGRATION_OUTPUT_SCHEMA,
+    )?;
     let mut inventory = AttemptInventory {
         records: Vec::new(),
         staging: Vec::new(),
@@ -260,11 +264,15 @@ pub(super) fn migrate_attempt_records(
         maximum_entries,
         maximum_bytes,
         true,
+        None,
         &mut |entry| {
             match entry {
                 AttemptInventoryEntry::Record(path) => inventory.records.push(path.to_owned()),
                 AttemptInventoryEntry::Staging(path) => inventory.staging.push(path.to_owned()),
                 AttemptInventoryEntry::Removal(path) => inventory.removals.push(path.to_owned()),
+                AttemptInventoryEntry::Tombstone => {
+                    return Err(corrupt("unexpected-attempt-migration-tombstone"));
+                }
             }
             Ok(())
         },
@@ -357,11 +365,16 @@ pub(super) fn migrate_attempt_records(
             })
             .transpose()?
             .unwrap_or(current_id);
+        let staging = staged
+            .map(|(staging_path, authority, staged_bytes, ..)| {
+                staging_cleanup(&staging_path, authority, &staged_bytes)
+            })
+            .transpose()?;
         records.push(ValidatedAttemptMigration {
             path,
             source,
             current_bytes,
-            staging: staged.map(|(_, authority, ..)| authority),
+            staging,
             receipt: MigrationObjectReceipt {
                 key,
                 source_object_id: source_id,
@@ -373,13 +386,53 @@ pub(super) fn migrate_attempt_records(
         return Err(corrupt("attempt-staging-target-missing").into());
     }
 
+    // Stage every replacement before sealing the receipt. A retry can therefore
+    // authenticate every complete or partial staging file before any source is
+    // replaced, including a file left by an interrupted create or write.
+    for record in &mut records {
+        let Some(bytes) = &record.current_bytes else {
+            continue;
+        };
+        if record.staging.is_some() {
+            continue;
+        }
+        if existing.is_some() {
+            return Err(OperationalStateMigrationError::InvalidReceipt);
+        }
+        let directory = record
+            .path
+            .parent()
+            .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
+        let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(".staging-{}-{ordinal}", std::process::id()));
+        let mut file = root_guard.create_file(&path, "create-attempt-migration-staging")?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| io_error("write-attempt-migration-staging", &path, source))?;
+        root_guard.sync()?;
+        let authority = root_guard
+            .open_regular_optional(&path, "pin-created-attempt-staging")?
+            .ok_or_else(|| corrupt("attempt-staging-disappeared"))?;
+        record.staging = Some(staging_cleanup(&path, authority, bytes)?);
+    }
+
     let mut receipt_objects = records
         .iter()
         .map(|record| record.receipt.clone())
         .collect::<Vec<_>>();
+    let cleanups = stale_staging
+        .iter()
+        .chain(records.iter().filter_map(|record| record.staging.as_ref()));
     if let Some(existing) = &existing {
-        for stale in &stale_staging {
-            if !existing.objects.contains(&stale.receipt) {
+        for cleanup in cleanups {
+            let prior = existing
+                .objects
+                .iter()
+                .find(|object| object.key == cleanup.receipt.key);
+            if !prior.is_some_and(|prior| {
+                prior.output_object_id == cleanup.receipt.output_object_id
+                    && (cleanup.destroyed || prior == &cleanup.receipt)
+            }) {
                 return Err(OperationalStateMigrationError::InvalidReceipt);
             }
         }
@@ -392,6 +445,12 @@ pub(super) fn migrate_attempt_records(
         );
     } else {
         receipt_objects.extend(stale_staging.iter().map(|stale| stale.receipt.clone()));
+        receipt_objects.extend(
+            records
+                .iter()
+                .filter_map(|record| record.staging.as_ref())
+                .map(|staging| staging.receipt.clone()),
+        );
     }
     receipt_objects.sort_by(|left, right| left.key.cmp(&right.key));
     let receipt = match existing {
@@ -400,7 +459,7 @@ pub(super) fn migrate_attempt_records(
         None => persist_phase_receipt(
             receipt_guard,
             ASSIGNMENT_RECEIPT,
-            OUTPUT_SCHEMA,
+            ATTEMPT_MIGRATION_OUTPUT_SCHEMA,
             receipt_objects,
         )?,
     };
@@ -409,44 +468,24 @@ pub(super) fn migrate_attempt_records(
     for stale in stale_staging {
         root_guard.remove_bound_file(&stale.authority, "remove-invalid-attempt-staging")?;
     }
-    let mut staged = Vec::new();
-    for (record_index, record) in records.iter_mut().enumerate() {
+    let migrated = records
+        .iter()
+        .filter(|record| record.current_bytes.is_some())
+        .count();
+    for record in &mut records {
         let Some(bytes) = &record.current_bytes else {
-            if let Some(authority) = record.staging.take() {
-                root_guard.remove_bound_file(&authority, "remove-completed-attempt-staging")?;
+            if let Some(staging) = record.staging.take() {
+                root_guard
+                    .remove_bound_file(&staging.authority, "remove-completed-attempt-staging")?;
             }
             continue;
         };
-        if let Some(authority) = record.staging.take() {
-            staged.push((authority, record_index));
-            continue;
-        }
-        let directory = record
-            .path
-            .parent()
-            .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
-        let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = directory.join(format!(".staging-{}-{ordinal}", std::process::id()));
-        let mut file = root_guard.create_file(&path, "create-attempt-migration-staging")?;
-        file.write_all(bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|source| io_error("write-attempt-migration-staging", &path, source))?;
-        let authority = root_guard
-            .open_regular_optional(&path, "pin-created-attempt-staging")?
-            .ok_or_else(|| corrupt("attempt-staging-disappeared"))?;
-        staged.push((authority, record_index));
-    }
-
-    let migrated = staged.len();
-    for (authority, record_index) in staged {
-        let record = &records[record_index];
-        record.source.replace_contents(
-            record
-                .current_bytes
-                .as_deref()
-                .ok_or_else(|| corrupt("attempt-staging-without-current-output"))?,
-        )?;
-        root_guard.remove_bound_file(&authority, "remove-published-attempt-staging")?;
+        let staging = record
+            .staging
+            .take()
+            .ok_or_else(|| corrupt("attempt-staging-without-current-output"))?;
+        record.source.replace_contents(bytes)?;
+        root_guard.remove_bound_file(&staging.authority, "remove-published-attempt-staging")?;
     }
 
     Ok(AssignmentMigrationSummary {
@@ -461,6 +500,7 @@ fn staging_cleanup(
     authority: AnchoredFile,
     bytes: &[u8],
 ) -> Result<StaleAttemptStaging, AssignmentLedgerError> {
+    let destroyed = authority.removal_original_name().is_some() && bytes.is_empty();
     let logical_name = authority
         .removal_original_name()
         .or_else(|| path.file_name().map(ToOwned::to_owned))
@@ -469,14 +509,11 @@ fn staging_cleanup(
         .parent()
         .and_then(std::path::Path::file_name)
         .ok_or_else(|| corrupt("attempt-staging-shard-missing"))?;
-    let identity = authenticated_id(
-        "crucible.assignment-migration-cleanup.v1",
-        &[shard.as_bytes(), logical_name.as_bytes()],
-    );
+    let (device, inode) = authority.identity();
     Ok(StaleAttemptStaging {
         authority,
         receipt: MigrationObjectReceipt {
-            key: format!("cleanup/{identity}"),
+            key: attempt_cleanup_key(shard, &logical_name, device, inode),
             source_object_id: authenticated_id(
                 "crucible.assignment-migration-cleanup-source.v1",
                 &[bytes],
@@ -486,6 +523,7 @@ fn staging_cleanup(
                 &[b"absent"],
             ),
         },
+        destroyed,
     })
 }
 

@@ -1,7 +1,7 @@
 //! Authenticated provenance receipts for offline state rewrites.
 
 use std::fs::{self, File};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -301,6 +301,28 @@ pub(crate) fn marker_present_guarded(root: &AnchoredDirectory) -> std::io::Resul
     }
 }
 
+pub(crate) fn completed_receipt_directory_guarded(
+    root: &AnchoredDirectory,
+) -> std::io::Result<Option<AnchoredDirectory>> {
+    let path = root.path().join(ACTIVE_MARKER);
+    let marker = match root.open_regular_optional(&path, "open-marker") {
+        Ok(Some(marker)) => marker,
+        Ok(None) => return Ok(None),
+        Err(error) => return Err(receipt_error_as_io(error)),
+    };
+    let bytes = marker
+        .read_bounded(MAX_RECEIPT_BYTES)
+        .map_err(receipt_error_as_io)?;
+    if marker_is_active(&bytes)? {
+        return Err(invalid_marker());
+    }
+    let paths = marker_paths(&bytes)?;
+    let receipt = PathBuf::from(std::ffi::OsString::from_vec(paths[0].to_vec()));
+    AnchoredDirectory::new(receipt)
+        .map(Some)
+        .map_err(receipt_error_as_io)
+}
+
 pub(crate) fn authenticated_id(domain: &str, parts: &[&[u8]]) -> String {
     let key = blake3::derive_key(domain, domain.as_bytes());
     let mut hasher = blake3::Hasher::new_keyed(&key);
@@ -393,6 +415,27 @@ fn marker_phase(bytes: &[u8]) -> std::io::Result<(u8, usize)> {
         MARKER_ACTIVE | MARKER_COMPLETE => Ok((phase, record_length)),
         _ => Err(invalid_marker()),
     }
+}
+
+fn marker_paths(bytes: &[u8]) -> std::io::Result<[&[u8]; 3]> {
+    marker_phase(bytes)?;
+    let mut offset = MARKER_MAGIC.len();
+    let mut paths = [&[][..]; 3];
+    for path in &mut paths {
+        let length = u32::from_be_bytes(
+            bytes
+                .get(offset..offset + 4)
+                .ok_or_else(invalid_marker)?
+                .try_into()
+                .map_err(|_| invalid_marker())?,
+        ) as usize;
+        offset += 4;
+        *path = bytes
+            .get(offset..offset + length)
+            .ok_or_else(invalid_marker)?;
+        offset += length;
+    }
+    Ok(paths)
 }
 
 fn invalid_marker() -> std::io::Error {
