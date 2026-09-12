@@ -181,6 +181,9 @@ POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
 EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA = (
     "aos.qualification.native-adapter-effect-cohort-subject/v1"
 )
+EFFECT_BOUNDARY_EVIDENCE_SCHEMA = (
+    "aos.qualification.native-adapter-effect-flight/v1"
+)
 POSTGRESQL_REJECTION_EVIDENCE_SCHEMA = (
     "aos.qualification.postgresql-provider-rejection-evidence/v1"
 )
@@ -2061,23 +2064,35 @@ def _validate_cohort_subject(
 
 
 def _validate_effect_boundary_subject(
-    cell: dict[str, Any], subject: Any, plan_bundle_bytes: Any
+    cell: dict[str, Any], subject: Any, evidence_bytes: Any
 ) -> None:
     """Rebuilds an effect-boundary subject from its canonical production plan."""
 
-    bundle = _canonical_evidence(plan_bundle_bytes, "effect-boundary plan bundle")
+    evidence = _canonical_evidence(evidence_bytes, "effect-boundary flight")
     try:
+        if not isinstance(evidence, dict) or set(evidence) != {
+            "schema",
+            "plan-bundle",
+            "source-authority",
+            "candidate-authority",
+        }:
+            raise RuntimeError("effect-boundary evidence is malformed")
+        if evidence.get("schema") != EFFECT_BOUNDARY_EVIDENCE_SCHEMA:
+            raise RuntimeError("effect-boundary evidence has another schema")
+        bundle = evidence["plan-bundle"]
         if bundle.get("schema") != "aos.ability.plan-bundle/v1":
             raise RuntimeError("effect-boundary evidence has another plan schema")
         if not isinstance(subject, dict) or set(subject) != {
             "schema",
             "plan",
             "plan-bundle-digest",
+            "evidence-digest",
             "adapter",
             "operation",
             "dependent-operation",
             "dependency-edge",
             "provider-implementation",
+            "native-route",
         }:
             raise RuntimeError("effect-boundary subject is malformed")
         effect = bundle["transition"]["effect_document"]
@@ -2106,6 +2121,14 @@ def _validate_effect_boundary_subject(
         if len(implementations) != 1:
             raise RuntimeError("effect-boundary terminal implementation is ambiguous")
         implementation = next(iter(implementations.values()))
+        operation_document = effect["operations"][operation["ordinal"]]
+        native_route = _effect_boundary_native_route(
+            bundle,
+            operation_document,
+            implementation,
+            evidence["source-authority"],
+            evidence["candidate-authority"],
+        )
     except RuntimeError:
         raise
     except (AttributeError, KeyError, TypeError) as error:
@@ -2120,7 +2143,9 @@ def _validate_effect_boundary_subject(
         subject["schema"] != EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA
         or subject["plan"] != bundle["plan"]
         or subject["plan-bundle-digest"]
-        != "sha256:" + hashlib.sha256(plan_bundle_bytes).hexdigest()
+        != sha256(bundle)
+        or subject["evidence-digest"]
+        != "sha256:" + hashlib.sha256(evidence_bytes).hexdigest()
         or subject["adapter"] != cell["adapter"]
         or operation["interface"] != cell["interface"]
         or operation["method"] != cell["method"]
@@ -2129,8 +2154,86 @@ def _validate_effect_boundary_subject(
         or expected_edge not in effect["edges"]
         or subject["provider-implementation"] != implementation
         or not implementation.get("handler")
+        or subject["native-route"] != native_route
     ):
         raise RuntimeError("effect-boundary subject differs from its production plan")
+
+
+def _effect_boundary_policy(authority: Any) -> dict[str, Any]:
+    """Validates one retained generation's exact authenticated native policy."""
+
+    if not isinstance(authority, dict) or set(authority) != {
+        "generation",
+        "manifest-path",
+        "policy-pin",
+        "policy-document",
+    }:
+        raise RuntimeError("effect-boundary generation authority is malformed")
+    policy = authority["policy-document"]
+    pin = authority["policy-pin"]
+    policy_bytes = canonical(policy)
+    if (
+        not _is_nonnegative_int(authority.get("generation"))
+        or not isinstance(authority.get("manifest-path"), str)
+        or not isinstance(pin, dict)
+        or not isinstance(policy, dict)
+        or policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+        or pin.get("document_sha256")
+        != "sha256:" + hashlib.sha256(policy_bytes).hexdigest()
+        or pin.get("document_size") != len(policy_bytes)
+        or policy.get("native_resource_map", {}).get("schema")
+        != "aos.ability.native-resource-map/v3"
+    ):
+        raise RuntimeError("effect-boundary generation authority is not exact")
+    return policy
+
+
+def _effect_boundary_native_route(
+    bundle: dict[str, Any],
+    operation: dict[str, Any],
+    implementation: dict[str, Any],
+    source_authority: dict[str, Any],
+    candidate_authority: dict[str, Any],
+) -> dict[str, Any]:
+    """Rebuilds the authoritative resource route used by NativeDispatcher."""
+
+    source_policy = _effect_boundary_policy(source_authority)
+    candidate_policy = _effect_boundary_policy(candidate_authority)
+    transition_authority = bundle.get("transition_authority") or {}
+    teardown = [
+        entry
+        for entry in transition_authority.get("teardown_bindings", [])
+        if entry.get("binding", {}).get("id") == operation["binding"]
+    ]
+    if len(teardown) > 1:
+        raise RuntimeError("effect-boundary teardown route is ambiguous")
+    if teardown:
+        role = "current"
+        authority = source_authority
+        policy = source_policy
+        binding = teardown[0]["source_binding"]
+    else:
+        role = "desired"
+        authority = candidate_authority
+        policy = candidate_policy
+        binding = operation["binding"]
+    resource_map = policy["native_resource_map"]
+    mappings = [
+        mapping
+        for mapping in resource_map["entries"]
+        if mapping.get("resource") == operation["target"]["resource"]
+        and mapping.get("binding") == binding
+    ]
+    if len(mappings) != 1 or mappings[0].get("implementation") != implementation:
+        raise RuntimeError("effect-boundary native route is absent or ambiguous")
+    return {
+        "authority-role": role,
+        "generation": authority["generation"],
+        "policy-document-sha256": sha256(policy),
+        "resource-map-desired-state": resource_map["desired_state"],
+        "source-binding": binding,
+        "mapping": mappings[0],
+    }
 
 
 def _validate_effect_boundary_probe_facts(

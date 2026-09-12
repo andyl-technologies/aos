@@ -14,6 +14,7 @@ from typing import Any
 
 
 SUBJECT_SCHEMA = "aos.qualification.native-adapter-effect-cohort-subject/v1"
+EVIDENCE_SCHEMA = "aos.qualification.native-adapter-effect-flight/v1"
 SCENARIO_BOUNDARIES = {
     "interrupt-after-acquisition": "resources-acquired",
     "interrupt-after-durable-intent": "effect-intent-durable",
@@ -155,6 +156,8 @@ class EffectBoundaryEvidence:
         self,
         cell_id: str,
         plan_bundle: bytes,
+        source_authority: dict[str, Any],
+        candidate_authority: dict[str, Any],
         observation: EffectBoundaryObservation,
     ) -> None:
         """Binds a production transaction and physical observations to a cell."""
@@ -231,10 +234,26 @@ class EffectBoundaryEvidence:
         ):
             raise RuntimeError("required-success boundary preceded predecessor settlement")
 
+        provider_implementation = _provider_implementation(bundle, operation)
+        native_route = _native_route(
+            bundle,
+            operation,
+            provider_implementation,
+            source_authority,
+            candidate_authority,
+        )
+        evidence = {
+            "schema": EVIDENCE_SCHEMA,
+            "plan-bundle": bundle,
+            "source-authority": source_authority,
+            "candidate-authority": candidate_authority,
+        }
+        evidence_bytes = canonical(evidence)
         subject = {
             "schema": SUBJECT_SCHEMA,
             "plan": bundle["plan"],
             "plan-bundle-digest": sha256_bytes(plan_bundle),
+            "evidence-digest": sha256_bytes(evidence_bytes),
             "adapter": cell["adapter"],
             "operation": operation_identity,
             "dependent-operation": observation.dependent_operation,
@@ -246,7 +265,8 @@ class EffectBoundaryEvidence:
                 },
                 "kind": "required-success",
             },
-            "provider-implementation": _provider_implementation(bundle, operation),
+            "provider-implementation": provider_implementation,
+            "native-route": native_route,
         }
         disposition = SCENARIO_DISPOSITIONS[scenario]
         live_digest_baseline = sha256_bytes(canonical(observation.live_baseline))
@@ -264,7 +284,7 @@ class EffectBoundaryEvidence:
                 "live provider state differs from the selected interruption boundary"
             )
         self.subjects[cell_id] = subject
-        self.plan_bundles[cell_id] = plan_bundle
+        self.plan_bundles[cell_id] = evidence_bytes
         self.probes[cell_id] = {
             "durable-attempt-state-classified": {
                 "kind": "journal-timeline",
@@ -382,6 +402,84 @@ def _provider_implementation(
     if not implementation.get("handler"):
         raise RuntimeError("matrix operation did not select a terminal provider")
     return implementation
+
+
+def _authenticated_policy(authority: dict[str, Any]) -> dict[str, Any]:
+    """Validates and returns one exactly pinned authenticated policy document."""
+
+    if set(authority) != {
+        "generation",
+        "manifest-path",
+        "policy-pin",
+        "policy-document",
+    }:
+        raise RuntimeError("generation authority has another shape")
+    policy = authority["policy-document"]
+    policy_bytes = canonical(policy)
+    pin = authority["policy-pin"]
+    if (
+        policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+        or pin.get("document_sha256") != sha256_bytes(policy_bytes)
+        or pin.get("document_size") != len(policy_bytes)
+        or policy.get("native_resource_map", {}).get("schema")
+        != "aos.ability.native-resource-map/v3"
+    ):
+        raise RuntimeError("generation authority is not an exact native policy pin")
+    return policy
+
+
+def _native_route(
+    bundle: dict[str, Any],
+    operation: dict[str, Any],
+    implementation: dict[str, Any],
+    source_authority: dict[str, Any],
+    candidate_authority: dict[str, Any],
+) -> dict[str, Any]:
+    """Projects the same authoritative resource route used by NativeDispatcher."""
+
+    source_policy = _authenticated_policy(source_authority)
+    candidate_policy = _authenticated_policy(candidate_authority)
+    transition_authority = bundle.get("transition_authority") or {}
+    teardown = [
+        entry
+        for entry in transition_authority.get("teardown_bindings", [])
+        if entry.get("binding", {}).get("id") == operation["binding"]
+    ]
+    if len(teardown) > 1:
+        raise RuntimeError("operation has ambiguous teardown authority")
+
+    if teardown:
+        authority_role = "current"
+        authoritative_generation = source_authority["generation"]
+        policy = source_policy
+        binding = teardown[0]["source_binding"]
+    else:
+        authority_role = "desired"
+        authoritative_generation = candidate_authority["generation"]
+        policy = candidate_policy
+        binding = operation["binding"]
+
+    resource_map = policy["native_resource_map"]
+    mappings = [
+        mapping
+        for mapping in resource_map["entries"]
+        if mapping.get("resource") == operation["target"]["resource"]
+        and mapping.get("binding") == binding
+    ]
+    if len(mappings) != 1:
+        raise RuntimeError("operation has no exact authoritative native mapping")
+    mapping = mappings[0]
+    if mapping.get("implementation") != implementation:
+        raise RuntimeError("native mapping names another provider implementation")
+
+    return {
+        "authority-role": authority_role,
+        "generation": authoritative_generation,
+        "policy-document-sha256": sha256_bytes(canonical(policy)),
+        "resource-map-desired-state": resource_map["desired_state"],
+        "source-binding": binding,
+        "mapping": mapping,
+    }
 
 
 def _required_success_dependents(
