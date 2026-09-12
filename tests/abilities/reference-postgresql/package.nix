@@ -257,6 +257,12 @@
               requestSchema = storageRequest;
               methods = storageMethods;
               persistent = true;
+              selectedLifecycle = {
+                stableResourceIdentity = true;
+                releasesEphemeralOnDisable = true;
+                retainsPersistentByDefault = true;
+                persistentDeleteMethod = null;
+              };
             };
           };
         };
