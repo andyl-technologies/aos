@@ -1120,6 +1120,102 @@ def main() -> None:
     assert_negative_semantic_validators(module, subject, cell_spec)
     assert_postgresql_cohort(module)
 
+    authority_cell = copy.deepcopy(cell_spec)
+    authority_cell.update(
+        {
+            "id": (
+                "managed-configuration/aos.managed-configuration-effects/abi-1/"
+                "publish/revoke-caller-before-acquisition"
+            ),
+            "boundary": "before-acquisition",
+            "failure": "caller-authority-revoked",
+        }
+    )
+    authority_digest = module.sha256(authority_cell)
+    audit_digest = "sha256:" + "66" * 32
+    authority_record = {
+        "cell_digest": authority_digest,
+        "subject": {
+            "schema": "aos.qualification.authority-revocation-subject/v1",
+            "cell-id": authority_cell["id"],
+            "cell-digest": authority_digest,
+            "interface": authority_cell["interface"],
+            "method": authority_cell["method"],
+            "plan": "sha256:" + "77" * 32,
+            "transaction": "authority-fixture",
+        },
+        "plan_bundle": {
+            "schema": "aos.qualification.authority-revocation-plan/v1",
+            "digest": audit_digest,
+            "bytes-sha256": audit_digest,
+        },
+        "evidence": {
+            "role": "caller-binding-grant",
+            "authority-boundary": "before-resource-acquisition",
+            "runtime-boundary": "BeforeResourceAcquisition",
+            "journal": {
+                "digest": "sha256:" + "88" * 32,
+                "head": "sha256:" + "99" * 32,
+                "authority-rejections": 1,
+                "effect-outcomes": 0,
+            },
+            "reservation-ledger": {
+                "digest": "sha256:" + "aa" * 32,
+                "acquire-calls": 0,
+                "release-calls": 0,
+                "max-owners": 0,
+                "owners": 0,
+            },
+            "dispatch-calls": 0,
+            "foreign-before": "sha256:" + "bb" * 32,
+            "foreign-after": "sha256:" + "bb" * 32,
+        },
+    }
+    authority_spec = {"cells": [*spec["cells"], authority_cell]}
+    authority_audit = {
+        "schema": "aos.qualification.authority-revocation-audit/v1",
+        "matrix_spec_digest": module.sha256(authority_spec),
+        "cells": {authority_cell["id"]: authority_record},
+    }
+    authority_scope = [*scope, authority_cell["id"]]
+    authority_cells, authority_count = module.build_cells(
+        authority_spec,
+        probes,
+        authority_scope,
+        {qualified: subject for qualified in scope},
+        {qualified: plan_bundle for qualified in scope},
+        "sha256:" + "11" * 32,
+        "sha256:" + "22" * 32,
+        authority_audit,
+    )
+    assert authority_count == 16
+    authority_observations = {
+        cell["id"]: cell for cell in authority_cells
+    }[authority_cell["id"]]
+    assert all(
+        value["passed"]
+        for value in authority_observations["postconditions"].values()
+    )
+    rejected_audit = copy.deepcopy(authority_audit)
+    rejected_audit["cells"][authority_cell["id"]]["evidence"][
+        "dispatch-calls"
+    ] = 1
+    try:
+        module.build_cells(
+            authority_spec,
+            probes,
+            authority_scope,
+            {qualified: subject for qualified in scope},
+            {qualified: plan_bundle for qualified in scope},
+            "sha256:" + "11" * 32,
+            "sha256:" + "22" * 32,
+            rejected_audit,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("authority audit accepted an adapter dispatch")
+
     first_cell = cell_spec
     replay_cell = copy.deepcopy(first_cell)
     replay_cell["id"] = replay_cell["id"].replace(

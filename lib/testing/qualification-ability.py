@@ -1226,6 +1226,7 @@ class Scenario:
         submissions: dict[str, Any] = {}
         cohort_subjects: dict[str, Any] = {}
         cohort_evidence: dict[str, bytes] = {}
+        authority_audit: dict[str, Any] | None = None
         for cohort_id, namespace in self.fixture_namespaces.items():
             cohort_input = one(
                 [entry for entry in MATRIX_COHORTS if entry["id"] == cohort_id],
@@ -1238,6 +1239,16 @@ class Scenario:
                 evidence_map = namespace.get(
                     "NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES"
                 )
+            cohort_authority_audit = namespace.get(
+                "NATIVE_ADAPTER_MATRIX_AUTHORITY_AUDIT"
+            )
+            authority_cells: dict[str, Any] = {}
+            if cohort_authority_audit is not None:
+                if not isinstance(cohort_authority_audit, dict) or not isinstance(
+                    cohort_authority_audit.get("cells"), dict
+                ):
+                    raise RuntimeError("matrix cohort retained a malformed authority audit")
+                authority_cells = cohort_authority_audit["cells"]
             if subject_map is None and isinstance(cohort_probes, dict):
                 legacy_subject = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT")
                 legacy_bundle = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE")
@@ -1250,11 +1261,14 @@ class Scenario:
                 or not isinstance(subject_map, dict)
                 or not isinstance(evidence_map, dict)
                 or any(not isinstance(value, bytes) for value in evidence_map.values())
+                or set(cohort_probes) & set(authority_cells)
             ):
                 raise RuntimeError(
                     f"matrix cohort {cohort_id!r} did not retain exact production evidence"
                 )
-            if set(cohort_probes) != set(cohort_input["qualifiedCells"]):
+            if set(cohort_probes) | set(authority_cells) != set(
+                cohort_input["qualifiedCells"]
+            ):
                 raise RuntimeError(
                     f"matrix cohort {cohort_id!r} differs from its declared cells"
                 )
@@ -1267,6 +1281,15 @@ class Scenario:
             submissions.update(cohort_probes)
             cohort_subjects.update(subject_map)
             cohort_evidence.update(evidence_map)
+            if cohort_authority_audit is not None:
+                if authority_audit is not None or not isinstance(
+                    cohort_authority_audit, dict
+                ):
+                    raise RuntimeError("matrix cohorts repeat or malformed authority audit")
+                authority_audit = cohort_authority_audit
+
+        if authority_audit is None:
+            raise RuntimeError("matrix cohort did not retain its authority audit")
 
         qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
         qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
@@ -1327,6 +1350,7 @@ class Scenario:
             cohort_evidence,
             self.case["subjects_digest"],
             environment_digest,
+            authority_audit,
         )
 
         finished = time.time()

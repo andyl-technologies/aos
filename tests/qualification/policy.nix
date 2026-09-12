@@ -184,6 +184,11 @@
   nativeCells = nativeAdapterMatrix.cells;
   firstNativeCell = builtins.head nativeCells;
   remainingNativeCells = builtins.tail nativeCells;
+  nativeRoleRevocationCells = builtins.filter (cell:
+    builtins.match "revoke-(caller|provider|enforcement|assignment)-(before-acquisition|after-acquisition|before-external-effect)"
+    (builtins.elemAt (lib.splitString "/" cell.id) 4)
+    != null)
+  nativeCells;
   replaceFirstNativeCell = replacement: [replacement] ++ remainingNativeCells;
   rejectsNativeMatrix = arguments:
     !(builtins.tryEval (builtins.deepSeq (import ../../qualification/modules/_native-adapter-matrix.nix ({inherit lib;} // arguments)) true)).success;
@@ -366,6 +371,8 @@ in
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
   assert nativeAdapterMatrix.cell_count == 1316;
   assert nativeAdapterMatrix.required_production_vm_cells == 1316;
+  assert builtins.length nativeRoleRevocationCells == 564;
+  assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
   assert abilityRequirements.ability-native-adapter-matrix.checks
