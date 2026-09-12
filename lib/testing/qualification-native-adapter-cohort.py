@@ -2646,7 +2646,60 @@ def _cancellation_oracle_snapshot(adapter: str, value: Any) -> bool:
     """Checks that a live snapshot names the adapter's independent oracle kind."""
 
     expected = CANCELLATION_ORACLE_KINDS.get(adapter)
-    return isinstance(value, dict) and value.get("kind") == expected
+    if not isinstance(value, dict) or value.get("kind") != expected:
+        return False
+    if adapter != "image-rollout":
+        return True
+
+    if set(value) != {
+        "kind",
+        "filesystem",
+        "hook-state",
+        "kernel-command-line",
+    }:
+        return False
+    filesystem = value.get("filesystem")
+    hooks = value.get("hook-state")
+    if (
+        not _cancellation_filesystem_snapshot(filesystem)
+        or not _cancellation_filesystem_snapshot(hooks)
+        or not isinstance(value.get("kernel-command-line"), str)
+        or not value["kernel-command-line"]
+    ):
+        return False
+    paths = [entry["path"] for entry in filesystem["entries"]]
+    return (
+        "/var/lib/profiles/image/state.json" in paths
+        and any(
+            path.startswith("/var/lib/profiles/image/ability-rollouts/")
+            and path.endswith("/state.json")
+            for path in paths
+        )
+    )
+
+
+def _cancellation_filesystem_snapshot(value: Any) -> bool:
+    """Checks the bounded file facts used by the image rollout oracle."""
+
+    if not isinstance(value, dict) or set(value) != {"kind", "entries"}:
+        return False
+    entries = value.get("entries")
+    if value.get("kind") != "filesystem" or not isinstance(entries, list):
+        return False
+    if len(entries) > 512:
+        return False
+    return all(
+        isinstance(entry, dict)
+        and set(entry) == {"path", "metadata", "digest"}
+        and isinstance(entry.get("path"), str)
+        and entry["path"].startswith("/")
+        and isinstance(entry.get("metadata"), str)
+        and (
+            entry.get("digest") is None
+            or _matches(RAW_DIGEST, entry.get("digest"))
+        )
+        for entry in entries
+    )
 
 
 def _cancellation_foreign_snapshot(value: Any) -> bool:
@@ -2722,6 +2775,8 @@ def _validate_cancellation_probe_facts(
                 _cancellation_oracle_snapshot(cell["adapter"], observations.get(field))
                 for field in ("live-before", "live-unsettled", "live-after")
             )
+            or observations.get("live-before") != observations.get("live-unsettled")
+            or observations.get("live-before") != observations.get("live-after")
         ):
             raise RuntimeError("cancellation journal or provider facts are invalid")
     elif postcondition == "at-most-one-resource-owner":

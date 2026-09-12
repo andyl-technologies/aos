@@ -89,6 +89,15 @@
       inherit (cohort) id script setup qualifiedCells;
     })
     additionalCohorts;
+  matrixUsesImageRollout =
+    builtins.any (
+      cellId: builtins.head (lib.splitString "/" cellId) == "image-rollout"
+    )
+    matrixQualifiedCells;
+  requiresStagingHub =
+    scenarioId
+    == "ability-native-image-rollout"
+    || (scenarioId == "ability-native-adapter-matrix" && matrixUsesImageRollout);
   fixtureRoots = lib.unique (
     map builtins.toString (
       [fixtureScriptRoot setupModuleRoot]
@@ -373,7 +382,7 @@ in
     && cohort.candidateRuntimeCompanions != [])
   matrixAdditionalCohorts;
   assert checks != [];
-  assert (stagingHubUrl != null) == (scenarioId == "ability-native-image-rollout");
+  assert (stagingHubUrl != null) == requiresStagingHub;
   assert stagingHubUrl == null || builtins.match "https://[^/]+/?" stagingHubUrl != null;
     executable
     // {

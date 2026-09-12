@@ -441,9 +441,31 @@ class Scenario:
 }}
 '''
 
+    def matrix_uses_image_rollout(self) -> bool:
+        """Returns whether the exact matrix scope contains image rollout cells."""
+
+        return self.matrix_spec is not None and any(
+            cell_id.split("/", 1)[0] == "image-rollout"
+            for cell_id in MATRIX_QUALIFIED_CELLS
+        )
+
+    @staticmethod
+    def cohort_uses_image_rollout(cohort: dict[str, Any]) -> bool:
+        """Returns whether one matrix cohort contains only image rollout cells."""
+
+        cells = cohort.get("qualifiedCells", [])
+        return bool(cells) and all(
+            isinstance(cell_id, str)
+            and cell_id.split("/", 1)[0] == "image-rollout"
+            for cell_id in cells
+        )
+
     def validate_inputs(self) -> None:
         matrix_case = SCENARIO_ID == "ability-native-adapter-matrix"
         rollout_case = SCENARIO_ID == "ability-native-image-rollout"
+        published_rollout_case = rollout_case or self.matrix_uses_image_rollout()
+        if published_rollout_case and not STAGING_HUB_URL:
+            raise RuntimeError("published image rollout lacks its authenticated staging origin")
         if PLATFORM != "x86_64-linux" or self.request["platform"] != PLATFORM:
             raise RuntimeError("native ability qualification requires x86_64 Linux")
         if (
@@ -536,7 +558,9 @@ class Scenario:
         self._validate_object(self.assembly_artifact)
         self._validate_object(self.finalized_artifact)
         self._validate_image_controls()
-        if rollout_case:
+        if published_rollout_case:
+            if not self.case.get("predecessor") or not self.predecessor_objects:
+                raise RuntimeError("published image rollout lacks its verified predecessor")
             self._bind_predecessor_image()
         self._bind_published_package_outputs()
         self._prepare_candidate_handler_companions()
@@ -1623,6 +1647,13 @@ class Scenario:
             raise RuntimeError("matrix cohort did not retain its runtime audit")
         if interruption_audit is None:
             raise RuntimeError("matrix cohort did not retain its interruption audit")
+        if self.matrix_uses_image_rollout() and (
+            not self.rollout_boot_ids["candidate"]
+            or not self.rollout_boot_ids["predecessor"]
+        ):
+            raise RuntimeError(
+                "matrix image rollout did not boot both frozen published subjects"
+            )
 
         qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
         qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
@@ -1914,11 +1945,25 @@ class Scenario:
                     or not isinstance(cohort["qualifiedCells"], list)
                 ):
                     raise RuntimeError("matrix production cohort input is malformed")
+                image_cells = [
+                    cell_id
+                    for cell_id in cohort["qualifiedCells"]
+                    if isinstance(cell_id, str)
+                    and cell_id.split("/", 1)[0] == "image-rollout"
+                ]
+                if image_cells and not self.cohort_uses_image_rollout(cohort):
+                    raise RuntimeError(
+                        "matrix image rollout cells require an isolated production cohort"
+                    )
 
                 rollout_case = SCENARIO_ID == "ability-native-image-rollout"
+                matrix_rollout_cohort = (
+                    self.matrix_spec is not None
+                    and self.cohort_uses_image_rollout(cohort)
+                )
                 image_path = (
                     self.predecessor_image["qcow2_path"]
-                    if rollout_case
+                    if rollout_case or matrix_rollout_cohort
                     else self.qcow2_path
                 )
                 machine = PublishedImageMachine(
@@ -1929,8 +1974,9 @@ class Scenario:
                     IMAGE.Counts(),
                     scenario=self,
                 )
-                if rollout_case:
+                if rollout_case or matrix_rollout_cohort:
                     machine.expect_published_image("predecessor")
+                if rollout_case:
                     machine.rollout_branch = cohort["id"]
                 self.machine = machine
                 try:

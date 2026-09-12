@@ -218,6 +218,12 @@ class CancellationEvidence:
             == observation.foreign_after
         ):
             raise RuntimeError("foreign sentinel changed during cancellation")
+        if not (
+            observation.live_before
+            == observation.live_unsettled
+            == observation.live_after
+        ):
+            raise RuntimeError("provider state changed before cancellation dispatch")
         if (
             observation.dependent_before
             or observation.dependent_after

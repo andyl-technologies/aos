@@ -512,6 +512,11 @@
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
+  nativeCancellationRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId;
+    })
+  nativeCancellationCells.groups.rollout;
   nativeAdapterRoleScenarios = [
     "revoke-caller-before-acquisition"
     "revoke-caller-after-acquisition"
@@ -564,7 +569,8 @@
     ++ nativeEffectBoundaryCells.groups.foreground
     ++ nativeCancellationKubernetesCells
     ++ nativeCancellationCells.groups.postgresql
-    ++ nativeCancellationSystemdCells;
+    ++ nativeCancellationSystemdCells
+    ++ nativeCancellationCells.groups.rollout;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
       mkNativeAbilityScenario
@@ -577,6 +583,9 @@
       checks = qualificationRequirementChecks "ability-native-adapter-matrix";
       matrixSpec = nativeAdapterMatrix.spec;
       matrixQualifiedCells = nativeAdapterQualifiedCells;
+      # Image cancellation cells run the same predecessor-to-candidate path as
+      # the production rollout requirement and fail closed without this origin.
+      stagingHubUrl = "https://aos.staging.andyl.org";
       matrixAdditionalCohorts =
         [
           {
@@ -636,7 +645,14 @@
             inherit (nativeCancellationSystemdCohort) testScript;
             inherit (nativeCancellationSystemdCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
-        ];
+        ]
+        ++ lib.imap (index: cohort: {
+          id = "provider-cancellation-rollout-${builtins.toString index}";
+          qualifiedCells = [(builtins.elemAt nativeCancellationCells.groups.rollout index)];
+          inherit (cohort) testScript;
+          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        })
+        nativeCancellationRolloutCohorts;
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
