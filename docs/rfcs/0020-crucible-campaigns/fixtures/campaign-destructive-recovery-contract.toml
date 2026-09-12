@@ -206,7 +206,7 @@ action = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER=crucible.destructive-recovery.co
 prior_state = "At least two independently named placements authenticate the same content identity."
 symptom = "Store ensure or verify reports corruption distinctly from a miss and refuses bytes from the corrupt placement."
 automatic_response = "The configured graph follows only its declared authenticated fallback or repair policy."
-recovery_commands = ["crucible --format jsonl store repair {content_id} --in {store_deployment} --source {valid_source_node} --target {corrupt_target_node} --state {campaign_state} --policy {campaign_policy}", "crucible --format jsonl store ensure {content_id} --in {store_deployment}", "crucible --format jsonl store verify {store_deployment}"]
+recovery_commands = ["crucible --format jsonl store repair placement {content_id} --in {store_deployment} --source {valid_source_node} --target {corrupt_target_node} --state {campaign_state} --policy {campaign_policy}", "crucible --format jsonl store ensure {content_id} --in {store_deployment}", "crucible --format jsonl store verify {store_deployment}"]
 observables = ["corrupt placement identity", "valid placement identity", "content digest", "fallback route", "repair disposition"]
 post_recovery_invariant = "Only authenticated bytes are returned and repair does not alter the logical content identity."
 backend_scope = "constrained-host-and-each-targeted-backend"

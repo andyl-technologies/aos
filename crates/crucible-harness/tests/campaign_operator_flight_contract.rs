@@ -90,6 +90,7 @@ struct Automation {
     executor_restart: String,
     credential_refresh: String,
     store_repair: String,
+    operational_state_migration: String,
     store_gc: String,
     store_repack: String,
     evidence_export: String,
@@ -225,6 +226,7 @@ fn operator_contract_is_executable_without_claiming_manual_acceptance() -> Resul
     for public_surface in [
         contract.automation.service_start,
         contract.automation.store_repair,
+        contract.automation.operational_state_migration,
         contract.automation.store_gc,
         contract.automation.store_repack,
     ] {

@@ -1123,7 +1123,13 @@ mod tests {
             .filter(|id| *id != "help")
             .collect::<BTreeSet<_>>();
         assert_eq!(repack_ids, BTreeSet::from(["store", "node", "plan"]));
-        let repair_ids = repair
+        let placement = repair
+            .find_subcommand("placement")
+            .expect("placement repair command");
+        let operational = repair
+            .find_subcommand("operational-state")
+            .expect("operational-state repair command");
+        let repair_ids = placement
             .get_arguments()
             .filter(|argument| !argument.is_global_set())
             .map(|argument| argument.get_id().as_str())
@@ -1139,6 +1145,24 @@ mod tests {
                 "maximum_bytes",
                 "state",
                 "policy",
+            ])
+        );
+        let operational_ids = operational
+            .get_arguments()
+            .filter(|argument| !argument.is_global_set())
+            .map(|argument| argument.get_id().as_str())
+            .filter(|id| *id != "help")
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            operational_ids,
+            BTreeSet::from([
+                "state",
+                "policy",
+                "ledger",
+                "prepared_results",
+                "maximum_assignment_records",
+                "maximum_prepared_journals",
+                "maximum_prepared_result_bytes",
             ])
         );
     }
