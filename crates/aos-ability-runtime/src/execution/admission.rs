@@ -652,8 +652,7 @@ impl<'plan> ExecutionTransaction<'plan> {
         }
 
         for access in accesses {
-            let expected_resource_provider =
-                expected_provider_for_resource(expected_provider.as_ref(), &access.resource);
+            let expected_resource_provider = expected_provider.as_ref();
             if let Err(error) = check_admission_deadline(
                 self,
                 operation_key,
@@ -906,16 +905,6 @@ impl<'plan> ExecutionTransaction<'plan> {
             _live_reservation: live_reservation,
         })
     }
-}
-
-fn expected_provider_for_resource<'a>(
-    expected_provider: Option<&'a aos_ability_model::ProviderAssignment>,
-    resource: &ResourceId,
-) -> Option<&'a aos_ability_model::ProviderAssignment> {
-    // Version-1 checked bindings currently grant only resources owned by their
-    // selected provider. Keep the runtime boundary exact if a later registered
-    // catalog admits independently assigned cross-provider resources.
-    expected_provider.filter(|assignment| assignment.provider == resource.provider)
 }
 
 fn check_admission<'plan>(
@@ -1269,43 +1258,6 @@ mod tests {
 
     use super::*;
     use crate::adapter::CatalogReservation;
-
-    #[test]
-    fn operation_assignment_applies_only_to_its_own_provider_resources()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let own_resource = resource("own")?;
-        let assignment = aos_ability_model::ProviderAssignment {
-            provider: own_resource.provider.clone(),
-            interface: aos_ability_model::InterfaceKey {
-                name: aos_ability_model::InterfaceName::new("test.interface")?,
-                abi: std::num::NonZeroU32::MIN,
-                descriptor: aos_contract::Sha256Digest::of_bytes("test-interface"),
-            },
-            implementation: aos_ability_model::ProviderImplementationReference {
-                descriptor: aos_contract::Sha256Digest::of_bytes("test-provider"),
-                artifact: aos_ability_model::ArtifactReference {
-                    content: aos_contract::Sha256Digest::of_bytes("content"),
-                    store_path: "/nix/store/00000000000000000000000000000000-test".to_string(),
-                    nar_hash: aos_contract::Sha256Digest::of_bytes("nar"),
-                    closure: aos_contract::Sha256Digest::of_bytes("closure"),
-                },
-                handler: Some(LocalKey::new("handler")?),
-            },
-            incarnation: aos_ability_model::IncarnationId::new("own-incarnation")?,
-        };
-        let mut foreign_resource = resource("foreign")?;
-        foreign_resource.provider.key = LocalKey::new("foreign-provider")?;
-
-        assert_eq!(
-            expected_provider_for_resource(Some(&assignment), &own_resource),
-            Some(&assignment)
-        );
-        assert_eq!(
-            expected_provider_for_resource(Some(&assignment), &foreign_resource),
-            None
-        );
-        Ok(())
-    }
 
     #[test]
     fn incomplete_acquisition_releases_in_reverse_and_retains_failures()

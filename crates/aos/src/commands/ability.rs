@@ -228,9 +228,15 @@ fn diagnostic(args: &AbilityDiagnosticArgs, printer: &Printer) -> Result<()> {
     let transaction = TransactionId(
         LocalKey::new(args.transaction.clone()).context("parsing ability transaction identity")?,
     );
-    let supported_features = BTreeSet::from([
-        RequiredFeature::new("abilities-v1").context("constructing ability feature set")?
-    ]);
+    let supported_features = [
+        "abilities-v1",
+        aos_ability_model::PROVIDER_STATE_FORMAT_V1,
+        aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
+    ]
+    .into_iter()
+    .map(RequiredFeature::new)
+    .collect::<std::result::Result<BTreeSet<_>, _>>()
+    .context("constructing ability feature set")?;
     let source =
         RetainedAbilityDiagnosticSource::load(&args.generation, &transaction, supported_features)
             .context("loading retained ability transaction")?;

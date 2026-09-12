@@ -10,9 +10,10 @@ use aos_ability_model::document::ProviderState;
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::{
     AccessMode, AuthorityGrant, Binding, BindingPlanDocument, Diagnostic, DiagnosticClass,
-    DiagnosticCode, DiagnosticPhase, ImplementationKind, InstanceId, InterfaceKey, PackageDocument,
-    PlanId, RequestId, RequirementDeclaration, RequirementStrength, ResourceLifetime,
-    ValueExpression, VersionedDocument, compare_resource_ids,
+    DiagnosticCode, DiagnosticPhase, ImplementationKind, InstanceId, InterfaceKey,
+    PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId, RequestId, RequirementDeclaration,
+    RequirementStrength, ResourceLifetime, ValueExpression, VersionedDocument,
+    compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -1313,9 +1314,14 @@ fn validate_binding(
     validate_grant(
         &binding.caller_grant,
         binding,
+        context,
+        plan,
+        inputs,
+        input_index,
         resources,
         aggregation,
         false,
+        true,
         index,
         "caller_grant",
         diagnostics,
@@ -1323,9 +1329,14 @@ fn validate_binding(
     validate_grant(
         &binding.provider_grant,
         binding,
+        context,
+        plan,
+        inputs,
+        input_index,
         resources,
         aggregation,
         true,
+        false,
         index,
         "provider_grant",
         diagnostics,
@@ -1520,9 +1531,14 @@ fn validate_grant_methods(
 fn validate_grant(
     grant: &AuthorityGrant,
     binding: &Binding,
+    context: &ValidationContext,
+    plan: &BindingPlanDocument,
+    inputs: &BindingValidationInputs,
+    input_index: &BindingInputIndex,
     resources: &BTreeSet<aos_ability_model::ResourceId>,
     aggregation: Option<&aos_ability_model::AggregationContract>,
     permit_caller_observation: bool,
+    permit_stateful_owner_write: bool,
     index: usize,
     field: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1581,7 +1597,17 @@ fn validate_grant(
             &binding.provider,
             &binding.request.consumer,
             permit_caller_observation,
-        ) {
+        ) && !(permit_stateful_owner_write
+            && mediated_owner_write_in_scope(
+                permission,
+                binding,
+                context,
+                plan,
+                inputs,
+                input_index,
+                resources,
+            ))
+        {
             let mut item = binding_diagnostic(
                 DiagnosticCode::ResourceScopeEscape,
                 DiagnosticClass::Unauthorized,
@@ -1594,6 +1620,50 @@ fn validate_grant(
             push_diagnostic(diagnostics, item);
         }
     }
+}
+
+fn mediated_owner_write_in_scope(
+    permission: &aos_ability_model::ResourcePermission,
+    binding: &Binding,
+    context: &ValidationContext,
+    plan: &BindingPlanDocument,
+    inputs: &BindingValidationInputs,
+    input_index: &BindingInputIndex,
+    resources: &BTreeSet<aos_ability_model::ResourceId>,
+) -> bool {
+    if permission.resource.provider != binding.request.consumer
+        || !permission.access.is_write()
+        || !resources.contains(&permission.resource)
+    {
+        return false;
+    }
+    let request_matches_lifetime = plan
+        .requests
+        .iter()
+        .any(|request| request.id == binding.request && request.lifetime == binding.lifetime);
+    let binding_is_terminal = binding.provider_package.is_some_and(|digest| {
+        input_index
+            .packages
+            .get(&digest)
+            .is_some_and(|package_index| {
+                package_supplies_binding(
+                    &inputs.packages[*package_index],
+                    &input_index.package_catalogs[*package_index],
+                    binding,
+                ) == Some(PackageProviderKind::TerminalHandler)
+            })
+    });
+    if !request_matches_lifetime || !binding_is_terminal || permission.operations.is_empty() {
+        return false;
+    }
+
+    permission.operations.iter().all(|operation| {
+        binding.caller_grant.methods.contains(operation)
+            && context
+                .interface(&binding.interface)
+                .and_then(|interface| interface.interface.methods.get(operation))
+                .is_some()
+    })
 }
 
 fn grant_resource_in_scope(

@@ -1041,20 +1041,24 @@ mod tests {
         let content = b"bounded decompressed NAR content";
         let (tmp, hash) = zstd_fixture(content);
 
-        assert!(verify_nar_identity_with_compression(
-            tmp.path(),
-            &hash,
-            u64::try_from(content.len()).unwrap(),
-            "zstd",
-        )
-        .is_ok());
-        assert!(verify_nar_identity_with_compression(
-            tmp.path(),
-            &hash,
-            u64::try_from(content.len() - 1).unwrap(),
-            "zstd",
-        )
-        .is_err());
+        assert!(
+            verify_nar_identity_with_compression(
+                tmp.path(),
+                &hash,
+                u64::try_from(content.len()).unwrap(),
+                "zstd",
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_nar_identity_with_compression(
+                tmp.path(),
+                &hash,
+                u64::try_from(content.len() - 1).unwrap(),
+                "zstd",
+            )
+            .is_err()
+        );
     }
 
     use crate::registry::store::{self, NarBytes, Realisation};

@@ -115,6 +115,9 @@ pub struct TransitionReconciliation {
     pub authority_publication: Sha256Digest,
     /// Retains the exact protected current-authority publication as bounded JSON.
     pub authority_document: AbilityValue,
+    /// Names settled provider handoffs that still require linked ownership settlement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsettled_provider_adoptions: Vec<aos_ability_model::ResourceId>,
     /// Lists exact classified resources in canonical logical-resource order.
     pub observations: Vec<RuntimeResourceObservation>,
 }

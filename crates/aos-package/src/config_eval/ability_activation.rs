@@ -21,8 +21,9 @@ use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AggregateOutput, DesiredStateDocument, EnvironmentDocument, RequiredFeature,
-    ResourceReference, TransitionAuthorizationDocument, ValueExpression, VersionedDocument,
+    ABILITY_LIMITS_V1, AggregateOutput, DesiredStateDocument, EnvironmentDocument,
+    ImplementationKind, RequiredFeature, ResourceReference, TransitionAuthorizationDocument,
+    ValueExpression, VersionedDocument,
 };
 use aos_ability_plan::{
     PlanningReplayInputs, PlanningSnapshot, ResolutionPolicyDocument, TransitionInputs,
@@ -260,6 +261,7 @@ pub struct VerifiedAbilityActivationInputs {
 pub struct SpecializedAbilityActivation {
     plan: CheckedEffectPlan,
     bundle: ReloadablePlanBundle,
+    current_binding_plan: Option<CheckedBindingPlan>,
     desired_state: DesiredStateDocument,
     current_desired_state: Option<DesiredStateDocument>,
     desired_native_resources: NativeResourceMap,
@@ -278,6 +280,12 @@ impl SpecializedAbilityActivation {
     #[must_use]
     pub const fn bundle(&self) -> &ReloadablePlanBundle {
         &self.bundle
+    }
+
+    /// Returns the independently checked retained binding plan, when present.
+    #[must_use]
+    pub const fn current_binding_plan(&self) -> Option<&CheckedBindingPlan> {
+        self.current_binding_plan.as_ref()
     }
 
     /// Returns the freshly specialized fixed-point desired state.
@@ -483,9 +491,91 @@ pub fn specialize_reconciliation(
     reconciliation: TransitionReconciliation,
     supported_features: &BTreeSet<RequiredFeature>,
 ) -> Result<SpecializedAbilityActivation> {
+    specialize_reconciliation_inner(
+        desired,
+        current,
+        packages,
+        evaluator,
+        source,
+        reconciliation,
+        supported_features,
+        None,
+    )
+}
+
+/// Constructs a linked repair graph for resources retained by failed adoption receipts.
+///
+/// Unlike ordinary drift repair, the initially checked graph may contain the
+/// exact adoption effects. A freshly authenticated classification still links
+/// the replacement graph, and every named receipt resource must be covered by
+/// that classification.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`specialize_reconciliation`],
+/// or when the failed receipt set is empty, unobserved, or lacks exact adoption
+/// authority for an effectful source graph.
+pub(crate) fn specialize_adoption_reconciliation(
+    desired: &VerifiedAbilityActivationInputs,
+    current: &VerifiedAbilityActivationInputs,
+    packages: &VerifiedAbilityPackageSet,
+    evaluator: &mut RestrictedAbilityEvaluator,
+    source: &SpecializedAbilityActivation,
+    reconciliation: TransitionReconciliation,
+    supported_features: &BTreeSet<RequiredFeature>,
+    receipt_resources: &BTreeSet<aos_ability_model::ResourceId>,
+) -> Result<SpecializedAbilityActivation> {
     ensure!(
-        source.plan().operations().is_empty(),
-        "runtime reconciliation source plan is not effect-free"
+        !receipt_resources.is_empty()
+            && reconciliation.unsettled_provider_adoptions
+                == receipt_resources.iter().cloned().collect::<Vec<_>>()
+            && receipt_resources.iter().all(|resource| {
+                reconciliation
+                    .observations
+                    .iter()
+                    .any(|observation| &observation.resource == resource)
+            }),
+        "settled provider-adoption recovery does not classify every receipt resource"
+    );
+    if !source.plan().operations().is_empty() {
+        ensure!(
+            receipt_resources.iter().all(|resource| {
+                source
+                    .bundle()
+                    .provider_adoptions()
+                    .iter()
+                    .any(|adoption| &adoption.resource == resource)
+            }),
+            "effectful provider-adoption recovery lacks exact transition authority"
+        );
+    }
+
+    specialize_reconciliation_inner(
+        desired,
+        current,
+        packages,
+        evaluator,
+        source,
+        reconciliation,
+        supported_features,
+        Some(receipt_resources),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn specialize_reconciliation_inner(
+    desired: &VerifiedAbilityActivationInputs,
+    current: &VerifiedAbilityActivationInputs,
+    packages: &VerifiedAbilityPackageSet,
+    evaluator: &mut RestrictedAbilityEvaluator,
+    source: &SpecializedAbilityActivation,
+    reconciliation: TransitionReconciliation,
+    supported_features: &BTreeSet<RequiredFeature>,
+    settled_adoption_resources: Option<&BTreeSet<aos_ability_model::ResourceId>>,
+) -> Result<SpecializedAbilityActivation> {
+    ensure!(
+        source.plan().operations().is_empty() || settled_adoption_resources.is_some(),
+        "runtime reconciliation source plan is not effect-free or adoption-linked"
     );
     ensure!(
         reconciliation.source_plan == source.plan().id(),
@@ -507,9 +597,35 @@ pub fn specialize_reconciliation(
         "runtime reconciliation changed its authenticated planning inputs"
     );
     ensure!(
-        !repaired.plan().operations().is_empty() && repaired.plan().id() != source.plan().id(),
+        repaired.plan().id() != source.plan().id(),
         "runtime reconciliation did not produce a distinct repair graph"
     );
+    if repaired.plan().operations().is_empty() {
+        let Some(settled_adoption_resources) = settled_adoption_resources else {
+            bail!("runtime reconciliation did not produce a repair operation");
+        };
+        ensure!(
+            settled_adoption_resources.iter().all(|resource| {
+                let desired_revision = repaired
+                    .desired_native_resources()
+                    .entries
+                    .iter()
+                    .find(|mapping| &mapping.resource == resource)
+                    .map(|mapping| mapping.revision);
+                reconciliation.observations.iter().any(|observation| {
+                    &observation.resource == resource
+                        && matches!(
+                            observation.state,
+                            aos_ability_plan::RuntimeResourceState::Present {
+                                revision,
+                                health: aos_ability_plan::RuntimeResourceHealth::Healthy,
+                            } if Some(revision) == desired_revision
+                        )
+                })
+            }),
+            "empty provider-adoption recovery lacks exact healthy observations"
+        );
+    }
     Ok(repaired)
 }
 
@@ -604,7 +720,12 @@ fn specialize_activation_with_reconciliation(
         })
         .transpose()?;
     if let Some(reconciliation) = reconciliation {
-        validate_runtime_reconciliation(desired, &desired_native_resources, reconciliation)?;
+        validate_runtime_reconciliation(
+            desired,
+            &desired_native_resources,
+            current_native_resources.as_ref(),
+            reconciliation,
+        )?;
     }
     validate_cross_generation_physical_claims(
         &desired_native_resources,
@@ -659,6 +780,9 @@ fn specialize_activation_with_reconciliation(
     let current_desired_state = current_planning
         .as_ref()
         .map(|planning| planning.outcome().desired_state.clone());
+    let current_binding_plan = current_planning
+        .as_ref()
+        .map(|planning| planning.checked_binding().clone());
     let plan = transition.into_checked_effect();
     // Only desired policy remains a live execution grant. Retained current
     // mappings are historical facts authenticated by generation evidence;
@@ -667,6 +791,7 @@ fn specialize_activation_with_reconciliation(
     Ok(SpecializedAbilityActivation {
         plan,
         bundle,
+        current_binding_plan,
         desired_state,
         current_desired_state,
         desired_native_resources,
@@ -677,7 +802,8 @@ fn specialize_activation_with_reconciliation(
 
 fn validate_runtime_reconciliation(
     desired: &VerifiedAbilityActivationInputs,
-    resources: &NativeResourceMap,
+    desired_resources: &NativeResourceMap,
+    current_resources: Option<&NativeResourceMap>,
     reconciliation: &TransitionReconciliation,
 ) -> Result<()> {
     let expected_policy_fence = aos_ability_model::RevisionId(
@@ -688,13 +814,21 @@ fn validate_runtime_reconciliation(
         reconciliation.policy_fence == expected_policy_fence,
         "runtime reconciliation uses another operator policy fence"
     );
+    let mut resources = current_resources
+        .into_iter()
+        .flat_map(|resources| &resources.entries)
+        .map(|mapping| (&mapping.resource, mapping))
+        .collect::<BTreeMap<_, _>>();
+    for mapping in &desired_resources.entries {
+        resources.insert(&mapping.resource, mapping);
+    }
     ensure!(
-        reconciliation.observations.len() == resources.entries.len(),
-        "runtime reconciliation does not classify the complete native resource map"
+        reconciliation.observations.len() == resources.len(),
+        "runtime reconciliation does not classify the complete desired/current native resource map"
     );
-    for (observation, mapping) in reconciliation.observations.iter().zip(&resources.entries) {
+    for (observation, resource) in reconciliation.observations.iter().zip(resources.keys()) {
         ensure!(
-            observation.resource == mapping.resource,
+            &observation.resource == *resource,
             "runtime reconciliation observation names a foreign native resource"
         );
     }
@@ -777,10 +911,14 @@ fn validate_resource_map_against_planning(
             .binding(&mapping.binding)
             .with_context(|| format!("{generation} native mapping names an unknown binding"))?;
         ensure!(
-            binding.provider == mapping.resource.provider
-                && binding.provider_package == Some(mapping.owner_package)
+            binding.provider_package == Some(mapping.owner_package)
                 && binding.implementation == mapping.implementation,
             "{generation} native mapping disagrees with its checked provider binding"
+        );
+        ensure!(
+            binding.provider == mapping.resource.provider
+                || mapping_has_checked_owner_route(mapping, binding, checked_binding, packages)?,
+            "{generation} native mapping has no checked logical-owner to terminal-handler route"
         );
         if let NativeResourceQualification::SystemdService {
             consumer_observation: Some(consumer_observation),
@@ -813,6 +951,66 @@ fn validate_resource_map_against_planning(
         validate_mapping_outputs(mapping, desired_state, owner, generation)?;
     }
     Ok(())
+}
+
+fn mapping_has_checked_owner_route(
+    mapping: &NativeResourceMapping,
+    handler_binding: &aos_ability_model::Binding,
+    checked_binding: &CheckedBindingPlan,
+    packages: &VerifiedAbilityPackageSet,
+) -> Result<bool> {
+    let Some(handler_request) = checked_binding
+        .document()
+        .requests
+        .iter()
+        .find(|request| request.id == handler_binding.request)
+    else {
+        return Ok(false);
+    };
+    if handler_request.id.consumer != mapping.resource.provider
+        || handler_request.lifetime != handler_binding.lifetime
+    {
+        return Ok(false);
+    }
+    let Some(package) = handler_binding.provider_package.and_then(|digest| {
+        packages
+            .iter()
+            .find(|package| package.package_digest() == digest)
+    }) else {
+        return Ok(false);
+    };
+    let exact_terminal = package
+        .package()
+        .implementation
+        .providers
+        .iter()
+        .filter(|implementation| {
+            implementation.descriptor_digest().ok()
+                == Some(handler_binding.implementation.descriptor)
+                && implementation.interface == handler_binding.interface
+                && implementation.artifact == handler_binding.implementation.artifact
+                && matches!(
+                    implementation.implementation,
+                    ImplementationKind::TerminalHandler { .. }
+                )
+        })
+        .count()
+        == 1;
+    let exact_caller_grant = handler_binding
+        .caller_grant
+        .resources
+        .iter()
+        .any(|permission| {
+            permission.resource == mapping.resource
+                && permission.access.is_write()
+                && !permission.operations.is_empty()
+                && permission
+                    .operations
+                    .iter()
+                    .all(|method| handler_binding.caller_grant.methods.contains(method))
+        });
+
+    Ok(exact_terminal && exact_caller_grant)
 }
 
 fn validate_mapping_outputs(
@@ -2040,6 +2238,7 @@ mod tests {
             max_age_millis: 1_000,
             authority_publication: digest("current authority"),
             authority_document: AbilityValue::new(serde_json::json!({})).unwrap(),
+            unsettled_provider_adoptions: Vec::new(),
             observations: vec![aos_ability_plan::RuntimeResourceObservation {
                 resource: mapping.resource.clone(),
                 state: aos_ability_plan::RuntimeResourceState::Present {
@@ -2049,13 +2248,18 @@ mod tests {
             }],
         };
 
-        validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+        validate_runtime_reconciliation(&inputs, &resources, None, &reconciliation)
             .expect("exact complete classification must be accepted");
 
         reconciliation.observations.clear();
-        let error = validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+        let error = validate_runtime_reconciliation(&inputs, &resources, None, &reconciliation)
             .expect_err("an incomplete resource classification must fail closed");
-        assert!(error.to_string().contains("complete native resource map"));
+        assert!(
+            error
+                .to_string()
+                .contains("complete desired/current native resource map"),
+            "unexpected reconciliation error: {error}"
+        );
 
         reconciliation.observations = vec![aos_ability_plan::RuntimeResourceObservation {
             resource: ResourceId {
@@ -2064,13 +2268,13 @@ mod tests {
             },
             state: aos_ability_plan::RuntimeResourceState::Absent,
         }];
-        let error = validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+        let error = validate_runtime_reconciliation(&inputs, &resources, None, &reconciliation)
             .expect_err("a foreign resource classification must fail closed");
         assert!(error.to_string().contains("foreign native resource"));
 
         reconciliation.observations[0].resource = mapping.resource.clone();
         reconciliation.policy_fence = RevisionId(digest("revoked policy"));
-        let error = validate_runtime_reconciliation(&inputs, &resources, &reconciliation)
+        let error = validate_runtime_reconciliation(&inputs, &resources, None, &reconciliation)
             .expect_err("another operator policy fence must fail closed");
         assert!(error.to_string().contains("another operator policy fence"));
     }
@@ -2280,6 +2484,7 @@ mod tests {
                 handler: handler_key.clone(),
             },
             owns_resource_kinds: vec![interface_key.name.clone()],
+            state_format: None,
         };
         let provider_descriptor = provider
             .descriptor_digest()

@@ -246,11 +246,13 @@ impl CurrentAbilityAuthorityDocument {
                 "current authority binding uses another policy revision",
             ));
         }
-        if self
-            .provider_assignments
-            .windows(2)
-            .any(|pair| pair[0].provider >= pair[1].provider)
-        {
+        if self.provider_assignments.windows(2).any(|pair| {
+            pair[0]
+                .provider
+                .cmp(&pair[1].provider)
+                .then_with(|| pair[0].interface.cmp(&pair[1].interface))
+                .is_ge()
+        }) {
             return Err(invalid(
                 "current authority provider assignments are not strictly canonical",
             ));
@@ -440,21 +442,23 @@ impl PublishingNativeAdmissionPolicy {
                 .admission
                 .as_ref()
                 .is_some_and(|admission| admission.commitment.transaction.is_some());
-        let document = self.publisher.publish(CurrentAuthorityPublication {
-            policy_fence: self.policy_fence,
-            transaction: retains_transaction.then_some(&self.transaction),
-            resolution_policy: &self.resolution_policy,
-            platform_policy: self.platform_policy.as_ref(),
-            transition_authority: self.transition_authority.as_ref(),
-            plan,
-            observations: CurrentAuthorityObservations {
-                sequence: self.sequence,
-                observed_at_restart_millis: self.clock.restart_stable_millis(),
-                max_age_millis: self.max_age_millis,
-                provider_assignments: assignments.to_vec(),
-                resource_observations: resources,
-            },
-        })?;
+        let document = self
+            .publisher
+            .publish_resuming(CurrentAuthorityPublication {
+                policy_fence: self.policy_fence,
+                transaction: retains_transaction.then_some(&self.transaction),
+                resolution_policy: &self.resolution_policy,
+                platform_policy: self.platform_policy.as_ref(),
+                transition_authority: self.transition_authority.as_ref(),
+                plan,
+                observations: CurrentAuthorityObservations {
+                    sequence: self.sequence,
+                    observed_at_restart_millis: self.clock.restart_stable_millis(),
+                    max_age_millis: self.max_age_millis,
+                    provider_assignments: assignments.to_vec(),
+                    resource_observations: resources,
+                },
+            })?;
         if let Some(admission) = &self.admission {
             if admission.commitment.plan != document.plan
                 || admission.commitment.transaction != document.transaction
@@ -640,6 +644,40 @@ where
         }
         Ok(())
     }
+
+    /// Revalidates one exact freshly observed union for linked recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the publication is stale or revoked, its checked
+    /// bindings or assignments changed, or its complete resource states differ.
+    pub(crate) fn authorize_native_observed_no_op(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: &[CurrentResourceObservation],
+    ) -> Result<(), CurrentAuthorityError> {
+        let current = self.refresh()?;
+        if plan.id() != self.commitment.plan {
+            return Err(invalid("native no-op uses another checked plan"));
+        }
+        if current.bindings != plan.binding_plan().bindings() {
+            return Err(invalid(
+                "current policy bindings differ from the checked no-op plan",
+            ));
+        }
+        if current.provider_assignments != assignments {
+            return Err(invalid(
+                "current provider assignments differ from the no-op observations",
+            ));
+        }
+        if current.resource_observations != resources {
+            return Err(invalid(
+                "current resource observations differ from the linked recovery union",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl<Source, Clock> TrustedAdmissionPolicy for NativeCurrentAdmissionPolicy<Source, Clock>
@@ -700,7 +738,7 @@ where
         }
 
         for (access, evidence) in operation.accesses.iter().zip(resources) {
-            require_current_resource_evidence(&current, access, evidence)?;
+            require_current_resource_evidence(&current, assignment, access, evidence)?;
         }
         Ok(())
     }
@@ -727,6 +765,16 @@ impl super::native_dispatch::NativeNoOpAdmissionPolicy for PublishingNativeAdmis
     ) -> Result<(), Self::Error> {
         self.admission_mut()?
             .authorize_native_no_op(plan, assignments, resources)
+    }
+
+    fn authorize_observed_no_op(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: &[CurrentResourceObservation],
+    ) -> Result<(), Self::Error> {
+        self.admission_mut()?
+            .authorize_native_observed_no_op(plan, assignments, resources)
     }
 }
 
@@ -765,21 +813,16 @@ impl TrustedAdmissionPolicy for PublishingNativeAdmissionPolicy {
 
 fn require_current_resource_evidence(
     current: &CurrentAbilityAuthorityDocument,
+    assignment: &ProviderAssignment,
     access: &ResourceAccess,
     evidence: &ResourceAdmissionEvidence,
 ) -> Result<(), CurrentAuthorityError> {
     if evidence.resource() != &access.resource {
         return Err(invalid("resource evidence names another checked resource"));
     }
-    let assignment = current
-        .provider_assignments
-        .binary_search_by(|assignment| assignment.provider.cmp(&access.resource.provider))
-        .ok()
-        .map(|index| &current.provider_assignments[index])
-        .ok_or_else(|| invalid("current authority lacks the resource provider assignment"))?;
     if evidence.provider_incarnation() != Some(&assignment.incarnation) {
         return Err(invalid(
-            "resource evidence differs from its own current provider assignment",
+            "resource evidence differs from the checked handler assignment",
         ));
     }
     let observed = current
@@ -938,10 +981,14 @@ fn build_publication(
     }
 
     let mut provider_assignments = publication.observations.provider_assignments;
-    provider_assignments.sort_by(|left, right| left.provider.cmp(&right.provider));
+    provider_assignments.sort_by(|left, right| {
+        left.provider
+            .cmp(&right.provider)
+            .then_with(|| left.interface.cmp(&right.interface))
+    });
     if provider_assignments
         .windows(2)
-        .any(|pair| pair[0].provider == pair[1].provider)
+        .any(|pair| pair[0].provider == pair[1].provider && pair[0].interface == pair[1].interface)
     {
         return Err(invalid(
             "observations contain duplicate provider assignments",
@@ -1131,13 +1178,16 @@ fn require_live_assignment<'a>(
 ) -> Result<&'a ProviderAssignment, CurrentAuthorityError> {
     let assignment = current
         .provider_assignments
-        .binary_search_by(|assignment| assignment.provider.cmp(&binding.provider))
+        .binary_search_by(|assignment| {
+            assignment
+                .provider
+                .cmp(&binding.provider)
+                .then_with(|| assignment.interface.cmp(&binding.interface))
+        })
         .ok()
         .map(|index| &current.provider_assignments[index])
         .ok_or_else(|| invalid("current authority lacks the provider assignment"))?;
-    if assignment.interface != binding.interface
-        || assignment.implementation != binding.implementation
-    {
+    if assignment.implementation != binding.implementation {
         return Err(invalid(
             "current provider assignment differs from the checked binding",
         ));

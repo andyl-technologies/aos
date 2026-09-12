@@ -52,6 +52,22 @@
         name = "ability-reference-postgresql-upgrade";
         package = packageSet.upgradeSuite;
       }
+      {
+        name = "ability-reference-postgresql-adoption-v1";
+        package = packageSet.adoptionV1Suite;
+      }
+      {
+        name = "ability-reference-postgresql-adoption-v2";
+        package = packageSet.adoptionV2Suite;
+      }
+      {
+        name = "ability-reference-postgresql-adoption-incompatible";
+        package = packageSet.adoptionIncompatibleSuite;
+      }
+      {
+        name = "ability-reference-postgresql-adoption-v2-interrupted";
+        package = packageSet.adoptionInterruptedSuite;
+      }
     ]
     ++ map (faultPoint: {
       name = "ability-reference-postgresql-fault-${faultPoint}";
@@ -273,6 +289,8 @@ in {
           lifecycle="full",
           fault=None,
           postgresql_artifact="baseline",
+          provider_adoption_from=None,
+          provider_adoption_current_planning=None,
           additional=None,
       ):
           runtime.succeed(
@@ -292,6 +310,16 @@ in {
               " --postgresql-artifact "
               + shlex.quote(postgresql_artifact)
           )
+          if provider_adoption_from is not None:
+              assert provider_adoption_current_planning is not None
+              optional += (
+                  " --provider-adoption-from "
+                  + shlex.quote(provider_adoption_from)
+                  + " --provider-adoption-current-planning "
+                  + shlex.quote(provider_adoption_current_planning)
+              )
+          else:
+              assert provider_adoption_current_planning is None
           for entry in additional or []:
               (
                   additional_database,
@@ -382,10 +410,23 @@ in {
           return destination
 
 
-      def write_postgresql_host(path, activation):
+      def write_postgresql_host(path, activation, desired_package_names=None):
           activation_json = json.dumps(activation, separators=(",", ":"))
+          selected_packages = (
+              REFERENCE_PACKAGES
+              if desired_package_names is None
+              else [
+                  entry for entry in REFERENCE_PACKAGES
+                  if entry["name"] in desired_package_names
+              ]
+          )
+          assert len(selected_packages) == len(
+              set(desired_package_names or [
+                  entry["name"] for entry in REFERENCE_PACKAGES
+              ])
+          ), (selected_packages, desired_package_names)
           desired_packages = " ".join(
-              json.dumps(entry["name"]) for entry in REFERENCE_PACKAGES
+              json.dumps(entry["name"]) for entry in selected_packages
           )
           host_module = (
               "{ lib, ... }: {\n"

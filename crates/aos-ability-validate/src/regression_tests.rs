@@ -1,21 +1,22 @@
 //! Cross-stage semantic regression tests built from the shared checked-plan fixture.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::{Contribution, PackageSubject, ProviderState};
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AccessMode, AggregateId, AggregateOutput,
-    AggregateOutputReference, AggregationContract, AggregationScope, BindingId, BranchMembership,
-    ContributionPermission, ControllerAssignment, DecisionAlternative, DecisionNode,
-    DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind, DiagnosticCode,
-    ExportDeclaration, HandlerDescriptor, ImplementationKind, IncarnationId, LocalKey, MergeNode,
-    MergedOutput, MethodReference, OperationFamily, OperationResultReference, OutputDescriptor,
-    PackageDocument, PackageImplementation, PlanNodeKey, ProviderAssignment,
-    ProviderImplementation, RequirementDeclaration, RequirementFallback, RequirementStrength,
-    ResourceId, ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision,
-    ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey, ServiceAction, StringConstraint,
-    ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument, compare_edges,
-    compare_operation_keys, compare_resource_ids,
+    AggregateOutputReference, AggregationContract, AggregationScope, ArtifactReference, BindingId,
+    BranchMembership, ContributionPermission, ControllerAssignment, DecisionAlternative,
+    DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
+    DiagnosticCode, ExportDeclaration, HandlerDescriptor, ImplementationKind, IncarnationId,
+    LocalKey, MergeNode, MergedOutput, MethodReference, OperationFamily, OperationResultReference,
+    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
+    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RequiredFeature,
+    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId, ResourceLifetime,
+    ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey, RevisionId,
+    ScopePath, ScopedOperationKey, ServiceAction, StringConstraint, ValueExpression, ValuePhase,
+    ValueSchema, ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
+    compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -205,6 +206,67 @@ fn contracts_only_package_cannot_catalog_a_terminal_handler() {
     );
 
     assert_diagnostic(fixture, DiagnosticCode::ResourceScopeEscape);
+}
+
+#[test]
+fn state_format_declaration_requires_its_package_feature() {
+    let mut fixture = plan_fixture();
+    configure_primary_state_format(&mut fixture, StateFormatFixture::MissingFeature);
+
+    assert_diagnostic(fixture, DiagnosticCode::UnsupportedRequiredFeature);
+}
+
+#[test]
+fn state_format_feature_requires_a_declaration() {
+    let mut fixture = plan_fixture();
+    configure_primary_state_format(&mut fixture, StateFormatFixture::MissingDeclaration);
+
+    assert_diagnostic(fixture, DiagnosticCode::UnsupportedRequiredFeature);
+}
+
+#[test]
+fn old_client_rejects_state_format_semantics_as_unknown() {
+    let mut fixture = plan_fixture();
+    configure_primary_state_format(&mut fixture, StateFormatFixture::Valid);
+    fixture.context = crate::ValidationContext::new(BTreeSet::new(), fixture.interfaces.clone())
+        .expect("fixture catalog accepts an empty feature set");
+
+    assert_diagnostic(fixture, DiagnosticCode::UnsupportedRequiredFeature);
+}
+
+#[test]
+fn package_feature_authenticates_state_format_semantics() {
+    let mut fixture = plan_fixture();
+    configure_primary_state_format(&mut fixture, StateFormatFixture::Valid);
+
+    fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect("feature-aware validation accepts the exact state-format declaration");
+}
+
+#[test]
+fn terminal_provider_cannot_declare_persistent_state_format() {
+    let mut fixture = plan_fixture();
+    configure_primary_state_format(&mut fixture, StateFormatFixture::TerminalProvider);
+
+    assert_diagnostic(fixture, DiagnosticCode::UnsupportedRequiredFeature);
+}
+
+#[test]
+fn state_format_requires_an_owned_resource_kind() {
+    let mut fixture = plan_fixture();
+    configure_primary_state_format(&mut fixture, StateFormatFixture::MissingOwnedResource);
+
+    assert_diagnostic(fixture, DiagnosticCode::UnsupportedRequiredFeature);
+}
+
+#[test]
+fn state_format_artifact_must_equal_the_provider_artifact() {
+    let mut fixture = plan_fixture();
+    configure_primary_state_format(&mut fixture, StateFormatFixture::DivergentArtifact);
+
+    assert_diagnostic(fixture, DiagnosticCode::UnsupportedRequiredFeature);
 }
 
 #[test]
@@ -1193,6 +1255,7 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
             transition_entry: transition_entry.clone(),
         },
         owns_resource_kinds: Vec::new(),
+        state_format: None,
     };
     let descriptor = implementation
         .descriptor_digest()
@@ -1235,6 +1298,92 @@ fn pin_primary_binding_to_pure_package(fixture: &mut PlanFixture) {
             .expect("static pure package must have a content digest"),
     );
     fixture.binding_inputs.packages = vec![package];
+    fixture.refresh_commitments();
+}
+
+#[derive(Clone, Copy)]
+enum StateFormatFixture {
+    DivergentArtifact,
+    MissingDeclaration,
+    MissingFeature,
+    MissingOwnedResource,
+    TerminalProvider,
+    Valid,
+}
+
+fn configure_primary_state_format(fixture: &mut PlanFixture, mode: StateFormatFixture) {
+    pin_primary_binding_to_pure_package(fixture);
+
+    let feature = RequiredFeature::new(PROVIDER_STATE_FORMAT_V1)
+        .expect("static provider state-format feature");
+    if !matches!(mode, StateFormatFixture::MissingFeature) {
+        fixture.binding_inputs.packages[0]
+            .required_features
+            .push(feature.clone());
+    }
+    fixture.context =
+        crate::ValidationContext::new([feature].into_iter().collect(), fixture.interfaces.clone())
+            .expect("fixture catalog accepts the state-format feature");
+
+    let package = &mut fixture.binding_inputs.packages[0];
+    if !matches!(mode, StateFormatFixture::MissingDeclaration) {
+        package.activation_mode = AbilityActivationMode::StructuredEffects;
+        let implementation = &mut package.implementation.providers[0];
+        implementation.owns_resource_kinds =
+            if matches!(mode, StateFormatFixture::MissingOwnedResource) {
+                Vec::new()
+            } else {
+                vec![implementation.interface.name.clone()]
+            };
+        implementation.state_format = Some(ProviderStateFormat {
+            descriptor: Sha256Digest::of_bytes("state-format-v1"),
+            artifact: if matches!(mode, StateFormatFixture::DivergentArtifact) {
+                ArtifactReference {
+                    content: Sha256Digest::of_bytes("divergent state-format content"),
+                    store_path:
+                        "/nix/store/00000000000000000000000000000000-divergent-state-format"
+                            .to_string(),
+                    nar_hash: Sha256Digest::of_bytes("divergent state-format nar"),
+                    closure: Sha256Digest::of_bytes("divergent state-format closure"),
+                }
+            } else {
+                implementation.artifact.clone()
+            },
+        });
+        if matches!(mode, StateFormatFixture::TerminalProvider) {
+            let handler = key("stateful-terminal");
+            implementation.implementation = ImplementationKind::TerminalHandler {
+                handler: handler.clone(),
+            };
+            implementation
+                .state_format
+                .as_mut()
+                .expect("state format")
+                .artifact = implementation.artifact.clone();
+            package.implementation.handlers.insert(
+                handler,
+                HandlerDescriptor {
+                    artifact: implementation.artifact.clone(),
+                    entry_point: "bin/stateful-terminal".to_string(),
+                    arguments: ValueSchema::Boolean,
+                    result: ValueSchema::Boolean,
+                },
+            );
+        }
+        let implementation_descriptor = implementation
+            .descriptor_digest()
+            .expect("stateful fixture implementation must digest");
+        package.exports[0].implementation = implementation_descriptor;
+        fixture.binding_plan.bindings[0].implementation.descriptor = implementation_descriptor;
+        fixture.binding_inputs.environment.providers[0]
+            .implementation
+            .descriptor = implementation_descriptor;
+    }
+
+    let package_digest = package
+        .content_digest()
+        .expect("stateful fixture package must digest");
+    fixture.binding_plan.bindings[0].provider_package = Some(package_digest);
     fixture.refresh_commitments();
 }
 

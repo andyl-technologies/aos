@@ -226,6 +226,9 @@ let
       builtins.filter
       (change: isPostgresqlResource change && change.kind == "remove")
       context.changes;
+    teardownOnly =
+      context.authorized_bindings != []
+      && builtins.all (entry: entry.authority.role == "teardown") context.authorized_bindings;
     contributionFor = snapshot: cluster: let
       selected =
         builtins.filter
@@ -256,8 +259,7 @@ let
       else if change.kind == "unchanged"
       then observation
       else throw "PostgreSQL transition cannot provision child ${change.resource.key} from '${change.kind}'";
-    terminalFor = authorityRole: requestKey: resourceId: method: access: let
-      selected =
+    terminalsFor = authorityRole: requestKey: resourceId: method: access:
         builtins.filter
         (entry:
           entry.authority.role
@@ -287,6 +289,8 @@ let
             entry.binding.caller_grant.resources)
           == 1)
         context.authorized_bindings;
+    terminalFor = authorityRole: requestKey: resourceId: method: access: let
+      selected = terminalsFor authorityRole requestKey resourceId method access;
     in
       if builtins.length selected == 1
       then (builtins.head selected).binding
@@ -623,6 +627,7 @@ let
             };
           };
         };
+        inherit cluster lifecycleKey;
       };
     retire = change: let
       cluster = clusterFor change;
@@ -765,8 +770,36 @@ let
         (edge policyKey endpointReleaseKey)
         (edge endpointReleaseKey storageKey)
       ];
+      inherit cluster stopKey;
+      replacement = {
+        operations = [stopOperation];
+        edges = [];
+        inherit cluster stopKey;
+      };
     };
-    provisioned = builtins.map provision changed;
+    replacementChanges = builtins.filter
+      (change: let
+        postgresqlResource = change.resource;
+        lifecycleMethod =
+          if change.kind == "reconcile-stopped"
+          then "start"
+          else "restart";
+      in
+        (change.kind == "update" || isReconciliation change)
+        && builtins.length (terminalsFor "teardown" "postgresql-terminal" postgresqlResource "stop" "exclusive-write") == 1
+        && (
+          teardownOnly
+          || (
+            builtins.length (terminalsFor "desired" "postgresql-terminal" postgresqlResource "materialize" "exclusive-write") == 1
+            && builtins.length (terminalsFor "desired" "postgresql-terminal" postgresqlResource lifecycleMethod "exclusive-write") == 1
+          )
+        ))
+      changed;
+    replacementStopped = builtins.map (change: (retire change).replacement) replacementChanges;
+    provisioned =
+      if teardownOnly
+      then []
+      else builtins.map provision changed;
     retired = builtins.map retire removed;
     dependencyRank = kind:
       builtins.getAttr kind {
@@ -790,12 +823,14 @@ let
     schema = "aos.ability.transition-fragment/v1";
     operations = builtins.sort operationLess (
       builtins.concatMap (entry: entry.operations) provisioned
+      ++ builtins.concatMap (entry: entry.operations) replacementStopped
       ++ builtins.concatMap (entry: entry.operations) retired
     );
     decisions = [];
     merges = [];
     edges = builtins.sort edgeLess (
       builtins.concatMap (entry: entry.edges) provisioned
+      ++ builtins.concatMap (entry: entry.edges) replacementStopped
       ++ builtins.concatMap (entry: entry.edges) retired
     );
     exports =

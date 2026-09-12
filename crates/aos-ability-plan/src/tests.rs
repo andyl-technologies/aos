@@ -870,6 +870,7 @@ fn planner_fixture_with_configuration(
             transition_entry: transition_entry.clone(),
         },
         owns_resource_kinds: Vec::new(),
+        state_format: None,
     };
     let descriptor = provider_implementation
         .descriptor_digest()

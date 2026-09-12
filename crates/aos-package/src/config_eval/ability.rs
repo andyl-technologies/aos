@@ -960,6 +960,7 @@ mod tests {
                 transition_entry: LocalKey::new("transition").unwrap(),
             },
             owns_resource_kinds: Vec::new(),
+            state_format: None,
         }
     }
 

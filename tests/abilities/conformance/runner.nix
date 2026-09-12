@@ -1,6 +1,7 @@
 ##! tests/abilities/conformance/runner.nix - Version-1 corpus Nix dispatcher.
 {
   abilities,
+  abilityPackageRenderer ? null,
   fixtureRoot ? ../.,
 }: let
   inherit (abilities) effects schemas;
@@ -200,6 +201,95 @@
       conditionalRequirements = [];
     };
     transition = _: effects.empty;
+  };
+
+  stateFormatExport = arguments:
+    abilities.define ({
+        interface = "aos.test.stateful";
+        abi = 1;
+        requestSchema = schemas.boolean;
+        outputs = {};
+        methods = {};
+        lifecycle = {
+          stableResourceIdentity = true;
+          releasesEphemeralOnDisable = false;
+          retainsPersistentByDefault = true;
+          persistentDeleteMethod = null;
+        };
+        guarantees = [];
+        aggregation = null;
+        requires = {};
+        ownsResourceKinds = arguments.owns_resource_kinds;
+        stateFormat = arguments.state_format;
+      }
+      // (
+        if arguments.implementation == "terminal-handler"
+        then {
+          handler = "stateful-handler";
+          provide = _: {
+            requests = {};
+            outputs = {};
+            resources = [];
+            conditionalRequirements = [];
+          };
+        }
+        else {
+          composeEntry = "compose";
+          transitionEntry = "transition";
+          compose = _: {
+            requests = {};
+            outputs = {};
+            resources = [];
+            conditionalRequirements = [];
+          };
+          transition = _: effects.empty;
+        }
+      ));
+
+  evaluatePackageRenderer = arguments: let
+    renderer =
+      if abilityPackageRenderer == null
+      then throw "ability package renderer is unavailable"
+      else abilityPackageRenderer;
+    fixturePath = fixtureRoot + "/conformance/provider.nix";
+    rendered = renderer.prepare {
+      packageName = "state-format-conformance";
+      version = "1.0.0";
+      payload = fixturePath;
+      source = fixturePath;
+      abilityPackage = {
+        activationMode = "structured-effects";
+        requiredFeatures = arguments.required_features;
+        exports.stateful = {
+          artifact = fixturePath;
+          export = stateFormatExport arguments;
+          requiredFeatures = [];
+        };
+        handlers =
+          if arguments.implementation == "terminal-handler"
+          then {
+            stateful-handler = {
+              artifact = fixturePath;
+              entryPoint = "bin/stateful-handler";
+              arguments = schemas.boolean;
+              result = schemas.boolean;
+            };
+          }
+          else {};
+      };
+    };
+    providerImplementation = builtins.head rendered.template.implementation.providers;
+  in {
+    required_features = rendered.template.required_features;
+    implementation_kind = providerImplementation.implementation.kind;
+    owns_resource_kinds = providerImplementation.owns_resource_kinds;
+    state_format =
+      if (providerImplementation.state_format or null) == null
+      then null
+      else {
+        descriptor = providerImplementation.state_format.descriptor;
+        artifact_matches = providerImplementation.state_format.artifact == providerImplementation.artifact;
+      };
   };
 
   compositionFixture = import (fixtureRoot + "/composition.nix") {inherit abilities;};
@@ -467,6 +557,8 @@
         declaration = abilities.normalizeExportDeclaration "corpus" (digest "6") pinned;
         requirements = abilities.normalizeRequirements {};
       }
+    else if operation == "package-renderer-state-format"
+    then evaluatePackageRenderer arguments
     else if operation == "compose-terminal"
     then
       abilities.compose {

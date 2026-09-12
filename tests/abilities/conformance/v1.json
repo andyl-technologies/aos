@@ -3233,6 +3233,177 @@
       "rust": "interface-unsupported-feature"
     },
     {
+      "operation": "package-renderer-state-format",
+      "consumers": [
+        "nix"
+      ],
+      "rust": "none",
+      "id": "package-state-format-legacy",
+      "arguments": {
+        "implementation": "pure-composition",
+        "owns_resource_kinds": [],
+        "required_features": [
+          "abilities-v1"
+        ],
+        "state_format": null
+      },
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "implementation_kind": "pure-composition",
+          "owns_resource_kinds": [],
+          "required_features": [
+            "abilities-v1"
+          ],
+          "state_format": null
+        }
+      }
+    },
+    {
+      "operation": "package-renderer-state-format",
+      "consumers": [
+        "nix"
+      ],
+      "rust": "none",
+      "id": "package-state-format-valid",
+      "arguments": {
+        "implementation": "pure-composition",
+        "owns_resource_kinds": [
+          "aos.test.stateful-resource"
+        ],
+        "required_features": [
+          "abilities-v1",
+          "provider-state-format-v1"
+        ],
+        "state_format": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "expected": {
+        "outcome": "accept",
+        "value": {
+          "implementation_kind": "pure-composition",
+          "owns_resource_kinds": [
+            "aos.test.stateful-resource"
+          ],
+          "required_features": [
+            "abilities-v1",
+            "provider-state-format-v1"
+          ],
+          "state_format": {
+            "artifact_matches": true,
+            "descriptor": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+          }
+        }
+      }
+    },
+    {
+      "operation": "package-renderer-state-format",
+      "consumers": [
+        "nix"
+      ],
+      "rust": "none",
+      "id": "package-state-format-unknown-feature",
+      "arguments": {
+        "implementation": "pure-composition",
+        "owns_resource_kinds": [],
+        "required_features": [
+          "abilities-v1",
+          "future-state-format-v2"
+        ],
+        "state_format": null
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "unsupported-required-feature"
+      }
+    },
+    {
+      "operation": "package-renderer-state-format",
+      "consumers": [
+        "nix"
+      ],
+      "rust": "none",
+      "id": "package-state-format-missing-feature",
+      "arguments": {
+        "implementation": "pure-composition",
+        "owns_resource_kinds": [
+          "aos.test.stateful-resource"
+        ],
+        "required_features": [
+          "abilities-v1"
+        ],
+        "state_format": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "unsupported-required-feature"
+      }
+    },
+    {
+      "operation": "package-renderer-state-format",
+      "consumers": [
+        "nix"
+      ],
+      "rust": "none",
+      "id": "package-state-format-missing-declaration",
+      "arguments": {
+        "implementation": "pure-composition",
+        "owns_resource_kinds": [],
+        "required_features": [
+          "abilities-v1",
+          "provider-state-format-v1"
+        ],
+        "state_format": null
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "unsupported-required-feature"
+      }
+    },
+    {
+      "operation": "package-renderer-state-format",
+      "consumers": [
+        "nix"
+      ],
+      "rust": "none",
+      "id": "package-state-format-terminal-owner",
+      "arguments": {
+        "implementation": "terminal-handler",
+        "owns_resource_kinds": [
+          "aos.test.stateful-resource"
+        ],
+        "required_features": [
+          "abilities-v1",
+          "provider-state-format-v1"
+        ],
+        "state_format": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "value-type-mismatch"
+      }
+    },
+    {
+      "operation": "package-renderer-state-format",
+      "consumers": [
+        "nix"
+      ],
+      "rust": "none",
+      "id": "package-state-format-missing-owned-resource",
+      "arguments": {
+        "implementation": "pure-composition",
+        "owns_resource_kinds": [],
+        "required_features": [
+          "abilities-v1",
+          "provider-state-format-v1"
+        ],
+        "state_format": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "value-type-mismatch"
+      }
+    },
+    {
       "arguments": {
         "depth": 12,
         "path": "@secret-path@"

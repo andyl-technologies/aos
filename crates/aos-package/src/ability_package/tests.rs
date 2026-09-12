@@ -9,8 +9,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use aos_ability_model::document::{PackageSubject, PlatformIdentity};
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactReference, ImplementationKind, InterfaceDocument, LocalKey,
-    PackageDocument, PackageImplementation, RequiredFeature, VersionedDocument, encode_canonical,
+    AbilityActivationMode, ArtifactReference, ExportDeclaration, ImplementationKind,
+    InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, PROVIDER_STATE_FORMAT_V1,
+    PackageDocument, PackageImplementation, ProviderImplementation, ProviderStateFormat,
+    RequiredFeature, VersionedDocument, encode_canonical,
 };
 use aos_contract::Sha256Digest;
 use base64::Engine as _;
@@ -112,6 +114,130 @@ fn production_nix_companion_round_trips_through_native_contracts() {
     let catalog = set.planning_catalog().unwrap();
     assert_eq!(catalog.packages().len(), 1);
     let _composer = catalog.composer();
+}
+
+#[test]
+fn package_decoder_accepts_encoded_state_format_semantics() {
+    let manifest = encode_canonical(&stateful_package()).unwrap();
+
+    let package = super::decode_package_manifest(&manifest)
+        .expect("the package reader supports provider state-format semantics");
+
+    assert!(package.implementation.providers[0].state_format.is_some());
+}
+
+#[test]
+fn older_package_reader_rejects_encoded_state_format_semantics() {
+    let manifest = encode_canonical(&stateful_package()).unwrap();
+    let old_features = BTreeSet::from([RequiredFeature::new("abilities-v1").unwrap()]);
+
+    assert!(
+        aos_ability_model::decode_canonical::<PackageDocument>(
+            &manifest,
+            aos_ability_model::ABILITY_LIMITS_V1,
+            &old_features,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn package_decoder_rejects_an_unknown_future_state_format_feature() {
+    let mut package = stateful_package();
+    package
+        .required_features
+        .push(RequiredFeature::new("provider-state-format-v2").expect("valid future feature name"));
+    let manifest = encode_canonical(&package).unwrap();
+
+    let error = super::decode_package_manifest(&manifest)
+        .expect_err("the package reader must reject unknown future semantics");
+    let detail = format!("{error:#}");
+    assert!(detail.contains("required feature"), "{detail}");
+}
+
+#[test]
+fn legacy_package_omits_state_format_and_round_trips_exactly() {
+    let mut package = stateful_package();
+    package
+        .required_features
+        .retain(|feature| feature.as_str() != PROVIDER_STATE_FORMAT_V1);
+    package.implementation.providers[0].state_format = None;
+    package.exports[0].implementation = package.implementation.providers[0]
+        .descriptor_digest()
+        .unwrap();
+    let manifest = encode_canonical(&package).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+
+    assert!(
+        value["implementation"]["providers"][0]
+            .get("state_format")
+            .is_none()
+    );
+
+    let decoded = super::decode_package_manifest(&manifest)
+        .expect("the package reader retains the legacy absent-field contract");
+    assert_eq!(decoded.implementation.providers[0].state_format, None);
+    assert_eq!(encode_canonical(&decoded).unwrap(), manifest);
+}
+
+fn stateful_package() -> PackageDocument {
+    let artifact = ArtifactReference {
+        content: digest('1'),
+        store_path: STORE_ROOT.to_string(),
+        nar_hash: digest('2'),
+        closure: digest('3'),
+    };
+    let interface = InterfaceKey {
+        name: InterfaceName::new("test.stateful-resource").unwrap(),
+        abi: std::num::NonZeroU32::new(1).unwrap(),
+        descriptor: digest('4'),
+    };
+    let provider = ProviderImplementation {
+        interface: interface.clone(),
+        artifact: artifact.clone(),
+        requirements: Vec::new(),
+        implementation: ImplementationKind::PureComposition {
+            compose_entry: LocalKey::new("compose").unwrap(),
+            transition_entry: LocalKey::new("transition").unwrap(),
+        },
+        owns_resource_kinds: vec![interface.name.clone()],
+        state_format: Some(ProviderStateFormat {
+            descriptor: digest('5'),
+            artifact: artifact.clone(),
+        }),
+    };
+    let implementation = provider.descriptor_digest().unwrap();
+    PackageDocument {
+        schema: PackageDocument::SCHEMA.to_string(),
+        required_features: vec![
+            RequiredFeature::new("abilities-v1").unwrap(),
+            RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).unwrap(),
+        ],
+        activation_mode: AbilityActivationMode::StructuredEffects,
+        package: PackageSubject {
+            name: LocalKey::new("stateful-package").unwrap(),
+            version: "1.0.0".to_string(),
+            payload: artifact.clone(),
+            source: artifact.clone(),
+        },
+        artifacts: vec![artifact.clone()],
+        exports: vec![ExportDeclaration {
+            name: LocalKey::new("stateful").unwrap(),
+            interface,
+            aggregation: None,
+            implementation,
+        }],
+        requirements: Vec::new(),
+        module_entry_points: BTreeMap::from([
+            (LocalKey::new("compose").unwrap(), artifact.clone()),
+            (LocalKey::new("transition").unwrap(), artifact),
+        ]),
+        implementation: PackageImplementation {
+            providers: vec![provider],
+            handlers: BTreeMap::new(),
+        },
+        ownership: Vec::new(),
+    }
 }
 
 struct TestFixture {

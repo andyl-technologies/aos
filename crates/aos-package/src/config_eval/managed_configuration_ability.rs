@@ -56,6 +56,8 @@ const MAX_MARKER_BYTES: u64 = 16 * 1024;
 pub struct ManagedConfigurationResourceSpec {
     /// Names the logical resource declared by the checked provider.
     pub resource: ResourceId,
+    /// Names the terminal handler selected for this logical owner.
+    pub handler_provider: aos_ability_model::InstanceId,
     /// Names the destination relative to the catalog's trusted root.
     pub destination: PathBuf,
     /// Carries the exact candidate bytes selected by the native orchestrator.
@@ -137,7 +139,7 @@ impl ManagedConfigurationResourceCatalog {
         let mut destinations = BTreeSet::new();
         let mut indexed = BTreeMap::new();
         for spec in resources {
-            if spec.resource.provider != assignment.provider {
+            if spec.handler_provider != assignment.provider {
                 return Err(invalid_data(
                     "managed configuration resource belongs to another provider",
                 ));
@@ -207,17 +209,6 @@ impl ManagedConfigurationResourceCatalog {
         self.resources.get(resource).map(|entry| &entry.spec)
     }
 
-    pub(crate) fn observe_no_op(
-        &self,
-        resource: &ResourceId,
-    ) -> Result<(NativeQualifiedResource, ResourceRevisionObservation), io::Error> {
-        let resource = self
-            .resources
-            .get(resource)
-            .ok_or_else(|| invalid_data("managed configuration no-op resource is not cataloged"))?;
-        Ok((resource.qualified.clone(), observe_revision(resource)?))
-    }
-
     /// Classifies owned live content while rejecting ambiguous ownership evidence.
     ///
     /// # Errors
@@ -249,7 +240,10 @@ impl TrustedResourceCatalog for ManagedConfigurationResourceCatalog {
         operation: &Operation,
         access: &ResourceAccess,
     ) -> Result<CatalogReservation<Self::Handle>, Self::Error> {
-        if context.expected_provider != Some(&self.assignment) {
+        if context
+            .expected_provider
+            .is_some_and(|assignment| assignment != &self.assignment)
+        {
             return Err(invalid_data(
                 "managed configuration provider assignment is absent or stale",
             ));
@@ -259,6 +253,10 @@ impl TrustedResourceCatalog for ManagedConfigurationResourceCatalog {
                 "managed configuration access does not target the operation resource",
             ));
         }
+        let context = ReservationContext {
+            expected_provider: Some(&self.assignment),
+            ..context
+        };
         let resource = self
             .resources
             .get(&access.resource)
@@ -1609,6 +1607,7 @@ mod tests {
             _root: root,
             resource: QualifiedManagedConfiguration {
                 spec: ManagedConfigurationResourceSpec {
+                    handler_provider: resource_id.provider.clone(),
                     resource: resource_id,
                     destination: PathBuf::from("nginx.conf"),
                     candidate: candidate.to_vec(),

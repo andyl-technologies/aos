@@ -255,6 +255,7 @@
     inherit (lib) abilities;
   };
   effectPlan = effectFixture.normalized;
+  postgresqlReconciliation = import ../../tests/abilities/reference-postgresql/reconciliation.nix;
   oversizedFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "advisory" {outputs.payload = effectFixture.oversizedValue;}
     )
@@ -618,6 +619,8 @@ in
     action = "apply";
   };
   assert effectFixture.omitted == emptyEffects;
+  assert postgresqlReconciliation.reconcile_stopped == ["materialize" "observe" "start" "stop"];
+  assert postgresqlReconciliation.reconcile_divergent == ["materialize" "observe" "restart" "stop"];
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
   assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);

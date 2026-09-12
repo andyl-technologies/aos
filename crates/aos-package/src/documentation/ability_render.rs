@@ -436,11 +436,7 @@ const fn requirement_strength(strength: RequirementStrength) -> &'static str {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 fn escape_html_into(value: &str, output: &mut String) {

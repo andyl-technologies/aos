@@ -9,10 +9,10 @@ mod context;
 mod graph;
 mod snapshot;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
-use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, InstanceId};
+use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, InstanceId, ResourceId};
 use aos_ability_validate::{
     BindingAuthorityKind, CheckedEffectPlan, CheckedTransitionAuthority, ValidationContext,
     ValidationErrors,
@@ -425,6 +425,11 @@ impl<'a> TransitionPlanner<'a> {
 
         let document = merge_fragments(
             binding_plan,
+            inputs
+                .authority
+                .map(|authority| authority.document().provider_adoptions.as_slice())
+                .unwrap_or_default(),
+            &linked_healthy_provider_adoptions(desired, inputs.reconciliation),
             controllers,
             fragments,
             &packages,
@@ -497,7 +502,7 @@ impl<'a> TransitionPlanner<'a> {
         }
     }
 
-    fn validate_reconciliation_inputs(
+    pub(crate) fn validate_reconciliation_inputs(
         &self,
         desired: &VerifiedPlanningSnapshot,
         inputs: &TransitionInputs<'_>,
@@ -509,8 +514,9 @@ impl<'a> TransitionPlanner<'a> {
             || reconciliation.authority_epoch == 0
             || reconciliation.sequence == 0
             || reconciliation.max_age_millis == 0
-            || reconciliation.observations.is_empty()
             || reconciliation.observations.len() > ABILITY_LIMITS_V1.max_collection_items as usize
+            || reconciliation.unsettled_provider_adoptions.len()
+                > ABILITY_LIMITS_V1.max_collection_items as usize
         {
             return Err(TransitionError::Encoding(
                 "runtime reconciliation input is malformed or exceeds its bound".to_string(),
@@ -525,6 +531,16 @@ impl<'a> TransitionPlanner<'a> {
                 "runtime reconciliation observations are not in strict resource order".to_string(),
             ));
         }
+        if reconciliation
+            .unsettled_provider_adoptions
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation provider adoptions are not in strict resource order"
+                    .to_string(),
+            ));
+        }
         validate_reconciliation_authority(reconciliation)?;
 
         let desired_resources = desired
@@ -534,22 +550,66 @@ impl<'a> TransitionPlanner<'a> {
             .iter()
             .map(|revision| (&revision.resource, revision.revision))
             .collect::<BTreeMap<_, _>>();
-        let mut requires_repair = false;
+        let current_resources = inputs
+            .current
+            .into_iter()
+            .flat_map(|current| &current.outcome().desired_state.resources)
+            .map(|revision| (&revision.resource, revision.revision))
+            .collect::<BTreeMap<_, _>>();
+        let expected_observations = desired_resources
+            .keys()
+            .chain(current_resources.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let observed_resources = reconciliation
+            .observations
+            .iter()
+            .map(|observation| &observation.resource)
+            .collect::<BTreeSet<_>>();
+        if observed_resources != expected_observations {
+            return Err(TransitionError::Encoding(
+                "runtime reconciliation observations differ from the exact desired/current resource union"
+                    .to_string(),
+            ));
+        }
+        let mut requires_repair = !reconciliation.unsettled_provider_adoptions.is_empty();
+        for resource in &reconciliation.unsettled_provider_adoptions {
+            if !desired_resources.contains_key(resource)
+                || !current_resources.contains_key(resource)
+            {
+                return Err(TransitionError::Encoding(
+                    "runtime reconciliation provider adoption is not retained by both desired and current state"
+                        .to_string(),
+                ));
+            }
+            let matching_authorizations = inputs
+                .authority
+                .into_iter()
+                .flat_map(|authority| &authority.document().provider_adoptions)
+                .filter(|adoption| adoption.resource == *resource)
+                .count();
+            if matching_authorizations != 1 {
+                return Err(TransitionError::Encoding(
+                    "runtime reconciliation provider adoption lacks one exact sealed authority entry"
+                        .to_string(),
+                ));
+            }
+        }
         for observation in &reconciliation.observations {
-            let desired_revision =
-                desired_resources
-                    .get(&observation.resource)
-                    .ok_or_else(|| {
-                        TransitionError::Encoding(
-                            "runtime reconciliation observation names a foreign resource"
-                                .to_string(),
-                        )
-                    })?;
-            requires_repair |= match observation.state {
-                RuntimeResourceState::Absent => true,
-                RuntimeResourceState::Present { revision, health } => {
+            let desired_revision = desired_resources.get(&observation.resource);
+            if desired_revision.is_none() && !current_resources.contains_key(&observation.resource)
+            {
+                return Err(TransitionError::Encoding(
+                    "runtime reconciliation observation names a foreign resource".to_string(),
+                ));
+            }
+            requires_repair |= match (desired_revision, observation.state) {
+                (Some(_), RuntimeResourceState::Absent) => true,
+                (Some(desired_revision), RuntimeResourceState::Present { revision, health }) => {
                     revision != *desired_revision || health != RuntimeResourceHealth::Healthy
                 }
+                (None, RuntimeResourceState::Present { .. }) => true,
+                (None, RuntimeResourceState::Absent) => false,
             };
         }
         if !requires_repair {
@@ -559,6 +619,43 @@ impl<'a> TransitionPlanner<'a> {
         }
         Ok(())
     }
+}
+
+pub(super) fn linked_healthy_provider_adoptions(
+    desired: &VerifiedPlanningSnapshot,
+    reconciliation: Option<&TransitionReconciliation>,
+) -> BTreeSet<ResourceId> {
+    let Some(reconciliation) = reconciliation else {
+        return BTreeSet::new();
+    };
+    let desired_revisions = desired
+        .outcome()
+        .desired_state
+        .resources
+        .iter()
+        .map(|revision| (&revision.resource, revision.revision))
+        .collect::<BTreeMap<_, _>>();
+
+    reconciliation
+        .unsettled_provider_adoptions
+        .iter()
+        .filter(|resource| {
+            let Some(desired_revision) = desired_revisions.get(resource) else {
+                return false;
+            };
+            reconciliation.observations.iter().any(|observation| {
+                observation.resource == **resource
+                    && matches!(
+                        observation.state,
+                        RuntimeResourceState::Present {
+                            revision,
+                            health: RuntimeResourceHealth::Healthy,
+                        } if revision == *desired_revision
+                    )
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 fn validate_reconciliation_authority(

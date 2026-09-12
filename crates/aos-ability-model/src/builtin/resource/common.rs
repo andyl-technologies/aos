@@ -100,6 +100,7 @@ pub(super) fn terminal_provider(
 ) -> Result<ProviderImplementation> {
     Ok(ProviderImplementation {
         owns_resource_kinds: vec![interface.name.clone()],
+        state_format: None,
         interface,
         artifact,
         requirements: Vec::new(),

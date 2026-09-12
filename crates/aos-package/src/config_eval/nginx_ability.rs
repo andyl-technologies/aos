@@ -59,6 +59,8 @@ const MAX_ASSOCIATION_BYTES: u64 = 16 * 1024;
 pub struct NginxResourceSpec {
     /// Names the logical resource declared by the checked provider.
     pub resource: ResourceId,
+    /// Names the terminal handler selected for this logical owner.
+    pub handler_provider: aos_ability_model::InstanceId,
     /// Names the independently authorized validation working directory.
     pub validation_prefix: PathBuf,
     /// Carries the exact configuration bytes selected by native orchestration.
@@ -136,7 +138,7 @@ impl NginxResourceCatalog {
         let mut validation_prefixes = BTreeSet::new();
         let mut indexed = BTreeMap::new();
         for spec in resources {
-            if spec.resource.provider != assignment.provider {
+            if spec.handler_provider != assignment.provider {
                 return Err(invalid_data("nginx resource belongs to another provider"));
             }
             if spec.current_generation.is_some() != spec.current_candidate_digest.is_some() {
@@ -223,17 +225,6 @@ impl NginxResourceCatalog {
         self.resources.get(resource).map(|entry| &entry.spec)
     }
 
-    pub(crate) fn observe_no_op(
-        &self,
-        resource: &ResourceId,
-    ) -> Result<(NativeQualifiedResource, ResourceRevisionObservation), io::Error> {
-        let resource = self
-            .resources
-            .get(resource)
-            .ok_or_else(|| invalid_data("nginx no-op resource is not cataloged"))?;
-        Ok((resource.qualified.clone(), observe_association(resource)?))
-    }
-
     /// Classifies an association only when its ownership is unambiguous.
     ///
     /// # Errors
@@ -273,7 +264,10 @@ impl TrustedResourceCatalog for NginxResourceCatalog {
         operation: &Operation,
         access: &ResourceAccess,
     ) -> Result<CatalogReservation<Self::Handle>, Self::Error> {
-        if context.expected_provider != Some(&self.assignment) {
+        if context
+            .expected_provider
+            .is_some_and(|assignment| assignment != &self.assignment)
+        {
             return Err(invalid_data("nginx provider assignment is absent or stale"));
         }
         if operation.target.resource != access.resource {
@@ -281,6 +275,10 @@ impl TrustedResourceCatalog for NginxResourceCatalog {
                 "nginx access does not target the operation resource",
             ));
         }
+        let context = ReservationContext {
+            expected_provider: Some(&self.assignment),
+            ..context
+        };
         let resource = self
             .resources
             .get(&access.resource)
@@ -1252,6 +1250,7 @@ mod tests {
             _root: root,
             resource: QualifiedNginxResource {
                 spec: NginxResourceSpec {
+                    handler_provider: resource_id.provider.clone(),
                     resource: resource_id,
                     validation_prefix: validation_prefix.display().to_path_buf(),
                     candidate,

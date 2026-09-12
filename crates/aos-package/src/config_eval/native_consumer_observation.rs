@@ -71,6 +71,7 @@ pub(super) struct NativeConsumerClassification {
 /// Returns an error when the target is not a numeric loopback socket, the
 /// bounded connection or read fails, the response is malformed, or its exact
 /// instance and revision evidence differs from the resource-map contract.
+#[cfg(test)]
 pub(super) fn observe_native_http_consumer(
     observation: &NativeHttpConsumerObservation,
 ) -> Result<(), NativeConsumerObservationError> {

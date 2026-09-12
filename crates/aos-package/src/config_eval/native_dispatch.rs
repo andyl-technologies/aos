@@ -6,6 +6,7 @@
 //! wrapper then combines revocable operator authorization with the existing
 //! current-assignment policy at every admission and immediate dispatch check.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -25,14 +26,14 @@ use aos_ability_plan::{
 };
 use aos_ability_runtime::adapter::{
     CancellationToken, InvocationPurpose, MonotonicClock, ResourceAdmissionEvidence,
-    ResourceRevisionObservation, SystemMonotonicClock, TrustedAdapter, TrustedResourceCatalog,
+    SystemMonotonicClock, TrustedAdapter, TrustedResourceCatalog,
 };
 use aos_ability_runtime::execution::{
     AdmittedOperation, CheckedExecutionJournalSnapshot, ExecutionBoundaryObserver, ExecutionError,
     ExecutionStep, RecoveryAction, TerminalResult, TrustedAdmissionPolicy,
 };
 use aos_ability_runtime::journal::JournalLimits;
-use aos_ability_validate::{BindingAuthorityKind, CheckedEffectPlan};
+use aos_ability_validate::{BindingAuthorityKind, CheckedBindingPlan, CheckedEffectPlan};
 use aos_contract::Sha256Digest;
 
 use super::ability_activation::SpecializedAbilityActivation;
@@ -42,10 +43,12 @@ use super::ability_policy::{
 };
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
 use super::ability_store::inventory::{
-    NativeNoOpResourceObservation, verify_retained_native_consumers,
+    LinkedAdoptionVerificationState, NativeConsumerRequirement, NativeNoOpResourceObservation,
+    NativeQualifiedResource, NativeResourceInventory, verify_retained_native_consumers,
 };
 use super::ability_store::{
-    NativeAbilitySession, NativeObservationSession, RetainedAbilityDiagnosticSource,
+    GenerationAbilityStoreError, NativeAbilitySession, NativeObservationSession,
+    RetainedAbilityDiagnosticSource,
 };
 use super::kubernetes_ability::{
     DeferredKubernetesApiCapability, KubernetesApiCapability, KubernetesObjectResourceCatalog,
@@ -56,9 +59,7 @@ use super::managed_configuration_ability::{
     NativeManagedConfigurationAdapter, preflight_native_managed_configuration,
 };
 use super::native_adapter_surface::{adapter_id, supports_exact_route};
-use super::native_consumer_observation::{
-    classify_native_http_consumer, observe_native_http_consumer,
-};
+use super::native_consumer_observation::classify_native_http_consumer;
 use super::native_host_resources::{
     HostResourceAllocations, NativeDependencyBinding, NativeHostResourceAdapter,
     NativeHostResourceCatalog, NativeHostResourceKind, NativeHostResourceSpec,
@@ -112,6 +113,7 @@ pub(crate) struct NativeAdapterRoute<'a> {
     pub(crate) mapping: &'a NativeResourceMapping,
     desired_state: &'a DesiredStateDocument,
     generation: NativeResourceGeneration,
+    pub(crate) assignment_provider: aos_ability_model::InstanceId,
     pub(crate) assignment_interface: aos_ability_model::InterfaceKey,
     pub(crate) kind: NativeAdapterKind,
 }
@@ -129,6 +131,7 @@ pub(crate) struct NativeAdapterRegistry<'a> {
     current: Option<&'a NativeResourceMap>,
     desired_state: &'a DesiredStateDocument,
     current_desired_state: Option<&'a DesiredStateDocument>,
+    current_binding_plan: Option<&'a CheckedBindingPlan>,
     current_planning: Option<aos_contract::Sha256Digest>,
     reconciliation: Option<&'a TransitionReconciliation>,
     packages: &'a VerifiedAbilityPackageSet,
@@ -177,6 +180,7 @@ pub(crate) struct NativeNoOpEvidence<'a> {
 pub(crate) struct RetainedNativeNoOpVerifier {
     source: Option<RetainedAbilityDiagnosticSource>,
     journal_limits: JournalLimits,
+    supported_features: BTreeSet<aos_ability_model::RequiredFeature>,
 }
 
 impl RetainedNativeNoOpVerifier {
@@ -185,10 +189,12 @@ impl RetainedNativeNoOpVerifier {
     pub(crate) const fn new(
         source: RetainedAbilityDiagnosticSource,
         journal_limits: JournalLimits,
+        supported_features: BTreeSet<aos_ability_model::RequiredFeature>,
     ) -> Self {
         Self {
             source: Some(source),
             journal_limits,
+            supported_features,
         }
     }
 }
@@ -207,7 +213,6 @@ impl TrustedNativeNoOpVerifier for RetainedNativeNoOpVerifier {
         let retained_plan_is_empty = source.plan().operations().is_empty();
         let native_no_op_verified = source.native_no_op_verified();
         let expected_transaction = source.transaction().clone();
-        let expected_plan = source.plan().id();
         let expected_bundle = source.plan_bundle();
         let (plan, _, journal, journal_path) = source.into_parts();
         let snapshot = CheckedExecutionJournalSnapshot::read_file(
@@ -230,8 +235,8 @@ impl TrustedNativeNoOpVerifier for RetainedNativeNoOpVerifier {
         )?;
         verify_retained_native_consumers(
             &retained_generation,
-            &expected_transaction,
-            expected_plan,
+            self.supported_features.clone(),
+            self.journal_limits,
             evidence.resources,
         )
         .context("verifying retained native consumer ownership")?;
@@ -267,6 +272,13 @@ pub(crate) trait NativeNoOpAdmissionPolicy: TrustedAdmissionPolicy {
         assignments: &[ProviderAssignment],
         resources: &NativeResourceMap,
     ) -> std::result::Result<(), Self::Error>;
+
+    fn authorize_observed_no_op(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: &[CurrentResourceObservation],
+    ) -> std::result::Result<(), Self::Error>;
 }
 
 /// Refreshes independently observed assignment and resource authority.
@@ -298,6 +310,15 @@ where
     ) -> std::result::Result<(), Self::Error> {
         self.authorize_native_no_op(plan, assignments, resources)
     }
+
+    fn authorize_observed_no_op(
+        &mut self,
+        plan: &CheckedEffectPlan,
+        assignments: &[ProviderAssignment],
+        resources: &[CurrentResourceObservation],
+    ) -> std::result::Result<(), Self::Error> {
+        self.authorize_native_observed_no_op(plan, assignments, resources)
+    }
 }
 
 impl<'a> NativeAdapterRegistry<'a> {
@@ -318,19 +339,18 @@ impl<'a> NativeAdapterRegistry<'a> {
             current: activation.current_native_resources(),
             desired_state: activation.desired_state(),
             current_desired_state: activation.current_desired_state(),
+            current_binding_plan: activation.current_binding_plan(),
             current_planning: activation.bundle().current_planning_digest(),
             reconciliation: activation.bundle().reconciliation(),
             packages,
             host_allocations: HostResourceAllocations::default(),
         };
 
-        for mapping in registry
-            .desired
-            .entries
-            .iter()
-            .chain(registry.current.into_iter().flat_map(|map| &map.entries))
-        {
-            registry.preflight_mapping(mapping)?;
+        for mapping in &registry.desired.entries {
+            registry.preflight_mapping(mapping, NativeResourceGeneration::Desired)?;
+        }
+        for mapping in registry.current.into_iter().flat_map(|map| &map.entries) {
+            registry.preflight_mapping(mapping, NativeResourceGeneration::Current)?;
         }
         registry.host_allocations = registry.build_host_allocations()?;
         // Preflight the complete graph before any operation can be admitted.
@@ -383,7 +403,7 @@ impl<'a> NativeAdapterRegistry<'a> {
             &mapping.binding == source_binding,
             "native dispatcher mapping names a different authoritative binding"
         );
-        let mut route = self.preflight_mapping(mapping)?;
+        let mut route = self.preflight_mapping(mapping, generation)?;
         ensure!(
             route.assignment_interface == operation.interface,
             "native dispatcher mapping resolves to a different terminal interface"
@@ -406,7 +426,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         assignments: &[ProviderAssignment],
     ) -> Result<ProviderAssignment> {
         let mut matching = assignments.iter().filter(|assignment| {
-            assignment.provider == route.mapping.resource.provider
+            assignment.provider == route.assignment_provider
                 && assignment.interface == route.assignment_interface
                 && assignment.implementation == route.mapping.implementation
         });
@@ -432,7 +452,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         assignment: &ProviderAssignment,
     ) -> Result<()> {
         ensure!(
-            assignment.provider == route.mapping.resource.provider
+            assignment.provider == route.assignment_provider
                 && assignment.interface == route.assignment_interface
                 && assignment.implementation == route.mapping.implementation,
             "planned provider assignment differs from the authenticated native route"
@@ -468,6 +488,7 @@ impl<'a> NativeAdapterRegistry<'a> {
 
         Ok(ManagedConfigurationResourceSpec {
             resource: route.mapping.resource.clone(),
+            handler_provider: route.assignment_provider.clone(),
             destination: destination
                 .strip_prefix('/')
                 .context("managed-configuration destination is not absolute")?
@@ -514,6 +535,7 @@ impl<'a> NativeAdapterRegistry<'a> {
 
         Ok(NginxResourceSpec {
             resource: route.mapping.resource.clone(),
+            handler_provider: route.assignment_provider.clone(),
             validation_prefix: validation_prefix.into(),
             candidate: mapped_candidate(candidate, route.desired_state)?
                 .as_bytes()
@@ -553,6 +575,7 @@ impl<'a> NativeAdapterRegistry<'a> {
 
         Ok(SystemdResourceSpec {
             resource: route.mapping.resource.clone(),
+            handler_provider: route.assignment_provider.clone(),
             unit: unit.clone(),
             revision: route.mapping.revision,
             generation,
@@ -609,6 +632,7 @@ impl<'a> NativeAdapterRegistry<'a> {
 
         Ok(KubernetesObjectResourceSpec {
             resource: route.mapping.resource.clone(),
+            handler_provider: route.assignment_provider.clone(),
             kubectl: kubectl.clone(),
             kubeconfig: kubeconfig.into(),
             api_version: api_version.clone(),
@@ -633,6 +657,7 @@ impl<'a> NativeAdapterRegistry<'a> {
         );
         Ok(NativeHostResourceSpec {
             resource: route.mapping.resource.clone(),
+            handler_provider: route.assignment_provider.clone(),
             revision: route.mapping.revision,
             qualification: route.mapping.qualification.clone(),
             retained_qualification: self
@@ -838,7 +863,8 @@ impl<'a> NativeAdapterRegistry<'a> {
                     .iter()
                     .find(|candidate| candidate.resource == producer.target.resource)
                     .context("host-resource dependency has no native producer mapping")?;
-                let producer_route = self.preflight_mapping(producer_mapping)?;
+                let producer_route =
+                    self.preflight_mapping(producer_mapping, NativeResourceGeneration::Desired)?;
                 let expected_kind = match *input {
                     "credential_view" => NativeHostResourceKind::Credential,
                     "endpoint" => NativeHostResourceKind::Endpoint,
@@ -877,6 +903,58 @@ impl<'a> NativeAdapterRegistry<'a> {
             .entries
             .iter()
             .find(|mapping| &mapping.resource == resource)
+    }
+
+    fn reconciliation_mappings(
+        &self,
+    ) -> Vec<(&'a NativeResourceMapping, NativeResourceGeneration)> {
+        let mut mappings = self
+            .current
+            .into_iter()
+            .flat_map(|resources| &resources.entries)
+            .map(|mapping| {
+                (
+                    mapping.resource.clone(),
+                    (mapping, NativeResourceGeneration::Current),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for mapping in &self.desired.entries {
+            mappings.insert(
+                mapping.resource.clone(),
+                (mapping, NativeResourceGeneration::Desired),
+            );
+        }
+        mappings.into_values().collect()
+    }
+
+    fn no_op_mappings(&self) -> Vec<(&'a NativeResourceMapping, NativeResourceGeneration)> {
+        if self
+            .reconciliation
+            .is_some_and(|reconciliation| !reconciliation.unsettled_provider_adoptions.is_empty())
+        {
+            self.reconciliation_mappings()
+        } else {
+            self.desired
+                .entries
+                .iter()
+                .map(|mapping| (mapping, NativeResourceGeneration::Desired))
+                .collect()
+        }
+    }
+
+    fn preflight_reconciliation_mapping(
+        &self,
+        mapping: &'a NativeResourceMapping,
+        generation: NativeResourceGeneration,
+    ) -> Result<NativeAdapterRoute<'a>> {
+        let mut route = self.preflight_mapping(mapping, generation)?;
+        route.generation = generation;
+        route.desired_state = match generation {
+            NativeResourceGeneration::Desired => self.activation_desired_state(),
+            NativeResourceGeneration::Current => self.activation_current_desired_state()?,
+        };
+        Ok(route)
     }
 
     fn retained_resources_match_execution(&self) -> bool {
@@ -987,13 +1065,20 @@ impl<'a> NativeAdapterRegistry<'a> {
             &str,
             &NativeResourceMapping,
         )> = None;
-        for mapping in self
+        for (mapping, generation) in self
             .desired
             .entries
             .iter()
-            .chain(self.current.into_iter().flat_map(|map| &map.entries))
-            .filter(|mapping| &mapping.resource.provider == provider)
+            .map(|mapping| (mapping, NativeResourceGeneration::Desired))
+            .chain(self.current.into_iter().flat_map(|map| {
+                map.entries
+                    .iter()
+                    .map(|mapping| (mapping, NativeResourceGeneration::Current))
+            }))
         {
+            if &self.mapping_binding(mapping, generation)?.provider != provider {
+                continue;
+            }
             let NativeResourceQualification::KubernetesObject {
                 kubectl,
                 kubeconfig,
@@ -1073,6 +1158,7 @@ impl<'a> NativeAdapterRegistry<'a> {
     fn preflight_mapping(
         &self,
         mapping: &'a NativeResourceMapping,
+        generation: NativeResourceGeneration,
     ) -> Result<NativeAdapterRoute<'a>> {
         let package = self
             .packages
@@ -1093,8 +1179,9 @@ impl<'a> NativeAdapterRegistry<'a> {
             "native dispatcher terminal artifact differs from the mapped implementation"
         );
         let assignment_interface = terminal.provider().interface.clone();
+        let assignment_provider = self.mapping_binding(mapping, generation)?.provider.clone();
         let assignment = ProviderAssignment {
-            provider: mapping.resource.provider.clone(),
+            provider: assignment_provider.clone(),
             interface: assignment_interface.clone(),
             implementation: mapping.implementation.clone(),
             incarnation: IncarnationId::new("native-static-preflight")
@@ -1134,10 +1221,27 @@ impl<'a> NativeAdapterRegistry<'a> {
             package,
             mapping,
             desired_state: self.desired_state,
-            generation: NativeResourceGeneration::Desired,
+            generation,
+            assignment_provider,
             assignment_interface,
             kind,
         })
+    }
+
+    fn mapping_binding(
+        &self,
+        mapping: &NativeResourceMapping,
+        generation: NativeResourceGeneration,
+    ) -> Result<&aos_ability_model::Binding> {
+        let binding_plan = match generation {
+            NativeResourceGeneration::Desired => self.plan.binding_plan(),
+            NativeResourceGeneration::Current => self
+                .current_binding_plan
+                .context("native current mapping has no retained checked binding plan")?,
+        };
+        binding_plan
+            .binding(&mapping.binding)
+            .context("native mapping lost its independently checked terminal binding")
     }
 }
 
@@ -1278,7 +1382,7 @@ impl<'a> NativeDispatcher<'a> {
         })
     }
 
-    /// Classifies every desired native resource without issuing an effect.
+    /// Classifies every desired/current native resource without issuing an effect.
     ///
     /// The caller must retain the machine-global switch lock through
     /// classification, current-authority publication, and repair planning.
@@ -1289,149 +1393,68 @@ impl<'a> NativeDispatcher<'a> {
     ///
     /// Returns an error when the source plan is not effect-free, a provider or
     /// resource cannot be requalified, consumer evidence is foreign or
-    /// unavailable, or the complete desired map is not classified exactly once.
+    /// unavailable, or the complete desired/current union is not classified exactly once.
     pub(crate) fn classify_retained_resources(
         &mut self,
         session: &NativeObservationSession,
+        settled_failed_adoptions: &BTreeSet<ResourceId>,
     ) -> Result<NativeDriftClassification> {
         ensure!(
-            self.registry.plan.operations().is_empty(),
-            "native drift classification requires an effect-free source plan"
+            self.registry.plan.operations().is_empty() || !settled_failed_adoptions.is_empty(),
+            "native drift classification requires an effect-free source plan or settled adoption recovery"
         );
-        ensure!(
-            self.registry.retained_resources_match_execution(),
-            "native drift classification requires identical retained execution semantics"
-        );
+        let reconciliation_mappings = self.registry.reconciliation_mappings();
+        if settled_failed_adoptions.is_empty() {
+            ensure!(
+                self.registry.retained_resources_match_execution(),
+                "native drift classification requires identical retained execution semantics"
+            );
+        } else {
+            self.registry.current.context(
+                "settled provider-adoption recovery has no retained native resource map",
+            )?;
+            ensure!(
+                settled_failed_adoptions.iter().all(|resource| {
+                    reconciliation_mappings
+                        .iter()
+                        .any(|(mapping, _)| &mapping.resource == resource)
+                }),
+                "settled provider-adoption recovery names a resource outside the desired/current native map"
+            );
+        }
 
-        for mapping in &self.registry.desired.entries {
-            let route = self.registry.preflight_mapping(mapping)?;
+        for (mapping, generation) in &reconciliation_mappings {
+            let route = self
+                .registry
+                .preflight_reconciliation_mapping(mapping, *generation)?;
             if self.registry.assignment(&route, &self.assignments).is_err() {
                 let assignment = self.native_observation_assignment(session, &route)?;
                 Self::retain_assignment(&mut self.assignments, assignment)?;
             }
         }
 
-        let mut runtime = Vec::with_capacity(self.registry.desired.entries.len());
-        let mut authority = Vec::with_capacity(self.registry.desired.entries.len());
+        let mut runtime = Vec::with_capacity(reconciliation_mappings.len());
+        let mut authority = Vec::with_capacity(reconciliation_mappings.len());
+        let mut consumer_observations = Vec::with_capacity(reconciliation_mappings.len());
+        let mut consumer_backed_resources = BTreeSet::new();
         let mut requires_reconciliation = false;
-        for mapping in &self.registry.desired.entries {
-            let route = self.registry.preflight_mapping(mapping)?;
+        for (mapping, generation) in reconciliation_mappings {
+            let route = self
+                .registry
+                .preflight_reconciliation_mapping(mapping, generation)?;
             let assignment = self.registry.assignment(&route, &self.assignments)?;
             let inventory = session.resource_inventory();
-            let state = match route.kind {
-                NativeAdapterKind::KubernetesObject => {
-                    let spec = self.registry.kubernetes_spec(&route)?;
-                    let catalog = KubernetesObjectResourceCatalog::new(
-                        route.package,
-                        assignment,
-                        inventory,
-                        0,
-                        [spec],
-                    )
-                    .context("constructing Kubernetes drift catalog")?;
-                    catalog
-                        .classify_runtime_revision(&mapping.resource)
-                        .context("classifying current Kubernetes object")?
-                        .1
-                }
-                NativeAdapterKind::ManagedConfiguration => {
-                    let spec = self.registry.managed_configuration_spec(&route)?;
-                    let catalog = ManagedConfigurationResourceCatalog::new(
-                        Path::new("/"),
-                        Path::new(MANAGED_CONFIGURATION_STATE_ROOT),
-                        assignment,
-                        inventory,
-                        0,
-                        [spec],
-                    )
-                    .context("constructing managed-configuration drift catalog")?;
-                    catalog
-                        .classify_runtime_revision(&mapping.resource)
-                        .context("classifying current managed configuration")?
-                        .1
-                }
-                NativeAdapterKind::NginxValidation => {
-                    let spec = self.registry.nginx_spec(&route)?;
-                    let catalog = NginxResourceCatalog::new(
-                        Path::new(NGINX_STATE_ROOT),
-                        assignment,
-                        inventory,
-                        0,
-                        [spec],
-                    )
-                    .context("constructing nginx drift catalog")?;
-                    catalog
-                        .classify_runtime_revision(&mapping.resource)
-                        .context("classifying current nginx association")?
-                        .1
-                }
-                NativeAdapterKind::Systemd => {
-                    let spec = self.registry.systemd_spec(&route)?;
-                    let connection = self
-                        .systemd
-                        .reacquire_assignment(&assignment)
-                        .context("reacquiring systemd capability for drift classification")?;
-                    let catalog =
-                        SystemdResourceCatalog::new(connection, assignment, inventory, [spec])
-                            .context("constructing systemd drift catalog")?;
-                    let (_, active_state) = catalog
-                        .classify_runtime_state(&mapping.resource)
-                        .context("classifying current systemd resource")?;
-                    match active_state {
-                        SystemdResourceRuntimeState::Stopped => RuntimeResourceState::Present {
-                            revision: mapping.revision,
-                            health: RuntimeResourceHealth::Stopped,
-                        },
-                        SystemdResourceRuntimeState::Active => {
-                            let NativeResourceQualification::SystemdService {
-                                consumer_observation,
-                                ..
-                            } = &mapping.qualification
-                            else {
-                                return Err(anyhow!(
-                                    "systemd drift route changed resource qualification"
-                                ));
-                            };
-                            if let Some(expected_consumer) = consumer_observation {
-                                let observed_consumer =
-                                    classify_native_http_consumer(expected_consumer)
-                                        .context("classifying actual systemd service consumer")?;
-                                let health = if observed_consumer.controller_revision
-                                    == expected_consumer.expected_controller_revision
-                                    && observed_consumer.content_revision
-                                        == expected_consumer.expected_content_revision
-                                {
-                                    RuntimeResourceHealth::Healthy
-                                } else {
-                                    RuntimeResourceHealth::Divergent
-                                };
-                                RuntimeResourceState::Present {
-                                    // The checked systemd receipt established the
-                                    // resource revision; consumer headers only
-                                    // classify behavior at that revision.
-                                    revision: mapping.revision,
-                                    health,
-                                }
-                            } else {
-                                RuntimeResourceState::Present {
-                                    revision: mapping.revision,
-                                    health: RuntimeResourceHealth::Healthy,
-                                }
-                            }
-                        }
-                    }
-                }
-                NativeAdapterKind::HostResource(kind) => {
-                    let spec = self.registry.host_resource_spec(&route)?;
-                    let catalog =
-                        NativeHostResourceCatalog::new(assignment, inventory, kind, [spec])
-                            .context("constructing host-resource drift catalog")?;
-                    catalog
-                        .classify_runtime_state(&mapping.resource)
-                        .context("classifying current host resource")?
-                        .1
-                }
-            };
+            let (qualified, state) =
+                self.classify_mapping_state(&route, mapping, assignment, inventory)?;
+            let consumer_backed = route_is_consumer_backed(&route);
+            if consumer_backed {
+                consumer_backed_resources.insert(mapping.resource.clone());
+            }
+            consumer_observations.push(NativeNoOpResourceObservation {
+                qualified,
+                state,
+                consumer_requirement: live_resource_consumer_requirement(state, consumer_backed),
+            });
             let authority_state = current_authority_state(state);
             requires_reconciliation |= !matches!(
                 state,
@@ -1449,12 +1472,133 @@ impl<'a> NativeDispatcher<'a> {
                 state: authority_state,
             });
         }
+        session
+            .verify_observed_current_consumers(&consumer_observations, &consumer_backed_resources)
+            .map_err(anyhow::Error::new)
+            .context("verifying freshly classified native consumers")?;
+        requires_reconciliation |= !settled_failed_adoptions.is_empty();
         Ok(NativeDriftClassification {
             runtime,
             authority,
             assignments: self.assignments.clone(),
             requires_reconciliation,
         })
+    }
+
+    fn classify_mapping_state(
+        &self,
+        route: &NativeAdapterRoute<'_>,
+        mapping: &NativeResourceMapping,
+        assignment: ProviderAssignment,
+        inventory: NativeResourceInventory,
+    ) -> Result<(NativeQualifiedResource, RuntimeResourceState)> {
+        match route.kind {
+            NativeAdapterKind::KubernetesObject => {
+                let spec = self.registry.kubernetes_spec(route)?;
+                let catalog = KubernetesObjectResourceCatalog::new(
+                    route.package,
+                    assignment,
+                    inventory,
+                    0,
+                    [spec],
+                )
+                .context("constructing Kubernetes drift catalog")?;
+                catalog
+                    .classify_runtime_revision(&mapping.resource)
+                    .context("classifying current Kubernetes object")
+            }
+            NativeAdapterKind::ManagedConfiguration => {
+                let spec = self.registry.managed_configuration_spec(route)?;
+                let catalog = ManagedConfigurationResourceCatalog::new(
+                    Path::new("/"),
+                    Path::new(MANAGED_CONFIGURATION_STATE_ROOT),
+                    assignment,
+                    inventory,
+                    0,
+                    [spec],
+                )
+                .context("constructing managed-configuration drift catalog")?;
+                catalog
+                    .classify_runtime_revision(&mapping.resource)
+                    .context("classifying current managed configuration")
+            }
+            NativeAdapterKind::NginxValidation => {
+                let spec = self.registry.nginx_spec(route)?;
+                let catalog = NginxResourceCatalog::new(
+                    Path::new(NGINX_STATE_ROOT),
+                    assignment,
+                    inventory,
+                    0,
+                    [spec],
+                )
+                .context("constructing nginx drift catalog")?;
+                catalog
+                    .classify_runtime_revision(&mapping.resource)
+                    .context("classifying current nginx association")
+            }
+            NativeAdapterKind::Systemd => {
+                let spec = self.registry.systemd_spec(route)?;
+                let connection = self
+                    .systemd
+                    .reacquire_assignment(&assignment)
+                    .context("reacquiring systemd capability for drift classification")?;
+                let catalog =
+                    SystemdResourceCatalog::new(connection, assignment, inventory, [spec])
+                        .context("constructing systemd drift catalog")?;
+                let (qualified, active_state) = catalog
+                    .classify_runtime_state(&mapping.resource)
+                    .context("classifying current systemd resource")?;
+                let state = match active_state {
+                    SystemdResourceRuntimeState::Stopped => RuntimeResourceState::Present {
+                        revision: mapping.revision,
+                        health: RuntimeResourceHealth::Stopped,
+                    },
+                    SystemdResourceRuntimeState::Active => {
+                        let NativeResourceQualification::SystemdService {
+                            consumer_observation,
+                            ..
+                        } = &mapping.qualification
+                        else {
+                            return Err(anyhow!(
+                                "systemd drift route changed resource qualification"
+                            ));
+                        };
+                        if let Some(expected_consumer) = consumer_observation {
+                            let observed_consumer =
+                                classify_native_http_consumer(expected_consumer)
+                                    .context("classifying actual systemd service consumer")?;
+                            let health = if observed_consumer.controller_revision
+                                == expected_consumer.expected_controller_revision
+                                && observed_consumer.content_revision
+                                    == expected_consumer.expected_content_revision
+                            {
+                                RuntimeResourceHealth::Healthy
+                            } else {
+                                RuntimeResourceHealth::Divergent
+                            };
+                            RuntimeResourceState::Present {
+                                revision: mapping.revision,
+                                health,
+                            }
+                        } else {
+                            RuntimeResourceState::Present {
+                                revision: mapping.revision,
+                                health: RuntimeResourceHealth::Healthy,
+                            }
+                        }
+                    }
+                };
+                Ok((qualified, state))
+            }
+            NativeAdapterKind::HostResource(kind) => {
+                let spec = self.registry.host_resource_spec(route)?;
+                let catalog = NativeHostResourceCatalog::new(assignment, inventory, kind, [spec])
+                    .context("constructing host-resource drift catalog")?;
+                catalog
+                    .classify_runtime_state(&mapping.resource)
+                    .context("classifying current host resource")
+            }
+        }
     }
 
     fn native_observation_assignment(
@@ -1466,7 +1610,7 @@ impl<'a> NativeDispatcher<'a> {
             return self
                 .systemd
                 .observe_assignment(
-                    &route.mapping.resource.provider,
+                    &route.assignment_provider,
                     &route.assignment_interface,
                     &route.mapping.implementation,
                 )
@@ -1489,7 +1633,7 @@ impl<'a> NativeDispatcher<'a> {
                 .observe_incarnation_bounded(30_000)
                 .context("observing the current Kubernetes provider assignment")?;
             return Ok(ProviderAssignment {
-                provider: route.mapping.resource.provider.clone(),
+                provider: route.assignment_provider.clone(),
                 interface: route.assignment_interface.clone(),
                 implementation: route.mapping.implementation.clone(),
                 incarnation,
@@ -1502,7 +1646,7 @@ impl<'a> NativeDispatcher<'a> {
         ))
         .context("constructing native observation assignment")?;
         Ok(ProviderAssignment {
-            provider: route.mapping.resource.provider.clone(),
+            provider: route.assignment_provider.clone(),
             interface: route.assignment_interface.clone(),
             implementation: route.mapping.implementation.clone(),
             incarnation,
@@ -1534,6 +1678,9 @@ impl<'a> NativeDispatcher<'a> {
         NoOpVerifier: TrustedNativeNoOpVerifier,
         Observer: ExecutionBoundaryObserver,
     {
+        if !self.registry.plan.operations().is_empty() {
+            self.verify_linked_adoption_recovery(session, policy, false)?;
+        }
         let clock = SystemMonotonicClock::new();
         loop {
             if let Some(terminal) = session.transaction().summary().terminal() {
@@ -1541,7 +1688,14 @@ impl<'a> NativeDispatcher<'a> {
                     self.ensure_no_op_assignments(session)?;
                     return self.verify_no_op(session, policy, no_op_verifier, terminal);
                 }
-                return Ok(terminal);
+                self.verify_linked_adoption_recovery(
+                    session,
+                    policy,
+                    terminal == TerminalResult::Succeeded,
+                )?;
+                return finalize_recovered_nonempty_terminal(terminal, || {
+                    session.finalize_terminal_outcome()
+                });
             }
             ensure!(
                 !cancellation.is_cancelled(),
@@ -1614,6 +1768,64 @@ impl<'a> NativeDispatcher<'a> {
         }
     }
 
+    fn verify_linked_adoption_recovery<Policy>(
+        &mut self,
+        session: &mut NativeAbilitySession<'a>,
+        policy: &mut OperatorAuthorizedPolicy<'_, Policy>,
+        settle: bool,
+    ) -> Result<()>
+    where
+        Policy: NativeAuthorityRefresh,
+    {
+        let Some(reconciliation) = self
+            .registry
+            .reconciliation
+            .filter(|reconciliation| !reconciliation.unsettled_provider_adoptions.is_empty())
+        else {
+            return Ok(());
+        };
+
+        let verification_state = session
+            .linked_adoption_verification_state(reconciliation)
+            .map_err(anyhow::Error::new)?;
+        if verification_state == LinkedAdoptionVerificationState::Settled {
+            return Ok(());
+        }
+        let changed_resources = if verification_state == LinkedAdoptionVerificationState::Recorded {
+            session
+                .transaction()
+                .operations_reaching_effect_intent()
+                .filter_map(|operation_id| self.registry.plan.operation(&operation_id.operation))
+                .flat_map(|operation| &operation.accesses)
+                .filter(|access| access.mode.is_write())
+                .map(|access| access.resource.clone())
+                .collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
+        self.ensure_no_op_assignments(session)?;
+        let resource_observations =
+            self.observe_no_op_resources(session, Some(&changed_resources), settle)?;
+        let current_observations = resource_observations
+            .iter()
+            .map(|observation| CurrentResourceObservation {
+                resource: observation.qualified.logical().clone(),
+                state: current_authority_state(observation.state),
+            })
+            .collect::<Vec<_>>();
+        policy.refresh_authority(&self.assignments, current_observations.clone())?;
+        policy.authorize_observed_no_op(&self.assignments, &current_observations)?;
+        session
+            .verify_linked_adoption_no_op(
+                reconciliation,
+                &resource_observations,
+                &changed_resources,
+                settle,
+            )
+            .map_err(anyhow::Error::new)
+            .context("verifying linked adoption recovery before native effects")
+    }
+
     fn assignment_for_operation(
         registry: &NativeAdapterRegistry<'_>,
         assignments: &mut Vec<ProviderAssignment>,
@@ -1658,8 +1870,10 @@ impl<'a> NativeDispatcher<'a> {
     }
 
     fn ensure_no_op_assignments(&mut self, session: &NativeAbilitySession<'a>) -> Result<()> {
-        for mapping in &self.registry.desired.entries {
-            let route = self.registry.preflight_mapping(mapping)?;
+        for (mapping, generation) in self.registry.no_op_mappings() {
+            let route = self
+                .registry
+                .preflight_reconciliation_mapping(mapping, generation)?;
             if self.registry.assignment(&route, &self.assignments).is_ok() {
                 continue;
             }
@@ -1677,7 +1891,7 @@ impl<'a> NativeDispatcher<'a> {
         if route.kind == NativeAdapterKind::Systemd {
             return systemd
                 .observe_assignment(
-                    &route.mapping.resource.provider,
+                    &route.assignment_provider,
                     &route.assignment_interface,
                     &route.mapping.implementation,
                 )
@@ -1701,7 +1915,7 @@ impl<'a> NativeDispatcher<'a> {
                 .observe_incarnation_bounded(30_000)
                 .context("observing the current Kubernetes provider assignment")?;
             return Ok(ProviderAssignment {
-                provider: route.mapping.resource.provider.clone(),
+                provider: route.assignment_provider.clone(),
                 interface: route.assignment_interface.clone(),
                 implementation: route.mapping.implementation.clone(),
                 incarnation,
@@ -1715,7 +1929,7 @@ impl<'a> NativeDispatcher<'a> {
         ))
         .context("constructing native executor assignment")?;
         Ok(ProviderAssignment {
-            provider: route.mapping.resource.provider.clone(),
+            provider: route.assignment_provider.clone(),
             interface: route.assignment_interface.clone(),
             implementation: route.mapping.implementation.clone(),
             incarnation,
@@ -1726,8 +1940,12 @@ impl<'a> NativeDispatcher<'a> {
         assignments: &mut Vec<ProviderAssignment>,
         assignment: ProviderAssignment,
     ) -> Result<()> {
-        match assignments.binary_search_by(|candidate| candidate.provider.cmp(&assignment.provider))
-        {
+        match assignments.binary_search_by(|candidate| {
+            candidate
+                .provider
+                .cmp(&assignment.provider)
+                .then_with(|| candidate.interface.cmp(&assignment.interface))
+        }) {
             Ok(index) if assignments[index] == assignment => Ok(()),
             Ok(_) => Err(anyhow!(
                 "native provider assignment changed within one authority refresh interval"
@@ -1754,6 +1972,35 @@ impl<'a> NativeDispatcher<'a> {
             terminal == TerminalResult::Succeeded,
             "empty native transaction reached a non-success terminal state"
         );
+        if let Some(reconciliation) = self
+            .registry
+            .reconciliation
+            .filter(|reconciliation| !reconciliation.unsettled_provider_adoptions.is_empty())
+        {
+            let resource_observations = self.observe_no_op_resources(session, None, true)?;
+            let current_observations: Vec<CurrentResourceObservation> = resource_observations
+                .iter()
+                .map(|observation| CurrentResourceObservation {
+                    resource: observation.qualified.logical().clone(),
+                    state: current_authority_state(observation.state),
+                })
+                .collect();
+            policy.refresh_authority(&self.assignments, current_observations.clone())?;
+            policy.authorize_observed_no_op(&self.assignments, &current_observations)?;
+            session
+                .verify_linked_adoption_no_op(
+                    reconciliation,
+                    &resource_observations,
+                    &BTreeSet::new(),
+                    true,
+                )
+                .map_err(anyhow::Error::new)?;
+            session
+                .persist_native_no_op_verification()
+                .context("publishing linked adoption no-op verification evidence")?;
+            return Ok(terminal);
+        }
+
         let current_resources = self
             .registry
             .current
@@ -1764,14 +2011,12 @@ impl<'a> NativeDispatcher<'a> {
             "empty native transition changed retained execution semantics"
         );
 
-        let resource_observations = self.observe_no_op_resources(session)?;
+        let resource_observations = self.observe_no_op_resources(session, None, true)?;
         let current_observations = resource_observations
             .iter()
             .map(|observation| CurrentResourceObservation {
                 resource: observation.qualified.logical().clone(),
-                state: CurrentResourceState::Present {
-                    revision: observation.revision,
-                },
+                state: current_authority_state(observation.state),
             })
             .collect();
         policy.refresh_authority(&self.assignments, current_observations)?;
@@ -1798,120 +2043,81 @@ impl<'a> NativeDispatcher<'a> {
     fn observe_no_op_resources(
         &self,
         session: &NativeAbilitySession<'a>,
+        changed_resources: Option<&BTreeSet<ResourceId>>,
+        settle_linked: bool,
     ) -> Result<Vec<NativeNoOpResourceObservation>> {
-        let mut observations = Vec::with_capacity(self.registry.desired.entries.len());
-        for mapping in &self.registry.desired.entries {
-            let route = self.registry.preflight_mapping(mapping)?;
+        let mappings = self.registry.no_op_mappings();
+        let linked = self
+            .registry
+            .reconciliation
+            .filter(|reconciliation| !reconciliation.unsettled_provider_adoptions.is_empty());
+        if let Some(reconciliation) = linked {
+            let expected_resources = reconciliation
+                .observations
+                .iter()
+                .map(|observation| observation.resource.clone())
+                .collect::<BTreeSet<_>>();
+            let mapped_resources = mappings
+                .iter()
+                .map(|(mapping, _)| mapping.resource.clone())
+                .collect::<BTreeSet<_>>();
+            ensure!(
+                reconciliation.observations.len() == expected_resources.len()
+                    && expected_resources == mapped_resources,
+                "linked no-op observations differ from the desired/current resource union"
+            );
+        }
+
+        let mut observations = Vec::with_capacity(mappings.len());
+        for (mapping, generation) in mappings {
+            let route = self
+                .registry
+                .preflight_reconciliation_mapping(mapping, generation)?;
             let assignment = self.registry.assignment(&route, &self.assignments)?;
-            let inventory = session.resource_inventory();
-            let (qualified, revision, requires_consumer) = match route.kind {
-                NativeAdapterKind::KubernetesObject => {
-                    let spec = self.registry.kubernetes_spec(&route)?;
-                    let catalog = KubernetesObjectResourceCatalog::new(
-                        route.package,
-                        assignment,
-                        inventory,
-                        0,
-                        [spec],
-                    )
-                    .context("constructing Kubernetes no-op catalog")?;
-                    let (qualified, observed) = catalog
-                        .observe_no_op(&mapping.resource)
-                        .context("observing Kubernetes no-op resource")?;
-                    ensure!(
-                        observed == ResourceRevisionObservation::Present(mapping.revision),
-                        "Kubernetes resource drifted during no-op verification"
-                    );
-                    (qualified, mapping.revision, false)
+            let (qualified, state) = self.classify_mapping_state(
+                &route,
+                mapping,
+                assignment,
+                session.resource_inventory(),
+            )?;
+            let linked_resource = linked.is_some_and(|reconciliation| {
+                reconciliation
+                    .unsettled_provider_adoptions
+                    .contains(&mapping.resource)
+            });
+            let expected_state = if settle_linked && linked_resource {
+                RuntimeResourceState::Present {
+                    revision: mapping.revision,
+                    health: RuntimeResourceHealth::Healthy,
                 }
-                NativeAdapterKind::ManagedConfiguration => {
-                    let spec = self.registry.managed_configuration_spec(&route)?;
-                    let catalog = ManagedConfigurationResourceCatalog::new(
-                        Path::new("/"),
-                        Path::new(MANAGED_CONFIGURATION_STATE_ROOT),
-                        assignment,
-                        inventory,
-                        0,
-                        [spec],
-                    )
-                    .context("constructing managed-configuration no-op catalog")?;
-                    let (qualified, observed) = catalog
-                        .observe_no_op(&mapping.resource)
-                        .context("observing managed-configuration no-op resource")?;
-                    let expected = ResourceRevisionObservation::Present(mapping.revision);
-                    ensure!(
-                        observed == expected,
-                        "managed-configuration resource drifted during no-op verification"
-                    );
-                    (qualified, mapping.revision, false)
-                }
-                NativeAdapterKind::NginxValidation => {
-                    let spec = self.registry.nginx_spec(&route)?;
-                    let catalog = NginxResourceCatalog::new(
-                        Path::new(NGINX_STATE_ROOT),
-                        assignment,
-                        inventory,
-                        0,
-                        [spec],
-                    )
-                    .context("constructing nginx no-op catalog")?;
-                    let (qualified, observed) = catalog
-                        .observe_no_op(&mapping.resource)
-                        .context("observing nginx no-op resource")?;
-                    let expected = ResourceRevisionObservation::Present(mapping.revision);
-                    ensure!(
-                        observed == expected,
-                        "nginx resource drifted during no-op verification"
-                    );
-                    (qualified, mapping.revision, false)
-                }
-                NativeAdapterKind::Systemd => {
-                    let spec = self.registry.systemd_spec(&route)?;
-                    let connection = self
-                        .systemd
-                        .reacquire_assignment(&assignment)
-                        .context("reacquiring systemd capability for no-op observation")?;
-                    let catalog =
-                        SystemdResourceCatalog::new(connection, assignment, inventory, [spec])
-                            .context("constructing systemd no-op catalog")?;
-                    let qualified = catalog
-                        .observe_no_op(&mapping.resource)
-                        .context("observing systemd no-op resource")?;
-                    let NativeResourceQualification::SystemdService {
-                        consumer_observation,
-                        ..
-                    } = &mapping.qualification
-                    else {
-                        return Err(anyhow!(
-                            "systemd no-op route changed resource qualification"
-                        ));
-                    };
-                    let requires_consumer = consumer_observation.is_some();
-                    if let Some(consumer_observation) = consumer_observation {
-                        observe_native_http_consumer(consumer_observation)
-                            .context("observing actual systemd service consumer")?;
-                    }
-                    (qualified, mapping.revision, requires_consumer)
-                }
-                NativeAdapterKind::HostResource(kind) => {
-                    let spec = self.registry.host_resource_spec(&route)?;
-                    let catalog =
-                        NativeHostResourceCatalog::new(assignment, inventory, kind, [spec])
-                            .context("constructing host-resource no-op catalog")?;
-                    let (qualified, observed) = catalog
-                        .observe_no_op(&mapping.resource)
-                        .context("observing host-resource no-op state")?;
-                    ensure!(
-                        observed == ResourceRevisionObservation::Present(mapping.revision),
-                        "host resource drifted during no-op verification"
-                    );
-                    (qualified, mapping.revision, false)
-                }
+            } else {
+                linked
+                    .and_then(|reconciliation| {
+                        reconciliation
+                            .observations
+                            .iter()
+                            .find(|observation| observation.resource == mapping.resource)
+                            .map(|observation| observation.state)
+                    })
+                    .unwrap_or(RuntimeResourceState::Present {
+                        revision: mapping.revision,
+                        health: RuntimeResourceHealth::Healthy,
+                    })
             };
+            if changed_resources.is_none_or(|resources| !resources.contains(&mapping.resource))
+                || (settle_linked && linked_resource)
+            {
+                ensure!(
+                    state == expected_state,
+                    "native resource changed after its no-op classification"
+                );
+            }
+            let consumer_backed = route_is_consumer_backed(&route);
+            let consumer_requirement = live_resource_consumer_requirement(state, consumer_backed);
             observations.push(NativeNoOpResourceObservation {
                 qualified,
-                revision,
-                requires_consumer,
+                state,
+                consumer_requirement,
             });
         }
         Ok(observations)
@@ -2325,6 +2531,14 @@ impl<'a> NativeDispatcher<'a> {
     }
 }
 
+fn finalize_recovered_nonempty_terminal(
+    terminal: TerminalResult,
+    finalize: impl FnOnce() -> Result<(), GenerationAbilityStoreError>,
+) -> Result<TerminalResult> {
+    finalize().context("publishing recovered native terminal outcome")?;
+    Ok(terminal)
+}
+
 /// Waits for persisted retry eligibility while keeping cancellation bounded.
 fn wait_for_retry_eligibility(
     clock: &impl MonotonicClock,
@@ -2373,6 +2587,39 @@ fn validate_runtime_health_authority(
         "runtime health evidence differs from checked repair authority"
     );
     Ok(())
+}
+
+fn route_is_consumer_backed(route: &NativeAdapterRoute<'_>) -> bool {
+    match route.kind {
+        NativeAdapterKind::Systemd => matches!(
+            route.mapping.qualification,
+            NativeResourceQualification::SystemdService {
+                consumer_observation: Some(_),
+                ..
+            }
+        ),
+        NativeAdapterKind::HostResource(NativeHostResourceKind::Postgresql) => true,
+        _ => false,
+    }
+}
+
+const fn live_resource_consumer_requirement(
+    state: RuntimeResourceState,
+    consumer_backed: bool,
+) -> NativeConsumerRequirement {
+    if consumer_backed
+        && matches!(
+            state,
+            RuntimeResourceState::Present {
+                health: RuntimeResourceHealth::Healthy | RuntimeResourceHealth::Divergent,
+                ..
+            }
+        )
+    {
+        NativeConsumerRequirement::Required
+    } else {
+        NativeConsumerRequirement::Forbidden
+    }
 }
 
 const fn current_authority_state(state: RuntimeResourceState) -> CurrentResourceState {
@@ -2730,6 +2977,22 @@ impl<'a, Policy> OperatorAuthorizedPolicy<'a, Policy> {
             .map_err(|error| OperatorAuthorizedPolicyError::Current(anyhow!(error)))
     }
 
+    fn authorize_observed_no_op(
+        &mut self,
+        assignments: &[ProviderAssignment],
+        resources: &[CurrentResourceObservation],
+    ) -> std::result::Result<(), OperatorAuthorizedPolicyError>
+    where
+        Policy: NativeNoOpAdmissionPolicy,
+    {
+        self.activation
+            .reauthorize(self.operator_authority)
+            .map_err(OperatorAuthorizedPolicyError::Operator)?;
+        self.current
+            .authorize_observed_no_op(self.activation.plan(), assignments, resources)
+            .map_err(|error| OperatorAuthorizedPolicyError::Current(anyhow!(error)))
+    }
+
     fn refresh_authority(
         &mut self,
         assignments: &[ProviderAssignment],
@@ -2918,6 +3181,44 @@ mod tests {
         assert!(
             validate_runtime_health_authority(state, Some(different), false).is_err(),
             "checked repair authority must match the exact runtime state"
+        );
+    }
+
+    #[test]
+    fn divergent_present_resources_still_require_their_durable_consumer() {
+        let revision = aos_ability_model::RevisionId(aos_contract::Sha256Digest::of_bytes(
+            b"current revision",
+        ));
+
+        for health in [
+            RuntimeResourceHealth::Healthy,
+            RuntimeResourceHealth::Divergent,
+            RuntimeResourceHealth::Stopped,
+        ] {
+            let requirement = live_resource_consumer_requirement(
+                RuntimeResourceState::Present { revision, health },
+                true,
+            );
+            let expected = if health == RuntimeResourceHealth::Stopped {
+                NativeConsumerRequirement::Forbidden
+            } else {
+                NativeConsumerRequirement::Required
+            };
+            assert_eq!(requirement, expected);
+        }
+        assert_eq!(
+            live_resource_consumer_requirement(RuntimeResourceState::Absent, true),
+            NativeConsumerRequirement::Forbidden
+        );
+        assert_eq!(
+            live_resource_consumer_requirement(
+                RuntimeResourceState::Present {
+                    revision,
+                    health: RuntimeResourceHealth::Divergent,
+                },
+                false,
+            ),
+            NativeConsumerRequirement::Forbidden
         );
     }
 
@@ -3112,6 +3413,34 @@ mod tests {
         );
         require_successful_retained_transaction(Some(TerminalResult::Succeeded), 0, false, false)
             .expect("settled exact prior success");
+    }
+
+    fn assert_recovered_nonempty_terminal_invokes_marker_finalization(terminal: TerminalResult) {
+        let root = tempfile::tempdir().expect("temporary recovered transaction");
+        let marker = root.path().join("terminal.json");
+        assert!(!marker.exists());
+
+        let recovered = finalize_recovered_nonempty_terminal(terminal, || {
+            std::fs::write(&marker, format!("{terminal:?}"))
+                .map_err(|error| GenerationAbilityStoreError::Operation(error.into()))?;
+            Ok(())
+        })
+        .expect("recovered nonempty finalization");
+
+        assert_eq!(recovered, terminal);
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn recovered_nonempty_success_invokes_missing_marker_finalization() {
+        assert_recovered_nonempty_terminal_invokes_marker_finalization(TerminalResult::Succeeded);
+    }
+
+    #[test]
+    fn recovered_nonempty_settled_failure_invokes_missing_marker_finalization() {
+        assert_recovered_nonempty_terminal_invokes_marker_finalization(
+            TerminalResult::SettledFailure,
+        );
     }
 
     #[test]

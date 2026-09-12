@@ -33,7 +33,8 @@ in
       + builtins.readFile ./ability-native-postgresql-isolation.py
       + builtins.readFile ./ability-native-postgresql-recovery.py
       + builtins.readFile ./ability-native-postgresql-faults.py
-      + builtins.readFile ./ability-native-postgresql-capacity.py;
+      + builtins.readFile ./ability-native-postgresql-capacity.py
+      + builtins.readFile ./ability-native-postgresql-adoption.py;
   }
   // lib.optionalAttrs qualificationImage {
     qualification = {

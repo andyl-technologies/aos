@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
     AbilityValue, LocalKey, OperationId, ResourceId, RetryPolicy, TransactionId,
@@ -180,6 +180,8 @@ pub struct OperationHistory {
     interrupted_call_budget_millis: u64,
     durable_request: Option<AbilityValue>,
     idempotency_key: Option<Sha256Digest>,
+    admitted_attempts: BTreeSet<NonZeroU32>,
+    effect_intent_attempts: BTreeSet<NonZeroU32>,
     compensation: Option<CompensationState>,
     compensation_request: Option<AbilityValue>,
     compensation_idempotency_key: Option<Sha256Digest>,
@@ -200,6 +202,8 @@ impl OperationHistory {
             interrupted_call_budget_millis: 0,
             durable_request: None,
             idempotency_key: None,
+            admitted_attempts: BTreeSet::new(),
+            effect_intent_attempts: BTreeSet::new(),
             compensation: None,
             compensation_request: None,
             compensation_idempotency_key: None,
@@ -260,6 +264,40 @@ impl OperationHistory {
     pub const fn elapsed_millis(&self) -> u64 {
         self.elapsed_millis
             .saturating_add(self.interrupted_call_budget_millis)
+    }
+
+    /// Reports whether any attempt durably crossed the external-effect boundary.
+    #[must_use]
+    pub fn effect_intent_recorded(&self) -> bool {
+        !self.effect_intent_attempts.is_empty()
+    }
+
+    /// Returns every attempt that durably crossed the effect-intent boundary.
+    #[must_use]
+    pub fn effect_intent_attempts(&self) -> &BTreeSet<NonZeroU32> {
+        &self.effect_intent_attempts
+    }
+
+    /// Returns all admitted or immediately admissible attempts still clean before intent.
+    #[must_use]
+    pub fn clean_claim_attempts(&self) -> BTreeSet<NonZeroU32> {
+        let mut attempts = self
+            .admitted_attempts
+            .difference(&self.effect_intent_attempts)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        match &self.state {
+            OperationState::Pending if self.planned => {
+                attempts.insert(NonZeroU32::MIN);
+            }
+            OperationState::RetryReady { attempt } => {
+                if let Some(next) = next_attempt(*attempt) {
+                    attempts.insert(next);
+                }
+            }
+            _ => {}
+        }
+        attempts
     }
 
     /// Reports whether all recorded resources were released safely.
@@ -538,6 +576,7 @@ impl OperationHistory {
                 self.transferred_resources.clear();
                 self.resources_released = resources.is_empty();
                 self.interrupted_call_budget_millis = 0;
+                self.admitted_attempts.insert(*attempt);
                 self.state = OperationState::Admitted { attempt: *attempt };
                 self.observe_elapsed(sequence, *elapsed_millis)?;
             }
@@ -565,6 +604,7 @@ impl OperationHistory {
                 }
                 self.durable_request = Some(request.clone());
                 self.idempotency_key = Some(*idempotency_key);
+                self.effect_intent_attempts.insert(*attempt);
                 self.observe_elapsed(sequence, *elapsed_millis)?;
                 self.interrupted_call_budget_millis = *attempt_timeout_millis;
             }

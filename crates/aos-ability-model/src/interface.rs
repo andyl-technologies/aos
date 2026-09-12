@@ -17,6 +17,9 @@ use crate::plan::OperationFamily;
 use crate::schema::ValueSchema;
 use crate::value::{AbilityValue, ArtifactReference, ResourceLifetime};
 
+/// Names the version-1 package-level persistent-state format semantics.
+pub const PROVIDER_STATE_FORMAT_V1: &str = "provider-state-format-v1";
+
 /// Identifies one exact immutable guarantee semantic.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +235,21 @@ pub enum ImplementationKind {
     },
 }
 
+/// Identifies the persistent-state format understood by one implementation.
+///
+/// The descriptor names the format independently from the executable that
+/// declares it. This permits two separately authenticated implementations to
+/// adopt the same bytes while retaining the exact artifact that made each
+/// declaration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderStateFormat {
+    /// Identifies the canonical persistent-state format.
+    pub descriptor: Sha256Digest,
+    /// Identifies the authenticated artifact declaring support for the format.
+    pub artifact: ArtifactReference,
+}
+
 /// Declares one provider's implementation separately from its public interface.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +264,9 @@ pub struct ProviderImplementation {
     pub implementation: ImplementationKind,
     /// Names provider-owned resource kinds in canonical order.
     pub owns_resource_kinds: Vec<InterfaceName>,
+    /// Declares the persistent-state format eligible for explicit adoption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_format: Option<ProviderStateFormat>,
 }
 
 impl ProviderImplementation {
@@ -306,6 +327,11 @@ fn consume_provider_implementation_items(
     )?;
     consume_items(remaining_items, implementation.requirements.len())?;
     consume_items(remaining_items, implementation.owns_resource_kinds.len())?;
+    if implementation.state_format.is_some() {
+        consume_items(remaining_items, 1)?;
+        consume_items(remaining_items, 2)?;
+        consume_items(remaining_items, 4)?;
+    }
     for requirement in &implementation.requirements {
         consume_items(remaining_items, 6)?;
         consume_items(remaining_items, requirement.accepted_interfaces.len())?;
@@ -517,8 +543,9 @@ mod tests {
                 transition_entry: LocalKey::new("transition").expect("valid entry name"),
             },
             owns_resource_kinds: vec![
-                InterfaceName::new("aos.test.resource").expect("valid resource name")
+                InterfaceName::new("aos.test.resource").expect("valid resource name"),
             ],
+            state_format: None,
         }
     }
 
@@ -533,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_preflight_counts_every_serialized_collection_item() {
+    fn provider_without_state_format_retains_exact_legacy_item_ceiling() {
         let implementation = provider_implementation();
         let encoded = serde_json::to_value(&implementation).expect("implementation serializes");
         let exact_items = collection_item_count(&encoded);
@@ -547,6 +574,72 @@ mod tests {
         assert!(
             consume_provider_implementation_items(&implementation, &mut short_remaining, 64)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_without_state_format_retains_exact_legacy_encoding() {
+        let legacy = ProviderImplementation {
+            interface: InterfaceKey {
+                name: InterfaceName::new("aos.test.legacy").expect("valid interface name"),
+                abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
+                descriptor: digest(1),
+            },
+            artifact: ArtifactReference {
+                content: digest(2),
+                store_path: "/nix/store/legacy-provider".to_string(),
+                nar_hash: digest(3),
+                closure: digest(4),
+            },
+            requirements: Vec::new(),
+            implementation: ImplementationKind::TerminalHandler {
+                handler: LocalKey::new("run").expect("valid handler name"),
+            },
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/legacy-provider"},"implementation":{"handler":"run","kind":"terminal-handler"},"interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.legacy"},"owns_resource_kinds":[],"requirements":[]}"#;
+
+        let encoded = aos_contract::canonical::to_vec(&legacy)
+            .expect("legacy provider implementation encodes canonically");
+        assert_eq!(encoded, expected);
+        assert!(
+            !encoded
+                .windows(b"state_format".len())
+                .any(|window| { window == b"state_format" })
+        );
+
+        let decoded: ProviderImplementation =
+            serde_json::from_slice(expected).expect("legacy provider implementation decodes");
+        assert_eq!(decoded, legacy);
+        assert_eq!(decoded.state_format, None);
+    }
+
+    #[test]
+    fn provider_state_format_accounts_for_every_added_item() {
+        let legacy = provider_implementation();
+        let legacy_items = collection_item_count(
+            &serde_json::to_value(&legacy).expect("legacy implementation serializes"),
+        );
+        let mut stateful = legacy;
+        stateful.state_format = Some(ProviderStateFormat {
+            descriptor: digest(7),
+            artifact: stateful.artifact.clone(),
+        });
+        let stateful_items = collection_item_count(
+            &serde_json::to_value(&stateful).expect("stateful implementation serializes"),
+        );
+
+        assert_eq!(stateful_items, legacy_items + 7);
+
+        let mut exact_remaining = stateful_items;
+        consume_provider_implementation_items(&stateful, &mut exact_remaining, 64)
+            .expect("the exact stateful item budget is sufficient");
+        assert_eq!(exact_remaining, 0);
+
+        let mut short_remaining = stateful_items - 1;
+        assert!(
+            consume_provider_implementation_items(&stateful, &mut short_remaining, 64).is_err()
         );
     }
 }

@@ -19,9 +19,8 @@ use aos_ability_model::VersionedDocument as _;
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
-    tokenize, DocumentationComparison, OptionDocument, PackageAbilityReference,
-    PackageDocumentation, SearchDocument, DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA,
-    MAX_DOCUMENT_BYTES,
+    DOCUMENT_JSON_SCHEMA, DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES,
+    OptionDocument, PackageAbilityReference, PackageDocumentation, SearchDocument, tokenize,
 };
 use aos_proto_types::{
     ComparePackageDocumentationRequest, GetPackageAbilityReferenceRequest,
@@ -1254,8 +1253,8 @@ fn install_manpage(
 mod tests {
     use super::*;
     use aos_ability_model::{
-        decode_canonical, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
-        ScopePath, ValueSchema, ABILITY_LIMITS_V1,
+        ABILITY_LIMITS_V1, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
+        ScopePath, ValueSchema, decode_canonical,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -1510,9 +1509,11 @@ mod tests {
             PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
             loaded.document
         );
-        assert!(!String::from_utf8(canonical_document)
-            .unwrap()
-            .contains("package-ability-reference"));
+        assert!(
+            !String::from_utf8(canonical_document)
+                .unwrap()
+                .contains("package-ability-reference")
+        );
     }
 
     #[test]
@@ -1546,12 +1547,8 @@ mod tests {
             .registry_commit
             .clear();
         assert!(
-            verify_remote_ability_reference(
-                empty_ability_commit,
-                &document,
-                &"a".repeat(64)
-            )
-            .is_err()
+            verify_remote_ability_reference(empty_ability_commit, &document, &"a".repeat(64))
+                .is_err()
         );
         assert!(
             verify_remote_ability_reference(response.clone(), &document, "not-a-commit").is_err()

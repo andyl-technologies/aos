@@ -9,12 +9,14 @@ use aos_ability_validate::{
 };
 
 use crate::test_support::{
-    verified_planning_authorized_removal_fixture, verified_planning_transition_fixture,
+    verified_planning_authorized_removal_fixture, verified_planning_resource_removal_fixture,
+    verified_planning_transition_fixture,
 };
 use crate::{
     BindingCandidate, CandidateSelection, CompositionContext, CompositionEvaluator,
     CompositionFragment, EvaluationError, PlanningReplayInputs, PlanningSnapshot,
     RUNTIME_OBSERVATIONS_SCHEMA, RecursiveComposer, ResolutionPolicyDocument,
+    RuntimeResourceHealth, RuntimeResourceObservation, RuntimeResourceState,
     TRANSITION_FRAGMENT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA, TRANSITION_SNAPSHOT_SCHEMA_V2,
     TransitionBindingAuthority, TransitionContext, TransitionError, TransitionEvaluationResult,
     TransitionExport, TransitionExportKind, TransitionFragment, TransitionHandoff,
@@ -61,6 +63,267 @@ impl CompositionEvaluator for FailingTransitionEvaluator {
     ) -> Result<AbilityValue, EvaluationError> {
         Err(EvaluationError::new("deterministic transition failure"))
     }
+}
+
+fn reconciliation_fixture(
+    observations: Vec<RuntimeResourceObservation>,
+    unsettled_provider_adoptions: Vec<ResourceId>,
+) -> TransitionReconciliation {
+    let source_plan = PlanId(aos_contract::Sha256Digest::of_bytes(
+        "reconciliation-source",
+    ));
+    let transaction = TransactionId(key("reconciliation-attempt"));
+    let policy_fence = RevisionId(aos_contract::Sha256Digest::of_bytes("policy-fence"));
+    let authority_json = serde_json::json!({
+        "schema": "aos.ability.current-authority/v2",
+        "policy_fence": policy_fence,
+        "transaction": transaction,
+        "authority_epoch": 7,
+        "sequence": 11,
+        "observed_at_restart_millis": 23,
+        "max_age_millis": 5_000,
+        "plan": source_plan,
+        "resource_observations": observations.iter().map(|observation| {
+            let state = match observation.state {
+                RuntimeResourceState::Absent => serde_json::json!({"state": "absent"}),
+                RuntimeResourceState::Present { revision, health } => {
+                    let state = match health {
+                        RuntimeResourceHealth::Healthy => "present",
+                        RuntimeResourceHealth::Stopped => "stopped",
+                        RuntimeResourceHealth::Divergent => "divergent",
+                    };
+                    serde_json::json!({"state": state, "revision": revision})
+                }
+            };
+            serde_json::json!({"resource": observation.resource, "state": state})
+        }).collect::<Vec<_>>(),
+    });
+    let authority_bytes = aos_contract::canonical::to_vec(&authority_json)
+        .expect("reconciliation authority must encode");
+    TransitionReconciliation {
+        schema: RUNTIME_OBSERVATIONS_SCHEMA.to_string(),
+        source_plan,
+        transaction,
+        policy_fence,
+        authority_epoch: 7,
+        sequence: 11,
+        observed_at_restart_millis: 23,
+        max_age_millis: 5_000,
+        authority_publication: aos_contract::Sha256Digest::separated(
+            "aos.ability.current-authority/v2",
+            authority_bytes,
+        ),
+        authority_document: AbilityValue::new(authority_json)
+            .expect("bounded reconciliation authority"),
+        unsettled_provider_adoptions,
+        observations,
+    }
+}
+
+fn empty_transition_authority(
+    context: &ValidationContext,
+    planning: &VerifiedPlanningSnapshot,
+) -> aos_ability_validate::CheckedTransitionAuthority {
+    let policy_revision = planning.checked_binding().document().policy_revision;
+    let document = TransitionAuthorizationDocument {
+        schema: TransitionAuthorizationDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        desired_planning: planning.snapshot_digest(),
+        current_planning: planning.snapshot_digest(),
+        desired_policy_revision: policy_revision,
+        prior_policy_revision: policy_revision,
+        authorization_policy_revision: policy_revision,
+        teardown_bindings: Vec::new(),
+        teardown_providers: Vec::new(),
+        provider_adoptions: Vec::new(),
+    };
+    let expected_digest = document
+        .content_digest()
+        .expect("empty transition authority must digest");
+    context
+        .validate_transition_authority(
+            document,
+            TransitionAuthorityInputs {
+                expected_digest,
+                desired_planning: planning.snapshot_digest(),
+                current_planning: planning.snapshot_digest(),
+                authorization_policy_revision: policy_revision,
+                desired: planning.checked_binding(),
+                current: planning.checked_binding(),
+            },
+        )
+        .expect("empty transition authority must validate")
+}
+
+#[test]
+fn reconciliation_requires_the_exact_desired_current_observation_union() {
+    let (context, planning, _) = verified_planning_transition_fixture();
+    let reconciliation = reconciliation_fixture(Vec::new(), Vec::new());
+    let inputs = TransitionInputs {
+        current: Some(&planning),
+        authority: None,
+        reconciliation: Some(&reconciliation),
+    };
+
+    let error = TransitionPlanner::new(&context)
+        .validate_reconciliation_inputs(&planning, &inputs)
+        .expect_err("omitting a retained resource observation must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("exact desired/current resource union")
+    );
+}
+
+#[test]
+fn unsettled_provider_adoption_requires_exact_sealed_authority() {
+    let (context, planning, _) = verified_planning_transition_fixture();
+    let resource = planning.outcome().desired_state.resources[0].clone();
+    let reconciliation = reconciliation_fixture(
+        vec![RuntimeResourceObservation {
+            resource: resource.resource.clone(),
+            state: RuntimeResourceState::Present {
+                revision: resource.revision,
+                health: RuntimeResourceHealth::Stopped,
+            },
+        }],
+        vec![resource.resource],
+    );
+    let no_authority = TransitionInputs {
+        current: Some(&planning),
+        authority: None,
+        reconciliation: Some(&reconciliation),
+    };
+    let error = TransitionPlanner::new(&context)
+        .validate_reconciliation_inputs(&planning, &no_authority)
+        .expect_err("an unauthenticated unsettled adoption must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("one exact sealed authority entry")
+    );
+
+    let authority = empty_transition_authority(&context, &planning);
+    let unmatched_authority = TransitionInputs {
+        current: Some(&planning),
+        authority: Some(&authority),
+        reconciliation: Some(&reconciliation),
+    };
+    let error = TransitionPlanner::new(&context)
+        .validate_reconciliation_inputs(&planning, &unmatched_authority)
+        .expect_err("an unmatched unsettled adoption must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("one exact sealed authority entry")
+    );
+}
+
+#[test]
+fn only_exact_healthy_linked_provider_adoptions_allow_effect_free_settlement() {
+    let (_, planning, _) = verified_planning_transition_fixture();
+    let resource = planning.outcome().desired_state.resources[0].clone();
+    let exact_observation = RuntimeResourceObservation {
+        resource: resource.resource.clone(),
+        state: RuntimeResourceState::Present {
+            revision: resource.revision,
+            health: RuntimeResourceHealth::Healthy,
+        },
+    };
+    let reconciliation = reconciliation_fixture(
+        vec![exact_observation.clone()],
+        vec![resource.resource.clone()],
+    );
+
+    assert_eq!(
+        crate::transition::linked_healthy_provider_adoptions(&planning, Some(&reconciliation)),
+        BTreeSet::from([resource.resource.clone()])
+    );
+
+    let stopped = reconciliation_fixture(
+        vec![RuntimeResourceObservation {
+            state: RuntimeResourceState::Present {
+                revision: resource.revision,
+                health: RuntimeResourceHealth::Stopped,
+            },
+            ..exact_observation.clone()
+        }],
+        vec![resource.resource.clone()],
+    );
+    let stale = reconciliation_fixture(
+        vec![RuntimeResourceObservation {
+            state: RuntimeResourceState::Present {
+                revision: RevisionId(aos_contract::Sha256Digest::of_bytes("stale revision")),
+                health: RuntimeResourceHealth::Healthy,
+            },
+            ..exact_observation
+        }],
+        vec![resource.resource],
+    );
+
+    for reconciliation in [&stopped, &stale] {
+        assert!(
+            crate::transition::linked_healthy_provider_adoptions(&planning, Some(reconciliation))
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn unsettled_provider_adoption_must_remain_in_current_and_desired_state() {
+    let (context, desired, current) = verified_planning_resource_removal_fixture();
+    let resource = current.outcome().desired_state.resources[0].clone();
+    let observations = current
+        .outcome()
+        .desired_state
+        .resources
+        .iter()
+        .map(|revision| RuntimeResourceObservation {
+            resource: revision.resource.clone(),
+            state: RuntimeResourceState::Present {
+                revision: revision.revision,
+                health: if revision.resource == resource.resource {
+                    RuntimeResourceHealth::Stopped
+                } else {
+                    RuntimeResourceHealth::Healthy
+                },
+            },
+        })
+        .collect();
+    let reconciliation = reconciliation_fixture(observations, vec![resource.resource.clone()]);
+    let current_only = TransitionInputs {
+        current: Some(&current),
+        authority: None,
+        reconciliation: Some(&reconciliation),
+    };
+    let error = TransitionPlanner::new(&context)
+        .validate_reconciliation_inputs(&desired, &current_only)
+        .expect_err("a current-only adoption receipt must fail closed");
+    assert!(
+        matches!(
+            &error,
+            TransitionError::Encoding(reason)
+                if reason == "runtime reconciliation provider adoption is not retained by both desired and current state"
+        ),
+        "{error}"
+    );
+
+    let desired_only = TransitionInputs {
+        current: Some(&desired),
+        authority: None,
+        reconciliation: Some(&reconciliation),
+    };
+    let error = TransitionPlanner::new(&context)
+        .validate_reconciliation_inputs(&current, &desired_only)
+        .expect_err("a desired-only adoption receipt must fail closed");
+    assert!(
+        matches!(
+            &error,
+            TransitionError::Encoding(reason)
+                if reason == "runtime reconciliation provider adoption is not retained by both desired and current state"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
@@ -139,6 +402,7 @@ fn reconciliation_snapshot_round_trips_and_replays_exact_live_input() {
         max_age_millis: 5_000,
         authority_publication,
         authority_document: AbilityValue::new(authority_json).unwrap(),
+        unsettled_provider_adoptions: Vec::new(),
         observations: vec![crate::RuntimeResourceObservation {
             resource: desired_resource.resource,
             state: crate::RuntimeResourceState::Present {
@@ -242,6 +506,7 @@ fn absent_reconciliation_is_transaction_linked_and_replayable() {
             authority_bytes,
         ),
         authority_document: AbilityValue::new(authority_json).unwrap(),
+        unsettled_provider_adoptions: Vec::new(),
         observations: vec![crate::RuntimeResourceObservation {
             resource: desired_resource.resource,
             state: crate::RuntimeResourceState::Absent,
@@ -992,6 +1257,7 @@ fn enabled_root_retirement_fixture() -> EnabledRootRetirementFixture {
             package: enabled_package.package,
             policy_revision: desired.checked_binding().document().policy_revision,
         }],
+        provider_adoptions: Vec::new(),
     };
     let authorization_digest = authorization_document
         .content_digest()
@@ -1462,6 +1728,7 @@ fn lifecycle_upgrade_fixture(payload_only: bool) -> LifecycleUpgradeFixture {
         authorization_policy_revision: desired.checked_binding().document().policy_revision,
         teardown_bindings,
         teardown_providers: Vec::new(),
+        provider_adoptions: Vec::new(),
     };
     let authorization_digest = authorization_document
         .content_digest()
@@ -1538,6 +1805,7 @@ fn pure_service_package(
             transition_entry: transition_entry.clone(),
         },
         owns_resource_kinds: Vec::new(),
+        state_format: None,
     };
     let descriptor = implementation
         .descriptor_digest()
@@ -2317,6 +2585,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             transition_entry: transition_entry.clone(),
         },
         owns_resource_kinds: Vec::new(),
+        state_format: None,
     };
     let pure_descriptor = pure_implementation
         .descriptor_digest()
@@ -2366,6 +2635,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             handler: handler_key.clone(),
         },
         owns_resource_kinds: vec![interface.name.clone()],
+        state_format: None,
     };
     let terminal_reference = ProviderImplementationReference {
         descriptor: terminal_implementation

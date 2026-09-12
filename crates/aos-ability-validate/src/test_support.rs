@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU32, NonZeroU64};
 
 use aos_ability_model::document::{
-    FreshnessCondition, PlatformIdentity, ProviderInventory, ProviderState,
+    DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory, ProviderState,
 };
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::*;
@@ -208,6 +208,281 @@ pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
     fixture
         .validate()
         .expect("built-in systemd fixture must pass production validation")
+}
+
+/// Builds a checked persistent write owned by a stateful pure provider.
+///
+/// One package exports the pure owner and the terminal handler. The terminal
+/// request is nested beneath the owner instance, so native inventory tests can
+/// exercise durable owner admission through the same checked binding evidence
+/// used by production dispatch.
+///
+/// # Panics
+///
+/// Panics only when the statically constructed package, binding, or effect
+/// fixture stops satisfying a production validator invariant.
+#[must_use]
+pub fn checked_stateful_owner_effect_plan() -> CheckedEffectPlan {
+    stateful_owner_plan_fixture()
+        .validate()
+        .expect("stateful owner fixture must pass production validation")
+}
+
+/// Builds mutable checked-plan inputs for a stateful provider-owned write.
+///
+/// This is the mutable counterpart to [`checked_stateful_owner_effect_plan`].
+/// Downstream recovery tests can vary execution incarnation or operation shape,
+/// refresh the commitments, and still pass through the production validators.
+///
+/// # Panics
+///
+/// Panics only when the statically constructed package or model identities
+/// cannot be represented.
+#[must_use]
+pub fn stateful_owner_plan_fixture() -> PlanFixture {
+    let mut fixture = plan_fixture();
+    let terminal_interface = fixture.binding_plan.bindings[0].interface.clone();
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    let artifact = fixture.binding_plan.bindings[0]
+        .implementation
+        .artifact
+        .clone();
+    let handler = key("observe-handler");
+    let terminal_implementation = ProviderImplementation {
+        interface: terminal_interface.clone(),
+        artifact: artifact.clone(),
+        requirements: Vec::new(),
+        implementation: ImplementationKind::TerminalHandler {
+            handler: handler.clone(),
+        },
+        owns_resource_kinds: Vec::new(),
+        state_format: None,
+    };
+    let terminal_reference = ProviderImplementationReference {
+        descriptor: terminal_implementation
+            .descriptor_digest()
+            .expect("terminal implementation digest"),
+        artifact: artifact.clone(),
+        handler: Some(handler.clone()),
+    };
+
+    let mut owner_interface = fixture.interfaces[0].clone();
+    owner_interface.interface.name =
+        InterfaceName::new("test.state-owner").expect("owner interface name");
+    let owner_resource_kind = owner_interface.interface.name.clone();
+    for method in owner_interface.interface.methods.values_mut() {
+        method.target_resource = owner_resource_kind.clone();
+    }
+    let owner_interface_key = owner_interface
+        .interface_key()
+        .expect("owner interface digest");
+    let owner_implementation = ProviderImplementation {
+        interface: owner_interface_key.clone(),
+        artifact: artifact.clone(),
+        requirements: Vec::new(),
+        implementation: ImplementationKind::PureComposition {
+            compose_entry: key("compose"),
+            transition_entry: key("transition"),
+        },
+        owns_resource_kinds: vec![terminal_interface.name.clone()],
+        state_format: Some(ProviderStateFormat {
+            descriptor: Sha256Digest::of_bytes("stateful owner test format"),
+            artifact: artifact.clone(),
+        }),
+    };
+    let owner_reference = ProviderImplementationReference {
+        descriptor: owner_implementation
+            .descriptor_digest()
+            .expect("owner implementation digest"),
+        artifact: artifact.clone(),
+        handler: None,
+    };
+    let mut providers = vec![terminal_implementation, owner_implementation];
+    providers.sort_by(|left, right| left.interface.cmp(&right.interface));
+    let package = PackageDocument {
+        schema: PackageDocument::SCHEMA.to_string(),
+        required_features: vec![
+            RequiredFeature::new("abilities-v1").expect("base abilities feature"),
+            RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).expect("state-format feature"),
+        ],
+        activation_mode: AbilityActivationMode::StructuredEffects,
+        package: aos_ability_model::document::PackageSubject {
+            name: key("stateful-owner-provider"),
+            version: "1.0.0".to_string(),
+            payload: artifact.clone(),
+            source: artifact.clone(),
+        },
+        artifacts: vec![artifact.clone()],
+        exports: vec![
+            ExportDeclaration {
+                name: key("handler"),
+                interface: terminal_interface.clone(),
+                aggregation: None,
+                implementation: terminal_reference.descriptor,
+            },
+            ExportDeclaration {
+                name: key("owner"),
+                interface: owner_interface_key.clone(),
+                aggregation: None,
+                implementation: owner_reference.descriptor,
+            },
+        ],
+        requirements: Vec::new(),
+        module_entry_points: BTreeMap::from([
+            (key("compose"), artifact.clone()),
+            (key("transition"), artifact.clone()),
+        ]),
+        implementation: PackageImplementation {
+            providers,
+            handlers: BTreeMap::from([(
+                handler,
+                HandlerDescriptor {
+                    artifact: artifact.clone(),
+                    entry_point: "bin/observe".to_string(),
+                    arguments: ValueSchema::Boolean,
+                    result: ValueSchema::Boolean,
+                },
+            )]),
+        },
+        ownership: Vec::new(),
+    };
+    let package_digest = package.content_digest().expect("stateful package digest");
+
+    fixture.binding_inputs.environment.providers[0].implementation = terminal_reference.clone();
+    fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
+        instance: provider.clone(),
+        package: package_digest,
+        enabled: true,
+        configuration: None,
+    }];
+    fixture.binding_inputs.packages = vec![package];
+
+    let owner_resource = ResourceId {
+        provider: provider.clone(),
+        key: key("owner-metadata"),
+    };
+    let owner_revision = ResourceRevision {
+        resource: owner_resource.clone(),
+        revision: RevisionId(Sha256Digest::of_bytes("stateful owner metadata revision")),
+    };
+    for revisions in [
+        &mut fixture.binding_inputs.environment.resources,
+        &mut fixture.binding_inputs.desired_state.resources,
+        &mut fixture.binding_plan.resources,
+        &mut fixture.effect_plan.current_revisions,
+        &mut fixture.effect_plan.desired_revisions,
+    ] {
+        revisions.push(owner_revision.clone());
+        revisions.sort_by(|left, right| compare_resource_ids(&left.resource, &right.resource));
+    }
+
+    let handler_scope =
+        ScopePath::new(vec![provider.key.clone(), key("nested")]).expect("nested handler scope");
+    fixture.binding_inputs.desired_state.child_requests[0]
+        .id
+        .scope = handler_scope.clone();
+    fixture.binding_inputs.desired_state.child_requests[0].lifetime = ResourceLifetime::Persistent;
+    fixture.binding_plan.requests[0] =
+        fixture.binding_inputs.desired_state.child_requests[0].clone();
+    fixture.binding_plan.bindings[0].request = fixture.binding_plan.requests[0].id.clone();
+    fixture.binding_plan.bindings[0].provider_package = Some(package_digest);
+    fixture.binding_plan.bindings[0].implementation = terminal_reference;
+    fixture.binding_plan.bindings[0].caller_grant.resources[0].access = AccessMode::ExclusiveWrite;
+    fixture.binding_plan.bindings[0].lifetime = ResourceLifetime::Persistent;
+
+    let owner_request = BindingRequest {
+        id: RequestId {
+            consumer: provider.clone(),
+            scope: ScopePath::root(),
+            key: key("owner"),
+        },
+        accepted_interfaces: vec![owner_interface_key.clone()],
+        methods: vec![key("observe")],
+        guarantees: Vec::new(),
+        lifetime: ResourceLifetime::Persistent,
+    };
+    let owner_binding = Binding {
+        id: BindingId(key("owner")),
+        request: owner_request.id.clone(),
+        interface: owner_interface_key,
+        provider: provider.clone(),
+        provider_package: Some(package_digest),
+        implementation: owner_reference,
+        source: BindingSource::Explicit,
+        caller_grant: AuthorityGrant {
+            principal: provider.clone(),
+            methods: vec![key("observe")],
+            contributions: Vec::new(),
+            resources: vec![ResourcePermission {
+                resource: owner_resource,
+                access: AccessMode::Read,
+                operations: vec![key("observe")],
+            }],
+        },
+        provider_grant: AuthorityGrant {
+            principal: provider,
+            methods: Vec::new(),
+            contributions: Vec::new(),
+            resources: Vec::new(),
+        },
+        guarantees: Vec::new(),
+        policy_revision: fixture.binding_plan.policy_revision,
+        lifetime: ResourceLifetime::Persistent,
+        mediation_allowed: false,
+    };
+    fixture
+        .binding_inputs
+        .desired_state
+        .child_requests
+        .push(owner_request.clone());
+    fixture.binding_plan.requests.push(owner_request);
+    fixture.binding_plan.bindings.push(owner_binding);
+    fixture
+        .binding_inputs
+        .desired_state
+        .child_requests
+        .sort_by(|left, right| compare_request_ids(&left.id, &right.id));
+    fixture
+        .binding_plan
+        .requests
+        .sort_by(|left, right| compare_request_ids(&left.id, &right.id));
+    fixture.binding_plan.bindings.sort_by(|left, right| {
+        compare_request_ids(&left.request, &right.request).then_with(|| left.id.cmp(&right.id))
+    });
+
+    let terminal_resource = fixture.effect_plan.operations[0].target.resource.clone();
+    let controller = AggregateId {
+        provider: terminal_resource.provider.clone(),
+        group: key("stateful-owner"),
+    };
+    let controller_assignment = ControllerAssignment {
+        resource: terminal_resource,
+        controller: controller.clone(),
+    };
+    fixture.binding_inputs.environment.controllers = vec![controller_assignment.clone()];
+    fixture.binding_inputs.desired_state.controllers = vec![controller_assignment.clone()];
+    fixture.effect_plan.controllers = vec![controller_assignment];
+    fixture.effect_plan.operations[0].target.lifetime = ResourceLifetime::Persistent;
+    fixture.effect_plan.operations[0].accesses[0].mode = AccessMode::ExclusiveWrite;
+    fixture.effect_plan.operations[0].controller = Some(controller);
+    fixture.interfaces.push(owner_interface);
+    fixture.interfaces.sort_by(|left, right| {
+        left.interface
+            .name
+            .cmp(&right.interface.name)
+            .then_with(|| left.interface.abi.cmp(&right.interface.abi))
+    });
+    fixture.context = ValidationContext::new(
+        BTreeSet::from([
+            RequiredFeature::new("abilities-v1").expect("base abilities feature"),
+            RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).expect("state-format feature"),
+        ]),
+        fixture.interfaces.clone(),
+    )
+    .expect("stateful owner context");
+    fixture.refresh_commitments();
+
+    fixture
 }
 
 /// Builds mutable unchecked documents for focused validator regression tests.
@@ -700,7 +975,10 @@ fn digest(digit: char) -> Sha256Digest {
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_effect_plan, checked_systemd_manager_effect_plan};
+    use super::{
+        checked_effect_plan, checked_stateful_owner_effect_plan,
+        checked_systemd_manager_effect_plan,
+    };
 
     #[test]
     fn fixture_passes_production_validators() {
@@ -716,5 +994,13 @@ mod tests {
 
         assert!(plan.is_executable());
         assert_eq!(plan.operations()[0].method.as_str(), "start");
+    }
+
+    #[test]
+    fn stateful_owner_fixture_passes_production_validators() {
+        let plan = checked_stateful_owner_effect_plan();
+
+        assert!(plan.is_executable());
+        assert_eq!(plan.operations().len(), 1);
     }
 }

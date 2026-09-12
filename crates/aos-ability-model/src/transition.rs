@@ -12,9 +12,60 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Binding, BindingId, BindingRequest, InstanceId, ProviderImplementationReference,
-    RequiredFeature, RevisionId, VersionedDocument,
+    Binding, BindingId, BindingRequest, IncarnationId, InstanceId, InterfaceKey, LocalKey,
+    ProviderImplementationReference, ProviderStateFormat, RequiredFeature, ResourceId, RevisionId,
+    VersionedDocument,
 };
+
+/// Names the version-1 explicit provider-state adoption semantics.
+pub const PROVIDER_STATE_ADOPTION_V1: &str = "provider-state-adoption-v1";
+
+/// Pins one side of an explicit provider-state ownership transfer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAdoptionEndpoint {
+    /// Identifies the stable provider instance that owns the state.
+    pub provider: InstanceId,
+    /// Identifies the exact package manifest supplying the implementation.
+    pub package: Sha256Digest,
+    /// Identifies the exact public interface implemented by the provider.
+    pub interface: InterfaceKey,
+    /// Pins the exact provider implementation and executable artifact.
+    pub implementation: ProviderImplementationReference,
+    /// Pins the format declaration and the artifact that made it.
+    pub state_format: ProviderStateFormat,
+    /// Identifies the exact terminal binding used to affect the resource.
+    pub handler_binding: BindingId,
+    /// Names the exact handler method that writes the retained resource.
+    pub handler_method: LocalKey,
+    /// Identifies the provider instance supplying the terminal handler.
+    pub handler_provider: InstanceId,
+    /// Identifies the handler provider's exact observed incarnation.
+    pub handler_incarnation: IncarnationId,
+    /// Identifies the handler's exact public interface.
+    pub handler_interface: InterfaceKey,
+    /// Pins the exact terminal handler implementation and artifact.
+    pub handler_implementation: ProviderImplementationReference,
+    /// Identifies the exact package manifest supplying the terminal handler.
+    pub handler_package: Sha256Digest,
+}
+
+/// Authorizes one exact persistent resource to change provider ownership.
+///
+/// Version 1 permits adoption only when both endpoints declare the same state
+/// format descriptor. It does not authorize state migration or mutation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderAdoptionAuthorization {
+    /// Identifies the exact logical resource whose ownership may change.
+    pub resource: ResourceId,
+    /// Identifies the exact public kind of the retained resource.
+    pub resource_interface: InterfaceKey,
+    /// Pins the sole current owner and its authenticated handler path.
+    pub source: ProviderAdoptionEndpoint,
+    /// Pins the sole candidate owner and its authenticated handler path.
+    pub candidate: ProviderAdoptionEndpoint,
+}
 
 /// Authorizes one transition-local binding derived from an exact prior binding.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -74,6 +125,9 @@ pub struct TransitionAuthorizationDocument {
     pub teardown_bindings: Vec<TeardownBindingAuthorization>,
     /// Lists exact prior operator-enabled roots reauthorized for retirement.
     pub teardown_providers: Vec<TeardownProviderAuthorization>,
+    /// Lists explicit compatible provider-state ownership transfers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_adoptions: Vec<ProviderAdoptionAuthorization>,
 }
 
 impl VersionedDocument for TransitionAuthorizationDocument {

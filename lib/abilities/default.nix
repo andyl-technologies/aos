@@ -509,6 +509,7 @@
         "composeEntry"
         "transitionEntry"
         "ownsResourceKinds"
+        "stateFormat"
         "compose"
         "transition"
         "handler"
@@ -536,6 +537,10 @@
     then fail "terminal export with desired outputs must declare pure provide semantics"
     else if handler != null && !isLocalKey handler
     then fail "export handler must be a local key"
+    else if handler != null && (checked.stateFormat or null) != null
+    then fail "terminal export cannot declare a provider state format"
+    else if (checked.stateFormat or null) != null && (checked.ownsResourceKinds or []) == []
+    then fail "provider state format requires at least one owned resource kind"
     else {
       _type = "aos-ability-export";
       interface = {
@@ -569,6 +574,10 @@
         builtins.map
         (requireQualifiedName "owned resource kind")
         (uniqueSortedStrings "owned resource kinds" (checked.ownsResourceKinds or []));
+      state_format =
+        if (checked.stateFormat or null) == null
+        then null
+        else requireDigest "provider state-format descriptor" checked.stateFormat;
       inherit compose transition handler provide;
     };
 
@@ -588,29 +597,40 @@
 
   normalizeImplementation = artifact: value: let
     export = requireMarker "export" "aos-ability-export" value;
-  in {
-    interface =
-      if export.interface ? descriptor
-      then export.interface
-      else fail "provider implementation requires a validator-derived interface descriptor pin";
-    artifact = normalizeArtifactReference artifact;
-    requirements =
-      builtins.map
-      (alias: export.requirements.${alias})
-      (builtins.attrNames export.requirements);
-    implementation =
-      if export.handler != null
-      then {
-        kind = "terminal-handler";
-        handler = export.handler;
-      }
+  in
+    {
+      interface =
+        if export.interface ? descriptor
+        then export.interface
+        else fail "provider implementation requires a validator-derived interface descriptor pin";
+      artifact = normalizeArtifactReference artifact;
+      requirements =
+        builtins.map
+        (alias: export.requirements.${alias})
+        (builtins.attrNames export.requirements);
+      implementation =
+        if export.handler != null
+        then {
+          kind = "terminal-handler";
+          handler = export.handler;
+        }
+        else {
+          kind = "pure-composition";
+          compose_entry = export.compose_entry;
+          transition_entry = export.transition_entry;
+        };
+      owns_resource_kinds = export.owns_resource_kinds;
+    }
+    // (
+      if export.state_format == null
+      then {}
       else {
-        kind = "pure-composition";
-        compose_entry = export.compose_entry;
-        transition_entry = export.transition_entry;
-      };
-    owns_resource_kinds = export.owns_resource_kinds;
-  };
+        state_format = {
+          descriptor = export.state_format;
+          artifact = normalizeArtifactReference artifact;
+        };
+      }
+    );
 
   normalizeExportDeclaration = name: implementation: value: let
     export = requireMarker "export" "aos-ability-export" value;

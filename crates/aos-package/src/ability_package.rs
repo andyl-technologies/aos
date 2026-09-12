@@ -646,9 +646,11 @@ pub(crate) fn verify_artifact_catalog(
 }
 
 pub(crate) fn decode_package_manifest(bytes: &[u8]) -> Result<PackageDocument> {
-    let supported_features =
-        BTreeSet::from([aos_ability_model::RequiredFeature::new("abilities-v1")
-            .context("constructing the built-in ability feature")?]);
+    let supported_features = ["abilities-v1", aos_ability_model::PROVIDER_STATE_FORMAT_V1]
+        .into_iter()
+        .map(aos_ability_model::RequiredFeature::new)
+        .collect::<std::result::Result<BTreeSet<_>, _>>()
+        .context("constructing the built-in ability features")?;
     aos_ability_model::decode_canonical::<PackageDocument>(
         bytes,
         aos_ability_model::ABILITY_LIMITS_V1,

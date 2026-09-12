@@ -6,9 +6,9 @@ use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, DeploymentObligation, ExportDeclaration,
-    HandlerDescriptor, ImplementationKind, LocalKey, ObligationKind, PackageDocument,
-    PackageImplementation, ProviderImplementation, RequiredFeature, TransactionId, ValueExpression,
-    ValueSchema, VersionedDocument,
+    HandlerDescriptor, ImplementationKind, InterfaceName, LocalKey, ObligationKind,
+    PackageDocument, PackageImplementation, ProviderImplementation, ProviderStateFormat,
+    RequiredFeature, TransactionId, ValueExpression, ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_ability_validate::test_support::{
@@ -66,6 +66,23 @@ fn bundle_round_trip_accepts_the_implemented_abilities_v1_feature()
     Ok(())
 }
 
+#[test]
+fn bundle_round_trip_accepts_state_format_package_semantics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let feature = RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)?;
+    let mut fixture = plan_fixture();
+    install_package_with_feature(&mut fixture, feature.clone())?;
+    fixture.context =
+        ValidationContext::new(BTreeSet::from([feature]), fixture.interfaces.clone())?;
+
+    let bundle = InspectionBundle::from_checked(&fixture.validate()?)?;
+    let bytes = bundle.canonical_bytes()?;
+    let checked = InspectionBundle::decode(&bytes)?.check(None)?;
+
+    assert_eq!(checked.bundle().canonical_bytes()?, bytes);
+    Ok(())
+}
+
 fn install_package_with_feature(
     fixture: &mut aos_ability_validate::test_support::PlanFixture,
     feature: RequiredFeature,
@@ -81,11 +98,55 @@ fn install_package_with_feature(
             handler: handler.clone(),
         },
         owns_resource_kinds: Vec::new(),
+        state_format: None,
     };
     let descriptor = implementation.descriptor_digest()?;
     binding.implementation.descriptor = descriptor;
     binding.implementation.handler = Some(handler.clone());
     fixture.binding_inputs.environment.providers[0].implementation = binding.implementation.clone();
+
+    let mut exports = vec![ExportDeclaration {
+        name: LocalKey::new("provider")?,
+        interface: binding.interface.clone(),
+        aggregation: None,
+        implementation: descriptor,
+    }];
+    let mut providers = vec![implementation];
+    let mut module_entry_points = BTreeMap::new();
+    if feature.as_str() == aos_ability_model::PROVIDER_STATE_FORMAT_V1 {
+        let mut owner_interface = fixture.interfaces[0].clone();
+        owner_interface.interface.name = InterfaceName::new("test.state-owner")?;
+        for method in owner_interface.interface.methods.values_mut() {
+            method.target_resource = owner_interface.interface.name.clone();
+        }
+        let owner_interface_key = owner_interface.interface_key()?;
+        let owner = ProviderImplementation {
+            interface: owner_interface_key.clone(),
+            artifact: artifact.clone(),
+            requirements: Vec::new(),
+            implementation: ImplementationKind::PureComposition {
+                compose_entry: LocalKey::new("compose")?,
+                transition_entry: LocalKey::new("transition")?,
+            },
+            owns_resource_kinds: vec![binding.interface.name.clone()],
+            state_format: Some(ProviderStateFormat {
+                descriptor: Sha256Digest::of_bytes("inspection state format"),
+                artifact: artifact.clone(),
+            }),
+        };
+        exports.push(ExportDeclaration {
+            name: LocalKey::new("state-owner")?,
+            interface: owner_interface_key,
+            aggregation: None,
+            implementation: owner.descriptor_digest()?,
+        });
+        providers.push(owner);
+        module_entry_points.extend([
+            (LocalKey::new("compose")?, artifact.clone()),
+            (LocalKey::new("transition")?, artifact.clone()),
+        ]);
+        fixture.interfaces.push(owner_interface);
+    }
 
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
@@ -98,16 +159,11 @@ fn install_package_with_feature(
             source: artifact.clone(),
         },
         artifacts: vec![artifact.clone()],
-        exports: vec![ExportDeclaration {
-            name: LocalKey::new("provider")?,
-            interface: binding.interface.clone(),
-            aggregation: None,
-            implementation: descriptor,
-        }],
+        exports,
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::new(),
+        module_entry_points,
         implementation: PackageImplementation {
-            providers: vec![implementation],
+            providers,
             handlers: BTreeMap::from([(
                 handler,
                 HandlerDescriptor {
