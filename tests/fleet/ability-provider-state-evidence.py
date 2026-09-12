@@ -735,6 +735,8 @@ def _fresh_receiving_authority(
         raise RuntimeError("candidate authority reused the predecessor scope")
     if canonical(source) == canonical(candidate):
         raise RuntimeError("candidate authority reused the predecessor document")
+    if candidate["sequence"] <= source["sequence"]:
+        raise RuntimeError("candidate authority sequence did not advance")
     if candidate["observed_at_restart_millis"] < source[
         "observed_at_restart_millis"
     ]:
