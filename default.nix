@@ -571,7 +571,7 @@
         ]
         ++ lib.imap (index: cohort: {
           id = "provider-effect-boundary-rollout-${builtins.toString index}";
-          qualifiedCells = [builtins.elemAt nativeEffectBoundaryCells.groups.rollout index];
+          qualifiedCells = [(builtins.elemAt nativeEffectBoundaryCells.groups.rollout index)];
           inherit (cohort) testScript;
           inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
         })
