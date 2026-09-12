@@ -540,36 +540,54 @@ only from authenticated retained Storage state and freshly inspected
 descriptors. Exact replay of an already durable repair is observation-only and
 must be resolved before starting a new pre-admission observation.
 
-Before committing a new repair, the broker sends a distinct non-authorizing
-`AOSZRPA1` request to the fixed observer. It binds a fresh challenge, the
-prospective repair request identity and commitments, the exact latest Ensure
-attempt, creation publication, optional predecessor repair intent, canonical
-creation catalog, historical host scope, and a freshly descriptor-derived
-current host scope. The `AOSZRPS1` result must prove the exact retained dataset
-and an absent root pin. A validated payload is not admission authority: the
-broker may consume it only after it has authenticated the observer process,
-proved the child exited, and proved its complete service cgroup quiescent.
+Before committing a new repair, the broker selects one of two authenticated
+predecessor shapes. `ExistingAttempt` binds the exact globally latest workspace
+attempt, which must be an Ensure, and its optional predecessor repair intent.
+`MissingInitial` instead requires an active committed `CreateWorkspace` or
+`Clone` with no workspace-pin attempt. Ordinary committed same-handle history
+does not substitute for or make the creation ambiguous.
+
+The broker then sends a distinct non-authorizing version-2 `AOSZRPA1` request to
+the fixed observer. Version 2 is a hard cut and its probe uses a distinct v2
+domain. It binds a fresh challenge; the prospective repair request, assignment,
+and workspace identities; the exact creation operation, result catalog and
+digest; the creation publication and canonical catalog; the dataset GUID and
+root policy; the physical catalog head; and either authenticated latest-attempt
+bytes or an empty value for `MissingInitial`. The optional predecessor repair
+intent is separately authenticated. The observer independently authenticates
+the records it receives after entering the retained mount namespace and returns
+the exact dataset with an absent root pin in `AOSZRPS1`. A validated payload is
+not admission authority: the broker may consume it only after authenticating
+the observer process, proving natural child exit, and proving complete service-
+cgroup quiescence.
 
 The broker then reopens the raw request and signed artifacts under a fresh
-protected clock and rechecks the current fence, active creation, global latest
-attempt, exact retained record bytes, and fresh probe while holding the sole
-Storage journal lock. Admission atomically replaces the sandbox current fence
-and writes the Pending Effect, operation fence, immutable repair intent, and
-new Ambiguous Ensure attempt. Capacity for the later atomic completion must be
-reserved before this five-record transaction commits. Once committed, the
-repair authorization is consumed: a failure before immediate dispatch becomes
-observation-only recovery and cannot reissue the worker authority.
+protected clock while holding the sole Storage journal lock. It authenticates
+the exact committed creation and publication, current physical catalog head,
+current assignment and plan, ownership, node, lease, and Clone source identity;
+rechecks the predecessor shape and exact absence observation; and performs the
+final before-effect check. Admission atomically replaces the sandbox current
+fence and writes the Pending Effect, operation fence, immutable repair intent,
+and new Ambiguous Ensure attempt. Capacity for the later atomic completion must
+be reserved before this five-record transaction commits. No mutating provider
+action occurs before this authenticated durable admission. Once committed, the
+repair authorization is consumed: uncertain admission returns
+`ReopenRequired`, and restart can observe but cannot reissue its worker
+authority.
 
 The mutating worker accepts only the repair-specific `AOSZRPW1` envelope. It
 independently authenticates the Pending repair Effect, equal current and
-operation fences, repair intent, attempt receipt, creation publication, and
-canonical creation catalog. The attempt must be an ordinal-two-or-later
-Ensure for an existing workspace whose authenticated creation is either
-`CreateWorkspace` or `Clone`, and must prove the exact dataset with an absent
-pin before mutation. The worker checks the protected current fence and clock
-immediately before and after its durable exactly-once claim,
-materializes only the fixed handle-derived pin, and returns exact
-postcondition evidence.
+operation fences, repair intent, attempt receipt, committed creation result,
+creation publication, and canonical creation catalog. An ordinal-one Ensure is
+valid only when the tagged repair intent proves `MissingInitial`; an
+`ExistingAttempt` repair is exactly adjacent to its predecessor and therefore
+has ordinal two or greater. The worker binds the attempt root policy to both the
+portable publication and catalog root policies. For Clone it additionally
+binds the exact source dataset, snapshot, version handle, active hold, and
+source root policy. It proves the exact destination dataset and an absent pin
+before mutation, checks the protected current fence and clock immediately
+before and after its durable exactly-once claim, materializes only the fixed
+handle-derived pin, and returns exact postcondition evidence.
 
 Successful completion is one two-record journal transaction: the attempt
 becomes Satisfied with its observed pin proof and the live Effect becomes

@@ -5255,23 +5255,32 @@ commitment; zero or wrong-width identities, unknown fields at either protobuf
 level, action-field smuggling, older protocol versions, and noncanonical bytes
 fail closed.
 
-Durable repair history uses append-only journal namespace 35. Its
-location-authenticated intent retains the exact original Pending Effect bytes
-and digest, operation fence, repair and creation identities, committed creation
-result and publication record digests, workspace handle, predecessor Ensure
-attempt and phase, and the new adjacent attempt identity and ordinal. Recovery
-authenticates every retained repair intent, including satisfied and retired
-history, before ordinary Effect or workspace-inventory access. It requires
-contiguous ordinals and exact predecessor and reverse one-to-one joins. A
+Durable repair history uses append-only journal namespace 35. The current
+location-authenticated `AOSRPI01` format is canonical signed version 2. It
+retains the exact original Pending Effect bytes and digest, operation fence,
+repair and creation identities, committed creation result and publication
+record digests, workspace handle, a tagged predecessor, and the admitted
+attempt identity and ordinal. `ExistingAttempt` carries the exact predecessor
+Ensure identity, phase, and record digest. `MissingInitial` instead carries the
+exact committed creation-record digest and is valid only when that active
+creation had no workspace-pin attempt at admission; its repair attempt is the
+workspace's ordinal-one Ensure. Signed version-1 records remain readable on
+reopen, but their predecessor is always decoded as `ExistingAttempt` because
+that layout cannot express `MissingInitial`.
+
+Recovery authenticates every retained repair intent, including satisfied and
+retired history, before ordinary Effect or workspace-inventory access. It
+requires contiguous ordinals, exact tagged-predecessor links, and reverse one-
+to-one joins while allowing authenticated contiguous later attempts. A
 superseded attempt cannot complete late, and an admitted repair is always
 observation-only after restart; its historical authority is never
 redispatched.
 
 The dedicated `AOSZRPO1`/`AOSZRPR1` recovery exchange contains no effect grant.
-It binds a kernel-generated challenge, independently authenticated repair,
-attempt and publication records, the canonical creation catalog, the
-historical attempt scope, and a freshly descriptor-derived boot and
-mount-namespace scope. The fixed
+After either predecessor shape has been admitted, it binds a kernel-generated
+challenge, independently authenticated repair, admitted attempt and publication
+records, the canonical creation catalog, the admitted attempt scope, and a
+freshly descriptor-derived boot and mount-namespace scope. The fixed
 single-threaded observer independently opens the authenticated records after
 entering the retained namespace, performs bounded ZFS and exact mount
 inventory, and returns the probe digest with typed evidence. Broker completion
@@ -5308,54 +5317,74 @@ remain open; no
 
 ### Fresh Storage workspace root-pin repair execution (in progress)
 
-Commit `23ee70104fd313ba3497a07a263fa3d2cec2d0af` implements the
+Commit `23ee70104fd313ba3497a07a263fa3d2cec2d0af` introduced the
 fresh admission and immediate one-shot execution path that follows the
-recovery foundation above. `StorageBrokerRuntime::repair_workspace_pin` accepts
-only the raw Storage 1.0 request, standard authorization artifacts, negotiated
-version, peer identity and policy, and a protected-clock provider. Callers
-cannot select an observation, catalog, dataset name or GUID, attempt ordinal,
-host scope, or pin proof. The method resolves an exact durable replay before
-probing; such a retry returns `ObservationRequired` and never reaches an
-observer or mutator.
+recovery foundation above. Signed successor
+`c75d91f324040577b1ad44f4fb929c796a450c98` extends that same path to the
+missing-initial case described below.
+`StorageBrokerRuntime::repair_workspace_pin` accepts only the raw Storage 1.0
+request, standard authorization artifacts, negotiated version, peer identity
+and policy, and a protected-clock provider. Callers cannot select an
+observation, catalog, dataset name or GUID, attempt ordinal, host scope, or pin
+proof. The method resolves an exact durable replay before probing; such a retry
+returns `ObservationRequired` and never reaches an observer or mutator.
 
-For a new operation, the broker derives the globally latest Ensure attempt and
-active creation from authenticated state. Both an ordinal-one creation Ensure
-and an ordinal-two-or-later repair Ensure may be predecessors, whether their
-phase is Ambiguous or Satisfied. A retired creation, `RemoveAndDestroy`
-predecessor, nonmatching repair chain, or exhausted four-attempt bound fails
-closed. The noncommitting `AOSZRPA1`/`AOSZRPS1` exchange carries a fresh
-challenge, prospective request commitments, exact current records, creation
-catalog, and historical and descriptor-derived current host scopes. Its fixed
-observer independently authenticates the records after entering the retained
-mount namespace and must return the exact dataset with an absent pin. Only the
-systemd client can wrap that result in the move-only fresh value, and only
-after exact child identity, natural exit, and whole-cgroup quiescence have been
-proved.
+For a new operation, the broker authenticates the active committed
+`CreateWorkspace` or `Clone` and the globally latest workspace attempt. An
+exact latest Ensure becomes `ExistingAttempt`; it may be the creation's
+ordinal-one Ensure or any fully linked repair Ensure, and the new repair is the
+adjacent ordinal two or greater. Absence of any attempt selects
+`MissingInitial`, and the new repair is the exact ordinal-one Ensure. A retired
+creation, `RemoveAndDestroy` predecessor, competing ordinal-one attempt,
+nonmatching repair chain, or exhausted four-attempt bound fails closed.
+Committed Snapshot, quota, hold, release, and version-mint history does not make
+the creation lookup ambiguous.
+
+The noncommitting version-2 `AOSZRPA1`/`AOSZRPS1` exchange is a hard cut with a
+v2 probe domain. It carries a fresh challenge, prospective request and
+assignment commitments, exact creation and publication identities, creation
+catalog and root policy, physical catalog head, optional latest-attempt and
+predecessor-repair bytes, and a descriptor-derived current host scope. The
+observer independently authenticates the optional latest attempt, publication,
+and optional predecessor repair after entering the retained mount namespace;
+for `MissingInitial`, the latest-attempt bytes are empty. It must return the
+exact dataset with an absent pin. Only the systemd client can wrap that result
+in the move-only fresh value, and only after exact child identity, natural exit,
+and whole-cgroup quiescence have been proved. Legacy v1-domain, version, header,
+or layout substitution cannot authenticate as v2.
 
 The coordinator consumes that fresh value while the sole transaction-store
 lock remains held, resamples the protected clock, redecodes and reauthorizes the
-raw request, rereads the latest attempt and every linked raw record, rechecks
-the active creation and current fence, and performs the final before-effect
-check. It then atomically commits five records: the sandbox-keyed current
-fence, request-keyed Pending Effect, operation-keyed authority fence,
-location-authenticated repair intent, and adjacent Ambiguous Ensure attempt.
-The same preflight reserves the exact later two-record completion shape before
-any of those records become durable. Exact readback and post-commit fence,
-clock, receipt, catalog, publication, and repair-intent checks poison the
-in-memory authority source on any uncertainty.
+raw request, and reopens the exact committed creation and current physical
+catalog head. It rechecks current node, ownership, sandbox, incarnation, epoch,
+assignment, plan, lease, creation publication, Clone source identity, tagged
+predecessor, linked raw bytes, and exact absence before the final before-effect
+check. It then atomically commits five records: the sandbox-keyed current fence,
+request-keyed Pending Effect, operation-keyed authority fence, version-2 repair
+intent, and Ambiguous Ensure attempt. `MissingInitial` writes ordinal one;
+`ExistingAttempt` writes its exact adjacent ordinal. The same preflight reserves
+the exact later two-record completion shape before any record becomes durable.
+No mutating provider action occurs before authenticated durable admission.
+Exact readback and post-commit fence, clock, receipt, catalog, publication, and
+repair-intent checks poison the in-memory authority source on any uncertainty,
+which returns `ReopenRequired` and cannot dispatch the worker.
 
 The distinct `AOSZRPW1` worker request encloses the existing framed pin
 transport plus the repair and creation-publication records. The privileged
-worker independently accepts only a move-only authenticated
-ordinal-two-or-later Ensure. It authenticates the original Pending repair
-Effect, equal current and operation fences, attempt receipt, repair intent,
-committed creation result, publication identity range, and canonical creation
-catalog, and revalidates its transferred host descriptors. It requires the
-exact dataset and absent pin before its durable replay claim, checks the
-protected current fence and clock on both sides of that claim, materializes the
-fixed handle-derived pin, and observes the exact postcondition. Ordinary
-creation semantics cannot authorize this envelope, and restart never
-redispatches it.
+worker independently accepts only a move-only authenticated Ensure. Ordinal one
+is valid only for an authenticated `MissingInitial` intent; an
+`ExistingAttempt` repair must be exactly adjacent and therefore has ordinal two
+or greater. The worker authenticates the original Pending repair Effect, equal
+current and operation fences, attempt receipt, repair intent, committed
+creation result, publication identity range, and canonical creation catalog,
+and revalidates its transferred host descriptors. Publication and catalog root
+policies must equal the attempt root policy. Clone additionally binds the exact
+source dataset, snapshot, version handle, active hold, and source root policy.
+The worker requires the exact destination dataset and absent pin before its
+durable replay claim, checks the protected current fence and clock on both sides
+of that claim, materializes the fixed handle-derived pin, and observes the exact
+postcondition. Ordinary creation semantics cannot authorize this envelope, and
+restart never redispatches it.
 
 Fresh execution and recovery completion now share a repair-specific durable
 finish. One journal transaction changes the exact attempt to Satisfied with
@@ -5417,29 +5446,40 @@ and teardown with the repaired bind unmounted, dataset destroyed, and worker
 cgroups unpopulated. The final realized output is
 `/nix/store/p4pbsi6zpwmzya824s90psq6xmprawd2-aos-fleet-test-sandbox-zfs-worker-0`.
 
-Follow-up commit `487997afc` adds a test-only failure seam at the exact repair
-admission boundary. The installed test makes the one five-record admission
-transaction durable, then injects the error before the coordinator updates its
-materialized cache or constructs the worker dispatch. The journal snapshot
-sequence advances by seven frames -- transaction begin, five semantic records,
-and transaction commit -- and the runtime returns
-`StorageRuntimeError::Recovery`. The fresh admission observer is activated
+Historical checkpoint `487997afc` added a test-only failure seam at the exact
+repair admission boundary. The seam remains in the current source and is reused
+by current tests. Its installed test made the five-record admission transaction
+durable, then injected the error before the
+coordinator updated its materialized cache or constructed the worker dispatch.
+The journal snapshot sequence advanced by seven frames -- transaction begin,
+five semantic records, and transaction commit -- and the runtime returned
+`StorageRuntimeError::Recovery`. The fresh admission observer was activated
 once, while the worker acceptance count, durable replay-claim count, and pin
-remain unchanged.
+remained unchanged.
 
 A full runtime reopen from the same protected transaction and workspace-catalog
-paths authenticates the ordinal-two `Ambiguous` attempt, `Pending` Effect,
+paths authenticated the ordinal-two `Ambiguous` attempt, `Pending` Effect,
 repair-intent links, and equal decoded current and operation fences. Startup
-activates only the repair observer, retains
-`StorageRuntimeReadiness::RecoveryPending`, and converges to an empty workspace
+activated only the repair observer, retained
+`StorageRuntimeReadiness::RecoveryPending`, and converged to an empty workspace
 inventory without changing the journal, worker count, or claim count. An exact
-retry returns `WorkspacePinRepairExecutionOutcomeV1::ObservationRequired` with
+retry returned `WorkspacePinRepairExecutionOutcomeV1::ObservationRequired` with
 zero observer, worker, claim, and journal deltas. A separately authorized
-generation-eight repair then advances to ordinal three, activates the observer
-and worker once each, creates exactly one replay claim, and reaches a
+generation-eight repair then advanced to ordinal three, activated the observer
+and worker once each, created exactly one replay claim, and reached a
 `Satisfied` attempt with a `Complete` Effect and an active catalog row. The
-final authenticated journal and catalog reopen preserves both the interrupted
+final authenticated journal and catalog reopen preserved both the interrupted
 and successful repair histories.
+
+That checkpoint remains evidence for its exact revision. Its
+`StorageRuntimeError::Recovery` classification and lack of an ordinal-one
+`MissingInitial` path no longer describe the current source; its historical
+flow admitted an ordinal-two repair and then advanced to ordinal three, so it
+was not ordinal-two-only. Commit
+`c75d91f324040577b1ad44f4fb929c796a450c98` retains the admission-commit seam,
+supersedes the failure classification with `ReopenRequired`, adds the tagged
+ordinal-one `MissingInitial` path, and adds production-I/O boundary and public
+runtime orchestration coverage through the shared `WorkspacePinRuntimeIo`.
 
 The pinned development-shell library run compiled 153 Storage tests: 151
 passed, none failed, and the two installed-systemd tests were ignored. The
@@ -7211,8 +7251,9 @@ This is not production qualification. The installed workspace pin worker
 intentionally still lacks `CAP_CHOWN`/`CAP_FOWNER` and denies fchmod, and no
 dedicated root-initializer systemd/MAC domain or installed AArch64/x86_64 VM
 result exists. Clone readiness additionally depends on authenticated source
-snapshot root metadata, and crash recovery between committed dataset creation
-and the first durable pin attempt still requires a complete recovery story.
+snapshot root metadata. Missing-initial workspace-pin repair now covers crash
+recovery between an active committed dataset creation and its first durable pin
+attempt.
 An exact retained Prepared request can resume before its authority deadline;
 an expired Prepared intent now has the authenticated retirement path recorded
 below.
@@ -7390,11 +7431,76 @@ and test-only unwrap findings.
 
 This remains source qualification, not Storage Apply readiness. Production
 continues to construct `StorageApplyReadiness::WorkspaceBackendUnavailable` and
-advertises no Apply method. Missing-initial workspace-pin repair, Mount
-production authority, platform and enforcing-SELinux qualification, hermetic
-Nix integration, and installed x86_64/AArch64 VM evidence remain open, along
-with the previously recorded Snapshot and Clone authority gaps. No task
-checkbox is added or closed by this increment.
+advertises no Apply method. Mount production authority and provider wiring,
+platform and enforcing-SELinux qualification, hermetic Nix integration, and
+installed x86_64/AArch64 VM evidence remain open, along with the previously
+recorded Snapshot authority and Clone whole-tree identity-map provenance gaps.
+Missing-initial workspace-pin repair is source-qualified in the following
+increment. No task checkbox is added or closed here.
+
+### Missing-initial Storage workspace-pin repair (source qualified)
+
+Signed commit `c75d91f324040577b1ad44f4fb929c796a450c98`, subject
+`Repair missing initial workspace pins`, changes exactly eleven paths under
+`crates/aos-sandbox-storage/src` with 4,037 insertions and 346 deletions:
+`broker.rs`,
+`broker/tests/missing_initial_runtime_tests.rs`,
+`broker/tests/missing_initial_tests.rs`, `helper.rs`,
+`pin_worker_runtime.rs`, `runtime.rs`, `state.rs`,
+`state/workspace_projection.rs`, `workspace_repair.rs`,
+`workspace_repair_admission.rs`, and `workspace_repair_worker.rs`.
+
+The commit adds the explicit tagged `MissingInitial` predecessor, canonical
+repair-intent version 2 with signed-v1 `ExistingAttempt` reopen compatibility,
+version-2 pre-admission observation, and ordinal-one repair admission for an
+authenticated active committed `CreateWorkspace` or `Clone` that has no
+workspace-pin attempt. Exact creation, publication, catalog, physical head,
+current authority, assignment, lease, root-policy, and Clone source bindings
+fail closed. Admission rechecks the fresh exact-absence result around the
+atomic five-record commit, and no mutating provider action precedes
+authenticated durable admission.
+
+The runtime now retains a crate-private object-safe `WorkspacePinRuntimeIo`.
+Production forwards the existing descriptor custody, systemd executor, and
+observer through that boundary; ordinary pin execution, repair, startup
+reconciliation, and catalog observation use the same adapter-backed paths.
+Deterministic public `StorageBrokerRuntime::repair_workspace_pin` tests inject a
+strict scripted implementation at that effect boundary but still run the real
+startup, authorization, encoded observer and worker, journal, completion,
+catalog, retry, authenticated durable journal reopen, and runtime reconciliation
+paths. Root-owned protected-open custody is covered only by the ignored
+installed-systemd path, not by this deterministic seam. The deterministic tests
+cover Create and Clone, exact source and root policy, uncertain admission,
+before- and after-effect failure, uncertain completion and catalog commits,
+observation-only reopen, and zero-I/O exact retry. Isolated repair remains
+available while `StorageRuntimeReadiness` is `RecoveryPending`. Unresolved pin
+attempts and the physical catalog independently gate workspace inventory and
+catalog readiness.
+
+The deterministic Storage library run passed 300 tests with no failure and
+three existing installed-systemd/VM tests ignored. Focused runs passed 19
+missing-initial tests, 17 repair codec/admission/worker tests, 10 workspace-
+projection history tests, and both legacy concrete ensure/remove wrapper tests;
+the six public-runtime cases are included in the missing-initial count. Offline
+all-target Cargo check, all-target test compilation, no-deps Cargo doc, scoped
+rustfmt, diff checks, and the production unwrap/expect scan passed. Check,
+test-compilation, and docs emitted the same nine established dead-code warning
+groups. The exact no-deps all-target Clippy command reached Storage and exited
+on the established baseline. Its 18 library diagnostics comprised the nine
+dead-code groups and nine other pre-existing production findings; the lib-test
+target repeated those nine findings and added twelve test-only `root_policy.rs`
+unwrap findings, for 21. It reported no generated `aos-proto` `HashMap`
+diagnostic and no new finding in a touched production line.
+
+This is source qualification only. No installed-systemd, Nix, or VM validation
+was run for this commit. Apply readiness remains independently and
+unconditionally `StorageApplyReadiness::WorkspaceBackendUnavailable`, and Apply
+remains unadvertised regardless of the pin and physical-catalog blockers,
+including after both reconcile. Mount production authority/provider wiring,
+platform and enforcing-SELinux qualification,
+hermetic Nix integration, installed x86_64/AArch64 VM evidence, production
+Snapshot authority, and Clone whole-tree identity-map provenance remain open.
+No task checkbox is added or closed by this increment.
 
 ### Network Prepared-to-Aborted retirement (source qualified)
 
