@@ -60,6 +60,10 @@ QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
 RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v1"
 RUNTIME_SUBJECT_SCHEMA = "aos.qualification.native-adapter-runtime-subject/v1"
 RUNTIME_PLAN_SCHEMA = "aos.qualification.native-adapter-runtime-plan/v1"
+INTERRUPTION_AUDIT_SCHEMA = "aos.qualification.interruption-audit/v1"
+INTERRUPTION_SUBJECT_SCHEMA = "aos.qualification.interruption-subject/v1"
+INTERRUPTION_PLAN_SCHEMA = "aos.qualification.interruption-plan/v1"
+INTERRUPTION_SCENARIO = "interrupt-before-acquisition"
 ROLE_SCENARIOS = {
     f"revoke-{role}-{timing}"
     for role in ["caller", "provider", "enforcement", "assignment"]
@@ -261,6 +265,7 @@ def build_cells(
     subject_digest: str,
     environment_digest: str,
     runtime_audit: dict[str, Any] | None = None,
+    interruption_audit: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds all cell observations and proves every positive claim is expected."""
 
@@ -273,7 +278,16 @@ def build_cells(
     runtime_cells = runtime_audit.get("cells")
     if not isinstance(runtime_cells, dict):
         raise RuntimeError("runtime audit cells are malformed")
-    submitted_cells = set(submissions) | set(runtime_cells)
+    has_interruption_audit = interruption_audit is not None
+    interruption_audit = interruption_audit or {
+        "schema": INTERRUPTION_AUDIT_SCHEMA,
+        "matrix_spec_digest": "sha256:" + "0" * 64,
+        "cells": {},
+    }
+    interruption_cells = interruption_audit.get("cells")
+    if not isinstance(interruption_cells, dict):
+        raise RuntimeError("interruption audit cells are malformed")
+    submitted_cells = set(submissions) | set(runtime_cells) | set(interruption_cells)
     if submitted_cells != set(expected_qualified_cells):
         raise RuntimeError("cohort probe cells differ from its explicit qualification scope")
     if len(set(expected_qualified_cells)) != len(expected_qualified_cells):
@@ -303,6 +317,18 @@ def build_cells(
             *runtime_failure_cells,
             *POSTGRESQL_CELL_IDS,
         ]
+    if has_interruption_audit:
+        before_acquisition_cells = [
+            cell["id"]
+            for cell in spec["cells"]
+            if cell["id"].rsplit("/", 1)[-1] == INTERRUPTION_SCENARIO
+        ]
+        insertion = len(PRIMARY_COHORT_CELL_IDS)
+        allowed_cells = [
+            *allowed_cells[:insertion],
+            *before_acquisition_cells,
+            *allowed_cells[insertion:],
+        ]
     if (
         not expected_qualified_cells
         or any(cell_id not in allowed_cells for cell_id in expected_qualified_cells)
@@ -322,6 +348,8 @@ def build_cells(
         )
     if has_runtime_audit:
         _validate_runtime_audit(runtime_audit, spec, specification_cells)
+    if has_interruption_audit:
+        _validate_interruption_audit(interruption_audit, spec, specification_cells)
 
     observed_cells = []
     postcondition_count = 0
@@ -329,6 +357,7 @@ def build_cells(
     for cell in spec["cells"]:
         submitted = submissions.get(cell["id"])
         runtime_record = runtime_cells.get(cell["id"])
+        interruption_record = interruption_cells.get(cell["id"])
         names = cell["postconditions"]
         postcondition_count += len(names)
         if runtime_record is not None:
@@ -340,6 +369,13 @@ def build_cells(
                 bound_subject, postconditions, probes = _validated_failure_control_cell(
                     cell, runtime_record, subject_digest, probe_digests
                 )
+        elif interruption_record is not None:
+            bound_subject, postconditions, probes = _validated_interruption_cell(
+                cell,
+                interruption_record,
+                subject_digest,
+                probe_digests,
+            )
         elif submitted is None:
             postconditions = {
                 name: {
@@ -373,6 +409,219 @@ def build_cells(
         observed_cells.append(observation)
 
     return observed_cells, postcondition_count
+
+
+def _validate_interruption_audit(
+    audit: dict[str, Any],
+    spec: dict[str, Any],
+    specification_cells: dict[str, dict[str, Any]],
+) -> None:
+    """Checks the exact generic before-acquisition interruption cohort."""
+
+    expected = {
+        cell_id
+        for cell_id in specification_cells
+        if cell_id.rsplit("/", 1)[-1] == INTERRUPTION_SCENARIO
+    }
+    if (
+        set(audit) != {"schema", "matrix_spec_digest", "cells"}
+        or audit.get("schema") != INTERRUPTION_AUDIT_SCHEMA
+        or audit.get("matrix_spec_digest") != sha256(spec)
+        or set(audit.get("cells", {})) != expected
+    ):
+        raise RuntimeError("interruption audit differs from the closed before-acquisition cohort")
+
+
+def _validated_interruption_cell(
+    cell: dict[str, Any],
+    record: dict[str, Any],
+    subject_digest: str,
+    probe_digests: set[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validates one candidate-linked admission interruption and derives probes."""
+
+    if set(record) != {"cell_digest", "subject", "plan_bundle", "evidence"}:
+        raise RuntimeError("interruption audit cell is malformed")
+    cell_digest = sha256(cell)
+    subject = record["subject"]
+    plan_bundle = record["plan_bundle"]
+    evidence = record["evidence"]
+    expected_subject_fields = {
+        "schema",
+        "cell-id",
+        "cell-digest",
+        "interface",
+        "method",
+        "plan",
+        "transaction",
+        "operation",
+        "dependent-operation",
+    }
+    if (
+        record.get("cell_digest") != cell_digest
+        or cell["id"].rsplit("/", 1)[-1] != INTERRUPTION_SCENARIO
+        or not isinstance(subject, dict)
+        or set(subject) != expected_subject_fields
+        or subject.get("schema") != INTERRUPTION_SUBJECT_SCHEMA
+        or subject.get("cell-id") != cell["id"]
+        or subject.get("cell-digest") != cell_digest
+        or subject.get("interface") != cell["interface"]
+        or subject.get("method") != cell["method"]
+        or not _matches(DIGEST, subject.get("plan"))
+        or not _matches(LOCAL_KEY, subject.get("transaction"))
+        or not _scoped_operation_key(subject.get("operation"))
+        or not _scoped_operation_key(subject.get("dependent-operation"))
+        or subject.get("operation") == subject.get("dependent-operation")
+        or not isinstance(plan_bundle, dict)
+        or set(plan_bundle) != {"schema", "digest", "bytes-sha256"}
+        or plan_bundle.get("schema") != INTERRUPTION_PLAN_SCHEMA
+        or not _matches(DIGEST, plan_bundle.get("digest"))
+        or plan_bundle.get("bytes-sha256") != plan_bundle.get("digest")
+        or not isinstance(evidence, dict)
+        or set(evidence)
+        != {
+            "scenario",
+            "runtime-boundary",
+            "declared-recovery-routes",
+            "fixture-recovery-routes",
+            "boundary-record",
+            "journal-at-fault",
+            "journal-after-restart",
+            "reservation-ledger",
+            "adapter-calls",
+            "primary-ready-at-restart",
+            "dependent-ready-at-restart",
+            "foreign-before",
+            "foreign-after",
+        }
+        or evidence.get("scenario") != INTERRUPTION_SCENARIO
+        or evidence.get("runtime-boundary") != "BeforeResourceAcquisition"
+        or evidence.get("declared-recovery-routes") != cell["recovery"]
+        or evidence.get("fixture-recovery-routes")
+        != {
+            "reconcile": cell["method"] if cell["recovery"]["reconcile"] else None,
+            "cancel": None,
+        }
+        or evidence.get("primary-ready-at-restart") is not True
+        or evidence.get("dependent-ready-at-restart") is not False
+        or not _matches(DIGEST, evidence.get("foreign-before"))
+        or evidence.get("foreign-after") != evidence.get("foreign-before")
+    ):
+        raise RuntimeError("interruption audit subject or envelope is invalid")
+
+    boundary = evidence["boundary-record"]
+    boundary_bytes = boundary.get("bytes") if isinstance(boundary, dict) else None
+    expected_boundary = {
+        "schema": "aos.qualification.interruption-boundary/v1",
+        "scenario": INTERRUPTION_SCENARIO,
+        "transaction": subject["transaction"],
+        "operation": {
+            "plan": subject["plan"],
+            "operation": subject["operation"],
+        },
+        "attempt": 1,
+        "purpose": "effect",
+        "boundary": "BeforeResourceAcquisition",
+    }
+    journal_at_fault = evidence["journal-at-fault"]
+    journal_after_restart = evidence["journal-after-restart"]
+    ledger = evidence["reservation-ledger"]
+    adapter_calls = evidence["adapter-calls"]
+    expected_events = {"transaction-planned": 1}
+    if (
+        not isinstance(boundary, dict)
+        or set(boundary) != {"digest", "bytes"}
+        or not _matches(DIGEST, boundary.get("digest"))
+        or boundary.get("digest") != sha256(boundary_bytes)
+        or boundary_bytes != expected_boundary
+        or not isinstance(journal_at_fault, dict)
+        or set(journal_at_fault) != {"digest", "head", "state", "events"}
+        or not _matches(DIGEST, journal_at_fault.get("digest"))
+        or not _matches(DIGEST, journal_at_fault.get("head"))
+        or journal_at_fault.get("state") != "pending"
+        or journal_at_fault.get("events") != expected_events
+        or not isinstance(journal_after_restart, dict)
+        or set(journal_after_restart) != {"digest", "head", "state", "events"}
+        or journal_after_restart != journal_at_fault
+        or not isinstance(ledger, dict)
+        or set(ledger)
+        != {"digest", "acquire-calls", "release-calls", "max-owners", "owners"}
+        or not _matches(DIGEST, ledger.get("digest"))
+        or ledger.get("acquire-calls") != 0
+        or ledger.get("release-calls") != 0
+        or ledger.get("max-owners") != 0
+        or ledger.get("owners") != []
+        or adapter_calls != {"total": 0, "dependent": 0}
+    ):
+        raise RuntimeError("interruption audit does not prove a pre-acquisition halt")
+
+    bound_subject = _bound_cohort_subject(cell, subject)
+    cohort_subject_digest = sha256(bound_subject)
+    observations = {
+        "durable-attempt-state-classified": {
+            "cell": cell["id"],
+            "transaction": subject["transaction"],
+            "plan": subject["plan"],
+            "boundary-record": boundary["digest"],
+            "runtime-boundary": evidence["runtime-boundary"],
+            "journal-at-fault": journal_at_fault["digest"],
+            "journal-after-restart": journal_after_restart["digest"],
+            "journal-head": journal_at_fault["head"],
+            "state": journal_at_fault["state"],
+            "primary-ready-at-restart": True,
+        },
+        "at-most-one-resource-owner": {
+            "cell": cell["id"],
+            "ledger": ledger["digest"],
+            "acquire-calls": 0,
+            "release-calls": 0,
+            "max-owners": 0,
+            "owners": [],
+        },
+        "foreign-resources-unchanged": {
+            "cell": cell["id"],
+            "snapshot-before": evidence["foreign-before"],
+            "snapshot-after": evidence["foreign-after"],
+            "unchanged": True,
+        },
+        "dependent-effects-not-executed": {
+            "cell": cell["id"],
+            "operation": subject["operation"],
+            "dependent-operation": subject["dependent-operation"],
+            "adapter-calls": adapter_calls["total"],
+            "dependent-calls": adapter_calls["dependent"],
+            "dependent-ready-at-restart": False,
+            "blocked": True,
+        },
+    }
+    if set(cell["postconditions"]) != set(observations):
+        raise RuntimeError("interruption cell postconditions differ from its evidence contract")
+
+    postconditions = {}
+    probes = {}
+    for name in cell["postconditions"]:
+        facts = observations[name]
+        observation_digest = sha256(facts)
+        if observation_digest in probe_digests:
+            raise RuntimeError("passing matrix postconditions replay a production probe")
+        probe_digests.add(observation_digest)
+        postconditions[name] = {
+            "passed": True,
+            "detail": "The candidate runtime halted before acquisition and reopened the unchanged pending journal with dependents still blocked.",
+        }
+        probes[name] = {
+            "schema_version": PROBE_SCHEMA,
+            "kind": POSTCONDITION_KINDS[name],
+            "cell_id": cell["id"],
+            "cell_digest": cell_digest,
+            "disposition": "rejected-before-acquisition",
+            "subject_digest": subject_digest,
+            "cohort_subject_digest": cohort_subject_digest,
+            "observation_digest": observation_digest,
+            "observations": facts,
+        }
+
+    return bound_subject, postconditions, probes
 
 
 def _validate_runtime_audit(
@@ -1665,6 +1914,16 @@ def _expected_disposition(cell: dict[str, Any]) -> str:
 
 def _cohort_operation(cohort_subject: dict[str, Any]) -> Any:
     return cohort_subject.get("operation", cohort_subject.get("publish-operation"))
+
+
+def _scoped_operation_key(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"scope", "key"}
+        and isinstance(value.get("scope"), list)
+        and all(_matches(LOCAL_KEY, segment) for segment in value["scope"])
+        and _matches(LOCAL_KEY, value.get("key"))
+    )
 
 
 def _operation_key(value: Any) -> bool:

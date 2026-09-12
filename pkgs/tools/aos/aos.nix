@@ -657,6 +657,7 @@ in
             "$apm/bin/.aos-package-runtime-unwrapped" \
             "$packageRuntime/bin/.aos-package-runtime-unwrapped"
           mv "$out/bin/aos-ability-authority-audit" "$packageRuntime/bin/"
+          mv "$out/bin/aos-ability-interruption-audit" "$packageRuntime/bin/"
           write_cli_wrapper \
             aos-package-runtime \
             "$packageRuntime" \

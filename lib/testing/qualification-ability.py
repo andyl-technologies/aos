@@ -1526,6 +1526,7 @@ class Scenario:
         cohort_subjects: dict[str, Any] = {}
         cohort_evidence: dict[str, bytes] = {}
         runtime_audit: dict[str, Any] | None = None
+        interruption_audit: dict[str, Any] | None = None
         for cohort_id, namespace in self.fixture_namespaces.items():
             cohort_input = one(
                 [entry for entry in MATRIX_COHORTS if entry["id"] == cohort_id],
@@ -1541,6 +1542,9 @@ class Scenario:
             cohort_runtime_audit = namespace.get(
                 "NATIVE_ADAPTER_MATRIX_RUNTIME_AUDIT"
             )
+            cohort_interruption_audit = namespace.get(
+                "NATIVE_ADAPTER_MATRIX_INTERRUPTION_AUDIT"
+            )
             runtime_cells: dict[str, Any] = {}
             if cohort_runtime_audit is not None:
                 if not isinstance(cohort_runtime_audit, dict) or not isinstance(
@@ -1548,6 +1552,13 @@ class Scenario:
                 ):
                     raise RuntimeError("matrix cohort retained a malformed runtime audit")
                 runtime_cells = cohort_runtime_audit["cells"]
+            interruption_cells: dict[str, Any] = {}
+            if cohort_interruption_audit is not None:
+                if not isinstance(cohort_interruption_audit, dict) or not isinstance(
+                    cohort_interruption_audit.get("cells"), dict
+                ):
+                    raise RuntimeError("matrix cohort retained a malformed interruption audit")
+                interruption_cells = cohort_interruption_audit["cells"]
             if subject_map is None and isinstance(cohort_probes, dict):
                 legacy_subject = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT")
                 legacy_bundle = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE")
@@ -1560,12 +1571,13 @@ class Scenario:
                 or not isinstance(subject_map, dict)
                 or not isinstance(evidence_map, dict)
                 or any(not isinstance(value, bytes) for value in evidence_map.values())
-                or set(cohort_probes) & set(runtime_cells)
+                or set(cohort_probes) & (set(runtime_cells) | set(interruption_cells))
+                or set(runtime_cells) & set(interruption_cells)
             ):
                 raise RuntimeError(
                     f"matrix cohort {cohort_id!r} did not retain exact production evidence"
                 )
-            if set(cohort_probes) | set(runtime_cells) != set(
+            if set(cohort_probes) | set(runtime_cells) | set(interruption_cells) != set(
                 cohort_input["qualifiedCells"]
             ):
                 raise RuntimeError(
@@ -1586,9 +1598,17 @@ class Scenario:
                 ):
                     raise RuntimeError("matrix cohorts repeat or malformed runtime audit")
                 runtime_audit = cohort_runtime_audit
+            if cohort_interruption_audit is not None:
+                if interruption_audit is not None or not isinstance(
+                    cohort_interruption_audit, dict
+                ):
+                    raise RuntimeError("matrix cohorts repeat or malformed interruption audit")
+                interruption_audit = cohort_interruption_audit
 
         if runtime_audit is None:
             raise RuntimeError("matrix cohort did not retain its runtime audit")
+        if interruption_audit is None:
+            raise RuntimeError("matrix cohort did not retain its interruption audit")
 
         qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
         qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
@@ -1650,6 +1670,7 @@ class Scenario:
             self.case["subjects_digest"],
             environment_digest,
             runtime_audit,
+            interruption_audit,
         )
 
         finished = time.time()

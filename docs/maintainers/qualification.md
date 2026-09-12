@@ -483,7 +483,7 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 765 cells and 3,069
+independent published-image cohorts that currently exercise 815 cells and 3,269
 of the 6,050 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -503,10 +503,14 @@ provider behavior from a generic adapter. The evidence records each declared
 provider route separately from the type-compatible fixture route, which is
 never invoked for these controls. Each run retains an execution
 journal, reservation ledger, exact re-loadable plan bundle, and an independent
-foreign-resource sentinel. The 44 cancellation cells with a declared route
+foreign-resource sentinel. A second candidate-linked runtime audit covers all
+50 `interrupt-before-acquisition` cells. It durably records the exact admission
+boundary, performs no resource acquisition or adapter dispatch, reopens the
+unchanged pending journal, and proves a real required-success dependent remains
+blocked. The 44 cancellation cells with a declared route
 remain explicit failures until each production provider's cancellation handler
 has an exact semantic oracle. A generic indeterminate cancellation callback is
-insufficient. The other 635 cells remain explicit failures, so the mandatory
+insufficient. The other 585 cells remain explicit failures, so the mandatory
 aggregate gate cannot pass. Expand the mapping only with exact cell-bound
 subjects and independent provider-specific observations.
 

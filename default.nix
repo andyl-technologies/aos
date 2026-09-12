@@ -486,8 +486,14 @@
       || (scenario == "cancel-unsettled-attempt" && cell.recovery.cancel == null))
     nativeAdapterMatrix.cells
   );
+  nativeAdapterInterruptionCells = map (cell: cell.id) (
+    builtins.filter (cell:
+      builtins.elemAt (lib.splitString "/" cell.id) 4 == "interrupt-before-acquisition")
+    nativeAdapterMatrix.cells
+  );
   nativeAdapterQualifiedCells =
     nativeAdapterPrimaryCells
+    ++ nativeAdapterInterruptionCells
     ++ nativeAdapterRoleCells
     ++ nativeAdapterFailureControlCells
     ++ nativePostgresqlReplacementCells;
