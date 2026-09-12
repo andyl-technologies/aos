@@ -8,19 +8,109 @@ use aos_ability_model::{
     AggregateOutputReference, AggregationContract, AggregationScope, ArtifactReference, BindingId,
     BranchMembership, ContributionPermission, ControllerAssignment, DecisionAlternative,
     DecisionNode, DecisionPredicate, DecisionSelector, DependencyEdge, DependencyKind,
-    DiagnosticCode, ExportDeclaration, HandlerDescriptor, ImplementationKind, IncarnationId,
-    LocalKey, MergeNode, MergedOutput, MethodReference, OperationFamily, OperationResultReference,
-    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
-    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RequiredFeature,
-    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId, ResourceLifetime,
-    ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey, RevisionId,
-    ScopePath, ScopedOperationKey, ServiceAction, StringConstraint, ValueExpression, ValuePhase,
-    ValueSchema, ValueVisibility, VersionedDocument, compare_edges, compare_operation_keys,
-    compare_resource_ids,
+    DiagnosticCode, ExecutionStage, ExportDeclaration, HandlerDescriptor, ImplementationKind,
+    IncarnationId, LocalKey, MergeNode, MergedOutput, MethodReference, OperationFamily,
+    OperationResultReference, OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument,
+    PackageImplementation, PlanNodeKey, ProviderAssignment, ProviderImplementation,
+    ProviderStateFormat, RequiredFeature, RequirementDeclaration, RequirementFallback,
+    RequirementStrength, ResourceId, ResourceLifetime, ResourcePermission, ResourceReference,
+    ResourceRevision, ResultProducerKey, RevisionId, ScopePath, ScopedOperationKey, ServiceAction,
+    StringConstraint, ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
+    compare_edges, compare_operation_keys, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
-use crate::test_support::{PlanFixture, plan_fixture, planned_provider_chain_fixture};
+use crate::test_support::{
+    PlanFixture, plan_fixture, planned_provider_chain_fixture, systemd_manager_plan_fixture,
+};
+
+#[test]
+fn systemd_manager_accepts_exact_system_container_delegation() {
+    let mut fixture = systemd_manager_plan_fixture();
+    rewrite_execution_stage(&mut fixture, ExecutionStage::SystemContainer);
+    set_strategy_guarantees(
+        &mut fixture,
+        vec![
+            aos_ability_model::builtin::local_systemd_manager_guarantee().unwrap(),
+            aos_ability_model::builtin::system_container_manager_delegation_guarantee().unwrap(),
+        ],
+    );
+    fixture.refresh_commitments();
+
+    fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect("portable system-container binding must validate");
+}
+
+#[test]
+fn systemd_manager_rejects_missing_container_delegation() {
+    let mut fixture = systemd_manager_plan_fixture();
+    rewrite_execution_stage(&mut fixture, ExecutionStage::SystemContainer);
+    set_strategy_guarantees(
+        &mut fixture,
+        vec![aos_ability_model::builtin::local_systemd_manager_guarantee().unwrap()],
+    );
+    fixture.refresh_commitments();
+
+    assert_diagnostic(fixture, DiagnosticCode::MissingGuarantee);
+}
+
+#[test]
+fn systemd_manager_rejects_non_manager_execution_stages() {
+    for stage in [
+        ExecutionStage::Build,
+        ExecutionStage::Initrd,
+        ExecutionStage::User,
+        ExecutionStage::ApplicationContainer,
+    ] {
+        let mut fixture = systemd_manager_plan_fixture();
+        rewrite_execution_stage(&mut fixture, stage);
+        set_strategy_guarantees(
+            &mut fixture,
+            vec![
+                aos_ability_model::builtin::local_systemd_manager_guarantee().unwrap(),
+                aos_ability_model::builtin::system_container_manager_delegation_guarantee()
+                    .unwrap(),
+            ],
+        );
+        fixture.refresh_commitments();
+
+        assert_diagnostic(fixture, DiagnosticCode::ExecutionStageMismatch);
+    }
+}
+
+#[test]
+fn foreground_process_is_explicitly_application_container_only() {
+    let mut fixture = systemd_manager_plan_fixture();
+    fixture.interfaces = vec![aos_ability_model::builtin::foreground_process_interface().unwrap()];
+    fixture.refresh_interface();
+    rewrite_execution_stage(&mut fixture, ExecutionStage::ApplicationContainer);
+    set_strategy_guarantees(
+        &mut fixture,
+        vec![aos_ability_model::builtin::foreground_process_supervision_guarantee().unwrap()],
+    );
+    fixture.refresh_commitments();
+
+    fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect("foreground process must validate in an application container");
+}
+
+#[test]
+fn foreground_process_rejects_a_host_binding() {
+    let mut fixture = systemd_manager_plan_fixture();
+    fixture.interfaces = vec![aos_ability_model::builtin::foreground_process_interface().unwrap()];
+    fixture.refresh_interface();
+    set_strategy_guarantees(
+        &mut fixture,
+        vec![aos_ability_model::builtin::foreground_process_supervision_guarantee().unwrap()],
+    );
+    fixture.refresh_commitments();
+
+    assert_diagnostic(fixture, DiagnosticCode::ExecutionStageMismatch);
+}
 
 #[test]
 fn retained_resource_cannot_silently_change_controller() {
@@ -1564,6 +1654,52 @@ fn controller(fixture: &PlanFixture, group: &str) -> AggregateId {
             .clone(),
         group: key(group),
     }
+}
+
+fn rewrite_execution_stage(fixture: &mut PlanFixture, stage: ExecutionStage) {
+    rewrite_stages(&mut fixture.binding_inputs.environment, stage);
+    rewrite_stages(&mut fixture.binding_inputs.desired_state, stage);
+    rewrite_stages(&mut fixture.binding_plan, stage);
+    rewrite_stages(&mut fixture.effect_plan, stage);
+}
+
+fn rewrite_stages<T>(document: &mut T, stage: ExecutionStage)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    let mut value = serde_json::to_value(&*document).unwrap();
+    replace_stage_values(&mut value, &serde_json::to_value(stage).unwrap());
+    *document = serde_json::from_value(value).unwrap();
+}
+
+fn replace_stage_values(value: &mut serde_json::Value, stage: &serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                replace_stage_values(value, stage);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (name, value) in fields {
+                if name == "stage" {
+                    *value = stage.clone();
+                } else {
+                    replace_stage_values(value, stage);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn set_strategy_guarantees(
+    fixture: &mut PlanFixture,
+    guarantees: Vec<aos_ability_model::GuaranteeKey>,
+) {
+    fixture.binding_inputs.environment.providers[0].guarantees = guarantees.clone();
+    fixture.binding_inputs.desired_state.child_requests[0].guarantees = guarantees.clone();
+    fixture.binding_plan.requests[0].guarantees = guarantees.clone();
+    fixture.binding_plan.bindings[0].guarantees = guarantees;
 }
 
 fn assert_diagnostic(fixture: PlanFixture, expected: DiagnosticCode) {

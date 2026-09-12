@@ -22,7 +22,7 @@
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:6ab0550d2de40d9d49b211aa5944d3f7d86d53142c1a2dba8d59bf3974cc581c";
+    "sha256:771c63c0fe1730c0592b49c14600a115b2c842d5b363d66158b918ccd051ee3d";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -46,11 +46,31 @@
   systemdServiceEffects =
     interface
     "aos.systemd-service-effects"
-    "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98";
+    "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
+  foregroundProcess =
+    interface
+    "aos.foreground-process"
+    "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb";
   nginxInterface =
     interface
     "aos.nginx"
-    "sha256:ad32f30236fd6ca7169a6a728f82c33f1167e695ede478df50c8ad57c9f019d6";
+    "sha256:5d368e34482c6e2bea67626aa86cbc8b0ab882644009835d77de312c77333c88";
+
+  localSystemdManagerGuarantee = {
+    name = "aos.local-systemd-manager";
+    version = 1;
+    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
+  };
+  systemContainerManagerDelegationGuarantee = {
+    name = "aos.system-container-manager-delegation";
+    version = 1;
+    descriptor = "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda";
+  };
+  foregroundProcessSupervisionGuarantee = {
+    name = "aos.foreground-process-supervision";
+    version = 1;
+    descriptor = "sha256:b213e3c6ef28e4930a1091296e28fbfddde9f539d2daeb0287edfe955047311a";
+  };
 
   lifecycle = {
     stableResourceIdentity = true;
@@ -163,6 +183,7 @@
         maxLength = 15;
         syntax = null;
       };
+      execution_strategy = schemas.enum ["foreground-process" "systemd-manager"];
       port = schemas.integer {
         minimum = 1024;
         maximum = 65535;
@@ -250,6 +271,7 @@
     methods,
     requestSchema ? schemas.boolean,
     selectedLifecycle ? lifecycle,
+    guarantees ? [],
   }:
     lib.abilities.define {
       interface = name;
@@ -258,7 +280,7 @@
       outputs = {};
       inherit methods;
       lifecycle = selectedLifecycle;
-      guarantees = [];
+      inherit guarantees;
       aggregation = aggregation group;
       requires = {};
       ownsResourceKinds = [name];
@@ -331,7 +353,15 @@ in {
                 outputs.credential-views = {};
               };
               service = required systemdService;
-              service-terminal = methodRequirement systemdServiceEffects ["observe" "reload" "start" "stop"];
+              service-terminal =
+                requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
+                // {guarantees = [localSystemdManagerGuarantee];};
+              service-terminal-foreground =
+                requirement foregroundProcess ["observe" "start" "stop"] "required" null
+                // {guarantees = [foregroundProcessSupervisionGuarantee];};
+              service-terminal-system-container =
+                requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
+                // {guarantees = [localSystemdManagerGuarantee systemContainerManagerDelegationGuarantee];};
               validation-terminal = methodRequirement nginxValidation ["record" "release" "validate"];
             };
             composeEntry = "compose";
@@ -525,6 +555,7 @@ in {
             name = systemdServiceEffects.name;
             group = "systemd-service-effects";
             handler = "systemd-terminal";
+            guarantees = [localSystemdManagerGuarantee systemContainerManagerDelegationGuarantee];
             methods = {
               observe = method systemdServiceEffects.name {kind = "observe-readiness";} "observe";
               reload = method systemdServiceEffects.name {

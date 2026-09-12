@@ -82,6 +82,7 @@ impl AbilityEvaluationDiagnosticCode {
             Self::Contract(DiagnosticCode::MethodNotGranted) => "method-not-granted",
             Self::Contract(DiagnosticCode::MediationNotGranted) => "mediation-not-granted",
             Self::Contract(DiagnosticCode::MissingGuarantee) => "missing-guarantee",
+            Self::Contract(DiagnosticCode::ExecutionStageMismatch) => "execution-stage-mismatch",
             Self::Contract(DiagnosticCode::MethodContractMismatch) => "method-contract-mismatch",
             Self::Contract(DiagnosticCode::BindingInterfaceMismatch) => {
                 "binding-interface-mismatch"

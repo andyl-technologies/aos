@@ -1,0 +1,48 @@
+{
+  "cells": [
+    {
+      "blockers": ["foreground-supervisor-runtime-and-observation-evidence"],
+      "evidence": [],
+      "id": "foreground-process/application-container",
+      "interface_descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+      "interface_name": "aos.foreground-process",
+      "required_guarantees": ["aos.foreground-process-supervision"],
+      "stage": "application-container",
+      "status": "missing",
+      "strategy": "foreground-process"
+    },
+    {
+      "blockers": [],
+      "evidence": ["checks.fleet.ability-native-activation"],
+      "id": "systemd-manager/host",
+      "interface_descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
+      "interface_name": "aos.systemd-manager",
+      "required_guarantees": ["aos.local-systemd-manager"],
+      "stage": "host",
+      "status": "qualified",
+      "strategy": "systemd-manager"
+    },
+    {
+      "blockers": [
+        "pr232-authenticated-backend-readiness",
+        "pr232-broker-host-apply",
+        "pr232-resource-view-lease-handoff",
+        "pr232-shifted-payload-pid-namespace-proof",
+        "pr232-scoped-local-manager-endpoint",
+        "pr232-durable-lifecycle-observation-evidence"
+      ],
+      "evidence": [],
+      "id": "systemd-manager/system-container",
+      "interface_descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
+      "interface_name": "aos.systemd-manager",
+      "required_guarantees": [
+        "aos.local-systemd-manager",
+        "aos.system-container-manager-delegation"
+      ],
+      "stage": "system-container",
+      "status": "missing",
+      "strategy": "systemd-manager"
+    }
+  ],
+  "schema": "aos.qualification.container-execution-surface/v1"
+}

@@ -290,6 +290,15 @@ impl ReferenceFixture {
             .map(|(_, package)| package)
             .collect::<Vec<_>>();
         let interface_documents = interface_documents()?;
+        let interface_guarantees = interface_documents
+            .iter()
+            .map(|document| {
+                (
+                    document.interface.name.as_str().to_string(),
+                    document.interface.guarantees.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let interfaces = interface_documents
             .iter()
             .map(|document| {
@@ -370,7 +379,10 @@ impl ReferenceFixture {
                     implementation: implementation.clone(),
                     state: ProviderState::Available,
                     incarnation: Some(aos_ability_model::IncarnationId::new("reference-terminal")?),
-                    guarantees: Vec::new(),
+                    guarantees: interface_guarantees
+                        .get(terminal_name)
+                        .with_context(|| format!("missing guarantees for {terminal_name}"))?
+                        .clone(),
                 });
             }
         }
@@ -482,6 +494,7 @@ impl ReferenceFixture {
                 enabled: lifecycle.enables_main(),
                 configuration: Some(AbilityValue::new(serde_json::json!({
                     "address": "127.0.0.1",
+                    "execution_strategy": "systemd-manager",
                     "port": 18081,
                 }))?),
             },
@@ -491,6 +504,7 @@ impl ReferenceFixture {
                 enabled: true,
                 configuration: Some(AbilityValue::new(serde_json::json!({
                     "address": "127.0.0.1",
+                    "execution_strategy": "systemd-manager",
                     "port": 18082,
                 }))?),
             },
@@ -1163,6 +1177,15 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                 },
             ),
             (
+                key("execution_strategy")?,
+                ValueSchema::StringEnum {
+                    values: vec![
+                        "foreground-process".to_string(),
+                        "systemd-manager".to_string(),
+                    ],
+                },
+            ),
+            (
                 key("port")?,
                 ValueSchema::Integer {
                     minimum: 1024,
@@ -1307,6 +1330,16 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
             None,
             Vec::new(),
         )?,
+        aos_ability_model::builtin::foreground_process_interface()?,
+    ];
+    documents
+        .iter_mut()
+        .find(|document| document.interface.name.as_str() == "aos.systemd-service-effects")
+        .context("missing systemd effects interface")?
+        .interface
+        .guarantees = vec![
+        aos_ability_model::builtin::local_systemd_manager_guarantee()?,
+        aos_ability_model::builtin::system_container_manager_delegation_guarantee()?,
     ];
     documents.sort_by(|left, right| left.interface.name.cmp(&right.interface.name));
     Ok(documents)

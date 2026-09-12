@@ -178,6 +178,7 @@
       "ability-native-recovery"
     ]);
   nativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  containerExecutionMatrix = import ../../qualification/modules/_container-execution-matrix.nix {inherit lib;};
   nativeAdapterSurface = builtins.fromJSON (builtins.readFile ../../qualification/native-adapter-surface.json);
   nativeCells = nativeAdapterMatrix.cells;
   firstNativeCell = builtins.head nativeCells;
@@ -334,7 +335,12 @@ in
   assert nativeAdapterMatrix.required_production_vm_cells == 1316;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
-  assert abilityRequirements.ability-native-adapter-matrix.checks == [nativeAdapterMatrix.check];
+  assert abilityRequirements.ability-native-adapter-matrix.checks
+  == [
+    nativeAdapterMatrix.check
+    containerExecutionMatrix.check
+  ];
+  assert containerExecutionMatrix.missing_container_cells == 2;
   assert rejectsNativeMatrix {cells = remainingNativeCells;};
   assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
   assert rejectsNativeMatrix {cells = [(builtins.elemAt nativeCells 1) firstNativeCell] ++ lib.drop 2 nativeCells;};

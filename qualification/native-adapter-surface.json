@@ -321,7 +321,7 @@
     {
       "adapter": "systemd-manager",
       "interface_abi": 1,
-      "interface_descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+      "interface_descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
       "interface_name": "aos.systemd-manager",
       "methods": [
         {
@@ -360,7 +360,7 @@
     {
       "adapter": "systemd-service-legacy",
       "interface_abi": 1,
-      "interface_descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+      "interface_descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
       "interface_name": "aos.systemd-service-effects",
       "methods": [
         {
