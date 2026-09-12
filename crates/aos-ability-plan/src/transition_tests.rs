@@ -1966,6 +1966,10 @@ fn lifecycle_planning_snapshot(
     operator_enabled: bool,
 ) -> VerifiedPlanningSnapshot {
     let interface = pure_package.implementation.providers[0].interface.clone();
+    let stage_guarantees = vec![
+        builtin::local_systemd_manager_guarantee()
+            .expect("systemd host-stage guarantee must construct"),
+    ];
     let manager_alias = key("b-manager");
     if operator_enabled {
         let implementation = &mut pure_package.implementation.providers[0];
@@ -1973,7 +1977,7 @@ fn lifecycle_planning_snapshot(
             alias: manager_alias.clone(),
             accepted_interfaces: vec![interface.clone()],
             methods: vec![key("observe"), key("start")],
-            guarantees: Vec::new(),
+            guarantees: stage_guarantees.clone(),
             strength: RequirementStrength::Required,
             fallback: None,
         }];
@@ -2020,7 +2024,7 @@ fn lifecycle_planning_snapshot(
         },
         accepted_interfaces: vec![interface.clone()],
         methods: vec![key("start")],
-        guarantees: Vec::new(),
+        guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
     };
     let manager_request = BindingRequest {
@@ -2036,7 +2040,7 @@ fn lifecycle_planning_snapshot(
         },
         accepted_interfaces: vec![interface.clone()],
         methods: vec![key("observe"), key("start")],
-        guarantees: Vec::new(),
+        guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
     };
     let environment_digest = environment
@@ -2090,7 +2094,7 @@ fn lifecycle_planning_snapshot(
             contributions: Vec::new(),
             resources: Vec::new(),
         },
-        guarantees: Vec::new(),
+        guarantees: stage_guarantees.clone(),
         policy_revision: environment.policy_revision,
         lifetime: ResourceLifetime::Instance,
         mediation_allowed: false,
@@ -2115,7 +2119,7 @@ fn lifecycle_planning_snapshot(
             contributions: Vec::new(),
             resources: Vec::new(),
         },
-        guarantees: Vec::new(),
+        guarantees: stage_guarantees,
         policy_revision: environment.policy_revision,
         lifetime: ResourceLifetime::Instance,
         mediation_allowed: false,

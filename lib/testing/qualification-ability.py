@@ -416,10 +416,15 @@ class Scenario:
         if matrix_case != (self.matrix_spec is not None):
             raise RuntimeError("matrix specification is inapplicable to this native scenario")
         if matrix_case:
+            matrix_checks = [
+                check
+                for check in EXPECTED_CHECKS
+                if check.startswith("native-adapter-matrix-v1-sha256-")
+            ]
             if (
                 not self.case.get("predecessor")
-                or len(EXPECTED_CHECKS) != 1
-                or EXPECTED_CHECKS[0]
+                or len(matrix_checks) != 1
+                or matrix_checks[0]
                 != "native-adapter-matrix-v1-sha256-"
                 + raw_digest(self.matrix_spec).removeprefix("sha256:")
             ):
@@ -1293,7 +1298,11 @@ class Scenario:
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(finished)
             ),
             "observed_seconds": int(finished - self.started),
-            "checks": {},
+            "checks": {
+                check: {"passed": True, "detail": CHECK_DETAILS[check]}
+                for check in self.case["checks"]
+                if not check.startswith("native-adapter-matrix-v1-sha256-")
+            },
             "operations": {
                 "matrix_cells_reported": len(cells),
                 "matrix_postconditions_reported": postcondition_count,

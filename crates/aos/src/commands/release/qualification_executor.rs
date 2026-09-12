@@ -42,6 +42,7 @@ use crate::cli::{
 };
 
 const SCENARIO_REPORT_V1: &str = "aos.release.qualification-scenario-report/v1";
+const NATIVE_ADAPTER_MATRIX_CHECK_PREFIX: &str = "native-adapter-matrix-v1-sha256-";
 
 /// Immutable executable selection, produced by `mkQualificationExecutor`.
 #[derive(Clone, Deserialize, Serialize)]
@@ -232,30 +233,32 @@ fn build_response(
         Sha256Digest::of_bytes(&canonical::canonical_json(value)?)
     };
     let executor_digest = Sha256Digest::of_bytes(registry_bytes);
-    let (checks, native_adapter_matrix) =
-        if case.requirement_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT {
-            let matrix = fields.native_adapter_matrix.ok_or_else(|| {
-                anyhow::anyhow!("native adapter matrix report lacks exact per-cell evidence")
-            })?;
-            let passed = validate_native_adapter_matrix_observation(
-                case,
-                environment_digest,
-                executor_digest,
-                &matrix,
-            )?;
-            let check_name = case.checks.first().ok_or_else(|| {
-                anyhow::anyhow!("native adapter matrix case lacks its policy check")
-            })?;
-            (
-                BTreeMap::from([(
-                    check_name.clone(),
-                    native_adapter_matrix_check(&matrix, passed)?,
-                )]),
-                Some(matrix),
-            )
-        } else {
-            (fields.checks, None)
-        };
+    let (checks, native_adapter_matrix) = if case.requirement_id
+        == NATIVE_ADAPTER_MATRIX_REQUIREMENT
+    {
+        let matrix = fields.native_adapter_matrix.ok_or_else(|| {
+            anyhow::anyhow!("native adapter matrix report lacks exact per-cell evidence")
+        })?;
+        let passed = validate_native_adapter_matrix_observation(
+            case,
+            environment_digest,
+            executor_digest,
+            &matrix,
+        )?;
+        let check_name = case
+            .checks
+            .iter()
+            .find(|check| check.starts_with(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX))
+            .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its policy check"))?;
+        let mut checks = fields.checks;
+        checks.insert(
+            check_name.clone(),
+            native_adapter_matrix_check(&matrix, passed)?,
+        );
+        (checks, Some(matrix))
+    } else {
+        (fields.checks, None)
+    };
     let passed = checks.values().all(|check| check.passed);
     let evidence = EvidenceRecord {
         qualification: Some(QualificationObservation {
@@ -315,8 +318,29 @@ fn validate_report_fields(
         bail!("scenario report identity differs from the exact qualification request");
     }
     if case.requirement_id == NATIVE_ADAPTER_MATRIX_REQUIREMENT {
-        if !report.checks.is_empty() || report.native_adapter_matrix.is_none() {
-            bail!("native adapter matrix report must leave its aggregate check to the coordinator");
+        let matrix_checks = case
+            .checks
+            .iter()
+            .filter(|check| check.starts_with(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX))
+            .collect::<Vec<_>>();
+        let required = case
+            .checks
+            .iter()
+            .filter(|check| !check.starts_with(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX))
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual = report
+            .checks
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        if matrix_checks.len() != 1
+            || report.native_adapter_matrix.is_none()
+            || actual != required
+            || report
+                .checks
+                .values()
+                .any(|check| check.detail.trim().is_empty())
+        {
+            bail!("native adapter matrix report checks differ from the exact qualification case");
         }
     } else {
         let required = case
