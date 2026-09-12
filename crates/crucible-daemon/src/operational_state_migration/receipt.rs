@@ -1,6 +1,6 @@
 //! Authenticated provenance receipts for offline state rewrites.
 
-use std::fs::{self, File};
+use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,17 @@ use super::OperationalStateMigrationError;
 pub(crate) const MIGRATION_TOOL_ID: &str = "crucible.store-repair.operational-state.v1";
 const RECEIPT_SCHEMA: &str = "crucible.daemon.operational-state-migration-receipt.v1";
 const RECEIPT_HASH_DOMAIN: &str = "crucible.daemon.operational-state-migration-receipt.v1";
-const MAX_RECEIPT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_RECEIPT_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_EMITTED_RECEIPT_OBJECT_BYTES: usize = 384;
+const MAX_RECEIPT_OBJECTS_PER_ENTRY: usize = 2;
+const MAX_RECEIPT_ENVELOPE_BYTES: usize = 4 * 1024;
+const _: () = assert!(
+    super::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES
+        * MAX_RECEIPT_OBJECTS_PER_ENTRY
+        * MAX_EMITTED_RECEIPT_OBJECT_BYTES
+        + MAX_RECEIPT_ENVELOPE_BYTES
+        < MAX_RECEIPT_BYTES as usize
+);
 pub(crate) const ACTIVE_MARKER: &str = ".operational-state-migration-v1";
 const MARKER_MAGIC: &[u8] = b"crucible.daemon.operational-state-migration-marker.v1\0";
 const MARKER_ACTIVE: u8 = 0;
@@ -54,6 +64,12 @@ pub(crate) struct PhaseReceipt {
 
 impl PhaseReceipt {
     pub(crate) fn verify_path_binding(&self) -> Result<(), OperationalStateMigrationError> {
+        self.authority.verify_path_binding()?;
+        let bytes = self.authority.read_bounded(MAX_RECEIPT_BYTES)?;
+        let (body, id) = decode_receipt(&bytes, None)?;
+        if id != self.id || body.objects != self.objects {
+            return Err(OperationalStateMigrationError::InvalidReceipt);
+        }
         Ok(self.authority.verify_path_binding()?)
     }
 }
@@ -74,30 +90,9 @@ pub(crate) fn load_phase_receipt(
         return Ok(None);
     };
     let bytes = authority.read_bounded(MAX_RECEIPT_BYTES)?;
-    let envelope: ReceiptEnvelope = serde_json::from_slice(&bytes)
-        .map_err(|_| OperationalStateMigrationError::InvalidReceipt)?;
-    let canonical = serde_json::to_vec(&envelope)
-        .map_err(|_| OperationalStateMigrationError::InvalidReceipt)?;
-    if bytes != canonical
-        || envelope.body.schema != RECEIPT_SCHEMA
-        || envelope.body.migration_tool != MIGRATION_TOOL_ID
-        || envelope.body.output_schema != output_schema
-        || !envelope
-            .body
-            .objects
-            .windows(2)
-            .all(|pair| pair[0].key < pair[1].key)
-    {
-        return Err(OperationalStateMigrationError::InvalidReceipt);
-    }
-    let body = serde_json::to_vec(&envelope.body)
-        .map_err(|_| OperationalStateMigrationError::InvalidReceipt)?;
-    let id = authenticated_id(RECEIPT_HASH_DOMAIN, &[&body]);
-    if envelope.checksum != id {
-        return Err(OperationalStateMigrationError::InvalidReceipt);
-    }
+    let (body, id) = decode_receipt(&bytes, Some(output_schema))?;
     Ok(Some(PhaseReceipt {
-        objects: envelope.body.objects,
+        objects: body.objects,
         id,
         authority,
     }))
@@ -131,10 +126,16 @@ pub(crate) fn persist_phase_receipt(
         return Err(OperationalStateMigrationError::InvalidReceipt);
     }
     let path = directory.path().join(name);
+    #[cfg(test)]
+    run_receipt_publish_race_hook();
     publish_resumable(directory, &path, &bytes)?;
     let authority = directory
         .open_regular_optional(&path, "pin-receipt")?
         .ok_or(OperationalStateMigrationError::InvalidReceipt)?;
+    if authority.read_bounded(MAX_RECEIPT_BYTES)? != bytes {
+        return Err(OperationalStateMigrationError::InvalidReceipt);
+    }
+    authority.verify_path_binding()?;
     Ok(PhaseReceipt {
         objects: body.objects,
         id,
@@ -142,25 +143,83 @@ pub(crate) fn persist_phase_receipt(
     })
 }
 
+fn decode_receipt(
+    bytes: &[u8],
+    expected_output_schema: Option<&str>,
+) -> Result<(ReceiptBody, String), OperationalStateMigrationError> {
+    let envelope: ReceiptEnvelope = serde_json::from_slice(bytes)
+        .map_err(|_| OperationalStateMigrationError::InvalidReceipt)?;
+    let canonical = serde_json::to_vec(&envelope)
+        .map_err(|_| OperationalStateMigrationError::InvalidReceipt)?;
+    if bytes != canonical
+        || envelope.body.schema != RECEIPT_SCHEMA
+        || envelope.body.migration_tool != MIGRATION_TOOL_ID
+        || expected_output_schema.is_some_and(|expected| envelope.body.output_schema != expected)
+        || !envelope
+            .body
+            .objects
+            .windows(2)
+            .all(|pair| pair[0].key < pair[1].key)
+    {
+        return Err(OperationalStateMigrationError::InvalidReceipt);
+    }
+    let body_bytes = serde_json::to_vec(&envelope.body)
+        .map_err(|_| OperationalStateMigrationError::InvalidReceipt)?;
+    let id = authenticated_id(RECEIPT_HASH_DOMAIN, &[&body_bytes]);
+    if envelope.checksum != id {
+        return Err(OperationalStateMigrationError::InvalidReceipt);
+    }
+    Ok((envelope.body, id))
+}
+
+#[cfg(test)]
+thread_local! {
+    static RECEIPT_PUBLISH_RACE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn install_receipt_publish_race_hook(hook: impl FnOnce() + 'static) {
+    RECEIPT_PUBLISH_RACE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_receipt_publish_race_hook() {
+    RECEIPT_PUBLISH_RACE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
 pub(crate) fn prepare_receipt_directory(
+    parent: &AnchoredDirectory,
     directory: &Path,
 ) -> Result<AnchoredDirectory, OperationalStateMigrationError> {
-    match fs::create_dir(directory) {
-        Ok(()) => sync_parent(directory)?,
-        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
-            if !fs::symlink_metadata(directory)
-                .map_err(|source| receipt_io("inspect-directory", directory, source))?
-                .file_type()
-                .is_dir()
-            {
-                return Err(OperationalStateMigrationError::InvalidReceipt);
-            }
-        }
-        Err(source) => return Err(receipt_io("create-directory", directory, source)),
+    parent.verify_path_binding()?;
+    match parent.create_directory(directory, "create-receipt-directory") {
+        Ok(()) => {}
+        Err(crate::anchored_fs::AnchoredFsError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(source) => return Err(source.into()),
     }
-    let guard = AnchoredDirectory::new(directory.to_owned())?;
+    let guard = parent.open_child(directory, "open-receipt-directory")?;
+    parent.verify_path_binding()?;
     reconcile_receipt_directory(&guard)?;
     Ok(guard)
+}
+
+#[cfg(test)]
+pub(crate) fn prepare_receipt_directory_for_test(
+    directory: &Path,
+) -> Result<AnchoredDirectory, OperationalStateMigrationError> {
+    let parent = directory
+        .parent()
+        .ok_or(OperationalStateMigrationError::InvalidReceipt)?
+        .canonicalize()
+        .map_err(|source| receipt_io("canonicalize-receipt-parent", directory, source))?;
+    let parent = AnchoredDirectory::new(parent)?;
+    prepare_receipt_directory(&parent, directory)
 }
 
 fn reconcile_receipt_directory(
@@ -446,15 +505,6 @@ fn receipt_error_as_io(error: crate::anchored_fs::AnchoredFsError) -> std::io::E
     std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
 }
 
-fn sync_parent(path: &Path) -> Result<(), OperationalStateMigrationError> {
-    let parent = path
-        .parent()
-        .ok_or(OperationalStateMigrationError::InvalidReceipt)?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| receipt_io("sync-directory", parent, source))
-}
-
 fn receipt_io(
     operation: &'static str,
     path: &Path,
@@ -482,7 +532,8 @@ mod tests {
         for kind in ["tampered", "symlink"] {
             let parent = TempDir::new().expect("parent");
             let receipt = parent.path().join("receipt");
-            let guard = prepare_receipt_directory(&receipt).expect("prepare receipt directory");
+            let guard =
+                prepare_receipt_directory_for_test(&receipt).expect("prepare receipt directory");
             persist_phase_receipt(
                 &guard,
                 ASSIGNMENT_RECEIPT,
@@ -511,12 +562,52 @@ mod tests {
     }
 
     #[test]
+    fn receipt_publication_rejects_a_raced_conflicting_destination() {
+        let parent = TempDir::new().expect("parent");
+        let receipt = parent.path().join("receipt");
+        let guard = prepare_receipt_directory_for_test(&receipt).expect("receipt directory");
+        let destination = receipt.join(ASSIGNMENT_RECEIPT);
+        install_receipt_publish_race_hook({
+            let destination = destination.clone();
+            move || fs::write(destination, b"forged receipt").expect("install forged receipt")
+        });
+
+        assert!(matches!(
+            persist_phase_receipt(&guard, ASSIGNMENT_RECEIPT, "test.output.v1", Vec::new(),),
+            Err(OperationalStateMigrationError::InvalidReceipt)
+        ));
+        assert_eq!(
+            fs::read(destination).expect("forged destination remains"),
+            b"forged receipt"
+        );
+    }
+
+    #[test]
+    fn accepted_inventory_maximum_has_receipt_capacity() {
+        let maximum_object = MigrationObjectReceipt {
+            key: format!("cleanup/{}", "f".repeat(64)),
+            source_object_id: "a".repeat(64),
+            output_object_id: "b".repeat(64),
+        };
+        let encoded = serde_json::to_vec(&maximum_object).expect("encode maximum object");
+        assert!(encoded.len() <= MAX_EMITTED_RECEIPT_OBJECT_BYTES);
+        assert!(
+            super::super::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES
+                * MAX_RECEIPT_OBJECTS_PER_ENTRY
+                * MAX_EMITTED_RECEIPT_OBJECT_BYTES
+                + MAX_RECEIPT_ENVELOPE_BYTES
+                < MAX_RECEIPT_BYTES as usize
+        );
+    }
+
+    #[test]
     fn pinned_receipt_and_marker_reject_same_bytes_at_replacement_inodes() {
         let root = TempDir::new().expect("root");
         let receipt_parent = TempDir::new().expect("receipt parent");
         let receipt_path = receipt_parent.path().join("receipt");
         let root_guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
-        let receipt_guard = prepare_receipt_directory(&receipt_path).expect("receipt directory");
+        let receipt_guard =
+            prepare_receipt_directory_for_test(&receipt_path).expect("receipt directory");
         let receipt = persist_phase_receipt(
             &receipt_guard,
             ASSIGNMENT_RECEIPT,
@@ -568,7 +659,8 @@ mod tests {
         let receipt_parent = TempDir::new().expect("receipt parent");
         let receipt_path = receipt_parent.path().join("receipt");
         let root_guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
-        let receipt_guard = prepare_receipt_directory(&receipt_path).expect("receipt directory");
+        let receipt_guard =
+            prepare_receipt_directory_for_test(&receipt_path).expect("receipt directory");
         activate_marker(
             &root_guard,
             &receipt_guard,
@@ -594,7 +686,7 @@ mod tests {
             let receipt_path = receipt_parent.path().join("receipt");
             let root_guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
             let receipt_guard =
-                prepare_receipt_directory(&receipt_path).expect("receipt directory");
+                prepare_receipt_directory_for_test(&receipt_path).expect("receipt directory");
             let assignment = root.path().canonicalize().expect("assignment path");
             let prepared = receipt_parent.path().canonicalize().expect("prepared path");
             let expected =
@@ -621,7 +713,7 @@ mod tests {
             let receipt_path = receipt_parent.path().join("receipt");
             let root_guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
             let receipt_guard =
-                prepare_receipt_directory(&receipt_path).expect("receipt directory");
+                prepare_receipt_directory_for_test(&receipt_path).expect("receipt directory");
             let assignment = root.path().canonicalize().expect("assignment path");
             let prepared = receipt_parent.path().canonicalize().expect("prepared path");
             activate_marker(&root_guard, &receipt_guard, &assignment, &prepared)

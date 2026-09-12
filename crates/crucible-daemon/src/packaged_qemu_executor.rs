@@ -1142,10 +1142,8 @@ where
     reconcile_packaged_native_catalogs(config.lifecycle.run_state_root())?;
     let prepared_result_root =
         prepare_packaged_prepared_result_namespace(config.lifecycle.run_state_root())?;
-    let prepared_results = PreparedResultJournalConfig::new(
-        prepared_result_root.clone(),
-        MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-    );
+    let prepared_results =
+        PreparedResultJournalConfig::new(prepared_result_root, MAX_PREPARED_SEMANTIC_RESULT_BYTES)?;
     let checkpoints = Arc::new(ExactCheckpointStore::new(
         checkpoint_backend,
         config.maximum_checkpoint_bytes,
@@ -1170,7 +1168,7 @@ where
                 repository.as_ref(),
                 &store,
                 &recovery_owner,
-                &prepared_result_root,
+                &prepared_results.namespace,
                 MAX_PREPARED_SEMANTIC_RESULT_BYTES,
                 &mut ledger,
                 campaign,
@@ -1789,6 +1787,9 @@ pub enum PackagedQemuExecutorError {
     /// Durable assignment-ledger acquisition failed.
     #[error(transparent)]
     Ledger(#[from] AssignmentLedgerError),
+    /// Prepared-result namespace startup validation failed.
+    #[error(transparent)]
+    PreparedResultJournal(#[from] crate::PreparedResultJournalError),
     /// Process-ephemeral finding recovery authority could not be created.
     #[error(transparent)]
     FindingRecoveryAuthority(#[from] crate::pending_finding::PendingFindingRecoveryOwnerError),

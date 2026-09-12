@@ -1102,8 +1102,8 @@ pub fn retry_pending_attempt_result<W>(
 ///
 /// Returns [`AttemptResultJournalError`] with the complete prepared token when
 /// journal creation, reopening, authentication, or durability fails.
-pub fn journal_prepared_attempt_result(
-    namespace: impl AsRef<Path>,
+pub(crate) fn journal_prepared_attempt_result(
+    namespace: &crate::PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
     prepared: PreparedAttemptResult,
 ) -> Result<
@@ -1119,7 +1119,7 @@ pub fn journal_prepared_attempt_result(
 }
 
 pub(crate) fn stage_prepared_attempt_result_journal(
-    namespace: impl AsRef<Path>,
+    namespace: &crate::PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
     mut prepared: PreparedAttemptResult,
 ) -> Result<
@@ -1162,9 +1162,9 @@ pub(crate) fn stage_prepared_attempt_result_journal(
 ///
 /// Returns [`AttemptResultRecoveryError`] with the fresh execution token when
 /// journal or semantic authentication fails.
-pub fn recover_prepared_attempt_result(
+pub(crate) fn recover_prepared_attempt_result(
     store: &CampaignExecutorStore,
-    namespace: impl AsRef<Path>,
+    namespace: &crate::PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
     queued: QueuedAttempt,
 ) -> Result<PreparedAttemptRecoveryOutcome, AttemptResultRecoveryError> {

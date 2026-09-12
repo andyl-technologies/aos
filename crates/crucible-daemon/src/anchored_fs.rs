@@ -73,6 +73,16 @@ pub(crate) struct AnchoredFile {
 }
 
 impl AnchoredFile {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn try_clone(&self) -> Result<File, AnchoredFsError> {
+        self.file
+            .try_clone()
+            .map_err(|source| anchored_io("clone-anchored-file", &self.path, source))
+    }
+
     pub(crate) fn identity(&self) -> (u64, u64) {
         (self.device, self.inode)
     }
@@ -403,7 +413,9 @@ impl AnchoredDirectory {
             ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
         )
         .map_err(|source| self.io_error(operation, path, source))?;
-        Ok(File::from(descriptor))
+        let file = File::from(descriptor);
+        self.verify_path_binding()?;
+        Ok(file)
     }
 
     pub(crate) fn open_regular_optional(
@@ -440,6 +452,40 @@ impl AnchoredDirectory {
         }))
     }
 
+    pub(crate) fn open_or_create_regular(
+        &self,
+        path: &Path,
+        operation: &'static str,
+    ) -> Result<AnchoredFile, AnchoredFsError> {
+        let (parent, name) = self.open_parent(path, operation)?;
+        #[cfg(test)]
+        run_anchored_mutation_hook();
+        let descriptor = openat2(
+            &parent,
+            &name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_bits_truncate(0o600),
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+        )
+        .map_err(|source| self.io_error(operation, path, source))?;
+        let file = File::from(descriptor);
+        let metadata = file
+            .metadata()
+            .map_err(|source| anchored_io(operation, path, source))?;
+        if !metadata.is_file() {
+            return Err(invalid_path(path));
+        }
+        self.verify_path_binding()?;
+        Ok(AnchoredFile {
+            path: path.to_owned(),
+            file,
+            parent,
+            name,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
     pub(crate) fn open_inventory_file(
         &self,
         path: &Path,
@@ -458,6 +504,8 @@ impl AnchoredDirectory {
 
     pub(crate) fn write_once(&self, path: &Path, bytes: &[u8]) -> Result<(), AnchoredFsError> {
         self.verify_path_binding()?;
+        #[cfg(test)]
+        run_anchored_mutation_hook();
         let relative = self.relative(path)?;
         let parent = relative.parent().ok_or(invalid_path(path))?;
         let name = relative.file_name().ok_or(invalid_path(path))?;
@@ -486,7 +534,8 @@ impl AnchoredDirectory {
         .map_err(|source| self.io_error("publish", path, source))?;
         directory
             .sync_all()
-            .map_err(|source| anchored_io("sync-directory", path, source))
+            .map_err(|source| anchored_io("sync-directory", path, source))?;
+        self.verify_path_binding()
     }
 
     pub(crate) fn write_once_pending_path(&self, path: &Path) -> Result<PathBuf, AnchoredFsError> {
@@ -504,6 +553,8 @@ impl AnchoredDirectory {
         operation: &'static str,
     ) -> Result<File, AnchoredFsError> {
         self.verify_path_binding()?;
+        #[cfg(test)]
+        run_anchored_mutation_hook();
         let relative = self.relative(path)?;
         let descriptor = openat2(
             &self.directory,
@@ -513,7 +564,9 @@ impl AnchoredDirectory {
             ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
         )
         .map_err(|source| self.io_error(operation, path, source))?;
-        Ok(File::from(descriptor))
+        let file = File::from(descriptor);
+        self.verify_path_binding()?;
+        Ok(file)
     }
 
     pub(crate) fn remove_bound_file(
@@ -523,7 +576,10 @@ impl AnchoredDirectory {
     ) -> Result<(), AnchoredFsError> {
         self.verify_path_binding()?;
         file.verify_path_binding()?;
-        file.remove_after_validation(operation)
+        #[cfg(test)]
+        run_anchored_mutation_hook();
+        file.remove_after_validation(operation)?;
+        self.verify_path_binding()
     }
 
     pub(crate) fn remove_bound_directory(
@@ -542,7 +598,13 @@ impl AnchoredDirectory {
     ) -> Result<(), AnchoredFsError> {
         self.verify_path_binding()?;
         child.verify_path_binding()?;
-        let (parent, name) = self.open_parent(&child.path, operation)?;
+        #[cfg(test)]
+        run_anchored_mutation_hook();
+        let name = child
+            .path
+            .file_name()
+            .ok_or_else(|| invalid_path(&child.path))?
+            .to_owned();
         if let Some((_, device, inode)) = removal_identity(&name) {
             if device != child.device || inode != child.inode {
                 return Err(AnchoredFsError::DirectoryReplaced {
@@ -550,32 +612,44 @@ impl AnchoredDirectory {
                 });
             }
             after_validation()?;
-            return child.verify_path_binding();
+            child.verify_path_binding()?;
+            return self.verify_path_binding();
         }
 
         let mut quarantine = std::ffi::OsString::from(".");
         quarantine.push(&name);
         quarantine.push(format!(".removing-v1-{:x}-{:x}", child.device, child.inode));
-        renameat_with(&parent, &name, &parent, &quarantine, RenameFlags::NOREPLACE)
-            .map_err(|source| self.io_error(operation, &child.path, source))?;
-        parent
-            .sync_all()
-            .map_err(|source| anchored_io("sync-directory", &child.path, source))?;
         let quarantine_path = child.path.with_file_name(&quarantine);
-        let quarantined = self.open_inventory_child(&quarantine_path, operation)?;
-        if quarantined.device != child.device || quarantined.inode != child.inode {
-            renameat_with(&parent, &quarantine, &parent, &name, RenameFlags::NOREPLACE).map_err(
-                |source| self.io_error("restore-replaced-directory", &child.path, source),
-            )?;
-            parent
-                .sync_all()
-                .map_err(|source| anchored_io("sync-directory", &child.path, source))?;
-            return Err(AnchoredFsError::DirectoryReplaced {
-                path: child.path.clone(),
-            });
-        }
+        let quarantined =
+            self.rename_bound_directory_with(child, &quarantine_path, operation, || Ok(()))?;
         after_validation()?;
-        quarantined.verify_path_binding()
+        quarantined.verify_path_binding()?;
+        self.verify_path_binding()
+    }
+
+    pub(crate) fn rename_bound_directory_with(
+        &self,
+        child: &AnchoredDirectory,
+        destination: &Path,
+        operation: &'static str,
+        after_validation: impl FnOnce() -> Result<(), AnchoredFsError>,
+    ) -> Result<AnchoredDirectory, AnchoredFsError> {
+        self.verify_path_binding()?;
+        child.verify_path_binding()?;
+        after_validation()?;
+        self.rename_noreplace(&child.path, destination, operation)?;
+        let moved = self.open_inventory_child(destination, operation);
+        if moved
+            .as_ref()
+            .is_ok_and(|guard| guard.identity() == child.identity())
+        {
+            return moved;
+        }
+
+        self.rename_noreplace(destination, &child.path, "restore-substituted-directory")?;
+        Err(AnchoredFsError::DirectoryReplaced {
+            path: child.path.clone(),
+        })
     }
 
     pub(crate) fn create_directory(
@@ -584,12 +658,15 @@ impl AnchoredDirectory {
         operation: &'static str,
     ) -> Result<(), AnchoredFsError> {
         self.verify_path_binding()?;
+        #[cfg(test)]
+        run_anchored_mutation_hook();
         let (directory, name) = self.open_parent(path, operation)?;
         mkdirat(&directory, &name, Mode::RUSR | Mode::WUSR | Mode::XUSR)
             .map_err(|source| self.io_error(operation, path, source))?;
         directory
             .sync_all()
-            .map_err(|source| anchored_io("sync-directory", path, source))
+            .map_err(|source| anchored_io("sync-directory", path, source))?;
+        self.verify_path_binding()
     }
 
     pub(crate) fn rename_noreplace(
@@ -609,6 +686,8 @@ impl AnchoredDirectory {
         operation: &'static str,
     ) -> Result<(), AnchoredFsError> {
         self.verify_path_binding()?;
+        #[cfg(test)]
+        run_anchored_mutation_hook();
         let source_relative = self.relative(source)?;
         let destination_relative = self.relative(destination)?;
         let source_parent = source_relative.parent().ok_or(invalid_path(source))?;
@@ -641,7 +720,7 @@ impl AnchoredDirectory {
                 .sync_all()
                 .map_err(|source| anchored_io("sync-directory", destination, source))?;
         }
-        Ok(())
+        self.verify_path_binding()
     }
 
     fn open_parent(
@@ -732,6 +811,9 @@ fn removal_identity(name: &std::ffi::OsStr) -> Option<(std::ffi::OsString, u64, 
     let inode = std::str::from_utf8(&identity[separator + 1..])
         .ok()
         .and_then(|value| u64::from_str_radix(value, 16).ok())?;
+    if identity != format!("{device:x}-{inode:x}").as_bytes() {
+        return None;
+    }
     Some((
         std::ffi::OsString::from_vec(bytes[1..marker].to_vec()),
         device,
@@ -754,12 +836,87 @@ fn anchored_io(operation: &'static str, path: &Path, source: std::io::Error) -> 
 }
 
 #[cfg(test)]
+thread_local! {
+    static ANCHORED_MUTATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn install_anchored_mutation_hook(hook: impl FnOnce() + 'static) {
+    ANCHORED_MUTATION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_anchored_mutation_hook() {
+    ANCHORED_MUTATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
 mod tests {
     use std::fs;
 
     use tempfile::TempDir;
 
     use super::*;
+
+    fn replace_root_after_precheck(root: &Path, moved: &Path) {
+        let root = root.to_owned();
+        let moved = moved.to_owned();
+        install_anchored_mutation_hook(move || {
+            fs::rename(&root, &moved).expect("move guarded root");
+            fs::create_dir(&root).expect("replace guarded root");
+        });
+    }
+
+    #[test]
+    fn mutations_reject_parent_replacement_after_final_precheck() {
+        for operation in ["write", "rename", "file-removal", "directory-removal"] {
+            let parent = TempDir::new().expect("parent");
+            let moved_parent = TempDir::new().expect("moved parent");
+            let moved = moved_parent.path().join("guarded");
+            let guard = AnchoredDirectory::new(parent.path().to_owned()).expect("parent guard");
+            let source = parent.path().join("source");
+            let destination = parent.path().join("destination");
+
+            let result = match operation {
+                "write" => {
+                    replace_root_after_precheck(parent.path(), &moved);
+                    guard.write_once(&destination, b"bytes")
+                }
+                "rename" => {
+                    fs::write(&source, b"bytes").expect("source");
+                    replace_root_after_precheck(parent.path(), &moved);
+                    guard.rename_noreplace(&source, &destination, "rename")
+                }
+                "file-removal" => {
+                    fs::write(&source, b"bytes").expect("source");
+                    let file = guard
+                        .open_inventory_file(&source, "pin-source")
+                        .expect("open source")
+                        .expect("source exists");
+                    replace_root_after_precheck(parent.path(), &moved);
+                    guard.remove_bound_file(&file, "remove-file")
+                }
+                "directory-removal" => {
+                    fs::create_dir(&source).expect("source directory");
+                    let child = guard.open_child(&source, "pin-source").expect("child");
+                    replace_root_after_precheck(parent.path(), &moved);
+                    guard.remove_bound_directory(&child, "remove-directory")
+                }
+                _ => unreachable!(),
+            };
+
+            assert!(matches!(
+                result,
+                Err(AnchoredFsError::DirectoryReplaced { .. })
+            ));
+            assert!(!destination.exists());
+        }
+    }
 
     #[test]
     fn pinned_child_rejects_replacement_before_mutation() {
@@ -866,6 +1023,23 @@ mod tests {
         let guard = AnchoredDirectory::new(root.path().to_owned()).expect("root guard");
         assert!(guard.open_inventory_file(&forged, "reject-forged").is_err());
         assert!(forged.exists());
+    }
+
+    #[test]
+    fn removal_names_reject_noncanonical_hex_aliases() {
+        let canonical = std::ffi::OsStr::new(".state.removing-v1-a-10");
+        assert_eq!(
+            removal_identity(canonical),
+            Some((std::ffi::OsString::from("state"), 0xa, 0x10))
+        );
+        for alias in [
+            ".state.removing-v1-A-10",
+            ".state.removing-v1-a-010",
+            ".state.removing-v1-0a-10",
+            ".state.removing-v1-a-10A",
+        ] {
+            assert_eq!(removal_identity(std::ffi::OsStr::new(alias)), None);
+        }
     }
 
     #[test]
