@@ -14,27 +14,6 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-def current_runtime_authority(transaction: str, plan: str) -> dict[str, Any]:
-    """Reads the protected current authority for one exact execution scope."""
-
-    if not isinstance(transaction, str) or not transaction:
-        raise RuntimeError("current-authority transaction is empty")
-    if not isinstance(plan, str) or not plan.startswith("sha256:"):
-        raise RuntimeError("current-authority plan identity is malformed")
-    path = (
-        f"/run/apm/ability-authority/{plan.removeprefix('sha256:')}/"
-        f"{transaction}.json"
-    )
-    runtime.wait_until_succeeds(f"test -s {shlex.quote(path)}", timeout=120)
-    payload = runtime.succeed(f"{COREUTILS}/cat {shlex.quote(path)}").encode()
-    authority = json.loads(payload)
-    if PROVIDER_STATE_EVIDENCE.canonical(authority) != payload:
-        raise RuntimeError("current runtime authority is not canonical")
-    if authority.get("plan") != plan or authority.get("transaction") != transaction:
-        raise RuntimeError("current runtime authority names another execution scope")
-    return authority
-
-
 def generation_runtime_authority(generation: int) -> dict[str, Any]:
     """Resolves the most recent transaction recorded by one active generation."""
 
@@ -53,7 +32,8 @@ def generation_runtime_authority(generation: int) -> dict[str, Any]:
     bundle = json.loads(bundle_payload)
     if PROVIDER_STATE_EVIDENCE.canonical(bundle) != bundle_payload:
         raise RuntimeError("source generation plan bundle is not canonical")
-    return current_runtime_authority(transaction, bundle["plan"])
+    state = {"transaction": transaction, "plan": bundle["plan"]}
+    return EFFECT_FLIGHT.current_runtime_authority(state)["document"]
 
 
 def retained_rollback_launcher(retained_generation: int) -> Callable[[str, str], None]:
@@ -90,7 +70,7 @@ class RetainedTargetBridge:
             raise RuntimeError("rollback flight started from another predecessor")
         if state["generation"] != self.retained_generation:
             raise RuntimeError("rollback flight did not select the retained generation")
-        authority = current_runtime_authority(state["transaction"], state["plan"])
+        authority = state["runtime-authority-acquisition"]["document"]
         ledger = EFFECT_ORACLES.native_resource_ledger()
         self.acquisition = (state, authority, ledger)
 
@@ -110,9 +90,7 @@ class RetainedTargetBridge:
         if plan_bundle != state["bundle-bytes"]:
             raise RuntimeError("retained-target flight changed its checked plan bundle")
 
-        authority_after = current_runtime_authority(
-            state["transaction"], state["plan"]
-        )
+        authority_after = state["runtime-authority-after"]["document"]
         ledger_after = EFFECT_ORACLES.native_resource_ledger()
         activated_generation = EFFECT_FLIGHT.current_generation()
         observation = PROVIDER_STATE_EVIDENCE.RetainedTargetObservation(
@@ -165,9 +143,6 @@ def run_unsupported_transfer_flight(
     )
     state, baseline = EFFECT_FLIGHT.acquisition_state(held, flight, observe)
     state["source-generation"] = source_generation
-    candidate_authority = current_runtime_authority(
-        state["transaction"], state["plan"]
-    )
     ledger_before = EFFECT_ORACLES.native_resource_ledger()
 
     operation_path = f"{EFFECT_FLIGHT.BOUNDARY_ROOT}/{flight.label}-operation.json"
@@ -185,21 +160,9 @@ def run_unsupported_transfer_flight(
         raise RuntimeError("production transfer inspector returned no contract digest")
 
     unit = f"provider-transfer-{flight.label}.service"
-    EFFECT_FLIGHT.abort_acquisition(unit, flight, state)
+    aborted = EFFECT_FLIGHT.abort_acquisition(unit, flight, state)
     after = observe(state["operation-document"])
     ledger_after = EFFECT_ORACLES.native_resource_ledger()
-    diagnostic = EFFECT_FLIGHT.ability_diagnostic(
-        state["generation"], state["transaction"]
-    )
-    timeline = EFFECT_FLIGHT.timeline_events(
-        diagnostic, state["operation"]["ordinal"]
-    )
-    boundaries = EFFECT_FLIGHT.operation_boundaries(
-        state["transaction"], state["plan"], state["operation"]["key"]
-    )
-    dependent_timeline = EFFECT_FLIGHT.timeline_events(
-        diagnostic, state["dependent"]["ordinal"]
-    )
 
     observation = PROVIDER_STATE_EVIDENCE.UnsupportedTransferObservation(
         source_generation=source_generation,
@@ -207,10 +170,10 @@ def run_unsupported_transfer_flight(
         transaction=state["transaction"],
         operation_key=state["operation"]["key"],
         journal_at_rejection=state["journal-before-loss"],
-        timeline_at_rejection=timeline,
-        boundary_timeline=boundaries,
+        timeline_at_rejection=aborted["timeline"],
+        boundary_timeline=aborted["boundary-timeline"],
         source_authority=source_authority,
-        candidate_authority=candidate_authority,
+        candidate_authority=aborted["runtime-authority"]["document"],
         ledger_before=ledger_before,
         ledger_after=ledger_after,
         live_before=baseline["live"],
@@ -218,7 +181,7 @@ def run_unsupported_transfer_flight(
         foreign_before=baseline["foreign"],
         foreign_after=after["foreign"],
         dependent_operation=state["dependent"],
-        dependent_timeline=dependent_timeline,
+        dependent_timeline=aborted["dependent-timeline"],
     )
     state_builder.retain_unsupported_transfer(
         state_cell_id, state["bundle-bytes"], contract, observation
