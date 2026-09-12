@@ -98,15 +98,20 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   schedule encoding with branch-point identity separated from materialization.
 - [ ] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
   envelope and provide an explicit offline migration/rejection policy for older
-  schedule artifacts.
+  schedule artifacts. Normal schedule admission now accepts only Schedule V2.
+  The bounded one-way V1 migration accepts resolved delivery-order and RNG
+  evidence, emits V2, and rejects every untyped override, preemption,
+  application-random, or forged selection at its exact decision offset. The
+  remaining live preemption and non-signal override producers still need typed
+  selection envelopes, so this task remains open.
 - [x] **T-CAM-2.4** Implement versioned register/request/reply guest messages and
   typed Rust guest helpers with complete negative decode and allocation tests.
 - [x] **T-CAM-2.5** Freeze guest selectable catalogs at setup, validate scenario
   expectations, support bounded narrowed runtime offers, and checkpoint pending
   requests exactly.
-- [ ] **T-CAM-2.6** Adapt RFC-0014 Boolean outcome, transition, and parameter
-  search surfaces to publish environment choice opportunities without weakening typed
-  effect adapters.
+- [x] **T-CAM-2.6** Adapt RFC-0014 Boolean outcome, transition, and parameter
+  search surfaces to publish environment choice opportunities without weakening
+  typed effect adapters.
 - [x] **T-CAM-2.7** Route application randomness through the integer selectable
   model and remove the parallel raw-width exploration path.
 - [ ] **T-CAM-2.8** Integrate the actual network product guest with discrete and
@@ -213,6 +218,17 @@ live producer is the fail-closed conversion path. The broader legacy-decision
 migration policy and Phase 2 real-guest flight remain under T-CAM-2.3 and
 T-CAM-2.8 respectively.
 
+RFC-0014 search choices now retain their typed candidate meaning across the
+runtime frontier. Outcome searches publish Boolean domains. Transition and
+parameter searches publish stable discrete alternatives derived from their
+canonical object or typed-value identities, with an explicit unmodified
+alternative where the model can produce a value outside the branch list. The
+campaign adapter reconstructs and authenticates those records before emitting
+the original finite override index consumed by the unchanged typed effect
+adapter. Index-only and unknown candidate tags fail closed in runtime override
+decoding and campaign promotion; there is no compatibility domain beside the
+typed path.
+
 The public static `crucible-guest` product client now constructs discrete and
 unsigned-integral registrations and requests from the L1 protocol-owned
 `ChoiceDomain` and `ChoiceValue` representation. A cross-codec conformance test
@@ -235,7 +251,7 @@ the automated prerequisite for T-CAM-2.8. The task remains unchecked until the
 Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
 `crucible-api`.
 
-- [ ] **T-CAM-3.1** Add scenario measurement definitions, boundary selectors,
+- [x] **T-CAM-3.1** Add scenario measurement definitions, boundary selectors,
   cohort rules, metric types, exact aggregations, and canonical stop outcomes.
   The pure scenario-owned v1 definition component now provides bounded static
   boundary selectors, validated node cohorts, typed metric sources and values,
@@ -246,9 +262,11 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   satisfying evidence, and recomputes exact integer, rational, histogram, and
   delta aggregates. Campaign measurement-set v2 retains the exact verified
   evaluation/definition identities and payload behind a model-specific verifier
-  while preserving identity-exact v1 reads. Model-owned sample producers plus
-  complete raw evidence attachment remain open, so this task is not yet
-  complete.
+  while preserving identity-exact v1 reads. The bounded model projector derives
+  all closed network, storage, scheduler, icount, and virtual-time sources from
+  authenticated event-log entries. Prepared results, journals, executor
+  publication, finding replay, and objective verification retain and
+  reauthenticate the complete raw measurement evidence closure.
 - [x] **T-CAM-3.2** Add guest measurement begin/sample/end and semantic-marker
   protocol messages with scenario validation and limits.
   Doorbell protocol v3 now provides four byte-exact bounded kinds, seven closed
@@ -1339,13 +1357,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   paused root through bounded backpressure, and periodically reconciles pins
   accepted before or after checkpoint publication. Offline GC derives and
   locks the same canonical journal path.
-- [ ] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
+- [x] **T-CAM-4.7** Implement hierarchical per-event promotion and existing
   minimization integration.
   The execution-model bridge now normalizes one bounded, homogeneous
-  signal-fault runtime frontier into exact campaign declaration, integer
-  domain, and opportunity records. It reauthenticates those records and a
-  campaign branch selection to reconstruct the exact selection plus optional
-  override prefix, including the unmodified-result sentinel. Campaign attempt
+  signal-fault runtime frontier into exact campaign declaration, typed Boolean
+  or discrete domain, and opportunity records. It reauthenticates those records
+  and a campaign branch selection to reconstruct the exact selection plus
+  optional override prefix. Transition and parameter domains include the
+  unmodified-result alternative. Campaign attempt
   decoding recognizes this standardized adapter, reconstructs up to 4,096
   nested promoted events in exact schedule order, and retains one opaque
   validated replay plan. The fresh production lifecycle installs all finite
@@ -1360,12 +1379,16 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   canonical choice material. The modeled driver retains that discovery only
   when it causes the exact `NextChoice` stop; later-stop observations cannot
   retrospectively publish it, and a queued replay branch suppresses duplicate
-  discovery. Promotion is now attempt-scoped: the fresh runner enables it only
+  discovery. Promotion is attempt-scoped: the fresh runner enables it only
   for `NextChoice` after exact start materialization, so historical prefix
   frontiers remain replay-only. Terminal, marker, time, and event-count
   executions pass through finite authored search frontiers without campaign
-  pauses. Automatic planner selection of a bounded interesting suffix/window
-  and automatic signature-preserving minimization remain open.
+  pauses. The minimizer automatically reserves its bounded candidate window for
+  the empty schedule and exact campaign-branch prefixes before enumerating the
+  remaining shortest-first subsequences. Finding preparation invokes that
+  minimizer twice through the signature oracle, requires both passes to agree,
+  and retains the complete bounded replay and raw-measurement evidence before
+  publication.
 - [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful
