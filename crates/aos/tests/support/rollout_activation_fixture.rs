@@ -230,9 +230,10 @@ pub(super) fn audit_foreign_map(arguments: &[String]) -> Result<()> {
     );
 
     let packages = load_verified_package()?;
-    let fixture = RolloutFixture::new(&packages)?;
-    let composed = fixture.compose(&request, ActivationMode::Rollout)?;
-    let valid = rollout_resource_map(&composed, &request, ActivationMode::Rollout)?;
+    let mode = ActivationMode::Rollout;
+    let fixture = RolloutFixture::new(&packages, &mode)?;
+    let composed = fixture.compose(&request, &mode)?;
+    let valid = rollout_resource_map(&composed, &request, &mode)?;
     let [real] = valid.entries.as_slice() else {
         bail!("rollout foreign-map audit requires one real mapping");
     };

@@ -483,7 +483,7 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 1,155 cells and 4,629
+independent published-image cohorts that currently exercise 1,253 cells and 5,119
 of the 6,050 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -538,7 +538,20 @@ substrate independently of the execution journal. Foreground flights run system
 activation and dispatch inside the OCI container and bind receipts to the live
 PID, process group, ownership token, cgroup, and namespaces. The four effect
 cells already covered by the primary and PostgreSQL cohorts are not duplicated.
-The other 245 cells remain explicit failures, so the mandatory
+
+The provider-negative cohorts account for the remaining 98 required-success
+dependency and foreign-resource rejection cells in that qualified total. They
+pause each selected real operation after durable intent, change
+authority in the provider's live substrate, and require rejection before the
+external effect. Each provider-authored `RequiredSuccess` successor remains
+unexecuted, and independent resource observations prove the foreign target,
+successor, and any behavioral witness remain unchanged. The one-machine rollout
+cohort separately proves production map rejection for a forged logical resource
+and same-machine dependency blocking. These cohorts exclude the managed
+configuration `publish` foreign-resource cell and legacy systemd `reload`
+dependency cell already owned by the primary cohort.
+
+The other 147 cells remain explicit failures, so the mandatory
 aggregate gate cannot pass. Expand the mapping only with exact cell-bound
 subjects and independent provider-specific observations.
 
