@@ -1925,6 +1925,7 @@ mod tests {
             )),
             candidates_digest: ContentHash::from_bytes(b"finding-replay-signal-candidates"),
             candidate_count: 2,
+            candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
             selected_index: None,
             overridden: false,
         };

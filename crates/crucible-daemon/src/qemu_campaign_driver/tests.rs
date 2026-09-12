@@ -3755,6 +3755,7 @@ fn signal_fault_choice_discovery(parent: &Configuration, ticks: u64) -> ChoiceDi
         )),
         candidates_digest: crucible::ContentHash::from_bytes(b"fresh-driver-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };

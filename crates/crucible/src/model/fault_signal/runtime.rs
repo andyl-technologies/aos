@@ -176,29 +176,131 @@ pub struct BindingSearchChoice {
     pub candidates_digest: ContentHash,
     /// Number of finite candidates.
     pub candidate_count: u32,
+    /// Typed meaning of the finite candidate sequence.
+    pub candidate_semantics: BindingSearchCandidateSemantics,
     /// Chosen zero-based candidate index, or `None` for the unmodified model result.
     pub selected_index: Option<u32>,
     /// Whether a replay/explorer override selected the result.
     pub overridden: bool,
 }
 
+/// Typed meaning retained for one RFC-0014 finite search candidate sequence.
+///
+/// Candidate identities are ordered exactly like the binding policy's
+/// canonical candidate vector. They let the campaign boundary expose Boolean
+/// outcomes and stable discrete transition or parameter alternatives while the
+/// effect adapter continues to consume the original typed RFC-0014 values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BindingSearchCandidateSemantics {
+    /// False/true effect outcome candidates, in that order.
+    Outcome,
+    /// Stable identities for typed state-transition candidates.
+    Transition(Vec<ContentHash>),
+    /// Stable identities for candidates of one typed effect parameter.
+    Parameter {
+        /// Effect parameter changed by the finite search policy.
+        parameter: MappedEffectParameter,
+        /// Stable identities in canonical candidate order.
+        candidates: Vec<ContentHash>,
+    },
+}
+
+impl BindingSearchCandidateSemantics {
+    /// Returns the exact typed candidate at one zero-based finite-search index.
+    #[must_use]
+    pub fn candidate(&self, candidate_index: u32) -> Option<BindingSearchCandidate> {
+        let index = usize::try_from(candidate_index).ok()?;
+        match self {
+            Self::Outcome if candidate_index < 2 => {
+                Some(BindingSearchCandidate::Outcome(candidate_index == 1))
+            }
+            Self::Transition(candidates) => candidates
+                .get(index)
+                .copied()
+                .map(BindingSearchCandidate::Transition),
+            Self::Parameter {
+                parameter,
+                candidates,
+            } => candidates
+                .get(index)
+                .copied()
+                .map(|identity| BindingSearchCandidate::Parameter {
+                    parameter: *parameter,
+                    identity,
+                }),
+            Self::Outcome => None,
+        }
+    }
+
+    /// Returns whether the semantic candidate sequence has the expected size.
+    #[must_use]
+    pub fn is_valid_for_count(&self, candidate_count: u32) -> bool {
+        match self {
+            Self::Outcome => candidate_count == 2,
+            Self::Transition(candidates) | Self::Parameter { candidates, .. } => {
+                usize::try_from(candidate_count).ok() == Some(candidates.len())
+                    && !candidates.is_empty()
+                    && candidates.iter().collect::<BTreeSet<_>>().len() == candidates.len()
+            }
+        }
+    }
+}
+
+/// Exact typed meaning of one selected RFC-0014 finite-search candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BindingSearchCandidate {
+    /// Whether the typed effect applies.
+    Outcome(bool),
+    /// Stable identity of the selected state transition.
+    Transition(ContentHash),
+    /// Stable identity of the selected value for one typed effect parameter.
+    Parameter {
+        /// Effect parameter changed by the candidate.
+        parameter: MappedEffectParameter,
+        /// Stable identity of the selected typed value.
+        identity: ContentHash,
+    },
+}
+
+impl BindingSearchCandidate {
+    fn tag(self) -> String {
+        match self {
+            Self::Outcome(value) => format!("outcome/{value}"),
+            Self::Transition(identity) => format!("transition/{}", identity.to_hex()),
+            Self::Parameter {
+                parameter,
+                identity,
+            } => format!("parameter/{}/{}", parameter.as_str(), identity.to_hex()),
+        }
+    }
+}
+
 impl BindingSearchChoice {
     /// Materializes every finite candidate as a canonical explorer decision.
     #[must_use]
     pub fn override_decisions(&self, parent_branch: ContentHash) -> Vec<OverrideDecision> {
+        if !self
+            .candidate_semantics
+            .is_valid_for_count(self.candidate_count)
+        {
+            return Vec::new();
+        }
         (0..self.candidate_count)
-            .map(|candidate_index| OverrideDecision {
-                point: SchedulingPoint {
-                    key: format!(
-                        "signal-fault/{}/{}/{}",
-                        parent_branch.to_hex(),
-                        self.id.content_hash().to_hex(),
-                        self.candidates_digest.to_hex()
-                    ),
-                },
-                choice: ChoiceTag {
-                    name: format!("candidate/{candidate_index}"),
-                },
+            .filter_map(|candidate_index| {
+                let semantic_tag = self.candidate_semantics.candidate(candidate_index)?.tag();
+                Some(OverrideDecision {
+                    point: SchedulingPoint {
+                        key: format!(
+                            "signal-fault/{}/{}/{}",
+                            parent_branch.to_hex(),
+                            self.id.content_hash().to_hex(),
+                            self.candidates_digest.to_hex()
+                        ),
+                    },
+                    choice: ChoiceTag {
+                        name: format!("candidate/{candidate_index}/{semantic_tag}"),
+                    },
+                })
             })
             .collect()
     }
@@ -497,6 +599,8 @@ pub struct SearchOverride {
     pub candidate_index: u32,
     /// Digest of the exact finite candidate set.
     pub candidates_digest: ContentHash,
+    /// Typed candidate identity authenticated by the live binding policy.
+    pub candidate: BindingSearchCandidate,
     /// Parent branch, if this choice forked an earlier search branch.
     pub parent_branch: Option<ContentHash>,
 }
@@ -512,20 +616,39 @@ impl SearchOverride {
             return None;
         }
         let parent_branch = parse_search_content_hash(encoded_parent)?;
-        let candidate_index = decision
-            .choice
-            .name
-            .strip_prefix("candidate/")?
-            .parse()
-            .ok()?;
+        let encoded_candidate = decision.choice.name.strip_prefix("candidate/")?;
+        let (candidate_index, typed_semantics) = encoded_candidate.split_once('/')?;
+        let candidate = parse_typed_search_candidate(typed_semantics)?;
+        let candidate_index = candidate_index.parse().ok()?;
         Some((
             SearchChoiceId::from_content_hash(parse_search_content_hash(choice_id)?),
             Self {
                 candidate_index,
                 candidates_digest: parse_search_content_hash(candidates_digest)?,
+                candidate,
                 parent_branch: Some(parent_branch),
             },
         ))
+    }
+}
+
+fn parse_typed_search_candidate(candidate: &str) -> Option<BindingSearchCandidate> {
+    let mut parts = candidate.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("outcome"), Some("false"), None, None) => {
+            Some(BindingSearchCandidate::Outcome(false))
+        }
+        (Some("outcome"), Some("true"), None, None) => Some(BindingSearchCandidate::Outcome(true)),
+        (Some("transition"), Some(identity), None, None) => {
+            parse_search_content_hash(identity).map(BindingSearchCandidate::Transition)
+        }
+        (Some("parameter"), Some(parameter), Some(identity), None) => {
+            Some(BindingSearchCandidate::Parameter {
+                parameter: MappedEffectParameter::from_key(parameter)?,
+                identity: parse_search_content_hash(identity)?,
+            })
+        }
+        _ => None,
     }
 }
 

@@ -470,6 +470,7 @@ fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
         )),
         candidates_digest: ContentHash::from_bytes(b"typed-scheduler-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crate::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };

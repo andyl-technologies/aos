@@ -158,6 +158,7 @@ fn signal_fault_selectable(
                 .collect::<String>(),
         ),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
