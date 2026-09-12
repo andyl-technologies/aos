@@ -483,7 +483,7 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 1,011 cells and 4,053
+independent published-image cohorts that currently exercise 1,055 cells and 4,229
 of the 6,050 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -508,9 +508,17 @@ foreign-resource sentinel. A second candidate-linked runtime audit covers all
 boundary, performs no resource acquisition or adapter dispatch, reopens the
 unchanged pending journal, and proves a real required-success dependent remains
 blocked. The 44 cancellation cells with a declared route
-remain explicit failures until each production provider's cancellation handler
-has an exact semantic oracle. A generic indeterminate cancellation callback is
-insufficient.
+run in separate provider cohorts. Each flight pauses the candidate runtime
+after durable effect intent, confirms that the transient service executed that
+candidate, sends `SIGTERM`, releases the independent observer, and requires the
+runtime to dispatch the exact declared cancellation route. The retained record
+binds the handler and entry point, cancellation result, journal and boundary
+timelines, plan bundle, candidate and predecessor authority, owner and live
+state before, during, and after cancellation, an independent foreign-resource
+sentinel, and zero dependent effects. Reference host resources, PostgreSQL,
+Kubernetes and bootstrap systemd, manager and legacy systemd, foreground
+processes, and image rollout use distinct physical-state oracles. The verifier
+rejects missing, replayed, cross-cell, or provider-incompatible evidence.
 
 The provider-effect cohorts interrupt each applicable method after acquisition,
 after durable intent, after an external return whose result is lost, and after
@@ -522,7 +530,7 @@ substrate independently of the execution journal. Foreground flights run system
 activation and dispatch inside the OCI container and bind receipts to the live
 PID, process group, ownership token, cgroup, and namespaces. The four effect
 cells already covered by the primary and PostgreSQL cohorts are not duplicated.
-The other 389 cells remain explicit failures, so the mandatory
+The other 345 cells remain explicit failures, so the mandatory
 aggregate gate cannot pass. Expand the mapping only with exact cell-bound
 subjects and independent provider-specific observations.
 

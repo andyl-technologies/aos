@@ -101,33 +101,37 @@ The candidate runtime audit qualifies the shared failure controls only where
 their semantics do not depend on a provider implementation. It exercises all
 50 method cells for trusted-clock deadline expiry, cleanup failure, and release
 failure, plus the six cancellation cells whose descriptors declare no
-cancellation route. The remaining 44 cancellation cells require direct
-execution of each production provider's cancellation handler and an exact
-provider-specific oracle; routing a cancellation request to a generic callback
-does not complete them.
+cancellation route. Separate candidate-linked production cohorts cover the 44
+cells with a declared route by executing each provider's cancellation handler
+and applying an exact provider-specific oracle. Routing a cancellation request
+to a generic callback does not complete these cells.
 
-The open cancellation work is tracked against each production adapter rather
-than as one interchangeable callback:
+Supported cancellation is divided by production adapter because the physical
+state that establishes a safe cancellation result differs by provider:
 
-| Adapter | Declared method routes | Missing exact cancellation oracle |
+| Adapter | Declared method routes | Exact production observation |
 | --- | --- | --- |
-| `credential-delivery` | `acquire`, `deliver`, `release` | Invoke `NativeHostResourceAdapter` with a qualified credential source and compare the owned view, metadata record, and unrelated credential views before and after cancellation. |
-| `foreground-process` | `observe`, `start`, `stop` | Inject cancellation after durable intent through `NativeForegroundProcessAdapter`, then bind its disposition to the exact process identity, process group, ownership record, and an unrelated process observation. |
-| `host-network-policy` | `apply`, `observe`, `remove` | Run the host-resource handler against an isolated qualified policy and independently observe its exact rules plus unrelated rules after cancellation. |
-| `host-storage` | `ensure`, `observe`, `release` | Run the host-resource handler against qualified persistent and ephemeral paths and independently observe path identity, retention, ownership, and foreign paths. |
-| `image-rollout` | `drain`, `hold`, `observe-boot`, `observe-health`, `prepare`, `retain`, `retire`, `select`, `withdraw` | Inject cancellation into `NativeAbRolloutAdapter` and observe the exact slot, boot selection, retained roots, drain state, health result, and inactive-slot bytes required by each method. |
-| `kubernetes-object` | `apply`, `delete`, `observe` | Invoke `NativeKubernetesObjectAdapter` against the live qualified API object and compare UID, resource version, field ownership, and an unrelated object after cancellation. |
-| `managed-configuration` | `prepare`, `publish`, `release` | Invoke `NativeManagedConfigurationAdapter` and compare the exact managed marker, content revision, publication target, ownership, and unrelated managed files after cancellation. |
-| `network-endpoint` | `materialize`, `observe`, `release` | Run the host-resource handler with its qualified listener and policy binding and independently observe the exact endpoint reservation and unrelated listeners. |
-| `nginx-validation` | `record`, `release`, `validate` | Invoke `NativeNginxAdapter` with its exact configuration, credential, and storage bindings and compare validation records, referenced bytes, and unrelated records. |
-| `postgresql` | `materialize`, `observe`, `restart`, `start`, `stop` | Run the host-resource handler against the qualified cluster and independently observe service state, data identity, ownership markers, and a foreign cluster. |
-| `systemd-bootstrap` | `observe-manager`, `stop` | Invoke the bootstrap service adapter and bind its result to the exact manager boot identity and unit state after cancellation. |
-| `systemd-manager` | `observe`, `stop` | Invoke `NativeSystemdAdapter` and independently observe the exact unit active state, job result, and an unrelated unit. |
-| `systemd-service-legacy` | `observe`, `stop` | Invoke `NativeSystemdServiceAdapter` with its manager-readiness dependency and independently observe the exact legacy unit and an unrelated unit. |
+| `credential-delivery` | `acquire`, `deliver`, `release` | The qualified credential source is compared with the owned view, metadata record, and unrelated credential views before, during, and after cancellation. |
+| `foreground-process` | `observe`, `start`, `stop` | The disposition is bound to the exact PID, process group, ownership token, cgroup, namespaces, receipt, and a secondary process sentinel. |
+| `host-network-policy` | `apply`, `observe`, `remove` | The isolated qualified policy is compared with its exact rules and unrelated rules after the native host-resource handler returns. |
+| `host-storage` | `ensure`, `observe`, `release` | Persistent and ephemeral path identity, retention, ownership, and a foreign path are observed independently of the runtime journal. |
+| `image-rollout` | `drain`, `hold`, `observe-boot`, `observe-health`, `prepare`, `retain`, `retire`, `select`, `withdraw` | One authenticated plan per method observes the exact slot, boot selection, retained roots, drain and health state, boot files, hook facts, and kernel identity. |
+| `kubernetes-object` | `apply`, `delete`, `observe` | The live API object, ownership record, UID and resource version evidence, and an unrelated object are retained around the native handler. |
+| `managed-configuration` | `prepare`, `publish`, `release` | The managed marker, content revision, publication target, ownership, and unrelated managed files are compared around cancellation. |
+| `network-endpoint` | `materialize`, `observe`, `release` | The qualified listener and policy binding are observed with the exact endpoint reservation and unrelated listeners. |
+| `nginx-validation` | `record`, `release`, `validate` | The exact configuration, credential, storage binding, validation record, referenced bytes, and unrelated record are observed independently. |
+| `postgresql` | `materialize`, `observe`, `restart`, `start`, `stop` | The qualified cluster's service state, data identity, ownership markers, socket state, and foreign cluster are compared around cancellation. |
+| `systemd-bootstrap` | `observe-manager`, `stop` | The bootstrap provider result is bound to the exact manager boot identity, unit state, and an unrelated unit. |
+| `systemd-manager` | `observe`, `stop` | The exact unit active state, job result, ownership record, and an unrelated manager unit are observed. |
+| `systemd-service-legacy` | `observe`, `stop` | The exact legacy unit, its manager-readiness dependency, ownership record, and an unrelated unit are observed. |
 
-Each row still needs a candidate-linked production VM branch at the
-`cancel-unsettled-attempt` boundary. Existing source tests for these handlers
-are useful regressions, but they do not provide those observations.
+Every flight enters the `cancel-unsettled-attempt` boundary through the checked
+production graph. It confirms the transient service's candidate executable
+before signaling it, then retains the exact cancel route, handler entry point,
+durable journal and boundary timelines, before/unsettled/after provider state,
+unchanged foreign state, and a blocked required-success dependent. These
+records become passing evidence only when the production VM cohort executes;
+source tests remain regressions and cannot substitute for those observations.
 
 ## Required end-to-end reference fixture
 
