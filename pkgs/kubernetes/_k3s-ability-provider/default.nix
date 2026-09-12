@@ -506,4 +506,43 @@ in rec {
           fragment.edges ++ observeEdges ++ deleteEdges ++ stopEdges
         );
       };
+
+  # Starting an already healthy bootstrap service is the provider's real
+  # convergent operation. State qualification binds that call to the existing
+  # service owner while an object update supplies the ordinary readiness path.
+  providerStateQualificationTransition = context: let
+    fragment = transition context;
+    ready = builtins.filter (operation: operation.method == "observe-manager") fragment.operations;
+    start = operation:
+      operation
+      // {
+        key = operation.key // {key = "state-start-${operation.target.resource.key}";};
+        method = "start";
+        family = {
+          kind = "service-lifecycle";
+          action = "start";
+        };
+        target = operation.target // {operations = ["start"];};
+        accesses = builtins.map (access: access // {mode = "exclusive-write";}) operation.accesses;
+      };
+    starts = builtins.map start ready;
+    settlements = builtins.map (operation:
+      operation
+      // {key = operation.key // {key = "settle-${operation.key.key}";};})
+    starts;
+    node = operation: {
+      kind = "operation";
+      key = operation.key;
+    };
+    edges = builtins.genList (index: {
+      from = node (builtins.elemAt starts index);
+      to = node (builtins.elemAt settlements index);
+      kind = "required-success";
+    }) (builtins.length starts);
+  in
+    fragment
+    // {
+      operations = fragment.operations ++ starts ++ settlements;
+      edges = fragment.edges ++ edges;
+    };
 }

@@ -394,4 +394,51 @@ in rec {
         (fragment.operations ++ builtins.map (entry: entry.operation) witnesses);
       edges = fragment.edges ++ builtins.map (entry: entry.edge) witnesses;
     };
+
+  # Provider-state qualification performs a real idempotent delivery against
+  # the currently owned credential view, then repeats it as the settlement
+  # successor required by the matrix cell.
+  providerStateQualificationTransition = context: let
+    fragment = transition context;
+    acquired = builtins.filter (operation: operation.method == "acquire") fragment.operations;
+    delivery = operation:
+      operation
+      // {
+        key = operation.key // {key = "state-deliver-${operation.target.resource.key}";};
+        method = "deliver";
+        family = {
+          kind = "credential";
+          action = "deliver";
+        };
+        target = operation.target // {operations = ["deliver"];};
+        accesses = builtins.map (access: access // {mode = "exclusive-write";}) operation.accesses;
+        recovery =
+          operation.recovery
+          // {
+            reconcile = {
+              inherit (operation) interface;
+              method = "deliver";
+            };
+          };
+      };
+    deliveries = builtins.map delivery acquired;
+    settlements = builtins.map (operation:
+      operation
+      // {key = operation.key // {key = "settle-${operation.key.key}";};})
+    deliveries;
+    node = operation: {
+      kind = "operation";
+      key = operation.key;
+    };
+    edges = builtins.genList (index: {
+      from = node (builtins.elemAt deliveries index);
+      to = node (builtins.elemAt settlements index);
+      kind = "required-success";
+    }) (builtins.length deliveries);
+  in
+    fragment
+    // {
+      operations = fragment.operations ++ deliveries ++ settlements;
+      edges = fragment.edges ++ edges;
+    };
 }

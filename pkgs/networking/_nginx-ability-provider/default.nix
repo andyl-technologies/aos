@@ -1741,4 +1741,85 @@ in rec {
         fragment.edges ++ builtins.map (entry: entry.edge) witnesses
       );
     };
+
+  # These convergent calls exercise state transfer while the exact host object
+  # remains Present and owned. Each operation keeps the production binding,
+  # request, target, and handler selected by the ordinary nginx transition.
+  providerStateQualificationTransition = context: let
+    fragment = transition context;
+    stateMethod = operation:
+      if operation.interface.name == "aos.host-storage-effects" && operation.method == "observe"
+      then {
+        method = "ensure";
+        family = {
+          kind = "host-storage";
+          action = "ensure";
+        };
+      }
+      else if operation.interface.name == "aos.network-endpoint-effects" && operation.method == "observe"
+      then {
+        method = "materialize";
+        family = {
+          kind = "network-endpoint";
+          action = "materialize";
+        };
+      }
+      else if operation.interface.name == "aos.host-network-policy-effects" && operation.method == "observe"
+      then {
+        method = "apply";
+        family = {
+          kind = "host-network-policy";
+          action = "apply";
+        };
+      }
+      else if operation.interface.name == "aos.systemd-service-effects" && operation.method == "reload"
+      then {
+        method = "start";
+        family = {
+          kind = "service-lifecycle";
+          action = "start";
+        };
+      }
+      else null;
+    selected = builtins.filter (operation: stateMethod operation != null) fragment.operations;
+    mutation = operation: let
+      state = stateMethod operation;
+      route = value:
+        if value == null
+        then null
+        else value // {inherit (state) method;};
+    in
+      operation
+      // {
+        key = operation.key // {key = "state-${state.method}-${operation.target.resource.key}";};
+        inherit (state) method family;
+        target = operation.target // {operations = [state.method];};
+        accesses = builtins.map (access: access // {mode = "exclusive-write";}) operation.accesses;
+        recovery =
+          operation.recovery
+          // {
+            reconcile = route operation.recovery.reconcile;
+            cancel = route operation.recovery.cancel;
+          };
+      };
+    mutations = builtins.map mutation selected;
+    settlements = builtins.map (operation:
+      operation
+      // {key = operation.key // {key = "settle-${operation.key.key}";};})
+    mutations;
+    node = operation: {
+      kind = "operation";
+      key = operation.key;
+    };
+    edges = builtins.genList (index: {
+      from = node (builtins.elemAt mutations index);
+      to = node (builtins.elemAt settlements index);
+      kind = "required-success";
+    }) (builtins.length mutations);
+  in
+    fragment
+    // {
+      operations = fragment.operations ++ mutations ++ settlements;
+      edges = fragment.edges ++ edges;
+    };
 }
