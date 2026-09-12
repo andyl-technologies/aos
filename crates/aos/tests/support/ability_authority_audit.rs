@@ -15,14 +15,13 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, ArtifactReference, ControllerAssignment, DependencyEdge,
     DependencyKind, ExecutionStage, IncarnationId, IndeterminateSemantics, InterfaceDocument,
     InterfaceKey, LocalKey, MethodDescriptor, MethodReference, Operation, OperationPrecondition,
-    PlanNodeKey,
-    ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId, RetryPolicy,
-    StringSyntax, TransactionId, ValueExpression, ValueSchema, compare_edges,
+    PlanNodeKey, ProviderAssignment, ProviderImplementationReference, ResourceAccess, ResourceId,
+    RetryPolicy, StringSyntax, TransactionId, ValueExpression, ValueSchema, compare_edges,
     compare_operation_keys,
 };
 use aos_ability_runtime::adapter::{
@@ -40,11 +39,11 @@ use aos_ability_runtime::execution::{
     TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 use aos_ability_runtime::journal::JournalLimits;
-use aos_ability_validate::test_support::{plan_fixture, PlanFixture};
 use aos_ability_validate::CheckedEffectPlan;
+use aos_ability_validate::test_support::{PlanFixture, plan_fixture};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 const OUTPUT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-audit/v2";
