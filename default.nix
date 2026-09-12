@@ -562,12 +562,6 @@
             inherit (nativeEffectKubernetesCohort) testScript;
             inherit (nativeEffectKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
-          {
-            id = "provider-effect-boundaries-foreground";
-            qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
-            inherit (nativeEffectForegroundCohort) testScript;
-            inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
-          }
         ]
         ++ lib.imap (index: cohort: {
           id = "provider-effect-boundary-rollout-${builtins.toString index}";
@@ -575,7 +569,15 @@
           inherit (cohort) testScript;
           inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
         })
-        nativeEffectRolloutCohorts;
+        nativeEffectRolloutCohorts
+        ++ [
+          {
+            id = "provider-effect-boundaries-foreground";
+            qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
+            inherit (nativeEffectForegroundCohort) testScript;
+            inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ];
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
