@@ -28,7 +28,7 @@ use crate::{Configuration, Decision, SearchRuntimeFrontier, SelectionDecision, V
 pub const SIGNAL_FAULT_CAMPAIGN_ADAPTER: &str = "crucible.signal-fault-search.v1";
 
 /// Maximum finite candidates promoted from one signal-fault event.
-pub const MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES: usize = 4_096;
+pub const MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES: usize = 4_095;
 
 /// Maximum promoted signal-fault events retained in one replay plan.
 pub const MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES: usize = 4_096;
@@ -531,12 +531,13 @@ impl SignalFaultCampaignBranch {
     pub fn matches_runtime_frontier(&self, frontier: &SearchRuntimeFrontier) -> bool {
         self.selected_candidate.is_none()
             && Self::runtime_frontier_basis(frontier).is_some_and(
-                |(parent, at, choice, candidates_digest, candidate_count)| {
+                |(parent, at, choice, candidates_digest, candidate_count, candidate_semantics)| {
                     parent == self.parent
                         && at == self.frontier
                         && choice == self.choice
                         && candidates_digest == self.candidates_digest
                         && candidate_count == self.candidate_count
+                        && candidate_semantics == self.candidate_semantics
                 },
             )
     }
@@ -565,6 +566,7 @@ impl SignalFaultCampaignBranch {
         SearchChoiceId,
         crate::ContentHash,
         u32,
+        crate::model::BindingSearchCandidateSemantics,
     )> {
         let selectable = SignalFaultSelectable::from_frontier(frontier).ok()?;
         Some((
@@ -573,6 +575,7 @@ impl SignalFaultCampaignBranch {
             selectable.choice,
             selectable.candidates_digest,
             selectable.candidate_count,
+            selectable.semantics.runtime_semantics(),
         ))
     }
 
@@ -709,6 +712,30 @@ mod tests {
         }
     }
 
+    fn rewrite_frontier_names(
+        frontier: &SearchRuntimeFrontier,
+        rewrite: impl Fn(usize, &str) -> String,
+    ) -> SearchRuntimeFrontier {
+        let decisions: Vec<_> = frontier
+            .choices
+            .choices()
+            .iter()
+            .enumerate()
+            .map(|(index, choice)| {
+                let Decision::Override(mut decision) = choice.decision().clone() else {
+                    panic!("fixture decisions are overrides");
+                };
+                decision.choice.name = rewrite(index, &decision.choice.name);
+                Decision::Override(decision)
+            })
+            .collect();
+        SearchRuntimeFrontier {
+            configuration: frontier.configuration.clone(),
+            at: frontier.at,
+            choices: SearchFrontierChoices::from_decisions(decisions),
+        }
+    }
+
     #[test]
     fn outcome_search_is_one_boolean_campaign_choice() {
         let choice = BindingSearchChoice {
@@ -804,6 +831,21 @@ mod tests {
             SignalFaultSelectable::from_frontier(&frontier),
             Err(SignalFaultSelectableError::UntypedCandidate)
         );
+
+        let (frontier, _) = fixture(2);
+        for alias in ["00", "+0"] {
+            let noncanonical = rewrite_frontier_names(&frontier, |index, name| {
+                if index == 0 {
+                    name.replacen("candidate/0/", &format!("candidate/{alias}/"), 1)
+                } else {
+                    String::from(name)
+                }
+            });
+            assert_eq!(
+                SignalFaultSelectable::from_frontier(&noncanonical),
+                Err(SignalFaultSelectableError::NonDenseCandidates)
+            );
+        }
     }
 
     #[test]
@@ -884,6 +926,29 @@ mod tests {
             &choice,
         ));
         assert_eq!(branch.expected_search_override(), None);
+
+        let forged_kind = rewrite_frontier_names(&frontier, |index, name| {
+            let identity = name
+                .rsplit_once('/')
+                .map_or("missing", |(_, identity)| identity);
+            format!("candidate/{index}/parameter/duration-nanos/{identity}")
+        });
+        assert!(!branch.matches_runtime_frontier(&forged_kind));
+
+        let forged_identity = rewrite_frontier_names(&frontier, |index, name| {
+            if index == 0 {
+                let (prefix, _) = name
+                    .rsplit_once('/')
+                    .expect("fixture candidate must contain an identity");
+                format!(
+                    "{prefix}/{}",
+                    crate::ContentHash::from_bytes(b"forged-candidate").to_hex()
+                )
+            } else {
+                String::from(name)
+            }
+        });
+        assert!(!branch.matches_runtime_frontier(&forged_identity));
     }
 
     #[test]
@@ -1033,6 +1098,13 @@ mod tests {
             SignalFaultSelectable::from_frontier(&mixed),
             Err(SignalFaultSelectableError::MixedCandidateBasis)
         );
+
+        let (maximum, _) = fixture(
+            u32::try_from(MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES).expect("candidate cap fits u32"),
+        );
+        let maximum = SignalFaultSelectable::from_frontier(&maximum)
+            .expect("maximum candidates plus sentinel fit the shared discrete-domain cap");
+        assert_eq!(maximum.domain().cardinality(), 4_096);
 
         let (excess, _) = fixture(
             u32::try_from(MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES + 1)

@@ -564,7 +564,7 @@ sequence joins, broken reservation references, and every exceeded bound. No
 earlier checkpoint version is accepted through a compatibility or legacy
 decoding path.
 
-The enclosing production fault-runtime checkpoint is version 3 and binds the
+The enclosing production fault-runtime checkpoint is version 4 and binds the
 network adapter bytes to the scheduler network checkpoint, committed scheduler
 frontier, pending routed frames, live QEMU node snapshots, and the canonical
 network-state digest. The QEMU node-continuation checkpoint is independently

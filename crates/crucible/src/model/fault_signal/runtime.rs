@@ -23,7 +23,7 @@ pub use observation::*;
 pub use search::*;
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 3;
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 4;
 
 const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v1\0";
 

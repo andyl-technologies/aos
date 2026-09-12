@@ -227,7 +227,9 @@ campaign adapter reconstructs and authenticates those records before emitting
 the original finite override index consumed by the unchanged typed effect
 adapter. Index-only and unknown candidate tags fail closed in runtime override
 decoding and campaign promotion; there is no compatibility domain beside the
-typed path.
+typed path. Fault-runtime checkpoint version 4 makes the typed override identity
+required and rejects version 3 at admission, including version-3 checkpoints
+whose override map happened to be empty.
 
 The public static `crucible-guest` product client now constructs discrete and
 unsigned-integral registrations and requests from the L1 protocol-owned
