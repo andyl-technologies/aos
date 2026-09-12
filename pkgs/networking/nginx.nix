@@ -209,6 +209,11 @@ in
       }
     ];
 
+    abilityPackage = import ./_nginx-ability-contract.nix {
+      inherit lib;
+      providerArtifact = ./_nginx-ability-provider;
+    };
+
     expose = {
       units."nginx.service" = {
         description = "nginx HTTP and reverse proxy server";
@@ -342,12 +347,90 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
-      version = testing.mkToolCheck {
-        pname = "tool-nginx";
-        tool = self;
-        command = "nginx -V 2>&1";
+    }:
+      {
+        version = testing.mkToolCheck {
+          pname = "tool-nginx";
+          tool = self;
+          command = "nginx -V 2>&1";
+        };
+
+        ability-contract =
+          pkgs.runCommand "nginx-production-ability-contract" {
+            buildDeps = [pkgs.jq];
+          } ''
+            set -eu
+
+            ${pkgs.jq}/bin/jq -e --arg payload ${lib.escapeShellArg "${self}"} '
+              . as $document
+              | .schema == "aos.ability.package/v1"
+                and .required_features == ["abilities-v1"]
+                and .activation_mode == "structured-effects"
+                and .ownership == [[]]
+                and .package.name == "nginx"
+                and .package.payload.store_path == $payload
+                and ([.exports[].name] == ["nginx", "nginx-validation"])
+                and ([.implementation.providers[].interface.name]
+                  == ["aos.nginx", "aos.nginx-validation"])
+                and ([.implementation.providers[]
+                      | select(.interface.name == "aos.nginx")
+                      | .requirements[].alias]
+                  == ["configuration", "credential", "service", "service-terminal", "validation-terminal"])
+                and ([.implementation.providers[]
+                      | select(.interface.name == "aos.nginx-validation")
+                      | .artifact]
+                  == [$document.package.payload])
+                and .implementation.handlers."nginx-terminal".artifact
+                  == $document.package.payload
+                and .implementation.handlers."nginx-terminal".entry_point == "bin/nginx"
+                and .module_entry_points.compose == .module_entry_points.transition
+                and .module_entry_points.compose != $document.package.payload
+            ' ${self.abilities}/package.json >/dev/null
+
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          '';
+      }
+      // lib.optionalAttrs (
+        pkgs.stdenv.hostPlatform.isLinux
+        && builtins.elem pkgs.stdenv.hostPlatform.constraints.cpu ["aarch64" "x86_64"]
+      ) {
+        openssl-consumption = import ../../lib/build/artifact-consumption-audit.nix {
+          inherit pkgs lib;
+          name = "nginx-openssl-linkage";
+          consumer = self;
+          consumerPath = "/bin/nginx";
+          provider = openssl;
+          providerPath = "/lib/libssl.so.4";
+          targetPlatform = {
+            system = pkgs.stdenv.hostPlatform.constraints.os;
+            architecture = pkgs.stdenv.hostPlatform.constraints.cpu;
+          };
+          soname = "libssl.so.4";
+          needed = [
+            "libc.so.6"
+            "libcrypto.so.4"
+            "libpcre2-8.so.0"
+            "libssl.so.4"
+            "libz.so.1"
+          ];
+          searchPath = [
+            "${pkgs.stdenv.glibc}/lib"
+            "${openssl}/lib"
+            "${pcre2}/lib"
+            "${zlib}/lib"
+          ];
+          searchPathKind = "runpath";
+          symbols = [
+            {
+              name = "SSL_read";
+              version = "OPENSSL_4.0.0";
+            }
+          ];
+          loader = "${pkgs.stdenv.glibc}/lib/${pkgs.stdenv.hostPlatform.dynamicLinker}";
+          inspector = pkgs.buildPackages.aos;
+        };
       };
-    };
   }

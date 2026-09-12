@@ -69,7 +69,10 @@ in {
     preparedExports =
       builtins.mapAttrs (name: value: let
         entry = requireAttrs packageName "abilityPackage.exports.${name}" ["artifact" "export" "requiredFeatures"] value;
-        artifact = entry.artifact or (fail packageName "export '${name}' must set artifact");
+        # An export implemented by the package executable naturally uses the
+        # payload itself. Defaulting here avoids a circular authoring reference
+        # from the payload derivation to its separately built companion.
+        artifact = entry.artifact or payload;
         authored = entry.export or (fail packageName "export '${name}' must set export");
         interfaceDocument = abilities.interfaceDocument (entry.requiredFeatures or []) authored;
         pinned = abilities.pinInterface {
@@ -90,7 +93,7 @@ in {
       builtins.mapAttrs (name: value: let
         entry = requireAttrs packageName "abilityPackage.handlers.${name}" ["arguments" "artifact" "entryPoint" "result"] value;
       in {
-        artifact = entry.artifact or (fail packageName "handler '${name}' must set artifact");
+        artifact = entry.artifact or payload;
         entry_point = entry.entryPoint or (fail packageName "handler '${name}' must set entryPoint");
         arguments = abilities.schemas.validateSchema "ability handler '${name}' arguments" entry.arguments;
         result = abilities.schemas.validateSchema "ability handler '${name}' result" entry.result;

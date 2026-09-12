@@ -1,4 +1,4 @@
-##! Pure nginx aggregate provider for the checked source-composition fixture.
+##! Pure aggregate provider for the authenticated production nginx contract.
 let
   interface = name: descriptor: {
     inherit name descriptor;
