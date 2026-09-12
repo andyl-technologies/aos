@@ -157,6 +157,15 @@ fn signal_fault_search_decisions_round_trip_with_parent_identity() {
     let mut unknown_semantics = decisions[0].clone();
     unknown_semantics.choice.name = String::from("candidate/0/unknown/value");
     assert!(SearchOverride::from_override_decision(&unknown_semantics).is_none());
+    for alias in ["00", "+0"] {
+        let mut noncanonical_index = decisions[0].clone();
+        noncanonical_index.choice.name = noncanonical_index.choice.name.replacen(
+            "candidate/0/",
+            &format!("candidate/{alias}/"),
+            1,
+        );
+        assert!(SearchOverride::from_override_decision(&noncanonical_index).is_none());
+    }
     assert!(
         decisions
             .into_iter()

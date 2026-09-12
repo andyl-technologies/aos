@@ -86,6 +86,7 @@ impl BindingSearchCandidateSemantics {
 
 /// Exact typed meaning of one selected RFC-0014 finite-search candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum BindingSearchCandidate {
     /// Whether the typed effect applies.
     Outcome(bool),
@@ -215,7 +216,7 @@ impl SearchOverride {
         let encoded_candidate = decision.choice.name.strip_prefix("candidate/")?;
         let (candidate_index, typed_semantics) = encoded_candidate.split_once('/')?;
         let candidate = parse_typed_search_candidate(typed_semantics)?;
-        let candidate_index = candidate_index.parse().ok()?;
+        let candidate_index = parse_canonical_candidate_index(candidate_index)?;
         Some((
             SearchChoiceId::from_content_hash(parse_search_content_hash(choice_id)?),
             Self {
@@ -248,6 +249,12 @@ fn parse_typed_search_candidate(candidate: &str) -> Option<BindingSearchCandidat
     }
 }
 
+/// Parses one canonical unsigned decimal candidate index.
+pub(crate) fn parse_canonical_candidate_index(encoded: &str) -> Option<u32> {
+    let value = encoded.parse::<u32>().ok()?;
+    (value.to_string() == encoded).then_some(value)
+}
+
 pub(super) fn parse_search_content_hash(encoded: &str) -> Option<ContentHash> {
     if encoded.len() != 64
         || !encoded
@@ -261,4 +268,28 @@ pub(super) fn parse_search_content_hash(encoded: &str) -> Option<ContentHash> {
         bytes[index] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(ContentHash { bytes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_candidate_rejects_unknown_fields() {
+        let candidate = BindingSearchCandidate::Parameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            identity: ContentHash::from_bytes(b"typed-candidate"),
+        };
+        let mut encoded = serde_json::to_value(candidate)
+            .unwrap_or_else(|error| panic!("candidate should encode: {error}"));
+        let Some(fields) = encoded
+            .get_mut("Parameter")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            panic!("parameter candidate must use the tagged object shape");
+        };
+        fields.insert(String::from("unknown"), serde_json::Value::Bool(true));
+
+        assert!(serde_json::from_value::<BindingSearchCandidate>(encoded).is_err());
+    }
 }
