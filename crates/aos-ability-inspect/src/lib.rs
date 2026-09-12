@@ -4,9 +4,10 @@
 //! effect plan without evaluating Nix or acquiring live resources. [`view`]
 //! projects that checked plan into stable heterogeneous nodes and typed edges.
 //! [`query`] performs bounded graph traversal, [`compare`] computes stable
-//! structural changes, [`projection`] selects one semantic edge family, and
-//! [`render()`] presents a view, projection, or slice as text, canonical JSON,
-//! DOT, or Mermaid.
+//! structural changes, [`workflow`] classifies semantic changes and previews
+//! removal, [`projection`] selects one semantic edge family, and [`render()`]
+//! presents a view, projection, or slice as text, canonical JSON, DOT, or
+//! Mermaid.
 //!
 //! This crate deliberately has no dependency on the native runtime, filesystem,
 //! CLI parsing, registry transport, or privileged provider adapters. Native
@@ -26,6 +27,7 @@ pub mod query;
 pub mod reference;
 pub mod render;
 pub mod view;
+pub mod workflow;
 
 pub use artifact_consumption::{
     ARTIFACT_CONSUMPTION_EVIDENCE_MAX_BYTES, ArtifactConsumptionEvidenceError,
@@ -81,6 +83,10 @@ pub use render::{
 pub use view::{
     INSPECTION_VIEW_MAX_BYTES, INSPECTION_VIEW_MAX_ITEMS, INSPECTION_VIEW_SCHEMA, InspectionEdge,
     InspectionNode, InspectionRelation, InspectionView, InspectionViewError, NodeKey, ViewAnchor,
+};
+pub use workflow::{
+    REMOVAL_PREVIEW_SCHEMA, RemovalDisposition, RemovalImpact, RemovalPreview, RemovalPreviewError,
+    SEMANTIC_COMPARISON_SCHEMA, SemanticChangeKind, SemanticComparison, SemanticComparisonError,
 };
 
 #[cfg(test)]

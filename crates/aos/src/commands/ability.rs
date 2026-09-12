@@ -11,11 +11,12 @@ use aos_ability_inspect::{
     ArtifactConsumptionQuery, CheckedArtifactConsumptionEvidence, DiagnosticBundle,
     DiagnosticBundleAudience, ExecutionTimeline, GraphQuery, INSPECTION_BUNDLE_MAX_BYTES,
     INSPECTION_BUNDLE_SCHEMA, INSPECTION_QUERY_MAX_BYTES, InspectionBundle, InspectionView,
-    OPERATOR_OBSERVATION_MAX_BYTES, OPERATOR_QUERY_MAX_BYTES, OperatorObservation, OperatorQuery,
-    OperatorView, PendingStateAvailability, ProjectionKind, REFERENCE_INSPECTION_INPUT_SCHEMA,
-    ReferenceInspectionAnchor, ReferenceInspectionInput, ReferenceInspectionView, RenderFormat,
-    TimelineEventInput, TimelineEventKind, TimelineProvenance, TimelineTiming, ViewAnchor, render,
-    render_projection, render_reference, render_reference_slice, render_slice,
+    NodeKey, OPERATOR_OBSERVATION_MAX_BYTES, OPERATOR_QUERY_MAX_BYTES, OperatorObservation,
+    OperatorQuery, OperatorView, PendingStateAvailability, ProjectionKind,
+    REFERENCE_INSPECTION_INPUT_SCHEMA, ReferenceInspectionAnchor, ReferenceInspectionInput,
+    ReferenceInspectionView, RemovalPreview, RenderFormat, SemanticComparison, TimelineEventInput,
+    TimelineEventKind, TimelineProvenance, TimelineTiming, ViewAnchor, render, render_projection,
+    render_reference, render_reference_slice, render_slice,
 };
 use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
 use aos_ability_runtime::execution::{
@@ -28,9 +29,9 @@ use aos_core::output::{OutputMode, Printer};
 use aos_package::config_eval::ability_store::RetainedAbilityDiagnosticSource;
 
 use crate::cli::{
-    AbilityArtifactConsumptionArgs, AbilityCommand, AbilityDiagnosticArgs,
+    AbilityArtifactConsumptionArgs, AbilityCommand, AbilityCompareArgs, AbilityDiagnosticArgs,
     AbilityDiagnosticAudience, AbilityInspectArgs, AbilityOperatorArgs, AbilityProjection,
-    AbilityRenderFormat, ArtifactConsumptionRenderFormat,
+    AbilityRemovalPreviewArgs, AbilityRenderFormat, ArtifactConsumptionRenderFormat,
 };
 
 mod browser;
@@ -48,7 +49,71 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
         AbilityCommand::ArtifactConsumption(args) => artifact_consumption(args, printer),
         AbilityCommand::Diagnostic(args) => diagnostic(args, printer),
         AbilityCommand::Operator(args) => operator(args, printer).await,
+        AbilityCommand::Compare(args) => compare(args, printer),
+        AbilityCommand::RemovalPreview(args) => removal_preview(args, printer),
     }
+}
+
+fn compare(args: &AbilityCompareArgs, printer: &Printer) -> Result<()> {
+    let before = checked_view(&args.before, args.before_digest.as_deref())?;
+    let after = checked_view(&args.after, args.after_digest.as_deref())?;
+    let observation = args
+        .observation
+        .as_deref()
+        .map(read_operator_observation)
+        .transpose()?;
+    let comparison = SemanticComparison::between(&before, &after, observation.as_ref())?;
+    let bytes = comparison.canonical_bytes()?;
+    printer.raw(std::str::from_utf8(&bytes).context("semantic comparison JSON is not UTF-8")?);
+    Ok(())
+}
+
+fn removal_preview(args: &AbilityRemovalPreviewArgs, printer: &Printer) -> Result<()> {
+    let view = checked_view(&args.bundle, args.expected_digest.as_deref())?;
+    let target_bytes = read_bounded_file(
+        &args.target,
+        u64::try_from(OPERATOR_QUERY_MAX_BYTES)
+            .context("removal target byte limit does not fit this platform")?,
+        "removal target",
+    )?;
+    let target: NodeKey =
+        serde_json::from_slice(&target_bytes).context("decoding typed removal target")?;
+    let canonical_target = aos_contract::canonical::to_vec(&target)?;
+    if canonical_target != target_bytes {
+        bail!("removal target is not canonically encoded");
+    }
+    let preview = RemovalPreview::from_view(&view, target, args.max_depth, args.max_nodes)?;
+    let bytes = preview.canonical_bytes()?;
+    printer.raw(std::str::from_utf8(&bytes).context("removal preview JSON is not UTF-8")?);
+    Ok(())
+}
+
+fn checked_view(path: &std::path::Path, expected_digest: Option<&str>) -> Result<InspectionView> {
+    let bundle_bytes = read_bounded_file(
+        path,
+        u64::try_from(INSPECTION_BUNDLE_MAX_BYTES)
+            .context("inspection bundle byte limit does not fit this platform")?,
+        "inspection bundle",
+    )?;
+    let expected_digest = expected_digest
+        .map(Sha256Digest::parse)
+        .transpose()
+        .context("parsing expected inspection-bundle digest")?;
+    let checked = InspectionBundle::decode(&bundle_bytes)
+        .context("decoding canonical ability inspection bundle")?
+        .check(expected_digest)
+        .context("checking ability inspection bundle semantics")?;
+    InspectionView::from_bundle(&checked).context("projecting checked ability inspection view")
+}
+
+fn read_operator_observation(path: &std::path::Path) -> Result<OperatorObservation> {
+    let bytes = read_bounded_file(
+        path,
+        u64::try_from(OPERATOR_OBSERVATION_MAX_BYTES)
+            .context("operator observation byte limit does not fit this platform")?,
+        "operator observation",
+    )?;
+    OperatorObservation::decode(&bytes).context("decoding canonical operator observation")
 }
 
 async fn operator(args: &AbilityOperatorArgs, printer: &Printer) -> Result<()> {

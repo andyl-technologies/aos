@@ -291,6 +291,116 @@ pub(super) fn activate_config(
     Ok(generation)
 }
 
+/// Authenticates and preflights a retained structured manifest without effects.
+///
+/// This probe reopens current operator policy, verifies desired and current
+/// package artifacts, specializes the complete transition, validates every
+/// native route, and opens the scoped host manager capability. It does not
+/// publish a generation, journal event, observation, or resource mutation.
+///
+/// # Errors
+///
+/// Returns an error when retained inputs, current authority, packages, binding
+/// policy, native routes, or the host provider capability cannot be verified.
+pub(crate) fn preflight_retained_manifest(
+    params: &ActivateConfigParams,
+    desired_manifest: &ConfigManifest,
+) -> std::result::Result<(), RetainedNativePreflightError> {
+    let config = ApmConfig::load(ProfileScope::System)
+        .context("loading system registry trust for retained activation")
+        .map_err(RetainedNativePreflightError::CurrentAuthority)?;
+    let operator_authority = OperatorPolicyAuthorityStore::open()
+        .context("opening current operator policy authority")
+        .map_err(RetainedNativePreflightError::CurrentAuthority)?;
+    let desired_inputs =
+        VerifiedAbilityActivationInputs::load(desired_manifest, &operator_authority)
+            .context("authenticating retained desired ability inputs")
+            .map_err(RetainedNativePreflightError::CurrentAuthority)?;
+    let current_manifest =
+        crate::sysroot::authenticated_current_generation_manifest(&params.profile)
+            .map_err(RetainedNativePreflightError::Artifact)?
+            .map(|path| super::activation::load_config_manifest(&path))
+            .transpose()
+            .context("loading the authenticated current ability manifest")
+            .map_err(RetainedNativePreflightError::Artifact)?;
+    let current_inputs = current_manifest
+        .as_ref()
+        .filter(|manifest| manifest.inputs.ability_activation.is_some())
+        .map(|manifest| VerifiedAbilityActivationInputs::load(manifest, &operator_authority))
+        .transpose()
+        .context("authenticating current ability inputs")
+        .map_err(RetainedNativePreflightError::CurrentAuthority)?;
+    let manifests = current_manifest.as_ref().map_or_else(
+        || vec![desired_manifest],
+        |current| vec![desired_manifest, current],
+    );
+    let packages = verify_generation_packages(&config, &manifests)
+        .context("reverifying retained and current native packages")
+        .map_err(RetainedNativePreflightError::Artifact)?;
+    let mut evaluator = production_evaluator().map_err(RetainedNativePreflightError::Provider)?;
+    let activation = specialize_activation(
+        &desired_inputs,
+        current_inputs.as_ref(),
+        &packages,
+        &mut evaluator,
+    )
+    .context("specializing retained native transition")
+    .map_err(RetainedNativePreflightError::CurrentAuthority)?;
+    NativeDispatcher::preflight(&activation, &packages)
+        .context("preflighting retained native routes")
+        .map_err(RetainedNativePreflightError::Provider)?;
+    let resolution_policy = resolution_policy(&desired_inputs, &activation)
+        .map_err(RetainedNativePreflightError::CurrentAuthority)?;
+    validate_independent_binding_authority(
+        activation.plan(),
+        &resolution_policy,
+        desired_inputs.policy_set().platform_policy.as_ref(),
+        desired_inputs.policy_set().transition_authority.as_ref(),
+    )
+    .context("checking current authority for retained native bindings")
+    .map_err(RetainedNativePreflightError::CurrentAuthority)?;
+
+    let systemd = systemd_connection()
+        .context("opening the live host provider capability")
+        .map_err(RetainedNativePreflightError::Provider)?;
+    NativeDispatcher::new(&activation, &packages, systemd)
+        .context("binding retained activation to the live host provider")
+        .map_err(RetainedNativePreflightError::Provider)?;
+    Ok(())
+}
+
+/// Classifies a retained native preflight failure by failed trust boundary.
+#[derive(Debug)]
+pub(crate) enum RetainedNativePreflightError {
+    /// Current registry or operator authority rejected the retained input.
+    CurrentAuthority(anyhow::Error),
+    /// A retained package, manifest, or implementation artifact failed authentication.
+    Artifact(anyhow::Error),
+    /// The exact provider route or scoped live manager could not be acquired.
+    Provider(anyhow::Error),
+}
+
+impl std::fmt::Display for RetainedNativePreflightError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CurrentAuthority(error) => write!(
+                formatter,
+                "current activation authority rejected the retained target: {error:#}"
+            ),
+            Self::Artifact(error) => write!(
+                formatter,
+                "retained activation artifact is unavailable: {error:#}"
+            ),
+            Self::Provider(error) => write!(
+                formatter,
+                "retained activation provider is unavailable: {error:#}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RetainedNativePreflightError {}
+
 fn commit_configuration(
     params: &ActivateConfigParams,
     manifest: &ConfigManifest,

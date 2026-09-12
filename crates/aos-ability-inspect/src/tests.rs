@@ -20,8 +20,10 @@ use crate::{
     DiagnosticBundle, DiagnosticBundleAudience, Direction, ExecutionTimeline, GraphQuery,
     INSPECTION_QUERY_MAX_DEPTH, INSPECTION_QUERY_MAX_NODES, InspectionBundle,
     InspectionBundleError, InspectionDiff, InspectionEdge, InspectionNode, InspectionRelation,
-    InspectionView, NodeKey, PendingStateAvailability, ProjectionKind, RenderFormat,
-    TimelineProvenance, ViewAnchor, render, render_projection, render_slice,
+    InspectionView, NodeKey, OperatorObservation, PendingStateAvailability, ProjectionKind,
+    RemovalDisposition, RemovalPreview, RenderFormat, SemanticChangeKind, SemanticComparison,
+    SemanticComparisonError, TimelineProvenance, ViewAnchor, render, render_projection,
+    render_slice,
 };
 
 #[test]
@@ -700,6 +702,80 @@ fn operation_input_change_is_visible_under_redaction() -> Result<(), Box<dyn std
 
     let json = render(&after_view, RenderFormat::Json)?;
     assert_eq!(json.into_bytes(), after_view.canonical_bytes()?);
+    Ok(())
+}
+
+#[test]
+fn semantic_comparison_classifies_redacted_operation_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let before = InspectionView::from_checked(&checked_effect_plan())?;
+    let mut fixture = plan_fixture();
+    fixture.effect_plan.operations[0].inputs = ValueExpression::Literal {
+        value: AbilityValue::new(serde_json::Value::Bool(false))?,
+    };
+    let after = InspectionView::from_checked(&fixture.validate()?)?;
+
+    let comparison = SemanticComparison::between(&before, &after, None)?;
+
+    assert!(comparison.is_runtime_affecting());
+    assert!(
+        comparison
+            .classifications()
+            .contains(&SemanticChangeKind::TransitionStrategy)
+    );
+    assert!(comparison.canonical_bytes()?.len() < crate::INSPECTION_VIEW_MAX_BYTES);
+    Ok(())
+}
+
+#[test]
+fn semantic_comparison_rejects_a_foreign_observation() -> Result<(), Box<dyn std::error::Error>> {
+    let view = InspectionView::from_checked(&checked_effect_plan())?;
+    let observation = OperatorObservation::new(
+        aos_ability_model::PlanId(Sha256Digest::of_bytes("another plan")),
+        Sha256Digest::of_bytes("authenticated observation"),
+        1_725_900_000_000,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
+
+    assert_eq!(
+        SemanticComparison::between(&view, &view, Some(&observation)),
+        Err(SemanticComparisonError::ObservationPlanMismatch)
+    );
+    Ok(())
+}
+
+#[test]
+fn removal_preview_finds_binding_and_consumer_blockers() -> Result<(), Box<dyn std::error::Error>> {
+    let plan = checked_effect_plan();
+    let provider = plan.binding_plan().bindings()[0].provider.clone();
+    let view = InspectionView::from_checked(&plan)?;
+
+    let preview = RemovalPreview::from_view(&view, NodeKey::Provider(provider), 8, 64)?;
+
+    assert!(preview.is_blocked());
+    assert!(preview.impacts().iter().any(|impact| {
+        impact.relation == InspectionRelation::SelectsProvider
+            && impact.disposition == RemovalDisposition::BlocksRemoval
+    }));
+    assert!(preview.impacts().iter().any(|impact| {
+        matches!(impact.node, NodeKey::Request(_))
+            && impact.disposition == RemovalDisposition::BlocksRemoval
+    }));
+    Ok(())
+}
+
+#[test]
+fn truncated_removal_preview_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let plan = checked_effect_plan();
+    let provider = plan.binding_plan().bindings()[0].provider.clone();
+    let view = InspectionView::from_checked(&plan)?;
+
+    let preview = RemovalPreview::from_view(&view, NodeKey::Provider(provider), 1, 1)?;
+
+    assert!(preview.is_blocked());
+    assert!(preview.impacts().is_empty());
     Ok(())
 }
 

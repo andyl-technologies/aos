@@ -12,7 +12,7 @@ nix develop
 aos ability --help
 ```
 
-The current command surface has four operations:
+The current command surface has six operations:
 
 | Command | Input | Result |
 | --- | --- | --- |
@@ -20,6 +20,8 @@ The current command surface has four operations:
 | `operator` | Inspection bundle and single-focus query; optional observation | Desired and observed operator view as JSON or a loopback browser |
 | `diagnostic` | Retained system generation and transaction | Redacted or deployment-detail execution timeline |
 | `artifact-consumption` | Realized build-gate evidence | Exact consumer/provider relationship and retention explanation |
+| `compare` | Two checked-plan bundles; optional later-plan observation | Runtime-affecting semantic classifications plus the complete structural diff |
+| `removal-preview` | Checked-plan bundle and one canonical typed node identity | Bounded reverse-use blockers, required transitions, and retention-only relationships |
 
 ## Know what each input establishes
 
@@ -151,6 +153,44 @@ The command prints the selected URL and listens on loopback only. Use
 The server keeps the checked source in memory and performs no deployment
 authentication, network discovery, or mutation.
 
+## Compare plans and preview removal
+
+Compare two independently obtained checked bundles before applying a desired
+change:
+
+```sh
+aos --json ability compare before.json after.json \
+  --before-digest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --after-digest sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+```
+
+The version-1 comparison classifies visible provider ABI, credential-bearing
+operation, enforcement guarantee, aggregate contribution, artifact, transition
+strategy, and observed-generation changes. A changed redacted commitment that
+cannot be narrowed remains `other-runtime`; it is never called documentation
+only. Equal checked plan identities have no runtime-affecting difference, so a
+prose-only package documentation rebuild does not request activation.
+
+Use `--observation FILE` only with an overlay collected for the later plan. A
+foreign plan is rejected; a diverged or missing generation observation is
+classified as `observed-generation`, while failed, stale, or unverified nodes
+are `observed-state`. The portable command validates linkage and shape; the
+collector remains responsible for authenticating provenance and freshness.
+
+Preview an exact node removal with a canonical JSON-encoded `NodeKey`:
+
+```sh
+aos --json ability removal-preview inspection-bundle.json \
+  --target provider-node.json --max-depth 8 --max-nodes 256
+```
+
+The result separates consumer blockers, controller transitions, and
+retention-only relationships. Provider-owned aggregates and resources join the
+removal closure before reverse traversal. Reaching either bound sets
+`truncated: true` and `blocked: true`; incomplete evidence never authorizes
+removal. The preview does not apply the removal or claim that a retained edge
+identifies a currently running process.
+
 ## Export a retained transaction diagnostic
 
 Each native activation transaction is retained below its system generation.
@@ -223,5 +263,6 @@ The current CLI reads version-1 canonical schemas and rejects unknown required
 features. It supports offline plan validation and rendering, one-focus bounded
 operator views, retained system-generation timelines, and realized
 artifact-consumption reports. Remote Hub lookup, signed-release verification,
-live controller attachment, plan comparison, activation, effect replay, and
-state mutation are outside this command group.
+live controller attachment, activation, effect replay, and state mutation are
+outside this command group. Live retained-generation activatability is checked
+by the privileged `apm rollback --system --list` and `--dry-run` paths instead.

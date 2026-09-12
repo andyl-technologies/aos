@@ -53,6 +53,33 @@ pub(super) fn preflight_image_selection(
         qualified_rollout,
         Path::new("/"),
         &authenticated_running,
+        true,
+    )
+}
+
+/// Verifies an image selection against live authenticated state without mutation.
+///
+/// # Errors
+///
+/// Returns an error for an unauthenticated running image, incompatible state
+/// format or executor transition, unsettled retained configuration, or invalid
+/// candidate metadata.
+pub(super) fn probe_image_selection(
+    image_profile: &Path,
+    system_profile: &Path,
+    candidate_toplevel: &Path,
+    qualified_rollout: bool,
+) -> Result<()> {
+    let authenticated_running = running_image_generation()
+        .context("authenticating the actual running image before selection")?;
+    preflight_image_selection_beneath(
+        image_profile,
+        system_profile,
+        candidate_toplevel,
+        qualified_rollout,
+        Path::new("/"),
+        &authenticated_running,
+        false,
     )
 }
 
@@ -63,6 +90,7 @@ fn preflight_image_selection_beneath(
     qualified_rollout: bool,
     immutable_root: &Path,
     authenticated_running: &ImageGeneration,
+    publish_legacy_migration: bool,
 ) -> Result<()> {
     let mut images = load_image_generation_state_pub(image_profile)?;
     let running = images
@@ -138,7 +166,7 @@ fn preflight_image_selection_beneath(
 
     ensure_executor_replacement_is_settled(retained_config_generation_paths(system_profile)?)?;
 
-    if let Some(state_version) = legacy_state_version {
+    if publish_legacy_migration && let Some(state_version) = legacy_state_version {
         migrate_legacy_running_state_version(
             image_profile,
             &mut images,
@@ -617,6 +645,20 @@ mod tests {
             self.preflight_with_authenticated(qualified_rollout, authenticated_running)
         }
 
+        fn probe(&self, qualified_rollout: bool) -> Result<()> {
+            let state = self.image_state();
+            let authenticated_running = state.running_generation().unwrap();
+            preflight_image_selection_beneath(
+                &self.image_profile,
+                &self.system_profile,
+                &self.candidate_toplevel,
+                qualified_rollout,
+                &self.immutable_root,
+                authenticated_running,
+                false,
+            )
+        }
+
         fn preflight_with_authenticated(
             &self,
             qualified_rollout: bool,
@@ -629,6 +671,7 @@ mod tests {
                 qualified_rollout,
                 &self.immutable_root,
                 authenticated_running,
+                true,
             )
         }
 
@@ -687,6 +730,23 @@ mod tests {
             std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap(),
             durable
         );
+    }
+
+    #[test]
+    fn activatability_probe_authenticates_legacy_state_without_migration() {
+        let fixture = LegacyPreflightFixture::new();
+        let before = std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap();
+
+        fixture
+            .probe(true)
+            .expect("a compatible legacy image should be currently selectable");
+
+        assert_eq!(
+            std::fs::read(fixture.image_profile.join(IMAGE_STATE_FILE)).unwrap(),
+            before,
+            "the read-only probe must not publish legacy migration state"
+        );
+        assert_eq!(fixture.image_state().generations[0].state_version, None);
     }
 
     #[test]

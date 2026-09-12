@@ -187,6 +187,11 @@ apm rollback --system --list
 apm rollback --system --generation N --dry-run
 ```
 
+Both `--list` and `--dry-run` authenticate retained manifests, current policy,
+provider routes, credential references, artifacts, and the running module ABI.
+The JSON form emits `aos.retained-activatability/v1` reports with stable reason
+codes. A blocked dry run exits without activating or repairing state.
+
 Apply it:
 
 ```sh
@@ -209,6 +214,12 @@ List and preview the image axis separately:
 apm rollback --system --image --list
 apm rollback --system --image --generation N --dry-run
 ```
+
+Image reports additionally authenticate the installed UKI, immutable running
+identity, state-format and native-executor boundary, and unfinished rollout
+ownership. The read-only probe does not perform the one-time legacy image-state
+migration; an accepted real rollback performs that migration later while it
+still holds the switch lock.
 
 Select the older image as the durable next boot, optionally rebooting in the
 same operation:
