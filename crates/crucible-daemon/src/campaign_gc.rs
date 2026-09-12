@@ -4,9 +4,10 @@
 //! physical-candidate manifests, the non-destructive single-host planner that
 //! binds them to every administrative generation, the durable external apply
 //! journal, and exact-generation physical-leaf logical deletion under
-//! publication/root fences. Version 2 adds graph-derived read-through cache
-//! eviction backed by an independently authenticated required placement;
-//! broader transform administration remains a higher-level owner responsibility.
+//! publication/root fences. Version 2 adds graph-derived read-through,
+//! non-write-tier, and completed write-back staging eviction backed by an
+//! independently authenticated required placement. Pending write-back journal
+//! ownership suppresses cache eviction through planning and apply.
 //!
 //! The v1 body is:
 //!
@@ -32,14 +33,13 @@ mod manifest;
 mod planner;
 mod roots;
 
+#[cfg(test)]
+pub(crate) use apply::apply_single_host_campaign_gc;
 #[cfg(target_os = "linux")]
-pub use apply::apply_single_host_campaign_gc_with_hot_checkpoints;
+pub(crate) use apply::apply_single_host_campaign_gc_with_hot_checkpoints;
 #[cfg(test)]
 use apply::apply_single_host_campaign_gc_with_physical;
-pub use apply::{
-    CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,
-    apply_single_host_campaign_gc, apply_single_host_campaign_gc_with_transfers,
-};
+pub use apply::{CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus};
 pub use journal::{
     CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
     CampaignGcJournalTransition, DirectoryCampaignGcJournal,
@@ -49,16 +49,16 @@ pub use manifest::{
     CampaignGcCandidateReason, CampaignGcManifestError, CampaignGcRootManifest,
     MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
 };
+pub(crate) use planner::CampaignGcPhysicalStore;
+#[cfg(test)]
+pub(crate) use planner::plan_single_host_campaign_gc;
 #[cfg(target_os = "linux")]
-pub use planner::plan_single_host_campaign_gc_with_hot_checkpoints;
+pub(crate) use planner::plan_single_host_campaign_gc_with_hot_checkpoints;
 #[cfg(test)]
 use planner::plan_single_host_campaign_gc_with_physical;
 #[cfg(all(test, target_os = "linux"))]
 use planner::plan_single_host_campaign_gc_with_physical_and_hot_checkpoints;
-pub use planner::{
-    CampaignGcPhysicalStore, CampaignGcPlanningError, CampaignGcPreparedPlan,
-    plan_single_host_campaign_gc, plan_single_host_campaign_gc_with_transfers,
-};
+pub use planner::{CampaignGcPlanningError, CampaignGcPreparedPlan};
 
 use crucible_campaign::CampaignHash;
 #[cfg(test)]
@@ -103,7 +103,7 @@ pub const MAX_CAMPAIGN_GC_BACKEND_ID_BYTES: usize = 64;
 /// Exact-pin selection remains optional only for stores with no current exact
 /// semantic pins.
 #[cfg(target_os = "linux")]
-pub struct CampaignGcHotCheckpointRoots<'a> {
+pub(crate) struct CampaignGcHotCheckpointRoots<'a> {
     sources: CampaignGcRetentionSources<'a>,
 }
 
@@ -111,7 +111,8 @@ pub struct CampaignGcHotCheckpointRoots<'a> {
 impl<'a> CampaignGcHotCheckpointRoots<'a> {
     /// Binds one mandatory hot-checkpoint catalog without exact-pin selections.
     #[must_use]
-    pub const fn new(hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin) -> Self {
+    #[cfg(test)]
+    pub(crate) const fn new(hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin) -> Self {
         Self {
             sources: CampaignGcRetentionSources::with_hot_checkpoints(None, hot_fallbacks, None),
         }
@@ -119,7 +120,7 @@ impl<'a> CampaignGcHotCheckpointRoots<'a> {
 
     /// Binds hot-checkpoint fallbacks and incomplete archive-transfer roots.
     #[must_use]
-    pub const fn with_transfers(
+    pub(crate) const fn with_transfers(
         hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
         transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
     ) -> Self {
@@ -132,24 +133,9 @@ impl<'a> CampaignGcHotCheckpointRoots<'a> {
         }
     }
 
-    /// Binds the mandatory hot-checkpoint catalog and exact-pin selections.
-    #[must_use]
-    pub const fn with_exact_pins(
-        exact_pins: &'a mut dyn ExactPinRetentionAdmin,
-        hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
-    ) -> Self {
-        Self {
-            sources: CampaignGcRetentionSources::with_hot_checkpoints(
-                Some(exact_pins),
-                hot_fallbacks,
-                None,
-            ),
-        }
-    }
-
     /// Binds exact pins, hot fallbacks, and incomplete archive transfers.
     #[must_use]
-    pub const fn with_exact_pins_and_transfers(
+    pub(crate) const fn with_exact_pins_and_transfers(
         exact_pins: &'a mut dyn ExactPinRetentionAdmin,
         hot_fallbacks: &'a dyn HotCheckpointFallbackRetentionAdmin,
         transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
@@ -176,6 +162,7 @@ pub(super) struct CampaignGcRetentionSources<'a> {
 }
 
 impl<'a> CampaignGcRetentionSources<'a> {
+    #[cfg(test)]
     pub(super) const fn without_hot_checkpoints(
         exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
     ) -> Self {
@@ -197,18 +184,6 @@ impl<'a> CampaignGcRetentionSources<'a> {
             exact_pins,
             transfers,
             hot_fallbacks: Some(hot_fallbacks),
-        }
-    }
-
-    pub(super) const fn with_transfers(
-        exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
-        transfers: &'a dyn crate::CampaignTransferRetentionAdmin,
-    ) -> Self {
-        Self {
-            exact_pins,
-            transfers: Some(transfers),
-            #[cfg(target_os = "linux")]
-            hot_fallbacks: None,
         }
     }
 }

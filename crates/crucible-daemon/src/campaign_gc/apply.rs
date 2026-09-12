@@ -97,7 +97,9 @@ impl CampaignGcApplyReport {
 /// identities fail closed before deletion.
 /// The construction-time `store_graph` capability supplies both the graph
 /// identity and every physical leaf; independently supplied graph hashes or
-/// deletion capabilities are not accepted by this public boundary.
+/// deletion capabilities are not accepted by this coupled engine boundary.
+/// `write_back` is mandatory; a graph without write-back nodes supplies an
+/// authenticated empty fence rather than bypassing operational-root revalidation.
 /// Omitting `exact_pins` is valid only when the complete authoritative campaign
 /// inventory contains no current exact pin. This catalog-free entry point is
 /// valid only when no managed hot-checkpoint pool exists; configured pools must
@@ -112,12 +114,13 @@ impl CampaignGcApplyReport {
 /// Returns [`CampaignGcApplyError`] before deletion if any exact basis changed,
 /// or after durable `Applying` if deletion or final journal persistence fails.
 /// An error after `Applying` requires a fresh plan and must not reuse this one.
-pub fn apply_single_host_campaign_gc<L>(
+#[cfg(test)]
+pub(crate) fn apply_single_host_campaign_gc<L>(
     journal: &mut DirectoryCampaignGcJournal,
     repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
-    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    write_back: &dyn WriteBackRetentionAdmin,
     exact_pins: Option<&mut dyn ExactPinRetentionAdmin>,
     store_graph: &StoreGraphAdmin,
 ) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
@@ -139,52 +142,6 @@ where
     )
 }
 
-/// Applies a GC plan while retaining every incomplete archive-transfer object.
-///
-/// The transfer inventory fence follows write-back in the fixed operational
-/// root lock order and remains held through candidate deletion.
-///
-/// # Errors
-///
-/// Returns [`CampaignGcApplyError`] under the same conditions as
-/// [`apply_single_host_campaign_gc`], and when transfer-root inventory is
-/// invalid or differs from the planned root set.
-// crucible-lint: allow rust-allow -- GC apply keeps each authenticated store, fence, and plan authority explicit.
-#[allow(clippy::too_many_arguments)]
-pub fn apply_single_host_campaign_gc_with_transfers<'a, L>(
-    journal: &mut DirectoryCampaignGcJournal,
-    repository: &CampaignRepository,
-    refs: &dyn RefStoreAdmin,
-    ledger: &mut L,
-    write_back: Option<&dyn WriteBackRetentionAdmin>,
-    transfers: &'a dyn CampaignTransferRetentionAdmin,
-    exact_pins: Option<&'a mut dyn ExactPinRetentionAdmin>,
-    store_graph: &StoreGraphAdmin,
-) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
-where
-    L: AssignmentRetentionAdmin,
-    L::Error: StdError + Send + Sync + 'static,
-{
-    let borrowed = store_graph.physical();
-    let physical = borrowed
-        .iter()
-        .copied()
-        .map(CampaignGcPhysicalStore::from_graph_leaf)
-        .collect::<Result<Vec<_>, _>>()?;
-    apply_single_host_campaign_gc_with_physical(
-        journal,
-        CampaignGcApplySources::new_with_retention_sources(
-            repository,
-            refs,
-            ledger,
-            write_back,
-            CampaignGcRetentionSources::with_transfers(exact_pins, transfers),
-        ),
-        crucible_campaign::CampaignHash::from_bytes(store_graph.configuration_id().as_bytes()),
-        &physical,
-    )
-}
-
 /// Applies a GC plan while retaining every durable hot-checkpoint fallback.
 ///
 /// This is the production single-host boundary when a hot-checkpoint manager
@@ -198,12 +155,12 @@ where
 /// [`apply_single_host_campaign_gc`], and additionally when the fallback
 /// catalog cannot provide a complete authenticated inventory.
 #[cfg(target_os = "linux")]
-pub fn apply_single_host_campaign_gc_with_hot_checkpoints<L>(
+pub(crate) fn apply_single_host_campaign_gc_with_hot_checkpoints<L>(
     journal: &mut DirectoryCampaignGcJournal,
     repository: &CampaignRepository,
     refs: &dyn RefStoreAdmin,
     ledger: &mut L,
-    write_back: Option<&dyn WriteBackRetentionAdmin>,
+    write_back: &dyn WriteBackRetentionAdmin,
     roots: CampaignGcHotCheckpointRoots<'_>,
     store_graph: &StoreGraphAdmin,
 ) -> Result<CampaignGcApplyReport, CampaignGcApplyError<L::Error>>
@@ -235,18 +192,19 @@ pub(crate) struct CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_bac
     repository: &'repository CampaignRepository,
     refs: &'refs dyn RefStoreAdmin,
     ledger: &'ledger mut L,
-    write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+    write_back: &'write_back dyn WriteBackRetentionAdmin,
     retention: CampaignGcRetentionSources<'retention>,
 }
 
 impl<'repository, 'refs, 'ledger, 'write_back, 'retention, L>
     CampaignGcApplySources<'repository, 'refs, 'ledger, 'write_back, 'retention, L>
 {
+    #[cfg(test)]
     pub(crate) const fn new(
         repository: &'repository CampaignRepository,
         refs: &'refs dyn RefStoreAdmin,
         ledger: &'ledger mut L,
-        write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+        write_back: &'write_back dyn WriteBackRetentionAdmin,
         exact_pins: Option<&'retention mut dyn ExactPinRetentionAdmin>,
     ) -> Self {
         Self {
@@ -263,7 +221,7 @@ impl<'repository, 'refs, 'ledger, 'write_back, 'retention, L>
         repository: &'repository CampaignRepository,
         refs: &'refs dyn RefStoreAdmin,
         ledger: &'ledger mut L,
-        write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+        write_back: &'write_back dyn WriteBackRetentionAdmin,
         exact_pins: Option<&'retention mut dyn ExactPinRetentionAdmin>,
         hot_fallbacks: Option<&'retention dyn HotCheckpointFallbackRetentionAdmin>,
     ) -> Self {
@@ -284,7 +242,7 @@ impl<'repository, 'refs, 'ledger, 'write_back, 'retention, L>
         repository: &'repository CampaignRepository,
         refs: &'refs dyn RefStoreAdmin,
         ledger: &'ledger mut L,
-        write_back: Option<&'write_back dyn WriteBackRetentionAdmin>,
+        write_back: &'write_back dyn WriteBackRetentionAdmin,
         retention: CampaignGcRetentionSources<'retention>,
     ) -> Self {
         Self {
@@ -352,8 +310,7 @@ where
         .transpose()
         .map_err(CampaignGcApplyError::HotFallback)?;
     let mut write_back_fence = write_back
-        .map(WriteBackRetentionAdmin::acquire_write_back_retention_fence)
-        .transpose()
+        .acquire_write_back_retention_fence()
         .map_err(CampaignGcApplyError::WriteBack)?;
     let mut transfer_fence = retention
         .transfers
@@ -422,15 +379,13 @@ where
             })
             .map_err(CampaignGcApplyError::HotFallback)?;
     }
-    if let Some(fence) = write_back_fence.as_mut() {
-        fence
-            .visit_roots(&mut |root| {
-                roots
-                    .insert_direct(root.id())
-                    .map_err(|()| StoreError::Quota)
-            })
-            .map_err(CampaignGcApplyError::WriteBack)?;
-    }
+    write_back_fence
+        .visit_roots(&mut |root| {
+            roots
+                .insert_pending_write_back(root.id())
+                .map_err(|()| StoreError::Quota)
+        })
+        .map_err(CampaignGcApplyError::WriteBack)?;
     if let Some(fence) = transfer_fence.as_mut() {
         fence
             .visit_roots(&mut |root| {
@@ -439,6 +394,17 @@ where
                     .map_err(|()| StoreError::Quota)
             })
             .map_err(CampaignGcApplyError::Transfer)?;
+    }
+    if let Some(candidate) = journal.candidates().iter().find(|candidate| {
+        matches!(
+            candidate.reason(),
+            CampaignGcCandidateReason::ReachableCache { .. }
+        ) && roots.pending_write_back.contains(&candidate.id())
+    }) {
+        return Err(CampaignGcApplyError::CandidateBecameWriteBackPending {
+            backend: candidate.backend().to_owned(),
+            id: candidate.id(),
+        });
     }
     let current_roots = CampaignGcRootManifest::new(roots.unique.iter().copied())?;
     if current_roots != *journal.roots() {
@@ -461,7 +427,6 @@ where
     }) {
         return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
     }
-
     for (target, planned) in physical.iter().zip(journal.plan().physical()) {
         let mut fence = target.admin().acquire_inventory_fence().map_err(|source| {
             CampaignGcApplyError::Blob {
@@ -977,6 +942,14 @@ where
     #[error("campaign GC candidate {id} became reachable after planning")]
     CandidateBecameReachable {
         /// Newly reachable planned candidate.
+        id: ContentId,
+    },
+    /// A reachable cache candidate became owned by a pending write-back record.
+    #[error("campaign GC cache candidate {id} on backend {backend} became write-back pending")]
+    CandidateBecameWriteBackPending {
+        /// Cache backend selected for deletion.
+        backend: String,
+        /// Reachable logical object owned by a pending write-back record.
         id: ContentId,
     },
     /// A v2 candidate no longer has its planned graph-derived retention roles.

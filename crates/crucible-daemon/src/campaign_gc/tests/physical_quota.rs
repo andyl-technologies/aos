@@ -116,7 +116,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        graph.as_ref(),
         None,
         &admin,
     )
@@ -136,7 +136,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        graph.as_ref(),
         None,
         &admin,
     )
@@ -158,7 +158,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        graph.as_ref(),
         None,
         &admin,
     )

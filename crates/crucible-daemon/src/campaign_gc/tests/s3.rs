@@ -564,7 +564,7 @@ fn observational_s3_gc_apply_deletes_orphan_and_preserves_write_back_staging() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        Some(graph.as_ref()),
+        graph.as_ref(),
         None,
         &admin,
     )
@@ -593,7 +593,7 @@ fn observational_s3_gc_apply_deletes_orphan_and_preserves_write_back_staging() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        Some(graph.as_ref()),
+        graph.as_ref(),
         None,
         &admin,
     )
@@ -670,7 +670,7 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        graph.as_ref(),
         None,
         &admin,
     )
@@ -704,7 +704,7 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        graph.as_ref(),
         None,
         &admin,
     )
@@ -747,7 +747,7 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
         &repository,
         refs.as_ref(),
         &mut ledger,
-        None,
+        graph.as_ref(),
         None,
         &admin,
     )
@@ -767,7 +767,7 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
             &repository,
             refs.as_ref(),
             &mut ledger,
-            None,
+            graph.as_ref(),
             None,
             &admin,
         ),

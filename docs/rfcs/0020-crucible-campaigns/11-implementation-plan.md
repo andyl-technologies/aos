@@ -1922,9 +1922,11 @@ when a unique, independent required placement authenticates to EOF between
 matching inventory generations. Apply recomputes reachability and graph roles,
 authenticates the required source again, acquires paired physical fences in
 identity order, and advances a rolling post-delete cache basis while retaining
-all root fences. Pending write-back roots and a missing destination therefore
-retain staging; focused tests prove staging becomes eligible only after transfer
-completion and remains readable from the authenticated destination after apply.
+all root fences. Pending write-back roots retain staging even when the
+destination is already present after a publication-before-completion crash;
+focused restart and apply revalidation tests prove staging becomes eligible only
+after durable journal completion and remains readable from the authenticated
+destination after apply.
 The v1 plan and candidate encodings remain byte-stable and unreachable-only;
 v2 journals require matching plan/manifest versions. Wrapped cache, tier,
 write-back staging, shared required-path, same-path alias, strict-codec, and
@@ -3722,10 +3724,17 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   materialization selection is now
   restart-safe, exact-configuration/fact-bound, and consumed by both planning
   and apply; stale records cease to root checkpoint closures after unpin.
-  Policy-aware v2 planning and apply now cover read-through caches, non-write
-  tiers, and completed write-back staging across unique, physically independent
-  cache/source identities with graph-derived roles, EOF-authenticated required
-  bytes, and paired exact-generation fences. The stopped-owner archive and
+  Policy-aware v2 planning and apply now cover read-through caches, promoted
+  non-write tiers, and completed write-back staging across unique, physically
+  independent cache/source identities with graph-derived roles,
+  EOF-authenticated required bytes, and paired exact-generation fences. A
+  restart regression preserves pending staging when destination publication
+  preceded a crash, and apply rejects newly pending candidates while holding
+  the journal fence. Raw composable GC entry points are crate-private; the
+  public stopped-owner authority supplies its coupled graph and journal owner.
+  A private build-instance token rejects independently built graph/admin pairs
+  even when their canonical configurations are identical.
+  The stopped-owner archive and
   store status/ensure/verify/GC/repack porcelain cover the bounded store-admin
   subset. Replay/debug, the final command-family aliases, and full operator
   flights remain open, so T-CAM-8.3 remains unchecked.

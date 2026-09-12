@@ -474,6 +474,7 @@ impl StoreWriteBackFlushSummary {
 /// available independently and is not itself a physical GC fence.
 pub struct StoreGraphAdmin {
     configuration: StoreGraphConfigurationId,
+    authority_identity: Arc<StoreGraphAuthorityIdentity>,
     physical: BTreeMap<StoreNodeId, StoreGraphPhysicalAuthority>,
     packed_repack: BTreeMap<StoreNodeId, StoreGraphPackedRepackAuthority>,
     s3_multipart_cleanup: BTreeMap<StoreNodeId, Arc<S3MultipartCleanupAdmin>>,
@@ -489,6 +490,8 @@ struct StoreGraphPackedRepackAuthority {
     backend: Arc<PackedBlobBackend>,
     physical_quota: Option<Arc<dyn StorePhysicalQuotaGuard>>,
 }
+
+struct StoreGraphAuthorityIdentity;
 
 /// Graph-derived retention role for one physical boundary and object kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -508,6 +511,15 @@ impl StoreGraphAdmin {
     #[must_use]
     pub const fn configuration_id(&self) -> StoreGraphConfigurationId {
         self.configuration
+    }
+
+    /// Returns whether this capability was created with the given graph instance.
+    ///
+    /// Canonical configuration identity alone cannot establish ownership because
+    /// independently built graphs may bind different memory or external capabilities.
+    #[must_use]
+    pub fn is_authority_for(&self, graph: &StoreGraph) -> bool {
+        Arc::ptr_eq(&self.authority_identity, &graph.authority_identity)
     }
 
     /// Returns physical administration boundaries in canonical node-ID order.
@@ -688,6 +700,7 @@ impl<'a> StoreGraphS3MultipartCleanupAdmin<'a> {
 /// Admitted immutable-store graph with one root service.
 pub struct StoreGraph {
     configuration: StoreGraphConfigurationId,
+    authority_identity: Arc<StoreGraphAuthorityIdentity>,
     root_id: StoreNodeId,
     admitted_kinds: BTreeSet<ObjectKind>,
     root: Arc<dyn ImmutableBlobBackend>,
@@ -1104,9 +1117,11 @@ impl StoreGraph {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
+        let authority_identity = Arc::new(StoreGraphAuthorityIdentity);
         Ok((
             Self {
                 configuration,
+                authority_identity: Arc::clone(&authority_identity),
                 root_id: config.root,
                 admitted_kinds: config.admitted_kinds,
                 root,
@@ -1120,6 +1135,7 @@ impl StoreGraph {
             },
             StoreGraphAdmin {
                 configuration,
+                authority_identity,
                 physical,
                 packed_repack: state.packed_repack,
                 s3_multipart_cleanup: state.s3_multipart_cleanup,

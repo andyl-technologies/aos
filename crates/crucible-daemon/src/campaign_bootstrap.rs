@@ -204,7 +204,7 @@ impl CampaignLocalRepositoryStore {
     ///
     /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
     /// graph is not durably conditional, the ref backend is not durable, or
-    /// the maintenance authority belongs to a different graph configuration.
+    /// the maintenance authority was not created with that exact graph instance.
     pub fn new_with_maintenance<R>(
         graph: Arc<StoreGraph>,
         refs: Arc<R>,
@@ -213,7 +213,7 @@ impl CampaignLocalRepositoryStore {
     where
         R: MutableRefBackend + RefStoreAdmin + 'static,
     {
-        if graph.configuration_id() != graph_maintenance.configuration_id() {
+        if !graph_maintenance.is_authority_for(graph.as_ref()) {
             return Err(CampaignLocalServiceError::InvalidRepositoryStore);
         }
         let maintenance_store = Arc::clone(&graph);
@@ -1013,7 +1013,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
             self.repository,
             self.maintenance.refs.as_ref(),
             ledger,
-            Some(self.maintenance.store.as_ref()),
+            self.maintenance.store.as_ref(),
             roots,
             &self.maintenance.graph,
         )
@@ -1057,7 +1057,7 @@ impl CampaignLocalStoreGcAuthority<'_> {
             self.repository,
             self.maintenance.refs.as_ref(),
             ledger,
-            Some(self.maintenance.store.as_ref()),
+            self.maintenance.store.as_ref(),
             roots,
             &self.maintenance.graph,
         )

@@ -1643,32 +1643,29 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
 #[test]
 fn external_store_rejects_foreign_graph_maintenance_authority() {
     let directory = tempdir().expect("external store directory");
-    let first = StoreNodeId::new("campaign-first").expect("first graph node");
-    let (first_graph, _first_maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
-        root: first.clone(),
+    let node = StoreNodeId::new("campaign-memory").expect("memory graph node");
+    let config = StoreGraphConfig {
+        root: node.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([(
-            first,
-            StoreNodeSpec::Directory {
-                root: directory.path().join("first-objects"),
+            node,
+            StoreNodeSpec::Memory {
+                max_logical_bytes: 1024,
             },
         )]),
-    })
-    .expect("first graph");
-    let second = StoreNodeId::new("campaign-second").expect("second graph node");
-    let (_second_graph, second_maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
-        root: second.clone(),
-        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
-        nodes: BTreeMap::from([(
-            second,
-            StoreNodeSpec::Directory {
-                root: directory.path().join("second-objects"),
-            },
-        )]),
-    })
-    .expect("second graph");
+    };
+    let (first_graph, first_maintenance) =
+        StoreGraph::build_with_admin(config.clone()).expect("first graph");
+    let (_second_graph, second_maintenance) =
+        StoreGraph::build_with_admin(config).expect("second graph");
     let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
 
+    assert_eq!(
+        first_graph.configuration_id(),
+        second_maintenance.configuration_id()
+    );
+    assert!(first_maintenance.is_authority_for(&first_graph));
+    assert!(!second_maintenance.is_authority_for(&first_graph));
     assert!(matches!(
         CampaignLocalRepositoryStore::new_with_maintenance(
             Arc::new(first_graph),
