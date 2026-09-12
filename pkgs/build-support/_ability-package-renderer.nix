@@ -9,6 +9,8 @@
 
   fail = packageName: message:
     throw "mkDerivation abilityPackage for package '${packageName}' ${message}";
+  failFeature = packageName: message:
+    throw "AOS_ABILITY_DIAGNOSTIC_V1[unsupported-required-feature] mkDerivation abilityPackage for package '${packageName}' ${message}";
 
   requireAttrs = packageName: context: allowed: value: let
     unknown =
@@ -97,11 +99,15 @@ in {
 
     exportNames = builtins.attrNames preparedExports;
     handlerNames = builtins.attrNames preparedHandlers;
+    declaresStateFormat = lib.any (name: (preparedExports.${name}.implementation.state_format or null) != null) exportNames;
+    requiresStateFormat = builtins.elem "provider-state-format-v1" requiredFeatures;
     featureCheck =
       if !(builtins.elem activationMode ["contracts-only" "structured-effects"])
       then fail packageName "has unsupported activationMode '${toString activationMode}'"
-      else if !(builtins.isList requiredFeatures) || !(lib.all (feature: feature == "abilities-v1") requiredFeatures)
-      then fail packageName "requires an unsupported package feature"
+      else if !(builtins.isList requiredFeatures) || !(lib.all (feature: builtins.elem feature ["abilities-v1" "provider-state-format-v1"]) requiredFeatures)
+      then failFeature packageName "requires an unsupported package feature"
+      else if declaresStateFormat != requiresStateFormat
+      then failFeature packageName "must require provider-state-format-v1 exactly when an implementation declares stateFormat"
       else true;
     handlerLinkCheck = lib.all (name: let
       export = preparedExports.${name};

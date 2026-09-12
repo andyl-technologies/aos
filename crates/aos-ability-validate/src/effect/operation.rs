@@ -106,7 +106,15 @@ pub(super) fn validate_operation(
             diagnostics,
         );
     }
-    if operation.target.resource.provider != binding.provider
+    let mediated_owner_target = operation.target.lifetime == binding.lifetime
+        && operation.authority == aos_ability_model::AuthorityRole::Caller
+        && operation.target.resource.provider == binding.request.consumer
+        && binding.caller_grant.resources.iter().any(|permission| {
+            permission.resource == operation.target.resource
+                && permission.access.is_write()
+                && permission.operations.contains(&operation.method)
+        });
+    if (operation.target.resource.provider != binding.provider && !mediated_owner_target)
         || !resources.contains(&operation.target.resource)
     {
         push_operation_resource_diagnostic(

@@ -689,6 +689,7 @@ fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplem
             transition_entry: key("transition"),
         },
         owns_resource_kinds: Vec::new(),
+        state_format: None,
     }
 }
 

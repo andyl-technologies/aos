@@ -4,8 +4,13 @@
   lib,
 }: let
   corpus = builtins.fromJSON (builtins.readFile ../../tests/abilities/conformance/v1.json);
+  abilityPackageRenderer = import ../../pkgs/build-support/_ability-package-renderer.nix {
+    inherit lib;
+    inherit (lib) abilities;
+  };
   runner = import ../../tests/abilities/conformance/runner.nix {
     inherit (lib) abilities;
+    inherit abilityPackageRenderer;
   };
 
   unique = values:
@@ -70,10 +75,12 @@
       {
         name = "install";
         script = ''
-          mkdir -p "$out/lib"
+          mkdir -p "$out/lib" "$out/conformance"
           cp -R ${../.}/. "$out/lib/"
           cp ${../../tests/abilities/conformance/direct.nix} "$out/direct.nix"
           cp ${../../tests/abilities/conformance/runner.nix} "$out/runner.nix"
+          cp ${../../pkgs/build-support/_ability-package-renderer.nix} "$out/ability-package-renderer.nix"
+          cp ${../../tests/abilities/conformance/provider.nix} "$out/conformance/provider.nix"
           cp ${../../tests/abilities/composition.nix} "$out/composition.nix"
           cp ${../../tests/abilities/effects.nix} "$out/effects.nix"
         '';

@@ -94,6 +94,7 @@ pub struct CheckedExecutionJournalSnapshot {
     transaction: TransactionId,
     plan_bundle: Sha256Digest,
     records: Vec<JournalRecord<ExecutionEvent>>,
+    operations: Vec<OperationSummary>,
     verified_bytes: u64,
     incomplete_tail_bytes: u64,
     terminal: Option<TerminalResult>,
@@ -198,6 +199,7 @@ impl CheckedExecutionJournalSnapshot {
             transaction: transaction.clone(),
             plan_bundle: *plan_bundle,
             records: snapshot.into_records(),
+            operations,
             verified_bytes,
             incomplete_tail_bytes,
             terminal,
@@ -220,6 +222,12 @@ impl CheckedExecutionJournalSnapshot {
     #[must_use]
     pub fn records(&self) -> &[JournalRecord<ExecutionEvent>] {
         &self.records
+    }
+
+    /// Returns operation outcomes derived from the checked durable prefix.
+    #[must_use]
+    pub fn operations(&self) -> &[OperationSummary] {
+        &self.operations
     }
 
     /// Returns the digest committing the complete verified prefix.
@@ -549,6 +557,43 @@ impl<'plan> ExecutionTransaction<'plan> {
 
     pub(crate) fn operation_histories(&self) -> impl Iterator<Item = &OperationHistory> {
         self.replay.operations.values()
+    }
+
+    /// Returns operations for which at least one attempt recorded durable effect intent.
+    pub fn operations_reaching_effect_intent(
+        &self,
+    ) -> impl Iterator<Item = &aos_ability_model::OperationId> {
+        self.replay
+            .operations
+            .values()
+            .filter(|history| history.effect_intent_recorded())
+            .map(OperationHistory::operation_id)
+    }
+
+    /// Returns every exact operation attempt with durable effect intent.
+    pub fn effect_intent_attempts(
+        &self,
+    ) -> impl Iterator<Item = (aos_ability_model::OperationId, std::num::NonZeroU32)> + '_ {
+        self.replay.operations.values().flat_map(|history| {
+            history
+                .effect_intent_attempts()
+                .iter()
+                .copied()
+                .map(|attempt| (history.operation_id().clone(), attempt))
+        })
+    }
+
+    /// Returns clean pre-intent claim attempts authorized by checked replay.
+    pub fn clean_claim_attempts(
+        &self,
+    ) -> impl Iterator<Item = (aos_ability_model::OperationId, std::num::NonZeroU32)> + '_ {
+        self.replay.operations.values().flat_map(|history| {
+            let operation = history.operation_id().clone();
+            history
+                .clean_claim_attempts()
+                .into_iter()
+                .map(move |attempt| (operation.clone(), attempt))
+        })
     }
 
     pub(crate) fn durably_blocked_operations(&self) -> BTreeSet<ScopedOperationKey> {

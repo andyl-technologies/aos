@@ -55,8 +55,11 @@ impl VerifiedAbilityPackageSet {
     /// non-canonical, unsupported, exceeds the version-1 bound, disagrees with
     /// its export key, or conflicts with another authenticated companion.
     pub fn planning_catalog(&self) -> Result<VerifiedAbilityPlanningCatalog> {
-        let supported_features = BTreeSet::from([RequiredFeature::new("abilities-v1")
-            .context("constructing the built-in ability feature")?]);
+        let interface_features = ["abilities-v1"]
+            .into_iter()
+            .map(RequiredFeature::new)
+            .collect::<std::result::Result<BTreeSet<_>, _>>()
+            .context("constructing the built-in interface features")?;
         let mut interfaces = BTreeMap::new();
         for sealed in &self.packages {
             let companion = Path::new(sealed.retention.companion_store_path());
@@ -68,7 +71,7 @@ impl VerifiedAbilityPackageSet {
                 let document = aos_ability_model::decode_canonical::<InterfaceDocument>(
                     &bytes,
                     aos_ability_model::ABILITY_LIMITS_V1,
-                    &supported_features,
+                    &interface_features,
                 )
                 .with_context(|| format!("decoding ability interface {}", path.display()))?;
                 let key = document
@@ -88,6 +91,15 @@ impl VerifiedAbilityPackageSet {
             }
         }
 
+        let supported_features = [
+            "abilities-v1",
+            aos_ability_model::PROVIDER_STATE_FORMAT_V1,
+            aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
+        ]
+        .into_iter()
+        .map(RequiredFeature::new)
+        .collect::<std::result::Result<BTreeSet<_>, _>>()
+        .context("constructing the built-in planning features")?;
         let context = ValidationContext::new(supported_features, interfaces.into_values())
             .context("validating authenticated registry ability interfaces")?;
         let mut packages = self

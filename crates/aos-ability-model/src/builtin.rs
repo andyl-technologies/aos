@@ -170,6 +170,7 @@ pub fn kubernetes_object_provider(artifact: ArtifactReference) -> Result<Provide
             handler: kubernetes_object_handler_key()?,
         },
         owns_resource_kinds: vec![interface.name],
+        state_format: None,
     })
 }
 
@@ -456,6 +457,7 @@ pub fn systemd_manager_provider(artifact: ArtifactReference) -> Result<ProviderI
             handler: systemd_manager_handler_key()?,
         },
         owns_resource_kinds: vec![interface.name],
+        state_format: None,
     })
 }
 

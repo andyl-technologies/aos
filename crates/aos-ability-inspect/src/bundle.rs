@@ -258,10 +258,15 @@ impl InspectionBundle {
         }
         validate_artifact_consumption_edges(&self.artifact_consumption_edges)?;
 
-        // Version 1 has no optional feature semantics. A later inspector must
-        // explicitly add support rather than trusting a bundle-authored list.
-        let supported_features = BTreeSet::from([RequiredFeature::new("abilities-v1")
-            .map_err(|error| InspectionBundleError::Encode(error.into()))?]);
+        let supported_features = [
+            "abilities-v1",
+            "ability-effects-v1",
+            aos_ability_model::PROVIDER_STATE_FORMAT_V1,
+        ]
+        .into_iter()
+        .map(RequiredFeature::new)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|error| InspectionBundleError::Encode(error.into()))?;
         let context = ValidationContext::new(supported_features, self.interfaces.clone())
             .map_err(InspectionBundleError::Validation)?;
         let binding = context

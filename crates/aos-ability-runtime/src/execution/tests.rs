@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::rc::Rc;
 
 use aos_ability_model::{
     AbilityValue, AccessMode, ArtifactReference, BindingId, BranchMembership, DecisionAlternative,
@@ -568,6 +569,138 @@ fn settled_failure_propagates_to_a_required_dependent_and_survives_reopen()
 }
 
 #[test]
+fn effect_intent_replay_excludes_a_dependent_settled_before_effect()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_dependent_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let producer = scoped("observe");
+    let dependent = scoped("consume");
+
+    reject_and_settle(&mut transaction, &producer)?;
+    let ready = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].operation(), &dependent);
+    transaction.settle_failure_before_effect(&dependent, ability(false))?;
+
+    assert_eq!(
+        transaction
+            .operations_reaching_effect_intent()
+            .cloned()
+            .collect::<Vec<_>>(),
+        [OperationId {
+            plan: fixture.plan.id(),
+            operation: producer,
+        }]
+    );
+    assert_eq!(
+        transaction
+            .summary()
+            .operations()
+            .iter()
+            .find(|summary| summary.operation().operation == dependent)
+            .map(|summary| summary.status()),
+        Some(OperationStatus::SettledFailure)
+    );
+    Ok(())
+}
+
+#[test]
+fn effect_intent_replay_excludes_an_operation_skipped_before_effect()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_branch_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let selector = scoped("observe");
+    let skipped = scoped("false-step");
+
+    complete(&mut transaction, &selector)?;
+    let selected = transaction.schedule_ready(NonZeroUsize::new(8).ok_or("positive batch")?)?;
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].operation().key.as_str(), "true-step");
+
+    assert_eq!(
+        transaction
+            .operations_reaching_effect_intent()
+            .cloned()
+            .collect::<Vec<_>>(),
+        [OperationId {
+            plan: fixture.plan.id(),
+            operation: selector,
+        }]
+    );
+    assert_eq!(
+        transaction
+            .summary()
+            .operations()
+            .iter()
+            .find(|summary| summary.operation().operation == skipped)
+            .map(|summary| summary.status()),
+        Some(OperationStatus::Skipped)
+    );
+    Ok(())
+}
+
+#[test]
+fn effect_intent_replay_remains_monotonic_through_failure_settlement_and_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::new()?;
+    let mut store = TestStore;
+    let expected = OperationId {
+        plan: fixture.plan.id(),
+        operation: fixture.operation().clone(),
+    };
+    let mut transaction = fixture.open(&mut store)?;
+
+    reject_and_settle(&mut transaction, fixture.operation())?;
+    assert_eq!(
+        transaction
+            .operations_reaching_effect_intent()
+            .cloned()
+            .collect::<Vec<_>>(),
+        [expected.clone()]
+    );
+    drop(transaction);
+
+    let snapshot = CheckedExecutionJournalSnapshot::read(
+        &fixture.plan,
+        fixture.journal_path(),
+        JournalLimits::default(),
+    )?;
+    let intent_sequence = snapshot
+        .records()
+        .iter()
+        .position(|record| {
+            matches!(
+                record.body().body(),
+                ExecutionEventKind::EffectIntent { .. }
+            )
+        })
+        .ok_or("effect intent record missing")?;
+    let settlement_sequence = snapshot
+        .records()
+        .iter()
+        .position(|record| {
+            matches!(
+                record.body().body(),
+                ExecutionEventKind::OperationSettledFailure { .. }
+            )
+        })
+        .ok_or("failure settlement record missing")?;
+    assert!(intent_sequence < settlement_sequence);
+
+    let reopened = fixture.open(&mut store)?;
+    assert_eq!(
+        reopened
+            .operations_reaching_effect_intent()
+            .cloned()
+            .collect::<Vec<_>>(),
+        [expected]
+    );
+    Ok(())
+}
+
+#[test]
 fn ordering_only_waits_for_propagated_failure_to_settle_then_runs()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::with_plan(checked_failure_then_ordering_plan())?;
@@ -973,7 +1106,11 @@ fn reopened_indeterminate_effect_authorizes_only_reconciliation_and_preserves_bu
     );
     assert_eq!(
         recovery_policy.purposes,
-        [InvocationPurpose::Reconcile, InvocationPurpose::Reconcile]
+        [
+            InvocationPurpose::Reconcile,
+            InvocationPurpose::Reconcile,
+            InvocationPurpose::Reconcile,
+        ]
     );
     assert_eq!(adapter.reconciliation_elapsed, [150]);
     assert_eq!(recovered.elapsed_millis(), 150);
@@ -1089,6 +1226,274 @@ fn boundary_source_error_survives_and_reopens_into_fresh_reconciliation()
     assert_eq!(adapter.execute_calls, 1);
     assert_eq!(recovered_adapter.execute_calls, 0);
     assert_eq!(recovered_adapter.reconcile_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn revocation_after_effect_intent_prevents_external_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let mut catalog = TestCatalog::default();
+    let revoked = Rc::new(Cell::new(false));
+    let mut policy = RevocablePolicy::new(Rc::clone(&revoked));
+    let mut adapter = RecoveryAdapter::default();
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    let mut observer = RevokeAtBoundary::new(
+        Rc::clone(&revoked),
+        crate::execution::Boundary::EffectIntentDurable,
+    );
+
+    let error = transaction
+        .drive_admitted_with_observer(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+            &mut observer,
+        )
+        .expect_err("revocation after durable intent must fail closed");
+
+    assert_revoked_dispatch(error, InvocationPurpose::Effect)?;
+    assert_eq!(adapter.execute_calls, 0);
+    assert!(matches!(
+        transaction.next_action(fixture.operation())?,
+        RecoveryAction::ReconcileBeforeRetry { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn revocation_after_reconciliation_intent_prevents_replay_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_recovery_plan())?;
+    let mut store = TestStore;
+    let mut catalog = TestCatalog::default();
+    let mut adapter = RecoveryAdapter::default();
+    let mut transaction = fixture.open(&mut store)?;
+    let mut initial_policy = AllowPolicy;
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut initial_policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &admitted,
+            &mut adapter,
+            &mut initial_policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Indeterminate
+    );
+    drop(admitted);
+    drop(transaction);
+
+    let mut reopened = fixture.open(&mut store)?;
+    let revoked = Rc::new(Cell::new(false));
+    let mut policy = RevocablePolicy::new(Rc::clone(&revoked));
+    let replay = reopened
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    assert_eq!(replay.invocation_purpose(), InvocationPurpose::Reconcile);
+    let mut observer = RevokeAtBoundary::new(
+        Rc::clone(&revoked),
+        crate::execution::Boundary::ReconciliationIntentDurable,
+    );
+
+    let error = reopened
+        .drive_admitted_with_observer(
+            &replay,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+            &mut observer,
+        )
+        .expect_err("revocation after durable reconciliation intent must fail closed");
+
+    assert_revoked_dispatch(error, InvocationPurpose::Reconcile)?;
+    assert_eq!(adapter.execute_calls, 1);
+    assert!(adapter.reconciliation_elapsed.is_empty());
+    assert!(matches!(
+        reopened.next_action(fixture.operation())?,
+        RecoveryAction::ReconcileBeforeRetry { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn revocation_after_compensation_intent_prevents_external_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, &operation)?;
+    transaction.request_compensation(&operation, ability(true))?;
+
+    let mut catalog = TestCatalog::default();
+    let revoked = Rc::new(Cell::new(false));
+    let mut policy = RevocablePolicy::new(Rc::clone(&revoked));
+    let mut adapter = RecoveryAdapter::default();
+    let admitted = transaction
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(admitted.invocation_purpose(), InvocationPurpose::Compensate);
+    let mut observer = RevokeAtBoundary::new(
+        Rc::clone(&revoked),
+        crate::execution::Boundary::EffectIntentDurable,
+    );
+
+    let error = transaction
+        .drive_admitted_with_observer(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+            &mut observer,
+        )
+        .expect_err("revocation after durable compensation intent must fail closed");
+
+    assert_revoked_dispatch(error, InvocationPurpose::Compensate)?;
+    assert_eq!(adapter.compensate_calls, 0);
+    assert_eq!(
+        transaction.next_action(&operation)?,
+        RecoveryAction::ReconcileCompensation
+    );
+    Ok(())
+}
+
+#[test]
+fn revocation_after_compensation_reconciliation_intent_prevents_replay_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_compensatable_dependent_plan())?;
+    let operation = scoped("observe");
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    complete(&mut transaction, &operation)?;
+    transaction.request_compensation(&operation, ability(true))?;
+
+    let mut catalog = TestCatalog::default();
+    let mut adapter = RecoveryAdapter::default();
+    let mut initial_policy = AllowPolicy;
+    let compensation = transaction
+        .admit(
+            &operation,
+            &adapter,
+            &mut catalog,
+            &mut initial_policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    assert_eq!(
+        transaction.drive_admitted(
+            &compensation,
+            &mut adapter,
+            &mut initial_policy,
+            &TestClock,
+            &CancellationToken::default(),
+        )?,
+        ExecutionStep::Indeterminate
+    );
+    drop(compensation);
+    drop(transaction);
+
+    let mut reopened = fixture.open(&mut store)?;
+    let revoked = Rc::new(Cell::new(false));
+    let mut policy = RevocablePolicy::new(Rc::clone(&revoked));
+    let replay = reopened
+        .admit(&operation, &adapter, &mut catalog, &mut policy, &TestClock)
+        .map_err(admission_error)?;
+    assert_eq!(
+        replay.invocation_purpose(),
+        InvocationPurpose::ReconcileCompensation
+    );
+    let mut observer = RevokeAtBoundary::new(
+        Rc::clone(&revoked),
+        crate::execution::Boundary::ReconciliationIntentDurable,
+    );
+
+    let error = reopened
+        .drive_admitted_with_observer(
+            &replay,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+            &mut observer,
+        )
+        .expect_err("revocation after durable compensation reconciliation must fail closed");
+
+    assert_revoked_dispatch(error, InvocationPurpose::ReconcileCompensation)?;
+    assert_eq!(adapter.compensate_calls, 1);
+    assert_eq!(adapter.compensation_reconciliation_calls, 0);
+    assert_eq!(
+        reopened.next_action(&operation)?,
+        RecoveryAction::ReconcileCompensation
+    );
+    Ok(())
+}
+
+#[test]
+fn revocation_after_cancellation_intent_prevents_external_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::with_plan(checked_cancellation_plan())?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let mut catalog = TestCatalog::default();
+    let revoked = Rc::new(Cell::new(false));
+    let mut policy = RevocablePolicy::new(Rc::clone(&revoked));
+    let mut adapter = RecoveryAdapter::default();
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+    let mut observer = RevokeAtBoundary::new(
+        Rc::clone(&revoked),
+        crate::execution::Boundary::CancellationIntentDurable,
+    );
+
+    let error = transaction
+        .cancel_admitted_with_observer(
+            &admitted,
+            &mut adapter,
+            &mut policy,
+            &TestClock,
+            &CancellationToken::default(),
+            &mut observer,
+        )
+        .expect_err("revocation after durable cancellation intent must fail closed");
+
+    assert_revoked_dispatch(error, InvocationPurpose::Cancel)?;
+    assert_eq!(adapter.cancel_calls, 0);
     Ok(())
 }
 
@@ -2642,6 +3047,53 @@ impl TrustedAdmissionPolicy for AllowPolicy {
     }
 }
 
+struct RevocablePolicy {
+    revoked: Rc<Cell<bool>>,
+}
+
+impl RevocablePolicy {
+    fn new(revoked: Rc<Cell<bool>>) -> Self {
+        Self { revoked }
+    }
+
+    fn authorize_current(&self) -> Result<(), io::Error> {
+        if self.revoked.get() {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected authority revocation",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl TrustedAdmissionPolicy for RevocablePolicy {
+    type Error = io::Error;
+
+    fn authorize(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _method: &MethodReference,
+        _purpose: InvocationPurpose,
+    ) -> Result<(), Self::Error> {
+        self.authorize_current()
+    }
+
+    fn authorize_resources(
+        &mut self,
+        _plan: &aos_ability_validate::CheckedEffectPlan,
+        _binding: &aos_ability_model::Binding,
+        _operation: &Operation,
+        _expected_provider: Option<&ProviderAssignment>,
+        _resources: &[ResourceAdmissionEvidence],
+    ) -> Result<(), Self::Error> {
+        self.authorize_current()
+    }
+}
+
 #[derive(Clone)]
 struct TestRecord {
     evidence: AbilityValue,
@@ -2674,6 +3126,30 @@ struct RecordingBoundaryObserver {
         InvocationPurpose,
         crate::execution::Boundary,
     )>,
+}
+
+struct RevokeAtBoundary {
+    revoked: Rc<Cell<bool>>,
+    boundary: crate::execution::Boundary,
+}
+
+impl RevokeAtBoundary {
+    fn new(revoked: Rc<Cell<bool>>, boundary: crate::execution::Boundary) -> Self {
+        Self { revoked, boundary }
+    }
+}
+
+impl ExecutionBoundaryObserver for RevokeAtBoundary {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        if observation.boundary() == self.boundary {
+            self.revoked.set(true);
+        }
+        Ok(ExecutionBoundaryControl::Continue)
+    }
 }
 
 impl ExecutionBoundaryObserver for RecordingBoundaryObserver {
@@ -3078,7 +3554,9 @@ impl TrustedAdmissionPolicy for RecordingPolicy {
 
 #[derive(Default)]
 struct RecoveryAdapter {
+    execute_calls: usize,
     reconciliation_elapsed: Vec<u64>,
+    cancel_calls: usize,
     compensate_calls: usize,
     compensation_reconciliation_calls: usize,
 }
@@ -3125,6 +3603,7 @@ impl TrustedAdapter for RecoveryAdapter {
         _request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> EffectDisposition<Self::Completion, Self::Observation> {
+        self.execute_calls += 1;
         EffectDisposition::Indeterminate(TestRecord {
             evidence: ability(true),
             outputs: BTreeMap::new(),
@@ -3148,6 +3627,7 @@ impl TrustedAdapter for RecoveryAdapter {
         _request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> CancellationDisposition<Self::Completion, Self::Observation> {
+        self.cancel_calls += 1;
         CancellationDisposition::Indeterminate(TestRecord {
             evidence: ability(true),
             outputs: BTreeMap::new(),
@@ -3176,6 +3656,20 @@ impl TrustedAdapter for RecoveryAdapter {
             evidence: ability(true),
             outputs: BTreeMap::from([(key("ready"), ability(true))]),
         }))
+    }
+}
+
+fn assert_revoked_dispatch(
+    error: ExecutionError,
+    expected_purpose: InvocationPurpose,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match error {
+        ExecutionError::DispatchAdmission(AdmissionError::FreshAuthorization {
+            purpose, ..
+        }) if purpose == expected_purpose => Ok(()),
+        other => {
+            Err(format!("expected {expected_purpose:?} dispatch revocation, got {other:?}").into())
+        }
     }
 }
 

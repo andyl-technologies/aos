@@ -55,6 +55,7 @@ const DEFINE_FIELDS: &[&str] = &[
     "composeEntry",
     "transitionEntry",
     "ownsResourceKinds",
+    "stateFormat",
     "compose",
     "transition",
     "handler",

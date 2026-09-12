@@ -14,8 +14,9 @@ use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityActivationMode, ArtifactReference, AuthorityRole, Binding,
     ControllerAssignment, DecisionNode, DependencyEdge, DependencyKind, DeploymentObligation,
     EffectPlanDocument, InstanceId, LocalKey, MergeNode, Operation, OperationResultReference,
-    PackageDocument, PlanNodeKey, ProviderImplementation, ProviderImplementationReference,
-    ProviderReadiness, ScopePath, ValueExpression, VersionedDocument, compare_edges,
+    PackageDocument, PlanNodeKey, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint,
+    ProviderImplementation, ProviderImplementationReference, ProviderReadiness, ResourceId,
+    ResourceLifetime, ScopePath, ServiceAction, ValueExpression, VersionedDocument, compare_edges,
     compare_operation_keys,
 };
 use aos_ability_validate::{CheckedBindingPlan, CheckedTransitionAuthority};
@@ -246,7 +247,15 @@ fn authority_selects_group(
         entry.provider == prior.provider
             && entry.implementation == prior.reference
             && entry.package == prior.package
-    })
+    }) || authority
+        .document()
+        .provider_adoptions
+        .iter()
+        .any(|adoption| {
+            adoption.source.provider == prior.provider
+                && adoption.source.implementation == prior.reference
+                && adoption.source.package == prior.package
+        })
 }
 
 fn authority_selects_outgoing_binding(
@@ -811,6 +820,8 @@ fn retain_foreign_results(
 
 pub(super) fn merge_fragments(
     binding_plan: &CheckedBindingPlan,
+    provider_adoptions: &[ProviderAdoptionAuthorization],
+    linked_healthy_adoptions: &BTreeSet<ResourceId>,
     controllers: Vec<ControllerAssignment>,
     fragments: Vec<AuthoredTransitionFragment>,
     packages: &BTreeMap<Sha256Digest, &PackageDocument>,
@@ -1025,6 +1036,12 @@ pub(super) fn merge_fragments(
         obligations.extend(fragment.obligations);
     }
     edges.extend(imported_edges);
+    edges.extend(provider_adoption_handoffs(
+        binding_plan,
+        &operations,
+        provider_adoptions,
+        linked_healthy_adoptions,
+    )?);
     operations.sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
     decisions.sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
     merges.sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
@@ -1068,6 +1085,144 @@ pub(super) fn merge_fragments(
         controllers,
         obligations,
     })
+}
+
+fn provider_adoption_handoffs(
+    binding_plan: &CheckedBindingPlan,
+    operations: &[Operation],
+    adoptions: &[ProviderAdoptionAuthorization],
+    linked_healthy_adoptions: &BTreeSet<ResourceId>,
+) -> Result<Vec<DependencyEdge>, TransitionError> {
+    let mut handoffs = Vec::with_capacity(adoptions.len());
+
+    for adoption in adoptions {
+        let source = operations
+            .iter()
+            .filter(|operation| {
+                adoption_operation_matches(
+                    binding_plan,
+                    operation,
+                    adoption,
+                    &adoption.source,
+                    false,
+                ) && matches!(
+                    operation.family,
+                    aos_ability_model::OperationFamily::ServiceLifecycle {
+                        action: ServiceAction::Stop
+                    }
+                )
+            })
+            .collect::<Vec<_>>();
+        let candidate = operations
+            .iter()
+            .filter(|operation| {
+                adoption_operation_matches(
+                    binding_plan,
+                    operation,
+                    adoption,
+                    &adoption.candidate,
+                    true,
+                ) && operation.method == adoption.candidate.handler_method
+            })
+            .collect::<Vec<_>>();
+        let handoff = select_provider_adoption_handoff(
+            &adoption.resource,
+            operations,
+            &source,
+            &candidate,
+            linked_healthy_adoptions,
+        )
+        .ok_or_else(|| TransitionError::InvalidFragment {
+            provider: adoption.candidate.provider.clone(),
+            reason: "provider adoption requires one exact source Stop and candidate acquisition operation"
+                .to_string(),
+        })?;
+        let Some((source, candidate)) = handoff else {
+            continue;
+        };
+
+        handoffs.push(DependencyEdge {
+            from: PlanNodeKey::Operation {
+                key: source.key.clone(),
+            },
+            to: PlanNodeKey::Operation {
+                key: candidate.key.clone(),
+            },
+            kind: DependencyKind::RequiredSuccess,
+        });
+    }
+
+    Ok(handoffs)
+}
+
+fn select_provider_adoption_handoff<'a>(
+    resource: &ResourceId,
+    operations: &'a [Operation],
+    source: &[&'a Operation],
+    candidate: &[&'a Operation],
+    linked_healthy_adoptions: &BTreeSet<ResourceId>,
+) -> Option<Option<(&'a Operation, &'a Operation)>> {
+    if let ([source], [candidate]) = (source, candidate) {
+        return Some(Some((source, candidate)));
+    }
+
+    let has_targeted_write = operations.iter().any(|operation| {
+        operation
+            .accesses
+            .iter()
+            .any(|access| access.resource == *resource && access.mode.is_write())
+    });
+    if linked_healthy_adoptions.contains(resource)
+        && source.is_empty()
+        && candidate.is_empty()
+        && !has_targeted_write
+    {
+        return Some(None);
+    }
+
+    None
+}
+
+fn adoption_operation_matches(
+    binding_plan: &CheckedBindingPlan,
+    operation: &Operation,
+    adoption: &ProviderAdoptionAuthorization,
+    endpoint: &ProviderAdoptionEndpoint,
+    desired: bool,
+) -> bool {
+    let Some(binding) = binding_plan.binding(&operation.binding) else {
+        return false;
+    };
+    let Some(authority) = binding_plan.binding_authority(&operation.binding) else {
+        return false;
+    };
+    let endpoint_binding_matches = match authority {
+        aos_ability_validate::BindingAuthorityKind::Desired => {
+            desired && operation.binding == endpoint.handler_binding
+        }
+        aos_ability_validate::BindingAuthorityKind::Teardown { source_binding, .. } => {
+            !desired && *source_binding == endpoint.handler_binding
+        }
+    };
+
+    // The endpoint method authenticates the ownership acquisition. A source
+    // Stop is a teardown handoff on the sealed source binding, so its method
+    // may differ while the exact implementation and resource still match.
+    endpoint_binding_matches
+        && (!desired || operation.method == endpoint.handler_method)
+        && operation.target.resource == adoption.resource
+        && operation.target.interface == adoption.resource_interface
+        && operation.target.interface == endpoint.handler_interface
+        && operation.target.lifetime == ResourceLifetime::Persistent
+        && operation
+            .accesses
+            .iter()
+            .any(|access| access.resource == adoption.resource && access.mode.is_write())
+        && binding.request.consumer == endpoint.provider
+        && binding.provider == endpoint.handler_provider
+        && binding.interface == endpoint.handler_interface
+        && binding.implementation == endpoint.handler_implementation
+        && binding.provider_package == Some(endpoint.handler_package)
 }
 
 fn retained_transition_artifacts(
@@ -1148,4 +1303,153 @@ fn insert_artifact(
     }
     artifacts.insert(artifact.content, artifact.clone());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_ability_model::{AccessMode, ProviderStateFormat};
+
+    use super::*;
+
+    fn operation_fixture() -> Operation {
+        aos_ability_validate::test_support::checked_systemd_manager_effect_plan().operations()[0]
+            .clone()
+    }
+
+    #[test]
+    fn linked_healthy_adoption_allows_no_writes() {
+        let mut observation = operation_fixture();
+        observation.accesses[0].mode = AccessMode::Read;
+        let resource = observation.target.resource.clone();
+        let operations = vec![observation];
+        let linked = BTreeSet::from([resource.clone()]);
+
+        assert!(matches!(
+            select_provider_adoption_handoff(&resource, &operations, &[], &[], &linked),
+            Some(None)
+        ));
+    }
+
+    #[test]
+    fn linked_healthy_adoption_rejects_a_mismatched_write() {
+        let mut operation = operation_fixture();
+        let resource = operation.target.resource.clone();
+        operation.target.resource.key =
+            LocalKey::new("different-target").expect("static resource key must be valid");
+        let operations = vec![operation];
+        let linked = BTreeSet::from([resource.clone()]);
+
+        assert!(
+            select_provider_adoption_handoff(&resource, &operations, &[], &[], &linked).is_none()
+        );
+    }
+
+    #[test]
+    fn linked_healthy_adoption_rejects_a_partial_handoff() {
+        let source = operation_fixture();
+        let resource = source.target.resource.clone();
+        let operations = vec![source];
+        let source = [&operations[0]];
+        let linked = BTreeSet::from([resource.clone()]);
+
+        assert!(
+            select_provider_adoption_handoff(&resource, &operations, &source, &[], &linked)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ordinary_adoption_still_requires_an_exact_handoff() {
+        let source = operation_fixture();
+        let candidate = operation_fixture();
+        let resource = source.target.resource.clone();
+        let operations = vec![source, candidate];
+        let source = [&operations[0]];
+        let candidate = [&operations[1]];
+
+        assert!(
+            select_provider_adoption_handoff(&resource, &operations, &[], &[], &BTreeSet::new())
+                .is_none()
+        );
+        assert!(matches!(
+            select_provider_adoption_handoff(
+                &resource,
+                &operations,
+                &source,
+                &candidate,
+                &BTreeSet::new()
+            ),
+            Some(Some(_))
+        ));
+    }
+
+    #[test]
+    fn candidate_adoption_operation_requires_the_exact_sealed_handler_method() {
+        let plan = aos_ability_validate::test_support::checked_stateful_owner_effect_plan();
+        let operation = plan.operations()[0].clone();
+        let binding = plan
+            .binding_plan()
+            .binding(&operation.binding)
+            .expect("fixture operation must retain its checked binding");
+        let assignment = plan
+            .binding_plan()
+            .environment()
+            .providers
+            .iter()
+            .find(|assignment| {
+                assignment.provider == binding.provider
+                    && assignment.interface == binding.interface
+                    && assignment.implementation == binding.implementation
+            })
+            .expect("fixture binding must retain its checked assignment");
+        let endpoint = ProviderAdoptionEndpoint {
+            provider: binding.request.consumer.clone(),
+            package: binding
+                .provider_package
+                .expect("fixture binding must retain its package"),
+            interface: binding.interface.clone(),
+            implementation: binding.implementation.clone(),
+            state_format: ProviderStateFormat {
+                descriptor: Sha256Digest::of_bytes("unused owner state format"),
+                artifact: binding.implementation.artifact.clone(),
+            },
+            handler_binding: binding.id.clone(),
+            handler_method: operation.method.clone(),
+            handler_provider: binding.provider.clone(),
+            handler_incarnation: assignment
+                .incarnation
+                .clone()
+                .expect("fixture assignment must be available"),
+            handler_interface: binding.interface.clone(),
+            handler_implementation: binding.implementation.clone(),
+            handler_package: binding
+                .provider_package
+                .expect("fixture binding must retain its package"),
+        };
+        let adoption = ProviderAdoptionAuthorization {
+            resource: operation.target.resource.clone(),
+            resource_interface: operation.target.interface.clone(),
+            source: endpoint.clone(),
+            candidate: endpoint.clone(),
+        };
+
+        assert!(adoption_operation_matches(
+            plan.binding_plan(),
+            &operation,
+            &adoption,
+            &endpoint,
+            true
+        ));
+
+        let mut wrong_method = endpoint;
+        wrong_method.handler_method =
+            LocalKey::new("wrong-stop-method").expect("static handler method must be valid");
+        assert!(!adoption_operation_matches(
+            plan.binding_plan(),
+            &operation,
+            &adoption,
+            &wrong_method,
+            true
+        ));
+    }
 }

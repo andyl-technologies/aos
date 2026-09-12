@@ -58,6 +58,8 @@ const OWNER_ANNOTATION: &str = "aos.andyl.com/resource-owner";
 pub struct KubernetesObjectResourceSpec {
     /// Names the provider-owned logical resource.
     pub resource: ResourceId,
+    /// Names the terminal handler selected for this logical owner.
+    pub handler_provider: aos_ability_model::InstanceId,
     /// Pins the exact authenticated kubectl artifact.
     pub kubectl: ArtifactReference,
     /// Names the protected root-owned kubeconfig.
@@ -138,7 +140,7 @@ impl KubernetesObjectResourceCatalog {
         let mut physical_objects = BTreeSet::new();
         let mut indexed = BTreeMap::new();
         for spec in resources {
-            if spec.resource.provider != assignment.provider {
+            if spec.handler_provider != assignment.provider {
                 return Err(invalid_data(
                     "Kubernetes object resource belongs to another provider",
                 ));
@@ -199,22 +201,6 @@ impl KubernetesObjectResourceCatalog {
             .map(|entry| entry.qualified.clone())
     }
 
-    pub(crate) fn observe_no_op(
-        &self,
-        resource: &ResourceId,
-    ) -> Result<(NativeQualifiedResource, ResourceRevisionObservation), io::Error> {
-        let resource = self
-            .resources
-            .get(resource)
-            .ok_or_else(|| invalid_data("Kubernetes no-op resource is not cataloged"))?;
-        let control = FixedBudgetControl::new(30_000);
-        let observation = observe_object(resource, &control)?;
-        Ok((
-            resource.qualified.clone(),
-            revision_observation(&observation),
-        ))
-    }
-
     /// Classifies an owned live object while rejecting unavailable or foreign evidence.
     ///
     /// # Errors
@@ -246,7 +232,10 @@ impl TrustedResourceCatalog for KubernetesObjectResourceCatalog {
         operation: &Operation,
         access: &ResourceAccess,
     ) -> Result<CatalogReservation<Self::Handle>, Self::Error> {
-        if context.expected_provider != Some(&self.assignment) {
+        if context
+            .expected_provider
+            .is_some_and(|assignment| assignment != &self.assignment)
+        {
             return Err(invalid_data(
                 "Kubernetes provider assignment is absent or stale",
             ));
@@ -256,6 +245,10 @@ impl TrustedResourceCatalog for KubernetesObjectResourceCatalog {
                 "Kubernetes access does not target the operation resource",
             ));
         }
+        let context = ReservationContext {
+            expected_provider: Some(&self.assignment),
+            ..context
+        };
         let resource = self
             .resources
             .get(&access.resource)
@@ -1448,6 +1441,7 @@ fn safe_to_retry(request: &KubernetesDurableRequest, observation: &KubernetesObs
                 .as_deref()
 }
 
+#[cfg(test)]
 fn revision_observation(observation: &KubernetesObservation) -> ResourceRevisionObservation {
     if !observation.available {
         return ResourceRevisionObservation::Unknown;
@@ -2309,6 +2303,7 @@ mod tests {
             current_revision.map(|revision| object_bytes(&resource, Some(revision), 1));
 
         KubernetesObjectResourceSpec {
+            handler_provider: resource.provider.clone(),
             resource,
             kubectl: test_artifact(),
             kubeconfig: PathBuf::from("/run/aos/kubernetes/admin.kubeconfig"),

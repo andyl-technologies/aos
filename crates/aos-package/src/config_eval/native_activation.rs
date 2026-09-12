@@ -25,7 +25,7 @@ use aos_contract::Sha256Digest;
 use super::ability::{AbilityEvaluationLimits, RestrictedAbilityEvaluator};
 use super::ability_activation::{
     SpecializedAbilityActivation, VerifiedAbilityActivationInputs, specialize_activation,
-    specialize_reconciliation, verify_generation_packages,
+    specialize_adoption_reconciliation, specialize_reconciliation, verify_generation_packages,
 };
 use super::ability_policy::{
     CurrentAuthorityScope, CurrentPlatformPolicyDocument, PublishingNativeAdmissionPolicy,
@@ -65,39 +65,26 @@ pub(super) fn activate_config(
         .context("identifying the preflighted structured manifest")?
         .manifest;
     let pending = load_pending_activation(params)?;
-    if let Some(pending) = &pending
-        && pending.manifest != desired_manifest
-    {
-        let pending_manifest = pending.manifest.clone();
-        let pending_transaction = pending.transaction.clone();
-        let pending_generation = pending.generation;
+    let failed = if pending.is_none() {
+        load_failed_activation(params)?
+    } else {
+        None
+    };
+    if let Some((recovery, manifest)) = required_manifest_recovery(
+        pending.as_ref().map(|pending| &pending.manifest),
+        failed.as_ref().map(|failed| &failed.manifest),
+        &desired_manifest,
+    ) {
+        let recovery_manifest = manifest.clone();
         drop(switch_lock);
-
-        if let Err(resume_error) = activate_config(params, pending_manifest) {
-            let recovery_lock = Arc::new(super::activation::acquire_switch_lock_pub(
-                &params.switch_lock,
-            )?);
-            let selected = load_pending_activation(params)?
-                .context("pending native transaction disappeared during rollback recovery")?;
-            ensure!(
-                selected.generation == pending_generation
-                    && selected.transaction == pending_transaction,
-                "pending native transaction changed during rollback recovery"
-            );
-            let terminal = RetainedAbilityDiagnosticSource::load(
-                params.profile.join(format!("gen-{pending_generation}")),
-                &pending_transaction,
-                supported_features()?,
-            )?
-            .terminal_result(JournalLimits::default())?;
-            if terminal != Some(TerminalResult::SettledFailure) {
-                drop(recovery_lock);
-                return Err(resume_error)
-                    .context("pending native transaction has not safely settled before rollback");
+        activate_config(params, recovery_manifest).with_context(|| match recovery {
+            NativeManifestRecovery::Pending => {
+                "pending native transaction must settle successfully before replacement"
             }
-            publish_settled_native_failure(params, &selected)?;
-            drop(recovery_lock);
-        }
+            NativeManifestRecovery::Failed => {
+                "failed native manifest must recover successfully before replacement"
+            }
+        })?;
         return activate_config(params, desired_manifest);
     }
     let current_generation = match &pending {
@@ -106,6 +93,18 @@ pub(super) fn activate_config(
             load_generation_manifest(params, pending.prior_generation)?,
         )),
         Some(_) => None,
+        None if failed
+            .as_ref()
+            .is_some_and(|failed| failed.manifest == desired_manifest) =>
+        {
+            match failed.as_ref().map(|failed| failed.prior_generation) {
+                Some(0) | None => None,
+                Some(prior_generation) => Some((
+                    prior_generation,
+                    load_successful_generation_manifest(params, prior_generation)?,
+                )),
+            }
+        }
         None => load_current_manifest(params)?,
     };
     let current_manifest = current_generation.as_ref().map(|(_, manifest)| manifest);
@@ -147,6 +146,13 @@ pub(super) fn activate_config(
     )
     .context("checking source authority before native drift classification")?;
     let supported_features = supported_features()?;
+    let receipt_resources =
+        super::ability_store::inventory::provider_adoption_receipt_resources(&params.profile)?;
+    let settled_failed_adoptions =
+        super::ability_store::inventory::settled_failed_provider_adoption_resources(
+            &params.profile,
+            &supported_features,
+        )?;
     let transaction = pending
         .as_ref()
         .map(|pending| pending.transaction.clone())
@@ -165,6 +171,8 @@ pub(super) fn activate_config(
         &resolution_policy,
         platform_policy.as_ref(),
         &supported_features,
+        &receipt_resources,
+        &settled_failed_adoptions,
         &transaction,
         pending.as_ref(),
         Arc::clone(&switch_lock),
@@ -178,7 +186,12 @@ pub(super) fn activate_config(
         desired_inputs.policy_set().transition_authority.as_ref(),
     )
     .context("checking independent authority for every native binding")?;
-    let retained_no_op = if activation.plan().operations().is_empty() {
+    let linked_adoption_no_op = activation.plan().operations().is_empty()
+        && activation
+            .bundle()
+            .reconciliation()
+            .is_some_and(|reconciliation| !reconciliation.unsettled_provider_adoptions.is_empty());
+    let retained_no_op = if activation.plan().operations().is_empty() && !linked_adoption_no_op {
         current_generation
             .as_ref()
             .map(|(generation, _)| {
@@ -219,7 +232,7 @@ pub(super) fn activate_config(
         .into());
     }
 
-    execute_native_transition(
+    let execution = execute_native_transition(
         params,
         generation,
         transaction.clone(),
@@ -232,12 +245,37 @@ pub(super) fn activate_config(
         supported_features,
         retained_no_op,
         Arc::clone(&switch_lock),
-    )
-    .map_err(|error| {
-        ActivationFailure::degraded(format!(
-            "configuration generation {generation} remains committed, but native ability activation failed: {error:#}"
+    );
+    let terminal = match execution {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            return Err(ActivationFailure::degraded(format!(
+                "configuration generation {generation} remains committed, but native ability activation failed: {error:#}"
+            ))
+            .into());
+        }
+    };
+    if terminal == TerminalResult::SettledFailure {
+        let failed = PendingActivation {
+            generation,
+            generation_id: generation_id.clone(),
+            prior_generation: current_generation
+                .as_ref()
+                .map_or(0, |(generation, _)| *generation),
+            transaction: transaction.clone(),
+            transaction_manifest: transaction_manifest.clone(),
+            manifest: desired_manifest.clone(),
+        };
+        publish_settled_native_failure(params, &failed)?;
+        return Err(ActivationFailure::degraded(format!(
+            "configuration generation {generation} reached a settled native ability failure"
         ))
-    })?;
+        .into());
+    }
+    ensure!(
+        terminal == TerminalResult::Succeeded,
+        "native transaction reached unsupported terminal result {terminal:?}"
+    );
     super::activation::publish_structured_activation_success(
         params,
         generation,
@@ -349,6 +387,27 @@ struct PendingActivation {
     manifest: ConfigManifest,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeManifestRecovery {
+    Pending,
+    Failed,
+}
+
+fn required_manifest_recovery<'a, T: Eq>(
+    pending: Option<&'a T>,
+    failed: Option<&'a T>,
+    desired: &T,
+) -> Option<(NativeManifestRecovery, &'a T)> {
+    pending
+        .filter(|manifest| *manifest != desired)
+        .map(|manifest| (NativeManifestRecovery::Pending, manifest))
+        .or_else(|| {
+            failed
+                .filter(|manifest| *manifest != desired)
+                .map(|manifest| (NativeManifestRecovery::Failed, manifest))
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn reconcile_native_drift(
     params: &ActivateConfigParams,
@@ -362,17 +421,41 @@ fn reconcile_native_drift(
     resolution_policy: &ResolutionPolicyDocument,
     platform_policy: Option<&CurrentPlatformPolicyDocument>,
     supported_features: &std::collections::BTreeSet<RequiredFeature>,
+    receipt_resources: &std::collections::BTreeSet<aos_ability_model::ResourceId>,
+    settled_failed_adoptions: &std::collections::BTreeSet<aos_ability_model::ResourceId>,
     transaction: &TransactionId,
     pending: Option<&PendingActivation>,
     switch_lock: Arc<super::activation::SwitchLockGuard>,
 ) -> Result<SpecializedAbilityActivation> {
-    if !source.plan().operations().is_empty() {
-        return Ok(source);
-    }
     let (Some(current_generation), Some(current_inputs)) = (current_generation, current_inputs)
     else {
+        ensure!(
+            settled_failed_adoptions.is_empty(),
+            "settled provider-adoption recovery has no authenticated current generation"
+        );
         return Ok(source);
     };
+
+    let activation_resources = source
+        .desired_native_resources()
+        .entries
+        .iter()
+        .chain(
+            source
+                .current_native_resources()
+                .into_iter()
+                .flat_map(|resources| &resources.entries),
+        )
+        .map(|mapping| mapping.resource.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    ensure!(
+        receipt_resources.is_subset(&activation_resources),
+        "native ownership ledger contains an adoption receipt outside the selected desired/current resources"
+    );
+    ensure!(
+        settled_failed_adoptions.is_subset(&activation_resources),
+        "settled provider-adoption receipt lies outside the selected desired/current resources"
+    );
 
     let retained = pending
         .map(|pending| load_pending_reconciliation(params, pending, supported_features.clone()))
@@ -387,20 +470,45 @@ fn reconcile_native_drift(
         // The retained v2 snapshot supplies exactly the original live
         // classification, while normal execution admission reobserves all
         // resources before any resumed effect.
-        let repaired = specialize_reconciliation(
-            desired_inputs,
-            current_inputs,
-            packages,
-            evaluator,
-            &source,
-            reconciliation,
-            supported_features,
-        )
+        let linked_receipt_resources = reconciliation
+            .unsettled_provider_adoptions
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        ensure!(
+            linked_receipt_resources.is_subset(&receipt_resources),
+            "pending repair graph lost an unsettled provider-adoption receipt"
+        );
+        let repaired = if linked_receipt_resources.is_empty() {
+            specialize_reconciliation(
+                desired_inputs,
+                current_inputs,
+                packages,
+                evaluator,
+                &source,
+                reconciliation,
+                supported_features,
+            )
+        } else {
+            specialize_adoption_reconciliation(
+                desired_inputs,
+                current_inputs,
+                packages,
+                evaluator,
+                &source,
+                reconciliation,
+                supported_features,
+                &linked_receipt_resources,
+            )
+        }
         .context("replaying the pending native repair graph")?;
         repaired
             .reauthorize(operator_authority)
             .context("reauthorizing operator policy after repair replay")?;
         return Ok(repaired);
+    }
+    if !source.plan().operations().is_empty() && settled_failed_adoptions.is_empty() {
+        return Ok(source);
     }
 
     source
@@ -413,11 +521,12 @@ fn reconcile_native_drift(
         &params.profile.join(format!("gen-{current_generation}")),
         transaction.clone(),
         source.plan(),
+        supported_features.clone(),
         switch_lock,
     )
     .context("opening the retained native observation boundary")?;
     let classification = dispatcher
-        .classify_retained_resources(&observation_session)
+        .classify_retained_resources(&observation_session, &settled_failed_adoptions)
         .context("classifying retained native resources")?;
     source
         .reauthorize(operator_authority)
@@ -476,17 +585,31 @@ fn reconcile_native_drift(
                 .context("encoding protected drift-classification authority")?,
         )
         .context("bounding protected drift-classification authority")?,
+        unsettled_provider_adoptions: settled_failed_adoptions.iter().cloned().collect(),
         observations: classification.runtime_observations().to_vec(),
     };
-    let repaired = specialize_reconciliation(
-        desired_inputs,
-        current_inputs,
-        packages,
-        evaluator,
-        &source,
-        reconciliation,
-        supported_features,
-    )
+    let repaired = if settled_failed_adoptions.is_empty() {
+        specialize_reconciliation(
+            desired_inputs,
+            current_inputs,
+            packages,
+            evaluator,
+            &source,
+            reconciliation,
+            supported_features,
+        )
+    } else {
+        specialize_adoption_reconciliation(
+            desired_inputs,
+            current_inputs,
+            packages,
+            evaluator,
+            &source,
+            reconciliation,
+            supported_features,
+            &settled_failed_adoptions,
+        )
+    }
     .context("constructing a linked native repair graph")?;
     repaired
         .reauthorize(operator_authority)
@@ -517,6 +640,17 @@ fn load_pending_reconciliation(
 }
 
 fn load_pending_activation(params: &ActivateConfigParams) -> Result<Option<PendingActivation>> {
+    load_selected_native_activation(params, "native-pending")
+}
+
+fn load_failed_activation(params: &ActivateConfigParams) -> Result<Option<PendingActivation>> {
+    load_selected_native_activation(params, "native-failed")
+}
+
+fn load_selected_native_activation(
+    params: &ActivateConfigParams,
+    expected_status: &str,
+) -> Result<Option<PendingActivation>> {
     let state = crate::sysroot::recover_generation_state_pub(&params.profile)?;
     if state.current == 0 {
         return Ok(None);
@@ -532,7 +666,7 @@ fn load_pending_activation(params: &ActivateConfigParams) -> Result<Option<Pendi
             return Err(error).with_context(|| format!("reading {}", record_path.display()));
         }
     };
-    if record.get("status").and_then(serde_json::Value::as_str) != Some("native-pending") {
+    if record.get("status").and_then(serde_json::Value::as_str) != Some(expected_status) {
         return Ok(None);
     }
     ensure!(
@@ -544,7 +678,7 @@ fn load_pending_activation(params: &ActivateConfigParams) -> Result<Option<Pendi
                 .get("generation_id")
                 .and_then(serde_json::Value::as_str)
                 == Some(generation_id.as_str()),
-        "pending native activation differs from its generation identity"
+        "selected native activation differs from its generation identity"
     );
     let manifest = load_generation_manifest(params, state.current)?;
     let transaction_manifest = crate::graph_compile::graph_transaction(&manifest)?.manifest;
@@ -553,28 +687,28 @@ fn load_pending_activation(params: &ActivateConfigParams) -> Result<Option<Pendi
             .get("transaction_manifest")
             .and_then(serde_json::Value::as_str)
             == Some(transaction_manifest.as_str()),
-        "pending native activation differs from its retained manifest identity"
+        "selected native activation differs from its retained manifest identity"
     );
     let transaction = serde_json::from_value(
         record
             .get("native_ability_transaction")
             .cloned()
-            .context("pending native activation has no selected transaction")?,
+            .context("selected native activation has no transaction")?,
     )
-    .context("decoding pending native transaction")?;
+    .context("decoding selected native transaction")?;
     let prior_generation_u64 = record
         .get("native_ability_prior_generation")
         .and_then(serde_json::Value::as_u64)
-        .context("pending native activation has no prior generation")?;
+        .context("selected native activation has no prior generation")?;
     let prior_generation = u32::try_from(prior_generation_u64)
-        .context("pending native prior generation exceeds u32")?;
+        .context("selected native prior generation exceeds u32")?;
     ensure!(
         prior_generation == 0
             || state
                 .generations
                 .iter()
                 .any(|generation| generation.number == prior_generation),
-        "pending native activation prior generation is not retained"
+        "selected native activation prior generation is not retained"
     );
     Ok(Some(PendingActivation {
         generation: state.current,
@@ -612,7 +746,7 @@ fn execute_native_transition(
     supported_features: std::collections::BTreeSet<RequiredFeature>,
     retained_no_op: Option<RetainedAbilityDiagnosticSource>,
     switch_lock: Arc<super::activation::SwitchLockGuard>,
-) -> Result<()> {
+) -> Result<TerminalResult> {
     let cancellation = super::native_cancellation::NativeCancellationGuard::install()
         .context("installing native activation cancellation listeners")?;
     let systemd = systemd_connection()?;
@@ -636,6 +770,7 @@ fn execute_native_transition(
         transaction,
     };
     let transaction_linked = activation.bundle().reconciliation().is_some();
+    let retained_consumer_features = supported_features.clone();
     let current_policy = PublishingNativeAdmissionPolicy::new(
         &scope,
         RevisionId(policy_digest),
@@ -648,8 +783,13 @@ fn execute_native_transition(
     );
     let mut policy = OperatorAuthorizedPolicy::new(&activation, operator_authority, current_policy);
     let mut no_op_verifier = ProductionNoOpVerifier {
-        retained: retained_no_op
-            .map(|source| RetainedNativeNoOpVerifier::new(source, JournalLimits::default())),
+        retained: retained_no_op.map(|source| {
+            RetainedNativeNoOpVerifier::new(
+                source,
+                JournalLimits::default(),
+                retained_consumer_features,
+            )
+        }),
     };
     let mut boundary_observer = NativeExecutionBoundaryObserver::load()
         .context("opening protected native execution observation channel")?;
@@ -660,11 +800,7 @@ fn execute_native_transition(
         cancellation.token(),
         &mut boundary_observer,
     )?;
-    ensure!(
-        terminal == TerminalResult::Succeeded,
-        "native transaction reached terminal result {terminal:?}"
-    );
-    Ok(())
+    Ok(terminal)
 }
 
 fn load_current_manifest(params: &ActivateConfigParams) -> Result<Option<(u32, ConfigManifest)>> {
@@ -701,6 +837,38 @@ fn load_generation_manifest(
         "retained current manifest differs from its generation identity"
     );
     Ok(manifest)
+}
+
+fn load_successful_generation_manifest(
+    params: &ActivateConfigParams,
+    generation: u32,
+) -> Result<ConfigManifest> {
+    let generation_id = committed_generation_id(params, generation)?;
+    let record_path = params
+        .profile
+        .join(format!("gen-{generation}/activation.json"));
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&record_path)
+            .with_context(|| format!("reading {}", record_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", record_path.display()))?;
+    ensure!(
+        record.get("schema").and_then(serde_json::Value::as_str)
+            == Some("aos.config-activation/v1")
+            && record.get("generation").and_then(serde_json::Value::as_u64)
+                == Some(u64::from(generation))
+            && record
+                .get("generation_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(generation_id.as_str())
+            && record.get("status").and_then(serde_json::Value::as_str) == Some("complete")
+            && record
+                .get("activation_exit")
+                .and_then(serde_json::Value::as_i64)
+                == Some(0),
+        "failed native activation does not name a complete prior generation"
+    );
+    load_generation_manifest(params, generation)
 }
 
 fn load_retained_no_op_source(
@@ -753,6 +921,8 @@ fn supported_features() -> Result<std::collections::BTreeSet<RequiredFeature>> {
         crate::types::FEATURE_ABILITY_EFFECTS_V1,
         "native-platform-policy-v1",
         "native-resource-map-v2",
+        aos_ability_model::PROVIDER_STATE_FORMAT_V1,
+        aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
     ]
     .into_iter()
     .map(RequiredFeature::new)
@@ -827,10 +997,32 @@ impl TrustedNativeNoOpVerifier for ProductionNoOpVerifier {
         );
         ensure!(
             evidence.current_resources.entries.iter().all(|mapping| {
+                let provider = evidence
+                    .plan
+                    .binding_plan()
+                    .binding(&mapping.binding)
+                    .map(|binding| &binding.provider)
+                    .or_else(|| {
+                        evidence
+                            .plan
+                            .binding_plan()
+                            .bindings()
+                            .iter()
+                            .find_map(|binding| {
+                                matches!(
+                                    evidence.plan.binding_plan().binding_authority(&binding.id),
+                                    Some(aos_ability_validate::BindingAuthorityKind::Teardown {
+                                        source_binding,
+                                        ..
+                                    }) if source_binding == &mapping.binding
+                                )
+                                .then_some(&binding.provider)
+                            })
+                    });
                 evidence
                     .assignments
                     .iter()
-                    .any(|assignment| assignment.provider == mapping.resource.provider)
+                    .any(|assignment| Some(&assignment.provider) == provider)
             }),
             "native no-op evidence lacks a live assignment for a retained resource"
         );
@@ -849,6 +1041,25 @@ impl TrustedNativeNoOpVerifier for ProductionNoOpVerifier {
 mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
+
+    #[test]
+    fn a_different_manifest_cannot_bypass_pending_or_failed_recovery() {
+        let failed_manifest = "B removes the owned resource";
+        let later_manifest = "C also omits it and changes another resource";
+
+        assert_eq!(
+            super::required_manifest_recovery(None, Some(&failed_manifest), &later_manifest,),
+            Some((super::NativeManifestRecovery::Failed, &failed_manifest))
+        );
+        assert_eq!(
+            super::required_manifest_recovery(Some(&failed_manifest), None, &later_manifest,),
+            Some((super::NativeManifestRecovery::Pending, &failed_manifest))
+        );
+        assert_eq!(
+            super::required_manifest_recovery(None, Some(&failed_manifest), &failed_manifest),
+            None
+        );
+    }
 
     #[test]
     fn activation_owner_retains_switch_lock_through_final_publication() {

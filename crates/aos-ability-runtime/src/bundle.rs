@@ -33,7 +33,7 @@ use aos_ability_plan::{
     VerifiedTransitionPlan,
 };
 use aos_ability_validate::{
-    CheckedEffectPlan, CheckedTransitionAuthority, TransitionAuthorityError,
+    CheckedBindingPlan, CheckedEffectPlan, CheckedTransitionAuthority, TransitionAuthorityError,
     TransitionAuthorityInputs, ValidationContext, ValidationErrors,
 };
 use aos_contract::Sha256Digest;
@@ -195,6 +195,47 @@ impl ReloadablePlanBundle {
     #[must_use]
     pub const fn transition_authority_digest(&self) -> Option<Sha256Digest> {
         self.transition_authority_digest
+    }
+
+    /// Returns sealed provider-state transfers authorized for this transition.
+    #[must_use]
+    pub fn provider_adoptions(&self) -> &[aos_ability_model::ProviderAdoptionAuthorization] {
+        self.transition_authority
+            .as_ref()
+            .map_or(&[], |authority| authority.provider_adoptions.as_slice())
+    }
+
+    /// Reports whether the retained prior plan contained an exact resource.
+    #[must_use]
+    pub fn current_contains_resource(&self, resource: &aos_ability_model::ResourceId) -> bool {
+        self.current.as_ref().is_some_and(|current| {
+            current
+                .snapshot
+                .desired_state()
+                .resources
+                .iter()
+                .any(|revision| revision.resource == *resource)
+        })
+    }
+
+    /// Replays and returns the independently retained prior binding plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when retained prior planning provenance, interfaces,
+    /// policy commitments, or structure no longer validate exactly.
+    pub fn revalidate_current_binding(
+        &self,
+        supported_features: &BTreeSet<RequiredFeature>,
+    ) -> Result<Option<CheckedBindingPlan>, PlanBundleError> {
+        self.current
+            .as_ref()
+            .map(|current| {
+                current
+                    .verify(supported_features)
+                    .map(|(verified, _)| verified.checked_binding().clone())
+            })
+            .transpose()
     }
 
     /// Returns the protected runtime classification retained by a repair graph.
@@ -435,9 +476,44 @@ mod tests {
         verified_planning_authorized_removal_fixture, verified_planning_transition_plan,
         verified_planning_transition_with_current,
         verified_planning_transition_with_distinct_current,
+        verified_stateful_planning_transition_plan,
     };
 
     use super::*;
+
+    fn stateful_features() -> BTreeSet<RequiredFeature> {
+        BTreeSet::from([
+            RequiredFeature::new("abilities-v1").expect("valid base feature"),
+            RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
+                .expect("valid provider state-format feature"),
+        ])
+    }
+
+    fn assert_replay_diagnostic(
+        error: PlanBundleError,
+        code: aos_ability_model::DiagnosticCode,
+        message: Option<&str>,
+    ) {
+        let validation = match error {
+            PlanBundleError::Planning(PlanningSnapshotError::Replay(
+                aos_ability_plan::CompositionError::Validation(validation),
+            ))
+            | PlanBundleError::Planning(PlanningSnapshotError::Replay(
+                aos_ability_plan::CompositionError::Resolution(
+                    aos_ability_plan::ResolutionError::Validation(validation),
+                ),
+            )) => validation,
+            error => panic!("expected retained planning validation failure, got {error:?}"),
+        };
+        assert!(
+            validation.diagnostics().iter().any(|diagnostic| {
+                diagnostic.code == code
+                    && message.is_none_or(|expected| diagnostic.message.contains(expected))
+            }),
+            "missing expected diagnostic in {:?}",
+            validation.diagnostics()
+        );
+    }
 
     #[test]
     fn exact_bundle_round_trips_and_structurally_replays() -> Result<(), Box<dyn std::error::Error>>
@@ -451,6 +527,110 @@ mod tests {
         let decoded = ReloadablePlanBundle::decode(&bytes)?;
         assert_eq!(decoded.digest()?, expected_digest);
         assert_eq!(decoded.revalidate(BTreeSet::new())?.id(), expected_plan);
+        Ok(())
+    }
+
+    #[test]
+    fn stateful_bundle_round_trips_and_replays_with_exact_feature_support()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (planning, transition) = verified_stateful_planning_transition_plan();
+        let bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
+        let expected_plan = transition.effect_plan();
+        let bytes = bundle.canonical_bytes()?;
+
+        let decoded = ReloadablePlanBundle::decode(&bytes)?;
+        assert!(
+            decoded.desired.packages[0].implementation.providers[0]
+                .state_format
+                .is_some()
+        );
+        assert_eq!(decoded.revalidate(stateful_features())?.id(), expected_plan);
+        Ok(())
+    }
+
+    #[test]
+    fn stateful_bundle_replay_rejects_an_older_feature_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (planning, transition) = verified_stateful_planning_transition_plan();
+        let bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
+        let old_features =
+            BTreeSet::from([RequiredFeature::new("abilities-v1").expect("valid base feature")]);
+
+        let error = bundle
+            .revalidate(old_features)
+            .expect_err("an older runtime must reject state-format semantics");
+        assert_replay_diagnostic(
+            error,
+            aos_ability_model::DiagnosticCode::UnsupportedRequiredFeature,
+            None,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stateful_bundle_replay_rejects_an_unknown_future_feature()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (planning, transition) = verified_stateful_planning_transition_plan();
+        let mut bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
+        bundle.desired.packages[0]
+            .required_features
+            .push(RequiredFeature::new("provider-state-format-v2").expect("valid future feature"));
+        let bytes = bundle.canonical_bytes()?;
+        let decoded = ReloadablePlanBundle::decode(&bytes)?;
+
+        let error = decoded
+            .revalidate(stateful_features())
+            .expect_err("unknown future state-format semantics must fail closed");
+        assert_replay_diagnostic(
+            error,
+            aos_ability_model::DiagnosticCode::UnsupportedRequiredFeature,
+            None,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stateful_bundle_replay_rejects_a_divergent_state_format_artifact()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (planning, transition) = verified_stateful_planning_transition_plan();
+        let mut bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
+        let provider = &mut bundle.desired.packages[0].implementation.providers[0];
+        let state_format = provider
+            .state_format
+            .as_mut()
+            .expect("stateful fixture provider declares its format");
+        state_format.artifact.content = Sha256Digest::of_bytes("divergent format artifact");
+        let bytes = bundle.canonical_bytes()?;
+        let decoded = ReloadablePlanBundle::decode(&bytes)?;
+
+        let error = decoded
+            .revalidate(stateful_features())
+            .expect_err("state-format and implementation artifacts must remain identical");
+        assert_replay_diagnostic(
+            error,
+            aos_ability_model::DiagnosticCode::UnsupportedRequiredFeature,
+            Some("state-format artifact"),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stateful_bundle_replay_rejects_feature_declaration_drift()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (planning, transition) = verified_stateful_planning_transition_plan();
+        let mut bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)?;
+        bundle.desired.packages[0].implementation.providers[0].state_format = None;
+        let bytes = bundle.canonical_bytes()?;
+        let decoded = ReloadablePlanBundle::decode(&bytes)?;
+
+        let error = decoded
+            .revalidate(stateful_features())
+            .expect_err("feature and state-format declaration must remain coupled");
+        assert_replay_diagnostic(
+            error,
+            aos_ability_model::DiagnosticCode::UnsupportedRequiredFeature,
+            Some("appear together"),
+        );
         Ok(())
     }
 

@@ -375,6 +375,17 @@ pub enum RetryPolicy {
     },
 }
 
+impl RetryPolicy {
+    /// Returns the greatest attempt number admitted by this retry policy.
+    #[must_use]
+    pub const fn max_attempts(&self) -> NonZeroU32 {
+        match self {
+            Self::Disabled => NonZeroU32::MIN,
+            Self::Bounded { max_attempts, .. } => *max_attempts,
+        }
+    }
+}
+
 /// References one exact interface method used for recovery.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

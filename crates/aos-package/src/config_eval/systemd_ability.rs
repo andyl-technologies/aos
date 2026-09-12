@@ -80,6 +80,8 @@ const SYSTEMD_PROVIDER_BOOTSTRAP_HANDLER: &str = "systemd-bootstrap-terminal";
 pub struct SystemdResourceSpec {
     /// Names the logical resource declared by the checked provider.
     pub resource: ResourceId,
+    /// Names the terminal handler selected for this logical owner.
+    pub handler_provider: aos_ability_model::InstanceId,
     /// Names the exact systemd unit authorized for that resource.
     pub unit: String,
     /// Identifies the unit revision that systemd must have parsed and loaded.
@@ -313,6 +315,7 @@ impl SystemdResourceCatalog {
             .map(|resource| resource.qualified.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn observe_no_op(
         &self,
         resource: &ResourceId,
@@ -425,7 +428,7 @@ fn index_resources(
     let mut indexed = BTreeMap::new();
     let mut units = BTreeSet::new();
     for spec in resources {
-        if spec.resource.provider != assignment.provider {
+        if spec.handler_provider != assignment.provider {
             return Err(invalid_data("systemd resource belongs to another provider"));
         }
         validate_unit_name(&spec.unit)?;
@@ -500,11 +503,18 @@ impl TrustedResourceCatalog for SystemdResourceCatalog {
                 "systemd access does not target the operation resource",
             ));
         }
-        if context.expected_provider != Some(&self.assignment) {
+        if context
+            .expected_provider
+            .is_some_and(|assignment| assignment != &self.assignment)
+        {
             return Err(invalid_data(
                 "systemd provider assignment is absent or stale",
             ));
         }
+        let context = ReservationContext {
+            expected_provider: Some(&self.assignment),
+            ..context
+        };
         let authorized_action = SystemdAbilityAction::from_operation(operation)?;
         let resource = self
             .resources
@@ -2180,6 +2190,7 @@ mod tests {
                 handler: handler_key.clone(),
             },
             owns_resource_kinds: vec![interface.name.clone()],
+            state_format: None,
         };
         let assignment = ProviderAssignment {
             provider: binding.provider.clone(),
@@ -2987,6 +2998,7 @@ mod tests {
     fn test_resource_spec(resource: ResourceId, unit: &str) -> SystemdResourceSpec {
         let consumer_observation = test_consumer_observation(&resource.provider);
         SystemdResourceSpec {
+            handler_provider: resource.provider.clone(),
             resource,
             unit: unit.to_string(),
             revision: test_revision(),

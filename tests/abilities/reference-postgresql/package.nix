@@ -42,6 +42,8 @@
     interface
     "aos.postgresql-effects"
     "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6";
+  compatibleStateFormat = "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596";
+  incompatibleStateFormat = "sha256:8825d1eed586b8e50a61fc1ee0cd51330da8ae06b605c865b3201d64d426786d";
 
   loopbackIngressGuarantee = lib.abilities.guarantee {
     name = "aos.guarantee.loopback-tcp-ingress-enforcement";
@@ -496,6 +498,11 @@
     name = "ability-reference-postgresql-control-upgrade";
     distribution = upgradePostgresql;
   };
+  adoptionInterruptedControl = mkControl {
+    name = "ability-reference-postgresql-control-adoption-v2-interrupted";
+    distribution = upgradePostgresql;
+    faultPoint = "hold-quarantine-after-start";
+  };
 
   faultPoints = [
     "hold-quarantine-after-start"
@@ -538,6 +545,7 @@
       };
     };
   upgradeProviderSource = mkProviderSource "upgrade";
+  adoptionV1ProviderSource = mkProviderSource "adoption-v1";
   faultProviderSources = builtins.listToAttrs (map (faultPoint: {
       name = faultPoint;
       value = mkProviderSource faultPoint;
@@ -549,6 +557,7 @@
     selectedControl,
     selectedPostgresql,
     selectedProviderSource,
+    stateFormat ? null,
   }:
     mkDerivation {
       inherit pname;
@@ -557,6 +566,10 @@
       runtimeDeps = [selectedControl selectedPostgresql];
       abilityPackage = {
         activationMode = "structured-effects";
+        requiredFeatures =
+          if stateFormat == null
+          then ["abilities-v1"]
+          else ["abilities-v1" "provider-state-format-v1"];
         artifacts = [selectedControl selectedPostgresql];
         ownership = [[]];
         exports = {
@@ -589,7 +602,10 @@
               };
               composeEntry = "compose";
               transitionEntry = "transition";
-              ownsResourceKinds = [postgresqlInterface.name];
+              ownsResourceKinds =
+                [postgresqlInterface.name]
+                ++ lib.optional (stateFormat != null) postgresqlEffects.name;
+              inherit stateFormat;
               compose = postgresqlProvider.compose;
               transition = postgresqlProvider.transition;
             };
@@ -715,6 +731,34 @@
     selectedPostgresql = upgradePostgresql;
     selectedProviderSource = upgradeProviderSource;
   };
+  adoptionV1Suite = mkSuite {
+    pname = "ability-reference-postgresql-adoption-v1";
+    selectedControl = control;
+    selectedPostgresql = postgresql;
+    selectedProviderSource = adoptionV1ProviderSource;
+    stateFormat = compatibleStateFormat;
+  };
+  adoptionV2Suite = mkSuite {
+    pname = "ability-reference-postgresql-adoption-v2";
+    selectedControl = upgradeControl;
+    selectedPostgresql = upgradePostgresql;
+    selectedProviderSource = upgradeProviderSource;
+    stateFormat = compatibleStateFormat;
+  };
+  adoptionIncompatibleSuite = mkSuite {
+    pname = "ability-reference-postgresql-adoption-incompatible";
+    selectedControl = upgradeControl;
+    selectedPostgresql = upgradePostgresql;
+    selectedProviderSource = upgradeProviderSource;
+    stateFormat = incompatibleStateFormat;
+  };
+  adoptionInterruptedSuite = mkSuite {
+    pname = "ability-reference-postgresql-adoption-v2-interrupted";
+    selectedControl = adoptionInterruptedControl;
+    selectedPostgresql = upgradePostgresql;
+    selectedProviderSource = faultProviderSources."hold-quarantine-after-start";
+    stateFormat = compatibleStateFormat;
+  };
   faultSuites = builtins.listToAttrs (map (faultPoint: {
       name = faultPoint;
       value = mkSuite {
@@ -727,6 +771,10 @@
     faultPoints);
 in {
   inherit
+    adoptionIncompatibleSuite
+    adoptionInterruptedSuite
+    adoptionV1Suite
+    adoptionV2Suite
     control
     faultControls
     faultSuites

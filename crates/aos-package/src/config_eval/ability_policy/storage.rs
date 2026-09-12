@@ -114,6 +114,32 @@ impl CurrentAbilityAuthorityPublisher {
         Ok(document)
     }
 
+    /// Publishes current authority while safely resuming one matching scope.
+    ///
+    /// A reconstructed activation publisher starts its process-local sequence at
+    /// one. When an earlier process already published the same immutable
+    /// authority scope, this method advances from the protected prior sequence
+    /// while holding the publication lock. It rejects a prior document with
+    /// different plan, transaction, policy, or epoch commitments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when publication fails or an existing document cannot
+    /// be authenticated as the same resumable authority scope.
+    pub(crate) fn publish_resuming(
+        &self,
+        publication: CurrentAuthorityPublication<'_>,
+    ) -> Result<CurrentAbilityAuthorityDocument, CurrentAuthorityError> {
+        let mut document = build_publication(publication)?;
+        publish_resuming_authority_file(
+            &self.path,
+            &self.trust_anchor,
+            self.trusted_owner,
+            &mut document,
+        )?;
+        Ok(document)
+    }
+
     /// Explicitly regrants a revoked scope under a newly authenticated policy fence.
     ///
     /// This transition is intentionally separate from [`Self::publish`]. A
@@ -302,6 +328,96 @@ pub(super) fn publish_authority_file(
     }
 
     replace_authority_at(&parent, &bytes)
+}
+
+fn publish_resuming_authority_file(
+    path: &Path,
+    trust_anchor: &Path,
+    trusted_owner: u32,
+    document: &mut CurrentAbilityAuthorityDocument,
+) -> Result<(), CurrentAuthorityError> {
+    let parent = open_authority_parent(path, trust_anchor, trusted_owner)?;
+    let _lock = lock_authority_parent(&parent)?;
+
+    let fence = match read_authority_fence_at(&parent) {
+        Ok(fence) => fence,
+        Err(CurrentAuthorityError::Io { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            match read_authority_at(&parent) {
+                Err(CurrentAuthorityError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound => {}
+                Ok(_) => {
+                    return Err(invalid(
+                        "current authority exists without its protected fence",
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+
+            let fence = AuthorityFenceRecord::active(1, document.policy_fence);
+            write_authority_fence_at(&parent, &fence)?;
+            fence
+        }
+        Err(error) => return Err(error),
+    };
+    if fence.state != AuthorityFenceState::Active {
+        return Err(invalid(
+            "current authority scope is revoked and requires explicit regrant",
+        ));
+    }
+    if fence.policy_fence.as_ref() != Some(&document.policy_fence) {
+        return Err(invalid(
+            "current authority publication does not match the active policy fence",
+        ));
+    }
+
+    document.authority_epoch = fence.epoch;
+    document.validate(&document.required_features.iter().cloned().collect())?;
+    match read_authority_at(&parent) {
+        Ok(previous) => {
+            if !same_resumable_authority(&previous, document) {
+                return Err(invalid(
+                    "existing current authority differs from the resumable publication scope",
+                ));
+            }
+            if document.observed_at_restart_millis < previous.observed_at_restart_millis {
+                return Err(invalid(
+                    "resumed current authority regressed its observation timestamp",
+                ));
+            }
+            let next_sequence = previous
+                .sequence
+                .checked_add(1)
+                .ok_or_else(|| invalid("current authority sequence overflowed during resume"))?;
+            document.sequence = document.sequence.max(next_sequence);
+        }
+        Err(CurrentAuthorityError::Io { source, .. })
+            if source.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let bytes = aos_contract::canonical::to_vec(&*document)
+        .map_err(|error| invalid(format!("encoding current authority: {error}")))?;
+    replace_authority_at(&parent, &bytes)
+}
+
+fn same_resumable_authority(
+    previous: &CurrentAbilityAuthorityDocument,
+    candidate: &CurrentAbilityAuthorityDocument,
+) -> bool {
+    previous.schema == candidate.schema
+        && previous.required_features == candidate.required_features
+        && previous.policy_fence == candidate.policy_fence
+        && previous.transaction == candidate.transaction
+        && previous.authority_epoch == candidate.authority_epoch
+        && previous.policy_revision == candidate.policy_revision
+        && previous.resolution_policy == candidate.resolution_policy
+        && previous.platform_policy == candidate.platform_policy
+        && previous.transition_authority == candidate.transition_authority
+        && previous.max_age_millis == candidate.max_age_millis
+        && previous.plan == candidate.plan
+        && previous.bindings == candidate.bindings
 }
 
 fn regrant_authority_file(

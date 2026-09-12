@@ -241,11 +241,19 @@ impl NativeObservationSession {
         generation: &Path,
         transaction: TransactionId,
         plan: &CheckedEffectPlan,
+        supported_features: BTreeSet<RequiredFeature>,
         switch_lock: Arc<SwitchLockGuard>,
     ) -> Result<Self, GenerationAbilityStoreError> {
         require_host_effect_plan(plan)?;
-        let inventory =
-            NativeInventoryState::for_generation(generation, &transaction, plan, switch_lock)?;
+        let inventory = NativeInventoryState::for_generation(
+            generation,
+            &transaction,
+            plan,
+            None,
+            supported_features,
+            switch_lock,
+        )?;
+        inventory.preflight_observed_current_owners()?;
         Ok(Self {
             transaction,
             inventory,
@@ -263,6 +271,22 @@ impl NativeObservationSession {
     #[must_use]
     pub(crate) fn resource_inventory(&self) -> NativeResourceInventory {
         NativeResourceInventory::new(&self.inventory, &self.inventory_admission)
+    }
+
+    /// Verifies freshly classified consumer cardinality under the retained ledger fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an observed consumer-backed resource lacks one
+    /// exact authenticated consumer, retains foreign consumers, or differs
+    /// from its durable physical identity or revision.
+    pub(crate) fn verify_observed_current_consumers(
+        &self,
+        observations: &[inventory::NativeNoOpResourceObservation],
+        consumer_backed_resources: &BTreeSet<aos_ability_model::ResourceId>,
+    ) -> Result<(), GenerationAbilityStoreError> {
+        self.inventory
+            .verify_observed_current_consumers(observations, consumer_backed_resources)
     }
 }
 
@@ -287,6 +311,7 @@ pub struct RetainedAbilityDiagnosticSource {
     plan_bundle: Sha256Digest,
     desired_planning: Sha256Digest,
     reconciliation: Option<TransitionReconciliation>,
+    provider_adoptions: Vec<aos_ability_model::ProviderAdoptionAuthorization>,
     native_no_op_verified: bool,
     journal: File,
     journal_path: PathBuf,
@@ -307,7 +332,21 @@ impl RetainedAbilityDiagnosticSource {
     ) -> Result<Self, GenerationAbilityStoreError> {
         let generation = generation.into();
         let expected_profile = ProfileScope::System.profile_path();
-        if generation.parent() != Some(expected_profile.as_path()) {
+        Self::load_from_profile(
+            generation,
+            transaction,
+            supported_features,
+            &expected_profile,
+        )
+    }
+
+    pub(in crate::config_eval::ability_store) fn load_from_profile(
+        generation: PathBuf,
+        transaction: &TransactionId,
+        supported_features: BTreeSet<RequiredFeature>,
+        expected_profile: &Path,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        if generation.parent() != Some(expected_profile) {
             return Err(GenerationAbilityStoreError::Conflict(format!(
                 "ability diagnostic generation {} is outside the canonical system profile {}",
                 generation.display(),
@@ -401,6 +440,7 @@ impl RetainedAbilityDiagnosticSource {
             .map_err(GenerationAbilityStoreError::Bundle)?;
         let desired_planning = bundle.desired_planning_digest();
         let reconciliation = bundle.reconciliation().cloned();
+        let provider_adoptions = bundle.provider_adoptions().to_vec();
         let plan = bundle
             .revalidate(supported_features)
             .map_err(GenerationAbilityStoreError::Bundle)?;
@@ -418,10 +458,103 @@ impl RetainedAbilityDiagnosticSource {
             plan_bundle,
             desired_planning,
             reconciliation,
+            provider_adoptions,
             native_no_op_verified,
             journal,
             journal_path,
         })
+    }
+
+    pub(in crate::config_eval::ability_store) fn operation_succeeded(
+        self,
+        limits: JournalLimits,
+        operation: &aos_ability_model::OperationId,
+        attempt: u32,
+        terminal: TerminalResult,
+    ) -> Result<bool, GenerationAbilityStoreError> {
+        let expected_transaction = self.transaction.clone();
+        let expected_bundle = self.plan_bundle;
+        let snapshot = CheckedExecutionJournalSnapshot::read_file(
+            &self.plan,
+            self.journal,
+            self.journal_path,
+            limits,
+        )
+        .map_err(GenerationAbilityStoreError::Transaction)?;
+        if snapshot.transaction() != &expected_transaction
+            || snapshot.plan_bundle() != expected_bundle
+            || snapshot.incomplete_tail_bytes() != 0
+            || snapshot.terminal() != Some(terminal)
+        {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained native consumer journal differs from its protected terminal selection"
+                    .to_string(),
+            ));
+        }
+        let matching = snapshot
+            .operations()
+            .iter()
+            .filter(|summary| summary.operation() == operation)
+            .collect::<Vec<_>>();
+        let [summary] = matching.as_slice() else {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained native consumer operation is absent or ambiguous in its checked journal"
+                    .to_string(),
+            ));
+        };
+        Ok(
+            summary.status() == aos_ability_runtime::execution::OperationStatus::Succeeded
+                && summary.attempt().map(std::num::NonZeroU32::get) == Some(attempt),
+        )
+    }
+
+    pub(in crate::config_eval::ability_store) fn operation_reached_effect_intent(
+        self,
+        limits: JournalLimits,
+        claimed_operation: &aos_ability_model::OperationId,
+        claimed_attempt: u32,
+        terminal: TerminalResult,
+    ) -> Result<bool, GenerationAbilityStoreError> {
+        let expected_transaction = self.transaction.clone();
+        let expected_bundle = self.plan_bundle;
+        let snapshot = CheckedExecutionJournalSnapshot::read_file(
+            &self.plan,
+            self.journal,
+            self.journal_path,
+            limits,
+        )
+        .map_err(GenerationAbilityStoreError::Transaction)?;
+        if snapshot.transaction() != &expected_transaction
+            || snapshot.plan_bundle() != expected_bundle
+            || snapshot.incomplete_tail_bytes() != 0
+            || snapshot.terminal() != Some(terminal)
+        {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained native owner claim journal differs from its protected terminal selection"
+                    .to_string(),
+            ));
+        }
+        let matching = snapshot
+            .operations()
+            .iter()
+            .filter(|summary| summary.operation() == claimed_operation)
+            .collect::<Vec<_>>();
+        let [_summary] = matching.as_slice() else {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "retained native owner claim operation is absent or ambiguous in its checked journal"
+                    .to_string(),
+            ));
+        };
+        Ok(snapshot.records().iter().any(|record| {
+            matches!(
+                record.body().body(),
+                aos_ability_runtime::execution::ExecutionEventKind::EffectIntent {
+                    operation: event_operation,
+                    attempt: event_attempt,
+                    ..
+                } if event_operation == claimed_operation && event_attempt.get() == claimed_attempt
+            )
+        }))
     }
 
     /// Returns the freshly replayed exact checked plan.
@@ -458,6 +591,12 @@ impl RetainedAbilityDiagnosticSource {
     #[must_use]
     pub const fn reconciliation(&self) -> Option<&TransitionReconciliation> {
         self.reconciliation.as_ref()
+    }
+
+    /// Returns the exact adoption endpoints sealed into the retained bundle.
+    #[must_use]
+    pub fn provider_adoptions(&self) -> &[aos_ability_model::ProviderAdoptionAuthorization] {
+        &self.provider_adoptions
     }
 
     /// Reports whether protected orchestration completed this empty native plan.
@@ -607,6 +746,7 @@ impl<'plan> NativeAbilitySession<'plan> {
             authenticated: packages,
             platform: plan.binding_plan().environment().platform.clone(),
         };
+        let inventory_features = supported_features.clone();
         let mut store = GenerationAbilityStore::with_bundle_and_lock(
             &generation,
             bundle,
@@ -618,18 +758,30 @@ impl<'plan> NativeAbilitySession<'plan> {
             &generation,
             &transaction,
             plan,
+            store.pending_bundle.as_ref(),
+            inventory_features,
             Arc::clone(&store.switch_lock),
         )?;
         let transaction =
             ExecutionTransaction::open(plan, transaction, &journal, limits, &mut store)
                 .map_err(GenerationAbilityStoreError::Transaction)?;
+        let retained_bundle = store.pending_bundle.as_ref().ok_or_else(|| {
+            GenerationAbilityStoreError::Conflict(
+                "native provider preflight lost its retained plan bundle".to_string(),
+            )
+        })?;
+        inventory.preflight_provider_owners(retained_bundle, &transaction)?;
         let inventory_admission = Arc::new(());
-        Ok(Self {
+        let session = Self {
             transaction,
             inventory,
             inventory_admission,
             store,
-        })
+        };
+        session
+            .inventory
+            .finalize_existing_terminal_marker(&session.transaction.summary())?;
+        Ok(session)
     }
 
     fn open_at(
@@ -661,6 +813,7 @@ impl<'plan> NativeAbilitySession<'plan> {
             authenticated: packages,
             platform: plan.binding_plan().environment().platform.clone(),
         };
+        let inventory_features = supported_features.clone();
         let mut store = GenerationAbilityStore::with_bundle_at(
             &generation,
             bundle,
@@ -672,18 +825,30 @@ impl<'plan> NativeAbilitySession<'plan> {
             &generation,
             &transaction,
             plan,
+            store.pending_bundle.as_ref(),
+            inventory_features,
             Arc::clone(&store.switch_lock),
         )?;
         let transaction =
             ExecutionTransaction::open(plan, transaction, &journal, limits, &mut store)
                 .map_err(GenerationAbilityStoreError::Transaction)?;
+        let retained_bundle = store.pending_bundle.as_ref().ok_or_else(|| {
+            GenerationAbilityStoreError::Conflict(
+                "native provider preflight lost its retained plan bundle".to_string(),
+            )
+        })?;
+        inventory.preflight_provider_owners(retained_bundle, &transaction)?;
         let inventory_admission = Arc::new(());
-        Ok(Self {
+        let session = Self {
             transaction,
             inventory,
             inventory_admission,
             store,
-        })
+        };
+        session
+            .inventory
+            .finalize_existing_terminal_marker(&session.transaction.summary())?;
+        Ok(session)
     }
 
     /// Returns the lock-bound execution transaction.
@@ -696,6 +861,84 @@ impl<'plan> NativeAbilitySession<'plan> {
     #[must_use]
     pub fn resource_inventory(&self) -> NativeResourceInventory {
         NativeResourceInventory::new(&self.inventory, &self.inventory_admission)
+    }
+
+    /// Verifies an effect-free provider-adoption settlement from fresh observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the linked reconciliation or live resource and
+    /// consumer evidence differs from the unsettled durable ownership receipt.
+    pub(crate) fn verify_linked_adoption_no_op(
+        &self,
+        reconciliation: &TransitionReconciliation,
+        observations: &[inventory::NativeNoOpResourceObservation],
+        changed_resources: &BTreeSet<aos_ability_model::ResourceId>,
+        settle: bool,
+    ) -> Result<(), GenerationAbilityStoreError> {
+        let summary = self.transaction.summary();
+        let successful_operations = summary
+            .operations()
+            .iter()
+            .filter(|operation| {
+                operation.status() == aos_ability_runtime::execution::OperationStatus::Succeeded
+            })
+            .map(|operation| {
+                let attempt = operation.attempt().ok_or_else(|| {
+                    GenerationAbilityStoreError::Conflict(
+                        "successful native operation lacks its admitted attempt identity"
+                            .to_string(),
+                    )
+                })?;
+                Ok((operation.operation().operation.clone(), attempt.get()))
+            })
+            .collect::<Result<BTreeMap<_, _>, GenerationAbilityStoreError>>()?;
+        self.inventory
+            .verify_linked_adoption_no_op_with_consumer_status(
+                reconciliation,
+                observations,
+                changed_resources,
+                settle,
+                |consumer, owner_handler| {
+                    if self.inventory.is_current_consumer(consumer) {
+                        self.inventory.current_consumer_operation_succeeded(
+                            consumer,
+                            owner_handler,
+                            &successful_operations,
+                        )
+                    } else {
+                        self.inventory
+                            .consumer_operation_succeeded(consumer, owner_handler)
+                    }
+                },
+            )
+    }
+
+    pub(crate) fn linked_adoption_verification_state(
+        &self,
+        reconciliation: &TransitionReconciliation,
+    ) -> Result<inventory::LinkedAdoptionVerificationState, GenerationAbilityStoreError> {
+        self.inventory
+            .linked_adoption_verification_state(reconciliation)
+    }
+
+    /// Publishes and applies the exact terminal outcome recovered by this session.
+    ///
+    /// Empty transactions must first publish their native no-op verification;
+    /// callers therefore invoke this only after dispatch has performed that
+    /// verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transaction is nonterminal, its immutable
+    /// marker conflicts, or durable ownership finalization fails.
+    pub(crate) fn finalize_terminal_outcome(&self) -> Result<(), GenerationAbilityStoreError> {
+        if self.transaction.summary().terminal().is_none() {
+            return Err(GenerationAbilityStoreError::Conflict(
+                "native terminal finalization requires a terminal transaction".to_string(),
+            ));
+        }
+        self.persist_terminal_marker_after_linked_verification()
     }
 
     /// Persists deterministic graph decisions and returns one bounded work batch.
@@ -877,7 +1120,7 @@ impl<'plan> NativeAbilitySession<'plan> {
         self.transaction
             .settle_failure_before_effect(operation, evidence)
             .map_err(GenerationAbilityStoreError::Transaction)?;
-        self.persist_terminal_marker()
+        self.persist_terminal_marker_after_linked_verification()
     }
 
     /// Releases every held resource after durable operation settlement.
@@ -982,7 +1225,7 @@ impl<'plan> NativeAbilitySession<'plan> {
                 .join(NATIVE_NO_OP_VERIFICATION_FILE),
             &bytes,
         )?;
-        self.persist_terminal_marker()
+        self.persist_terminal_marker_after_linked_verification()
     }
 
     fn preserve_outcome_on_marker_failure<T>(
@@ -1002,6 +1245,29 @@ impl<'plan> NativeAbilitySession<'plan> {
         let Some(terminal) = self.transaction.summary().terminal() else {
             return Ok(());
         };
+        if terminal == TerminalResult::Succeeded && self.inventory.has_provider_adoptions() {
+            // A successful adoption is not terminal until the dispatcher has
+            // durably recorded the post-effect linked observation.
+            return Ok(());
+        }
+        self.publish_terminal_marker(terminal)
+    }
+
+    fn persist_terminal_marker_after_linked_verification(
+        &self,
+    ) -> Result<(), GenerationAbilityStoreError> {
+        let terminal = self.transaction.summary().terminal().ok_or_else(|| {
+            GenerationAbilityStoreError::Conflict(
+                "native terminal finalization requires a terminal transaction".to_string(),
+            )
+        })?;
+        self.publish_terminal_marker(terminal)
+    }
+
+    fn publish_terminal_marker(
+        &self,
+        terminal: TerminalResult,
+    ) -> Result<(), GenerationAbilityStoreError> {
         if !terminal_is_prune_eligible(terminal) {
             // Intervention is a durable journal state that recovery may later
             // resolve. Leave the marker absent until resources are released
@@ -1014,19 +1280,29 @@ impl<'plan> NativeAbilitySession<'plan> {
             plan: self.transaction.plan().id(),
             terminal,
         };
-        let bytes = aos_contract::canonical::to_vec(&marker).map_err(|source| {
-            GenerationAbilityStoreError::Operation(anyhow::anyhow!(
-                "encoding terminal marker: {source:#}"
-            ))
-        })?;
-        publish_named_immutable(
-            &self
-                .store
-                .transaction_dir(self.transaction.transaction())
-                .join(TERMINAL_MARKER_FILE),
-            &bytes,
-        )
+        let marker_path = self
+            .store
+            .transaction_dir(self.transaction.transaction())
+            .join(TERMINAL_MARKER_FILE);
+        publish_terminal_marker_and_finalize(&marker_path, &marker, || {
+            self.inventory
+                .finalize_terminal_ownership(&self.transaction.summary())
+        })
     }
+}
+
+fn publish_terminal_marker_and_finalize(
+    marker_path: &Path,
+    marker: &TerminalMarker,
+    finalize: impl FnOnce() -> Result<(), GenerationAbilityStoreError>,
+) -> Result<(), GenerationAbilityStoreError> {
+    let bytes = aos_contract::canonical::to_vec(marker).map_err(|source| {
+        GenerationAbilityStoreError::Operation(anyhow::anyhow!(
+            "encoding terminal marker: {source:#}"
+        ))
+    })?;
+    publish_named_immutable(marker_path, &bytes)?;
+    finalize()
 }
 
 fn require_host_effect_plan(plan: &CheckedEffectPlan) -> Result<(), GenerationAbilityStoreError> {
@@ -1534,6 +1810,22 @@ pub(crate) fn generation_must_be_retained(generation: &Path) -> anyhow::Result<b
         .consumers
         .iter()
         .any(|consumer| consumer.generation == name)
+        || ledger.owners.iter().any(|owner| {
+            owner.generation == name
+                || owner.claim_by.iter().any(|claim| claim.generation == name)
+                || owner
+                    .established_by
+                    .as_ref()
+                    .is_some_and(|establishment| establishment.generation == name)
+                || owner.adoption.as_ref().is_some_and(|receipt| {
+                    receipt.source_generation == name
+                        || receipt.source_establishment.generation == name
+                        || receipt
+                            .linked_verification
+                            .as_ref()
+                            .is_some_and(|verification| verification.generation == name)
+                })
+        })
     {
         return Ok(true);
     }
@@ -1688,7 +1980,8 @@ mod tests {
     use aos_ability_model::{
         AbilityValue, AccessMode, AggregateId, ControllerAssignment, DependencyEdge,
         DependencyKind, LocalKey, MethodReference, OperationFamily, OperationId, PlanNodeKey,
-        ProviderImplementationReference, ServiceAction, ValueExpression, ValuePhase, builtin,
+        ProviderAssignment, ProviderImplementationReference, ServiceAction, ValueExpression,
+        ValuePhase, builtin,
     };
     use aos_ability_plan::test_support::verified_planning_transition_plan;
     use aos_ability_runtime::adapter::ReservationContext;
@@ -1811,6 +2104,37 @@ mod tests {
             .expect("combined systemd read/write plan must pass production validation")
     }
 
+    fn checked_handler_assignment(
+        plan: &CheckedEffectPlan,
+        operation: &aos_ability_model::Operation,
+    ) -> ProviderAssignment {
+        let binding = plan
+            .binding_plan()
+            .binding(&operation.binding)
+            .expect("test operation binding must exist");
+        let provider = plan
+            .binding_plan()
+            .environment()
+            .providers
+            .iter()
+            .find(|provider| {
+                provider.provider == binding.provider
+                    && provider.interface == binding.interface
+                    && provider.implementation == binding.implementation
+            })
+            .expect("test handler assignment must be in checked inventory");
+
+        ProviderAssignment {
+            provider: provider.provider.clone(),
+            interface: provider.interface.clone(),
+            implementation: provider.implementation.clone(),
+            incarnation: provider
+                .incarnation
+                .clone()
+                .expect("test handler assignment must have an incarnation"),
+        }
+    }
+
     #[test]
     fn mutating_native_reservation_publishes_a_durable_conservative_claim()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1826,6 +2150,7 @@ mod tests {
             plan: plan.id(),
             operation: operation.key.clone(),
         };
+        let assignment = checked_handler_assignment(&plan, operation);
         let qualified = NativeQualifiedResource::systemd(
             operation.target.resource.clone(),
             "/org/freedesktop/systemd1/unit/example_2eservice",
@@ -1837,7 +2162,7 @@ mod tests {
                 transaction: &transaction,
                 operation: &operation_id,
                 attempt: NonZeroU32::new(1).ok_or("test attempt must be positive")?,
-                expected_provider: None,
+                expected_provider: Some(&assignment),
                 recovery_remaining_millis: 1_000,
             },
             operation,
@@ -1879,6 +2204,7 @@ mod tests {
             plan: plan.id(),
             operation: operation.key.clone(),
         };
+        let assignment = checked_handler_assignment(&plan, operation);
         let qualified = NativeQualifiedResource::systemd(
             operation.target.resource.clone(),
             "/org/freedesktop/systemd1/unit/example_2eservice",
@@ -1890,7 +2216,7 @@ mod tests {
                 transaction: &transaction,
                 operation: &operation_id,
                 attempt: NonZeroU32::new(1).ok_or("test attempt must be positive")?,
-                expected_provider: None,
+                expected_provider: Some(&assignment),
                 recovery_remaining_millis: 1_000,
             },
             operation,
@@ -1934,11 +2260,12 @@ mod tests {
         let observe_a_id = operation_id(observe_a);
         let observe_b_id = operation_id(observe_b);
         let start_id = operation_id(start);
+        let assignment = checked_handler_assignment(&plan, observe_a);
         let context = |operation| ReservationContext {
             transaction: &transaction,
             operation,
             attempt: NonZeroU32::new(1).expect("test attempt is positive"),
-            expected_provider: None,
+            expected_provider: Some(&assignment),
             recovery_remaining_millis: 1_000,
         };
 
@@ -1988,6 +2315,7 @@ mod tests {
             plan: plan.id(),
             operation: operation.key.clone(),
         };
+        let assignment = checked_handler_assignment(&plan, operation);
         let qualified = NativeQualifiedResource::systemd(
             operation.target.resource.clone(),
             "/org/freedesktop/systemd1/unit/example_2eservice",
@@ -1998,7 +2326,7 @@ mod tests {
                 transaction: &transaction,
                 operation: &operation_id,
                 attempt: NonZeroU32::new(1).ok_or("test attempt must be positive")?,
-                expected_provider: None,
+                expected_provider: Some(&assignment),
                 recovery_remaining_millis: 1_000,
             },
             operation,
@@ -2036,6 +2364,7 @@ mod tests {
             plan: plan.id(),
             operation: operation.key.clone(),
         };
+        let assignment = checked_handler_assignment(&plan, operation);
         let qualified = NativeQualifiedResource::systemd(
             operation.target.resource.clone(),
             "/org/freedesktop/systemd1/unit/example_2eservice",
@@ -2046,7 +2375,7 @@ mod tests {
                 transaction: &transaction,
                 operation: &operation_id,
                 attempt: NonZeroU32::new(1).ok_or("test attempt must be positive")?,
-                expected_provider: None,
+                expected_provider: Some(&assignment),
                 recovery_remaining_millis: 1_000,
             },
             operation,
@@ -2144,6 +2473,7 @@ mod tests {
             plan: plan.id(),
             operation: operation.key.clone(),
         };
+        let assignment = checked_handler_assignment(&plan, operation);
         let qualified = NativeQualifiedResource::systemd(
             operation.target.resource.clone(),
             "/org/freedesktop/systemd1/unit/example_2eservice",
@@ -2152,7 +2482,7 @@ mod tests {
             transaction: &transaction,
             operation: &operation_id,
             attempt: NonZeroU32::new(1).ok_or("test attempt must be positive")?,
-            expected_provider: None,
+            expected_provider: Some(&assignment),
             recovery_remaining_millis: 1_000,
         };
         let mut reservation =
@@ -2371,6 +2701,52 @@ mod tests {
         assert!(terminal_is_prune_eligible(
             aos_ability_model::document::TerminalResult::Succeeded
         ));
+    }
+
+    fn assert_recovered_nonempty_terminal_publishes_missing_marker(
+        terminal: aos_ability_model::document::TerminalResult,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let marker_path = directory.path().join(TERMINAL_MARKER_FILE);
+        let plan = checked_systemd_manager_effect_plan();
+        assert!(!plan.operations().is_empty());
+        let marker = TerminalMarker {
+            schema: TERMINAL_MARKER_SCHEMA.to_string(),
+            transaction: TransactionId(LocalKey::new("recovered-native")?),
+            plan: plan.id(),
+            terminal,
+        };
+        let finalized = std::cell::Cell::new(false);
+
+        assert!(!marker_path.exists());
+        publish_terminal_marker_and_finalize(&marker_path, &marker, || {
+            finalized.set(true);
+            Ok(())
+        })?;
+
+        assert!(finalized.get());
+        let published: TerminalMarker = aos_contract::canonical::from_slice(
+            &std::fs::read(marker_path)?,
+            "recovered terminal marker",
+        )?;
+        assert_eq!(published, marker);
+        Ok(())
+    }
+
+    #[test]
+    fn recovered_nonempty_success_publishes_a_missing_terminal_marker_and_finalizes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_recovered_nonempty_terminal_publishes_missing_marker(
+            aos_ability_model::document::TerminalResult::Succeeded,
+        )
+    }
+
+    #[test]
+    fn recovered_nonempty_settled_failure_publishes_a_missing_terminal_marker_and_finalizes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_recovered_nonempty_terminal_publishes_missing_marker(
+            aos_ability_model::document::TerminalResult::SettledFailure,
+        )
     }
 
     #[test]

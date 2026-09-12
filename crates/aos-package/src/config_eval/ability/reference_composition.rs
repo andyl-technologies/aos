@@ -1934,6 +1934,7 @@ fn teardown_authority(
         authorization_policy_revision: desired.checked_binding().document().policy_revision,
         teardown_bindings,
         teardown_providers,
+        provider_adoptions: Vec::new(),
     };
     let expected_digest = document.content_digest().unwrap();
     fixture

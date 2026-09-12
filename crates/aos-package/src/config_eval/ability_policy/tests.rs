@@ -652,6 +652,55 @@ fn native_no_op_requires_fresh_exact_grants_assignments_and_resource_revision() 
 }
 
 #[test]
+fn linked_native_no_op_authorizes_the_exact_observed_stopped_or_absent_state() {
+    let stopped_fixture = AuthorityFixture::new();
+    let stopped = CurrentResourceState::Stopped {
+        revision: stopped_fixture.revision,
+    };
+    let document = stopped_fixture.publish(1, 1_000, stopped);
+    let mut admission = stopped_fixture.admission_policy(&document);
+    let stopped_observations = vec![CurrentResourceObservation {
+        resource: stopped_fixture.resource.clone(),
+        state: stopped,
+    }];
+    admission
+        .authorize_native_observed_no_op(
+            &stopped_fixture.plan,
+            std::slice::from_ref(&stopped_fixture.assignment),
+            &stopped_observations,
+        )
+        .expect("exact stopped union authority");
+
+    let divergent = CurrentResourceState::Divergent {
+        revision: stopped_fixture.revision,
+    };
+    stopped_fixture.publish(2, 1_000, divergent);
+    assert!(
+        admission
+            .authorize_native_observed_no_op(
+                &stopped_fixture.plan,
+                std::slice::from_ref(&stopped_fixture.assignment),
+                &stopped_observations,
+            )
+            .is_err()
+    );
+
+    let absent_fixture = AuthorityFixture::new();
+    let absent_document = absent_fixture.publish(1, 1_000, CurrentResourceState::Absent);
+    let mut absent_admission = absent_fixture.admission_policy(&absent_document);
+    absent_admission
+        .authorize_native_observed_no_op(
+            &absent_fixture.plan,
+            std::slice::from_ref(&absent_fixture.assignment),
+            &[CurrentResourceObservation {
+                resource: absent_fixture.resource.clone(),
+                state: CurrentResourceState::Absent,
+            }],
+        )
+        .expect("exact absent union authority");
+}
+
+#[test]
 fn publisher_rejects_cross_policy_binding_shadowing() {
     let fixture = AuthorityFixture::new();
     let binding = fixture.plan.binding_plan().bindings()[0].clone();
@@ -678,6 +727,7 @@ fn publisher_rejects_cross_policy_binding_shadowing() {
             binding,
         }],
         teardown_providers: Vec::new(),
+        provider_adoptions: Vec::new(),
     };
     let error = CurrentAbilityAuthorityPublisher::for_test(
         fixture.path.clone(),
@@ -810,6 +860,89 @@ fn absent_reconciliation_publication_is_transaction_linked() {
 }
 
 #[test]
+fn reconstructed_publisher_advances_the_protected_sequence() {
+    let fixture = AuthorityFixture::new();
+    let observations = || {
+        vec![CurrentResourceObservation {
+            resource: fixture.resource.clone(),
+            state: CurrentResourceState::Present {
+                revision: fixture.revision,
+            },
+        }]
+    };
+    let mut original = fixture.publishing_policy(true);
+    let first = original
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            observations(),
+        )
+        .expect("initial authority publication");
+    let second = original
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            observations(),
+        )
+        .expect("advanced authority publication");
+    drop(original);
+
+    let mut reconstructed = fixture.publishing_policy(true);
+    let resumed = reconstructed
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            observations(),
+        )
+        .expect("reconstructed authority publication");
+
+    assert_eq!(first.sequence, 1);
+    assert_eq!(second.sequence, 2);
+    assert_eq!(resumed.sequence, 3);
+    assert_eq!(resumed.authority_epoch, second.authority_epoch);
+}
+
+#[test]
+fn reconstructed_publisher_rejects_a_mismatched_transaction_without_replacement() {
+    let fixture = AuthorityFixture::new();
+    let observations = || {
+        vec![CurrentResourceObservation {
+            resource: fixture.resource.clone(),
+            state: CurrentResourceState::Present {
+                revision: fixture.revision,
+            },
+        }]
+    };
+    let mut original = fixture.publishing_policy(true);
+    original
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            observations(),
+        )
+        .expect("initial authority publication");
+    let selected = std::fs::read(&fixture.path).expect("selected authority bytes");
+    drop(original);
+
+    let mut mismatched = fixture.publishing_policy(true);
+    mismatched.transaction =
+        TransactionId(LocalKey::new("different-activation").expect("valid mismatched transaction"));
+    let error = mismatched
+        .publish_authority(
+            &fixture.plan,
+            std::slice::from_ref(&fixture.assignment),
+            observations(),
+        )
+        .expect_err("another transaction must not resume the selected authority");
+
+    assert!(error.to_string().contains("resumable publication scope"));
+    assert_eq!(
+        std::fs::read(&fixture.path).expect("unchanged authority bytes"),
+        selected
+    );
+}
+
+#[test]
 fn unknown_resource_observation_fails_closed() {
     let fixture = AuthorityFixture::new();
     let document = fixture.publish(1, 1_000, CurrentResourceState::Absent);
@@ -932,7 +1065,7 @@ fn foreign_resource_is_checked_against_its_own_provider_incarnation() {
         observation.clone(),
     );
 
-    require_current_resource_evidence(&document, &access, &current)
+    require_current_resource_evidence(&document, &foreign_assignment, &access, &current)
         .expect("foreign resource must use its own provider assignment");
 
     let stale = ResourceAdmissionEvidence::new_with_revision_observation(
@@ -941,9 +1074,9 @@ fn foreign_resource_is_checked_against_its_own_provider_incarnation() {
         ResourceRevisionObservation::Absent,
         observation,
     );
-    let error = require_current_resource_evidence(&document, &access, &stale)
+    let error = require_current_resource_evidence(&document, &foreign_assignment, &access, &stale)
         .expect_err("stale foreign provider incarnation must fail closed");
-    assert!(error.to_string().contains("own current provider"));
+    assert!(error.to_string().contains("checked handler"));
 }
 
 #[test]

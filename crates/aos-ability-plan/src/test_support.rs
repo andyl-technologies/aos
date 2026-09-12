@@ -2,15 +2,16 @@
 
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AggregationContract, AggregationScope, BindingId,
     DeploymentObligation, ExportDeclaration, ImplementationKind, InstanceId, LocalKey,
-    ObligationKind, PackageDocument, PackageImplementation, ProviderImplementation,
-    ProviderImplementationReference, ResourceLifetime, TeardownBindingAuthorization,
-    TransitionAuthorizationDocument, VersionedDocument,
+    ObligationKind, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
+    ProviderImplementation, ProviderImplementationReference, ProviderStateFormat, RequiredFeature,
+    ResourceLifetime, TeardownBindingAuthorization, TransitionAuthorizationDocument,
+    VersionedDocument,
 };
 use aos_ability_validate::{
     CheckedEffectPlan, CheckedTransitionAuthority, TransitionAuthorityInputs, ValidationContext,
@@ -78,6 +79,36 @@ pub fn verified_planning_transition_plan() -> (VerifiedPlanningSnapshot, Verifie
     (planning, transition)
 }
 
+/// Builds sealed planning and transition provenance for a stateful provider.
+///
+/// The package declares the version-1 provider state-format feature, owns one
+/// resource kind, and binds its state-format artifact to its implementation
+/// artifact. The fixture therefore exercises feature-aware retained replay.
+///
+/// # Panics
+///
+/// Panics only when the statically constructed fixture stops satisfying a
+/// production planning or transition invariant.
+#[must_use]
+pub fn verified_stateful_planning_transition_plan()
+-> (VerifiedPlanningSnapshot, VerifiedTransitionPlan) {
+    let (context, planning) =
+        build_verified_planning_fixture(false, PlanningFixtureKind::StatefulSelected);
+    let transition = TransitionPlanner::new(&context)
+        .plan(
+            &planning,
+            TransitionInputs {
+                current: None,
+                authority: None,
+                reconciliation: None,
+            },
+            &mut EmptyTransitionEvaluator,
+        )
+        .expect("stateful test transition must produce a checked effect graph");
+
+    (planning, transition)
+}
+
 /// Builds a transition whose desired and retained prior states are identical.
 ///
 /// This fixture exercises prior-snapshot linkage without introducing resource
@@ -142,61 +173,7 @@ pub fn verified_planning_authorized_removal_fixture() -> (
     VerifiedTransitionPlan,
 ) {
     let (context, current) = build_verified_planning_fixture(false, PlanningFixtureKind::Selected);
-    let environment = current.checked_binding().environment().clone();
-    let environment_digest = environment
-        .content_digest()
-        .expect("test environment must have a digest");
-    let mut seed = current.outcome().seed.clone();
-    seed.environment = environment_digest;
-    seed.instances.clear();
-    seed.contributions.clear();
-    seed.child_requests.clear();
-    seed.outputs.clear();
-    seed.controllers.clear();
-    let desired_state_digest = seed
-        .content_digest()
-        .expect("removed-provider desired state must digest");
-    let policy = ResolutionPolicyDocument {
-        schema: ResolutionPolicyDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
-        desired_state: desired_state_digest,
-        environment: environment_digest,
-        policy_revision: environment.policy_revision,
-        candidates: Vec::new(),
-        explicit_bindings: Vec::new(),
-        existing_pins: Vec::new(),
-        operator_orders: Vec::new(),
-        enabled_providers: Vec::new(),
-        obligations: Vec::new(),
-    };
-    let policies = vec![policy];
-    let packages = Vec::new();
-    let outcome = RecursiveComposer::new(&context)
-        .compose(
-            &policies,
-            seed.clone(),
-            environment.clone(),
-            packages.clone(),
-            &mut EmptyEvaluator,
-        )
-        .expect("removed-provider desired state must compose");
-    let snapshot = PlanningSnapshot::from_outcome(&outcome)
-        .expect("removed-provider planning snapshot must encode");
-    let snapshot_digest = snapshot
-        .digest()
-        .expect("removed-provider planning snapshot must digest");
-    let desired = snapshot
-        .verify_structure(
-            &RecursiveComposer::new(&context),
-            PlanningReplayInputs {
-                expected_digest: snapshot_digest,
-                authenticated_policies: &policies,
-                seed,
-                environment,
-                packages,
-            },
-        )
-        .expect("removed-provider planning snapshot must replay");
+    let desired = removed_provider_planning_snapshot(&context, &current, true);
 
     let source = current.checked_binding().bindings()[0].clone();
     let mut request = current.checked_binding().document().requests[0].clone();
@@ -219,6 +196,7 @@ pub fn verified_planning_authorized_removal_fixture() -> (
             binding,
         }],
         teardown_providers: Vec::new(),
+        provider_adoptions: Vec::new(),
     };
     let authorization_digest = authorization_document
         .content_digest()
@@ -249,6 +227,83 @@ pub fn verified_planning_authorized_removal_fixture() -> (
         .expect("authorized removed-provider transition must validate");
 
     (desired, current, authority, transition)
+}
+
+#[cfg(test)]
+pub(crate) fn verified_planning_resource_removal_fixture() -> (
+    ValidationContext,
+    VerifiedPlanningSnapshot,
+    VerifiedPlanningSnapshot,
+) {
+    let (context, current) = build_verified_planning_fixture(false, PlanningFixtureKind::Selected);
+    let desired = removed_provider_planning_snapshot(&context, &current, false);
+
+    (context, desired, current)
+}
+
+fn removed_provider_planning_snapshot(
+    context: &ValidationContext,
+    current: &VerifiedPlanningSnapshot,
+    retain_resources: bool,
+) -> VerifiedPlanningSnapshot {
+    let environment = current.checked_binding().environment().clone();
+    let environment_digest = environment
+        .content_digest()
+        .expect("test environment must have a digest");
+    let mut seed = current.outcome().seed.clone();
+    seed.environment = environment_digest;
+    seed.instances.clear();
+    seed.contributions.clear();
+    seed.child_requests.clear();
+    seed.outputs.clear();
+    seed.controllers.clear();
+    if !retain_resources {
+        seed.resources.clear();
+    }
+    let desired_state_digest = seed
+        .content_digest()
+        .expect("removed-provider desired state must digest");
+    let policy = ResolutionPolicyDocument {
+        schema: ResolutionPolicyDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        desired_state: desired_state_digest,
+        environment: environment_digest,
+        policy_revision: environment.policy_revision,
+        candidates: Vec::new(),
+        explicit_bindings: Vec::new(),
+        existing_pins: Vec::new(),
+        operator_orders: Vec::new(),
+        enabled_providers: Vec::new(),
+        obligations: Vec::new(),
+    };
+    let policies = vec![policy];
+    let packages = Vec::new();
+    let outcome = RecursiveComposer::new(context)
+        .compose(
+            &policies,
+            seed.clone(),
+            environment.clone(),
+            packages.clone(),
+            &mut EmptyEvaluator,
+        )
+        .expect("removed-provider desired state must compose");
+    let snapshot = PlanningSnapshot::from_outcome(&outcome)
+        .expect("removed-provider planning snapshot must encode");
+    let snapshot_digest = snapshot
+        .digest()
+        .expect("removed-provider planning snapshot must digest");
+    snapshot
+        .verify_structure(
+            &RecursiveComposer::new(context),
+            PlanningReplayInputs {
+                expected_digest: snapshot_digest,
+                authenticated_policies: &policies,
+                seed,
+                environment,
+                packages,
+            },
+        )
+        .expect("removed-provider planning snapshot must replay")
 }
 
 /// Builds a validation context with sealed planning and transition provenance.
@@ -292,6 +347,7 @@ fn build_verified_planning_transition_fixture(
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PlanningFixtureKind {
     Selected,
+    StatefulSelected,
     SelectedWithRejection,
     MultipleObligations,
 }
@@ -301,6 +357,20 @@ fn build_verified_planning_fixture(
     kind: PlanningFixtureKind,
 ) -> (ValidationContext, VerifiedPlanningSnapshot) {
     let source = aos_ability_validate::test_support::plan_fixture();
+    let stateful = kind == PlanningFixtureKind::StatefulSelected;
+    let context = if stateful {
+        ValidationContext::new(
+            BTreeSet::from([
+                RequiredFeature::new("abilities-v1").expect("static base ability feature is valid"),
+                RequiredFeature::new(PROVIDER_STATE_FORMAT_V1)
+                    .expect("static provider state-format feature is valid"),
+            ]),
+            source.interfaces.clone(),
+        )
+        .expect("stateful test validation context must construct")
+    } else {
+        source.context
+    };
     let interface = source.binding_plan.bindings[0].interface.clone();
     let provider = source.binding_plan.bindings[0].provider.clone();
     let artifact = source.binding_plan.bindings[0]
@@ -317,7 +387,14 @@ fn build_verified_planning_fixture(
             compose_entry: compose_entry.clone(),
             transition_entry: transition_entry.clone(),
         },
-        owns_resource_kinds: Vec::new(),
+        owns_resource_kinds: stateful
+            .then(|| interface.name.clone())
+            .into_iter()
+            .collect(),
+        state_format: stateful.then(|| ProviderStateFormat {
+            descriptor: aos_contract::Sha256Digest::of_bytes("stateful planning fixture format"),
+            artifact: artifact.clone(),
+        }),
     };
     let descriptor = provider_implementation
         .descriptor_digest()
@@ -329,7 +406,15 @@ fn build_verified_planning_fixture(
     };
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
+        required_features: if stateful {
+            vec![
+                RequiredFeature::new("abilities-v1").expect("static base ability feature is valid"),
+                RequiredFeature::new(PROVIDER_STATE_FORMAT_V1)
+                    .expect("static provider state-format feature is valid"),
+            ]
+        } else {
+            Vec::new()
+        },
         activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: key("planning-provider"),
@@ -463,7 +548,7 @@ fn build_verified_planning_fixture(
     }
     let packages = vec![package];
     let mut evaluator = EmptyEvaluator;
-    let outcome = RecursiveComposer::new(&source.context)
+    let outcome = RecursiveComposer::new(&context)
         .compose(
             &policies,
             desired_state.clone(),
@@ -479,7 +564,7 @@ fn build_verified_planning_fixture(
         .expect("test planning snapshot must have a digest");
     let verified = snapshot
         .verify_structure(
-            &RecursiveComposer::new(&source.context),
+            &RecursiveComposer::new(&context),
             PlanningReplayInputs {
                 expected_digest: snapshot_digest,
                 authenticated_policies: &policies,
@@ -490,7 +575,7 @@ fn build_verified_planning_fixture(
         )
         .expect("test planning snapshot must pass structural replay");
 
-    (source.context, verified)
+    (context, verified)
 }
 
 struct EmptyEvaluator;

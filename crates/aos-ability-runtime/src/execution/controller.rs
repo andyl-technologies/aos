@@ -22,8 +22,9 @@ impl<'plan> ExecutionTransaction<'plan> {
     /// Advances one freshly authorized token through effect or reconciliation.
     ///
     /// The current durable state selects effect dispatch versus reconciliation.
-    /// The driver rechecks policy and held-resource evidence immediately before
-    /// persisting intent. A stale token can never dispatch a second effect.
+    /// The driver rechecks policy and held-resource evidence before persisting
+    /// intent and again after intent is durable, immediately before the external
+    /// adapter call. A stale token can never dispatch a second effect.
     ///
     /// # Errors
     ///
@@ -158,21 +159,33 @@ impl<'plan> ExecutionTransaction<'plan> {
             attempt: admitted.attempt(),
             purpose: admitted.invocation_purpose(),
         };
+        let mut authorize_after_intent =
+            |adapter: &Adapter| authorize_dispatch(admitted, adapter, policy, &method, purpose);
         let mut executor = OperationExecutor::new(adapter, clock, cancellation, &mut hook);
         match action {
-            RecoveryAction::Execute { .. } => {
-                executor.execute(self, context, admitted.prepared_request())
-            }
-            RecoveryAction::ReconcileBeforeRetry { .. } => {
-                executor.reconcile(self, context, admitted.prepared_request().request())
-            }
-            RecoveryAction::ExecuteCompensation => {
-                executor.compensate(self, context, admitted.prepared_request())
-            }
+            RecoveryAction::Execute { .. } => executor.execute(
+                self,
+                context,
+                admitted.prepared_request(),
+                &mut authorize_after_intent,
+            ),
+            RecoveryAction::ReconcileBeforeRetry { .. } => executor.reconcile(
+                self,
+                context,
+                admitted.prepared_request().request(),
+                &mut authorize_after_intent,
+            ),
+            RecoveryAction::ExecuteCompensation => executor.compensate(
+                self,
+                context,
+                admitted.prepared_request(),
+                &mut authorize_after_intent,
+            ),
             RecoveryAction::ReconcileCompensation => executor.reconcile_compensation(
                 self,
                 context,
                 admitted.prepared_request().request(),
+                &mut authorize_after_intent,
             ),
             _ => Err(ExecutionError::StaleAdmission),
         }
@@ -261,8 +274,22 @@ impl<'plan> ExecutionTransaction<'plan> {
             attempt: admitted.attempt(),
             purpose: InvocationPurpose::Cancel,
         };
+        let mut authorize_after_intent = |adapter: &Adapter| {
+            authorize_dispatch(
+                admitted,
+                adapter,
+                policy,
+                &method,
+                InvocationPurpose::Cancel,
+            )
+        };
         let mut executor = OperationExecutor::new(adapter, clock, cancellation, &mut hook);
-        executor.cancel(self, context, admitted.prepared_request().request())
+        executor.cancel(
+            self,
+            context,
+            admitted.prepared_request().request(),
+            &mut authorize_after_intent,
+        )
     }
 
     fn cancellation_context<'token, Adapter, Clock>(

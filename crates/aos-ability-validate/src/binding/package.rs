@@ -86,6 +86,29 @@ pub(super) fn validate_package_document(
     );
     check_strict_order(&package.ownership, &root.child("ownership"), diagnostics);
 
+    let declares_state_format_feature = package
+        .required_features
+        .iter()
+        .any(|feature| feature.as_str() == PROVIDER_STATE_FORMAT_V1);
+    let declares_state_format = package
+        .implementation
+        .providers
+        .iter()
+        .any(|provider| provider.state_format.is_some());
+    if declares_state_format_feature != declares_state_format {
+        push_diagnostic(
+            diagnostics,
+            diagnostic(
+                DiagnosticCode::UnsupportedRequiredFeature,
+                DiagnosticClass::InvalidContract,
+                DiagnosticPhase::Binding,
+                root.child("required_features").components().to_vec(),
+                "provider state-format declarations and their required semantic feature must appear together"
+                    .to_string(),
+            ),
+        );
+    }
+
     let declares_effects = !package.ownership.is_empty()
         || !package.implementation.handlers.is_empty()
         || package.implementation.providers.iter().any(|provider| {
@@ -150,6 +173,51 @@ pub(super) fn validate_package_document(
             &provider_root.child("owns_resource_kinds"),
             diagnostics,
         );
+        if let Some(state_format) = &provider.state_format {
+            let state_format_path = provider_root.child("state_format");
+            if !matches!(
+                provider.implementation,
+                aos_ability_model::ImplementationKind::PureComposition { .. }
+            ) {
+                push_diagnostic(
+                    diagnostics,
+                    diagnostic(
+                        DiagnosticCode::UnsupportedRequiredFeature,
+                        DiagnosticClass::InvalidContract,
+                        DiagnosticPhase::Binding,
+                        state_format_path.components().to_vec(),
+                        "provider state format requires a pure-composition implementation"
+                            .to_string(),
+                    ),
+                );
+            }
+            if provider.owns_resource_kinds.is_empty() {
+                push_diagnostic(
+                    diagnostics,
+                    diagnostic(
+                        DiagnosticCode::UnsupportedRequiredFeature,
+                        DiagnosticClass::InvalidContract,
+                        DiagnosticPhase::Binding,
+                        state_format_path.components().to_vec(),
+                        "provider state format requires at least one owned resource kind"
+                            .to_string(),
+                    ),
+                );
+            }
+            if state_format.artifact != provider.artifact {
+                push_diagnostic(
+                    diagnostics,
+                    diagnostic(
+                        DiagnosticCode::UnsupportedRequiredFeature,
+                        DiagnosticClass::InvalidContract,
+                        DiagnosticPhase::Binding,
+                        state_format_path.child("artifact").components().to_vec(),
+                        "provider state-format artifact must equal its implementation artifact"
+                            .to_string(),
+                    ),
+                );
+            }
+        }
         match provider.descriptor_digest() {
             Ok(descriptor) => {
                 if !implementations.insert(descriptor) {

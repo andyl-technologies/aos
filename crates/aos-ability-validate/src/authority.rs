@@ -110,7 +110,15 @@ pub(crate) fn authorize_invocation(
     if grant.methods.binary_search(&method.method).is_err() {
         return Err(InvocationAuthorizationError::MethodNotGranted);
     }
-    if operation.target.resource.provider != binding.provider {
+    let mediated_owner_target = operation.target.lifetime == binding.lifetime
+        && operation.authority == AuthorityRole::Caller
+        && operation.target.resource.provider == binding.request.consumer
+        && grant.resources.iter().any(|permission| {
+            permission.resource == operation.target.resource
+                && permission.access.is_write()
+                && permission.operations.contains(&operation.method)
+        });
+    if operation.target.resource.provider != binding.provider && !mediated_owner_target {
         return Err(InvocationAuthorizationError::TargetScopeEscape);
     }
     let required_access = required_target_access(&descriptor.operation_family);

@@ -85,6 +85,7 @@ use validation::{
 #[derive(Clone, Debug)]
 pub(crate) struct NativeHostResourceSpec {
     pub(crate) resource: ResourceId,
+    pub(crate) handler_provider: aos_ability_model::InstanceId,
     pub(crate) revision: RevisionId,
     pub(crate) qualification: NativeResourceQualification,
     pub(crate) retained_qualification: Option<NativeResourceQualification>,
@@ -144,7 +145,7 @@ impl NativeHostResourceCatalog {
         let platform = NativePlatformTools::authenticate(&assignment.implementation.artifact)?;
         let mut indexed = BTreeMap::new();
         for spec in resources {
-            if spec.resource.provider != assignment.provider
+            if spec.handler_provider != assignment.provider
                 || NativeHostResourceKind::from_qualification(&spec.qualification) != Some(kind)
             {
                 return Err(invalid(
@@ -213,25 +214,6 @@ impl NativeHostResourceCatalog {
         };
         Ok((resource.qualified.clone(), runtime))
     }
-
-    pub(crate) fn observe_no_op(
-        &self,
-        resource: &ResourceId,
-    ) -> Result<(NativeQualifiedResource, ResourceRevisionObservation), io::Error> {
-        let (qualified, state) = self.classify_runtime_state(resource)?;
-        let revision = match state {
-            RuntimeResourceState::Absent => ResourceRevisionObservation::Absent,
-            RuntimeResourceState::Present {
-                revision,
-                health: RuntimeResourceHealth::Healthy | RuntimeResourceHealth::Stopped,
-            } => ResourceRevisionObservation::Present(revision),
-            RuntimeResourceState::Present {
-                health: RuntimeResourceHealth::Divergent,
-                ..
-            } => ResourceRevisionObservation::Unknown,
-        };
-        Ok((qualified, revision))
-    }
 }
 
 impl TrustedResourceCatalog for NativeHostResourceCatalog {
@@ -244,11 +226,17 @@ impl TrustedResourceCatalog for NativeHostResourceCatalog {
         operation: &Operation,
         access: &ResourceAccess,
     ) -> Result<CatalogReservation<Self::Handle>, Self::Error> {
-        if context.expected_provider != Some(&self.assignment)
+        if context
+            .expected_provider
+            .is_some_and(|assignment| assignment != &self.assignment)
             || operation.target.resource != access.resource
         {
             return Err(invalid("host-resource assignment or access is stale"));
         }
+        let context = ReservationContext {
+            expected_provider: Some(&self.assignment),
+            ..context
+        };
         require_operation_kind(operation, self.kind)?;
         let resource = self
             .resources

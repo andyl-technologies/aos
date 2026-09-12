@@ -60,6 +60,24 @@ inspection; the editor uses references already authenticated by its local or
 Hub loader. A prose-only regression preserves the checked graph and emits no
 reload or restart decision.
 
+The provider-replacement portion of the complete resource-lifecycle row uses
+the production native PostgreSQL path. Authenticated package manifests bind a
+pure provider implementation to its persistent-state format and to the exact
+PostgreSQL resource kind it owns. Transition authority pins the stable owner,
+the source and candidate packages and implementations, and each side's live
+terminal handler assignment. The VM flight rejects an incompatible format
+before effects, runs a compatible replacement against a real PostgreSQL data
+directory, and verifies the changed executable while preserving the database
+system identifier and queryable rows. A second replacement is interrupted
+after PostgreSQL starts but before the outcome is recorded. Its atomic ledger
+receipt survives executor and handler loss, generation cleanup, and Nix-store
+garbage collection; replay reconciles the operation once, a terminal marker
+retires the receipt, and later cleanup collects the unique source artifact.
+Adoption back to the earlier implementation preserves the same durable target.
+The validator regressions separately reject missing feature declarations,
+unselected owners, foreign scopes, ambiguous or stale ledger evidence, and any
+retained owner change that lacks one exact compatible adoption contract.
+
 The test chapters define the evidence needed for these rows. A schema fixture
 does not substitute for an enforcement test; an opaque legacy adapter does not
 establish typed guarantees; one supported provider does not establish semantic

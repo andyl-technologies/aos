@@ -31,10 +31,14 @@ pub const MAX_ABILITY_REFERENCE_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// Returns an error if a built-in feature identifier is invalid.
 pub fn ability_reference_supported_features() -> Result<BTreeSet<RequiredFeature>> {
-    ["abilities-v1", "ability-effects-v1"]
-        .into_iter()
-        .map(|feature| RequiredFeature::new(feature).map_err(invalid_model))
-        .collect()
+    [
+        "abilities-v1",
+        "ability-effects-v1",
+        aos_ability_model::PROVIDER_STATE_FORMAT_V1,
+    ]
+    .into_iter()
+    .map(|feature| RequiredFeature::new(feature).map_err(invalid_model))
+    .collect()
 }
 
 /// One public export and the exact interface document it implements.
@@ -335,6 +339,26 @@ mod tests {
             BTreeSet::from([RequiredFeature::new("abilities-v1").expect("valid feature name")]);
         let decoded = PackageAbilityReference::from_canonical_json(&bytes, &supported)
             .expect("decode supported reference");
+        assert_eq!(decoded, reference);
+    }
+
+    #[test]
+    fn state_format_reference_round_trips_only_for_the_new_reader() {
+        let mut reference = reference();
+        reference.required_features.push(
+            RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
+                .expect("valid state-format feature"),
+        );
+        let bytes = reference.canonical_json().expect("encode reference");
+        let old_reader =
+            BTreeSet::from([RequiredFeature::new("abilities-v1").expect("valid feature")]);
+
+        assert!(PackageAbilityReference::from_canonical_json(&bytes, &old_reader).is_err());
+        let decoded = PackageAbilityReference::from_canonical_json(
+            &bytes,
+            &ability_reference_supported_features().expect("new reader features"),
+        )
+        .expect("new reader accepts state-format reference");
         assert_eq!(decoded, reference);
     }
 

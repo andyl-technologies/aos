@@ -28,14 +28,17 @@ use aos_ability_model::{
     BindingRequest, BindingSource, ContributionPermission, DesiredStateDocument,
     EnvironmentDocument, EnvironmentId, ExecutionStage, ImplementationKind, InstanceId,
     InterfaceDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics,
-    LocalKey, OutputDescriptor, PackageDocument, ProviderImplementation,
-    ProviderImplementationReference, RequiredFeature, ResourceId, ResourceLifetime,
-    ResourcePermission, ResourceRevision, RevisionId, ScopePath, StringConstraint, StringSyntax,
-    ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
+    LocalKey, OutputDescriptor, PackageDocument, ProviderAdoptionAuthorization,
+    ProviderAdoptionEndpoint, ProviderImplementation, ProviderImplementationReference,
+    RequiredFeature, ResourceId, ResourceLifetime, ResourcePermission, ResourceRevision,
+    RevisionId, ScopePath, StringConstraint, StringSyntax, TeardownBindingAuthorization,
+    TeardownProviderAuthorization, TransitionAuthorizationDocument, ValuePhase, ValueSchema,
+    ValueVisibility, VersionedDocument,
 };
 use aos_ability_plan::{
     BindingCandidate, CandidateSelection, CompositionError, EnabledProviderSelection,
-    RecursiveComposer, ResolutionPolicyDocument,
+    PlanningReplayInputs, PlanningSnapshot, RecursiveComposer, ResolutionPolicyDocument,
+    VerifiedPlanningSnapshot,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -118,6 +121,8 @@ struct GenerateOptions {
     authentication: Authentication,
     fault: Option<String>,
     artifact: String,
+    adoption_from: Option<String>,
+    adoption_current_planning: Option<Sha256Digest>,
 }
 
 struct PostgresqlFixture {
@@ -128,6 +133,7 @@ struct PostgresqlFixture {
     selected_document: PackageDocument,
     consumer_package: Option<Sha256Digest>,
     provider: InstanceId,
+    terminal_provider: InstanceId,
     interfaces: BTreeMap<String, InterfaceKey>,
     implementations: BTreeMap<String, ProviderImplementationReference>,
     policy_revision: RevisionId,
@@ -142,6 +148,7 @@ struct ComposedPostgresql {
     bindings: Vec<Binding>,
     selected_document: PackageDocument,
     provider: InstanceId,
+    planning: Option<VerifiedPlanningSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -194,9 +201,27 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
     })?;
 
     let selected_name = selected_package_name(&options)?;
-    let verified = load_verified_packages(&selected_name, options.authentication)?;
+    let adoption_source = options
+        .adoption_from
+        .as_deref()
+        .map(adoption_package_name)
+        .transpose()?;
+    let verified = load_verified_packages(&selected_name, adoption_source, options.authentication)?;
     let fixture = PostgresqlFixture::new(&verified, &selected_name, options.authentication)?;
     let mut composed = fixture.compose(&options.clusters, options.lifecycle)?;
+    let transition_authority = if let Some(source_name) = adoption_source {
+        let current = PostgresqlFixture::new(&verified, source_name, options.authentication)?
+            .compose(&options.clusters, Lifecycle::Full)?;
+        Some(provider_adoption_authority(
+            &composed,
+            &current,
+            options
+                .adoption_current_planning
+                .context("provider adoption lacks the retained current planning digest")?,
+        )?)
+    } else {
+        None
+    };
     let mut native_resources = postgresql_native_resource_map(&composed, &options.clusters)?;
     apply_negative_fault(
         options.fault.as_deref(),
@@ -218,7 +243,7 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
         AuthenticatedPolicySetDocument {
             schema: AuthenticatedPolicySetDocument::SCHEMA_V3.to_string(),
             policies: composed.policies,
-            transition_authority: None,
+            transition_authority,
             native_resource_map: Some(native_resources),
             platform_policy: Some(platform_policy),
         }
@@ -226,7 +251,7 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
         let mut document = AuthenticatedPolicySetDocument::new(
             &desired_document,
             composed.policies,
-            None,
+            transition_authority,
             native_resources,
         )?;
         document.schema = AuthenticatedPolicySetDocument::SCHEMA_V3.to_string();
@@ -235,6 +260,7 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
     };
     if options.authentication == Authentication::Scram
         && !is_negative_fault(options.fault.as_deref())
+        && options.artifact != "adoption-incompatible"
     {
         policy_document.validate(&desired_document)?;
     }
@@ -254,6 +280,217 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
     Ok(())
 }
 
+fn provider_adoption_authority(
+    desired: &ComposedPostgresql,
+    current: &ComposedPostgresql,
+    expected_current_planning: Sha256Digest,
+) -> Result<TransitionAuthorizationDocument> {
+    let desired_planning = desired
+        .planning
+        .as_ref()
+        .context("provider adoption candidate lacks a verified planning snapshot")?;
+    let current_planning = current
+        .planning
+        .as_ref()
+        .context("provider adoption source lacks a verified planning snapshot")?;
+    ensure!(
+        current_planning.snapshot_digest() == expected_current_planning,
+        "synthesized adoption source planning {} differs from the retained prior generation {}",
+        current_planning.snapshot_digest(),
+        expected_current_planning,
+    );
+    ensure!(
+        desired.environment == current.environment,
+        "provider adoption plans must share one authenticated environment"
+    );
+    let resource = desired
+        .desired_state
+        .resources
+        .iter()
+        .filter(|revision| revision.resource.key.as_str().ends_with("-postgresql"))
+        .map(|revision| revision.resource.clone())
+        .collect::<Vec<_>>();
+    let [resource] = resource.as_slice() else {
+        bail!("provider adoption requires exactly one retained PostgreSQL resource");
+    };
+    ensure!(
+        current
+            .desired_state
+            .resources
+            .iter()
+            .any(|revision| revision.resource == *resource),
+        "provider adoption source lacks the retained PostgreSQL resource"
+    );
+
+    let method = key("materialize")?;
+    let candidate = adoption_endpoint(desired, resource, &method)?;
+    let source = adoption_endpoint(current, resource, &method)?;
+    ensure!(
+        source.handler_interface == candidate.handler_interface,
+        "provider adoption changes the PostgreSQL resource kind"
+    );
+    ensure!(
+        source.handler_provider != candidate.handler_provider,
+        "provider adoption source and candidate must use distinct terminal handler instances"
+    );
+
+    let source_binding = current_planning
+        .checked_binding()
+        .binding(&source.handler_binding)
+        .context("provider adoption source handler binding disappeared")?;
+    let source_request = current_planning
+        .checked_binding()
+        .document()
+        .requests
+        .iter()
+        .find(|request| request.id == source_binding.request)
+        .context("provider adoption source binding lost its checked request")?;
+    let stop = key("stop")?;
+    let mut request = source_request.clone();
+    request.id.key = key(&format!("adopt-request-{}", source_binding.id.0.as_str()))?;
+    let mut binding = source_binding.clone();
+    binding.id = BindingId(key(&format!(
+        "adopt-binding-{}",
+        source_binding.id.0.as_str()
+    ))?);
+    binding.request = request.id.clone();
+    binding.policy_revision = desired_planning
+        .checked_binding()
+        .document()
+        .policy_revision;
+    binding.caller_grant.contributions.clear();
+    binding.caller_grant.methods = vec![stop.clone()];
+    binding.caller_grant.resources.retain(|permission| {
+        permission.resource == *resource && permission.operations.contains(&stop)
+    });
+    ensure!(
+        binding.caller_grant.resources.len() == 1,
+        "provider adoption source lacks one exact PostgreSQL Stop grant"
+    );
+    binding.caller_grant.resources[0].operations = vec![stop];
+    binding.provider_grant.methods.clear();
+    binding.provider_grant.contributions.clear();
+    binding.provider_grant.resources.clear();
+    let teardown_bindings = vec![TeardownBindingAuthorization {
+        source_binding: source_binding.id.clone(),
+        request,
+        binding,
+    }];
+
+    let desired_policy_revision = desired_planning
+        .checked_binding()
+        .document()
+        .policy_revision;
+    Ok(TransitionAuthorizationDocument {
+        schema: TransitionAuthorizationDocument::SCHEMA.to_string(),
+        required_features: vec![RequiredFeature::new(
+            aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
+        )?],
+        desired_planning: desired_planning.snapshot_digest(),
+        current_planning: current_planning.snapshot_digest(),
+        desired_policy_revision,
+        prior_policy_revision: current_planning
+            .checked_binding()
+            .document()
+            .policy_revision,
+        authorization_policy_revision: desired_policy_revision,
+        teardown_bindings,
+        teardown_providers: Vec::<TeardownProviderAuthorization>::new(),
+        provider_adoptions: vec![ProviderAdoptionAuthorization {
+            resource: resource.clone(),
+            resource_interface: candidate.handler_interface.clone(),
+            source,
+            candidate,
+        }],
+    })
+}
+
+fn adoption_endpoint(
+    composed: &ComposedPostgresql,
+    resource: &ResourceId,
+    method: &LocalKey,
+) -> Result<ProviderAdoptionEndpoint> {
+    let planning = composed
+        .planning
+        .as_ref()
+        .context("provider adoption endpoint lacks verified planning")?;
+    let binding_plan = planning.checked_binding();
+    let owner_package = composed.selected_document.content_digest()?;
+    let owner = composed
+        .selected_document
+        .implementation
+        .providers
+        .iter()
+        .find(|implementation| {
+            implementation.interface.name.as_str() == PUBLIC_INTERFACE
+                && matches!(
+                    implementation.implementation,
+                    ImplementationKind::PureComposition { .. }
+                )
+                && implementation.state_format.is_some()
+                && implementation
+                    .owns_resource_kinds
+                    .iter()
+                    .any(|kind| kind.as_str() == "aos.postgresql-effects")
+        })
+        .context("provider adoption package lacks its stateful PostgreSQL owner")?;
+    let binding = binding_plan
+        .bindings()
+        .iter()
+        .filter(|binding| {
+            binding.request.consumer == composed.provider
+                && binding.interface.name.as_str() == "aos.postgresql-effects"
+                && binding.caller_grant.methods.contains(method)
+                && binding.caller_grant.resources.iter().any(|permission| {
+                    permission.resource == *resource
+                        && permission.access.is_write()
+                        && permission.operations.contains(method)
+                })
+        })
+        .collect::<Vec<_>>();
+    let [binding] = binding.as_slice() else {
+        bail!("provider adoption lacks one exact PostgreSQL materialization binding");
+    };
+    let handler_package = binding
+        .provider_package
+        .context("provider adoption handler lacks its exact package")?;
+    let assignments = binding_plan
+        .environment()
+        .providers
+        .iter()
+        .filter(|provider| {
+            provider.provider == binding.provider
+                && provider.interface == binding.interface
+                && provider.implementation == binding.implementation
+                && provider.state == ProviderState::Available
+        })
+        .collect::<Vec<_>>();
+    let [assignment] = assignments.as_slice() else {
+        bail!("provider adoption handler lacks one exact live assignment");
+    };
+
+    Ok(ProviderAdoptionEndpoint {
+        provider: composed.provider.clone(),
+        package: owner_package,
+        interface: owner.interface.clone(),
+        implementation: provider_reference(owner)?,
+        state_format: owner
+            .state_format
+            .clone()
+            .context("provider adoption owner lost its state format")?,
+        handler_binding: binding.id.clone(),
+        handler_method: method.clone(),
+        handler_provider: binding.provider.clone(),
+        handler_incarnation: assignment
+            .incarnation
+            .clone()
+            .context("available PostgreSQL assignment has no incarnation")?,
+        handler_interface: binding.interface.clone(),
+        handler_implementation: binding.implementation.clone(),
+        handler_package,
+    })
+}
+
 fn selected_package_name(options: &GenerateOptions) -> Result<String> {
     if let Some(fault) = options.fault.as_deref().and_then(control_fault_name) {
         return Ok(format!("ability-reference-postgresql-fault-{fault}"));
@@ -261,12 +498,30 @@ fn selected_package_name(options: &GenerateOptions) -> Result<String> {
     match options.artifact.as_str() {
         "baseline" => Ok("ability-reference-postgresql".to_string()),
         "upgrade" => Ok("ability-reference-postgresql-upgrade".to_string()),
+        "adoption-v1" => Ok("ability-reference-postgresql-adoption-v1".to_string()),
+        "adoption-v2" => Ok("ability-reference-postgresql-adoption-v2".to_string()),
+        "adoption-incompatible" => {
+            Ok("ability-reference-postgresql-adoption-incompatible".to_string())
+        }
+        "adoption-v2-interrupted" => {
+            Ok("ability-reference-postgresql-adoption-v2-interrupted".to_string())
+        }
         value => bail!("unknown PostgreSQL artifact selection {value:?}"),
+    }
+}
+
+fn adoption_package_name(artifact: &str) -> Result<&'static str> {
+    match artifact {
+        "adoption-v1" => Ok("ability-reference-postgresql-adoption-v1"),
+        "adoption-v2" => Ok("ability-reference-postgresql-adoption-v2"),
+        "adoption-v2-interrupted" => Ok("ability-reference-postgresql-adoption-v2-interrupted"),
+        value => bail!("unknown PostgreSQL adoption source {value:?}"),
     }
 }
 
 fn load_verified_packages(
     selected_name: &str,
+    adoption_source: Option<&str>,
     authentication: Authentication,
 ) -> Result<VerifiedAbilityPackageSet> {
     let config = ApmConfig::load(ProfileScope::System)?;
@@ -276,11 +531,31 @@ fn load_verified_packages(
         &enabled,
         &native_platform(),
     )?;
-    let mut names = vec![selected_name.to_string()];
+    let mut names = if selected_name.starts_with("ability-reference-postgresql-adoption-")
+        || adoption_source.is_some()
+    {
+        [
+            "ability-reference-postgresql-adoption-incompatible",
+            "ability-reference-postgresql-adoption-v1",
+            "ability-reference-postgresql-adoption-v2",
+            "ability-reference-postgresql-adoption-v2-interrupted",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    } else {
+        vec![selected_name.to_string()]
+    };
+    if let Some(source) = adoption_source
+        && !names.iter().any(|name| name == source)
+    {
+        names.push(source.to_string());
+    }
     if authentication == Authentication::Scram {
         names.push("ability-reference-postgresql-consumer".to_string());
     }
     names.sort();
+    names.dedup();
     let runtime = resolve_runtime(&registries, &names)?;
     aos_package::config_eval::ability_activation::verify_runtime_packages(&config, &runtime)
 }
@@ -288,7 +563,7 @@ fn load_verified_packages(
 fn parse_credentialed(arguments: &[String]) -> Result<GenerateOptions> {
     if arguments.len() < 7 {
         bail!(
-            "usage: aos-release-fleet-fixture postgresql-activation OUTPUT DATABASE ROLE CREDENTIAL_VERSION --configuration LABEL [--lifecycle full|remove] [--fault NAME] [--additional-postgresql DATABASE ROLE VERSION CONFIGURATION]... [--postgresql-artifact baseline|upgrade] --operator-authority-output DIR"
+            "usage: aos-release-fleet-fixture postgresql-activation OUTPUT DATABASE ROLE CREDENTIAL_VERSION --configuration LABEL [--lifecycle full|remove] [--fault NAME] [--additional-postgresql DATABASE ROLE VERSION CONFIGURATION]... [--postgresql-artifact baseline|upgrade|adoption-v1|adoption-v2|adoption-v2-interrupted|adoption-incompatible] [--provider-adoption-from adoption-v1|adoption-v2|adoption-v2-interrupted --provider-adoption-current-planning DIGEST] --operator-authority-output DIR"
         );
     }
     let mut options = GenerateOptions {
@@ -304,6 +579,8 @@ fn parse_credentialed(arguments: &[String]) -> Result<GenerateOptions> {
         authentication: Authentication::Scram,
         fault: None,
         artifact: "baseline".to_string(),
+        adoption_from: None,
+        adoption_current_planning: None,
     };
     let mut index = 4;
     while index < arguments.len() {
@@ -345,6 +622,28 @@ fn parse_credentialed(arguments: &[String]) -> Result<GenerateOptions> {
             "--postgresql-artifact" => {
                 let value = required_option(arguments, index, 1, "--postgresql-artifact")?;
                 options.artifact = value[0].clone();
+                index += 2;
+            }
+            "--provider-adoption-from" => {
+                let value = required_option(arguments, index, 1, "--provider-adoption-from")?;
+                ensure!(
+                    options.adoption_from.is_none(),
+                    "--provider-adoption-from is repeated"
+                );
+                options.adoption_from = Some(value[0].clone());
+                index += 2;
+            }
+            "--provider-adoption-current-planning" => {
+                let value =
+                    required_option(arguments, index, 1, "--provider-adoption-current-planning")?;
+                ensure!(
+                    options.adoption_current_planning.is_none(),
+                    "--provider-adoption-current-planning is repeated"
+                );
+                options.adoption_current_planning = Some(
+                    Sha256Digest::parse(&value[0])
+                        .context("parsing retained provider-adoption planning digest")?,
+                );
                 index += 2;
             }
             "--operator-authority-output" => {
@@ -394,6 +693,8 @@ fn parse_terminal(arguments: &[String]) -> Result<GenerateOptions> {
         authentication: Authentication::Trust,
         fault: None,
         artifact: "baseline".to_string(),
+        adoption_from: None,
+        adoption_current_planning: None,
     })
 }
 
@@ -447,6 +748,37 @@ fn validate_options(options: &GenerateOptions) -> Result<()> {
         ensure!(
             control_fault_name(fault).is_some() || AUTHORITY_FAULTS.contains(&fault),
             "unknown PostgreSQL fixture fault {fault:?}"
+        );
+    }
+    if let Some(source) = options.adoption_from.as_deref() {
+        adoption_package_name(source)?;
+        ensure!(
+            matches!(
+                options.artifact.as_str(),
+                "adoption-v1" | "adoption-v2" | "adoption-incompatible" | "adoption-v2-interrupted"
+            ),
+            "provider adoption requires a stateful PostgreSQL candidate"
+        );
+        ensure!(
+            source != options.artifact,
+            "provider adoption must replace the selected package"
+        );
+        ensure!(
+            options.lifecycle == Lifecycle::Full && options.clusters.len() == 1,
+            "provider adoption fixture requires one retained full-lifecycle cluster"
+        );
+        ensure!(
+            options.fault.is_none(),
+            "provider adoption cannot be combined with another fixture fault"
+        );
+        ensure!(
+            options.adoption_current_planning.is_some(),
+            "provider adoption requires the retained current planning digest"
+        );
+    } else {
+        ensure!(
+            options.adoption_current_planning.is_none(),
+            "a retained current planning digest requires provider adoption"
         );
     }
     Ok(())
@@ -522,7 +854,11 @@ impl PostgresqlFixture {
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         let context = ValidationContext::new(
-            BTreeSet::from([RequiredFeature::new("abilities-v1")?]),
+            BTreeSet::from([
+                RequiredFeature::new("abilities-v1")?,
+                RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)?,
+                RequiredFeature::new(aos_ability_model::PROVIDER_STATE_ADOPTION_V1)?,
+            ]),
             interface_documents,
         )?;
 
@@ -573,17 +909,25 @@ impl PostgresqlFixture {
                 PROVIDER_INSTANCE
             },
         )?;
+        let terminal_provider = terminal_provider_for_package(&environment_id, selected_package)?;
         let guarantee = host_network_policy_loopback_tcp_ingress_guarantee()?;
         let mut providers = Vec::new();
-        if authentication == Authentication::Scram {
-            providers.push(ProviderInventory {
-                provider: provider.clone(),
-                interface: interfaces[PUBLIC_INTERFACE].clone(),
-                implementation: implementations[PUBLIC_INTERFACE].clone(),
-                state: ProviderState::Declared,
-                incarnation: None,
-                guarantees: Vec::new(),
-            });
+        let mut terminal_implementations = BTreeMap::<String, Vec<_>>::new();
+        for (package_digest, package) in &identified {
+            for implementation in &package.implementation.providers {
+                if matches!(
+                    implementation.implementation,
+                    ImplementationKind::TerminalHandler { .. }
+                ) {
+                    let reference = provider_reference(implementation)?;
+                    let implementations = terminal_implementations
+                        .entry(implementation.interface.name.as_str().to_string())
+                        .or_default();
+                    if !implementations.contains(&(*package_digest, reference.clone())) {
+                        implementations.push((*package_digest, reference));
+                    }
+                }
+            }
         }
         for interface in [
             "aos.credential-delivery-effects",
@@ -597,26 +941,37 @@ impl PostgresqlFixture {
             {
                 continue;
             }
-            providers.push(ProviderInventory {
-                provider: provider.clone(),
-                interface: interfaces[interface].clone(),
-                implementation: implementations[interface].clone(),
-                state: ProviderState::Available,
-                incarnation: Some(aos_ability_model::IncarnationId::new(&format!(
-                    "postgresql-{}",
-                    interface.replace('.', "-")
-                ))?),
-                guarantees: if interface == "aos.host-network-policy-effects" {
-                    vec![guarantee.clone()]
-                } else {
-                    Vec::new()
-                },
-            });
+            for (package_digest, implementation) in terminal_implementations
+                .get(interface)
+                .context("PostgreSQL terminal implementation inventory is incomplete")?
+            {
+                providers.push(ProviderInventory {
+                    provider: terminal_provider_for_package(&environment_id, *package_digest)?,
+                    interface: interfaces[interface].clone(),
+                    implementation: implementation.clone(),
+                    state: ProviderState::Available,
+                    incarnation: Some(aos_ability_model::IncarnationId::new(&format!(
+                        "postgresql-{}-{}",
+                        interface.replace('.', "-"),
+                        digest_label(*package_digest)
+                    ))?),
+                    guarantees: if interface == "aos.host-network-policy-effects" {
+                        vec![guarantee.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                });
+            }
         }
         providers.sort_by(|left, right| {
             left.provider
                 .cmp(&right.provider)
                 .then_with(|| left.interface.cmp(&right.interface))
+                .then_with(|| {
+                    left.implementation
+                        .descriptor
+                        .cmp(&right.implementation.descriptor)
+                })
         });
         let policy_revision = RevisionId(digest(40));
         let evaluator = RestrictedAbilityEvaluator::new(
@@ -650,6 +1005,7 @@ impl PostgresqlFixture {
             selected_document,
             consumer_package,
             provider,
+            terminal_provider,
             interfaces,
             implementations,
             policy_revision,
@@ -672,6 +1028,22 @@ impl PostgresqlFixture {
                 &mut self.evaluator,
             ) {
                 Ok(outcome) => {
+                    let snapshot = PlanningSnapshot::from_outcome(&outcome)
+                        .context("constructing PostgreSQL planning snapshot")?;
+                    let mut authenticated_policies = policies.clone();
+                    authenticated_policies.sort_by_key(|policy| policy.desired_state);
+                    let planning = snapshot
+                        .verify_structure(
+                            &RecursiveComposer::new(&self.context),
+                            PlanningReplayInputs {
+                                expected_digest: snapshot.digest()?,
+                                authenticated_policies: &authenticated_policies,
+                                seed: seed.clone(),
+                                environment: self.environment.clone(),
+                                packages: self.packages.clone(),
+                            },
+                        )
+                        .context("verifying PostgreSQL planning snapshot")?;
                     return Ok(ComposedPostgresql {
                         seed,
                         environment: self.environment,
@@ -680,6 +1052,7 @@ impl PostgresqlFixture {
                         bindings: outcome.resolution.checked.bindings().to_vec(),
                         selected_document: self.selected_document,
                         provider: self.provider,
+                        planning: Some(planning),
                     });
                 }
                 Err(CompositionError::PolicyRequired { desired_state, .. }) => {
@@ -821,6 +1194,11 @@ impl PostgresqlFixture {
             .context("PostgreSQL request has no accepted interface")?
             .clone();
         let terminal = interface.name.as_str() != PUBLIC_INTERFACE;
+        let candidate_provider = if terminal {
+            self.terminal_provider.clone()
+        } else {
+            self.provider.clone()
+        };
         let resources = if terminal {
             terminal_resource_permissions(
                 desired,
@@ -858,7 +1236,7 @@ impl PostgresqlFixture {
             key: binding_key(&request.id)?,
             request: request.id.clone(),
             interface,
-            provider: self.provider.clone(),
+            provider: candidate_provider.clone(),
             provider_package: self.selected_package,
             implementation,
             caller_grant: AuthorityGrant {
@@ -868,10 +1246,10 @@ impl PostgresqlFixture {
                 resources: resources.clone(),
             },
             provider_grant: AuthorityGrant {
-                principal: self.provider.clone(),
+                principal: candidate_provider,
                 methods: Vec::new(),
                 contributions: Vec::new(),
-                resources,
+                resources: Vec::new(),
             },
             guarantees: request.guarantees.clone(),
             policy_revision: self.policy_revision,
@@ -956,6 +1334,7 @@ impl PostgresqlFixture {
             bindings: vec![binding],
             selected_document: self.selected_document,
             provider: self.provider,
+            planning: None,
         })
     }
 }
@@ -1136,6 +1515,20 @@ fn instance(environment: &EnvironmentId, name: &str) -> Result<InstanceId> {
         environment: environment.clone(),
         key: key(name)?,
     })
+}
+
+fn terminal_provider_for_package(
+    environment: &EnvironmentId,
+    package: Sha256Digest,
+) -> Result<InstanceId> {
+    instance(
+        environment,
+        &format!("postgresql-handler-{}", package.hex()),
+    )
+}
+
+fn digest_label(digest: Sha256Digest) -> String {
+    digest.hex()[..12].to_string()
 }
 
 fn binding_key(request: &aos_ability_model::RequestId) -> Result<LocalKey> {

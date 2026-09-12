@@ -267,12 +267,16 @@ where
     /// Returns an error when a journal boundary fails or a configured boundary
     /// hook stops execution. A halt after intent deliberately leaves recovery to
     /// reconcile even when the test hook stopped before adapter dispatch.
-    pub(crate) fn execute(
+    pub(crate) fn execute<Authorize>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
         request: &PreparedRequest<Adapter::Request>,
-    ) -> Result<ExecutionStep, ExecutionError> {
+        authorize_dispatch: &mut Authorize,
+    ) -> Result<ExecutionStep, ExecutionError>
+    where
+        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+    {
         // Keep configured room for intent, outcome, and one complete
         // reconciliation round before any external effect can begin.
         journal.ensure_capacity(4)?;
@@ -320,6 +324,7 @@ where
             return Ok(ExecutionStep::RejectedBeforeEffect);
         }
 
+        authorize_dispatch(self.adapter)?;
         let disposition = self.adapter.execute(request.request(), &control);
         self.observe(Boundary::EffectReturned, &control)?;
         let (event, step) = match disposition {
@@ -367,12 +372,16 @@ where
     /// Returns an error when a journal boundary fails or a configured boundary
     /// hook halts execution. `SafeToRetry` is returned only after the provider's
     /// observation and its evidence are durable.
-    pub(crate) fn reconcile(
+    pub(crate) fn reconcile<Authorize>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
         request: &Adapter::Request,
-    ) -> Result<ExecutionStep, ExecutionError> {
+        authorize_dispatch: &mut Authorize,
+    ) -> Result<ExecutionStep, ExecutionError>
+    where
+        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+    {
         journal.ensure_capacity(2)?;
         let control = LiveControl::new(
             self.clock,
@@ -396,6 +405,7 @@ where
             return Err(ExecutionError::RecoveryDeadlineExpired);
         }
 
+        authorize_dispatch(self.adapter)?;
         let disposition = self.adapter.reconcile(request, &control);
         self.observe(Boundary::ReconciliationReturned, &control)?;
         let (result, evidence, outputs, step) = match disposition {
@@ -444,12 +454,16 @@ where
     }
 
     /// Persists and dispatches an explicitly requested compensation effect.
-    pub(crate) fn compensate(
+    pub(crate) fn compensate<Authorize>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
         request: &PreparedRequest<Adapter::Request>,
-    ) -> Result<ExecutionStep, ExecutionError> {
+        authorize_dispatch: &mut Authorize,
+    ) -> Result<ExecutionStep, ExecutionError>
+    where
+        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+    {
         journal.ensure_capacity(4)?;
         let control = LiveControl::new(
             self.clock,
@@ -497,6 +511,7 @@ where
             return Ok(ExecutionStep::InterventionRequired);
         }
 
+        authorize_dispatch(self.adapter)?;
         let Some(disposition) = self.adapter.compensate(request.request(), &control) else {
             journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
                 transaction: context.transaction.clone(),
@@ -544,12 +559,16 @@ where
     }
 
     /// Reconciles the compensation effect without observing the primary effect.
-    pub(crate) fn reconcile_compensation(
+    pub(crate) fn reconcile_compensation<Authorize>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
         request: &Adapter::Request,
-    ) -> Result<ExecutionStep, ExecutionError> {
+        authorize_dispatch: &mut Authorize,
+    ) -> Result<ExecutionStep, ExecutionError>
+    where
+        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+    {
         journal.ensure_capacity(2)?;
         let control = LiveControl::new(
             self.clock,
@@ -585,6 +604,7 @@ where
             return Ok(ExecutionStep::InterventionRequired);
         }
 
+        authorize_dispatch(self.adapter)?;
         let Some(disposition) = self.adapter.reconcile_compensation(request, &control) else {
             journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
                 transaction: context.transaction.clone(),
@@ -642,12 +662,16 @@ where
     /// Returns an error when a journal boundary fails or a configured boundary
     /// hook halts execution. An indeterminate cancellation remains subject to
     /// reconciliation and retains resource ownership.
-    pub(crate) fn cancel(
+    pub(crate) fn cancel<Authorize>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
         request: &Adapter::Request,
-    ) -> Result<ExecutionStep, ExecutionError> {
+        authorize_dispatch: &mut Authorize,
+    ) -> Result<ExecutionStep, ExecutionError>
+    where
+        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+    {
         journal.ensure_capacity(2)?;
         let control = LiveControl::new(
             self.clock,
@@ -671,6 +695,7 @@ where
             return Err(ExecutionError::RecoveryDeadlineExpired);
         }
 
+        authorize_dispatch(self.adapter)?;
         let cancellation_control = CancellationCallControl::new(&control);
         let disposition = self.adapter.cancel(request, &cancellation_control);
         self.observe(Boundary::CancellationReturned, &control)?;
@@ -855,6 +880,10 @@ mod tests {
     use crate::execution::{CompensationState, ExecutionEvent, OperationHistory, RecoveryAction};
     use crate::journal::{FileJournal, JournalLimits};
 
+    fn allow_dispatch<Adapter>(_adapter: &Adapter) -> Result<(), ExecutionError> {
+        Ok(())
+    }
+
     #[test]
     fn halt_after_intent_never_dispatches_and_recovers_by_reconciliation()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -868,7 +897,12 @@ mod tests {
         let request = PreparedRequest::new(request_value.clone(), request_value);
 
         let error = OperationExecutor::new(&mut adapter, &clock, &cancellation, &mut hook)
-            .execute(&mut journal, fixture.context(), &request)
+            .execute(
+                &mut journal,
+                fixture.context(),
+                &request,
+                &mut allow_dispatch,
+            )
             .expect_err("fault injection must halt immediately after durable intent");
         assert!(matches!(
             error,
@@ -905,6 +939,7 @@ mod tests {
             &mut journal,
             fixture.context(),
             &request,
+            &mut allow_dispatch,
         )?;
         assert_eq!(step, ExecutionStep::RejectedBeforeEffect);
         assert_eq!(adapter.execute_calls, 0);
@@ -937,6 +972,7 @@ mod tests {
             &mut journal,
             fixture.context(),
             &request,
+            &mut allow_dispatch,
         )?;
 
         assert_eq!(step, ExecutionStep::RejectedBeforeEffect);
@@ -967,7 +1003,12 @@ mod tests {
         let request = PreparedRequest::new(request_value.clone(), request_value);
 
         let error = OperationExecutor::new(&mut adapter, &clock, &cancellation, &mut hook)
-            .execute(&mut journal, fixture.context(), &request)
+            .execute(
+                &mut journal,
+                fixture.context(),
+                &request,
+                &mut allow_dispatch,
+            )
             .expect_err("fault injection must halt before completion persistence");
         assert!(matches!(
             error,
@@ -996,7 +1037,12 @@ mod tests {
         let request = AbilityValue::new(json!({"revision": 2}))?;
 
         let error = OperationExecutor::new(&mut adapter, &clock, &cancellation, &mut hook)
-            .reconcile(&mut journal, fixture.context(), &request)
+            .reconcile(
+                &mut journal,
+                fixture.context(),
+                &request,
+                &mut allow_dispatch,
+            )
             .expect_err("expired recovery budget must stop reconciliation dispatch");
 
         assert!(matches!(error, ExecutionError::RecoveryDeadlineExpired));
@@ -1016,7 +1062,12 @@ mod tests {
         let request = AbilityValue::new(json!({"revision": 2}))?;
 
         let error = OperationExecutor::new(&mut adapter, &clock, &cancellation, &mut hook)
-            .cancel(&mut journal, fixture.context(), &request)
+            .cancel(
+                &mut journal,
+                fixture.context(),
+                &request,
+                &mut allow_dispatch,
+            )
             .expect_err("expired recovery budget must stop cancellation dispatch");
 
         assert!(matches!(error, ExecutionError::RecoveryDeadlineExpired));
@@ -1046,6 +1097,7 @@ mod tests {
             &mut journal,
             context,
             &request,
+            &mut allow_dispatch,
         )?;
 
         assert_eq!(step, ExecutionStep::Indeterminate);
@@ -1077,7 +1129,12 @@ mod tests {
         let request = PreparedRequest::new(request_value.clone(), request_value);
 
         let step = OperationExecutor::new(&mut adapter, &clock, &cancellation, &mut hook)
-            .compensate(&mut journal, fixture.context(), &request)?;
+            .compensate(
+                &mut journal,
+                fixture.context(),
+                &request,
+                &mut allow_dispatch,
+            )?;
         assert_eq!(step, ExecutionStep::InterventionRequired);
         assert_eq!(adapter.execute_calls, 0);
         drop(journal);

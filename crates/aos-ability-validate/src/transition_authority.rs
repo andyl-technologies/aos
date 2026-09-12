@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    Binding, BindingId, ImplementationKind, PackageDocument, PlanId, ResourceLifetime, RevisionId,
+    Binding, BindingId, ImplementationKind, PROVIDER_STATE_ADOPTION_V1, PackageDocument, PlanId,
+    ProviderAdoptionEndpoint, ProviderImplementation, ResourceLifetime, RevisionId,
     TransitionAuthorizationDocument, VersionedDocument, encode_canonical,
 };
 use aos_contract::Sha256Digest;
@@ -200,10 +201,299 @@ fn validate_document(
             "teardown providers are not in strict canonical order".to_string(),
         ));
     }
+    let adoption_feature = aos_ability_model::RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1)
+        .map_err(|error| TransitionAuthorityError::InvalidDocument(error.to_string()))?;
+    let declares_adoption = document.required_features.contains(&adoption_feature);
+    if declares_adoption != !document.provider_adoptions.is_empty() {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "provider adoption entries and their required semantic feature must appear together"
+                .to_string(),
+        ));
+    }
+    if document.provider_adoptions.len()
+        > aos_ability_model::ABILITY_LIMITS_V1.max_graph_nodes as usize
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "authorization exceeds the provider adoption limit".to_string(),
+        ));
+    }
+    if document
+        .provider_adoptions
+        .windows(2)
+        .any(|pair| pair[0].resource >= pair[1].resource)
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "provider adoptions are not in strict canonical resource order".to_string(),
+        ));
+    }
     for provider in &document.teardown_providers {
         validate_teardown_provider(context, document, inputs, provider)?;
     }
+    for adoption in &document.provider_adoptions {
+        validate_provider_adoption(context, inputs, adoption)?;
+    }
     Ok(())
+}
+
+fn validate_provider_adoption(
+    context: &ValidationContext,
+    inputs: &TransitionAuthorityInputs<'_>,
+    authorization: &aos_ability_model::ProviderAdoptionAuthorization,
+) -> Result<(), TransitionAuthorityError> {
+    if authorization.resource.provider != authorization.source.provider
+        || authorization.source.provider != authorization.candidate.provider
+        || authorization.source.interface != authorization.candidate.interface
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "provider adoption does not preserve one resource owner and public interface"
+                .to_string(),
+        ));
+    }
+    if authorization.source.state_format.descriptor
+        != authorization.candidate.state_format.descriptor
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "provider adoption state-format descriptors are incompatible".to_string(),
+        ));
+    }
+    if same_durable_adoption_authority(&authorization.source, &authorization.candidate) {
+        return Err(TransitionAuthorityError::InvalidDocument(
+            "provider adoption does not change durable owner or handler authority".to_string(),
+        ));
+    }
+
+    validate_adoption_endpoint(
+        context,
+        inputs.current,
+        &authorization.resource,
+        &authorization.resource_interface,
+        &authorization.source,
+        "source",
+    )?;
+    validate_adoption_endpoint(
+        context,
+        inputs.desired,
+        &authorization.resource,
+        &authorization.resource_interface,
+        &authorization.candidate,
+        "candidate",
+    )?;
+    Ok(())
+}
+
+fn same_durable_adoption_authority(
+    source: &aos_ability_model::ProviderAdoptionEndpoint,
+    candidate: &aos_ability_model::ProviderAdoptionEndpoint,
+) -> bool {
+    source.provider == candidate.provider
+        && source.package == candidate.package
+        && source.interface == candidate.interface
+        && source.implementation == candidate.implementation
+        && source.state_format == candidate.state_format
+        && source.handler_package == candidate.handler_package
+        && source.handler_provider == candidate.handler_provider
+        && source.handler_interface == candidate.handler_interface
+        && source.handler_implementation == candidate.handler_implementation
+}
+
+fn validate_adoption_endpoint(
+    context: &ValidationContext,
+    plan: &CheckedBindingPlan,
+    resource: &aos_ability_model::ResourceId,
+    resource_interface: &aos_ability_model::InterfaceKey,
+    endpoint: &ProviderAdoptionEndpoint,
+    label: &str,
+) -> Result<(), TransitionAuthorityError> {
+    if !plan
+        .document()
+        .resources
+        .iter()
+        .any(|revision| revision.resource == *resource)
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} plan does not retain the exact resource"
+        )));
+    }
+    let binding = plan.binding(&endpoint.handler_binding).ok_or_else(|| {
+        TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} handler binding is absent"
+        ))
+    })?;
+    let request = plan
+        .document()
+        .requests
+        .iter()
+        .find(|request| request.id == binding.request)
+        .ok_or_else(|| {
+            TransitionAuthorityError::InvalidDocument(format!(
+                "provider adoption {label} handler request is absent"
+            ))
+        })?;
+    if endpoint.handler_interface != *resource_interface
+        || binding.provider != endpoint.handler_provider
+        || binding.interface != endpoint.handler_interface
+        || binding.implementation != endpoint.handler_implementation
+        || binding.provider_package != Some(endpoint.handler_package)
+        || request.id.consumer != endpoint.provider
+        || !scope_belongs_to_owner(&request.id.scope, &endpoint.provider)
+        || request.lifetime != ResourceLifetime::Persistent
+        || binding.lifetime != ResourceLifetime::Persistent
+        || !request.methods.contains(&endpoint.handler_method)
+        || !binding
+            .caller_grant
+            .methods
+            .contains(&endpoint.handler_method)
+        || context
+            .interface(&endpoint.handler_interface)
+            .and_then(|interface| interface.interface.methods.get(&endpoint.handler_method))
+            .is_none_or(|method| method.target_resource != resource_interface.name)
+        || !binding.caller_grant.resources.iter().any(|permission| {
+            permission.resource == *resource
+                && permission.access.is_write()
+                && permission.operations.contains(&endpoint.handler_method)
+        })
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} handler differs from its exact owner-scoped checked binding and write grant"
+        )));
+    }
+    if !plan.environment().providers.iter().any(|provider| {
+        provider.provider == endpoint.handler_provider
+            && provider.interface == endpoint.handler_interface
+            && provider.implementation == endpoint.handler_implementation
+            && provider.state == ProviderState::Available
+            && provider.incarnation.as_ref() == Some(&endpoint.handler_incarnation)
+    }) {
+        return Err(TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} incarnation is not the exact checked available assignment"
+        )));
+    }
+
+    let package = exact_package(plan.packages(), endpoint.package).ok_or_else(|| {
+        TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} owner package is absent or ambiguous"
+        ))
+    })?;
+    if !owner_implementation_is_selected(plan, endpoint) {
+        return Err(TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} owner is not an exact selected package implementation"
+        )));
+    }
+    let implementation = exact_provider_implementation(package, &endpoint.implementation)
+        .filter(|implementation| implementation.interface == endpoint.interface)
+        .ok_or_else(|| {
+            TransitionAuthorityError::InvalidDocument(format!(
+                "provider adoption {label} owner implementation is not authenticated by its package"
+            ))
+        })?;
+    if implementation.state_format.as_ref() != Some(&endpoint.state_format)
+        || endpoint.state_format.artifact != endpoint.implementation.artifact
+        || !matches!(
+            implementation.implementation,
+            ImplementationKind::PureComposition { .. }
+        )
+        || context.interface(&endpoint.interface).is_none()
+        || !implementation
+            .owns_resource_kinds
+            .contains(&resource_interface.name)
+        || context.interface(resource_interface).is_none()
+    {
+        return Err(TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} owner lacks its exact interface or authenticated state format"
+        )));
+    }
+
+    let handler_package =
+        exact_package(plan.packages(), endpoint.handler_package).ok_or_else(|| {
+            TransitionAuthorityError::InvalidDocument(format!(
+                "provider adoption {label} handler package is absent or ambiguous"
+            ))
+        })?;
+    let handler = exact_provider_implementation(handler_package, &endpoint.handler_implementation)
+        .filter(|implementation| implementation.interface == endpoint.handler_interface)
+        .ok_or_else(|| {
+            TransitionAuthorityError::InvalidDocument(format!(
+                "provider adoption {label} terminal implementation is not authenticated by its package"
+            ))
+        })?;
+    let exact_handler = match &handler.implementation {
+        ImplementationKind::TerminalHandler { handler } => {
+            endpoint.handler_implementation.handler.as_ref() == Some(handler)
+                && handler_package
+                    .implementation
+                    .handlers
+                    .get(handler)
+                    .is_some_and(|descriptor| {
+                        descriptor.artifact == endpoint.handler_implementation.artifact
+                    })
+        }
+        ImplementationKind::PureComposition { .. } => false,
+    };
+    let exact_resource_method = context
+        .interface(&endpoint.handler_interface)
+        .and_then(|document| document.interface.methods.get(&endpoint.handler_method))
+        .is_some_and(|method| method.target_resource == resource_interface.name);
+    if !exact_handler || !exact_resource_method {
+        return Err(TransitionAuthorityError::InvalidDocument(format!(
+            "provider adoption {label} handler is not an authenticated terminal method for the retained resource kind"
+        )));
+    }
+    Ok(())
+}
+
+fn owner_implementation_is_selected(
+    plan: &CheckedBindingPlan,
+    endpoint: &ProviderAdoptionEndpoint,
+) -> bool {
+    plan.bindings().iter().any(|binding| {
+        binding.provider == endpoint.provider
+            && binding.provider_package == Some(endpoint.package)
+            && binding.interface == endpoint.interface
+            && binding.implementation == endpoint.implementation
+            && binding.lifetime == ResourceLifetime::Persistent
+            && plan.document().requests.iter().any(|request| {
+                request.id == binding.request && request.lifetime == ResourceLifetime::Persistent
+            })
+    })
+}
+
+fn scope_belongs_to_owner(
+    scope: &aos_ability_model::ScopePath,
+    owner: &aos_ability_model::InstanceId,
+) -> bool {
+    scope.as_slice().first() == Some(&owner.key)
+}
+
+fn exact_package(packages: &[PackageDocument], digest: Sha256Digest) -> Option<&PackageDocument> {
+    let mut matches = packages.iter().filter(|package| {
+        package
+            .content_digest()
+            .is_ok_and(|candidate| candidate == digest)
+    });
+    let package = matches.next()?;
+    matches.next().is_none().then_some(package)
+}
+
+fn exact_provider_implementation<'a>(
+    package: &'a PackageDocument,
+    reference: &aos_ability_model::ProviderImplementationReference,
+) -> Option<&'a ProviderImplementation> {
+    let mut matches = package
+        .implementation
+        .providers
+        .iter()
+        .filter(|implementation| {
+            implementation.artifact == reference.artifact
+                && implementation
+                    .descriptor_digest()
+                    .is_ok_and(|descriptor| descriptor == reference.descriptor)
+                && package.exports.iter().any(|export| {
+                    export.interface == implementation.interface
+                        && export.implementation == reference.descriptor
+                })
+        });
+    let implementation = matches.next()?;
+    matches.next().is_none().then_some(implementation)
 }
 
 fn transition_binding_plan(
@@ -256,7 +546,14 @@ fn transition_binding_plan(
         let source_request = current_requests.get(&source.request).ok_or_else(|| {
             binding_error(binding, "source request is absent from the prior plan")
         })?;
-        validate_teardown_binding(context, document, source, source_request, authorization)?;
+        validate_teardown_binding(
+            context,
+            document,
+            inputs.current,
+            source,
+            source_request,
+            authorization,
+        )?;
         if !binding_ids.insert(binding.id.clone()) {
             return Err(binding_error(
                 binding,
@@ -481,6 +778,7 @@ fn validate_projection_bounds(
 fn validate_teardown_binding(
     context: &ValidationContext,
     document: &TransitionAuthorizationDocument,
+    _current: &CheckedBindingPlan,
     source: &Binding,
     source_request: &aos_ability_model::BindingRequest,
     authorization: &aos_ability_model::TeardownBindingAuthorization,
@@ -555,7 +853,10 @@ fn validate_teardown_binding(
         .lifecycle
         .persistent_delete_method
         .as_ref();
-    for grant in [&binding.caller_grant, &binding.provider_grant] {
+    for (grant, caller_grant) in [
+        (&binding.caller_grant, true),
+        (&binding.provider_grant, false),
+    ] {
         if grant.methods.windows(2).any(|pair| pair[0] >= pair[1])
             || grant
                 .methods
@@ -578,7 +879,16 @@ fn validate_teardown_binding(
             .windows(2)
             .any(|pair| pair[0].resource >= pair[1].resource)
             || grant.resources.iter().any(|permission| {
-                permission.resource.provider != binding.provider
+                let mediated_owner_write = caller_grant
+                    && permission.resource.provider == request.id.consumer
+                    && permission.access.is_write()
+                    && request.lifetime == binding.lifetime
+                    && !permission.operations.is_empty()
+                    && permission.operations.iter().all(|operation| {
+                        binding.caller_grant.methods.contains(operation)
+                            && interface.interface.methods.get(operation).is_some()
+                    });
+                (permission.resource.provider != binding.provider && !mediated_owner_write)
                     || permission
                         .operations
                         .windows(2)
@@ -685,13 +995,19 @@ fn binding_error(binding: &Binding, reason: impl Into<String>) -> TransitionAuth
 
 #[cfg(test)]
 mod tests {
+    use aos_ability_model::document::{DesiredInstance, PackageSubject};
+    use aos_ability_model::identity::compare_request_ids;
     use aos_ability_model::{
-        AccessMode, AggregateId, ContributionPermission, LocalKey, ResourcePermission,
-        TeardownBindingAuthorization,
+        AbilityActivationMode, AccessMode, AggregateId, BindingRequest, ContributionPermission,
+        ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey, PackageImplementation,
+        ProviderAdoptionAuthorization, ProviderImplementation, ProviderImplementationReference,
+        ProviderStateFormat, RequiredFeature, ResourcePermission, ScopePath,
+        TeardownBindingAuthorization, ValueSchema,
     };
 
     use super::*;
 
+    #[derive(Clone)]
     struct AuthorityFixture {
         context: ValidationContext,
         desired: CheckedBindingPlan,
@@ -924,6 +1240,673 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn nested_adoption_request_scope_belongs_to_its_owner() {
+        let fixture = authority_fixture();
+        let owner = fixture.current.document.requests[0].id.consumer.clone();
+        let nested_scope = ScopePath::new(vec![owner.key.clone(), key("nested")])
+            .expect("nested owner scope must be valid");
+
+        assert!(scope_belongs_to_owner(&nested_scope, &owner));
+    }
+
+    #[test]
+    fn adoption_request_scope_rejects_a_foreign_first_component() {
+        let fixture = authority_fixture();
+        let owner = fixture.current.document.requests[0].id.consumer.clone();
+        let foreign_scope = ScopePath::new(vec![key("foreign"), owner.key.clone()])
+            .expect("foreign test scope must be valid");
+
+        assert!(!scope_belongs_to_owner(&foreign_scope, &owner));
+    }
+
+    #[test]
+    fn enabled_multi_export_package_cannot_substitute_an_unselected_owner() {
+        let (_, plan, endpoint) = multi_export_owner_fixture(false);
+
+        assert!(plan.desired_state().instances.iter().any(|instance| {
+            instance.enabled
+                && instance.instance == endpoint.provider
+                && instance.package == endpoint.package
+        }));
+        assert!(!owner_implementation_is_selected(&plan, &endpoint));
+    }
+
+    #[test]
+    fn stateful_owner_fixture_selects_the_exact_export() {
+        let (_, plan, endpoint) = multi_export_owner_fixture(true);
+
+        assert!(owner_implementation_is_selected(&plan, &endpoint));
+    }
+
+    #[test]
+    fn exact_compatible_provider_adoption_is_valid() {
+        adoption_authority_fixture()
+            .validate()
+            .expect("exact compatible adoption authority");
+    }
+
+    #[test]
+    fn byte_identical_provider_adoption_endpoints_are_rejected() {
+        let mut fixture = adoption_authority_fixture();
+        fixture.document.provider_adoptions[0].candidate =
+            fixture.document.provider_adoptions[0].source.clone();
+
+        assert_invalid_adoption(fixture, "byte-identical endpoints");
+    }
+
+    #[test]
+    fn binding_and_method_only_provider_adoption_is_rejected() {
+        let mut fixture = adoption_authority_fixture();
+        let candidate = fixture.document.provider_adoptions[0].candidate.clone();
+        let source = &mut fixture.document.provider_adoptions[0].source;
+        *source = candidate;
+        source.handler_binding = BindingId(key("plan-local-source-binding"));
+        source.handler_method = key("plan-local-source-method");
+
+        let error = fixture
+            .validate()
+            .expect_err("plan-local endpoint fields cannot create durable adoption authority");
+        assert!(
+            error
+                .to_string()
+                .contains("does not change durable owner or handler authority"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn provider_adoption_entries_and_feature_are_coupled() {
+        let mut missing_feature = adoption_authority_fixture();
+        missing_feature.document.required_features.clear();
+        assert_invalid_adoption(missing_feature, "missing adoption feature");
+
+        let mut missing_entry = adoption_authority_fixture();
+        missing_entry.document.provider_adoptions.clear();
+        assert_invalid_adoption(missing_entry, "adoption feature without entries");
+    }
+
+    #[test]
+    fn provider_adoptions_require_unique_canonical_resource_order() {
+        let mut duplicate = adoption_authority_fixture();
+        duplicate
+            .document
+            .provider_adoptions
+            .push(duplicate.document.provider_adoptions[0].clone());
+        assert_invalid_adoption(duplicate, "duplicate adoption resource");
+
+        let mut noncanonical = adoption_authority_fixture();
+        let mut earlier = noncanonical.document.provider_adoptions[0].clone();
+        earlier.resource.key = key("aaa-adoption-resource");
+        let mut later = noncanonical.document.provider_adoptions[0].clone();
+        later.resource.key = key("zzz-adoption-resource");
+        noncanonical.document.provider_adoptions = vec![later, earlier];
+        assert_invalid_adoption(noncanonical, "noncanonical adoption resource order");
+    }
+
+    #[test]
+    fn checked_handler_incarnation_only_adoption_is_not_a_durable_change() {
+        let mut fixture = adoption_authority_fixture();
+        fixture.current = fixture.desired.clone();
+        let candidate = fixture.document.provider_adoptions[0].candidate.clone();
+        let source_incarnation = aos_ability_model::IncarnationId::new("prior-checked-handler")
+            .expect("valid prior incarnation");
+        let source_inventory = fixture
+            .current
+            .inputs
+            .environment
+            .providers
+            .iter_mut()
+            .find(|provider| {
+                provider.provider == candidate.handler_provider
+                    && provider.interface == candidate.handler_interface
+                    && provider.implementation == candidate.handler_implementation
+            })
+            .expect("source handler inventory");
+        source_inventory.incarnation = Some(source_incarnation.clone());
+
+        let source = &mut fixture.document.provider_adoptions[0].source;
+        *source = candidate.clone();
+        source.handler_incarnation = source_incarnation;
+        assert_ne!(*source, candidate);
+
+        assert_invalid_adoption(
+            fixture,
+            "does not change durable owner or handler authority",
+        );
+    }
+
+    #[test]
+    fn adoption_authority_requires_its_exact_authenticated_digest() {
+        let fixture = adoption_authority_fixture();
+        let error = fixture
+            .context
+            .validate_transition_authority(
+                fixture.document.clone(),
+                TransitionAuthorityInputs {
+                    expected_digest: Sha256Digest::of_bytes("wrong adoption authority digest"),
+                    desired_planning: fixture.document.desired_planning,
+                    current_planning: fixture.document.current_planning,
+                    authorization_policy_revision: fixture.document.authorization_policy_revision,
+                    desired: &fixture.desired,
+                    current: &fixture.current,
+                },
+            )
+            .expect_err("a mismatched authenticated digest must fail");
+
+        assert!(matches!(error, TransitionAuthorityError::Commitment(_)));
+    }
+
+    #[test]
+    fn stale_source_adoption_endpoint_fields_fail_closed() {
+        assert_endpoint_mutations_fail(AdoptionSide::Source);
+    }
+
+    #[test]
+    fn stale_candidate_adoption_endpoint_fields_fail_closed() {
+        assert_endpoint_mutations_fail(AdoptionSide::Candidate);
+    }
+
+    #[test]
+    fn stale_adoption_resource_and_kind_fail_closed() {
+        let mut stale_resource = adoption_authority_fixture();
+        stale_resource.document.provider_adoptions[0].resource.key = key("stale-resource");
+        assert_invalid_adoption(stale_resource, "stale resource");
+
+        let mut stale_kind = adoption_authority_fixture();
+        stale_kind.document.provider_adoptions[0]
+            .resource_interface
+            .descriptor = Sha256Digest::of_bytes("stale resource kind");
+        assert_invalid_adoption(stale_kind, "stale resource kind");
+    }
+
+    #[test]
+    fn stale_source_and_candidate_grants_fail_closed() {
+        let mut stale_source = adoption_authority_fixture();
+        let source_binding = stale_source.document.provider_adoptions[0]
+            .source
+            .handler_binding
+            .clone();
+        let source_index = stale_source.current.binding_indices[&source_binding];
+        stale_source.current.document.bindings[source_index]
+            .caller_grant
+            .resources
+            .clear();
+        assert_invalid_adoption(stale_source, "stale source grant");
+
+        let mut stale_candidate = adoption_authority_fixture();
+        let candidate_binding = stale_candidate.document.provider_adoptions[0]
+            .candidate
+            .handler_binding
+            .clone();
+        let candidate_index = stale_candidate.desired.binding_indices[&candidate_binding];
+        stale_candidate.desired.document.bindings[candidate_index]
+            .caller_grant
+            .resources
+            .clear();
+        assert_invalid_adoption(stale_candidate, "stale candidate grant");
+    }
+
+    #[test]
+    fn revoked_or_unavailable_adoption_assignment_fails_closed() {
+        for side in [AdoptionSide::Source, AdoptionSide::Candidate] {
+            let mut revoked = adoption_authority_fixture();
+            adoption_plan_mut(&mut revoked, side)
+                .inputs
+                .environment
+                .providers
+                .clear();
+            assert_invalid_adoption(revoked, "revoked assignment");
+
+            let mut unavailable = adoption_authority_fixture();
+            adoption_plan_mut(&mut unavailable, side)
+                .inputs
+                .environment
+                .providers[0]
+                .state = ProviderState::Unavailable;
+            assert_invalid_adoption(unavailable, "unavailable assignment");
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum AdoptionSide {
+        Source,
+        Candidate,
+    }
+
+    fn assert_endpoint_mutations_fail(side: AdoptionSide) {
+        type Mutator = fn(&mut ProviderAdoptionEndpoint);
+
+        let mutations: [(&str, Mutator); 13] = [
+            ("owner provider", |endpoint| {
+                endpoint.provider.key = key("stale-owner-provider");
+            }),
+            ("package", |endpoint| {
+                endpoint.package = Sha256Digest::of_bytes("stale owner package");
+            }),
+            ("owner interface", |endpoint| {
+                endpoint.interface.descriptor = Sha256Digest::of_bytes("stale owner interface");
+            }),
+            ("owner implementation", |endpoint| {
+                endpoint.implementation.descriptor =
+                    Sha256Digest::of_bytes("stale owner implementation");
+            }),
+            ("state-format artifact", |endpoint| {
+                endpoint.state_format.artifact.content =
+                    Sha256Digest::of_bytes("unauthenticated state-format artifact");
+            }),
+            ("state-format descriptor", |endpoint| {
+                endpoint.state_format.descriptor =
+                    Sha256Digest::of_bytes("stale state-format descriptor");
+            }),
+            ("handler binding", |endpoint| {
+                endpoint.handler_binding = BindingId(key("stale-handler-binding"));
+            }),
+            ("handler method", |endpoint| {
+                endpoint.handler_method = key("stale-handler-method");
+            }),
+            ("handler provider", |endpoint| {
+                endpoint.handler_provider.key = key("stale-handler-provider");
+            }),
+            ("handler incarnation", |endpoint| {
+                endpoint.handler_incarnation =
+                    aos_ability_model::IncarnationId::new("stale-handler-incarnation")
+                        .expect("valid incarnation");
+            }),
+            ("handler interface", |endpoint| {
+                endpoint.handler_interface.descriptor =
+                    Sha256Digest::of_bytes("stale handler interface");
+            }),
+            ("handler implementation", |endpoint| {
+                endpoint.handler_implementation.descriptor =
+                    Sha256Digest::of_bytes("stale handler implementation");
+            }),
+            ("handler package", |endpoint| {
+                endpoint.handler_package = Sha256Digest::of_bytes("stale handler package");
+            }),
+        ];
+
+        for (label, mutate) in mutations {
+            let mut fixture = adoption_authority_fixture();
+            mutate(adoption_endpoint_mut(&mut fixture, side));
+            assert_invalid_adoption(fixture, label);
+        }
+    }
+
+    fn adoption_endpoint_mut(
+        fixture: &mut AuthorityFixture,
+        side: AdoptionSide,
+    ) -> &mut ProviderAdoptionEndpoint {
+        let adoption = &mut fixture.document.provider_adoptions[0];
+
+        match side {
+            AdoptionSide::Source => &mut adoption.source,
+            AdoptionSide::Candidate => &mut adoption.candidate,
+        }
+    }
+
+    fn adoption_plan_mut(
+        fixture: &mut AuthorityFixture,
+        side: AdoptionSide,
+    ) -> &mut CheckedBindingPlan {
+        match side {
+            AdoptionSide::Source => &mut fixture.current,
+            AdoptionSide::Candidate => &mut fixture.desired,
+        }
+    }
+
+    fn assert_invalid_adoption(fixture: AuthorityFixture, label: &str) {
+        assert!(
+            matches!(
+                fixture.validate(),
+                Err(TransitionAuthorityError::InvalidDocument(_))
+            ),
+            "{label} unexpectedly passed adoption authority validation"
+        );
+    }
+
+    fn adoption_authority_fixture() -> AuthorityFixture {
+        let (context, desired, candidate) = multi_export_owner_fixture(true);
+        let mut current = desired.clone();
+        current.inputs.packages[0].package.version = "0.9.0".to_string();
+        let source_package = current.inputs.packages[0]
+            .content_digest()
+            .expect("source package digest");
+        for binding in &mut current.document.bindings {
+            binding.provider_package = Some(source_package);
+        }
+        current.inputs.desired_state.instances[0].package = source_package;
+        current.document.desired_state = current
+            .inputs
+            .desired_state
+            .content_digest()
+            .expect("source desired-state digest");
+        current.id = PlanId(
+            current
+                .document
+                .content_digest()
+                .expect("source binding-plan digest"),
+        );
+
+        let mut source = candidate.clone();
+        source.package = source_package;
+        source.handler_package = source_package;
+        let handler_binding = desired
+            .binding(&candidate.handler_binding)
+            .expect("candidate handler binding");
+        let resource = handler_binding.caller_grant.resources[0].resource.clone();
+        let resource_interface = candidate.handler_interface.clone();
+        let desired_planning = Sha256Digest::of_bytes("adoption desired planning");
+        let current_planning = Sha256Digest::of_bytes("adoption current planning");
+        let policy_revision = desired.document.policy_revision;
+        let document = TransitionAuthorizationDocument {
+            schema: TransitionAuthorizationDocument::SCHEMA.to_string(),
+            required_features: vec![
+                RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1).expect("adoption feature"),
+            ],
+            desired_planning,
+            current_planning,
+            desired_policy_revision: policy_revision,
+            prior_policy_revision: current.document.policy_revision,
+            authorization_policy_revision: policy_revision,
+            teardown_bindings: Vec::new(),
+            teardown_providers: Vec::new(),
+            provider_adoptions: vec![ProviderAdoptionAuthorization {
+                resource,
+                resource_interface,
+                source,
+                candidate,
+            }],
+        };
+
+        AuthorityFixture {
+            context,
+            desired,
+            current,
+            document,
+        }
+    }
+
+    fn multi_export_owner_fixture(
+        select_owner: bool,
+    ) -> (
+        ValidationContext,
+        CheckedBindingPlan,
+        ProviderAdoptionEndpoint,
+    ) {
+        let mut fixture = crate::test_support::plan_fixture();
+        let selected_interface = fixture.binding_plan.bindings[0].interface.clone();
+        let provider = fixture.binding_plan.bindings[0].provider.clone();
+        let artifact = fixture.binding_plan.bindings[0]
+            .implementation
+            .artifact
+            .clone();
+        let handler_key = key("observe-handler");
+        let selected_implementation = ProviderImplementation {
+            interface: selected_interface.clone(),
+            artifact: artifact.clone(),
+            requirements: Vec::new(),
+            implementation: ImplementationKind::TerminalHandler {
+                handler: handler_key.clone(),
+            },
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let selected_reference = ProviderImplementationReference {
+            descriptor: selected_implementation
+                .descriptor_digest()
+                .expect("selected implementation digest"),
+            artifact: artifact.clone(),
+            handler: Some(handler_key.clone()),
+        };
+
+        let mut owner_interface = fixture.interfaces[0].clone();
+        owner_interface.interface.name =
+            InterfaceName::new("test.state-owner").expect("owner interface name");
+        for method in owner_interface.interface.methods.values_mut() {
+            method.target_resource = owner_interface.interface.name.clone();
+        }
+        let owner_interface_key = owner_interface
+            .interface_key()
+            .expect("owner interface digest");
+        let state_format = ProviderStateFormat {
+            descriptor: Sha256Digest::of_bytes("state-format-v1"),
+            artifact: artifact.clone(),
+        };
+        let owner_implementation = ProviderImplementation {
+            interface: owner_interface_key.clone(),
+            artifact: artifact.clone(),
+            requirements: Vec::new(),
+            implementation: ImplementationKind::PureComposition {
+                compose_entry: key("compose"),
+                transition_entry: key("transition"),
+            },
+            owns_resource_kinds: vec![selected_interface.name.clone()],
+            state_format: Some(state_format.clone()),
+        };
+        let owner_reference = ProviderImplementationReference {
+            descriptor: owner_implementation
+                .descriptor_digest()
+                .expect("owner implementation digest"),
+            artifact: artifact.clone(),
+            handler: None,
+        };
+        let package = PackageDocument {
+            schema: PackageDocument::SCHEMA.to_string(),
+            required_features: vec![
+                RequiredFeature::new("abilities-v1").expect("abilities feature"),
+                RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
+                    .expect("state-format feature"),
+            ],
+            activation_mode: AbilityActivationMode::StructuredEffects,
+            package: PackageSubject {
+                name: key("multi-export-provider"),
+                version: "1.0.0".to_string(),
+                payload: artifact.clone(),
+                source: artifact.clone(),
+            },
+            artifacts: vec![artifact.clone()],
+            exports: vec![
+                ExportDeclaration {
+                    name: key("handler"),
+                    interface: selected_interface.clone(),
+                    aggregation: None,
+                    implementation: selected_reference.descriptor,
+                },
+                ExportDeclaration {
+                    name: key("owner"),
+                    interface: owner_interface_key.clone(),
+                    aggregation: None,
+                    implementation: owner_reference.descriptor,
+                },
+            ],
+            requirements: Vec::new(),
+            module_entry_points: BTreeMap::from([
+                (key("compose"), artifact.clone()),
+                (key("transition"), artifact.clone()),
+            ]),
+            implementation: PackageImplementation {
+                providers: vec![selected_implementation, owner_implementation],
+                handlers: BTreeMap::from([(
+                    handler_key,
+                    HandlerDescriptor {
+                        artifact: artifact.clone(),
+                        entry_point: "bin/observe".to_string(),
+                        arguments: ValueSchema::Boolean,
+                        result: ValueSchema::Boolean,
+                    },
+                )]),
+            },
+            ownership: Vec::new(),
+        };
+        let package_digest = package.content_digest().expect("package digest");
+        fixture.binding_plan.bindings[0].provider_package = Some(package_digest);
+        fixture.binding_plan.bindings[0].implementation = selected_reference.clone();
+        fixture.binding_inputs.environment.providers[0].implementation = selected_reference.clone();
+        fixture.binding_inputs.desired_state.instances = vec![DesiredInstance {
+            instance: provider.clone(),
+            package: package_digest,
+            enabled: true,
+            configuration: None,
+        }];
+        fixture.binding_inputs.packages = vec![package];
+        if select_owner {
+            let handler_scope = ScopePath::new(vec![provider.key.clone(), key("nested")])
+                .expect("nested owner scope");
+            fixture.binding_inputs.desired_state.child_requests[0]
+                .id
+                .scope = handler_scope.clone();
+            fixture.binding_plan.requests[0].id.scope = handler_scope;
+            fixture.binding_plan.bindings[0].request = fixture.binding_plan.requests[0].id.clone();
+            fixture.binding_inputs.desired_state.child_requests[0].lifetime =
+                aos_ability_model::ResourceLifetime::Persistent;
+            fixture.binding_plan.requests[0].lifetime =
+                aos_ability_model::ResourceLifetime::Persistent;
+            fixture.binding_plan.bindings[0].lifetime =
+                aos_ability_model::ResourceLifetime::Persistent;
+            fixture.binding_plan.bindings[0].caller_grant.resources[0].access =
+                AccessMode::ExclusiveWrite;
+            let owner_resource = aos_ability_model::ResourceId {
+                provider: provider.clone(),
+                key: key("owner-service"),
+            };
+            let owner_revision = aos_ability_model::ResourceRevision {
+                resource: owner_resource.clone(),
+                revision: RevisionId(Sha256Digest::of_bytes("owner revision")),
+            };
+            let owner_request = BindingRequest {
+                id: aos_ability_model::RequestId {
+                    consumer: provider.clone(),
+                    scope: ScopePath::root(),
+                    key: key("owner-service"),
+                },
+                accepted_interfaces: vec![owner_interface_key.clone()],
+                methods: vec![key("observe")],
+                guarantees: Vec::new(),
+                lifetime: aos_ability_model::ResourceLifetime::Persistent,
+            };
+            let policy_revision = fixture.binding_plan.policy_revision;
+            let owner_binding = Binding {
+                id: BindingId(key("owner-service")),
+                request: owner_request.id.clone(),
+                interface: owner_interface_key.clone(),
+                provider: provider.clone(),
+                provider_package: Some(package_digest),
+                implementation: owner_reference.clone(),
+                source: aos_ability_model::BindingSource::Explicit,
+                caller_grant: aos_ability_model::AuthorityGrant {
+                    principal: provider.clone(),
+                    methods: vec![key("observe")],
+                    contributions: Vec::new(),
+                    resources: vec![ResourcePermission {
+                        resource: owner_resource.clone(),
+                        access: AccessMode::Read,
+                        operations: vec![key("observe")],
+                    }],
+                },
+                provider_grant: aos_ability_model::AuthorityGrant {
+                    principal: provider.clone(),
+                    methods: Vec::new(),
+                    contributions: Vec::new(),
+                    resources: Vec::new(),
+                },
+                guarantees: Vec::new(),
+                policy_revision,
+                lifetime: aos_ability_model::ResourceLifetime::Persistent,
+                mediation_allowed: false,
+            };
+            fixture
+                .binding_inputs
+                .desired_state
+                .child_requests
+                .push(owner_request.clone());
+            fixture.binding_plan.requests.push(owner_request);
+            fixture.binding_plan.bindings.push(owner_binding);
+            for revisions in [
+                &mut fixture.binding_inputs.environment.resources,
+                &mut fixture.binding_inputs.desired_state.resources,
+                &mut fixture.binding_plan.resources,
+                &mut fixture.effect_plan.current_revisions,
+                &mut fixture.effect_plan.desired_revisions,
+            ] {
+                revisions.push(owner_revision.clone());
+                revisions.sort_by(|left, right| {
+                    aos_ability_model::compare_resource_ids(&left.resource, &right.resource)
+                });
+            }
+            fixture
+                .binding_plan
+                .requests
+                .sort_by(|left, right| compare_request_ids(&left.id, &right.id));
+            fixture
+                .binding_inputs
+                .desired_state
+                .child_requests
+                .sort_by(|left, right| compare_request_ids(&left.id, &right.id));
+            fixture.binding_plan.bindings.sort_by(|left, right| {
+                compare_request_ids(&left.request, &right.request)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+        }
+        fixture.interfaces.push(owner_interface);
+        fixture.context = ValidationContext::new(
+            BTreeSet::from([
+                RequiredFeature::new("abilities-v1").expect("abilities feature"),
+                RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
+                    .expect("state-format feature"),
+            ]),
+            fixture.interfaces.clone(),
+        )
+        .expect("multi-export context");
+        fixture.refresh_commitments();
+        let checked = fixture
+            .context
+            .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+            .expect("multi-export binding plan");
+        let binding = checked
+            .bindings()
+            .iter()
+            .find(|binding| binding.implementation == selected_reference)
+            .expect("selected handler binding")
+            .clone();
+        let incarnation = checked
+            .environment()
+            .providers
+            .iter()
+            .find(|inventory| inventory.implementation == selected_reference)
+            .expect("selected handler inventory")
+            .incarnation
+            .clone()
+            .expect("available handler incarnation");
+        let endpoint = ProviderAdoptionEndpoint {
+            provider,
+            package: package_digest,
+            interface: owner_interface_key,
+            implementation: owner_reference,
+            state_format,
+            handler_binding: binding.id,
+            handler_method: key("observe"),
+            handler_provider: binding.provider,
+            handler_incarnation: incarnation,
+            handler_interface: binding.interface,
+            handler_implementation: binding.implementation,
+            handler_package: package_digest,
+        };
+
+        let context = ValidationContext::new(
+            BTreeSet::from([
+                RequiredFeature::new("abilities-v1").expect("abilities feature"),
+                RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
+                    .expect("state-format feature"),
+                RequiredFeature::new(PROVIDER_STATE_ADOPTION_V1).expect("adoption feature"),
+            ]),
+            fixture.interfaces,
+        )
+        .expect("stateful owner context");
+
+        (context, checked, endpoint)
+    }
+
     fn authority_fixture() -> AuthorityFixture {
         let checked = crate::test_support::checked_systemd_manager_effect_plan();
         let context =
@@ -959,6 +1942,7 @@ mod tests {
                 binding,
             }],
             teardown_providers: Vec::new(),
+            provider_adoptions: Vec::new(),
         };
 
         AuthorityFixture {
