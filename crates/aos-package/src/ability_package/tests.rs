@@ -509,6 +509,34 @@ fn verified_package_set_rechecks_every_live_retention_catalog() {
 }
 
 #[test]
+fn verified_package_set_rejects_path_derived_artifact_claims() {
+    let fixture = TestFixture::new();
+    let verified = verify_ability_package(
+        &fixture.package_meta,
+        &fixture.manifest_bytes,
+        &fixture.provenance_jsonl,
+        REGISTRY,
+        &fixture.trusted_keys,
+        &AcceptRetention::default(),
+    )
+    .expect("fixture package verifies");
+    let mut claimed = verified
+        .artifacts
+        .first()
+        .expect("fixture retains an artifact")
+        .clone();
+    claimed.store_path = format!("{}-untrusted", claimed.store_path);
+    let packages = VerifiedAbilityPackageSet::from_verified(vec![verified])
+        .expect("verified package set is valid");
+
+    let error = packages
+        .authenticate_artifact(&claimed)
+        .expect_err("path-derived metadata must not authenticate an artifact");
+
+    assert!(error.to_string().contains("exact metadata"));
+}
+
+#[test]
 fn signed_package_accepts_equivalent_primary_sri_nar_identity() {
     let mut fixture = TestFixture::new();
     fixture.package_meta.nar_hash = format!(

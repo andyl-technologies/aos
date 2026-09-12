@@ -9,12 +9,14 @@
   mkSystem,
   pkgs,
 }: let
-  containerSystem = mkSystem [
-    ../../systems/server-test.nix
+  reference = import ./_ability-runtime-reference.nix {
+    inherit lib mkSystem pkgs;
+  };
+  containerSystem = mkSystem (reference.runtimeModules ++ [
     {
-      environment.systemPackages = [pkgs.nginx pkgs.aos.testSupport];
+      environment.systemPackages = reference.packageRoots ++ [pkgs.aos.testSupport];
     }
-  ];
+  ]);
   containerImage = containerSystem.config.system.build.defaultContainer;
   aosSystem = pkgs.stdenv.hostPlatform.system;
   dockerArchive = containerImage.platforms.${aosSystem}.dockerArchive;
@@ -53,7 +55,7 @@
     + " --address /run/aos-foreground-containerd/containerd.sock"
     + " --namespace aos-foreground-qualification"
     + " --snapshotter native";
-  fixture = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture";
+  fixtureCommand = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture";
   stateRoot = "/var/lib/aos/ability-runtime/foreground-process";
 in {
   name = "ability-native-foreground-container";
@@ -66,12 +68,13 @@ in {
     varSizeMiB = 6144;
   };
 
-  testScript = ''
+  testScript = reference.testPrelude + ''
     import json
     import shlex
     import textwrap
 
     runtime.wait_for_unit("aos-foreground-containerd.service", timeout=120)
+    publish_reference_packages()
     runtime.succeed("${nerdctl} load --input ${dockerArchive}/image.docker.tar", timeout=360)
     runtime.succeed(textwrap.dedent(r"""
       install -d -m 0755 /var/lib/aos-foreground-nginx
@@ -95,12 +98,15 @@ in {
     runtime.succeed(
         "${nerdctl} run --detach --name foreground-nginx --net host "
         "--volume /var/lib/aos-foreground-nginx:/etc/nginx:ro "
+        "--volume /var/lib/ability-reference-registry:/var/lib/ability-reference-registry:ro "
+        "--volume /var/lib/apm:/var/lib/apm:rw "
+        "--volume /var/cache/apm:/var/cache/apm:rw "
         "aos:latest ${pkgs.coreutils}/bin/sleep infinity",
         timeout=120,
     )
 
     arguments = [
-        "${fixture}",
+        "${fixtureCommand}",
         "foreground-process",
         "start",
         "${stateRoot}",

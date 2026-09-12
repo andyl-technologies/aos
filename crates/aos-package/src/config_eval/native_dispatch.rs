@@ -55,6 +55,10 @@ use super::ability_store::{
     GenerationAbilityStoreError, NativeAbilitySession, NativeObservationSession,
     RetainedAbilityDiagnosticSource,
 };
+use super::foreground_process_ability::{
+    ForegroundProcessResourceCatalog, ForegroundProcessResourceSpec,
+    NativeForegroundProcessAdapter, preflight_native_foreground,
+};
 use super::kubernetes_ability::{
     DeferredKubernetesApiCapability, KubernetesApiCapability, KubernetesObjectResourceCatalog,
     KubernetesObjectResourceSpec, NativeKubernetesObjectAdapter, preflight_native_kubernetes,
@@ -92,6 +96,7 @@ use crate::sysroot::image_rollout::{
 
 const MANAGED_CONFIGURATION_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/managed-configuration";
 const NGINX_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/nginx";
+const FOREGROUND_PROCESS_STATE_ROOT: &str = "/var/lib/aos/ability-runtime/foreground-process";
 const RETRY_CANCELLATION_POLL: Duration = Duration::from_millis(50);
 
 /// Authenticates the sole built-in image rollout fragment inside a checked plan.
@@ -239,6 +244,8 @@ enum NativeCancellationAction {
 /// Selects the built-in adapter family authenticated for one native mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeAdapterKind {
+    /// Uses the process executor in the receiving application container.
+    ForegroundProcess,
     /// Uses the exact kubectl and protected cluster capability.
     KubernetesObject,
     /// Uses the root-owned managed-configuration adapter.
@@ -791,6 +798,33 @@ impl<'a> NativeAdapterRegistry<'a> {
             "planned provider assignment differs from the authenticated native route"
         );
         Ok(())
+    }
+
+    /// Builds the exact application-container foreground command for one route.
+    fn foreground_process_spec(
+        &self,
+        route: &NativeAdapterRoute<'_>,
+    ) -> Result<ForegroundProcessResourceSpec> {
+        let NativeResourceQualification::ForegroundProcess {
+            artifact,
+            entry_point,
+            arguments,
+        } = &route.mapping.qualification
+        else {
+            return Err(anyhow!(
+                "native dispatcher route is not a foreground process"
+            ));
+        };
+        self.packages
+            .authenticate_artifact(artifact)
+            .context("authenticating foreground executable artifact")?;
+        Ok(ForegroundProcessResourceSpec {
+            resource: route.mapping.resource.clone(),
+            revision: route.mapping.revision,
+            artifact: artifact.clone(),
+            entry_point: entry_point.clone(),
+            arguments: arguments.clone(),
+        })
     }
 
     /// Builds the trusted managed-configuration catalog input for one route.
@@ -1721,6 +1755,21 @@ impl<'a> NativeAdapterRegistry<'a> {
                     .context("preflighting native A/B rollout adapter")?;
                 NativeAdapterKind::ImageRollout
             }
+            NativeResourceQualification::ForegroundProcess { .. } => {
+                let route = NativeAdapterRoute {
+                    package,
+                    mapping,
+                    desired_state: self.desired_state,
+                    generation,
+                    assignment_provider: assignment_provider.clone(),
+                    assignment_interface: assignment_interface.clone(),
+                    kind: NativeAdapterKind::ForegroundProcess,
+                };
+                let spec = self.foreground_process_spec(&route)?;
+                preflight_native_foreground(self.packages, &assignment, &spec)
+                    .context("preflighting foreground-process adapter")?;
+                NativeAdapterKind::ForegroundProcess
+            }
             NativeResourceQualification::ManagedConfiguration { .. } => {
                 preflight_native_managed_configuration(package, &assignment)
                     .context("preflighting managed-configuration adapter")?;
@@ -1863,7 +1912,7 @@ impl<'a> NativeDispatcher<'a> {
     pub(crate) fn new(
         activation: &'a SpecializedAbilityActivation,
         packages: &'a VerifiedAbilityPackageSet,
-        systemd: Arc<aos_systemd::SystemdManagerConnection>,
+        systemd: Option<Arc<aos_systemd::SystemdManagerConnection>>,
     ) -> Result<Self> {
         let environment = activation
             .plan()
@@ -1871,8 +1920,17 @@ impl<'a> NativeDispatcher<'a> {
             .environment()
             .environment
             .clone();
-        let systemd = SystemdManagerCapabilities::single_host(environment, systemd)
-            .context("registering host systemd capability")?;
+        let systemd = match systemd {
+            Some(systemd) => SystemdManagerCapabilities::single_host(environment, systemd)
+                .context("registering host systemd capability")?,
+            None => {
+                ensure!(
+                    environment.stage == aos_ability_model::ExecutionStage::ApplicationContainer,
+                    "native dispatcher omitted systemd outside an application container"
+                );
+                SystemdManagerCapabilities::empty()
+            }
+        };
         Self::new_with_systemd_capabilities(activation, packages, systemd)
     }
 
@@ -2026,6 +2084,19 @@ impl<'a> NativeDispatcher<'a> {
         inventory: NativeResourceInventory,
     ) -> Result<(NativeQualifiedResource, RuntimeResourceState)> {
         match route.kind {
+            NativeAdapterKind::ForegroundProcess => {
+                let spec = self.registry.foreground_process_spec(route)?;
+                let catalog = ForegroundProcessResourceCatalog::new(
+                    self.registry.packages,
+                    assignment,
+                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
+                    [spec],
+                )
+                .context("constructing foreground-process drift catalog")?;
+                catalog
+                    .classify_runtime_revision(&mapping.resource)
+                    .context("classifying current foreground process")
+            }
             NativeAdapterKind::KubernetesObject => {
                 let spec = self.registry.kubernetes_spec(route)?;
                 let catalog = KubernetesObjectResourceCatalog::new(
@@ -2716,6 +2787,20 @@ impl<'a> NativeDispatcher<'a> {
     ) -> Result<CurrentResourceState> {
         let inventory = session.resource_inventory();
         let state = match route.kind {
+            NativeAdapterKind::ForegroundProcess => {
+                let spec = self.registry.foreground_process_spec(route)?;
+                let catalog = ForegroundProcessResourceCatalog::new(
+                    self.registry.packages,
+                    assignment,
+                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
+                    [spec],
+                )
+                .context("constructing foreground-process observation catalog")?;
+                catalog
+                    .classify_runtime_revision(&route.mapping.resource)
+                    .context("observing current foreground process")?
+                    .1
+            }
             NativeAdapterKind::KubernetesObject => {
                 let spec = self.registry.kubernetes_spec(route)?;
                 let catalog = KubernetesObjectResourceCatalog::new(
@@ -2876,6 +2961,31 @@ impl<'a> NativeDispatcher<'a> {
         Observer: ExecutionBoundaryObserver,
     {
         match route.kind {
+            NativeAdapterKind::ForegroundProcess => {
+                let spec = self.registry.foreground_process_spec(&route)?;
+                let mut catalog = ForegroundProcessResourceCatalog::new(
+                    self.registry.packages,
+                    assignment.clone(),
+                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
+                    [spec],
+                )
+                .context("constructing foreground-process resource catalog")?;
+                let mut adapter = NativeForegroundProcessAdapter::new(
+                    assignment,
+                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
+                )
+                .context("constructing foreground-process adapter")?;
+                drive_with_adapter(
+                    session,
+                    operation,
+                    &mut adapter,
+                    &mut catalog,
+                    policy,
+                    clock,
+                    cancellation,
+                    observer,
+                )
+            }
             NativeAdapterKind::KubernetesObject => {
                 let spec = self.registry.kubernetes_spec(&route)?;
                 let inventory = session.resource_inventory();
@@ -4052,6 +4162,15 @@ mod tests {
     #[test]
     fn native_method_matrix_is_closed_to_exact_adapter_contracts() {
         assert!(native_method_is_supported(
+            NativeAdapterKind::ForegroundProcess,
+            aos_ability_model::builtin::FOREGROUND_PROCESS_INTERFACE_NAME,
+            1,
+            advertised_descriptor(NativeAdapterId::ForegroundProcess),
+            "start",
+            "observe",
+            InvocationPurpose::Cancel,
+        ));
+        assert!(native_method_is_supported(
             NativeAdapterKind::ManagedConfiguration,
             "aos.managed-configuration-effects",
             1,
@@ -4195,6 +4314,7 @@ mod tests {
             NativeAdapterId::CredentialDelivery => {
                 NativeAdapterKind::HostResource(NativeHostResourceKind::Credential)
             }
+            NativeAdapterId::ForegroundProcess => NativeAdapterKind::ForegroundProcess,
             NativeAdapterId::HostNetworkPolicy => {
                 NativeAdapterKind::HostResource(NativeHostResourceKind::NetworkPolicy)
             }

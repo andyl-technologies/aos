@@ -203,6 +203,14 @@ fn assignment_value(
 }
 
 impl SystemdManagerCapabilities {
+    /// Constructs an inventory for a native plan with no systemd routes.
+    pub(crate) fn empty() -> Self {
+        Self {
+            control_managers: BTreeMap::new(),
+            planned_managers: BTreeMap::new(),
+        }
+    }
+
     /// Constructs the current production inventory for one host environment.
     ///
     /// The connection is already scoped by its transport. The separately

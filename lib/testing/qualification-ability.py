@@ -1957,7 +1957,7 @@ CHECK_DETAILS = {
         "The same production executor configuration without the opt-in profile retained no "
         "ability adapter or Crucible guest emitter in its realized closure."
     ),
-    "native-adapter-matrix-v1-sha256-595ccc8e10dbc95631f6b3155b1502e11bcf0dd2f70e988e6cd77af482bd224b": (
+    "native-adapter-matrix-v1-sha256-bda411dd249588bafa6b7859a478ce7f6366066e33e207806e83b2d90f90bea3": (
         "The closed native-adapter matrix bound every durability and authority "
         "cell to the exact adapter interface name, ABI, and descriptor."
     ),

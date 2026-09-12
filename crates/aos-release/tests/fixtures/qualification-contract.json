@@ -194,7 +194,7 @@
     },
     {
       "checks": [
-        "native-adapter-matrix-v1-sha256-595ccc8e10dbc95631f6b3155b1502e11bcf0dd2f70e988e6cd77af482bd224b",
+        "native-adapter-matrix-v1-sha256-bda411dd249588bafa6b7859a478ce7f6366066e33e207806e83b2d90f90bea3",
         "stage-specific-manager-and-foreground-contracts-with-unqualified-container-cells"
       ],
       "id": "ability-native-adapter-matrix",
@@ -210,6 +210,7 @@
       "production_only": true,
       "regressions": [
         "checks.fleet.ability-native-activation",
+        "checks.fleet.ability-native-foreground-container",
         "checks.fleet.ability-native-image-rollout",
         "checks.fleet.ability-native-kubernetes",
         "checks.fleet.ability-native-postgresql",

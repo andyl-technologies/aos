@@ -30,7 +30,7 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
     AbilityActivationMode, ArtifactReference, HandlerDescriptor, ImplementationKind, LocalKey,
@@ -236,6 +236,20 @@ impl VerifiedAbilityPackageSet {
     /// Returns packages in canonical coordinate order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &VerifiedAbilityPackage> {
         self.packages.iter()
+    }
+
+    /// Verifies that an artifact reference is retained by an authenticated package.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the content identity is absent or its authenticated
+    /// store-path, NAR, or closure commitments differ from `artifact`.
+    pub fn authenticate_artifact(&self, artifact: &ArtifactReference) -> Result<()> {
+        ensure!(
+            self.artifacts.get(&artifact.content) == Some(artifact),
+            "ability artifact is not present with exact metadata in the verified package set"
+        );
+        Ok(())
     }
 
     /// Returns the exact authenticated package at one release coordinate.

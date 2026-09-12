@@ -15,8 +15,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::builtin::{
-    credential_delivery_effects_interface, host_network_policy_interface,
-    host_network_policy_loopback_tcp_egress_guarantee,
+    credential_delivery_effects_interface, foreground_process_supervision_guarantee,
+    host_network_policy_interface, host_network_policy_loopback_tcp_egress_guarantee,
     host_network_policy_loopback_tcp_ingress_guarantee, host_storage_interface,
     network_endpoint_interface,
 };
@@ -153,7 +153,8 @@ impl ReferenceLifecycle {
 /// Generates one immutable activation-input descriptor for the reference VM.
 ///
 /// Arguments are `OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE
-/// --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO]`, where the
+/// --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO]
+/// [--execution-stage STAGE]`, where the
 /// responses become the bodies for `alpha.example` and `gamma.example`.
 /// `SCENARIO` selects a bounded removal or disable transition for lifecycle
 /// qualification. The generated descriptor is written to
@@ -171,7 +172,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         || (arguments.len() - 5) % 2 != 0
     {
         bail!(
-            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO] [--tls-version VERSION --tls-bundle PATH]"
+            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO] [--execution-stage host|application-container] [--tls-version VERSION --tls-bundle PATH]"
         );
     }
     let output = Path::new(&arguments[0]);
@@ -181,11 +182,19 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let mut lifecycle = ReferenceLifecycle::Full;
     let mut tls_version = None;
     let mut tls_bundle = None;
+    let mut execution_stage = ExecutionStage::Host;
     for option in arguments[5..].chunks_exact(2) {
         match option[0].as_str() {
             "--lifecycle" => lifecycle = ReferenceLifecycle::parse(&option[1])?,
             "--tls-version" => tls_version = Some(option[1].clone()),
             "--tls-bundle" => tls_bundle = Some(PathBuf::from(&option[1])),
+            "--execution-stage" => {
+                execution_stage = match option[1].as_str() {
+                    "host" => ExecutionStage::Host,
+                    "application-container" => ExecutionStage::ApplicationContainer,
+                    value => bail!("unknown reference execution stage {value:?}"),
+                }
+            }
             unknown => bail!("unknown reference activation option {unknown:?}"),
         }
     }
@@ -228,7 +237,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     fs::create_dir_all(output)
         .with_context(|| format!("creating ability fixture output {}", output.display()))?;
     let (_runtime, packages) = load_verified_packages()?;
-    let fixture = ReferenceFixture::new(&packages)?;
+    let fixture = ReferenceFixture::new(&packages, execution_stage)?;
     let composed = fixture.compose(
         primary_response,
         secondary_response,
@@ -405,7 +414,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn load_verified_packages() -> Result<(RuntimeResolution, VerifiedAbilityPackageSet)> {
+pub(super) fn load_verified_packages() -> Result<(RuntimeResolution, VerifiedAbilityPackageSet)> {
     let config = ApmConfig::load(ProfileScope::System)?;
     let enabled = config.enabled_registries();
     let registries = RegistrySet::load_for_config_evaluation(
@@ -424,7 +433,7 @@ fn load_verified_packages() -> Result<(RuntimeResolution, VerifiedAbilityPackage
 }
 
 impl ReferenceFixture {
-    fn new(verified: &VerifiedAbilityPackageSet) -> Result<Self> {
+    fn new(verified: &VerifiedAbilityPackageSet, execution_stage: ExecutionStage) -> Result<Self> {
         let mut identified_packages = verified
             .iter()
             .map(|package| {
@@ -495,7 +504,7 @@ impl ReferenceFixture {
         let environment_id = EnvironmentId {
             authority: key("reference")?,
             key: key("host")?,
-            stage: ExecutionStage::Host,
+            stage: execution_stage,
         };
         let policy_revision = RevisionId(digest(20));
         let mut providers = Vec::new();
@@ -519,7 +528,7 @@ impl ReferenceFixture {
             let terminal_name = terminal_interface_name(name);
             if let Some(implementation) = terminal_implementations.get(terminal_name) {
                 providers.push(ProviderInventory {
-                    provider,
+                    provider: provider.clone(),
                     interface: interfaces
                         .get(terminal_name)
                         .with_context(|| format!("missing interface {terminal_name}"))?
@@ -531,6 +540,25 @@ impl ReferenceFixture {
                         .get(terminal_name)
                         .with_context(|| format!("missing guarantees for {terminal_name}"))?
                         .clone(),
+                });
+            }
+            if suffix == "service" {
+                let foreground_name = aos_ability_model::builtin::FOREGROUND_PROCESS_INTERFACE_NAME;
+                providers.push(ProviderInventory {
+                    provider: provider.clone(),
+                    interface: interfaces
+                        .get(foreground_name)
+                        .context("missing foreground-process interface")?
+                        .clone(),
+                    implementation: terminal_implementations
+                        .get(foreground_name)
+                        .context("missing foreground-process implementation")?
+                        .clone(),
+                    state: ProviderState::Available,
+                    incarnation: Some(aos_ability_model::IncarnationId::new(
+                        "reference-foreground-terminal",
+                    )?),
+                    guarantees: vec![foreground_process_supervision_guarantee()?],
                 });
             }
         }
@@ -666,7 +694,11 @@ impl ReferenceFixture {
         let configuration = |instance: &str, port: u16, tls_port: u16| -> Result<AbilityValue> {
             let mut configuration = serde_json::json!({
                 "address": "127.0.0.1",
-                "execution_strategy": "systemd-manager",
+                "execution_strategy": if self.environment.environment.stage == ExecutionStage::ApplicationContainer {
+                    "foreground-process"
+                } else {
+                    "systemd-manager"
+                },
                 "port": port,
             });
             if let Some(tls) = tls {
@@ -1126,12 +1158,22 @@ fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeR
 
         let service_resource =
             resource_revision(composed, &service_provider, &format!("{name}-service"))?;
-        let service = native_mapping(
-            composed,
-            &service_provider,
-            &format!("{name}-service"),
-            &nginx,
-            "service-terminal",
+        let foreground = environment.stage == ExecutionStage::ApplicationContainer;
+        let service_qualification = if foreground {
+            let validation_binding = find_binding(composed, &nginx, "validation-terminal")?;
+            NativeResourceQualification::ForegroundProcess {
+                artifact: validation_binding.implementation.artifact.clone(),
+                entry_point: "bin/nginx".to_string(),
+                arguments: vec![
+                    "-c".to_string(),
+                    format!("/var/lib/aos/ability-reference/{name}.conf"),
+                    "-p".to_string(),
+                    format!("/var/lib/aos/ability-reference/{name}"),
+                    "-g".to_string(),
+                    "daemon off;".to_string(),
+                ],
+            }
+        } else {
             NativeResourceQualification::SystemdService {
                 unit: format!("nginx-{name}.service"),
                 resource_reference: output_locator(
@@ -1151,7 +1193,19 @@ fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeR
                     content_resource: nginx_resource.resource.clone(),
                     expected_content_revision: nginx_resource.revision,
                 }),
+            }
+        };
+        let service = native_mapping(
+            composed,
+            &service_provider,
+            &format!("{name}-service"),
+            &nginx,
+            if foreground {
+                "service-terminal-foreground"
+            } else {
+                "service-terminal"
             },
+            service_qualification,
         )?;
 
         let validation_binding = find_binding(composed, &nginx, "validation-terminal")?;

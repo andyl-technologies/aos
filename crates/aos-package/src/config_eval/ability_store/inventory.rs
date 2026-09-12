@@ -151,6 +151,24 @@ pub(crate) enum LinkedAdoptionVerificationState {
 }
 
 impl NativeQualifiedResource {
+    /// Qualifies one exact application-container foreground command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command identity is outside the bounded
+    /// process-executor ledger domain.
+    pub(crate) fn foreground_process(
+        logical: ResourceId,
+        command: &str,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        Self::new(
+            logical,
+            "foreground-process",
+            "application-container-executor",
+            command,
+        )
+    }
+
     pub(crate) fn systemd(
         logical: ResourceId,
         unit_path: &str,
@@ -317,7 +335,8 @@ impl NativePhysicalResource {
             }
             ("network-endpoint-allocation", "aos-host-runtime")
             | ("host-network-policy", "aos-host-runtime")
-            | ("ab-image-rollout", "aos-host-runtime") => {
+            | ("ab-image-rollout", "aos-host-runtime")
+            | ("foreground-process", "application-container-executor") => {
                 if self.object.starts_with('/') {
                     return Err(GenerationAbilityStoreError::Conflict(
                         "native host-resource ledger key must not be a path".to_string(),

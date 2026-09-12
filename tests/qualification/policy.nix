@@ -363,15 +363,16 @@ in
   assert abilityRequirements.ability-native-adapter-matrix.regressions
   == [
     "checks.fleet.ability-native-activation"
+    "checks.fleet.ability-native-foreground-container"
     "checks.fleet.ability-native-image-rollout"
     "checks.fleet.ability-native-kubernetes"
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
-  assert nativeAdapterMatrix.cell_count == 1316;
-  assert nativeAdapterMatrix.required_production_vm_cells == 1316;
-  assert builtins.length nativeRoleRevocationCells == 564;
+  assert nativeAdapterMatrix.cell_count == 1400;
+  assert nativeAdapterMatrix.required_production_vm_cells == 1400;
+  assert builtins.length nativeRoleRevocationCells == 600;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;

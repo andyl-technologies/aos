@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! {
-//!   "schema": "aos.ability.native-resource-map/v3",
+//!   "schema": "aos.ability.native-resource-map/v4",
 //!   "desired_state": "sha256:<64 lowercase hex characters>",
 //!   "entries": [
 //!     {
@@ -55,7 +55,7 @@ pub struct NativeResourceMap {
 
 impl NativeResourceMap {
     /// Current native resource-map schema.
-    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v3";
+    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v4";
 
     /// Constructs and validates a canonically ordered native resource map.
     ///
@@ -121,6 +121,8 @@ impl NativeResourceMap {
         let mut claimed_root_storage_paths: BTreeMap<String, &ResourceId> = BTreeMap::new();
         let mut claimed_policies: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         let mut claimed_postgresql_clusters: BTreeMap<&str, &ResourceId> = BTreeMap::new();
+        let mut claimed_foreground_commands: BTreeMap<(&str, &str, &[String]), &ResourceId> =
+            BTreeMap::new();
         let mut claimed_image_rollout_hosts: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         for entry in &self.entries {
             validate_mapping(entry, &mut remaining_items)?;
@@ -232,6 +234,22 @@ impl NativeResourceMap {
                         "PostgreSQL cluster",
                     )?;
                 }
+                NativeResourceQualification::ForegroundProcess {
+                    artifact,
+                    entry_point,
+                    arguments,
+                } => {
+                    claim_physical(
+                        &mut claimed_foreground_commands,
+                        (
+                            artifact.store_path.as_str(),
+                            entry_point.as_str(),
+                            arguments.as_slice(),
+                        ),
+                        &entry.resource,
+                        "foreground command",
+                    )?;
+                }
             }
         }
         validate_path_claims(&mut claimed_paths)?;
@@ -287,6 +305,15 @@ pub enum NativeResourceQualification {
     AbImageRollout {
         /// Pins the exact predecessor, candidate, strategy, and retention window.
         request: aos_ability_plan::AbRolloutRequest,
+    },
+    /// Supervises one exact process in an application container.
+    ForegroundProcess {
+        /// Pins the authenticated runtime artifact containing the executable.
+        artifact: ArtifactReference,
+        /// Names a safe relative executable path inside `artifact`.
+        entry_point: String,
+        /// Supplies the exact argument vector following argv zero.
+        arguments: Vec<String>,
     },
     /// Publishes a candidate file at one managed host destination.
     ManagedConfiguration {
@@ -475,6 +502,32 @@ fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) 
                 ("candidate executor", request.candidate.executor.as_str()),
             ] {
                 validate_string(value, label)?;
+            }
+        }
+        NativeResourceQualification::ForegroundProcess {
+            artifact,
+            entry_point,
+            arguments,
+        } => {
+            consume_items(remaining_items, 4)?;
+            consume_items(remaining_items, arguments.len())?;
+            validate_string(&artifact.store_path, "foreground artifact store path")?;
+            ensure!(
+                entry_point.len() <= 4_096,
+                "foreground entry point exceeds 4096 bytes"
+            );
+            validate_safe_relative_path(entry_point, "foreground entry point")?;
+            ensure!(
+                arguments.len() <= 128,
+                "foreground argument vector exceeds 128 entries"
+            );
+            for argument in arguments {
+                ensure!(
+                    argument.len() <= 4_096,
+                    "foreground argument exceeds 4096 bytes"
+                );
+                validate_string(argument, "foreground argument")?;
+                ensure!(!argument.contains('\0'), "foreground argument contains NUL");
             }
         }
         NativeResourceQualification::ManagedConfiguration {
@@ -770,6 +823,21 @@ fn validate_safe_host_path(path: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_safe_relative_path(path: &str, label: &str) -> Result<()> {
+    validate_string(path, label)?;
+    ensure!(
+        !path.is_empty()
+            && !path.starts_with('/')
+            && !path.ends_with('/')
+            && !path.contains("//")
+            && !path
+                .split('/')
+                .any(|component| matches!(component, "." | "..")),
+        "{label} is not a canonical relative path"
+    );
+    Ok(())
+}
+
 fn validate_path_claims(claims: &mut [(&str, &ResourceId)]) -> Result<()> {
     // Component ordering places an ancestor immediately before its first
     // descendant even when punctuation sorts between their raw byte strings.
@@ -966,6 +1034,33 @@ mod tests {
             consumer_observation: Some(observation),
         };
         assert!(NativeResourceMap::new(digest("desired"), vec![entry]).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_foreground_commands_outside_adapter_bounds() {
+        let qualification = |entry_point: String, arguments: Vec<String>| {
+            NativeResourceQualification::ForegroundProcess {
+                artifact: artifact("nginx"),
+                entry_point,
+                arguments,
+            }
+        };
+
+        let too_many = qualification("bin/nginx".to_string(), vec!["x".to_string(); 129]);
+        assert!(
+            NativeResourceMap::new(digest("desired"), vec![mapping("many", too_many)]).is_err()
+        );
+
+        let long_entry = qualification(format!("bin/{}", "x".repeat(4_093)), Vec::new());
+        assert!(
+            NativeResourceMap::new(digest("desired"), vec![mapping("entry", long_entry)]).is_err()
+        );
+
+        let long_argument = qualification("bin/nginx".to_string(), vec!["x".repeat(4_097)]);
+        assert!(
+            NativeResourceMap::new(digest("desired"), vec![mapping("argument", long_argument)])
+                .is_err()
+        );
     }
 
     #[test]

@@ -12,12 +12,12 @@ const SURFACE_PATH: &str = "../../qualification/native-adapter-surface.json";
 const SURFACE_SCHEMA: &str = "aos.qualification.native-adapter-surface/v1";
 const MATRIX_SCHEMA: &str = "aos.qualification.native-adapter-matrix/v1";
 const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-subject/v1";
-const EXPECTED_ADAPTERS: usize = 12;
-const EXPECTED_METHODS: usize = 47;
+const EXPECTED_ADAPTERS: usize = 13;
+const EXPECTED_METHODS: usize = 50;
 const EXPECTED_SCENARIOS: usize = 28;
 const MAX_SURFACE_BYTES: u64 = 64 * 1024;
 const EXPECTED_SURFACE_DIGEST: &str =
-    "e6a2431b0f00a40b9e10376271c8bd0d9d0a9845b8a929140aeca1fefc20d4a2";
+    "ab49c07a42c33d0a4c64532031497ea1f9a07b41bcbe22164a4106cdeb614ae7";
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -123,6 +123,14 @@ fn validate(document: &SurfaceDocument) -> BuildResult<()> {
                 "aos.credential-delivery-effects",
                 "host-resource",
                 &["acquire", "deliver", "release"] as &[_],
+            ),
+        ),
+        (
+            "foreground-process",
+            (
+                "aos.foreground-process",
+                "application-container-process",
+                &["observe", "start", "stop"],
             ),
         ),
         (
@@ -368,8 +376,8 @@ fn validate_digest(value: &str) -> BuildResult<()> {
 fn generate(document: &SurfaceDocument) -> BuildResult<String> {
     let mut output = String::from(
         "// Generated from qualification/native-adapter-surface.json.\n\
-         pub(crate) const NATIVE_ADAPTER_COUNT: usize = 12;\n\
-         pub(crate) const NATIVE_METHOD_COUNT: usize = 47;\n\n\
+         pub(crate) const NATIVE_ADAPTER_COUNT: usize = 13;\n\
+         pub(crate) const NATIVE_METHOD_COUNT: usize = 50;\n\n\
          #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n\
          pub(crate) enum NativeAdapterId {\n",
     );
@@ -405,6 +413,7 @@ fn generate(document: &SurfaceDocument) -> BuildResult<String> {
 fn variant(adapter: &str) -> BuildResult<&'static str> {
     Ok(match adapter {
         "credential-delivery" => "CredentialDelivery",
+        "foreground-process" => "ForegroundProcess",
         "host-network-policy" => "HostNetworkPolicy",
         "host-storage" => "HostStorage",
         "image-rollout" => "ImageRollout",

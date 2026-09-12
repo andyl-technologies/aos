@@ -22,12 +22,13 @@ use std::time::{Duration, Instant};
 
 use aos_ability_model::builtin::{
     FOREGROUND_PROCESS_OBSERVATION_SCHEMA, foreground_process_handler_key,
-    foreground_process_interface_key,
+    foreground_process_interface_key, foreground_process_provider,
 };
 use aos_ability_model::{
     AbilityValue, ArtifactReference, LocalKey, MethodReference, Operation, ProviderAssignment,
     ProviderImplementationReference, ResourceAccess, ResourceId, RevisionId,
 };
+use aos_ability_plan::{RuntimeResourceHealth, RuntimeResourceState};
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CatalogReservation,
     EffectDisposition, InvocationPurpose, ReconcileDisposition, ReservationContext,
@@ -38,10 +39,32 @@ use aos_contract::Sha256Digest;
 use rustix::fs::FlockOperation;
 use serde::{Deserialize, Serialize};
 
+use crate::ability_package::VerifiedAbilityPackageSet;
+use crate::config_eval::ability_store::inventory::NativeQualifiedResource;
+
 const REQUEST_SCHEMA: &str = "aos.ability.foreground-process-request/v1";
 const STATE_SCHEMA: &str = "aos.ability.foreground-process-state/v1";
 const OWNERSHIP_ENVIRONMENT: &str = "AOS_FOREGROUND_PROCESS_OWNERSHIP";
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Authenticates a foreground provider and executable without opening runtime state.
+///
+/// # Errors
+///
+/// Returns an error when the provider differs from the built-in contract, the
+/// executable artifact is absent from the verified package union, or the
+/// command escapes or exceeds its authenticated artifact.
+pub(crate) fn preflight_native_foreground(
+    packages: &VerifiedAbilityPackageSet,
+    assignment: &ProviderAssignment,
+    spec: &ForegroundProcessResourceSpec,
+) -> Result<(), io::Error> {
+    authenticate_assignment(assignment)?;
+    packages
+        .authenticate_artifact(&spec.artifact)
+        .map_err(|error| invalid(format!("authenticating foreground artifact: {error}")))?;
+    QualifiedCommand::new(spec).map(|_| ())
+}
 
 /// Binds one logical application-container resource to an exact foreground command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,6 +234,14 @@ impl ForegroundProcessSupervisor {
         let identity =
             match locate_owned_process(&command, &confinement, &token, state.identity.as_ref())? {
                 LocatedProcess::None => {
+                    if !matches!(
+                        locate_owned_process(&command, &confinement, &token, None)?,
+                        LocatedProcess::None
+                    ) {
+                        return Err(invalid(
+                            "an owned foreground process appeared before state removal",
+                        ));
+                    }
                     remove_state(&state_path)?;
                     return Ok(observation(None));
                 }
@@ -225,14 +256,18 @@ impl ForegroundProcessSupervisor {
         let pid = rustix::process::Pid::from_raw(identity.pid as i32)
             .ok_or_else(|| invalid("foreground process PID is zero"))?;
         let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())?;
+        // The pidfd pins the task against PID reuse. Re-reading every identity
+        // field after opening it also prevents signalling a changed group.
         if ProcessIdentity::read(identity.pid, &command, &confinement, &token)? != identity {
             return Err(invalid(
                 "foreground process identity changed before termination",
             ));
         }
-        rustix::process::kill_process_group(pid, rustix::process::Signal::TERM)?;
+        let process_group = rustix::process::Pid::from_raw(identity.process_group as i32)
+            .ok_or_else(|| invalid("foreground process group is zero"))?;
+        rustix::process::kill_process_group(process_group, rustix::process::Signal::TERM)?;
         if !wait_for_group_exit(identity.process_group, control)? {
-            rustix::process::kill_process_group(pid, rustix::process::Signal::KILL)?;
+            rustix::process::kill_process_group(process_group, rustix::process::Signal::KILL)?;
             if !wait_for_group_exit(identity.process_group, control)? {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
@@ -244,6 +279,14 @@ impl ForegroundProcessSupervisor {
             let _ = child.wait();
         }
         drop(pidfd);
+        match locate_owned_process(&command, &confinement, &token, None)? {
+            LocatedProcess::None => {}
+            LocatedProcess::One(_) | LocatedProcess::Many => {
+                return Err(invalid(
+                    "another owned foreground process group remains after stop",
+                ));
+            }
+        }
         remove_state(&state_path)?;
 
         Ok(observation(None))
@@ -291,6 +334,7 @@ pub struct ForegroundProcessResourceCatalog {
     assignment: ProviderAssignment,
     state_root: PathBuf,
     resources: BTreeMap<ResourceId, ForegroundProcessResourceSpec>,
+    qualified: BTreeMap<ResourceId, NativeQualifiedResource>,
 }
 
 impl ForegroundProcessResourceCatalog {
@@ -301,6 +345,7 @@ impl ForegroundProcessResourceCatalog {
     /// Returns an error for another interface or handler, duplicate resources
     /// or commands, unsafe commands, or an unusable private state root.
     pub fn new(
+        packages: &VerifiedAbilityPackageSet,
         assignment: ProviderAssignment,
         state_root: impl Into<PathBuf>,
         resources: impl IntoIterator<Item = ForegroundProcessResourceSpec>,
@@ -309,8 +354,10 @@ impl ForegroundProcessResourceCatalog {
         let state_root = state_root.into();
         let _ = ForegroundProcessSupervisor::new(&state_root)?;
         let mut by_resource = BTreeMap::new();
+        let mut qualified = BTreeMap::new();
         let mut commands = BTreeSet::new();
         for spec in resources {
+            preflight_native_foreground(packages, &assignment, &spec)?;
             let command = QualifiedCommand::new(&spec)?;
             let command_key = (command.executable, command.arguments);
             if !commands.insert(command_key) {
@@ -318,7 +365,18 @@ impl ForegroundProcessResourceCatalog {
                     "two foreground resources claim the same executable and argument vector",
                 ));
             }
-            if by_resource.insert(spec.resource.clone(), spec).is_some() {
+            let resource = spec.resource.clone();
+            let object = Sha256Digest::of_canonical(
+                "aos.ability.foreground-process-command/v1",
+                &ForegroundDurableRequest::new(ForegroundAction::Start, &spec),
+            )
+            .map_err(|error| invalid(format!("describing foreground command: {error}")))?;
+            qualified.insert(
+                resource.clone(),
+                NativeQualifiedResource::foreground_process(resource.clone(), &object.to_string())
+                    .map_err(|error| invalid(format!("qualifying foreground command: {error}")))?,
+            );
+            if by_resource.insert(resource, spec).is_some() {
                 return Err(invalid("duplicate foreground logical resource"));
             }
         }
@@ -326,7 +384,39 @@ impl ForegroundProcessResourceCatalog {
             assignment,
             state_root,
             resources: by_resource,
+            qualified,
         })
+    }
+
+    /// Classifies one exact foreground process from live ownership evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resource is absent, state is corrupt, or
+    /// process ownership is ambiguous or outside the current confinement.
+    pub(crate) fn classify_runtime_revision(
+        &self,
+        resource: &ResourceId,
+    ) -> Result<(NativeQualifiedResource, RuntimeResourceState), io::Error> {
+        let spec = self
+            .resources
+            .get(resource)
+            .ok_or_else(|| invalid("foreground resource is not catalogued"))?;
+        let qualified = self
+            .qualified
+            .get(resource)
+            .ok_or_else(|| invalid("foreground resource lost its qualification"))?
+            .clone();
+        let observed = ForegroundProcessSupervisor::new(&self.state_root)?.observe(spec)?;
+        let state = if observed.running {
+            RuntimeResourceState::Present {
+                revision: spec.revision,
+                health: RuntimeResourceHealth::Healthy,
+            }
+        } else {
+            RuntimeResourceState::Absent
+        };
+        Ok((qualified, state))
     }
 }
 
@@ -336,11 +426,17 @@ impl TrustedResourceCatalog for ForegroundProcessResourceCatalog {
 
     fn acquire(
         &mut self,
-        _context: ReservationContext<'_>,
+        context: ReservationContext<'_>,
         operation: &Operation,
         access: &ResourceAccess,
     ) -> Result<CatalogReservation<Self::Handle>, Self::Error> {
         authenticate_assignment(&self.assignment)?;
+        if context
+            .expected_provider
+            .is_some_and(|expected| expected != &self.assignment)
+        {
+            return Err(invalid("foreground provider assignment is absent or stale"));
+        }
         if &access.resource != &operation.target.resource {
             return Err(invalid("foreground access differs from operation target"));
         }
@@ -449,6 +545,36 @@ impl NativeForegroundProcessAdapter {
             supervisor: ForegroundProcessSupervisor::new(state_root)?,
             failure,
         })
+    }
+
+    /// Invokes one already authenticated foreground resource specification.
+    ///
+    /// This entry point backs the production container qualification driver;
+    /// normal activation reaches the same action implementation through
+    /// [`TrustedAdapter`]. The caller must first admit `spec` through a
+    /// [`ForegroundProcessResourceCatalog`] built from the verified package set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `method` is unsupported or process observation,
+    /// start, or termination cannot establish exact ownership.
+    pub fn invoke_qualified(
+        &mut self,
+        method: &str,
+        spec: &ForegroundProcessResourceSpec,
+        control: &dyn RuntimeControl,
+    ) -> Result<ForegroundProcessObservation, io::Error> {
+        let action = match method {
+            "observe" => ForegroundAction::Observe,
+            "start" => ForegroundAction::Start,
+            "stop" => ForegroundAction::Stop,
+            _ => return Err(invalid("unsupported foreground process method")),
+        };
+        let request = ForegroundProcessRequest {
+            durable: ForegroundDurableRequest::new(action, spec),
+            spec: spec.clone(),
+        };
+        self.apply(&request, control)
     }
 }
 
@@ -577,6 +703,17 @@ impl TrustedAdapter for NativeForegroundProcessAdapter {
         request: &Self::Request,
         control: &dyn RuntimeControl,
     ) -> CancellationDisposition<Self::Completion, Self::Observation> {
+        if request.durable.action == ForegroundAction::Start {
+            return match self.supervisor.observe(&request.spec) {
+                Ok(observed) if observed.running => {
+                    CancellationDisposition::Completed(self.record(observed))
+                }
+                Ok(observed) => {
+                    CancellationDisposition::RejectedBeforeEffect(self.record(observed))
+                }
+                Err(_) => CancellationDisposition::Indeterminate(self.failure.clone()),
+            };
+        }
         match self.reconcile(request, control) {
             ReconcileDisposition::Completed(record) => CancellationDisposition::Completed(record),
             ReconcileDisposition::RejectedBeforeEffect(record)
@@ -774,11 +911,6 @@ impl ProcessIdentity {
         }
         let stat = read_bounded(prefix.join("stat"), 16 * 1024)?;
         let (_, process_group, session, start_time) = parse_stat(&stat)?;
-        if process_group != pid {
-            return Err(invalid(
-                "foreground process does not lead its process group",
-            ));
-        }
         Ok(Self {
             boot_id: read_bounded("/proc/sys/kernel/random/boot_id", 128)?
                 .trim()
@@ -850,13 +982,18 @@ fn locate_owned_process(
     token: &str,
     retained: Option<&ProcessIdentity>,
 ) -> Result<LocatedProcess, io::Error> {
-    if let Some(identity) = retained
+    let mut groups = BTreeMap::new();
+    let mut claimed_groups = BTreeSet::new();
+    let retained_pid = if let Some(identity) = retained
         && identity.still_exists()
     {
-        return ProcessIdentity::read(identity.pid, command, confinement, token)
-            .map(LocatedProcess::One);
-    }
-    let mut matches = Vec::new();
+        let observed = ProcessIdentity::read(identity.pid, command, confinement, token)?;
+        claimed_groups.insert(observed.process_group);
+        groups.insert(observed.process_group, observed);
+        Some(identity.pid)
+    } else {
+        None
+    };
     for entry in fs::read_dir("/proc")? {
         let entry = entry?;
         let Some(pid) = entry
@@ -866,8 +1003,34 @@ fn locate_owned_process(
         else {
             continue;
         };
+        if retained_pid == Some(pid) {
+            continue;
+        }
+        match claimed_process_group(pid, confinement, token) {
+            Ok(Some(group)) => {
+                claimed_groups.insert(group);
+            }
+            Ok(None) => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
         match ProcessIdentity::read(pid, command, confinement, token) {
-            Ok(identity) => matches.push(identity),
+            Ok(identity) => {
+                let process_group = identity.process_group;
+                match groups.get(&process_group) {
+                    Some(selected) if selected.pid == process_group => {}
+                    _ => {
+                        groups.insert(process_group, identity);
+                    }
+                }
+            }
             Err(error)
                 if matches!(
                     error.kind(),
@@ -877,13 +1040,42 @@ fn locate_owned_process(
                 ) => {}
             Err(error) => return Err(error),
         }
-        if matches.len() > 1 {
+        if claimed_groups.len() > 1 {
             return Ok(LocatedProcess::Many);
         }
     }
-    Ok(matches
-        .pop()
+    if groups.is_empty() && !claimed_groups.is_empty() {
+        return Err(invalid(
+            "foreground ownership token is claimed by a process with a different command",
+        ));
+    }
+    Ok(groups
+        .into_values()
+        .next()
         .map_or(LocatedProcess::None, LocatedProcess::One))
+}
+
+fn claimed_process_group(
+    pid: u32,
+    confinement: &Confinement,
+    token: &str,
+) -> Result<Option<u32>, io::Error> {
+    let prefix = PathBuf::from("/proc").join(pid.to_string());
+    let environment = read_nul_fields(&prefix.join("environ"), 512 * 1024)?;
+    if !environment
+        .iter()
+        .any(|entry| entry == &format!("{OWNERSHIP_ENVIRONMENT}={token}"))
+    {
+        return Ok(None);
+    }
+    if Confinement::for_process(pid)? != *confinement {
+        return Err(invalid(
+            "foreground ownership token escaped executor confinement",
+        ));
+    }
+    let stat = read_bounded(prefix.join("stat"), 16 * 1024)?;
+    let (state, process_group, _, _) = parse_stat(&stat)?;
+    Ok((state != 'Z').then_some(process_group))
 }
 
 fn qualify_spawned_child(
@@ -912,10 +1104,17 @@ fn qualify_spawned_child(
 fn authenticate_assignment(assignment: &ProviderAssignment) -> Result<(), io::Error> {
     let interface = foreground_process_interface_key()
         .map_err(|error| invalid(format!("building foreground interface: {error}")))?;
+    let expected = foreground_process_provider(assignment.implementation.artifact.clone())
+        .map_err(|error| invalid(format!("building foreground provider: {error}")))?;
+    let descriptor = expected
+        .descriptor_digest()
+        .map_err(|error| invalid(format!("describing foreground provider: {error}")))?;
     let handler = foreground_process_handler_key()
         .map_err(|error| invalid(format!("building foreground handler: {error}")))?;
     if assignment.interface != interface
+        || assignment.implementation.descriptor != descriptor
         || assignment.implementation.handler.as_ref() != Some(&handler)
+        || assignment.implementation.artifact != expected.artifact
     {
         return Err(invalid(
             "assignment does not name the built-in foreground interface and handler",
@@ -1091,14 +1290,16 @@ fn ensure_private_directory(path: &Path) -> Result<(), io::Error> {
 }
 
 fn write_state(path: &Path, state: &ForegroundState) -> Result<(), io::Error> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
     let bytes = aos_contract::canonical::to_vec(state)
         .map_err(|error| invalid(format!("encoding foreground state: {error}")))?;
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(&temporary)?;
-    use std::os::unix::fs::PermissionsExt as _;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     file.write_all(&bytes)?;
     file.sync_all()?;
@@ -1261,6 +1462,8 @@ mod tests {
 
     #[test]
     fn supervisor_starts_observes_and_stops_exact_process() {
+        use std::os::unix::fs::MetadataExt as _;
+
         let temporary = tempfile::tempdir().expect("temporary directory is available");
         let spec = sleep_spec("lifecycle");
         let mut supervisor = ForegroundProcessSupervisor::new(temporary.path().join("state"))
@@ -1271,6 +1474,16 @@ mod tests {
             .expect("foreground process starts");
         assert!(started.running);
         assert!(started.process_identity.is_some());
+        let state_path = supervisor
+            .state_path(&spec.resource)
+            .expect("state path is valid");
+        assert_eq!(
+            fs::metadata(state_path)
+                .expect("durable state exists")
+                .mode()
+                & 0o777,
+            0o600
+        );
 
         let observed = supervisor
             .observe(&spec)
@@ -1344,6 +1557,151 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn preflight_rejects_executable_outside_verified_artifact_catalog() {
+        let spec = sleep_spec("unverified-artifact");
+        let assignment = foreground_assignment(&spec.artifact);
+        let packages = VerifiedAbilityPackageSet::default();
+
+        let error = preflight_native_foreground(&packages, &assignment, &spec)
+            .expect_err("unverified executable metadata must fail before dispatch");
+
+        assert!(error.to_string().contains("exact metadata"));
+    }
+
+    #[test]
+    fn cancelling_absent_start_never_spawns_the_process() {
+        let temporary = tempfile::tempdir().expect("temporary directory is available");
+        let spec = sleep_spec("cancel-absent-start");
+        let assignment = foreground_assignment(&spec.artifact);
+        let mut adapter =
+            NativeForegroundProcessAdapter::new(assignment, temporary.path().join("state"))
+                .expect("foreground adapter is valid");
+        let request = ForegroundProcessRequest {
+            durable: ForegroundDurableRequest::new(ForegroundAction::Start, &spec),
+            spec: spec.clone(),
+        };
+
+        let disposition = adapter.cancel(&request, &TestControl);
+
+        assert!(matches!(
+            disposition,
+            CancellationDisposition::RejectedBeforeEffect(_)
+        ));
+        assert!(
+            !adapter
+                .supervisor
+                .observe(&spec)
+                .expect("absence remains observable")
+                .running
+        );
+    }
+
+    #[test]
+    fn retained_identity_does_not_hide_a_second_owned_process_group() {
+        let temporary = tempfile::tempdir().expect("temporary directory is available");
+        let spec = sleep_spec("duplicate-claimant");
+        let mut supervisor = ForegroundProcessSupervisor::new(temporary.path().join("state"))
+            .expect("state root is valid");
+        supervisor
+            .start(&spec, &TestControl)
+            .expect("first foreground process starts");
+
+        let command = QualifiedCommand::new(&spec).expect("command is qualified");
+        let confinement = Confinement::current().expect("current confinement is readable");
+        let token = ownership_token(&spec, &confinement).expect("ownership token is encodable");
+        let mut claimant = Command::new(&command.executable)
+            .args(&command.arguments)
+            .env_clear()
+            .env(OWNERSHIP_ENVIRONMENT, &token)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("second claimant starts");
+        qualify_spawned_child(&mut claimant, &command, &confinement, &token)
+            .expect("second claimant is observable");
+
+        let error = supervisor
+            .observe(&spec)
+            .expect_err("two owned groups must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        terminate_child(&mut claimant);
+        supervisor
+            .stop(&spec, &TestControl)
+            .expect("original process remains stoppable after duplicate cleanup");
+    }
+
+    #[test]
+    fn multiple_claimants_in_the_owned_group_are_not_ambiguous() {
+        let temporary = tempfile::tempdir().expect("temporary directory is available");
+        let spec = sleep_spec("same-group-claimant");
+        let mut supervisor = ForegroundProcessSupervisor::new(temporary.path().join("state"))
+            .expect("state root is valid");
+        supervisor
+            .start(&spec, &TestControl)
+            .expect("group leader starts");
+        let command = QualifiedCommand::new(&spec).expect("command is qualified");
+        let confinement = Confinement::current().expect("current confinement is readable");
+        let token = ownership_token(&spec, &confinement).expect("ownership token is encodable");
+        let LocatedProcess::One(identity) =
+            locate_owned_process(&command, &confinement, &token, None)
+                .expect("owned group is discoverable")
+        else {
+            panic!("exactly one owned group must exist")
+        };
+        let mut member = Command::new(&command.executable)
+            .args(&command.arguments)
+            .env_clear()
+            .env(OWNERSHIP_ENVIRONMENT, &token)
+            .process_group(identity.process_group as i32)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("group member starts");
+        qualify_spawned_child(&mut member, &command, &confinement, &token)
+            .expect("group member is observable");
+
+        assert!(
+            supervisor
+                .observe(&spec)
+                .expect("one owned group remains unambiguous")
+                .running
+        );
+        supervisor
+            .stop(&spec, &TestControl)
+            .expect("the complete owned group stops");
+        let _ = member.wait();
+    }
+
+    fn foreground_assignment(artifact: &ArtifactReference) -> ProviderAssignment {
+        let provider = foreground_process_provider(artifact.clone())
+            .expect("built-in foreground provider is valid");
+        ProviderAssignment {
+            provider: InstanceId {
+                environment: EnvironmentId {
+                    authority: LocalKey::new("test").expect("authority is valid"),
+                    key: LocalKey::new("assignment").expect("environment is valid"),
+                    stage: ExecutionStage::ApplicationContainer,
+                },
+                key: LocalKey::new("executor").expect("instance is valid"),
+            },
+            interface: provider.interface.clone(),
+            implementation: ProviderImplementationReference {
+                descriptor: provider
+                    .descriptor_digest()
+                    .expect("provider descriptor is valid"),
+                artifact: provider.artifact,
+                handler: Some(foreground_process_handler_key().expect("handler key is valid")),
+            },
+            incarnation: aos_ability_model::IncarnationId::new("test-foreground")
+                .expect("incarnation is valid"),
+        }
     }
 
     fn sleep_spec(label: &str) -> ForegroundProcessResourceSpec {

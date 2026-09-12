@@ -45,12 +45,15 @@ pub(crate) struct NativeMethodContract {
 
 include!(concat!(env!("OUT_DIR"), "/native_adapter_surface.rs"));
 
-const _: [(); 12] = [(); NATIVE_ADAPTER_COUNT];
-const _: [(); 47] = [(); NATIVE_METHOD_COUNT];
+const _: [(); 13] = [(); NATIVE_ADAPTER_COUNT];
+const _: [(); 50] = [(); NATIVE_METHOD_COUNT];
 
 /// Resolves the generated adapter ID for one exact runtime route.
 pub(crate) fn adapter_id(kind: NativeAdapterKind, interface_name: &str) -> Option<NativeAdapterId> {
     match kind {
+        NativeAdapterKind::ForegroundProcess => (interface_name
+            == aos_ability_model::builtin::FOREGROUND_PROCESS_INTERFACE_NAME)
+            .then_some(NativeAdapterId::ForegroundProcess),
         NativeAdapterKind::ImageRollout => (interface_name
             == aos_ability_model::builtin::AB_IMAGE_ROLLOUT_INTERFACE_NAME)
             .then_some(NativeAdapterId::ImageRollout),
@@ -165,6 +168,7 @@ fn method_contract(
 const fn runtime_adapter_is_implemented(adapter: NativeAdapterId) -> bool {
     match adapter {
         NativeAdapterId::CredentialDelivery
+        | NativeAdapterId::ForegroundProcess
         | NativeAdapterId::HostNetworkPolicy
         | NativeAdapterId::HostStorage
         | NativeAdapterId::ImageRollout
@@ -189,8 +193,8 @@ mod tests {
 
     #[test]
     fn generated_surface_is_exact_and_bounded() {
-        assert_eq!(NATIVE_ADAPTER_COUNT, 12);
-        assert_eq!(NATIVE_METHOD_COUNT, 47);
+        assert_eq!(NATIVE_ADAPTER_COUNT, 13);
+        assert_eq!(NATIVE_METHOD_COUNT, 50);
         assert_eq!(NATIVE_METHODS.len(), NATIVE_METHOD_COUNT);
 
         let adapters = NATIVE_METHODS
@@ -344,6 +348,11 @@ mod tests {
             NativeAdapterId::CredentialDelivery => {
                 aos_ability_model::builtin::credential_delivery_effects_interface_key()
                     .expect("built-in credential interface")
+                    .descriptor
+            }
+            NativeAdapterId::ForegroundProcess => {
+                aos_ability_model::builtin::foreground_process_interface_key()
+                    .expect("built-in foreground interface")
                     .descriptor
             }
             NativeAdapterId::HostNetworkPolicy => {
