@@ -9,9 +9,9 @@
 //! formats are:
 //!
 //! ```text
-//! {"schema":"aos.ability.nginx-request/v2",...}
-//! {"schema":"aos.ability.nginx-validation/v2",...}
-//! {"schema":"aos.ability.nginx-generation-association/v2",...}
+//! {"schema":"aos.ability.nginx-request/v3",...}
+//! {"schema":"aos.ability.nginx-validation/v3",...}
+//! {"schema":"aos.ability.nginx-generation-association/v3",...}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,17 +48,20 @@ use crate::config_eval::ability_store::{
 use crate::config_eval::native_ability_fs::{RootedDirectory, RootedFile};
 use crate::config_eval::native_host_resources::{
     CredentialEvidence, NativeDependencyBinding, authenticate_credential_dependency_view,
-    authenticate_credential_view_evidence,
+    authenticate_credential_view_evidence, authenticate_storage_dependency,
+};
+use crate::config_eval::native_resource_map::{
+    HostStorageLifetime, HostStorageOwner, NativeResourceQualification,
 };
 
 const INTERFACE_NAME: &str = "aos.nginx-validation";
 pub(super) const INTERFACE_DESCRIPTOR: &str =
-    "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6";
+    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
 const HANDLER_KEY: &str = "nginx-terminal";
 const ENTRY_POINT: &str = "bin/nginx";
-const REQUEST_SCHEMA: &str = "aos.ability.nginx-request/v2";
-const VALIDATION_SCHEMA: &str = "aos.ability.nginx-validation/v2";
-const ASSOCIATION_SCHEMA: &str = "aos.ability.nginx-generation-association/v2";
+const REQUEST_SCHEMA: &str = "aos.ability.nginx-request/v3";
+const VALIDATION_SCHEMA: &str = "aos.ability.nginx-validation/v3";
+const ASSOCIATION_SCHEMA: &str = "aos.ability.nginx-generation-association/v3";
 const MAX_ASSOCIATION_BYTES: u64 = ABILITY_LIMITS_V1.max_document_bytes;
 
 /// Binds a logical nginx resource to exact candidate bytes and one generation.
@@ -80,6 +83,8 @@ pub struct NginxResourceSpec {
     pub desired_generation: Option<RevisionId>,
     /// Pins the credential producers authorized for candidate validation.
     pub(crate) credential_dependencies: Vec<NativeDependencyBinding>,
+    /// Pins the three host-storage producers authorized for this workload.
+    pub(crate) storage_dependencies: Vec<NativeDependencyBinding>,
 }
 
 #[derive(Clone, Debug)]
@@ -373,6 +378,7 @@ struct NginxDurableRequest {
     implementation: ProviderImplementationReference,
     validation_prefix: String,
     credential_evidence: Vec<CredentialEvidence>,
+    storage_paths: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -380,6 +386,15 @@ struct NginxDurableRequest {
 struct NginxValidationInput {
     candidate: bool,
     credential_views: Vec<CredentialViewInput>,
+    storage_paths: Option<StoragePathInput>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoragePathInput {
+    logs: String,
+    runtime: String,
+    state: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -495,16 +510,28 @@ impl TrustedAdapter for NativeNginxAdapter {
             )?,
             NginxAction::Record | NginxAction::Release => Vec::new(),
         };
+        let storage_paths = match action {
+            NginxAction::Validate => authenticate_storage_inputs(
+                input.storage_paths.as_ref(),
+                &resource.native().resource.spec.storage_dependencies,
+            )?,
+            NginxAction::Record | NginxAction::Release => BTreeMap::new(),
+        };
         if action == NginxAction::Validate {
             validate_candidate_credential_paths(
                 &resource.native().resource.spec.candidate,
                 &credential_evidence,
             )?;
+            validate_candidate_storage_paths(
+                &resource.native().resource.spec.candidate,
+                &storage_paths,
+            )?;
         }
-        encode_request(durable_request(
+        encode_request(durable_request_with_storage(
             action,
             &resource.native().resource,
             credential_evidence,
+            storage_paths,
         )?)
     }
 
@@ -535,6 +562,14 @@ impl TrustedAdapter for NativeNginxAdapter {
                 &resource.native().resource.spec.candidate,
                 &request.credential_evidence,
             )?;
+            authenticate_storage_paths(
+                &request.storage_paths,
+                &resource.native().resource.spec.storage_dependencies,
+            )?;
+            validate_candidate_storage_paths(
+                &resource.native().resource.spec.candidate,
+                &request.storage_paths,
+            )?;
         }
         Ok(NginxRequest {
             durable: request,
@@ -552,11 +587,12 @@ impl TrustedAdapter for NativeNginxAdapter {
         }
         match request.durable.action {
             NginxAction::Validate => {
-                match authenticate_request_credentials(request).and_then(|()| {
-                    validate_candidate(
+                match authenticate_request_dependencies(request).and_then(|()| {
+                    validate_candidate_with_storage(
                         &self.executable,
                         &request.resource,
                         &request.durable.credential_evidence,
+                        &request.durable.storage_paths,
                         control,
                     )
                 }) {
@@ -627,10 +663,11 @@ fn validate_recovered_request(
         ));
     }
     validate_action_spec(&request.action, &resource.spec)?;
-    let expected = durable_request(
+    let expected = durable_request_with_storage(
         request.action.clone(),
         resource,
         request.credential_evidence.clone(),
+        request.storage_paths.clone(),
     )?;
     if request != &expected {
         return Err(invalid_data(
@@ -651,8 +688,12 @@ fn reconcile_request(request: &NginxRequest) -> Result<ReconcileState, io::Error
     let resource = &request.resource;
     match request.durable.action {
         NginxAction::Validate => {
-            authenticate_request_credentials(request)?;
-            if validation_matches(resource, &request.durable.credential_evidence)? {
+            authenticate_request_dependencies(request)?;
+            if validation_matches_with_storage(
+                resource,
+                &request.durable.credential_evidence,
+                &request.durable.storage_paths,
+            )? {
                 resource.validation_path.sync_parent()?;
                 Ok(ReconcileState::Completed)
             } else {
@@ -685,10 +726,11 @@ fn reconcile_request(request: &NginxRequest) -> Result<ReconcileState, io::Error
     }
 }
 
-fn validate_candidate(
+fn validate_candidate_with_storage(
     executable: &Path,
     resource: &QualifiedNginxResource,
     credential_evidence: &[CredentialEvidence],
+    storage_paths: &BTreeMap<String, String>,
     control: &dyn RuntimeControl,
 ) -> Result<(), io::Error> {
     execution_budget(control)?;
@@ -710,12 +752,28 @@ fn validate_candidate(
     let status = wait_bounded(&mut child, control, budget)?;
     verify_candidate(resource)?;
     if status.success() {
-        write_validation(resource, credential_evidence)
+        write_validation_with_storage(resource, credential_evidence, storage_paths)
     } else {
         // Configuration testing may open configured logs before reporting a
         // failure, so rejection is not proof that no external effect occurred.
         Err(io::Error::other("nginx rejected the candidate"))
     }
+}
+
+#[cfg(test)]
+fn validate_candidate(
+    executable: &Path,
+    resource: &QualifiedNginxResource,
+    credential_evidence: &[CredentialEvidence],
+    control: &dyn RuntimeControl,
+) -> Result<(), io::Error> {
+    validate_candidate_with_storage(
+        executable,
+        resource,
+        credential_evidence,
+        &BTreeMap::new(),
+        control,
+    )
 }
 
 fn execution_budget(control: &dyn RuntimeControl) -> Result<u64, io::Error> {
@@ -801,11 +859,13 @@ struct ValidationRecord {
     implementation: ProviderImplementationReference,
     validation_prefix: String,
     credential_evidence: Vec<CredentialEvidence>,
+    storage_paths: BTreeMap<String, String>,
 }
 
-fn write_validation(
+fn write_validation_with_storage(
     resource: &QualifiedNginxResource,
     credential_evidence: &[CredentialEvidence],
+    storage_paths: &BTreeMap<String, String>,
 ) -> Result<(), io::Error> {
     let generation = resource
         .spec
@@ -819,21 +879,39 @@ fn write_validation(
         implementation: resource.implementation.clone(),
         validation_prefix: path_string(resource.validation_prefix.display())?,
         credential_evidence: credential_evidence.to_vec(),
+        storage_paths: storage_paths.clone(),
     };
     let bytes = serde_json::to_vec(&validation)
         .map_err(|error| invalid_data(format!("encoding nginx validation: {error}")))?;
     resource.validation_path.atomic_write(&bytes, false)
 }
 
-fn validation_matches(
+#[cfg(test)]
+fn write_validation(
     resource: &QualifiedNginxResource,
     credential_evidence: &[CredentialEvidence],
+) -> Result<(), io::Error> {
+    write_validation_with_storage(resource, credential_evidence, &BTreeMap::new())
+}
+
+fn validation_matches_with_storage(
+    resource: &QualifiedNginxResource,
+    credential_evidence: &[CredentialEvidence],
+    storage_paths: &BTreeMap<String, String>,
 ) -> Result<bool, io::Error> {
     let Some(validation) = read_validation(resource)? else {
         return Ok(false);
     };
 
-    validation_record_matches(resource, &validation, credential_evidence)
+    validation_record_matches(resource, &validation, credential_evidence, storage_paths)
+}
+
+#[cfg(test)]
+fn validation_matches(
+    resource: &QualifiedNginxResource,
+    credential_evidence: &[CredentialEvidence],
+) -> Result<bool, io::Error> {
+    validation_matches_with_storage(resource, credential_evidence, &BTreeMap::new())
 }
 
 fn read_validation(
@@ -855,6 +933,7 @@ fn validation_record_matches(
     resource: &QualifiedNginxResource,
     validation: &ValidationRecord,
     credential_evidence: &[CredentialEvidence],
+    storage_paths: &BTreeMap<String, String>,
 ) -> Result<bool, io::Error> {
     Ok(validation.schema == VALIDATION_SCHEMA
         && validation.resource == resource.spec.resource
@@ -862,7 +941,8 @@ fn validation_record_matches(
         && validation.candidate_digest == resource.candidate_digest
         && validation.implementation == resource.implementation
         && validation.validation_prefix == path_string(resource.validation_prefix.display())?
-        && validation.credential_evidence == credential_evidence)
+        && validation.credential_evidence == credential_evidence
+        && validation.storage_paths == *storage_paths)
 }
 
 #[derive(Deserialize, Serialize)]
@@ -873,6 +953,7 @@ struct AssociationRecord {
     generation: RevisionId,
     candidate_digest: Sha256Digest,
     credential_evidence: Vec<CredentialEvidence>,
+    storage_paths: BTreeMap<String, String>,
 }
 
 fn record_association(resource: &QualifiedNginxResource) -> Result<(), io::Error> {
@@ -883,7 +964,16 @@ fn record_association(resource: &QualifiedNginxResource) -> Result<(), io::Error
         &validation.credential_evidence,
         &resource.spec.credential_dependencies,
     )?;
-    if !validation_record_matches(resource, &validation, &validation.credential_evidence)? {
+    authenticate_storage_paths(
+        &validation.storage_paths,
+        &resource.spec.storage_dependencies,
+    )?;
+    if !validation_record_matches(
+        resource,
+        &validation,
+        &validation.credential_evidence,
+        &validation.storage_paths,
+    )? {
         return Err(invalid_data(
             "nginx candidate lacks exact successful validation evidence",
         ));
@@ -901,6 +991,7 @@ fn record_association(resource: &QualifiedNginxResource) -> Result<(), io::Error
         generation,
         candidate_digest: resource.candidate_digest,
         credential_evidence: validation.credential_evidence,
+        storage_paths: validation.storage_paths,
     };
     let bytes = serde_json::to_vec(&association)
         .map_err(|error| invalid_data(format!("encoding nginx association: {error}")))?;
@@ -959,15 +1050,27 @@ fn association_matches_desired(resource: &QualifiedNginxResource) -> Result<bool
     let Some(validation) = read_validation(resource)? else {
         return Ok(false);
     };
-    if !validation_record_matches(resource, &validation, &association.credential_evidence)? {
+    if !validation_record_matches(
+        resource,
+        &validation,
+        &association.credential_evidence,
+        &association.storage_paths,
+    )? {
         return Ok(false);
     }
     authenticate_credential_evidence(
         &association.credential_evidence,
         &resource.spec.credential_dependencies,
     )?;
+    authenticate_storage_paths(
+        &association.storage_paths,
+        &resource.spec.storage_dependencies,
+    )?;
 
-    Ok(association.credential_evidence == validation.credential_evidence)
+    Ok(
+        association.credential_evidence == validation.credential_evidence
+            && association.storage_paths == validation.storage_paths,
+    )
 }
 
 fn association_matches(
@@ -1076,6 +1179,11 @@ fn decode_validation_input(
             "only nginx validation may consume credential views",
         ));
     }
+    if !matches!(action, NginxAction::Validate) && input.storage_paths.is_some() {
+        return Err(invalid_data(
+            "only nginx validation may consume storage paths",
+        ));
+    }
 
     Ok(input)
 }
@@ -1149,7 +1257,66 @@ fn authenticate_credential_evidence(
     Ok(())
 }
 
-fn authenticate_request_credentials(request: &NginxRequest) -> Result<(), io::Error> {
+fn authenticate_storage_inputs(
+    input: Option<&StoragePathInput>,
+    dependencies: &[NativeDependencyBinding],
+) -> Result<BTreeMap<String, String>, io::Error> {
+    let input = input.ok_or_else(|| invalid_data("nginx validation has no storage paths"))?;
+    let paths = BTreeMap::from([
+        ("logs".to_string(), input.logs.clone()),
+        ("runtime".to_string(), input.runtime.clone()),
+        ("state".to_string(), input.state.clone()),
+    ]);
+    authenticate_storage_paths(&paths, dependencies)?;
+    Ok(paths)
+}
+
+fn authenticate_storage_paths(
+    paths: &BTreeMap<String, String>,
+    dependencies: &[NativeDependencyBinding],
+) -> Result<(), io::Error> {
+    if paths.is_empty() && dependencies.is_empty() {
+        return Ok(());
+    }
+    if paths.len() != 3 || dependencies.len() != 3 {
+        return Err(invalid_data(
+            "nginx storage paths differ from checked producer authority",
+        ));
+    }
+    for dependency in dependencies {
+        let path = paths
+            .get(&dependency.input)
+            .ok_or_else(|| invalid_data("nginx storage purpose has no checked path"))?;
+        let NativeResourceQualification::HostStorage {
+            cluster,
+            lifetime,
+            owner,
+            purpose,
+        } = &dependency.qualification
+        else {
+            return Err(invalid_data(
+                "nginx storage dependency has another qualification",
+            ));
+        };
+        if dependency.input != *purpose {
+            return Err(invalid_data("nginx storage purpose changed after planning"));
+        }
+        let binding =
+            authenticate_storage_dependency(dependency, path, cluster, purpose, *lifetime, *owner)?;
+        if binding.storage_path != *path
+            || binding.owner != HostStorageOwner::Root
+            || (purpose == "runtime" && *lifetime != HostStorageLifetime::Instance)
+            || (purpose != "runtime" && *lifetime != HostStorageLifetime::Persistent)
+        {
+            return Err(invalid_data(
+                "nginx storage binding has unsafe ownership or lifetime",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn authenticate_request_dependencies(request: &NginxRequest) -> Result<(), io::Error> {
     authenticate_credential_evidence(
         &request.durable.credential_evidence,
         &request.resource.spec.credential_dependencies,
@@ -1157,6 +1324,14 @@ fn authenticate_request_credentials(request: &NginxRequest) -> Result<(), io::Er
     validate_candidate_credential_paths(
         &request.resource.spec.candidate,
         &request.durable.credential_evidence,
+    )?;
+    authenticate_storage_paths(
+        &request.durable.storage_paths,
+        &request.resource.spec.storage_dependencies,
+    )?;
+    validate_candidate_storage_paths(
+        &request.resource.spec.candidate,
+        &request.durable.storage_paths,
     )
 }
 
@@ -1188,6 +1363,51 @@ fn validate_candidate_credential_paths(
         ));
     }
 
+    Ok(())
+}
+
+fn validate_candidate_storage_paths(
+    candidate: &[u8],
+    storage_paths: &BTreeMap<String, String>,
+) -> Result<(), io::Error> {
+    if storage_paths.is_empty() {
+        return Ok(());
+    }
+    let source =
+        std::str::from_utf8(candidate).map_err(|_| invalid_data("nginx candidate is not UTF-8"))?;
+    let tokens = tokenize_nginx(source)?;
+    let path = |purpose: &str| {
+        storage_paths
+            .get(purpose)
+            .map(String::as_str)
+            .ok_or_else(|| invalid_data("nginx candidate storage purpose is absent"))
+    };
+    let expected_pid = format!("{}/nginx.pid", path("runtime")?);
+    let expected_error_log = format!("{}/error.log", path("logs")?);
+    let expected_access_log = format!("{}/access.log", path("logs")?);
+
+    if directive_paths(&tokens, "pid")? != BTreeSet::from([expected_pid.as_str()])
+        || directive_paths(&tokens, "error_log")? != BTreeSet::from([expected_error_log.as_str()])
+        || directive_paths(&tokens, "access_log")? != BTreeSet::from([expected_access_log.as_str()])
+    {
+        return Err(invalid_data(
+            "nginx runtime or log directives differ from authenticated storage",
+        ));
+    }
+    let expected_state = BTreeSet::from([path("state")?]);
+    for directive in [
+        "client_body_temp_path",
+        "proxy_temp_path",
+        "fastcgi_temp_path",
+        "uwsgi_temp_path",
+        "scgi_temp_path",
+    ] {
+        if directive_paths(&tokens, directive)? != expected_state {
+            return Err(invalid_data(
+                "nginx state directives differ from authenticated storage",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1275,10 +1495,11 @@ fn tokenize_nginx(source: &str) -> Result<Vec<NginxToken<'_>>, io::Error> {
     Ok(tokens)
 }
 
-fn durable_request(
+fn durable_request_with_storage(
     action: NginxAction,
     resource: &QualifiedNginxResource,
     credential_evidence: Vec<CredentialEvidence>,
+    storage_paths: BTreeMap<String, String>,
 ) -> Result<NginxDurableRequest, io::Error> {
     Ok(NginxDurableRequest {
         schema: REQUEST_SCHEMA.to_string(),
@@ -1291,7 +1512,17 @@ fn durable_request(
         implementation: resource.implementation.clone(),
         validation_prefix: path_string(resource.validation_prefix.display())?,
         credential_evidence,
+        storage_paths,
     })
+}
+
+#[cfg(test)]
+fn durable_request(
+    action: NginxAction,
+    resource: &QualifiedNginxResource,
+    credential_evidence: Vec<CredentialEvidence>,
+) -> Result<NginxDurableRequest, io::Error> {
+    durable_request_with_storage(action, resource, credential_evidence, BTreeMap::new())
 }
 
 fn encode_request(request: NginxDurableRequest) -> Result<AbilityValue, io::Error> {
@@ -1371,6 +1602,27 @@ fn nginx_validation_request_schema() -> Result<ValueSchema, io::Error> {
                             .map_err(|error| invalid_data(error.to_string()))?,
                     ),
                     max_items: 1024,
+                },
+            ),
+            (
+                LocalKey::new("storage_paths").map_err(|error| invalid_data(error.to_string()))?,
+                ValueSchema::Optional {
+                    value: Box::new(ValueSchema::Record {
+                        fields: ["logs", "runtime", "state"]
+                            .into_iter()
+                            .map(|name| {
+                                Ok((
+                                    LocalKey::new(name)
+                                        .map_err(|error| invalid_data(error.to_string()))?,
+                                    ValueSchema::String {
+                                        max_length: 4096,
+                                        syntax: None,
+                                    },
+                                ))
+                            })
+                            .collect::<Result<BTreeMap<_, _>, io::Error>>()?,
+                        optional_fields: Vec::new(),
+                    }),
                 },
             ),
         ]),
@@ -1564,6 +1816,46 @@ mod tests {
     }
 
     #[test]
+    fn candidate_storage_directives_exactly_match_authenticated_paths() {
+        let paths = BTreeMap::from([
+            (
+                "logs".to_string(),
+                "/var/lib/aos/ability-runtime/storage/web-logs".to_string(),
+            ),
+            (
+                "runtime".to_string(),
+                "/var/lib/aos/ability-runtime/storage/web-runtime".to_string(),
+            ),
+            (
+                "state".to_string(),
+                "/var/lib/aos/ability-runtime/storage/web-state".to_string(),
+            ),
+        ]);
+        let candidate = br#"
+            error_log /var/lib/aos/ability-runtime/storage/web-logs/error.log;
+            pid /var/lib/aos/ability-runtime/storage/web-runtime/nginx.pid;
+            http {
+                access_log /var/lib/aos/ability-runtime/storage/web-logs/access.log;
+                client_body_temp_path /var/lib/aos/ability-runtime/storage/web-state;
+                proxy_temp_path /var/lib/aos/ability-runtime/storage/web-state;
+                fastcgi_temp_path /var/lib/aos/ability-runtime/storage/web-state;
+                uwsgi_temp_path /var/lib/aos/ability-runtime/storage/web-state;
+                scgi_temp_path /var/lib/aos/ability-runtime/storage/web-state;
+            }
+        "#;
+
+        validate_candidate_storage_paths(candidate, &paths)
+            .expect("all authenticated storage paths are exact");
+
+        let mut changed = paths;
+        changed.insert(
+            "runtime".to_string(),
+            "/var/lib/aos/ability-runtime/storage/other".to_string(),
+        );
+        assert!(validate_candidate_storage_paths(candidate, &changed).is_err());
+    }
+
+    #[test]
     fn candidate_file_is_immutable_and_exact() {
         let root = tempfile::tempdir().expect("temporary root is created");
         let owner = fs::metadata(root.path())
@@ -1750,6 +2042,7 @@ mod tests {
                     current_candidate_digest: current_generation.map(|_| candidate_digest),
                     desired_generation,
                     credential_dependencies: Vec::new(),
+                    storage_dependencies: Vec::new(),
                 },
                 candidate_path: candidate_root
                     .child(candidate_digest.to_string())
@@ -1805,6 +2098,7 @@ mod tests {
             generation,
             candidate_digest,
             credential_evidence: Vec::new(),
+            storage_paths: BTreeMap::new(),
         };
         resource
             .association_path

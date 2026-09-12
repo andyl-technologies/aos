@@ -1,4 +1,4 @@
-//! Persistent storage ownership and PostgreSQL principal-slot allocation.
+//! Lifetime-aware host storage ownership and PostgreSQL principal allocation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -9,14 +9,16 @@ use aos_ability_model::builtin::{HOST_STORAGE_OBSERVATION_SCHEMA, HOST_STORAGE_P
 use aos_ability_model::{LocalKey, ResourceId};
 use serde::{Deserialize, Serialize};
 
-use super::super::native_resource_map::NativeResourceQualification;
+use super::super::native_resource_map::{
+    HostStorageLifetime, HostStorageOwner, NativeResourceQualification,
+};
 use super::{
     HostState, NativeDependencyBinding, NativeHostRecord, NativeHostRequest, POSTGRESQL_GID,
     POSTGRESQL_SLOT_COUNT, STORAGE_ROOT, StorageInput, ability_value, decode_input,
     ensure_directory, invalid, new_state, path_text, postgresql_slot_principal,
     postgresql_slot_uid, protected_directory, read_state_optional, record,
-    remove_atomic_temporary_root, require_current_state, resource_key, storage_path, store_error,
-    write_state,
+    remove_atomic_temporary_root, remove_regular_optional, require_current_state, resource_key,
+    storage_path, store_error, write_state,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -34,6 +36,10 @@ pub(crate) struct StorageBinding {
     pub(crate) storage_resource: ResourceId,
     pub(crate) storage_path: String,
     pub(crate) cluster: String,
+    #[serde(default = "persistent_storage_lifetime")]
+    pub(crate) lifetime: HostStorageLifetime,
+    #[serde(default = "postgresql_storage_owner")]
+    pub(crate) owner: HostStorageOwner,
     pub(crate) purpose: String,
     pub(crate) slot: u8,
     pub(crate) uid: u32,
@@ -48,15 +54,17 @@ struct StorageStateDetails {
     binding: StorageBinding,
 }
 
-/// Names one complete desired persistent-storage lease before operation admission.
+/// Names one complete desired storage lease before operation admission.
 #[derive(Clone, Debug)]
 pub(crate) struct StorageAllocationRequest {
     pub(crate) resource: ResourceId,
     pub(crate) cluster: String,
+    pub(crate) lifetime: HostStorageLifetime,
+    pub(crate) owner: HostStorageOwner,
     pub(crate) purpose: String,
 }
 
-/// Retains the catalog-wide deterministic slot assignment for one activation.
+/// Retains deterministic storage ownership assignments for one activation.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HostResourceAllocations {
     storage: BTreeMap<ResourceId, StorageBinding>,
@@ -77,7 +85,10 @@ impl HostResourceAllocations {
         let mut used_slots = BTreeSet::new();
         for details in ledger.values() {
             let binding = details.binding.clone();
-            used_slots.insert(binding.slot);
+            if binding.owner == HostStorageOwner::PostgresqlSlot {
+                let slot = binding.slot;
+                used_slots.insert(slot);
+            }
             retained.insert(binding.storage_resource.clone(), binding);
         }
 
@@ -88,25 +99,48 @@ impl HostResourceAllocations {
                     binding,
                     &request.resource,
                     &request.cluster,
+                    request.lifetime,
+                    request.owner,
                     &request.purpose,
                 )?;
                 storage.insert(request.resource, binding.clone());
                 continue;
             }
-            let slot = (0..POSTGRESQL_SLOT_COUNT)
-                .find(|slot| !used_slots.contains(slot))
-                .ok_or_else(|| invalid("PostgreSQL principal-slot pool is exhausted"))?;
-            used_slots.insert(slot);
-            let path = storage_path(&request.resource)?;
+            let slot = match request.owner {
+                HostStorageOwner::Root => 0,
+                HostStorageOwner::PostgresqlSlot => {
+                    let slot = (0..POSTGRESQL_SLOT_COUNT)
+                        .find(|slot| !used_slots.contains(slot))
+                        .ok_or_else(|| invalid("PostgreSQL principal-slot pool is exhausted"))?;
+                    used_slots.insert(slot);
+                    slot
+                }
+            };
+            let (uid, gid, principal) = match request.owner {
+                HostStorageOwner::PostgresqlSlot => (
+                    postgresql_slot_uid(slot)?,
+                    POSTGRESQL_GID,
+                    postgresql_slot_principal(slot)?,
+                ),
+                HostStorageOwner::Root => (0, 0, "root".to_string()),
+            };
+            let path = storage_path(
+                &request.resource,
+                &request.cluster,
+                &request.purpose,
+                request.owner,
+            )?;
             let binding = StorageBinding {
                 storage_resource: request.resource.clone(),
                 storage_path: path_text(&path)?,
                 cluster: request.cluster,
+                lifetime: request.lifetime,
+                owner: request.owner,
                 purpose: request.purpose,
                 slot,
-                uid: postgresql_slot_uid(slot)?,
-                gid: POSTGRESQL_GID,
-                principal: postgresql_slot_principal(slot)?,
+                uid,
+                gid,
+                principal,
             };
             storage.insert(request.resource, binding);
         }
@@ -207,7 +241,7 @@ pub(super) fn execute_storage(request: &NativeHostRequest) -> Result<NativeHostR
         .durable
         .storage_binding
         .as_ref()
-        .ok_or_else(|| invalid("durable storage request has no principal-slot binding"))?;
+        .ok_or_else(|| invalid("durable storage request has no ownership binding"))?;
     require_binding_request(binding, &request.durable.resource, &input)?;
     let path = Path::new(&binding.storage_path);
 
@@ -249,36 +283,62 @@ pub(super) fn execute_storage(request: &NativeHostRequest) -> Result<NativeHostR
             if details.binding != *binding {
                 return Err(invalid("storage release binding changed"));
             }
+            if binding.lifetime == HostStorageLifetime::Instance
+                && details.phase == StoragePhase::Releasing
+            {
+                match fs::symlink_metadata(path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        remove_regular_optional(&request.resource.state_path, 0)?;
+                        return storage_record(request, path, false, false, None);
+                    }
+                    Err(error) => return Err(error),
+                    Ok(_) => {}
+                }
+            }
             protected_directory(path, binding.uid, binding.gid, 0o700)?;
             write_storage_state(request, StoragePhase::Releasing, binding.clone())?;
-            // Persistent storage and its slot lease survive logical release.
-            write_storage_state(request, StoragePhase::Released, binding.clone())?;
-            storage_record(request, path, false, true, Some(request.durable.revision))
+            if binding.lifetime == HostStorageLifetime::Instance {
+                fs::remove_dir_all(path)?;
+                remove_regular_optional(&request.resource.state_path, 0)?;
+                storage_record(request, path, false, false, None)
+            } else {
+                // Persistent storage and its ownership survive logical release.
+                write_storage_state(request, StoragePhase::Released, binding.clone())?;
+                storage_record(request, path, false, true, Some(request.durable.revision))
+            }
         }
         _ => Err(invalid("unsupported storage method")),
     }
 }
 
 fn resolve_storage_binding(
+    resource: &ResourceId,
     storage_path: &str,
     cluster: &str,
+    purpose: &str,
+    lifetime: HostStorageLifetime,
+    owner: HostStorageOwner,
 ) -> Result<(PathBuf, HostState, StorageStateDetails), io::Error> {
     let ledger = scan_storage_ledger()?;
     let path = PathBuf::from(storage_path);
-    let digest = canonical_storage_digest(&path)?;
-    let marker = Path::new(STORAGE_ROOT).join(format!(".{digest}.json"));
+    if path.parent() != Some(Path::new(STORAGE_ROOT)) {
+        return Err(invalid(
+            "storage path is outside the protected storage root",
+        ));
+    }
+    let marker = Path::new(STORAGE_ROOT).join(format!(".{}.json", resource_key(resource)?));
     let state = read_state_optional(&marker)?
-        .ok_or_else(|| invalid("PostgreSQL storage path has no ownership ledger"))?;
+        .ok_or_else(|| invalid("storage path has no ownership ledger"))?;
     let details = storage_details(&state)?;
     validate_ledger_entry(&marker, &state, &details)?;
     if details.binding.storage_path != storage_path
         || details.binding.cluster != cluster
-        || details.binding.purpose != "database"
+        || details.binding.purpose != purpose
+        || details.binding.lifetime != lifetime
+        || details.binding.owner != owner
         || details.phase != StoragePhase::Attached
     {
-        return Err(invalid(
-            "PostgreSQL storage does not match an attached database binding",
-        ));
+        return Err(invalid("storage path does not match its attached binding"));
     }
     protected_directory(&path, details.binding.uid, details.binding.gid, 0o700)?;
     if !ledger.contains_key(&marker) {
@@ -289,12 +349,22 @@ fn resolve_storage_binding(
     Ok((marker, state, details))
 }
 
-pub(super) fn authenticate_storage_dependency(
+pub(crate) fn authenticate_storage_dependency(
     dependency: &NativeDependencyBinding,
     storage_path: &str,
     cluster: &str,
+    purpose: &str,
+    lifetime: HostStorageLifetime,
+    owner: HostStorageOwner,
 ) -> Result<StorageBinding, io::Error> {
-    let (marker, state, details) = resolve_storage_binding(storage_path, cluster)?;
+    let (marker, state, details) = resolve_storage_binding(
+        &dependency.resource,
+        storage_path,
+        cluster,
+        purpose,
+        lifetime,
+        owner,
+    )?;
     if state.resource != dependency.resource
         || state.revision != dependency.revision
         || state.qualification != dependency.qualification
@@ -344,12 +414,14 @@ pub(super) fn storage_health(state: &HostState) -> Result<(bool, bool), io::Erro
         }
         Err(error)
             if error.kind() == io::ErrorKind::NotFound
-                && details.phase == StoragePhase::Preparing =>
+                && (details.phase == StoragePhase::Preparing
+                    || (details.phase == StoragePhase::Releasing
+                        && details.binding.lifetime == HostStorageLifetime::Instance)) =>
         {
             false
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(invalid("settled persistent storage is absent"));
+            return Err(invalid("settled storage is absent from its owned path"));
         }
         Err(error) => return Err(error),
     };
@@ -362,15 +434,19 @@ fn revalidate_reserved_binding(binding: &StorageBinding) -> Result<(), io::Error
         let existing = &details.binding;
         if existing.storage_resource == binding.storage_resource {
             if existing != binding {
-                return Err(invalid("reserved storage slot changed before publication"));
+                return Err(invalid(
+                    "reserved storage ownership changed before publication",
+                ));
             }
             return Ok(());
         }
-        if existing.slot == binding.slot
-            || existing.uid == binding.uid
-            || existing.storage_path == binding.storage_path
-        {
-            return Err(invalid("reserved storage slot collided before publication"));
+        let principal_slot_collides = binding.owner == HostStorageOwner::PostgresqlSlot
+            && existing.owner == HostStorageOwner::PostgresqlSlot
+            && existing.slot == binding.slot;
+        if principal_slot_collides || existing.storage_path == binding.storage_path {
+            return Err(invalid(
+                "reserved storage ownership collided before publication",
+            ));
         }
     }
     if Path::new(&binding.storage_path).try_exists()? {
@@ -406,21 +482,22 @@ fn scan_storage_ledger() -> Result<BTreeMap<PathBuf, StorageStateDetails>, io::E
             ledger.insert(path, details);
         } else if super::is_protected_atomic_temporary(&entry.path())? {
             continue;
-        } else if canonical_digest(&name) && entry.file_type()?.is_dir() {
-            directories.insert(name);
+        } else if entry.file_type()?.is_dir() {
+            directories.insert(entry.path());
         } else {
             return Err(invalid("storage root contains an unknown entry"));
         }
     }
 
-    let mut slots = BTreeSet::new();
-    let mut uids = BTreeSet::new();
+    let mut postgresql_slots = BTreeSet::new();
+    let mut postgresql_uids = BTreeSet::new();
     let mut resources = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for details in ledger.values() {
         let binding = &details.binding;
-        if !slots.insert(binding.slot)
-            || !uids.insert(binding.uid)
+        let principal_is_unique = binding.owner != HostStorageOwner::PostgresqlSlot
+            || (postgresql_slots.insert(binding.slot) && postgresql_uids.insert(binding.uid));
+        if !principal_is_unique
             || !resources.insert(binding.storage_resource.clone())
             || !paths.insert(binding.storage_path.clone())
         {
@@ -431,7 +508,9 @@ fn scan_storage_ledger() -> Result<BTreeMap<PathBuf, StorageStateDetails>, io::E
             Ok(_) => protected_directory(path, binding.uid, binding.gid, 0o700)?,
             Err(error)
                 if error.kind() == io::ErrorKind::NotFound
-                    && details.phase == StoragePhase::Preparing => {}
+                    && (details.phase == StoragePhase::Preparing
+                        || (details.phase == StoragePhase::Releasing
+                            && binding.lifetime == HostStorageLifetime::Instance)) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(invalid(
                     "settled persistent storage is absent from its owned path",
@@ -441,9 +520,8 @@ fn scan_storage_ledger() -> Result<BTreeMap<PathBuf, StorageStateDetails>, io::E
         }
     }
     for directory in directories {
-        if !ledger.keys().any(|marker| {
-            marker.file_name().and_then(|name| name.to_str()) == Some(&format!(".{directory}.json"))
-        }) {
+        let directory = path_text(&directory)?;
+        if !paths.contains(&directory) {
             return Err(invalid(
                 "storage directory exists without an ownership ledger",
             ));
@@ -452,29 +530,58 @@ fn scan_storage_ledger() -> Result<BTreeMap<PathBuf, StorageStateDetails>, io::E
     Ok(ledger)
 }
 
+fn canonical_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn persistent_storage_lifetime() -> HostStorageLifetime {
+    HostStorageLifetime::Persistent
+}
+
+fn postgresql_storage_owner() -> HostStorageOwner {
+    HostStorageOwner::PostgresqlSlot
+}
+
 fn validate_ledger_entry(
     marker: &Path,
     state: &HostState,
     details: &StorageStateDetails,
 ) -> Result<(), io::Error> {
-    let NativeResourceQualification::HostStorage { cluster, purpose } = &state.qualification else {
+    let NativeResourceQualification::HostStorage {
+        cluster,
+        lifetime,
+        owner,
+        purpose,
+    } = &state.qualification
+    else {
         return Err(invalid("storage ledger has another qualification"));
     };
     let binding = &details.binding;
-    let expected_path = storage_path(&state.resource)?;
+    let expected_path = storage_path(&state.resource, cluster, purpose, *owner)?;
     let expected_marker =
         Path::new(STORAGE_ROOT).join(format!(".{}.json", resource_key(&state.resource)?));
     if binding.storage_resource != state.resource
         || binding.storage_path != path_text(&expected_path)?
         || binding.cluster != *cluster
+        || binding.lifetime != *lifetime
+        || binding.owner != *owner
         || binding.purpose != *purpose
-        || binding.slot >= POSTGRESQL_SLOT_COUNT
-        || binding.uid != postgresql_slot_uid(binding.slot)?
-        || binding.gid != POSTGRESQL_GID
-        || binding.principal != postgresql_slot_principal(binding.slot)?
         || marker != expected_marker
     {
         return Err(invalid("storage ledger entry is inconsistent"));
+    }
+    match binding.owner {
+        HostStorageOwner::Root
+            if binding.uid == 0 && binding.gid == 0 && binding.principal == "root" => {}
+        HostStorageOwner::PostgresqlSlot
+            if binding.slot < POSTGRESQL_SLOT_COUNT
+                && binding.uid == postgresql_slot_uid(binding.slot)?
+                && binding.gid == POSTGRESQL_GID
+                && binding.principal == postgresql_slot_principal(binding.slot)? => {}
+        _ => return Err(invalid("storage ledger owner is inconsistent")),
     }
     Ok(())
 }
@@ -485,13 +592,19 @@ fn require_binding_request(
     input: &StorageInput,
 ) -> Result<(), io::Error> {
     if binding.storage_resource != *resource
-        || binding.storage_path != path_text(&storage_path(resource)?)?
+        || binding.storage_path
+            != path_text(&storage_path(
+                resource,
+                &input.cluster,
+                &input.purpose,
+                input.owner,
+            )?)?
         || binding.cluster != input.cluster
+        || binding.lifetime != input.lifetime
+        || binding.owner != input.owner
         || binding.purpose != input.purpose
     {
-        return Err(invalid(
-            "storage principal-slot binding differs from request",
-        ));
+        return Err(invalid("storage ownership binding differs from request"));
     }
     Ok(())
 }
@@ -500,11 +613,15 @@ fn require_binding_identity(
     binding: &StorageBinding,
     resource: &ResourceId,
     cluster: &str,
+    lifetime: HostStorageLifetime,
+    owner: HostStorageOwner,
     purpose: &str,
 ) -> Result<(), io::Error> {
     if binding.storage_resource != *resource
-        || binding.storage_path != path_text(&storage_path(resource)?)?
+        || binding.storage_path != path_text(&storage_path(resource, cluster, purpose, owner)?)?
         || binding.cluster != cluster
+        || binding.lifetime != lifetime
+        || binding.owner != owner
         || binding.purpose != purpose
     {
         return Err(invalid(
@@ -533,25 +650,6 @@ fn write_storage_state(
     )
 }
 
-fn canonical_storage_digest(path: &Path) -> Result<&str, io::Error> {
-    if path.parent() != Some(Path::new(STORAGE_ROOT)) {
-        return Err(invalid(
-            "storage path is outside the protected storage root",
-        ));
-    }
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|digest| canonical_digest(digest))
-        .ok_or_else(|| invalid("storage path has a noncanonical resource digest"))
-}
-
-fn canonical_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn storage_record(
     request: &NativeHostRequest,
     path: &Path,
@@ -577,4 +675,37 @@ fn storage_record(
         .transpose()?
         .unwrap_or_default();
     record(result, outputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_postgresql_binding_defaults_to_persistent_slot_ownership() {
+        let binding: StorageBinding = serde_json::from_value(serde_json::json!({
+            "storage_resource": {
+                "provider": {
+                    "environment": {
+                        "authority": "fixture",
+                        "key": "host",
+                        "stage": "host"
+                    },
+                    "key": "postgresql"
+                },
+                "key": "storage"
+            },
+            "storage_path": "/var/lib/aos/ability-runtime/storage/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "cluster": "fixture",
+            "purpose": "database",
+            "slot": 0,
+            "uid": 62000,
+            "gid": 61999,
+            "principal": "aos-pg-00"
+        }))
+        .expect("legacy storage binding");
+
+        assert_eq!(binding.lifetime, HostStorageLifetime::Persistent);
+        assert_eq!(binding.owner, HostStorageOwner::PostgresqlSlot);
+    }
 }

@@ -51,8 +51,8 @@ use aos_package::config_eval::ability_policy_authority::{
 };
 use aos_package::config_eval::materialize::PinnedAbilitySidecar;
 use aos_package::config_eval::native_resource_map::{
-    NativeHttpConsumerObservation, NativeOutputLocator, NativeResourceMap, NativeResourceMapping,
-    NativeResourceQualification,
+    HostStorageLifetime, HostStorageOwner, NativeHttpConsumerObservation, NativeOutputLocator,
+    NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
 };
 use aos_package::config_eval::runtime::{RuntimeResolution, resolve_runtime};
 use aos_package::platform::native_platform;
@@ -840,7 +840,12 @@ impl ReferenceFixture {
             .clone();
         let terminal = matches!(
             request.id.key.as_str(),
-            "effects" | "validation-terminal" | "service-terminal" | "endpoint" | "network-policy"
+            "effects"
+                | "validation-terminal"
+                | "service-terminal"
+                | "endpoint"
+                | "network-policy"
+                | "storage"
         );
         let (provider, provider_package, implementation, resources, contributions) = if terminal {
             let provider = if request.id.key.as_str() == "service-terminal" {
@@ -1034,6 +1039,11 @@ fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeR
         })
     }) {
         let nginx = instance(environment, name)?;
+        let storage_scope = Sha256Digest::of_bytes(serde_json::to_vec(&nginx)?)
+            .hex()
+            .chars()
+            .take(32)
+            .collect::<String>();
         let nginx_resource = resource_revision(composed, &nginx, "virtual-hosts")?;
 
         let configuration = native_mapping(
@@ -1167,6 +1177,29 @@ fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeR
                     "network-policy",
                     NativeResourceQualification::HostNetworkPolicy {
                         policy: resource_key.to_string(),
+                    },
+                )?);
+            } else if let Some(purpose) = resource_key.strip_suffix("-storage") {
+                ensure!(
+                    matches!(purpose, "logs" | "runtime" | "state"),
+                    "nginx storage resource has an unsupported purpose"
+                );
+                let lifetime = if purpose == "runtime" {
+                    HostStorageLifetime::Instance
+                } else {
+                    HostStorageLifetime::Persistent
+                };
+                mappings.push(native_mapping(
+                    composed,
+                    &nginx,
+                    resource_key,
+                    &nginx,
+                    "storage",
+                    NativeResourceQualification::HostStorage {
+                        cluster: storage_scope.clone(),
+                        lifetime,
+                        owner: HostStorageOwner::Root,
+                        purpose: purpose.to_string(),
                     },
                 )?);
             }

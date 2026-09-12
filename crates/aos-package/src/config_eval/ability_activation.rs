@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {"environment":{"schema":"aos.ability.environment/v1","...":"..."},"schema":"aos.ability.activation-desired/v1","seed":{"schema":"aos.ability.desired-state/v1","...":"..."}}
-//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v2"},"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v3","transition_authority":null}
+//! {"native_resource_map":{"desired_state":"sha256:...","entries":[...],"schema":"aos.ability.native-resource-map/v3"},"platform_policy":{"bindings":[...],"policy_revision":"sha256:...","required_features":[],"schema":"aos.ability.platform-policy/v1"},"policies":[{"schema":"aos.ability.resolution-policy/v1","...":"..."}],"schema":"aos.ability.authenticated-policy-set/v3","transition_authority":null}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1524,7 +1524,9 @@ fn physical_claim(qualification: &NativeResourceQualification) -> (&'static str,
             format!("{transport}:{address}:{port}"),
             false,
         ),
-        NativeResourceQualification::HostStorage { cluster, purpose } => (
+        NativeResourceQualification::HostStorage {
+            cluster, purpose, ..
+        } => (
             "host-storage",
             format!("/var/lib/aos/ability-runtime/storage/{cluster}-{purpose}"),
             true,

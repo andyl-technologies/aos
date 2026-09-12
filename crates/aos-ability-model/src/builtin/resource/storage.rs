@@ -52,7 +52,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
                     schema: bounded_string(RESOURCE_PATH_MAX_BYTES),
                     phase: ValuePhase::Runtime,
                     visibility: ValueVisibility::Protected,
-                    lifetime: ResourceLifetime::Persistent,
+                    lifetime: ResourceLifetime::Instance,
                 },
             )]),
         )?,
@@ -70,7 +70,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
                     schema: bounded_string(RESOURCE_PATH_MAX_BYTES),
                     phase: ValuePhase::Runtime,
                     visibility: ValueVisibility::Protected,
-                    lifetime: ResourceLifetime::Persistent,
+                    lifetime: ResourceLifetime::Instance,
                 },
             )]),
         )?,
@@ -94,7 +94,7 @@ pub fn host_storage_interface() -> Result<InterfaceDocument> {
         methods,
         LifecycleSemantics {
             stable_resource_identity: true,
-            releases_ephemeral_on_disable: false,
+            releases_ephemeral_on_disable: true,
             retains_persistent_by_default: true,
             persistent_delete_method: None,
         },
@@ -155,6 +155,18 @@ fn host_storage_request_schema() -> Result<ValueSchema> {
     Ok(ValueSchema::Record {
         fields: BTreeMap::from([
             (LocalKey::new("cluster")?, local_key()),
+            (
+                LocalKey::new("lifetime")?,
+                ValueSchema::StringEnum {
+                    values: vec!["instance".to_string(), "persistent".to_string()],
+                },
+            ),
+            (
+                LocalKey::new("owner")?,
+                ValueSchema::StringEnum {
+                    values: vec!["postgresql-slot".to_string(), "root".to_string()],
+                },
+            ),
             (LocalKey::new("purpose")?, local_key()),
         ]),
         optional_fields: Vec::new(),

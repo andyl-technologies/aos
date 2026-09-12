@@ -59,20 +59,20 @@ let
     '';
     render = contribution: ''
       worker_processes 1;
-      error_log stderr;
-      pid nginx.pid;
+      error_log ${contribution.value.consumer_storage_paths.logs}/error.log;
+      pid ${contribution.value.consumer_storage_paths.runtime}/nginx.pid;
 
       events {
         worker_connections 128;
       }
 
       http {
-        access_log off;
-        client_body_temp_path client_body;
-        proxy_temp_path proxy;
-        fastcgi_temp_path fastcgi;
-        uwsgi_temp_path uwsgi;
-        scgi_temp_path scgi;
+        access_log ${contribution.value.consumer_storage_paths.logs}/access.log;
+        client_body_temp_path ${contribution.value.consumer_storage_paths.state};
+        proxy_temp_path ${contribution.value.consumer_storage_paths.state};
+        fastcgi_temp_path ${contribution.value.consumer_storage_paths.state};
+        uwsgi_temp_path ${contribution.value.consumer_storage_paths.state};
+        scgi_temp_path ${contribution.value.consumer_storage_paths.state};
 
       ${renderConsumerObservation contribution}
       ${renderServers contribution}

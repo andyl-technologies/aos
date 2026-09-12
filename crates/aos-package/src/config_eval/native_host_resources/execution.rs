@@ -131,6 +131,9 @@ pub(super) fn authenticate_dependency_bindings(
                     storage_dependency,
                     storage_path,
                     &input.cluster,
+                    "database",
+                    super::super::native_resource_map::HostStorageLifetime::Persistent,
+                    super::super::native_resource_map::HostStorageOwner::PostgresqlSlot,
                 )?;
                 if storage != &authenticated_storage || storage_path != storage.storage_path {
                     return Err(invalid(
@@ -268,14 +271,19 @@ pub(super) fn rejection_record(request: &NativeHostRequest) -> NativeHostRecord 
             })),
             Some(NativeHostResourceKind::Storage) => {
                 let input = decode_input::<StorageInput>(&request.durable.inputs, "storage");
-                input.map(|_| {
+                input.map(|input| {
                     serde_json::json!({
                         "schema": HOST_STORAGE_OBSERVATION_SCHEMA,
                         "requested_revision": request.durable.revision.0.to_string(),
                         "observed_revision": null,
                         "attached": false,
                         "exists": false,
-                        "path": storage_path(&request.durable.resource)
+                        "path": storage_path(
+                            &request.durable.resource,
+                            &input.cluster,
+                            &input.purpose,
+                            input.owner,
+                        )
                             .and_then(|path| path_text(&path))
                             .unwrap_or_default(),
                     })

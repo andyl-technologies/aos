@@ -50,7 +50,8 @@ use aos_package::config_eval::ability_activation::{
 };
 use aos_package::config_eval::ability_policy::CurrentPlatformPolicyDocument;
 use aos_package::config_eval::native_resource_map::{
-    NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
+    HostStorageLifetime, HostStorageOwner, NativeResourceMap, NativeResourceMapping,
+    NativeResourceQualification,
 };
 use aos_package::config_eval::runtime::resolve_runtime;
 use aos_package::platform::native_platform;
@@ -1586,6 +1587,8 @@ fn postgresql_native_resource_map(
                     "storage",
                     NativeResourceQualification::HostStorage {
                         cluster: cluster.to_string(),
+                        lifetime: HostStorageLifetime::Persistent,
+                        owner: HostStorageOwner::PostgresqlSlot,
                         purpose: "database".to_string(),
                     },
                 )

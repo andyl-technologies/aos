@@ -77,8 +77,10 @@ use state::{
     remove_atomic_temporary_root, remove_regular_optional, require_current_state,
     require_matching_state, require_state, state_matches_spec, write_state,
 };
-pub(crate) use storage::{HostResourceAllocations, StorageAllocationRequest};
-use storage::{StorageBinding, authenticate_storage_dependency, execute_storage, storage_health};
+pub(crate) use storage::{
+    HostResourceAllocations, StorageAllocationRequest, authenticate_storage_dependency,
+};
+use storage::{StorageBinding, execute_storage, storage_health};
 use validation::{
     CredentialInput, CredentialView, EndpointInput, EndpointValue, PolicyInput, PostgresqlInput,
     StorageInput, method_supported, path_text, require_operation_kind, resource_key, storage_path,
@@ -628,8 +630,13 @@ fn physical_identity(
                 Path::new(ENDPOINT_ROOT).join(format!("{resource_key}.json")),
             )
         }
-        NativeResourceQualification::HostStorage { .. } => {
-            let path = storage_path(&spec.resource)?;
+        NativeResourceQualification::HostStorage {
+            cluster,
+            owner,
+            purpose,
+            ..
+        } => {
+            let path = storage_path(&spec.resource, cluster, purpose, *owner)?;
             (
                 "host-storage",
                 path_text(&path)?,

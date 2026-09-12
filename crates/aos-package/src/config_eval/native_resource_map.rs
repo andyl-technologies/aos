@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! {
-//!   "schema": "aos.ability.native-resource-map/v2",
+//!   "schema": "aos.ability.native-resource-map/v3",
 //!   "desired_state": "sha256:<64 lowercase hex characters>",
 //!   "entries": [
 //!     {
@@ -55,7 +55,7 @@ pub struct NativeResourceMap {
 
 impl NativeResourceMap {
     /// Current native resource-map schema.
-    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v2";
+    pub const SCHEMA: &'static str = "aos.ability.native-resource-map/v3";
 
     /// Constructs and validates a canonically ordered native resource map.
     ///
@@ -118,6 +118,7 @@ impl NativeResourceMap {
         let mut claimed_credential_views: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         let mut claimed_endpoint_ports: BTreeMap<u16, &ResourceId> = BTreeMap::new();
         let mut claimed_storage: BTreeMap<(&str, &str), &ResourceId> = BTreeMap::new();
+        let mut claimed_root_storage_paths: BTreeMap<String, &ResourceId> = BTreeMap::new();
         let mut claimed_policies: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         let mut claimed_postgresql_clusters: BTreeMap<&str, &ResourceId> = BTreeMap::new();
         let mut claimed_image_rollout_hosts: BTreeMap<&str, &ResourceId> = BTreeMap::new();
@@ -194,13 +195,26 @@ impl NativeResourceMap {
                         )?;
                     }
                 }
-                NativeResourceQualification::HostStorage { cluster, purpose } => {
+                NativeResourceQualification::HostStorage {
+                    cluster,
+                    owner,
+                    purpose,
+                    ..
+                } => {
                     claim_physical(
                         &mut claimed_storage,
                         (cluster.as_str(), purpose.as_str()),
                         &entry.resource,
                         "host storage",
                     )?;
+                    if *owner == HostStorageOwner::Root {
+                        claim_physical(
+                            &mut claimed_root_storage_paths,
+                            format!("{cluster}-{purpose}"),
+                            &entry.resource,
+                            "root-owned host storage path",
+                        )?;
+                    }
                 }
                 NativeResourceQualification::HostNetworkPolicy { policy } => {
                     claim_physical(
@@ -335,12 +349,16 @@ pub enum NativeResourceQualification {
         /// Pins the supported transport.
         transport: String,
     },
-    /// Attaches persistent provider-owned host storage.
+    /// Attaches provider-owned host storage with an explicit owner and lifetime.
     HostStorage {
-        /// Names the stable PostgreSQL cluster.
+        /// Names the stable workload scope.
         cluster: String,
         /// Names the storage purpose within the cluster.
         purpose: String,
+        /// Selects the trusted host identity that owns the directory.
+        owner: HostStorageOwner,
+        /// Selects removal or retention when the binding is released.
+        lifetime: HostStorageLifetime,
     },
     /// Owns one host ingress-policy record for the logical resource.
     HostNetworkPolicy {
@@ -362,6 +380,26 @@ pub enum NativeResourceQualification {
         /// Names the PostgreSQL role whose credential view is consumed.
         role: String,
     },
+}
+
+/// Selects the trusted host identity for a native storage binding.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostStorageOwner {
+    /// Assigns the directory to the root-owned host workload.
+    Root,
+    /// Assigns a unique principal from the PostgreSQL service pool.
+    PostgresqlSlot,
+}
+
+/// Selects the release behavior for a native storage binding.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostStorageLifetime {
+    /// Removes the directory and releases its ownership when the instance stops.
+    Instance,
+    /// Retains the directory and its ownership after logical release.
+    Persistent,
 }
 
 /// Defines the versioned loopback HTTP proof emitted by an active consumer.
@@ -524,8 +562,10 @@ fn validate_mapping(mapping: &NativeResourceMapping, remaining_items: &mut u64) 
                 "native endpoint qualification requests a privileged port"
             );
         }
-        NativeResourceQualification::HostStorage { cluster, purpose } => {
-            consume_items(remaining_items, 3)?;
+        NativeResourceQualification::HostStorage {
+            cluster, purpose, ..
+        } => {
+            consume_items(remaining_items, 5)?;
             validate_local_key_text(cluster, "storage cluster")?;
             validate_local_key_text(purpose, "storage purpose")?;
         }

@@ -339,6 +339,78 @@ in {
           return matching[0]
 
 
+      def exact_provider_operation(bundle, provider_key, resource_key, methods):
+          operations = bundle["transition"]["effect_document"]["operations"]
+          matching = [
+              operation
+              for operation in operations
+              if operation["target"]["resource"]["provider"]["key"] == provider_key
+              and operation["target"]["resource"]["key"] == resource_key
+              and operation["method"] in methods
+          ]
+          assert len(matching) == 1, (
+              provider_key,
+              resource_key,
+              methods,
+              operations,
+          )
+          return matching[0]
+
+
+      def nginx_storage_paths(instance):
+          content = runtime.succeed(
+              f"{COREUTILS}/cat /var/lib/aos/ability-reference/{instance}.conf"
+          )
+          patterns = {
+              "logs": r"^\s*error_log\s+(\S+)/error\.log;\s*$",
+              "runtime": r"^\s*pid\s+(\S+)/nginx\.pid;\s*$",
+              "state": r"^\s*client_body_temp_path\s+(\S+);\s*$",
+          }
+          paths = {}
+          for purpose, pattern in patterns.items():
+              matches = re.findall(pattern, content, flags=re.MULTILINE)
+              assert len(matches) == 1, (purpose, matches, content)
+              paths[purpose] = matches[0]
+          assert len(set(paths.values())) == 3, paths
+          for path in paths.values():
+              assert path.startswith("/var/lib/aos/ability-runtime/storage/"), path
+              runtime.succeed(
+                  f"test -d {shlex.quote(path)} && "
+                  f"test \"$({COREUTILS}/stat -c %a {shlex.quote(path)})\" = 700 && "
+                  f"test \"$({COREUTILS}/stat -c %u:%g {shlex.quote(path)})\" = 0:0"
+              )
+          return paths
+
+
+      def assert_storage_activation_order(generation, transaction, instance):
+          bundle, _ = native_transaction_documents(generation, transaction)
+          validation = exact_provider_operation(
+              bundle, instance, "virtual-hosts", {"validate"}
+          )
+          for purpose in ("logs", "runtime", "state"):
+              storage = exact_provider_operation(
+                  bundle, instance, f"{purpose}-storage", {"ensure", "observe"}
+              )
+              assert_effect_edge(bundle, storage, validation, "data")
+
+
+      def assert_storage_removal_order(
+          generation, transaction, instance, service_method, paths
+      ):
+          bundle, _ = native_transaction_documents(generation, transaction)
+          service = exact_operation(
+              bundle, f"{instance}-service", {service_method}
+          )
+          for purpose in ("logs", "runtime", "state"):
+              storage = exact_provider_operation(
+                  bundle, instance, f"{purpose}-storage", {"release"}
+              )
+              assert_effect_edge(bundle, service, storage, "required-success")
+          runtime.fail(f"test -e {shlex.quote(paths['runtime'])}")
+          runtime.succeed(f"test -d {shlex.quote(paths['logs'])}")
+          runtime.succeed(f"test -d {shlex.quote(paths['state'])}")
+
+
       def assert_network_activation_order(generation, transaction, instance, ports):
           bundle, _ = native_transaction_documents(generation, transaction)
           service = exact_operation(
@@ -438,7 +510,14 @@ in {
       assert "gamma-v1" in selected_v1_content, selected_v1_content
       transactions_v1 = retained_transactions(generation_v1)
       assert len(transactions_v1) == 1, transactions_v1
-      assert_redacted_diagnostic(generation_v1, next(iter(transactions_v1)))
+      transaction_v1 = next(iter(transactions_v1))
+      assert_redacted_diagnostic(generation_v1, transaction_v1)
+      main_storage_paths = nginx_storage_paths("nginx-main")
+      secondary_storage_paths = nginx_storage_paths("nginx-secondary")
+      assert_storage_activation_order(generation_v1, transaction_v1, "nginx-main")
+      assert_storage_activation_order(
+          generation_v1, transaction_v1, "nginx-secondary"
+      )
 
       # Identical desired input retains the generation, records a separately
       # verified empty transition, and invokes no provider effect adapter.
@@ -806,6 +885,15 @@ in {
       assert_completed_native_disable(
           generation_v6, next(iter(transactions_v6)), "nginx-main"
       )
+      assert_storage_removal_order(
+          generation_v6,
+          next(iter(transactions_v6)),
+          "nginx-main",
+          "stop",
+          main_storage_paths,
+      )
+      for path in secondary_storage_paths.values():
+          runtime.succeed(f"test -d {shlex.quote(path)}")
 
       # A TLS generation cannot enter candidate validation without its typed
       # credential source. The currently selected HTTP service remains live.

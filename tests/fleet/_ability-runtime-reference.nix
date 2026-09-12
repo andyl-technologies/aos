@@ -153,6 +153,7 @@ in {
       import base64
       import hashlib
       import json
+      import re
       import shlex
       import textwrap
 

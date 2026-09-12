@@ -292,6 +292,7 @@ in
     "selected-tls-generation-and-credential-view-survive-gc-and-reboot"
     "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
     "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order"
+    "authenticated-nginx-storage-ownership-lifetime-and-service-ordering"
   ];
   assert abilityRequirements.ability-native-image-rollout.regressions
   == ["checks.fleet.ability-native-image-rollout"];

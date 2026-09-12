@@ -5607,7 +5607,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5642,7 +5642,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5677,7 +5677,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5711,7 +5711,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5744,7 +5744,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5777,7 +5777,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5810,7 +5810,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5843,7 +5843,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5876,7 +5876,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5909,7 +5909,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5942,7 +5942,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -5975,7 +5975,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6008,7 +6008,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6042,7 +6042,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6078,7 +6078,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6111,7 +6111,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6144,7 +6144,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6177,7 +6177,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6210,7 +6210,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6243,7 +6243,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6276,7 +6276,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6309,7 +6309,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6342,7 +6342,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6375,7 +6375,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6408,7 +6408,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6441,7 +6441,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6474,7 +6474,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6507,7 +6507,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/ensure/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6540,7 +6540,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6575,7 +6575,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6610,7 +6610,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6644,7 +6644,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6677,7 +6677,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6710,7 +6710,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6743,7 +6743,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6776,7 +6776,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6809,7 +6809,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6842,7 +6842,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6875,7 +6875,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6908,7 +6908,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6941,7 +6941,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -6975,7 +6975,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7011,7 +7011,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7044,7 +7044,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7077,7 +7077,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7110,7 +7110,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7143,7 +7143,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7176,7 +7176,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7209,7 +7209,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7242,7 +7242,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7275,7 +7275,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7308,7 +7308,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7341,7 +7341,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7374,7 +7374,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7407,7 +7407,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7440,7 +7440,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/observe/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7473,7 +7473,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7508,7 +7508,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7543,7 +7543,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7577,7 +7577,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7610,7 +7610,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7643,7 +7643,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7676,7 +7676,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7709,7 +7709,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7742,7 +7742,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7775,7 +7775,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7808,7 +7808,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7841,7 +7841,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7874,7 +7874,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7908,7 +7908,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7944,7 +7944,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -7977,7 +7977,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8010,7 +8010,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8043,7 +8043,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8076,7 +8076,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8109,7 +8109,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8142,7 +8142,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8175,7 +8175,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8208,7 +8208,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8241,7 +8241,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8274,7 +8274,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8307,7 +8307,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8340,7 +8340,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -8373,7 +8373,7 @@
       "id": "host-storage/aos.host-storage-effects/abi-1/release/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       "invalidated_by": [
@@ -25200,7 +25200,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25235,7 +25235,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25270,7 +25270,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25304,7 +25304,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25337,7 +25337,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25370,7 +25370,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25403,7 +25403,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25436,7 +25436,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25469,7 +25469,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25502,7 +25502,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25535,7 +25535,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25568,7 +25568,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25601,7 +25601,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25635,7 +25635,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25671,7 +25671,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25704,7 +25704,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25737,7 +25737,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25770,7 +25770,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25803,7 +25803,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25836,7 +25836,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25869,7 +25869,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25902,7 +25902,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25935,7 +25935,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -25968,7 +25968,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26001,7 +26001,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26034,7 +26034,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26067,7 +26067,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26100,7 +26100,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/record/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26133,7 +26133,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26168,7 +26168,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26203,7 +26203,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26237,7 +26237,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26270,7 +26270,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26303,7 +26303,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26336,7 +26336,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26369,7 +26369,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26402,7 +26402,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26435,7 +26435,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26468,7 +26468,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26501,7 +26501,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26534,7 +26534,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26568,7 +26568,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26604,7 +26604,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26637,7 +26637,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26670,7 +26670,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26703,7 +26703,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26736,7 +26736,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26769,7 +26769,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26802,7 +26802,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26835,7 +26835,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26868,7 +26868,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26901,7 +26901,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26934,7 +26934,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -26967,7 +26967,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27000,7 +27000,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27033,7 +27033,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/release/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27066,7 +27066,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27101,7 +27101,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27136,7 +27136,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27170,7 +27170,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27203,7 +27203,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27236,7 +27236,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27269,7 +27269,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27302,7 +27302,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27335,7 +27335,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27368,7 +27368,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27401,7 +27401,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27434,7 +27434,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27467,7 +27467,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27501,7 +27501,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27537,7 +27537,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27570,7 +27570,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27603,7 +27603,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27636,7 +27636,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27669,7 +27669,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27702,7 +27702,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27735,7 +27735,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27768,7 +27768,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27801,7 +27801,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27834,7 +27834,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27867,7 +27867,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27900,7 +27900,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27933,7 +27933,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -27966,7 +27966,7 @@
       "id": "nginx-validation/aos.nginx-validation/abi-1/validate/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       "invalidated_by": [
@@ -35463,7 +35463,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35498,7 +35498,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35533,7 +35533,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35567,7 +35567,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35600,7 +35600,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35633,7 +35633,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35666,7 +35666,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35699,7 +35699,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35732,7 +35732,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35765,7 +35765,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35798,7 +35798,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35831,7 +35831,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35864,7 +35864,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35898,7 +35898,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35934,7 +35934,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -35967,7 +35967,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36000,7 +36000,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36033,7 +36033,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36066,7 +36066,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36099,7 +36099,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36132,7 +36132,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36165,7 +36165,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36198,7 +36198,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36231,7 +36231,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36264,7 +36264,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36297,7 +36297,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36330,7 +36330,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36363,7 +36363,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/observe/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36396,7 +36396,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36431,7 +36431,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36466,7 +36466,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36500,7 +36500,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36533,7 +36533,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36566,7 +36566,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36599,7 +36599,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36632,7 +36632,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36665,7 +36665,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36698,7 +36698,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36731,7 +36731,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36764,7 +36764,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36797,7 +36797,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36831,7 +36831,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36867,7 +36867,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36900,7 +36900,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36933,7 +36933,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36966,7 +36966,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -36999,7 +36999,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37032,7 +37032,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37065,7 +37065,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37098,7 +37098,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37131,7 +37131,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37164,7 +37164,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37197,7 +37197,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37230,7 +37230,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37263,7 +37263,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37296,7 +37296,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/reload/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37329,7 +37329,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37364,7 +37364,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37399,7 +37399,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37433,7 +37433,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37466,7 +37466,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37499,7 +37499,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37532,7 +37532,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37565,7 +37565,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37598,7 +37598,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37631,7 +37631,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37664,7 +37664,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37697,7 +37697,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37730,7 +37730,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37764,7 +37764,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37800,7 +37800,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37833,7 +37833,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37866,7 +37866,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37899,7 +37899,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37932,7 +37932,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37965,7 +37965,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -37998,7 +37998,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38031,7 +38031,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38064,7 +38064,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38097,7 +38097,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38130,7 +38130,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38163,7 +38163,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38196,7 +38196,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38229,7 +38229,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/restart/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38262,7 +38262,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38297,7 +38297,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38332,7 +38332,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38366,7 +38366,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38399,7 +38399,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38432,7 +38432,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38465,7 +38465,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38498,7 +38498,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38531,7 +38531,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38564,7 +38564,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38597,7 +38597,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38630,7 +38630,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38663,7 +38663,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38697,7 +38697,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38733,7 +38733,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38766,7 +38766,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38799,7 +38799,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38832,7 +38832,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38865,7 +38865,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38898,7 +38898,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38931,7 +38931,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38964,7 +38964,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -38997,7 +38997,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39030,7 +39030,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39063,7 +39063,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39096,7 +39096,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39129,7 +39129,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39162,7 +39162,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/start/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39195,7 +39195,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39230,7 +39230,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39265,7 +39265,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39299,7 +39299,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39332,7 +39332,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39365,7 +39365,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39398,7 +39398,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39431,7 +39431,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39464,7 +39464,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39497,7 +39497,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39530,7 +39530,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39563,7 +39563,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39596,7 +39596,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39630,7 +39630,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39666,7 +39666,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39699,7 +39699,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39732,7 +39732,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39765,7 +39765,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39798,7 +39798,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39831,7 +39831,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39864,7 +39864,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39897,7 +39897,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39930,7 +39930,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39963,7 +39963,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -39996,7 +39996,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -40029,7 +40029,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -40062,7 +40062,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -40095,7 +40095,7 @@
       "id": "systemd-manager/aos.systemd-manager/abi-1/stop/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       "invalidated_by": [
@@ -40128,7 +40128,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40163,7 +40163,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40198,7 +40198,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40232,7 +40232,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40265,7 +40265,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40298,7 +40298,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40331,7 +40331,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40364,7 +40364,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40397,7 +40397,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40430,7 +40430,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40463,7 +40463,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40496,7 +40496,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40529,7 +40529,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40563,7 +40563,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40599,7 +40599,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40632,7 +40632,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40665,7 +40665,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40698,7 +40698,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40731,7 +40731,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40764,7 +40764,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40797,7 +40797,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40830,7 +40830,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40863,7 +40863,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40896,7 +40896,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40929,7 +40929,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40962,7 +40962,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -40995,7 +40995,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41028,7 +41028,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41061,7 +41061,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41096,7 +41096,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41131,7 +41131,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41165,7 +41165,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41198,7 +41198,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41231,7 +41231,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41264,7 +41264,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41297,7 +41297,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41330,7 +41330,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41363,7 +41363,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41396,7 +41396,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41429,7 +41429,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41462,7 +41462,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41496,7 +41496,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41532,7 +41532,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41565,7 +41565,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41598,7 +41598,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41631,7 +41631,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41664,7 +41664,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41697,7 +41697,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41730,7 +41730,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41763,7 +41763,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41796,7 +41796,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41829,7 +41829,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41862,7 +41862,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41895,7 +41895,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41928,7 +41928,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41961,7 +41961,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -41994,7 +41994,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42029,7 +42029,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42064,7 +42064,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42098,7 +42098,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42131,7 +42131,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42164,7 +42164,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42197,7 +42197,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42230,7 +42230,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42263,7 +42263,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42296,7 +42296,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42329,7 +42329,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42362,7 +42362,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42395,7 +42395,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42429,7 +42429,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42465,7 +42465,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42498,7 +42498,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42531,7 +42531,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42564,7 +42564,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42597,7 +42597,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42630,7 +42630,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42663,7 +42663,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42696,7 +42696,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42729,7 +42729,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42762,7 +42762,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42795,7 +42795,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42828,7 +42828,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42861,7 +42861,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42894,7 +42894,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42927,7 +42927,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42962,7 +42962,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -42997,7 +42997,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43031,7 +43031,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43064,7 +43064,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43097,7 +43097,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43130,7 +43130,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43163,7 +43163,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43196,7 +43196,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43229,7 +43229,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43262,7 +43262,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43295,7 +43295,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43328,7 +43328,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43362,7 +43362,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43398,7 +43398,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43431,7 +43431,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43464,7 +43464,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43497,7 +43497,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43530,7 +43530,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43563,7 +43563,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43596,7 +43596,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43629,7 +43629,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43662,7 +43662,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43695,7 +43695,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43728,7 +43728,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43761,7 +43761,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43794,7 +43794,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43827,7 +43827,7 @@
       "id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       },
       "invalidated_by": [
@@ -43873,7 +43873,7 @@
       },
       {
         "abi": 1,
-        "descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "name": "aos.host-storage-effects"
       },
       {
@@ -43893,7 +43893,7 @@
       },
       {
         "abi": 1,
-        "descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "name": "aos.nginx-validation"
       },
       {
@@ -43903,7 +43903,7 @@
       },
       {
         "abi": 1,
-        "descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "name": "aos.systemd-manager"
       },
       {
@@ -43913,7 +43913,7 @@
       },
       {
         "abi": 1,
-        "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "name": "aos.systemd-service-effects"
       }
     ],
@@ -43921,7 +43921,7 @@
     "method_count": 47,
     "scenario_count": 28,
     "schema": "aos.qualification.native-adapter-subject/v1",
-    "surface_digest": "sha256:23371e64d59579c373175f20188680f2d8d0de77dbef1d96a8c9a5cc5a5e2367"
+    "surface_digest": "sha256:7086c44764589e31f56561757c1ee1ecc026e779794d476d47a7e3fc7a2e88f9"
   },
   "surface": {
     "adapters": [
@@ -43982,7 +43982,7 @@
       {
         "adapter": "host-storage",
         "interface_abi": 1,
-        "interface_descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+        "interface_descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
         "interface_name": "aos.host-storage-effects",
         "methods": [
           {
@@ -44153,7 +44153,7 @@
       {
         "adapter": "nginx-validation",
         "interface_abi": 1,
-        "interface_descriptor": "sha256:5c50148859e49a57ce842e49f7777e3843a3539985847f0ecef816e0351f3372",
+        "interface_descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
         "interface_name": "aos.nginx-validation",
         "methods": [
           {
@@ -44246,7 +44246,7 @@
       {
         "adapter": "systemd-manager",
         "interface_abi": 1,
-        "interface_descriptor": "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598",
+        "interface_descriptor": "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3",
         "interface_name": "aos.systemd-manager",
         "methods": [
           {
@@ -44285,7 +44285,7 @@
       {
         "adapter": "systemd-service-legacy",
         "interface_abi": 1,
-        "interface_descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+        "interface_descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
         "interface_name": "aos.systemd-service-effects",
         "methods": [
           {

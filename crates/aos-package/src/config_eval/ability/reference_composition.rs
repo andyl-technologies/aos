@@ -2310,6 +2310,21 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         ]),
         optional_fields: vec![key("credential_version")],
     };
+    let storage_paths = ValueSchema::Record {
+        fields: ["logs", "runtime", "state"]
+            .into_iter()
+            .map(|name| {
+                (
+                    key(name),
+                    ValueSchema::String {
+                        max_length: 4096,
+                        syntax: None,
+                    },
+                )
+            })
+            .collect(),
+        optional_fields: Vec::new(),
+    };
     let nginx_validation_request = ValueSchema::Record {
         fields: BTreeMap::from([
             (key("candidate"), ValueSchema::Boolean),
@@ -2318,6 +2333,12 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                 ValueSchema::List {
                     element: Box::new(credential_view_schema().unwrap()),
                     max_items: 1024,
+                },
+            ),
+            (
+                key("storage_paths"),
+                ValueSchema::Optional {
+                    value: Box::new(storage_paths.clone()),
                 },
             ),
         ]),
@@ -2370,6 +2391,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                     (key("consumer_controller_revision"), string_schema()),
                     (key("consumer_instance"), string_schema()),
                     (key("consumer_probe"), consumer_probe.clone()),
+                    (key("consumer_storage_paths"), storage_paths),
                     (
                         key("virtualHosts"),
                         ValueSchema::List {
@@ -2677,7 +2699,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.managed-configuration"].descriptor,
-        digest_from_hex("7ffd8615920764d2e93eb2072c6e822bcf7a0c47622952d3b9c6712cf06380b6")
+        digest_from_hex("64bc590155806e0b69dac2503f44cca63e16dc0603b72fa6602b46d49f135e67")
     );
     assert_eq!(
         interfaces["aos.credential-delivery"].descriptor,
@@ -2693,7 +2715,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.nginx-validation"].descriptor,
-        digest_from_hex("c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6")
+        digest_from_hex("3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1")
     );
     assert_eq!(
         interfaces["aos.network-endpoint-effects"].descriptor,
