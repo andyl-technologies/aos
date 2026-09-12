@@ -6,7 +6,8 @@
   all = map (cell: cell.id) (
     builtins.filter
     (cell:
-      builtins.elemAt (lib.splitString "/" cell.id) 4 == "cancel-unsettled-attempt"
+      builtins.elemAt (lib.splitString "/" cell.id) 4
+      == "cancel-unsettled-attempt"
       && cell.recovery.cancel != null)
     matrix.cells
   );
