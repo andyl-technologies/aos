@@ -171,7 +171,7 @@
     ];
   };
   abilityReferenceNginxFixture = builtins.path {
-    path = ../../../tests/abilities/reference-nginx/providers/nginx;
+    path = ../../networking/_nginx-ability-provider;
     name = "aos-ability-reference-nginx";
   };
   abilityReferenceManagedConfigurationFixture = builtins.path {

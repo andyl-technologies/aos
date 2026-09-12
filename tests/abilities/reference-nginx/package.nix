@@ -10,7 +10,7 @@
 }: let
   inherit (lib.abilities) schemas;
 
-  nginxArtifact = ./providers/nginx;
+  nginxArtifact = ../../../pkgs/networking/_nginx-ability-provider;
   managedConfigurationArtifact = ./providers/managed-configuration;
   credentialArtifact = ./providers/credential;
   systemdArtifact = ./providers/systemd;
@@ -418,10 +418,14 @@
       inherit handler;
     };
 
-  nginxProvider = import ./providers/nginx/default.nix;
   managedConfigurationProvider = import ./providers/managed-configuration/default.nix;
   credentialProvider = import ./providers/credential/default.nix;
   systemdProvider = import ./providers/systemd/default.nix;
+  nginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
+    inherit lib hostResourceRuntime;
+    providerArtifact = nginxArtifact;
+    runtimeArtifact = nginxRuntime;
+  };
 in let
   mkPackage = pname: src: abilityPackage:
     mkDerivation {
@@ -454,156 +458,7 @@ in {
     requirements.nginx = required nginxInterface;
   };
 
-  nginx = mkPackage "ability-reference-nginx" nginxArtifact (common
-    // {
-      exports = {
-        nginx = {
-          artifact = nginxArtifact;
-          export = lib.abilities.define {
-            interface = "aos.nginx";
-            abi = 1;
-            requestSchema = virtualHost;
-            configurationSchema = consumerProbe;
-            outputs = {
-              configuration = output schemas.resourceReference;
-              credential-view = output (schemas.optional schemas.resourceReference);
-              manager = output schemas.resourceReference;
-              rendered-configuration = output string;
-              virtual-host-count = output (schemas.integer {
-                minimum = 0;
-                maximum = 1024;
-              });
-            };
-            methods = {};
-            inherit lifecycle;
-            guarantees = [];
-            aggregation = aggregation "nginx";
-            requires = {
-              configuration = required managedConfiguration;
-              credential = requirement credentialDelivery [] "advisory" {
-                outputs.credential-views = {};
-              };
-              endpoint = methodRequirement endpointEffects ["materialize" "observe" "release"];
-              network-policy =
-                methodRequirementWithGuarantees
-                networkPolicyEffects
-                ["apply" "observe" "remove"]
-                [loopbackIngressGuarantee];
-              service = required systemdService;
-              service-terminal =
-                requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
-                // {guarantees = [localSystemdManagerGuarantee];};
-              service-terminal-foreground =
-                requirement foregroundProcess ["observe" "start" "stop"] "required" null
-                // {guarantees = [foregroundProcessSupervisionGuarantee];};
-              service-terminal-system-container =
-                requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
-                // {guarantees = [localSystemdManagerGuarantee systemContainerManagerDelegationGuarantee];};
-              validation-terminal = methodRequirement nginxValidation ["record" "release" "validate"];
-            };
-            composeEntry = "compose";
-            transitionEntry = "transition";
-            ownsResourceKinds = ["aos.nginx"];
-            compose = nginxProvider.compose;
-            transition = nginxProvider.transition;
-          };
-        };
-        nginx-validation = {
-          artifact = nginxRuntime;
-          export = terminalExport {
-            name = nginxValidation.name;
-            group = "nginx-validation";
-            handler = "nginx-terminal";
-            methods = {
-              record = validationMethod {kind = "record-generation-association";} "record";
-              release = validationMethod {kind = "release-resource";} "release";
-              validate = validationMethod {kind = "validate-candidate";} "validate";
-            };
-          };
-        };
-        network-endpoint = {
-          artifact = hostResourceRuntime;
-          export = terminalExport {
-            name = endpointEffects.name;
-            group = "network-endpoint";
-            handler = "native-network-endpoint-v1";
-            requestSchema = endpointRequest;
-            selectedLifecycle = credentialEffectsLifecycle;
-            methods = {
-              materialize =
-                endpointEffectMethod {
-                  kind = "network-endpoint";
-                  action = "materialize";
-                } "materialize" {
-                  endpoint = runtimeMethodOutput endpoint;
-                };
-              observe =
-                endpointEffectMethod {
-                  kind = "network-endpoint";
-                  action = "observe";
-                } "observe" {
-                  endpoint = runtimeMethodOutput endpoint;
-                };
-              release = endpointEffectMethod {
-                kind = "network-endpoint";
-                action = "release";
-              } "release" {};
-            };
-          };
-        };
-        network-policy = {
-          artifact = hostResourceRuntime;
-          export = terminalExport {
-            name = networkPolicyEffects.name;
-            group = "network-policy";
-            handler = "native-host-network-policy-v1";
-            requestSchema = networkPolicyRequest false;
-            selectedLifecycle = credentialEffectsLifecycle;
-            guarantees = [loopbackIngressGuarantee];
-            methods = {
-              apply =
-                networkPolicyEffectMethod {
-                  kind = "host-network-policy";
-                  action = "apply";
-                } "apply" (networkPolicyRequest true) {
-                  active = runtimeMethodOutput schemas.boolean;
-                } [loopbackIngressGuarantee];
-              observe =
-                networkPolicyEffectMethod {
-                  kind = "host-network-policy";
-                  action = "observe";
-                } "observe" (networkPolicyRequest true) {
-                  active = runtimeMethodOutput schemas.boolean;
-                } [loopbackIngressGuarantee];
-              remove = networkPolicyEffectMethod {
-                kind = "host-network-policy";
-                action = "remove";
-              } "remove" (networkPolicyRequest false) {} [];
-            };
-          };
-        };
-      };
-      handlers = {
-        nginx-terminal = {
-          artifact = nginxRuntime;
-          entryPoint = "bin/nginx";
-          arguments = nginxValidationRequest;
-          result = schemas.boolean;
-        };
-        native-network-endpoint-v1 = {
-          artifact = hostResourceRuntime;
-          entryPoint = "libexec/aos-network-endpoint-handler-v1";
-          arguments = endpointRequest;
-          result = endpointObservation;
-        };
-        native-host-network-policy-v1 = {
-          artifact = hostResourceRuntime;
-          entryPoint = "libexec/aos-host-network-policy-handler-v1";
-          arguments = networkPolicyRequest false;
-          result = networkPolicyObservation;
-        };
-      };
-    });
+  nginx = mkPackage "ability-reference-nginx" nginxArtifact nginxAbilityPackage;
 
   managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact (common
     // {
