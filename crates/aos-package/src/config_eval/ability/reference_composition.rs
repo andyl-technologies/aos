@@ -2723,7 +2723,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.nginx-validation"].descriptor,
-        digest_from_hex("3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1")
+        digest_from_hex("6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6")
     );
     assert_eq!(
         interfaces["aos.network-endpoint-effects"].descriptor,
