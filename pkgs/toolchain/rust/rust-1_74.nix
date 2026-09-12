@@ -127,7 +127,7 @@ in
             # The Makefile uses $(shell git ...) to embed version metadata
             # into version.o — without .git these would fail.
             mkdir -p .fake-bin
-            printf '%s\n' '#!/bin/sh' \
+            printf '%s\n' '#!${bash}/bin/bash' \
               'case "$1" in' \
               'show)         echo "v${mrustcVersion}" ;;' \
               'symbolic-ref) echo "v${mrustcVersion}" ;;' \
@@ -262,7 +262,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!/bin/sh
+            #!${bash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
@@ -273,6 +273,17 @@ in
                         fi
                       fi
                     done
+
+                    old_source_root="/build/mrustc-${mrustcVersion}"
+                    remapped_source_root="/rustc/${version}/mrustc"
+                    test "''${#old_source_root}" -eq "''${#remapped_source_root}"
+                    find "$out" -type f -exec sed -i \
+                      "s|$old_source_root|$remapped_source_root|g" {} +
+                    if find "$out" -type f -exec grep -a -l -m1 -F \
+                      "$old_source_root" {} + | grep -q .; then
+                      echo "Rust bootstrap output retains its mrustc source root" >&2
+                      exit 1
+                    fi
           '';
         }
       ];

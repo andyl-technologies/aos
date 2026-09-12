@@ -2,12 +2,21 @@
 {
   package,
   buildTools,
-  runtimePerl,
-  constructionPerl,
+  runtimePerl ? null,
+  constructionPerl ? null,
+  runtimeShell,
+  constructionShell,
 }: let
   attrs = package.drvAttrs;
   outputs = package.outputs or ["out"];
   split = builtins.elem "bin" outputs;
+  rewritePerl =
+    if runtimePerl != null && constructionPerl != null
+    then ''
+      sed 's|${constructionPerl}/bin/perl|${runtimePerl}/bin/perl|g' "$file" > rewritten
+      cat rewritten > "$file"
+    ''
+    else "";
 
   # Keep interpreter-dependent programs out of the library output. Perl can
   # then consume the libraries without depending on its own utility export.
@@ -47,7 +56,7 @@
         find "$out" -type f -print0 > files
         while IFS= read -r -d "" file; do
           [ "$(head -c 2 "$file")" = '#!' ] || continue
-          sed -e 's|${constructionPerl}/bin/perl|${runtimePerl}/bin/perl|g' \
+          ${rewritePerl}sed -e 's|${constructionShell}|${runtimeShell}|g' \
             -e "s|${libraries}/bin/|$out/bin/|g" \
             -e "s|${libraries}/sbin/|$out/sbin/|g" "$file" > rewritten
           cat rewritten > "$file"

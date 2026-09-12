@@ -139,7 +139,7 @@ in
 
             # Fake git — must return exit 1 to avoid canonicalize("") panic
             mkdir -p .fake-bin
-            printf '#!/bin/sh\nexit 1\n' > .fake-bin/git
+            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
             cat > bootstrap.toml << TOML
@@ -152,6 +152,9 @@ in
             [build]
             docs = false
             extended = true
+            # Rebuild the compiler, standard library, and native support
+            # artifacts at every bootstrap stage instead of uplifting them.
+            full-bootstrap = true
             tools = ["cargo", "rustdoc", "clippy", "rustfmt", "rust-analyzer", "src"]
             vendor = true
             profiler = true
@@ -174,6 +177,7 @@ in
             # scheduler allocation as the surrounding bootstrap.
             codegen-units = $NIX_BUILD_CORES
             rpath = true
+            remap-debuginfo = true
             omit-git-hash = true
             download-rustc = false
             # With lld disabled, x.py refuses rust.lld = true when configured with an
@@ -189,9 +193,13 @@ in
 
             [target.x86_64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
+            rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
 
             [target.aarch64-unknown-linux-gnu]
             llvm-config = "${llvm}/bin/llvm-config"
+            linker = "${stdenv.cc}/bin/cc"
+            rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
 
             # The bare wasm32 target needs no external C toolchain or llvm-config;
             # rustc's own LLVM backend emits the wasm directly. Use the pure-Rust
@@ -204,6 +212,7 @@ in
             # virtual prefix so downstream embedded Wasm has no /build refs.
             rustflags = ["--remap-path-prefix=$PWD=/rustc/${version}"]
             optimized-compiler-builtins = false
+            profiler = false
             TOML
           '';
         }
@@ -266,7 +275,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!/bin/sh
+            #!${bash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
@@ -300,6 +309,88 @@ in
                     if [ -d "$out/lib/rustlib/src" ]; then
                       mkdir -p $dev/lib/rustlib
                       mv "$out/lib/rustlib/src" "$dev/lib/rustlib/src"
+                    fi
+
+                    install_log="$out/lib/rustlib/install.log"
+                    test -f "$install_log"
+                    sed -i \
+                      -e "s|/build/rustc-${version}-src/build/|/rustc/${version}/bootstrap/|g" \
+                      -e "s|/build/rustc-${version}-src|/rustc/${version}|g" \
+                      "$install_log"
+                    old_source_root="/build/rustc-${version}-src"
+                    remapped_source_root="/rustc/${version}/toolchain"
+                    test "''${#old_source_root}" -eq "''${#remapped_source_root}"
+                    find "$out" "$dev" -type f -exec sed -i \
+                      "s|$old_source_root|$remapped_source_root|g" {} +
+                    if find "$out" "$dev" -type f -exec grep -a -l -m1 -F \
+                      "$old_source_root" {} + | grep -q .; then
+                      echo "Rust output retains its bootstrap source root" >&2
+                      exit 1
+                    fi
+
+                    wasm_lib="$out/lib/rustlib/wasm32-unknown-unknown/lib"
+                    profiler_archive=$(find "$wasm_lib" -maxdepth 1 -name 'libprofiler_builtins-*.rlib' -print -quit)
+                    if [ -n "$profiler_archive" ]; then
+                      echo "wasm target unexpectedly contains a profiler runtime" >&2
+                      exit 1
+                    fi
+
+                    archive_check="$TMPDIR/rust-archive-check"
+                    mkdir -p "$archive_check"
+                    found_native_object=false
+                    native_lib="$out/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+                    for archive in "$native_lib"/*.rlib; do
+                      for member in $(${stdenv.cc}/bin/ar t "$archive"); do
+                        case "$member" in
+                          *.o)
+                            ${stdenv.cc}/bin/ar p "$archive" "$member" > "$archive_check/member.o"
+                            magic=$(head -c 4 "$archive_check/member.o" | od -An -tx1 | tr -d ' \n')
+                            case "$magic" in
+                              7f454c46)
+                                machine=$(od -An -tx1 -j18 -N2 "$archive_check/member.o" | tr -d ' \n')
+                                if [ "$machine" != 3e00 ]; then
+                                  echo "$archive contains object $member for unexpected ELF machine $machine" >&2
+                                  exit 1
+                                fi
+                                ;;
+                              4243c0de|dec0170b) ;;
+                              *)
+                                echo "$archive contains invalid native object $member (magic $magic)" >&2
+                                exit 1
+                                ;;
+                            esac
+                            found_native_object=true
+                            ;;
+                        esac
+                      done
+                    done
+                    if [ "$found_native_object" != true ]; then
+                      echo "native target contains no inspectable object members" >&2
+                      exit 1
+                    fi
+
+                    found_wasm_object=false
+                    for archive in "$wasm_lib"/*.rlib; do
+                      for member in $(${stdenv.cc}/bin/ar t "$archive"); do
+                        case "$member" in
+                          *.o)
+                            ${stdenv.cc}/bin/ar p "$archive" "$member" > "$archive_check/member.o"
+                            magic=$(head -c 4 "$archive_check/member.o" | od -An -tx1 | tr -d ' \n')
+                            case "$magic" in
+                              0061736d|4243c0de|dec0170b) ;;
+                              *)
+                                echo "$archive contains non-wasm object $member (magic $magic)" >&2
+                                exit 1
+                                ;;
+                            esac
+                            found_wasm_object=true
+                            ;;
+                        esac
+                      done
+                    done
+                    if [ "$found_wasm_object" != true ]; then
+                      echo "wasm target contains no inspectable object members" >&2
+                      exit 1
                     fi
           '';
         }
