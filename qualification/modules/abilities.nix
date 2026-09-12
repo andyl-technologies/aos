@@ -66,6 +66,13 @@
       "retained-plan-journal-and-independent-service-observation"
       "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
     ];
+    ability-crucible-baseline = [
+      "connected-generic-markers-before-selected-interruption"
+      "retained-boundary-selection-and-digest-bound-adapter-acknowledgement"
+      "reproduced-reconciliation-through-production-executor"
+      "inspector-explains-retained-crucible-recovery-finding"
+      "disabled-production-executor-has-no-crucible-closure"
+    ];
     ability-native-adapter-matrix = [
       nativeAdapterMatrix.check
       containerExecutionMatrix.check
@@ -81,6 +88,7 @@
       "checks.fleet.ability-initrd-handoff-fail-closed"
       "checks.fleet.ability-native-power-loss"
     ];
+    ability-crucible-baseline = ["checks.fleet.ability-crucible-baseline"];
     ability-native-adapter-matrix = nativeAdapterMatrix.requirement.regressions;
   };
   requiredProductionOnly = {
@@ -89,6 +97,7 @@
     ability-native-kubernetes = false;
     ability-native-postgresql = false;
     ability-native-recovery = false;
+    ability-crucible-baseline = false;
     ability-native-adapter-matrix = true;
   };
   preservesRequiredValues = id: let
@@ -151,6 +160,15 @@ in {
         production_only = false;
         checks = requiredChecks.ability-native-recovery;
         regressions = requiredRegressions.ability-native-recovery;
+        invalidated_by = requiredInvalidation;
+      };
+      ability-crucible-baseline = {
+        phase = "staging";
+        scope = "release";
+        method = "automated";
+        production_only = false;
+        checks = requiredChecks.ability-crucible-baseline;
+        regressions = requiredRegressions.ability-crucible-baseline;
         invalidated_by = requiredInvalidation;
       };
       ability-native-adapter-matrix =

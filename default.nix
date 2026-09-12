@@ -401,6 +401,7 @@
       }
     else null;
   nativeAbilityScenarioIds = [
+    "ability-crucible-baseline"
     "ability-native-activation"
     "ability-native-adapter-matrix"
     "ability-native-image-rollout"
@@ -440,6 +441,10 @@
     "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/block-dependent-effect"
   ];
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+    ability-crucible-baseline =
+      mkNativeAbilityScenario
+      "ability-crucible-baseline"
+      ./tests/fleet/ability-crucible-baseline.nix;
     ability-native-adapter-matrix = testing.mkQualificationAbilityScenario {
       name = "aos-qualification-ability-native-adapter-matrix";
       identity = qualificationExecutorIdentity;

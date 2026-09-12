@@ -4,6 +4,10 @@
   mkSystem,
   pkgs,
   qualificationImage ? false,
+  observerForwardSocket ? null,
+  extraRuntimeModules ? [],
+  extraHostModule ? "",
+  additionalClosures ? [],
 }: let
   fixture = import ./_ability-runtime-reference.nix {
     inherit lib mkSystem pkgs;
@@ -20,20 +24,27 @@
     '';
   };
   observerConfiguration = ''{"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}'';
+  observerRequires = lib.optional (observerForwardSocket != null) "aos-ability-crucible.service";
+  observerAfter = ["local-fs.target"] ++ observerRequires;
   observerService = {
     description = "AOS native ability boundary test controller";
     wantedBy = ["multi-user.target"];
-    after = ["local-fs.target"];
+    requires = observerRequires;
+    after = observerAfter;
     before = ["aos-activate.service"];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
-      Restart = "on-failure";
-      RestartSec = "1s";
-      RuntimeDirectory = "aos-instrumentation";
-      RuntimeDirectoryMode = "0700";
-      UMask = "0077";
-    };
+    serviceConfig =
+      {
+        Type = "simple";
+        ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
+        Restart = "on-failure";
+        RestartSec = "1s";
+        RuntimeDirectory = "aos-instrumentation";
+        RuntimeDirectoryMode = "0700";
+        UMask = "0077";
+      }
+      // lib.optionalAttrs (observerForwardSocket != null) {
+        Environment = "AOS_ABILITY_FORWARD_SOCKET=${observerForwardSocket}";
+      };
   };
   observerModule = {
     environment.etc."aos/ability-execution-observer.json" = {
@@ -42,7 +53,7 @@
     };
     systemd.services.aos-ability-boundary-controller = observerService;
   };
-  observerSystem = mkSystem (fixture.runtimeModules ++ [observerModule]);
+  observerSystem = mkSystem (fixture.runtimeModules ++ [observerModule] ++ extraRuntimeModules);
   bootInitrdIdentityModule = {config, ...}: {
     # The fleet harness applies this module to the effective machine system,
     # so it records the same initrd output that the harness passes to QEMU.
@@ -61,7 +72,8 @@
     systemd.services.aos-ability-boundary-controller = {
       description = "AOS native ability boundary test controller";
       wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
+      requires = ${builtins.toJSON observerRequires};
+      after = ${builtins.toJSON observerAfter};
       before = [ "aos-activate.service" ];
       serviceConfig = {
         Type = "simple";
@@ -71,8 +83,12 @@
         RuntimeDirectory = "aos-instrumentation";
         RuntimeDirectoryMode = "0700";
         UMask = "0077";
+        ${lib.optionalString (observerForwardSocket != null) ''
+          Environment = "AOS_ABILITY_FORWARD_SOCKET=${observerForwardSocket}";
+        ''}
       };
     };
+    ${extraHostModule}
   '';
   packageRuntime =
     if qualificationImage
@@ -90,7 +106,7 @@ in {
   machines.runtime = {
     system = observerSystem;
     extraModules = [bootInitrdIdentityModule];
-    extraClosures = fixture.extraClosures;
+    extraClosures = fixture.extraClosures ++ additionalClosures;
     varSizeMiB = 8192;
     memoryMiB = 4096;
   };
@@ -134,6 +150,11 @@ in {
       }
       REFERENCE_ATTEMPT_TIMEOUT_MILLIS = 300_000
       REFERENCE_TOTAL_RECOVERY_MILLIS = 1_200_000
+      OBSERVER_FORWARD_ENABLED = ${
+        if observerForwardSocket == null
+        then "False"
+        else "True"
+      }
 
 
       def current_generation():
@@ -505,6 +526,12 @@ in {
           assert event["purpose"] == "effect", held
           assert event["operation"]["operation"]["key"] == expected_operation, held
           assert event["cancelled"] is False, held
+          if OBSERVER_FORWARD_ENABLED:
+              assert held["forwarded_acknowledgement"] == {
+                  "action": "continue",
+                  "event_digest": held["event_digest"],
+                  "schema": "aos.ability-execution-boundary-ack/v1",
+              }, held
           return held
 
 
@@ -520,6 +547,12 @@ in {
           assert event["transaction"] == transaction, resumed
           assert event["operation"]["plan"] == plan, resumed
           assert event["operation"]["operation"]["key"] == PUBLISH_OPERATION, resumed
+          if OBSERVER_FORWARD_ENABLED:
+              assert resumed["forwarded_acknowledgement"] == {
+                  "action": "continue",
+                  "event_digest": resumed["event_digest"],
+                  "schema": "aos.ability-execution-boundary-ack/v1",
+              }, resumed
           return resumed
 
 
@@ -1740,7 +1773,7 @@ in {
   // lib.optionalAttrs qualificationImage {
     qualification = {
       candidateRuntimeCompanions = fixture.qualificationCandidateRuntimeCompanions;
-      extraClosures = fixture.extraClosures ++ [observerController];
+      extraClosures = fixture.extraClosures ++ [observerController] ++ additionalClosures;
       setupBody = fixture.qualificationSetupBody + observerHostModule;
     };
   }
