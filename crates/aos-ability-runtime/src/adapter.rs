@@ -20,6 +20,7 @@ use aos_ability_model::{
 use aos_ability_model::{MethodReference, ProviderImplementationReference};
 use aos_ability_validate::CheckedEffectPlan;
 use aos_contract::Sha256Digest;
+use serde::{Deserialize, Serialize};
 
 /// A cancellation signal shared with an in-flight trusted adapter.
 #[derive(Clone, Debug, Default)]
@@ -505,7 +506,8 @@ pub trait TrustedPlanStore {
 }
 
 /// Distinguishes the separately authorized methods used by one operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum InvocationPurpose {
     /// Performs the operation's declared external effect.
     Effect,

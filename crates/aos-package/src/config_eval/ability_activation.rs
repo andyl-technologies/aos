@@ -323,10 +323,28 @@ impl SpecializedAbilityActivation {
     /// Returns an error when the desired policy authorization is absent,
     /// replaced, unsafe, or no longer matches its exact sidecar.
     pub fn reauthorize(&self, operator_authority: &OperatorPolicyAuthorityStore) -> Result<()> {
+        self.acquire_authority_fence(operator_authority).map(|_| ())
+    }
+
+    /// Captures exact operator grants for one monotonic dispatch decision.
+    ///
+    /// Each protected record read is the authorization linearization point.
+    /// Removing a record afterward fences the next invocation; it does not
+    /// retroactively revoke the dispatch whose exact records are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any desired policy authorization is absent,
+    /// replaced, unsafe, or no longer matches its exact sidecar.
+    pub fn acquire_authority_fence(
+        &self,
+        operator_authority: &OperatorPolicyAuthorityStore,
+    ) -> Result<Vec<super::ability_policy_authority::OperatorPolicyAuthorityRecord>> {
+        let mut records = Vec::with_capacity(self.policy_authority.len());
         for policy in &self.policy_authority {
-            operator_authority.authorize(policy)?;
+            records.push(operator_authority.authorize(policy)?);
         }
-        Ok(())
+        Ok(records)
     }
 
     /// Separates the owned checked graph from its reloadable provenance.

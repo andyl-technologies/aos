@@ -15,7 +15,7 @@ use crate::execution::event::{
     CancellationResult, CompensationInterventionReason, DispatchAbortReason, ExecutionEventKind,
     ReconciliationResult,
 };
-use crate::execution::{ExecutionTransaction, TransactionError};
+use crate::execution::{AdmissionError, ExecutionTransaction, TransactionError};
 use crate::journal::{FileJournal, JournalError};
 
 pub(crate) trait ExecutionEventSink {
@@ -49,6 +49,12 @@ impl ExecutionEventSink for ExecutionTransaction<'_> {
 /// Names a durable boundary available to tests and external observation hooks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Boundary {
+    /// Invocation authority is about to be checked before resource acquisition.
+    BeforeResourceAcquisition,
+    /// All process-scoped resources are held but their current authority is unchecked.
+    ResourcesAcquired,
+    /// Durable intent exists and the held dispatch fence has not been acquired yet.
+    FinalDispatch,
     /// Effect intent is durable and no adapter call has begun yet.
     EffectIntentDurable,
     /// The adapter returned but its outcome is not yet durable.
@@ -267,7 +273,7 @@ where
     /// Returns an error when a journal boundary fails or a configured boundary
     /// hook stops execution. A halt after intent deliberately leaves recovery to
     /// reconcile even when the test hook stopped before adapter dispatch.
-    pub(crate) fn execute<Authorize>(
+    pub(crate) fn execute<Authorize, Fence>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
@@ -275,7 +281,7 @@ where
         authorize_dispatch: &mut Authorize,
     ) -> Result<ExecutionStep, ExecutionError>
     where
-        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+        Authorize: FnMut(&Adapter) -> Result<Fence, ExecutionError>,
     {
         // Keep configured room for intent, outcome, and one complete
         // reconciliation round before any external effect can begin.
@@ -324,7 +330,13 @@ where
             return Ok(ExecutionStep::RejectedBeforeEffect);
         }
 
-        authorize_dispatch(self.adapter)?;
+        let _authority_fence = self.acquire_final_dispatch_fence(
+            journal,
+            context,
+            InvocationPurpose::Effect,
+            &control,
+            authorize_dispatch,
+        )?;
         let disposition = self.adapter.execute(request.request(), &control);
         self.observe(Boundary::EffectReturned, &control)?;
         let (event, step) = match disposition {
@@ -372,7 +384,7 @@ where
     /// Returns an error when a journal boundary fails or a configured boundary
     /// hook halts execution. `SafeToRetry` is returned only after the provider's
     /// observation and its evidence are durable.
-    pub(crate) fn reconcile<Authorize>(
+    pub(crate) fn reconcile<Authorize, Fence>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
@@ -380,7 +392,7 @@ where
         authorize_dispatch: &mut Authorize,
     ) -> Result<ExecutionStep, ExecutionError>
     where
-        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+        Authorize: FnMut(&Adapter) -> Result<Fence, ExecutionError>,
     {
         journal.ensure_capacity(2)?;
         let control = LiveControl::new(
@@ -405,7 +417,13 @@ where
             return Err(ExecutionError::RecoveryDeadlineExpired);
         }
 
-        authorize_dispatch(self.adapter)?;
+        let _authority_fence = self.acquire_final_dispatch_fence(
+            journal,
+            context,
+            InvocationPurpose::Reconcile,
+            &control,
+            authorize_dispatch,
+        )?;
         let disposition = self.adapter.reconcile(request, &control);
         self.observe(Boundary::ReconciliationReturned, &control)?;
         let (result, evidence, outputs, step) = match disposition {
@@ -454,7 +472,7 @@ where
     }
 
     /// Persists and dispatches an explicitly requested compensation effect.
-    pub(crate) fn compensate<Authorize>(
+    pub(crate) fn compensate<Authorize, Fence>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
@@ -462,7 +480,7 @@ where
         authorize_dispatch: &mut Authorize,
     ) -> Result<ExecutionStep, ExecutionError>
     where
-        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+        Authorize: FnMut(&Adapter) -> Result<Fence, ExecutionError>,
     {
         journal.ensure_capacity(4)?;
         let control = LiveControl::new(
@@ -511,7 +529,13 @@ where
             return Ok(ExecutionStep::InterventionRequired);
         }
 
-        authorize_dispatch(self.adapter)?;
+        let _authority_fence = self.acquire_final_dispatch_fence(
+            journal,
+            context,
+            InvocationPurpose::Compensate,
+            &control,
+            authorize_dispatch,
+        )?;
         let Some(disposition) = self.adapter.compensate(request.request(), &control) else {
             journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
                 transaction: context.transaction.clone(),
@@ -559,7 +583,7 @@ where
     }
 
     /// Reconciles the compensation effect without observing the primary effect.
-    pub(crate) fn reconcile_compensation<Authorize>(
+    pub(crate) fn reconcile_compensation<Authorize, Fence>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
@@ -567,7 +591,7 @@ where
         authorize_dispatch: &mut Authorize,
     ) -> Result<ExecutionStep, ExecutionError>
     where
-        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+        Authorize: FnMut(&Adapter) -> Result<Fence, ExecutionError>,
     {
         journal.ensure_capacity(2)?;
         let control = LiveControl::new(
@@ -604,7 +628,13 @@ where
             return Ok(ExecutionStep::InterventionRequired);
         }
 
-        authorize_dispatch(self.adapter)?;
+        let _authority_fence = self.acquire_final_dispatch_fence(
+            journal,
+            context,
+            InvocationPurpose::ReconcileCompensation,
+            &control,
+            authorize_dispatch,
+        )?;
         let Some(disposition) = self.adapter.reconcile_compensation(request, &control) else {
             journal.append_event(ExecutionEventKind::CompensationInterventionRequired {
                 transaction: context.transaction.clone(),
@@ -662,7 +692,7 @@ where
     /// Returns an error when a journal boundary fails or a configured boundary
     /// hook halts execution. An indeterminate cancellation remains subject to
     /// reconciliation and retains resource ownership.
-    pub(crate) fn cancel<Authorize>(
+    pub(crate) fn cancel<Authorize, Fence>(
         &mut self,
         journal: &mut impl ExecutionEventSink,
         context: AttemptContext<'_>,
@@ -670,7 +700,7 @@ where
         authorize_dispatch: &mut Authorize,
     ) -> Result<ExecutionStep, ExecutionError>
     where
-        Authorize: FnMut(&Adapter) -> Result<(), ExecutionError>,
+        Authorize: FnMut(&Adapter) -> Result<Fence, ExecutionError>,
     {
         journal.ensure_capacity(2)?;
         let control = LiveControl::new(
@@ -695,7 +725,13 @@ where
             return Err(ExecutionError::RecoveryDeadlineExpired);
         }
 
-        authorize_dispatch(self.adapter)?;
+        let _authority_fence = self.acquire_final_dispatch_fence(
+            journal,
+            context,
+            InvocationPurpose::Cancel,
+            &control,
+            authorize_dispatch,
+        )?;
         let cancellation_control = CancellationCallControl::new(&control);
         let disposition = self.adapter.cancel(request, &cancellation_control);
         self.observe(Boundary::CancellationReturned, &control)?;
@@ -730,6 +766,53 @@ where
         })?;
         self.observe(Boundary::CancellationOutcomeDurable, &control)?;
         Ok(step)
+    }
+
+    fn acquire_final_dispatch_fence<Authorize, Fence>(
+        &mut self,
+        journal: &mut impl ExecutionEventSink,
+        context: AttemptContext<'_>,
+        purpose: InvocationPurpose,
+        control: &dyn RuntimeControl,
+        authorize_dispatch: &mut Authorize,
+    ) -> Result<Fence, ExecutionError>
+    where
+        Authorize: FnMut(&Adapter) -> Result<Fence, ExecutionError>,
+    {
+        self.observe(Boundary::FinalDispatch, control)?;
+        match authorize_dispatch(self.adapter) {
+            Ok(fence) => Ok(fence),
+            Err(error) => {
+                let ExecutionError::DispatchAdmission(AdmissionError::FreshAuthorization {
+                    role,
+                    boundary,
+                    ..
+                }) = &error
+                else {
+                    return Err(error);
+                };
+                journal.append_event(ExecutionEventKind::AuthorityRejected {
+                    transaction: context.transaction.clone(),
+                    operation: context.operation.clone(),
+                    attempt: context.attempt,
+                    purpose,
+                    role: *role,
+                    boundary: *boundary,
+                    elapsed_millis: control.elapsed_millis(),
+                })?;
+                if purpose == InvocationPurpose::Effect {
+                    journal.append_event(ExecutionEventKind::EffectDispatchAborted {
+                        transaction: context.transaction.clone(),
+                        operation: context.operation.clone(),
+                        attempt: context.attempt,
+                        reason: DispatchAbortReason::AuthorityRejected,
+                        elapsed_millis: control.elapsed_millis(),
+                    })?;
+                    self.observe(Boundary::EffectOutcomeDurable, control)?;
+                }
+                Err(error)
+            }
+        }
     }
 
     fn observe(
@@ -1106,6 +1189,7 @@ mod tests {
             hook.observations,
             [
                 (Boundary::CancellationIntentDurable, true),
+                (Boundary::FinalDispatch, true),
                 (Boundary::CancellationReturned, true),
                 (Boundary::CancellationOutcomeDurable, true),
             ]

@@ -10,6 +10,8 @@ use aos_ability_model::{
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
+use crate::adapter::InvocationPurpose;
+use crate::execution::{AuthorityCheckBoundary, RuntimeAuthorityRole};
 use crate::journal::{JournalError, JournalLimits, JournalPayload};
 
 /// Exact schema discriminator for runtime journal event bodies.
@@ -51,6 +53,8 @@ pub enum DispatchAbortReason {
     Cancelled,
     /// The attempt or total recovery deadline expired after intent became durable.
     DeadlineExpired,
+    /// Current authority was rejected under the final dispatch fence.
+    AuthorityRejected,
 }
 
 /// Records why compensation stopped and now requires an operator decision.
@@ -100,6 +104,23 @@ pub enum ExecutionEventKind {
         attempt: NonZeroU32,
         /// Lists held logical resources in canonical identity order.
         resources: Vec<ResourceId>,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
+    /// Records a role-specific current-authority rejection before adapter invocation.
+    AuthorityRejected {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the exact operation under the plan.
+        operation: OperationId,
+        /// Identifies the attempted admission or dispatch.
+        attempt: NonZeroU32,
+        /// Identifies the independently admitted method family.
+        purpose: InvocationPurpose,
+        /// Identifies the authority that was revoked or unavailable.
+        role: RuntimeAuthorityRole,
+        /// Identifies where the fresh check rejected the invocation.
+        boundary: AuthorityCheckBoundary,
         /// Retains consumed operation recovery budget across reboot.
         elapsed_millis: u64,
     },
@@ -438,6 +459,7 @@ impl ExecutionEventKind {
         match self {
             Self::TransactionPlanned { transaction, .. }
             | Self::OperationAdmitted { transaction, .. }
+            | Self::AuthorityRejected { transaction, .. }
             | Self::RetryBackoffScheduled { transaction, .. }
             | Self::RetryBackoffElapsed { transaction, .. }
             | Self::CompensationRequested { transaction, .. }
@@ -472,6 +494,7 @@ impl ExecutionEventKind {
     pub const fn operation(&self) -> Option<&OperationId> {
         match self {
             Self::OperationAdmitted { operation, .. }
+            | Self::AuthorityRejected { operation, .. }
             | Self::RetryBackoffScheduled { operation, .. }
             | Self::RetryBackoffElapsed { operation, .. }
             | Self::CompensationRequested { operation, .. }
@@ -507,6 +530,7 @@ impl ExecutionEventKind {
     pub const fn attempt(&self) -> Option<NonZeroU32> {
         match self {
             Self::OperationAdmitted { attempt, .. }
+            | Self::AuthorityRejected { attempt, .. }
             | Self::RetryBackoffScheduled { attempt, .. }
             | Self::RetryBackoffElapsed { attempt, .. }
             | Self::EffectIntent { attempt, .. }
@@ -542,6 +566,7 @@ impl ExecutionEventKind {
     pub const fn elapsed_millis(&self) -> Option<u64> {
         match self {
             Self::OperationAdmitted { elapsed_millis, .. }
+            | Self::AuthorityRejected { elapsed_millis, .. }
             | Self::RetryBackoffScheduled { elapsed_millis, .. }
             | Self::RetryBackoffElapsed { elapsed_millis, .. }
             | Self::CompensationRequested { elapsed_millis, .. }

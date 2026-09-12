@@ -15,7 +15,8 @@ mod transaction;
 mod tests;
 
 pub use admission::{
-    AdmissionError, AdmissionFailure, AdmissionResult, AdmittedOperation, TrustedAdmissionPolicy,
+    AdmissionError, AdmissionFailure, AdmissionResult, AdmittedOperation, AuthorityCheckBoundary,
+    AuthorityRejection, RuntimeAuthorityRole, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 pub use event::{
     CancellationResult, CompensationInterventionReason, DispatchAbortReason,

@@ -12,8 +12,11 @@ use aos_ability_model::{
 use aos_contract::Sha256Digest;
 use thiserror::Error;
 
+use crate::adapter::InvocationPurpose;
 use crate::execution::event::{CancellationResult, ExecutionEventKind, ReconciliationResult};
-use crate::execution::{CompensationInterventionReason, DispatchAbortReason};
+use crate::execution::{
+    AuthorityCheckBoundary, CompensationInterventionReason, DispatchAbortReason,
+};
 use crate::journal::JournalRecord;
 
 /// Describes the durable state of one operation without discarding history.
@@ -578,6 +581,55 @@ impl OperationHistory {
                 self.interrupted_call_budget_millis = 0;
                 self.admitted_attempts.insert(*attempt);
                 self.state = OperationState::Admitted { attempt: *attempt };
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+            }
+            ExecutionEventKind::AuthorityRejected {
+                operation,
+                attempt,
+                purpose,
+                boundary,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                let valid_boundary = match boundary {
+                    AuthorityCheckBoundary::BeforeResourceAcquisition
+                    | AuthorityCheckBoundary::AfterResourceAcquisition => !matches!(
+                        self.state,
+                        OperationState::IntentDurable { .. }
+                            | OperationState::ReconciliationIntentDurable { .. }
+                            | OperationState::CancellationIntentDurable { .. }
+                    ),
+                    AuthorityCheckBoundary::FinalDispatch => match purpose {
+                        crate::adapter::InvocationPurpose::Effect => matches!(
+                            self.state,
+                            OperationState::IntentDurable { attempt: current }
+                                if current == *attempt
+                        ),
+                        InvocationPurpose::Reconcile => matches!(
+                            self.state,
+                            OperationState::ReconciliationIntentDurable { attempt: current }
+                                if current == *attempt
+                        ),
+                        InvocationPurpose::Cancel => matches!(
+                            self.state,
+                            OperationState::CancellationIntentDurable { attempt: current }
+                                if current == *attempt
+                        ),
+                        InvocationPurpose::Compensate => {
+                            matches!(self.compensation, Some(CompensationState::IntentDurable))
+                        }
+                        InvocationPurpose::ReconcileCompensation => matches!(
+                            self.compensation,
+                            Some(CompensationState::ReconciliationIntentDurable)
+                        ),
+                    },
+                };
+                if !self.planned || !valid_boundary {
+                    return Err(invalid(
+                        sequence,
+                        "authority rejection does not match its runtime boundary",
+                    ));
+                }
                 self.observe_elapsed(sequence, *elapsed_millis)?;
             }
             ExecutionEventKind::EffectIntent {

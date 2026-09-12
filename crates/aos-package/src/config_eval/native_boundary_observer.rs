@@ -544,6 +544,9 @@ const fn purpose_name(purpose: InvocationPurpose) -> &'static str {
 
 const fn boundary_name(boundary: Boundary) -> &'static str {
     match boundary {
+        Boundary::BeforeResourceAcquisition => "before-resource-acquisition",
+        Boundary::ResourcesAcquired => "resources-acquired",
+        Boundary::FinalDispatch => "final-dispatch",
         Boundary::EffectIntentDurable => "effect-intent-durable",
         Boundary::EffectReturned => "effect-returned",
         Boundary::EffectOutcomeDurable => "effect-outcome-durable",
