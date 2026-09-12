@@ -65,6 +65,11 @@ in
             -- --test-threads=1
 
           recorder=docs/rfcs/0020-crucible-campaigns/fixtures/campaign-manual-flight-recorder.sh
+          run_recorder() {
+            CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
+              CONFIG_SHELL=${pkgs.bash}/bin/bash \
+              ${pkgs.bash}/bin/bash "$recorder" "$@"
+          }
           evidence="$TMPDIR/operator-evidence"
           manifest="$TMPDIR/flight-manifest.json"
           roles='driver independent-reviewer campaign-model-owner qemu-boundary-owner storage-owner guest-api-owner operations-owner'
@@ -140,8 +145,7 @@ in
             planned_duration_hours:4, provenance:{"build-id":"fixture"},
             sign_offs:{required_roles:["driver"]}
           }' > "$TMPDIR/skeletal-manifest.json"
-          if CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" init "$TMPDIR/skeletal-evidence" \
+          if run_recorder init "$TMPDIR/skeletal-evidence" \
             "$TMPDIR/skeletal-manifest.json"; then
             echo 'skeletal evidence manifest unexpectedly passed' >&2
             exit 1
@@ -150,8 +154,7 @@ in
           jq '.gate = "gate:campaign-dogfood" |
             .layer = "dogfood" | .planned_duration_hours = 24' \
             "$manifest" > "$TMPDIR/dogfood-missing-participants.json"
-          if CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" init \
+          if run_recorder init \
             "$TMPDIR/dogfood-missing-participants" \
             "$TMPDIR/dogfood-missing-participants.json"; then
             echo 'dogfood manifest without handoff and release participants unexpectedly passed' >&2
@@ -162,22 +165,18 @@ in
             .participants["handoff-operator"] = {name:"Fixture Handoff Operator"} |
             .participants["release-owner"] = {name:"Fixture Release Owner"}' \
             "$manifest" > "$TMPDIR/dogfood-manifest.json"
-          CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" init "$TMPDIR/dogfood-evidence" \
+          run_recorder init "$TMPDIR/dogfood-evidence" \
             "$TMPDIR/dogfood-manifest.json"
 
-          CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" init "$evidence" "$manifest"
-          CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" record "$evidence" status zero -- \
+          run_recorder init "$evidence" "$manifest"
+          run_recorder record "$evidence" status zero -- \
             ${pkgs.coreutils}/bin/true
 
           for artifact in runbook campaign-snapshots exact-reproduction thin-reproduction \
             operational-telemetry resource-audit automated-gate-results; do
             printf '{"fixture":"%s","result":"prerequisite-only"}\n' "$artifact" \
               > "$TMPDIR/$artifact.json"
-            CONFIG_SHELL=${pkgs.bash}/bin/bash \
-              ${pkgs.bash}/bin/bash "$recorder" capture "$evidence" "$artifact" \
+            run_recorder capture "$evidence" "$artifact" \
               "$TMPDIR/$artifact.json"
           done
           jq -n '{
@@ -199,33 +198,25 @@ in
             "resource-audit":{complete:true, "unexplained-resources":[]},
             "sign-off-status":"pending"
           }' > "$TMPDIR/final-result.json"
-          CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" capture "$evidence" final-result \
+          run_recorder capture "$evidence" final-result \
             "$TMPDIR/final-result.json"
-          CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" seal "$evidence"
+          run_recorder seal "$evidence"
 
           first_signature=
           for role in $roles; do
             statement="$TMPDIR/$role.statement.json"
             signature="$TMPDIR/$role.signature"
             signer="Fixture $role"
-            CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
-              CONFIG_SHELL=${pkgs.bash}/bin/bash \
-              ${pkgs.bash}/bin/bash "$recorder" statement "$evidence" "$role" \
+            run_recorder statement "$evidence" "$role" \
               "$signer" "$TMPDIR/$role.public.pem" "$statement"
 
             if test "$role" = independent-reviewer; then
-              if CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
-                CONFIG_SHELL=${pkgs.bash}/bin/bash \
-                ${pkgs.bash}/bin/bash "$recorder" statement "$evidence" "$role" \
+              if run_recorder statement "$evidence" "$role" \
                 "$signer" "$TMPDIR/driver.public.pem" "$TMPDIR/reused-key.statement"; then
                 echo 'public key reuse unexpectedly passed' >&2
                 exit 1
               fi
-              if CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
-                CONFIG_SHELL=${pkgs.bash}/bin/bash \
-                ${pkgs.bash}/bin/bash "$recorder" attest "$evidence" "$role" \
+              if run_recorder attest "$evidence" "$role" \
                 "$signer" "$TMPDIR/$role.public.pem" "$statement" "$first_signature"; then
                 echo 'signature reuse unexpectedly passed' >&2
                 exit 1
@@ -237,22 +228,16 @@ in
             if test "$role" = driver; then
               first_signature=$signature
               jq '.signer = "Tampered Signer"' "$statement" > "$TMPDIR/tampered.statement"
-              if CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
-                CONFIG_SHELL=${pkgs.bash}/bin/bash \
-                ${pkgs.bash}/bin/bash "$recorder" attest "$evidence" "$role" \
+              if run_recorder attest "$evidence" "$role" \
                 "$signer" "$TMPDIR/$role.public.pem" "$TMPDIR/tampered.statement" "$signature"; then
                 echo 'statement tamper unexpectedly passed' >&2
                 exit 1
               fi
             fi
-            CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
-              CONFIG_SHELL=${pkgs.bash}/bin/bash \
-              ${pkgs.bash}/bin/bash "$recorder" attest "$evidence" "$role" \
+            run_recorder attest "$evidence" "$role" \
               "$signer" "$TMPDIR/$role.public.pem" "$statement" "$signature"
           done
-          CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
-            CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" verify "$evidence"
+          run_recorder verify "$evidence"
 
           cp -R "$evidence" "$TMPDIR/tampered-evidence"
           jq '.signer = "Tampered Signer"' \
@@ -260,9 +245,7 @@ in
             > "$TMPDIR/tampered-evidence/attestations/driver.statement.tmp"
           mv "$TMPDIR/tampered-evidence/attestations/driver.statement.tmp" \
             "$TMPDIR/tampered-evidence/attestations/driver.statement.json"
-          if CAMPAIGN_FLIGHT_OPENSSL=${pkgs.openssl}/bin/openssl \
-            CONFIG_SHELL=${pkgs.bash}/bin/bash \
-            ${pkgs.bash}/bin/bash "$recorder" verify "$TMPDIR/tampered-evidence"; then
+          if run_recorder verify "$TMPDIR/tampered-evidence"; then
             echo 'stored statement tamper unexpectedly passed' >&2
             exit 1
           fi

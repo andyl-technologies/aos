@@ -5,58 +5,148 @@
 
 use super::*;
 
-const JOURNAL_MIGRATION_PREFIX: &str = ".migration-v2-";
+use crate::OperationalStateMigrationError;
+use crate::anchored_fs::{AnchoredDirectory, AnchoredFile};
+use crate::crucible_artifact::decode_migration_prepared_result;
+#[cfg(test)]
+use crate::crucible_artifact::encode_legacy_prepared_result;
+use crate::operational_state_migration::receipt::{
+    ACTIVE_MARKER, MigrationObjectReceipt, PREPARED_RECEIPT, authenticated_id, load_phase_receipt,
+    persist_phase_receipt,
+};
+
 pub(super) const JOURNAL_RESULT_FILE_V1: &str = "result-v1";
 pub(super) const JOURNAL_STATE_FILE_V1: &str = "state-v1";
 const JOURNAL_STATE_MAGIC_V1: &[u8] = b"crucible.executor.prepared-result-journal-state.v1\0";
 const JOURNAL_STATE_HASH_DOMAIN_V1: &str = "crucible.executor.prepared-result-journal-state.v1";
+pub(super) const CURRENT_RESULT_PENDING: &str = ".result-v2.pending";
+pub(super) const CURRENT_STATE_PENDING: &str = ".state-v2.pending";
 
 pub(super) fn migrate_prepared_result_journals(
-    namespace: impl AsRef<Path>,
+    namespace: &AnchoredDirectory,
+    receipt_guard: &AnchoredDirectory,
     ledger: &mut DirectoryAssignmentLedger,
-    maximum_journals: usize,
+    maximum_entries: usize,
     maximum_payload_bytes: usize,
-) -> Result<PreparedResultJournalMigrationSummary, PreparedResultJournalError> {
-    let namespace = namespace.as_ref();
-    validate_namespace(namespace)?;
+) -> Result<PreparedResultJournalMigrationSummary, OperationalStateMigrationError> {
+    const OUTPUT_SCHEMA: &str = "crucible.executor.prepared-result-journal.v2";
     let maximum_payload_bytes = validate_payload_limit(maximum_payload_bytes)?;
-    let roots = visible_journal_roots(namespace, maximum_journals)?;
-    let mut migrations = Vec::with_capacity(roots.len());
+    let inventory = inventory_namespace(namespace, maximum_entries, maximum_payload_bytes)?;
+    let existing = load_phase_receipt(receipt_guard, PREPARED_RECEIPT, OUTPUT_SCHEMA)?;
+    let mut migrations = Vec::with_capacity(inventory.len());
 
-    // Retain every per-key lock so validation stays stable until all commits.
-    for root in roots {
-        let source = read_migration_journal(&root, maximum_payload_bytes)?;
-        let namespace_lock = acquire_namespace_lock(namespace, source.key)?;
+    // Retain every per-key lock and child directory authority through cleanup.
+    for journal in inventory {
+        let source_version = journal.files.source_version()?;
+        let (source, recovery_destinations) =
+            match read_migration_journal(&journal.root, maximum_payload_bytes, source_version) {
+                Ok(source) => (source, None),
+                Err(_)
+                    if source_version == MigrationJournalVersion::V2
+                        && journal.files.pending_state
+                        && journal.files.pending_result
+                        && existing.is_some() =>
+                {
+                    let source = read_migration_journal_files(
+                        &journal.root,
+                        maximum_payload_bytes,
+                        source_version,
+                        CURRENT_STATE_PENDING,
+                        CURRENT_RESULT_PENDING,
+                    )?;
+                    if !source.payload_current {
+                        return Err(PreparedResultJournalError::InvalidState.into());
+                    }
+                    let result_destination = journal
+                        .root
+                        .open_regular_optional(
+                            &journal.root.path().join(JOURNAL_RESULT_FILE),
+                            "pin-interrupted-result-destination",
+                        )?
+                        .ok_or(PreparedResultJournalError::Incomplete)?;
+                    let state_destination = journal
+                        .root
+                        .open_regular_optional(
+                            &journal.root.path().join(JOURNAL_STATE_FILE),
+                            "pin-interrupted-state-destination",
+                        )?
+                        .ok_or(PreparedResultJournalError::Incomplete)?;
+                    (source, Some((result_destination, state_destination)))
+                }
+                Err(error) => return Err(error.into()),
+            };
+        let namespace_lock = acquire_namespace_lock(&namespace.anchored_path(), source.key)?;
         validate_ledger_binding(ledger, &source)?;
-        let staging = migration_path(namespace, source.key);
-        let staged = if path_presence(&staging, "inspect-journal-migration-staging")? {
-            let staged = read_migration_journal(&staging, maximum_payload_bytes)?;
-            validate_equivalent_journals(&source, &staged)?;
-            Some(staged.version)
-        } else {
-            None
+
+        let current =
+            if source_version == MigrationJournalVersion::V1 && journal.files.current_complete() {
+                let current = read_migration_journal(
+                    &journal.root,
+                    maximum_payload_bytes,
+                    MigrationJournalVersion::V2,
+                )?;
+                validate_equivalent_journals(&source, &current)?;
+                Some(current)
+            } else {
+                None
+            };
+        let output_id = current
+            .as_ref()
+            .map(|journal| Ok(journal.object_id.clone()))
+            .unwrap_or_else(|| current_journal_object_id(&source, maximum_payload_bytes))?;
+        let current_id = source.object_id.clone();
+        let key = hex(source.key.storage_digest().as_bytes());
+        let prior = existing
+            .as_ref()
+            .and_then(|receipt| receipt.objects.iter().find(|object| object.key == key));
+        let source_id = match prior {
+            Some(object)
+                if object.output_object_id == output_id
+                    && (object.source_object_id == current_id || output_id == current_id) =>
+            {
+                object.source_object_id.clone()
+            }
+            Some(_) => return Err(OperationalStateMigrationError::InvalidReceipt),
+            None if journal.files.legacy_partial() => {
+                return Err(OperationalStateMigrationError::InvalidReceipt);
+            }
+            None => current_id,
         };
         migrations.push(JournalMigration {
             source,
-            staging,
-            staged,
+            root: journal.root,
+            files: journal.files,
+            receipt: MigrationObjectReceipt {
+                key,
+                source_object_id: source_id,
+                output_object_id: output_id,
+            },
+            recovery_destinations,
             _namespace_lock: namespace_lock,
         });
     }
 
-    for migration in &mut migrations {
-        migration.stage_current(maximum_payload_bytes)?;
-    }
+    let objects = migrations
+        .iter()
+        .map(|migration| migration.receipt.clone())
+        .collect::<Vec<_>>();
+    let receipt = match existing {
+        Some(existing) if existing.objects == objects => existing,
+        Some(_) => return Err(OperationalStateMigrationError::InvalidReceipt),
+        None => persist_phase_receipt(receipt_guard, PREPARED_RECEIPT, OUTPUT_SCHEMA, objects)?,
+    };
+
+    receipt.verify_path_binding()?;
+    let journals = migrations.len();
     let mut migrated = 0;
-    for migration in &migrations {
-        if migration.commit(namespace)? {
-            migrated += 1;
-        }
+    for migration in migrations {
+        migrated += usize::from(migration.apply(maximum_payload_bytes)?);
     }
 
     Ok(PreparedResultJournalMigrationSummary {
-        journals: migrations.len(),
+        journals,
         migrated,
+        receipt,
     })
 }
 
@@ -69,29 +159,113 @@ enum MigrationJournalVersion {
 struct MigrationJournal {
     key: AttemptExecutionKey,
     execution: ExecutionId,
-    maximum_payload_bytes: usize,
     result: PreparedSemanticAttemptResult,
     version: MigrationJournalVersion,
+    payload_current: bool,
+    object_id: String,
+    state_authority: AnchoredFile,
+    result_authority: AnchoredFile,
 }
 
 struct JournalMigration {
     source: MigrationJournal,
-    staging: PathBuf,
-    staged: Option<MigrationJournalVersion>,
+    root: AnchoredDirectory,
+    files: JournalFiles,
+    receipt: MigrationObjectReceipt,
+    recovery_destinations: Option<(AnchoredFile, AnchoredFile)>,
     _namespace_lock: OwnedAdvisoryLock,
 }
 
 impl JournalMigration {
-    fn stage_current(
-        &mut self,
-        maximum_payload_bytes: usize,
-    ) -> Result<(), PreparedResultJournalError> {
-        if self.source.version == MigrationJournalVersion::V2 || self.staged.is_some() {
-            return Ok(());
+    fn apply(self, maximum_payload_bytes: usize) -> Result<bool, OperationalStateMigrationError> {
+        let migrated = self.source.version == MigrationJournalVersion::V1
+            || !self.source.payload_current
+            || self.files.has_legacy()
+            || self.recovery_destinations.is_some();
+        let root = self.root.path();
+        if let Some((result_destination, state_destination)) = &self.recovery_destinations {
+            let (payload, state) = self.current_pair(maximum_payload_bytes)?;
+            result_destination.replace_contents(&payload)?;
+            state_destination.replace_contents(&state)?;
+            self.root
+                .remove_bound_file(&self.source.state_authority, "remove-resumed-current-state")?;
+            self.root.remove_bound_file(
+                &self.source.result_authority,
+                "remove-resumed-current-result",
+            )?;
         }
-        fs::create_dir(&self.staging).map_err(|source| {
-            io_error("create-journal-migration-staging", &self.staging, source)
-        })?;
+        for pending in self.files.pending_paths(root).into_iter().filter(|path| {
+            self.recovery_destinations.is_none()
+                || !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some(CURRENT_STATE_PENDING | CURRENT_RESULT_PENDING)
+                )
+        }) {
+            let authority = self
+                .root
+                .open_regular_optional(&pending, "pin-journal-migration-temporary")?
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            self.root
+                .remove_bound_file(&authority, "remove-journal-migration-temporary")?;
+        }
+        if self.source.version == MigrationJournalVersion::V1 && !self.files.current_complete() {
+            let (payload, state) = self.current_pair(maximum_payload_bytes)?;
+            if !self.files.current_result {
+                self.root
+                    .write_once(&root.join(JOURNAL_RESULT_FILE), &payload)?;
+            }
+            if !self.files.current_state {
+                self.root
+                    .write_once(&root.join(JOURNAL_STATE_FILE), &state)?;
+            }
+        } else if !self.source.payload_current {
+            let (payload, state) = self.current_pair(maximum_payload_bytes)?;
+            let result_pending = root.join(CURRENT_RESULT_PENDING);
+            let state_pending = root.join(CURRENT_STATE_PENDING);
+            self.root.write_once(&result_pending, &payload)?;
+            self.root.write_once(&state_pending, &state)?;
+            let result_pending_authority = self
+                .root
+                .open_regular_optional(&result_pending, "pin-staged-current-result")?
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            let state_pending_authority = self
+                .root
+                .open_regular_optional(&state_pending, "pin-staged-current-state")?
+                .ok_or(PreparedResultJournalError::Incomplete)?;
+            self.source.result_authority.replace_contents(&payload)?;
+            self.source.state_authority.replace_contents(&state)?;
+            self.root
+                .remove_bound_file(&result_pending_authority, "remove-staged-current-result")?;
+            self.root
+                .remove_bound_file(&state_pending_authority, "remove-staged-current-state")?;
+        }
+        let current = read_migration_journal(
+            &self.root,
+            maximum_payload_bytes,
+            MigrationJournalVersion::V2,
+        )?;
+        if current.key != self.source.key
+            || current.execution != self.source.execution
+            || current.result != self.source.result
+        {
+            return Err(PreparedResultJournalError::InvalidState.into());
+        }
+        if self.files.legacy_result {
+            self.root
+                .remove_file(&root.join(JOURNAL_RESULT_FILE_V1), "remove-legacy-result")?;
+        }
+        if self.files.legacy_state {
+            self.root
+                .remove_file(&root.join(JOURNAL_STATE_FILE_V1), "remove-legacy-state")?;
+        }
+        self.root.verify_path_binding()?;
+        Ok(migrated)
+    }
+
+    fn current_pair(
+        &self,
+        maximum_payload_bytes: usize,
+    ) -> Result<(Vec<u8>, Vec<u8>), PreparedResultJournalError> {
         let payload = self
             .source
             .result
@@ -103,152 +277,309 @@ impl JournalMigration {
             &self.source.result,
             &payload,
         )?;
-        initialize_new(&self.staging, &payload, &state)?;
-        sync_parent(&self.staging, "sync-journal-parent-after-migration-stage")?;
-        self.staged = Some(MigrationJournalVersion::V2);
-        Ok(())
-    }
-
-    fn commit(&self, namespace: &Path) -> Result<bool, PreparedResultJournalError> {
-        match (self.source.version, self.staged) {
-            (MigrationJournalVersion::V1, Some(MigrationJournalVersion::V2)) => {
-                rename_exchange(&journal_path(namespace, self.source.key), &self.staging)?;
-                sync_directory(namespace, "sync-journal-parent-after-migration-exchange")?;
-                remove_migration_directory(&self.staging)?;
-                sync_directory(namespace, "sync-journal-parent-after-migration-cleanup")?;
-                Ok(true)
-            }
-            (MigrationJournalVersion::V2, Some(MigrationJournalVersion::V1)) => {
-                remove_migration_directory(&self.staging)?;
-                sync_directory(namespace, "sync-journal-parent-after-migration-cleanup")?;
-                Ok(true)
-            }
-            (MigrationJournalVersion::V2, None) => Ok(false),
-            _ => Err(PreparedResultJournalError::RecoveryRequired),
-        }
+        Ok((payload, state))
     }
 }
 
-fn visible_journal_roots(
-    namespace: &Path,
-    maximum: usize,
-) -> Result<Vec<PathBuf>, PreparedResultJournalError> {
-    let mut roots = Vec::new();
-    for entry in fs::read_dir(namespace)
-        .map_err(|source| io_error("read-journal-migration-namespace", namespace, source))?
+struct JournalInventory {
+    root: AnchoredDirectory,
+    files: JournalFiles,
+}
+
+struct JournalFiles {
+    legacy_state: bool,
+    legacy_result: bool,
+    current_state: bool,
+    current_result: bool,
+    pending_state: bool,
+    pending_result: bool,
+}
+
+impl JournalFiles {
+    fn source_version(&self) -> Result<MigrationJournalVersion, PreparedResultJournalError> {
+        if self.legacy_state && self.legacy_result {
+            Ok(MigrationJournalVersion::V1)
+        } else if self.current_complete() {
+            Ok(MigrationJournalVersion::V2)
+        } else {
+            Err(PreparedResultJournalError::Incomplete)
+        }
+    }
+
+    fn current_complete(&self) -> bool {
+        self.current_state && self.current_result
+    }
+
+    fn has_legacy(&self) -> bool {
+        self.legacy_state || self.legacy_result
+    }
+
+    fn legacy_partial(&self) -> bool {
+        self.legacy_state != self.legacy_result
+    }
+
+    fn pending_paths(&self, root: &Path) -> Vec<PathBuf> {
+        [
+            self.pending_result
+                .then(|| root.join(CURRENT_RESULT_PENDING)),
+            self.pending_state.then(|| root.join(CURRENT_STATE_PENDING)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+fn inventory_namespace(
+    namespace: &AnchoredDirectory,
+    maximum_entries: usize,
+    maximum_payload_bytes: usize,
+) -> Result<Vec<JournalInventory>, OperationalStateMigrationError> {
+    let anchored = namespace.anchored_path();
+    let mut journals = Vec::new();
+    let mut entries = 0usize;
+    let mut bytes = 0u64;
+    let maximum_bytes = (maximum_payload_bytes as u64)
+        .checked_add(MAX_JOURNAL_STATE_BYTES as u64)
+        .and_then(|per_journal| per_journal.checked_mul(maximum_entries as u64))
+        .ok_or(PreparedResultJournalError::MigrationLimitExceeded)?;
+    for entry in fs::read_dir(&anchored)
+        .map_err(|source| io_error("read-journal-migration-namespace", &anchored, source))?
     {
         let entry =
-            entry.map_err(|source| io_error("read-journal-migration-entry", namespace, source))?;
-        let name = entry.file_name();
-        let name = name
+            entry.map_err(|source| io_error("read-journal-migration-entry", &anchored, source))?;
+        admit_inventory_entry(&mut entries, maximum_entries)?;
+        let name = entry
+            .file_name()
             .to_str()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
+            .ok_or(PreparedResultJournalError::InvalidDirectory)?
+            .to_owned();
         let file_type = entry
             .file_type()
             .map_err(|source| io_error("stat-journal-migration-entry", &entry.path(), source))?;
-        if name.starts_with(JOURNAL_LOCK_PREFIX) {
-            if !file_type.is_file() {
-                return Err(PreparedResultJournalError::InvalidDirectory);
+        if name == ACTIVE_MARKER || name.starts_with(JOURNAL_LOCK_PREFIX) {
+            if (name != ACTIVE_MARKER && !valid_keyed_name(&name, JOURNAL_LOCK_PREFIX))
+                || !file_type.is_file()
+            {
+                return Err(PreparedResultJournalError::InvalidDirectory.into());
             }
-            continue;
-        }
-        if name.starts_with(JOURNAL_MIGRATION_PREFIX) {
-            if !file_type.is_dir() {
-                return Err(PreparedResultJournalError::InvalidDirectory);
-            }
+            admit_inventory_bytes(
+                &mut bytes,
+                entry
+                    .metadata()
+                    .map_err(|source| {
+                        io_error("inspect-journal-migration-file", &entry.path(), source)
+                    })?
+                    .len(),
+                maximum_bytes,
+            )?;
             continue;
         }
         if name.starts_with(JOURNAL_STAGED_PREFIX) || name.starts_with(JOURNAL_RETIRED_PREFIX) {
-            return Err(PreparedResultJournalError::RecoveryRequired);
+            return Err(PreparedResultJournalError::RecoveryRequired.into());
         }
-        if !is_lower_hex(name, 64) || !file_type.is_dir() {
+        if !is_lower_hex(&name, 64) || !file_type.is_dir() {
+            return Err(PreparedResultJournalError::InvalidDirectory.into());
+        }
+        let root = namespace.open_child(&entry.path(), "open-migration-journal")?;
+        let files = inventory_journal_directory(
+            &root,
+            &mut entries,
+            &mut bytes,
+            maximum_entries,
+            maximum_bytes,
+        )?;
+        journals.push(JournalInventory { root, files });
+    }
+    journals.sort_by(|left, right| left.root.path().cmp(right.root.path()));
+    Ok(journals)
+}
+
+fn inventory_journal_directory(
+    root: &AnchoredDirectory,
+    entries: &mut usize,
+    bytes: &mut u64,
+    maximum_entries: usize,
+    maximum_bytes: u64,
+) -> Result<JournalFiles, PreparedResultJournalError> {
+    let mut files = JournalFiles {
+        legacy_state: false,
+        legacy_result: false,
+        current_state: false,
+        current_result: false,
+        pending_state: false,
+        pending_result: false,
+    };
+    let anchored = root.anchored_path();
+    for entry in fs::read_dir(&anchored)
+        .map_err(|source| io_error("inventory-journal-directory", &anchored, source))?
+    {
+        let entry =
+            entry.map_err(|source| io_error("inventory-journal-entry", &anchored, source))?;
+        admit_inventory_entry(entries, maximum_entries)?;
+        if !entry
+            .file_type()
+            .map_err(|source| io_error("stat-inventory-journal-entry", &entry.path(), source))?
+            .is_file()
+        {
             return Err(PreparedResultJournalError::InvalidDirectory);
         }
-        if roots.len() == maximum {
-            return Err(PreparedResultJournalError::MigrationLimitExceeded);
+        admit_inventory_bytes(
+            bytes,
+            entry
+                .metadata()
+                .map_err(|source| {
+                    io_error("inspect-inventory-journal-entry", &entry.path(), source)
+                })?
+                .len(),
+            maximum_bytes,
+        )?;
+        match entry.file_name().to_str() {
+            Some(JOURNAL_STATE_FILE_V1) if !files.legacy_state => files.legacy_state = true,
+            Some(JOURNAL_RESULT_FILE_V1) if !files.legacy_result => files.legacy_result = true,
+            Some(JOURNAL_STATE_FILE) if !files.current_state => files.current_state = true,
+            Some(JOURNAL_RESULT_FILE) if !files.current_result => files.current_result = true,
+            Some(CURRENT_STATE_PENDING) if !files.pending_state => files.pending_state = true,
+            Some(CURRENT_RESULT_PENDING) if !files.pending_result => files.pending_result = true,
+            _ => return Err(PreparedResultJournalError::InvalidDirectory),
         }
-        roots.push(entry.path());
     }
-    roots.sort();
-    Ok(roots)
+    if !(files.legacy_state && files.legacy_result) && !files.current_complete() {
+        return Err(PreparedResultJournalError::Incomplete);
+    }
+    Ok(files)
+}
+
+fn valid_keyed_name(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .is_some_and(|suffix| is_lower_hex(suffix, 64))
+}
+
+fn admit_inventory_entry(
+    count: &mut usize,
+    maximum: usize,
+) -> Result<(), PreparedResultJournalError> {
+    *count = count
+        .checked_add(1)
+        .ok_or(PreparedResultJournalError::MigrationLimitExceeded)?;
+    if *count > maximum {
+        return Err(PreparedResultJournalError::MigrationLimitExceeded);
+    }
+    Ok(())
+}
+
+fn admit_inventory_bytes(
+    total: &mut u64,
+    length: u64,
+    maximum: u64,
+) -> Result<(), PreparedResultJournalError> {
+    *total = total
+        .checked_add(length)
+        .ok_or(PreparedResultJournalError::MigrationLimitExceeded)?;
+    if *total > maximum {
+        return Err(PreparedResultJournalError::MigrationLimitExceeded);
+    }
+    Ok(())
 }
 
 fn read_migration_journal(
-    root: &Path,
+    root: &AnchoredDirectory,
     maximum_payload_bytes: usize,
+    version: MigrationJournalVersion,
 ) -> Result<MigrationJournal, PreparedResultJournalError> {
-    validate_journal_directory(root)?;
-    let (state_name, result_name, version) = migration_journal_files(root)?;
-    let state = read_bounded_file(
-        &root.join(state_name),
-        MAX_JOURNAL_STATE_BYTES,
-        "read-migration-journal-state",
-    )?;
+    let (state_name, result_name) = match version {
+        MigrationJournalVersion::V1 => (JOURNAL_STATE_FILE_V1, JOURNAL_RESULT_FILE_V1),
+        MigrationJournalVersion::V2 => (JOURNAL_STATE_FILE, JOURNAL_RESULT_FILE),
+    };
+    read_migration_journal_files(
+        root,
+        maximum_payload_bytes,
+        version,
+        state_name,
+        result_name,
+    )
+}
+
+fn read_migration_journal_files(
+    root: &AnchoredDirectory,
+    maximum_payload_bytes: usize,
+    version: MigrationJournalVersion,
+    state_name: &str,
+    result_name: &str,
+) -> Result<MigrationJournal, PreparedResultJournalError> {
+    let anchored = root.anchored_path();
+    let state_path = anchored.join(state_name);
+    let state_authority = root
+        .open_regular_optional(&state_path, "open-migration-journal-state")
+        .map_err(migration_guard_error)?
+        .ok_or(PreparedResultJournalError::Incomplete)?;
+    let state = state_authority
+        .read_bounded(MAX_JOURNAL_STATE_BYTES as u64)
+        .map_err(migration_guard_error)?;
     let key = decode_migration_key(&state, version)?;
     let envelope = decode_migration_state(&state, key, maximum_payload_bytes, version)?;
-    let payload = read_bounded_file(
-        &root.join(result_name),
-        maximum_payload_bytes,
-        "read-migration-journal-result",
-    )?;
+    let result_path = anchored.join(result_name);
+    let result_authority = root
+        .open_regular_optional(&result_path, "open-migration-journal-result")
+        .map_err(migration_guard_error)?
+        .ok_or(PreparedResultJournalError::Incomplete)?;
+    let payload = result_authority
+        .read_bounded(maximum_payload_bytes as u64)
+        .map_err(migration_guard_error)?;
     envelope.validate_payload(&payload)?;
-    let payload_version = PreparedSemanticResultVersion::from_payload(&payload)
-        .ok_or(PreparedResultJournalError::InvalidState)?;
-    if (version == MigrationJournalVersion::V1
-        && payload_version != PreparedSemanticResultVersion::V1)
-        || (version == MigrationJournalVersion::V2 && !current_payload_version(payload_version))
-    {
+    let decoded = decode_migration_prepared_result(&payload, maximum_payload_bytes)?;
+    if version == MigrationJournalVersion::V1 && decoded.current {
         return Err(PreparedResultJournalError::InvalidState);
     }
-    let result = PreparedSemanticAttemptResult::from_canonical_bytes_with_limit(
-        &payload,
-        maximum_payload_bytes,
-    )?;
+    let result = decoded.result;
     envelope.validate_result(&result)?;
     validate_result_key(key, &result)?;
     let directory_name = root
+        .path()
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(PreparedResultJournalError::InvalidDirectory)?;
     let expected_name = hex(key.storage_digest().as_bytes());
-    if directory_name != expected_name
-        && directory_name != format!("{JOURNAL_MIGRATION_PREFIX}{expected_name}")
-    {
+    if directory_name != expected_name {
         return Err(PreparedResultJournalError::InvalidState);
     }
+    let object_id = authenticated_id(
+        "crucible.prepared-result-journal-migration-object.v1",
+        &[&state, &payload],
+    );
     Ok(MigrationJournal {
         key,
         execution: envelope.execution,
-        maximum_payload_bytes,
         result,
         version,
+        payload_current: decoded.current,
+        object_id,
+        state_authority,
+        result_authority,
     })
 }
 
-fn migration_journal_files(
-    root: &Path,
-) -> Result<(&'static str, &'static str, MigrationJournalVersion), PreparedResultJournalError> {
-    let current = (
-        root.join(JOURNAL_STATE_FILE).exists(),
-        root.join(JOURNAL_RESULT_FILE).exists(),
-    );
-    let legacy = (
-        root.join(JOURNAL_STATE_FILE_V1).exists(),
-        root.join(JOURNAL_RESULT_FILE_V1).exists(),
-    );
-    match (current, legacy) {
-        ((true, true), (false, false)) => Ok((
-            JOURNAL_STATE_FILE,
-            JOURNAL_RESULT_FILE,
-            MigrationJournalVersion::V2,
-        )),
-        ((false, false), (true, true)) => Ok((
-            JOURNAL_STATE_FILE_V1,
-            JOURNAL_RESULT_FILE_V1,
-            MigrationJournalVersion::V1,
-        )),
-        _ => Err(PreparedResultJournalError::Incomplete),
+fn current_journal_object_id(
+    journal: &MigrationJournal,
+    maximum_payload_bytes: usize,
+) -> Result<String, PreparedResultJournalError> {
+    if journal.version == MigrationJournalVersion::V2 && journal.payload_current {
+        return Ok(journal.object_id.clone());
     }
+    let payload = journal
+        .result
+        .canonical_bytes_with_limit(maximum_payload_bytes)?;
+    let state = encode_state(
+        journal.key,
+        journal.execution,
+        maximum_payload_bytes,
+        &journal.result,
+        &payload,
+    )?;
+    Ok(authenticated_id(
+        "crucible.prepared-result-journal-migration-object.v1",
+        &[&state, &payload],
+    ))
 }
 
 fn decode_migration_key(
@@ -386,67 +717,12 @@ fn validate_equivalent_journals(
 ) -> Result<(), PreparedResultJournalError> {
     if source.key != staged.key
         || source.execution != staged.execution
-        || source.maximum_payload_bytes != staged.maximum_payload_bytes
         || source.result != staged.result
         || source.version == staged.version
     {
         return Err(PreparedResultJournalError::InvalidState);
     }
     Ok(())
-}
-
-pub(super) fn migration_path(namespace: &Path, key: AttemptExecutionKey) -> PathBuf {
-    namespace.join(format!(
-        "{JOURNAL_MIGRATION_PREFIX}{}",
-        hex(key.storage_digest().as_bytes())
-    ))
-}
-
-fn rename_exchange(source: &Path, destination: &Path) -> Result<(), PreparedResultJournalError> {
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        source,
-        rustix::fs::CWD,
-        destination,
-        rustix::fs::RenameFlags::EXCHANGE,
-    )
-    .map_err(|error| {
-        io_error(
-            "exchange-journal-migration-directory",
-            destination,
-            io::Error::from(error),
-        )
-    })
-}
-
-fn remove_migration_directory(path: &Path) -> Result<(), PreparedResultJournalError> {
-    validate_journal_directory(path)?;
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(path)
-        .map_err(|source| io_error("read-legacy-journal-for-removal", path, source))?
-    {
-        let entry = entry
-            .map_err(|source| io_error("read-legacy-journal-entry-for-removal", path, source))?;
-        let name = entry.file_name();
-        let name = name
-            .to_str()
-            .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-        if entries.len() == 2 || (name != JOURNAL_STATE_FILE_V1 && name != JOURNAL_RESULT_FILE_V1) {
-            return Err(PreparedResultJournalError::InvalidDirectory);
-        }
-        entries.push(entry.path());
-    }
-    for entry in entries {
-        remove_file_if_present(&entry, "remove-legacy-journal-file")?;
-    }
-    fs::remove_dir(path).map_err(|source| io_error("remove-legacy-journal-directory", path, source))
-}
-
-fn is_lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -457,7 +733,7 @@ pub(super) fn write_legacy_journal_for_test(
     maximum_payload_bytes: usize,
     result: &PreparedSemanticAttemptResult,
 ) -> Result<(), PreparedResultJournalError> {
-    let payload = result.canonical_v1_bytes_with_limit(maximum_payload_bytes)?;
+    let payload = encode_legacy_prepared_result(result, maximum_payload_bytes)?;
     let observation = result
         .observation()
         .observation()
@@ -491,30 +767,10 @@ pub(super) fn write_legacy_journal_for_test(
 
     let root = journal_path(namespace, key);
     fs::create_dir(&root).map_err(|source| io_error("create-test-v1-journal", &root, source))?;
-    write_atomic(&root, JOURNAL_RESULT_FILE_V1, &payload)?;
-    write_atomic(&root, JOURNAL_STATE_FILE_V1, &state)?;
+    fs::write(root.join(JOURNAL_RESULT_FILE_V1), payload)
+        .map_err(|source| io_error("write-test-v1-result", &root, source))?;
+    fs::write(root.join(JOURNAL_STATE_FILE_V1), state)
+        .map_err(|source| io_error("write-test-v1-state", &root, source))?;
+    sync_directory(&root, "sync-test-v1-journal")?;
     sync_directory(namespace, "sync-test-v1-journal-parent")
-}
-
-#[cfg(test)]
-pub(super) fn interrupt_migration_for_test(
-    namespace: &Path,
-    key: AttemptExecutionKey,
-    maximum_payload_bytes: usize,
-    after_exchange: bool,
-) -> Result<(), PreparedResultJournalError> {
-    let source = read_migration_journal(&journal_path(namespace, key), maximum_payload_bytes)?;
-    let namespace_lock = acquire_namespace_lock(namespace, key)?;
-    let mut migration = JournalMigration {
-        staging: migration_path(namespace, key),
-        source,
-        staged: None,
-        _namespace_lock: namespace_lock,
-    };
-    migration.stage_current(maximum_payload_bytes)?;
-    if after_exchange {
-        rename_exchange(&journal_path(namespace, key), &migration.staging)?;
-        sync_directory(namespace, "sync-test-interrupted-migration-exchange")?;
-    }
-    Ok(())
 }

@@ -29,6 +29,7 @@ ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "time"] }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 

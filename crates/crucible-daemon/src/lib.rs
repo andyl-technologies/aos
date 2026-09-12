@@ -98,6 +98,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod anchored_fs;
 pub mod assignment_ledger;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
