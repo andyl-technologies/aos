@@ -30,13 +30,16 @@ pub use endpoint::{
 pub use network_policy::{
     HOST_NETWORK_POLICY_ACTIVE_OUTPUT, HOST_NETWORK_POLICY_HANDLER_ENTRY_POINT,
     HOST_NETWORK_POLICY_HANDLER_KEY, HOST_NETWORK_POLICY_INTERFACE_NAME,
+    HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_DESCRIPTOR,
+    HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_NAME,
+    HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_SEMANTICS,
     HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_DESCRIPTOR,
     HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_NAME,
     HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_SEMANTICS,
     HOST_NETWORK_POLICY_OBSERVATION_SCHEMA, host_network_policy_handler,
     host_network_policy_handler_key, host_network_policy_interface,
     host_network_policy_interface_key, host_network_policy_loopback_tcp_ingress_guarantee,
-    host_network_policy_provider,
+    host_network_policy_loopback_tcp_egress_guarantee, host_network_policy_provider,
 };
 pub use postgresql::{
     POSTGRESQL_CONFIGURATION_REVISION_OUTPUT, POSTGRESQL_EFFECTS_INTERFACE_NAME,
@@ -121,14 +124,14 @@ mod tests {
         let guarantee =
             host_network_policy_loopback_tcp_ingress_guarantee().expect("guarantee must construct");
 
-        assert_eq!(document.interface.guarantees, [guarantee.clone()]);
+        assert!(document.interface.guarantees.contains(&guarantee));
         assert_eq!(
             document.interface.methods["apply"].guarantees,
-            [guarantee.clone()]
+            document.interface.guarantees
         );
         assert_eq!(
             document.interface.methods["observe"].guarantees,
-            [guarantee]
+            document.interface.guarantees
         );
         assert!(document.interface.methods["remove"].guarantees.is_empty());
         assert_eq!(
@@ -137,6 +140,22 @@ mod tests {
             )
             .to_string(),
             HOST_NETWORK_POLICY_LOOPBACK_TCP_INGRESS_GUARANTEE_DESCRIPTOR
+        );
+    }
+
+    #[test]
+    fn network_policy_supplies_exact_loopback_egress_enforcement() {
+        let document = host_network_policy_interface().expect("policy contract must construct");
+        let guarantee =
+            host_network_policy_loopback_tcp_egress_guarantee().expect("guarantee must construct");
+
+        assert!(document.interface.guarantees.contains(&guarantee));
+        assert_eq!(
+            aos_contract::Sha256Digest::of_bytes(
+                HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_SEMANTICS
+            )
+            .to_string(),
+            HOST_NETWORK_POLICY_LOOPBACK_TCP_EGRESS_GUARANTEE_DESCRIPTOR
         );
     }
 

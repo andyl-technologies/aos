@@ -148,8 +148,12 @@ pub(super) fn validate_inputs(
             NativeResourceQualification::HostNetworkPolicy { .. },
         ) => {
             let input: PolicyInput = decode_input(inputs, "host network policy")?;
-            if input.direction != "ingress" || input.protocol != "tcp" {
-                return Err(invalid("network policy supports only TCP ingress"));
+            if !matches!(input.direction.as_str(), "egress" | "ingress")
+                || input.protocol != "tcp"
+            {
+                return Err(invalid(
+                    "network policy supports only loopback TCP ingress or egress",
+                ));
             }
             match (method, input.endpoint) {
                 ("apply" | "observe", Some(endpoint))

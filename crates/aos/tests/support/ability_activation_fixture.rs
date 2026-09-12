@@ -16,6 +16,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::builtin::{
     credential_delivery_effects_interface, host_network_policy_interface,
+    host_network_policy_loopback_tcp_egress_guarantee,
     host_network_policy_loopback_tcp_ingress_guarantee, network_endpoint_interface,
 };
 use aos_ability_model::document::{
@@ -532,7 +533,10 @@ impl ReferenceFixture {
                 });
             }
         }
-        let loopback_ingress = host_network_policy_loopback_tcp_ingress_guarantee()?;
+        let policy_guarantees = vec![
+            host_network_policy_loopback_tcp_egress_guarantee()?,
+            host_network_policy_loopback_tcp_ingress_guarantee()?,
+        ];
         for name in ["nginx-main", "nginx-secondary"] {
             let provider = instance(&environment_id, name)?;
             for interface_name in [
@@ -556,7 +560,7 @@ impl ReferenceFixture {
                         interface_name.replace('.', "-")
                     ))?),
                     guarantees: if interface_name == "aos.host-network-policy-effects" {
-                        vec![loopback_ingress.clone()]
+                        policy_guarantees.clone()
                     } else {
                         Vec::new()
                     },
@@ -725,7 +729,11 @@ impl ReferenceFixture {
                 instance: application.clone(),
                 package: self.consumer_package,
                 enabled: true,
-                configuration: None,
+                configuration: Some(AbilityValue::new(serde_json::json!({
+                    "address": "127.0.0.1",
+                    "port": backend_port(application.key.as_str())?,
+                    "transport": "tcp",
+                }))?),
             });
             child_requests.push(BindingRequest {
                 id: request.clone(),
@@ -738,6 +746,7 @@ impl ReferenceFixture {
                 "host": host,
                 "response_content": content,
                 "response_identity": application.key.as_str(),
+                "proxy_backend": true,
                 "tls": tls.is_some(),
             });
             if let Some(tls) = tls {
@@ -812,6 +821,28 @@ impl ReferenceFixture {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        enabled_providers.extend(
+            desired
+                .instances
+                .iter()
+                .filter(|instance| instance.enabled && instance.package == self.consumer_package)
+                .map(|instance| {
+                    Ok(EnabledProviderSelection {
+                        instance: instance.instance.clone(),
+                        interface: self.interface("aos.http-backend")?,
+                        implementation: self.implementation("aos.http-backend")?,
+                        provider_grant: aos_ability_model::AuthorityGrant {
+                            principal: instance.instance.clone(),
+                            methods: Vec::new(),
+                            contributions: Vec::new(),
+                            resources: Vec::new(),
+                        },
+                        policy_revision: self.policy_revision,
+                        lifetime: ResourceLifetime::Instance,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
         enabled_providers.sort_by(|left, right| left.instance.cmp(&right.instance));
         Ok(ResolutionPolicyDocument {
             schema: ResolutionPolicyDocument::SCHEMA.to_string(),
@@ -907,6 +938,22 @@ impl ReferenceFixture {
                 Vec::new(),
                 contributions,
             )
+        } else if interface == self.interface("aos.http-backend")? {
+            let application = request
+                .id
+                .scope
+                .as_slice()
+                .last()
+                .context("reference backend request has no application scope")?;
+            let provider = instance(&self.environment.environment, application.as_str())?;
+
+            (
+                provider,
+                self.consumer_package,
+                self.implementation("aos.http-backend")?,
+                Vec::new(),
+                Vec::new(),
+            )
         } else {
             let suffix = request.id.key.as_str();
             let name = lower_interface_name(suffix)?;
@@ -976,7 +1023,10 @@ impl ReferenceFixture {
                 .collect(),
         };
         let guarantees = if interface.name.as_str() == "aos.host-network-policy-effects" {
-            vec![host_network_policy_loopback_tcp_ingress_guarantee()?]
+            vec![
+                host_network_policy_loopback_tcp_egress_guarantee()?,
+                host_network_policy_loopback_tcp_ingress_guarantee()?,
+            ]
         } else {
             Vec::new()
         };
@@ -1459,6 +1509,31 @@ fn store_hash(path: &str) -> Result<String> {
 }
 
 fn interface_documents() -> Result<Vec<InterfaceDocument>> {
+    let endpoint = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                key("address")?,
+                ValueSchema::String {
+                    max_length: 15,
+                    syntax: None,
+                },
+            ),
+            (
+                key("port")?,
+                ValueSchema::Integer {
+                    minimum: 1024,
+                    maximum: 65535,
+                },
+            ),
+            (
+                key("transport")?,
+                ValueSchema::StringEnum {
+                    values: vec!["tcp".to_string()],
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
     let consumer_probe = ValueSchema::Record {
         fields: BTreeMap::from([
             (
@@ -1518,6 +1593,7 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                     syntax: Some(StringSyntax::LocalKeyV1),
                 },
             ),
+            (key("proxy_backend")?, ValueSchema::Boolean),
             (key("tls")?, ValueSchema::Boolean),
             (
                 key("credential_version")?,
@@ -1527,11 +1603,34 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                 },
             ),
         ]),
-        optional_fields: vec![key("credential_version")?],
+        optional_fields: vec![key("credential_version")?, key("proxy_backend")?],
+    };
+    let managed_nginx_request = match &nginx_request {
+        ValueSchema::Record {
+            fields,
+            optional_fields,
+        } => {
+            let mut fields = fields.clone();
+            fields.insert(key("backend_endpoint")?, endpoint.clone());
+            let mut optional_fields = optional_fields.clone();
+            optional_fields.push(key("backend_endpoint")?);
+            optional_fields.sort();
+            ValueSchema::Record {
+                fields,
+                optional_fields,
+            }
+        }
+        _ => unreachable!("nginx request is a record"),
     };
     let mut documents = vec![
         network_endpoint_interface()?,
         host_network_policy_interface()?,
+        interface_document(
+            "aos.http-backend",
+            ValueSchema::Boolean,
+            Some(endpoint.clone()),
+            vec![("endpoint", endpoint)],
+        )?,
         interface_document(
             "aos.nginx",
             nginx_request.clone(),
@@ -1562,7 +1661,7 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                     (
                         key("virtualHosts")?,
                         ValueSchema::List {
-                            element: Box::new(nginx_request),
+                            element: Box::new(managed_nginx_request),
                             max_items: 1024,
                         },
                     ),
@@ -1863,6 +1962,15 @@ fn ensure_interface_matches(
         actual.name
     );
     Ok(())
+}
+
+fn backend_port(application: &str) -> Result<u16> {
+    match application {
+        "app-a" => Ok(19001),
+        "app-b" => Ok(19002),
+        "app-c" => Ok(19003),
+        _ => bail!("unknown reference backend application {application}"),
+    }
 }
 
 fn lower_interface_name(suffix: &str) -> Result<&'static str> {

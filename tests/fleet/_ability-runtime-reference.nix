@@ -59,12 +59,16 @@
   runtimeModules = [
     ../../systems/server-test.nix
     {
-      environment.systemPackages = [pkgs.nginx pkgs.openssl reloadWrapper];
+      environment.systemPackages = [pkgs.nginx pkgs.openssl pkgs.python3 reloadWrapper];
       environment.etc."tmpfiles.d/ability-reference.conf".text = ''
         d /var/lib/aos 0700 root root - -
         d /var/lib/aos/ability-reference 0700 root root - -
         d /var/lib/aos/ability-reference/nginx-main 0700 root root - -
         d /var/lib/aos/ability-reference/nginx-secondary 0700 root root - -
+        d /var/lib/aos/ability-reference/backends 0755 root root - -
+        d /var/lib/aos/ability-reference/backends/app-a 0755 root root - -
+        d /var/lib/aos/ability-reference/backends/app-b 0755 root root - -
+        d /var/lib/aos/ability-reference/backends/app-c 0755 root root - -
         d /var/lib/aos/ability-runtime 0700 root root - -
         d /var/lib/aos/ability-runtime/managed-configuration 0700 root root - -
         d /var/lib/aos/ability-runtime/managed-configuration/candidates 0700 root root - -
@@ -75,6 +79,21 @@
         d /var/lib/aos/ability-runtime/nginx/associations 0700 root root - -
         d /var/lib/aos/ability-runtime/nginx/sandbox 0700 root root - -
       '';
+      systemd.services = lib.genAttrs ["app-a" "app-b" "app-c"] (application: let
+        port = {
+          app-a = 19001;
+          app-b = 19002;
+          app-c = 19003;
+        }.${application};
+      in {
+        description = "Reference HTTP backend ${application}";
+        wantedBy = ["multi-user.target"];
+        after = ["systemd-tmpfiles-setup.service"];
+        serviceConfig = {
+          ExecStart = "${pkgs.python3}/bin/python3 -m http.server ${builtins.toString port} --bind 127.0.0.1 --directory /var/lib/aos/ability-reference/backends/${application}";
+          Restart = "on-failure";
+        };
+      });
     }
   ];
   runtimeSystem = mkSystem runtimeModules;
@@ -84,6 +103,10 @@
       d /var/lib/aos/ability-reference 0700 root root - -
       d /var/lib/aos/ability-reference/nginx-main 0700 root root - -
       d /var/lib/aos/ability-reference/nginx-secondary 0700 root root - -
+      d /var/lib/aos/ability-reference/backends 0755 root root - -
+      d /var/lib/aos/ability-reference/backends/app-a 0755 root root - -
+      d /var/lib/aos/ability-reference/backends/app-b 0755 root root - -
+      d /var/lib/aos/ability-reference/backends/app-c 0755 root root - -
       d /var/lib/aos/ability-runtime 0700 root root - -
       d /var/lib/aos/ability-runtime/managed-configuration 0700 root root - -
       d /var/lib/aos/ability-runtime/managed-configuration/candidates 0700 root root - -
@@ -109,6 +132,7 @@
       pkgs.nginx
       pkgs.nix
       pkgs.openssl
+      pkgs.python3
       pkgs.util-linux
       reloadWrapper
     ];
@@ -306,6 +330,22 @@ in {
               f"{COREUTILS}/mkdir -p {shlex.quote(output)} "
               f"{shlex.quote(authority_staging)}"
           )
+          backend_content = {
+              "app-a": primary_response,
+              "app-b": "beta-v1",
+              "app-c": secondary_response,
+          }
+          for application, content in backend_content.items():
+              encoded = base64.b64encode(
+                  f"{application}:{content}\n".encode()
+              ).decode()
+              destination = (
+                  f"/var/lib/aos/ability-reference/backends/{application}/index.html"
+              )
+              runtime.succeed(
+                  f"printf '%s' {shlex.quote(encoded)} | {COREUTILS}/base64 -d > "
+                  f"{shlex.quote(destination)}"
+              )
           runtime.succeed(
               f"PATH={NIX_BIN}:{COREUTILS} "
               f"AOS_NIX_INSTANTIATE={NIX_INSTANTIATE} "
@@ -425,6 +465,14 @@ in {
               f"{CURL} --fail --silent "
               f"-H {shlex.quote('Host: ' + host)} http://127.0.0.1:{port}/"
           )
+
+
+      def backend_body(application, port):
+          body = runtime.succeed(
+              f"{CURL} --fail --silent http://127.0.0.1:{port}/"
+          )
+          assert body.startswith(f"{application}:"), body
+          return body
 
 
       def assert_route(host, port, identity, content):

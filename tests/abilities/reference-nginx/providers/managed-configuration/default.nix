@@ -39,7 +39,16 @@ let
           }
             server_name ${virtualHost.host};
             location = / {
-              return 200 ${quote "${virtualHost.response_identity}:${virtualHost.response_content}\n"};
+              ${
+            if virtualHost.proxy_backend or false
+            then ''
+              proxy_set_header X-AOS-Backend-Identity ${quote virtualHost.response_identity};
+              proxy_pass http://${virtualHost.backend_endpoint.address}:${builtins.toString virtualHost.backend_endpoint.port};
+            ''
+            else ''
+              return 200 ${quote "${virtualHost.response_identity}:${virtualHost.response_content}\\n"};
+            ''
+          }
             }
           }
         '')

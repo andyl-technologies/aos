@@ -466,6 +466,8 @@ in {
               )
               assert_effect_edge(bundle, endpoint, policy, "data")
               assert_effect_edge(bundle, policy, service, "required-success")
+              if listener.startswith("backend-"):
+                  assert_effect_edge(bundle, endpoint, readiness, "communication")
 
 
       def assert_network_removal_order(
@@ -513,6 +515,18 @@ in {
           "gamma-v1",
           "/run/ability-authority-v1",
       )
+      runtime.wait_until_succeeds(
+          "systemctl is-active --quiet app-a.service", timeout=120
+      )
+      runtime.wait_until_succeeds(
+          "systemctl is-active --quiet app-b.service", timeout=120
+      )
+      runtime.wait_until_succeeds(
+          "systemctl is-active --quiet app-c.service", timeout=120
+      )
+      assert backend_body("app-a", 19001) == "app-a:alpha-v1\n"
+      assert backend_body("app-b", 19002) == "app-b:beta-v1\n"
+      assert backend_body("app-c", 19003) == "app-c:gamma-v1\n"
       authority_v1 = provision_operator_authority(
           activation_v1, "/run/ability-authority-v1"
       )
@@ -538,6 +552,11 @@ in {
       assert_route("alpha.example", 18081, "app-a", "alpha-v1")
       assert_route("beta.example", 18081, "app-b", "beta-v1")
       assert_route("gamma.example", 18082, "app-c", "gamma-v1")
+      rendered_main = runtime.succeed(
+          f"{COREUTILS}/cat /var/lib/aos/ability-reference/nginx-main.conf"
+      )
+      assert "proxy_pass http://127.0.0.1:19001;" in rendered_main, rendered_main
+      assert "proxy_pass http://127.0.0.1:19002;" in rendered_main, rendered_main
       assert_consumer_observation(activation_v1)
       selected_v1, selected_v1_content = assert_managed_configuration_selected(
           activation_v1, "nginx-secondary"
@@ -546,6 +565,22 @@ in {
       transactions_v1 = retained_transactions(generation_v1)
       assert len(transactions_v1) == 1, transactions_v1
       transaction_v1 = next(iter(transactions_v1))
+      assert_network_activation_order(
+          generation_v1,
+          transaction_v1,
+          "nginx-main",
+          [
+              ("http", 18081),
+              ("backend-app-a", 19001),
+              ("backend-app-b", 19002),
+          ],
+      )
+      assert_network_activation_order(
+          generation_v1,
+          transaction_v1,
+          "nginx-secondary",
+          [("http", 18082), ("backend-app-c", 19003)],
+      )
       assert_redacted_diagnostic(generation_v1, transaction_v1)
       main_storage_paths = nginx_storage_paths("nginx-main")
       secondary_storage_paths = nginx_storage_paths("nginx-secondary")

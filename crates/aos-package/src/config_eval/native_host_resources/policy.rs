@@ -1,4 +1,4 @@
-//! Exact per-resource nftables ownership and loopback ingress enforcement.
+//! Exact per-resource nftables ownership and loopback traffic enforcement.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -20,8 +20,11 @@ use super::{
     require_matching_state, store_error, write_state,
 };
 
-const INPUT_CHAIN: &str = "input";
 const MAX_NFT_OUTPUT_BYTES: usize = 1024 * 1024;
+
+fn default_policy_direction() -> String {
+    "ingress".to_string()
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -36,6 +39,8 @@ enum PolicyPhase {
 struct PolicyStateDetails {
     phase: PolicyPhase,
     table: String,
+    #[serde(default = "default_policy_direction")]
+    direction: String,
     endpoint: EndpointValue,
     ipv4_comment: String,
     ipv6_comment: String,
@@ -48,6 +53,8 @@ struct PolicyStateDetails {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PolicySnapshot {
+    #[serde(default = "default_policy_direction")]
+    direction: String,
     endpoint: EndpointValue,
     ruleset: serde_json::Value,
     endpoint_authority: NativeDependencyBinding,
@@ -64,6 +71,7 @@ pub(super) fn execute_policy(
         .map(|endpoint| {
             policy_details(
                 &request.durable.resource,
+                &input.direction,
                 endpoint,
                 policy_endpoint_authority(request)?,
                 PolicyPhase::Preparing,
@@ -180,6 +188,7 @@ fn authenticate_live_snapshot(
     };
     if live == &details.ruleset {
         return Ok(Some(PolicySnapshot {
+            direction: details.direction.clone(),
             endpoint: details.endpoint.clone(),
             ruleset: details.ruleset.clone(),
             endpoint_authority: details.endpoint_authority.clone(),
@@ -317,6 +326,7 @@ fn decode_policy_state(state: &HostState) -> Result<PolicyStateDetails, io::Erro
 
 fn policy_details(
     resource: &ResourceId,
+    direction: &str,
     endpoint: &EndpointValue,
     endpoint_authority: NativeDependencyBinding,
     phase: PolicyPhase,
@@ -327,6 +337,7 @@ fn policy_details(
     let mut details = PolicyStateDetails {
         phase,
         table: format!("aos_p_{}", &digest[..24]),
+        direction: direction.to_string(),
         endpoint: endpoint.clone(),
         ipv4_comment: format!("aos:{digest}:ipv4"),
         ipv6_comment: format!("aos:{digest}:ipv6"),
@@ -350,6 +361,7 @@ fn require_same_policy(
     expected: &PolicyStateDetails,
 ) -> Result<(), io::Error> {
     if actual.table != expected.table
+        || actual.direction != expected.direction
         || actual.endpoint != expected.endpoint
         || actual.ipv4_comment != expected.ipv4_comment
         || actual.ipv6_comment != expected.ipv6_comment
@@ -367,6 +379,7 @@ fn validate_policy_details(
 ) -> Result<(), io::Error> {
     let expected = policy_details(
         resource,
+        &details.direction,
         &details.endpoint,
         details.endpoint_authority.clone(),
         details.phase,
@@ -382,6 +395,7 @@ fn validate_policy_details(
     }
     if let Some(prior) = &details.prior {
         let mut prior_details = details.clone();
+        prior_details.direction = prior.direction.clone();
         prior_details.endpoint = prior.endpoint.clone();
         prior_details.endpoint_authority = prior.endpoint_authority.clone();
         prior_details.ruleset = serde_json::Value::Null;
@@ -433,14 +447,22 @@ fn create_policy_table(
 }
 
 fn create_policy_script(details: &PolicyStateDetails) -> String {
+    let chain = policy_chain(details);
     format!(
-        "add table inet {table}\nadd chain inet {table} {chain} {{ type filter hook input priority -5; policy accept; }}\nadd rule inet {table} {chain} ip daddr != 127.0.0.1 tcp dport {port} counter drop comment \"{ipv4}\"\nadd rule inet {table} {chain} ip6 daddr != ::1 tcp dport {port} counter drop comment \"{ipv6}\"\n",
+        "add table inet {table}\nadd chain inet {table} {chain} {{ type filter hook {chain} priority -5; policy accept; }}\nadd rule inet {table} {chain} ip daddr != 127.0.0.1 tcp dport {port} counter drop comment \"{ipv4}\"\nadd rule inet {table} {chain} ip6 daddr != ::1 tcp dport {port} counter drop comment \"{ipv6}\"\n",
         table = details.table,
-        chain = INPUT_CHAIN,
+        chain = chain,
         port = details.endpoint.port,
         ipv4 = details.ipv4_comment,
         ipv6 = details.ipv6_comment,
     )
+}
+
+fn policy_chain(details: &PolicyStateDetails) -> &'static str {
+    match details.direction.as_str() {
+        "egress" => "output",
+        _ => "input",
+    }
 }
 
 fn replace_policy_table(
@@ -610,6 +632,7 @@ fn normalized_policy_document(
 }
 
 fn expected_policy_entries(details: &PolicyStateDetails) -> Vec<serde_json::Value> {
+    let chain = policy_chain(details);
     let payload_match = |protocol: &str, field: &str, op: &str, right: serde_json::Value| {
         serde_json::json!({
             "match": {
@@ -624,16 +647,16 @@ fn expected_policy_entries(details: &PolicyStateDetails) -> Vec<serde_json::Valu
         serde_json::json!({"chain": {
             "family": "inet",
             "table": details.table,
-            "name": INPUT_CHAIN,
+            "name": chain,
             "type": "filter",
-            "hook": "input",
+            "hook": chain,
             "prio": -5,
             "policy": "accept",
         }}),
         serde_json::json!({"rule": {
             "family": "inet",
             "table": details.table,
-            "chain": INPUT_CHAIN,
+            "chain": chain,
             "expr": [
                 payload_match("ip", "daddr", "!=", serde_json::json!("127.0.0.1")),
                 payload_match("tcp", "dport", "==", serde_json::json!(details.endpoint.port)),
@@ -645,7 +668,7 @@ fn expected_policy_entries(details: &PolicyStateDetails) -> Vec<serde_json::Valu
         serde_json::json!({"rule": {
             "family": "inet",
             "table": details.table,
-            "chain": INPUT_CHAIN,
+            "chain": chain,
             "expr": [
                 payload_match("ip6", "daddr", "!=", serde_json::json!("::1")),
                 payload_match("tcp", "dport", "==", serde_json::json!(details.endpoint.port)),
