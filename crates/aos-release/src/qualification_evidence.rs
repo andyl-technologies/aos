@@ -148,8 +148,8 @@ const NATIVE_ADAPTER_CELL_COHORT_SUBJECT_V1: &str =
 pub const NATIVE_ADAPTER_MATRIX_ENVIRONMENT_V1: &str =
     "aos.release.native-adapter-matrix-environment/v1";
 const NATIVE_ADAPTER_MATRIX_CHECK_PREFIX: &str = "native-adapter-matrix-v1-sha256-";
-const NATIVE_ADAPTER_MATRIX_MAX_ADAPTERS: usize = 12;
-const NATIVE_ADAPTER_MATRIX_MAX_METHODS: usize = 47;
+const NATIVE_ADAPTER_MATRIX_MAX_ADAPTERS: usize = 13;
+const NATIVE_ADAPTER_MATRIX_MAX_METHODS: usize = 50;
 const NATIVE_ADAPTER_MATRIX_MAX_SCENARIOS: usize = 28;
 const NATIVE_ADAPTER_MATRIX_MAX_CELLS: usize =
     NATIVE_ADAPTER_MATRIX_MAX_METHODS * NATIVE_ADAPTER_MATRIX_MAX_SCENARIOS;
@@ -1677,6 +1677,7 @@ fn valid_native_adapter(adapter: &NativeAdapterSurfaceAdapter) -> bool {
         || !matrix_token(&adapter.interface_name)
         || adapter.interface_abi != 1
         || ![
+            "application-container-process",
             "bootstrap-manager",
             "host-filesystem",
             "host-manager",
