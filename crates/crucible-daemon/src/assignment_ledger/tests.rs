@@ -736,6 +736,25 @@ fn runtime_open_rejects_unfenced_assignment_staging() {
 }
 
 #[test]
+fn assignment_migration_rejects_unknown_root_entries() {
+    for kind in ["file", "directory", "symlink"] {
+        let directory = tempfile::tempdir().expect("ledger tempdir");
+        let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
+        let junk = directory.path().join(format!("unknown-{kind}"));
+        match kind {
+            "file" => fs::write(&junk, b"junk").expect("junk file"),
+            "directory" => fs::create_dir(&junk).expect("junk directory"),
+            "symlink" => std::os::unix::fs::symlink("missing", &junk).expect("junk symlink"),
+            _ => unreachable!(),
+        }
+
+        assert!(ledger.migrate_attempt_records_for_test(1).is_err());
+        drop(ledger);
+        assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
+    }
+}
+
+#[test]
 fn assignment_migration_destination_replacement_fails_pinned_commit_check() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
