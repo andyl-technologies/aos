@@ -58,6 +58,10 @@
     + " --address /run/aos-foreground-containerd/containerd.sock"
     + " --namespace aos-foreground-qualification"
     + " --snapshotter native";
+  ctr =
+    "${pkgs.containerd}/bin/ctr"
+    + " --address /run/aos-foreground-containerd/containerd.sock"
+    + " --namespace aos-foreground-qualification";
   fixtureCommand = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture";
   stateRoot = "/var/lib/aos/ability-runtime/foreground-process";
 in {
@@ -78,9 +82,11 @@ in {
 
     runtime.wait_for_unit("aos-foreground-containerd.service", timeout=120)
     publish_reference_packages()
-    # The containerd transfer API requires exactly one platform for unpacking.
+    # Local import avoids the transfer-service unpacker, then lifecycle checks
+    # continue through the production nerdctl/containerd interface.
     runtime.succeed(
-        "${nerdctl} load --platform ${ociPlatform} --input ${dockerArchive}/image.docker.tar",
+        "${ctr} images import --local --platform ${ociPlatform} "
+        "--snapshotter native ${dockerArchive}/image.docker.tar",
         timeout=360,
     )
     runtime.succeed(textwrap.dedent(r"""
