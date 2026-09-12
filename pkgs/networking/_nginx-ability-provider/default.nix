@@ -309,18 +309,19 @@ let
       (childRequest context scope "storage" storageEffects [])
       // {methods = ["ensure" "observe" "release"];};
     requests =
-      [configurationRequest endpointRequest networkPolicyRequest storageRequest]
+      [configurationRequest]
       ++ (
         if usesTls
         then [credentialRequest]
         else []
       )
+      ++ [endpointRequest networkPolicyRequest]
       ++ (
         if serviceRequest == null
         then []
         else [serviceRequest]
       )
-      ++ [serviceTerminalRequest validationRequest];
+      ++ [serviceTerminalRequest storageRequest validationRequest];
     validationRequestWithMethod = validationRequest // {methods = ["record" "release" "validate"];};
     serviceTerminalRequestWithMethods =
       serviceTerminalRequest
