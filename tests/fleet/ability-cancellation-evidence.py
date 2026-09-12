@@ -55,6 +55,30 @@ HANDLER_ROUTES = {
         "libexec/aos-network-endpoint-handler-v1",
     ),
     "aos.nginx-validation": ("nginx-terminal", "bin/nginx"),
+    "aos.postgresql-effects": (
+        "native-postgresql-v1",
+        "libexec/aos-postgresql-handler-v1",
+    ),
+    "aos.kubernetes-object-effects": (
+        "native-kubernetes-object-v1",
+        "libexec/aos-kubernetes-object-handler-v1",
+    ),
+    "aos.systemd-provider-bootstrap": (
+        "systemd-bootstrap-terminal",
+        "bin/.aos-package-runtime-unwrapped",
+    ),
+    "aos.systemd-manager": (
+        "native-systemd-manager-v1",
+        "libexec/aos-systemd-manager-handler-v1",
+    ),
+    "aos.systemd-service-effects": (
+        "systemd-terminal",
+        "bin/.aos-package-runtime-unwrapped",
+    ),
+    "aos.ab-image-rollout-effects": (
+        "native-ab-image-rollout-v1",
+        "libexec/aos-ab-image-rollout-handler-v1",
+    ),
 }
 
 
@@ -180,7 +204,7 @@ class CancellationEvidence:
             observation.owner_after,
         )
         if not all(EFFECT_EVIDENCE._single_owner_inventory(value) for value in ownership):
-            raise RuntimeError("cancelled resource admits duplicate or absent ownership")
+            raise RuntimeError("cancelled resource admits duplicate ownership")
         resource = operation["target"]["resource"]
         if any(
             owner.get("resource") != resource
@@ -268,7 +292,7 @@ class CancellationEvidence:
                 "kind": "ownership-inventory",
                 "disposition": disposition,
                 "detail": (
-                    "The authoritative native ledger retained exactly one checked "
+                    "The authoritative native ledger retained at most one checked "
                     "owner before, during, and after cancellation."
                 ),
                 "observations": {
