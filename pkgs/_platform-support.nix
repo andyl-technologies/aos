@@ -726,10 +726,12 @@ let
     "emulation/_darling-sources.nix" = "linux-only-source";
     "emulation/qemu-patches/_series.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
+    "kubernetes/_ability-contracts.nix" = "target-independent-source";
     "kubernetes/_k3s-common.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "networking/_nginx-ability-contract.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
@@ -771,11 +773,13 @@ let
     "kubernetes/_cilium-config/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
     "networking/_envoy-config/module.nix" = "linux-only-config-source";
     "networking/_envoy-config/render.nix" = "linux-only-config-source";
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
+    "networking/_nginx-ability-provider/default.nix" = "target-independent-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
