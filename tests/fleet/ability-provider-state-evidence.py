@@ -385,8 +385,8 @@ class ProviderStateEvidence:
         _fresh_receiving_authority(source_authority, candidate_authority)
         if source_assignment["incarnation"] == candidate_assignment["incarnation"]:
             raise RuntimeError("candidate reused the predecessor provider incarnation")
-        _exact_resource_observation(source_authority, operation, usable=True)
-        _exact_resource_observation(candidate_authority, operation, usable=True)
+        _exact_resource_observation(source_authority, operation, usable=False)
+        _exact_resource_observation(candidate_authority, operation, usable=False)
         dependency_edge = _exact_dependent(
             bundle, operation_identity, observation.dependent_operation
         )
