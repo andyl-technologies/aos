@@ -4,6 +4,8 @@
 //! restart opens remain confined to the current v2 format.
 
 use super::*;
+#[cfg(test)]
+use std::fs::File;
 use std::io::Write;
 
 use crate::OperationalStateMigrationError;
@@ -80,7 +82,7 @@ pub(super) fn migrate_prepared_result_journals(
                 }
                 Err(error) => return Err(error.into()),
             };
-        let namespace_lock = acquire_namespace_lock(&namespace.anchored_path(), source.key)?;
+        let namespace_lock = acquire_namespace_lock(namespace, source.key)?;
         validate_ledger_binding(ledger, &source)?;
 
         let current = if source_version == MigrationJournalVersion::V1 && files.current_complete() {
@@ -117,7 +119,11 @@ pub(super) fn migrate_prepared_result_journals(
             None => current_id,
         };
 
-        if source.version == MigrationJournalVersion::V2 && !source.payload_current {
+        let stage_result = (source.version == MigrationJournalVersion::V1 && !files.current_result)
+            || (source.version == MigrationJournalVersion::V2 && !source.payload_current);
+        let stage_state = (source.version == MigrationJournalVersion::V1 && !files.current_state)
+            || (source.version == MigrationJournalVersion::V2 && !source.payload_current);
+        if stage_result || stage_state {
             let payload = source
                 .result
                 .canonical_bytes_with_limit(maximum_payload_bytes)
@@ -129,18 +135,26 @@ pub(super) fn migrate_prepared_result_journals(
                 &source.result,
                 &payload,
             )?;
-            for (path, bytes, slot) in [
+            for (required, path, bytes, slot) in [
                 (
+                    stage_result,
                     journal.root.path().join(CURRENT_RESULT_PENDING),
                     payload.as_slice(),
                     &mut files.pending_result,
                 ),
                 (
+                    stage_state,
                     journal.root.path().join(CURRENT_STATE_PENDING),
                     state.as_slice(),
                     &mut files.pending_state,
                 ),
             ] {
+                if !required {
+                    if slot.is_some() {
+                        return Err(OperationalStateMigrationError::InvalidReceipt);
+                    }
+                    continue;
+                }
                 if let Some(authority) = slot.as_ref() {
                     let staged = authority.read_bounded(bytes.len() as u64)?;
                     if !bytes.starts_with(&staged) {
@@ -217,6 +231,8 @@ pub(super) fn migrate_prepared_result_journals(
     };
 
     receipt.verify_path_binding()?;
+    #[cfg(test)]
+    migration_interruption_point()?;
     let journals = migrations.len();
     let mut migrated = 0;
     for migration in migrations {
@@ -276,12 +292,35 @@ impl JournalMigration {
             )?;
         }
         if self.source.version == MigrationJournalVersion::V1 && !self.files.current_complete() {
-            let (payload, state) = self.current_pair(maximum_payload_bytes)?;
             if !self.files.current_result {
-                publish_resumable(&self.root, &root.join(JOURNAL_RESULT_FILE), &payload)?;
+                let pending = self
+                    .files
+                    .pending_result
+                    .as_ref()
+                    .ok_or(PreparedResultJournalError::Incomplete)?;
+                pending.verify_path_binding()?;
+                self.root.rename_noreplace(
+                    &root.join(CURRENT_RESULT_PENDING),
+                    &root.join(JOURNAL_RESULT_FILE),
+                    "publish-journal-migration-result",
+                )?;
+                #[cfg(test)]
+                migration_interruption_point()?;
             }
             if !self.files.current_state {
-                publish_resumable(&self.root, &root.join(JOURNAL_STATE_FILE), &state)?;
+                let pending = self
+                    .files
+                    .pending_state
+                    .as_ref()
+                    .ok_or(PreparedResultJournalError::Incomplete)?;
+                pending.verify_path_binding()?;
+                self.root.rename_noreplace(
+                    &root.join(CURRENT_STATE_PENDING),
+                    &root.join(JOURNAL_STATE_FILE),
+                    "publish-journal-migration-state",
+                )?;
+                #[cfg(test)]
+                migration_interruption_point()?;
             }
         } else if self.source.version == MigrationJournalVersion::V2 && !self.source.payload_current
         {
@@ -386,20 +425,14 @@ impl JournalMigration {
                 ));
             }
         }
-        if self.source.version == MigrationJournalVersion::V2 && !self.source.payload_current {
+        if self.files.pending_result.is_some() || self.files.pending_state.is_some() {
             let (payload, state) = self.current_pair(maximum_payload_bytes)?;
-            let result = self
-                .files
-                .pending_result
-                .as_ref()
-                .ok_or(PreparedResultJournalError::Incomplete)?;
-            let state_authority = self
-                .files
-                .pending_state
-                .as_ref()
-                .ok_or(PreparedResultJournalError::Incomplete)?;
-            receipts.push(self.cleanup_receipt(CURRENT_RESULT_PENDING, result, &payload));
-            receipts.push(self.cleanup_receipt(CURRENT_STATE_PENDING, state_authority, &state));
+            if let Some(result) = self.files.pending_result.as_ref() {
+                receipts.push(self.cleanup_receipt(CURRENT_RESULT_PENDING, result, &payload));
+            }
+            if let Some(state_authority) = self.files.pending_state.as_ref() {
+                receipts.push(self.cleanup_receipt(CURRENT_STATE_PENDING, state_authority, &state));
+            }
         }
         Ok(receipts)
     }
@@ -555,23 +588,58 @@ fn write_pending(
         }
         None => {
             let mut file = root.create_file(path, "create-journal-migration-pending")?;
-            file.write_all(bytes)
-                .and_then(|()| file.sync_all())
+            #[cfg(test)]
+            migration_interruption_point()?;
+            let midpoint = bytes.len() / 2;
+            file.write_all(&bytes[..midpoint])
                 .map_err(|source| io_error("write-journal-migration-pending", path, source))?;
+            #[cfg(test)]
+            migration_interruption_point()?;
+            file.write_all(&bytes[midpoint..])
+                .map_err(|source| io_error("write-journal-migration-pending", path, source))?;
+            #[cfg(test)]
+            migration_interruption_point()?;
+            file.sync_all()
+                .map_err(|source| io_error("write-journal-migration-pending", path, source))?;
+            #[cfg(test)]
+            migration_interruption_point()?;
         }
     }
-    Ok(root.sync()?)
+    root.sync()?;
+    #[cfg(test)]
+    migration_interruption_point()?;
+    Ok(())
 }
 
-fn publish_resumable(
-    root: &AnchoredDirectory,
-    destination: &Path,
-    bytes: &[u8],
-) -> Result<(), OperationalStateMigrationError> {
-    let pending_path = root.write_once_pending_path(destination)?;
-    write_pending(root, &pending_path, bytes)?;
-    root.rename_noreplace(&pending_path, destination, "publish-journal-migration-file")?;
-    Ok(())
+#[cfg(test)]
+thread_local! {
+    static MIGRATION_INTERRUPTION_POINT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn interrupt_migration_after_for_test(point: usize) {
+    MIGRATION_INTERRUPTION_POINT.with(|target| target.set(Some(point)));
+}
+
+#[cfg(test)]
+fn migration_interruption_point() -> Result<(), OperationalStateMigrationError> {
+    let interrupted = MIGRATION_INTERRUPTION_POINT.with(|target| match target.get() {
+        Some(0) => {
+            target.set(None);
+            true
+        }
+        Some(remaining) => {
+            target.set(Some(remaining - 1));
+            false
+        }
+        None => false,
+    });
+    if interrupted {
+        Err(PreparedResultJournalError::RecoveryRequired.into())
+    } else {
+        Ok(())
+    }
 }
 
 struct JournalInventory {
@@ -645,8 +713,13 @@ fn inventory_namespace(
         let file_type = entry
             .file_type()
             .map_err(|source| io_error("stat-journal-migration-entry", &entry.path(), source))?;
-        if name == ACTIVE_MARKER || name.starts_with(JOURNAL_LOCK_PREFIX) {
-            if (name != ACTIVE_MARKER && !valid_keyed_name(&name, JOURNAL_LOCK_PREFIX))
+        if name == ACTIVE_MARKER
+            || name == JOURNAL_OWNER_LOCK
+            || name.starts_with(JOURNAL_LOCK_PREFIX)
+        {
+            if (name != ACTIVE_MARKER
+                && name != JOURNAL_OWNER_LOCK
+                && !valid_keyed_name(&name, JOURNAL_LOCK_PREFIX))
                 || !file_type.is_file()
             {
                 return Err(PreparedResultJournalError::InvalidDirectory.into());
@@ -1094,6 +1167,10 @@ pub(super) fn write_legacy_journal_for_test(
         .map_err(|source| io_error("write-test-v1-result", &root, source))?;
     fs::write(root.join(JOURNAL_STATE_FILE_V1), state)
         .map_err(|source| io_error("write-test-v1-state", &root, source))?;
-    sync_directory(&root, "sync-test-v1-journal")?;
-    sync_directory(namespace, "sync-test-v1-journal-parent")
+    File::open(&root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error("sync-test-v1-journal", &root, source))?;
+    File::open(namespace)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error("sync-test-v1-journal-parent", namespace, source))
 }

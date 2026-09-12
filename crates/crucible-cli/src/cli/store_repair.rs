@@ -139,7 +139,7 @@ fn run_operational_state_repair(
     args: &StoreOperationalStateRepairArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
-    let _owner = acquire_stopped_owner(&args.state, &args.policy)?;
+    let owner = acquire_stopped_owner(&args.state, &args.policy)?;
     let config = crucible_daemon::OperationalStateMigrationConfig {
         assignment_ledger: args.ledger.clone(),
         prepared_results: args.prepared_results.clone(),
@@ -149,7 +149,7 @@ fn run_operational_state_repair(
         maximum_prepared_result_entries: args.maximum_prepared_result_entries,
         maximum_prepared_result_bytes: args.maximum_prepared_result_bytes,
     };
-    let summary = crucible_daemon::migrate_operational_state(&config)
+    let summary = crucible_daemon::migrate_operational_state(&owner, &config)
         .map_err(|error| repair_error(format!("operational-state migration failed: {error}")))?;
     let report = OperationalStateRepairReport {
         schema: "crucible.cli.store-operational-state-repair.v1",

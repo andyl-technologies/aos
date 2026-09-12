@@ -608,7 +608,7 @@ struct StoreOperationalStateRepairArgs {
     /// Acquire this ledger's writer lock and migrate attempt-state records to v15.
     #[arg(long, value_name = "PATH")]
     ledger: PathBuf,
-    /// Migrate this namespace through v2 while the writer lock remains held.
+    /// Migrate payloads to v6 and journal state to v2 while holding the writer lock.
     #[arg(long, value_name = "PATH")]
     prepared_results: PathBuf,
     /// Write provenance here; reuse this exact path when retrying interruption.

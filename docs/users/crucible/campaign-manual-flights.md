@@ -657,9 +657,12 @@ memory, event, signal, selection, and metric state through read-only surfaces,
 and explain the selected fault and guest response.
 
 The store surface provides status, ensure, verify, stopped-owner physical-copy
-repair, GC plan/cancel/apply, and generation-bound repack plan/apply. Repair
-requires an authenticated source node, a distinct target storage identity, and
-the campaign owner lock; it reauthenticates the target before returning success.
+repair, stopped-daemon operational-state migration, GC plan/cancel/apply, and
+generation-bound repack plan/apply. Physical repair requires an authenticated
+source node, a distinct target storage identity, and the campaign owner lock;
+it reauthenticates the target before returning success. Operational-state
+migration records authenticated receipts before replacement and resumes only
+with the same roots, bounds, and receipt path after interruption.
 The full retention flight also needs documented flows for archive plans across
 all modes, transfer protection roots, loss-of-acceleration impact warning, plan
 cancellation, repacking with concurrent readers, and stale-plan rejection after

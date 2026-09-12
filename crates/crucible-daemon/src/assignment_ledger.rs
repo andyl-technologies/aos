@@ -31,6 +31,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::owned_advisory_lock::OwnedAdvisoryLock;
 use crucible_campaign::{
     AssignmentId, AttemptExecutionScope, AttemptId, AttemptResourceLimits, AttemptStartMode,
     CampaignCodecError, CampaignFactId, CampaignHash, CampaignLineageId, CampaignSnapshotId,
@@ -39,7 +40,6 @@ use crucible_campaign::{
     ObservationId, SubmitAttemptRequest, SubmitAttemptResponse,
     attempt_execution_basis_digest_for_start_mode,
 };
-use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
 const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v15\0";
@@ -1532,8 +1532,17 @@ pub(crate) struct AssignmentMigrationSummary {
 pub struct DirectoryAssignmentLedger {
     root: PathBuf,
     authority: crate::anchored_fs::AnchoredDirectory,
-    writer_lock: File,
+    writer_lock: OwnedAdvisoryLock,
     retention_state: AssignmentRetentionState,
+}
+
+fn anchored_lock_error(
+    error: crate::anchored_fs::AnchoredFsError,
+    operation: &'static str,
+    path: &Path,
+) -> AssignmentLedgerError {
+    let (_, _, source) = error.into_io_parts(operation);
+    io_error(operation, path, source)
 }
 
 /// Authenticated retention access to an existing or absent optional directory ledger.
@@ -1572,21 +1581,12 @@ impl DirectoryAssignmentLedger {
                 )
             })?;
         let storage_root = authority.anchored_path();
-        let lock_path = storage_root.join("writer.lock");
-        let writer_lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|source| io_error("open-writer-lock", &lock_path, source))?;
-        flock(&writer_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
-            io_error(
-                "lock-writer",
-                &lock_path,
-                std::io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?;
+        let lock_path = root.join("writer.lock");
+        let writer_lock = authority
+            .open_or_create_regular(&lock_path, "open-writer-lock")
+            .map_err(|error| anchored_lock_error(error, "open-writer-lock", &lock_path))?;
+        let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(writer_lock)
+            .map_err(|error| anchored_lock_error(error, "lock-writer", &lock_path))?;
         if crate::operational_state_migration::receipt::marker_present_guarded(&authority)
             .map_err(|source| io_error("inspect-operational-state-migration", &root, source))?
         {
@@ -1595,12 +1595,14 @@ impl DirectoryAssignmentLedger {
         validate_runtime_attempt_inventory(&storage_root, &authority)?;
         sync_directory(&storage_root)?;
         let retention_state = load_or_create_retention_state(&storage_root)?;
-        Ok(Self {
+        let ledger = Self {
             root,
             authority,
             writer_lock,
             retention_state,
-        })
+        };
+        ledger.verify_runtime_fence()?;
+        Ok(ledger)
     }
 
     /// Opens an existing durable ledger without creating or repairing state.
@@ -1637,15 +1639,13 @@ impl DirectoryAssignmentLedger {
                 )
             })?;
         let storage_root = authority.anchored_path();
-        let lock_path = storage_root.join("writer.lock");
-        let writer_lock = open_existing_writer_lock(&lock_path)?;
-        flock(&writer_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
-            io_error(
-                "lock-writer",
-                &lock_path,
-                std::io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?;
+        let lock_path = root.join("writer.lock");
+        let writer_lock = authority
+            .open_regular_optional(&lock_path, "open-writer-lock")
+            .map_err(|error| anchored_lock_error(error, "open-writer-lock", &lock_path))?
+            .ok_or_else(|| corrupt("writer-lock-missing"))?;
+        let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(writer_lock)
+            .map_err(|error| anchored_lock_error(error, "lock-writer", &lock_path))?;
         if !permit_migration
             && crate::operational_state_migration::receipt::marker_present_guarded(&authority)
                 .map_err(|source| io_error("inspect-operational-state-migration", &root, source))?
@@ -1663,12 +1663,14 @@ impl DirectoryAssignmentLedger {
         )?
         .ok_or_else(|| corrupt("retention-state-missing"))?;
         let retention_state = decode_retention_state(&retention_bytes)?;
-        Ok(Self {
+        let ledger = Self {
             root,
             authority,
             writer_lock,
             retention_state,
-        })
+        };
+        ledger.verify_writer_authority()?;
+        Ok(ledger)
     }
 
     /// Returns the physical ledger root.
@@ -1679,6 +1681,25 @@ impl DirectoryAssignmentLedger {
 
     pub(crate) fn authority(&self) -> &crate::anchored_fs::AnchoredDirectory {
         &self.authority
+    }
+
+    pub(crate) fn verify_writer_authority(&self) -> Result<(), AssignmentLedgerError> {
+        self.writer_lock
+            .verify_path_binding()
+            .map_err(|error| anchored_lock_error(error, "verify-writer-lock", &self.root))?;
+        self.authority
+            .verify_path_binding()
+            .map_err(|error| anchored_lock_error(error, "verify-ledger-root", &self.root))
+    }
+
+    fn verify_runtime_fence(&self) -> Result<(), AssignmentLedgerError> {
+        self.verify_writer_authority()?;
+        if crate::operational_state_migration::receipt::marker_present_guarded(&self.authority)
+            .map_err(|source| io_error("inspect-operational-state-migration", &self.root, source))?
+        {
+            return Err(corrupt("operational-state-migration-active"));
+        }
+        self.verify_writer_authority()
     }
 
     /// Authenticates and converts legacy attempt records to v15.
@@ -1713,7 +1734,9 @@ impl DirectoryAssignmentLedger {
         })?;
         let receipt = receipt_parent.path().join("receipt");
         let receipt_guard =
-            crate::operational_state_migration::receipt::prepare_receipt_directory(&receipt)?;
+            crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
+                &receipt,
+            )?;
         self.migrate_attempt_records(
             &receipt_guard,
             maximum_records.saturating_add(256),
@@ -1735,17 +1758,19 @@ impl DirectoryAssignmentLedger {
     }
 
     fn advance_retention_state(&mut self) -> Result<(), AssignmentLedgerError> {
+        self.verify_runtime_fence()?;
         let mut next = self.retention_state;
         next.advance()?;
         persist_retention_state(&self.authority.anchored_path(), next)?;
         self.retention_state = next;
-        Ok(())
+        self.verify_runtime_fence()
     }
 
     fn visit_attempt_records(
         &self,
         visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
     ) -> Result<(), AssignmentLedgerError> {
+        self.verify_runtime_fence()?;
         let complete = visit_directory_attempt_states_bounded_with_authority(
             &self.authority.anchored_path(),
             usize::MAX,
@@ -1757,7 +1782,7 @@ impl DirectoryAssignmentLedger {
                 "attempt-record-count-exceeds-process-address-space",
             ));
         }
-        Ok(())
+        self.verify_runtime_fence()
     }
 }
 
@@ -1846,7 +1871,7 @@ fn visit_directory_attempt_states_bounded_with_authority(
     visit_bounded_ledger_inventory(
         root,
         maximum,
-        crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES,
+        crate::operational_state_migration::MAX_OPERATIONAL_STATE_RUNTIME_ENTRIES,
         u64::MAX,
         false,
         Some(authority),
@@ -1870,7 +1895,7 @@ fn validate_runtime_attempt_inventory(
     root: &Path,
     authority: &crate::anchored_fs::AnchoredDirectory,
 ) -> Result<(), AssignmentLedgerError> {
-    let maximum = crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES;
+    let maximum = crate::operational_state_migration::MAX_OPERATIONAL_STATE_RUNTIME_ENTRIES;
     if visit_bounded_ledger_inventory(
         root,
         maximum,
@@ -2095,16 +2120,6 @@ fn is_staging_name(name: &str) -> bool {
         && ordinal.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-impl Drop for DirectoryAssignmentLedger {
-    fn drop(&mut self) {
-        // A fork can retain a duplicate of this open-file description until
-        // exec closes it. Release ownership explicitly when the Rust owner
-        // ends so that inherited or duplicated descriptors cannot extend the
-        // ledger's writer lease.
-        let _ = flock(&self.writer_lock, FlockOperation::Unlock);
-    }
-}
-
 impl AssignmentLedger for DirectoryAssignmentLedger {
     type Error = AssignmentLedgerError;
 
@@ -2112,8 +2127,10 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         assignment: AssignmentId,
     ) -> Result<Option<AssignmentRecord>, Self::Error> {
+        self.verify_runtime_fence()?;
         let path = self.assignment_path(assignment);
         let Some(bytes) = read_optional_bounded(&path)? else {
+            self.verify_runtime_fence()?;
             return Ok(None);
         };
         sync_record_parent(&path)?;
@@ -2121,6 +2138,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         if record.request.assignment() != assignment {
             return Err(corrupt("assignment-path-identity-mismatch"));
         }
+        self.verify_runtime_fence()?;
         Ok(Some(record))
     }
 
@@ -2128,6 +2146,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &mut self,
         record: &AssignmentRecord,
     ) -> Result<AssignmentPublish, Self::Error> {
+        self.verify_runtime_fence()?;
         let assignment = record.request.assignment();
         if let Some(existing) = self.load_assignment(assignment)? {
             return Ok(if existing == *record {
@@ -2140,25 +2159,30 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         let path = self.assignment_path(assignment);
         let published = publish_immutable(&path, &encode_assignment_record(record))?;
         if published {
+            self.verify_runtime_fence()?;
             return Ok(AssignmentPublish::Stored);
         }
         let existing = self
             .load_assignment(assignment)?
             .ok_or_else(|| corrupt("assignment-publish-lost-race"))?;
-        Ok(if existing == *record {
+        let disposition = if existing == *record {
             AssignmentPublish::Existing
         } else {
             AssignmentPublish::Conflict
-        })
+        };
+        self.verify_runtime_fence()?;
+        Ok(disposition)
     }
 
     fn load_attempt(
         &self,
         key: AttemptExecutionKey,
     ) -> Result<Option<AttemptRuntimeState>, Self::Error> {
+        self.verify_runtime_fence()?;
         let path = self.attempt_path(key);
         let Some(bytes) = read_optional_bounded(&path)? else {
             sync_record_parent_if_present(&path)?;
+            self.verify_runtime_fence()?;
             return Ok(None);
         };
         sync_record_parent(&path)?;
@@ -2166,6 +2190,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         if recorded_key != key {
             return Err(corrupt("attempt-path-identity-mismatch"));
         }
+        self.verify_runtime_fence()?;
         Ok(Some(state))
     }
 
@@ -2175,6 +2200,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         expected: Option<AttemptRuntimeState>,
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::Error> {
+        self.verify_runtime_fence()?;
         if next.is_some_and(|state| !state.validates_for_key(key)) {
             return Err(corrupt("attempt-state-does-not-match-execution-scope"));
         }
@@ -2188,6 +2214,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
             Some(next) => replace_mutable(&path, &encode_attempt_state(key, next))?,
             None => remove_mutable(&path)?,
         }
+        self.verify_runtime_fence()?;
         Ok(AttemptStateCas::Advanced)
     }
 

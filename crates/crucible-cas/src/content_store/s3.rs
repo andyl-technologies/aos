@@ -958,6 +958,7 @@ impl ImmutableBlobBackend for S3BlobBackend {
 
     fn repair_put_if_absent(
         &self,
+        _authority: &super::PhysicalRepairAuthority,
         id: ContentId,
         source: &BlobHandle,
         expected_generation: super::InventoryGeneration,

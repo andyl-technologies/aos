@@ -1478,8 +1478,10 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
 
     let journal_namespace = lifecycle_artifacts.path().join("journals");
     fs::create_dir(&journal_namespace).expect("create prepared-result journal namespace");
+    let journal_authority = crate::PreparedResultJournalNamespace::open(&journal_namespace)
+        .expect("prepared-result namespace");
     let (journal, disposition) = DirectoryPreparedResultJournal::create(
-        &journal_namespace,
+        &journal_authority,
         key,
         producer_execution,
         MAX_PREPARED_SEMANTIC_RESULT_BYTES,
@@ -1588,7 +1590,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
     .expect("remove one persisted production replay chunk");
     let failed_recovery = crate::recover_prepared_attempt_result(
         &store,
-        &journal_namespace,
+        &journal_authority,
         MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         queued,
     )
@@ -1621,7 +1623,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .expect("corrupt one persisted production replay chunk");
     let failed_recovery = crate::recover_prepared_attempt_result(
         &store,
-        &journal_namespace,
+        &journal_authority,
         MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         *failed_recovery.queued,
     )
@@ -1654,7 +1656,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
 
     let recovered = crate::recover_prepared_attempt_result(
         &store,
-        &journal_namespace,
+        &journal_authority,
         MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         *failed_recovery.queued,
     )

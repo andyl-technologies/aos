@@ -2176,13 +2176,15 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
-The version-10 attempt-state reader retains strict read compatibility for
-versions 1 through 9. Versions 5 through 10 may encode
+Historical versions 5 through 10 may encode
 `checkpoint-promoting`; version 6 additionally retains the exact resource and
 retention basis in `paused` and `checkpoint-promoting` records. A legacy pause
 without that basis remains a durable GC root but cannot launch a new guarded
 comparison after restart. A legacy staged pair remains discoverable because a
-complete replacement can be authenticated and reconciled without QEMU.
+complete replacement can be authenticated and reconciled without QEMU. These
+historical forms are parsed only by the bounded, authenticated, stopped-daemon
+`store repair operational-state` migration, which records provenance and
+writes version 15 before normal runtime may reopen the ledger.
 Version 7 adds the terminal-worker-failure state, version 8 adds the optional
 pending finding-candidate root, and version 9 distinguishes pending from
 acknowledged candidate roots. Version 10 binds the start mode into checkpoint
@@ -2263,7 +2265,7 @@ installer do not make it an in-process unforgeability boundary against arbitrary
 linked code. If a
 closure is incomplete, a fresh daemon may recover publication under a new
 execution identity, but the committed observation ID remains fixed. Readers
-retain every registered prior attempt-state version; new writes use v15.
+accept attempt-state version 15 only, and all new writes use v15.
 
 The local Crucible execution adapter owns nested payload schemas. Scenario
 payload versions 1, 2, and 3 are respectively the strict `ScenarioDefForm`
