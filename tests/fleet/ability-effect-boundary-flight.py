@@ -165,6 +165,42 @@ def current_generation() -> int:
     )
 
 
+def sha256_bytes(value: bytes) -> str:
+    """Returns the ordinary SHA-256 identity of exact retained bytes."""
+
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def generation_authority(generation: int) -> dict[str, Any]:
+    """Reads the authenticated native authority pinned by one generation."""
+
+    manifest_path = f"/var/lib/profiles/system/gen-{generation}/manifest.json"
+    manifest_bytes = runtime.succeed(
+        f"{COREUTILS}/cat {shlex.quote(manifest_path)}"
+    ).encode()
+    manifest = json.loads(manifest_bytes)
+    activation = manifest["inputs"]["ability_activation"]
+    policy_pin = activation["authenticated_policy_set"]
+    policy_path = policy_pin["store_path"] + "/" + policy_pin["document"]
+    policy_bytes = runtime.succeed(
+        f"{COREUTILS}/cat {shlex.quote(policy_path)}"
+    ).encode()
+    policy = json.loads(policy_bytes)
+
+    assert canonical(policy) == policy_bytes, policy_path
+    assert sha256_bytes(policy_bytes) == policy_pin["document_sha256"], policy_pin
+    assert len(policy_bytes) == policy_pin["document_size"], policy_pin
+    assert policy["schema"] == "aos.ability.authenticated-policy-set/v3", policy
+    resource_map = policy["native_resource_map"]
+    assert resource_map["schema"] == "aos.ability.native-resource-map/v3", resource_map
+    return {
+        "generation": generation,
+        "manifest-path": manifest_path,
+        "policy-pin": policy_pin,
+        "policy-document": policy,
+    }
+
+
 def transaction_state(held: dict[str, Any], flight: EffectFlight) -> dict[str, Any]:
     """Loads and validates the exact durable plan selected by the observer."""
 
@@ -389,6 +425,7 @@ def run_effect_flight(
     scenario = flight.cell_id.rsplit("/", 1)[-1]
     selected_boundary = SCENARIO_BOUNDARIES[scenario]
     source_generation = current_generation()
+    source_authority = generation_authority(source_generation)
     if selected_boundary == "resources-acquired":
         arm(flight)
         start_switch(unit, host)
@@ -417,6 +454,8 @@ def run_effect_flight(
             baseline_state,
         )
     state["source-generation"] = source_generation
+    state["source-authority"] = source_authority
+    state["candidate-authority"] = generation_authority(state["generation"])
     if on_acquisition is not None:
         on_acquisition(state, baseline)
     unsettled = observe(state["operation-document"])
@@ -478,5 +517,9 @@ def run_effect_flight(
         dependent_boundary_after=dependent_boundaries,
     )
     evidence_builder.retain(
-        flight.cell_id, state["bundle-bytes"], observation
+        flight.cell_id,
+        state["bundle-bytes"],
+        state["source-authority"],
+        state["candidate-authority"],
+        observation,
     )

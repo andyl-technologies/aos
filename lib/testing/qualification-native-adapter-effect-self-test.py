@@ -93,6 +93,7 @@ def main() -> None:
             }
         },
         "current": None,
+        "transition_authority": None,
         "transition": {
             "effect_document": {
                 "operations": [operation, dependent],
@@ -101,6 +102,35 @@ def main() -> None:
         },
     }
     bundle_bytes = evidence.canonical(bundle)
+    resource_mapping = {
+        "resource": target["resource"],
+        "revision": digest("8"),
+        "owner_package": digest("9"),
+        "binding": binding,
+        "implementation": implementation,
+        "qualification": {"kind": "test"},
+    }
+    policy = {
+        "schema": "aos.ability.authenticated-policy-set/v3",
+        "policies": [],
+        "native_resource_map": {
+            "schema": "aos.ability.native-resource-map/v3",
+            "desired_state": digest("a"),
+            "entries": [resource_mapping],
+        },
+    }
+    policy_bytes = evidence.canonical(policy)
+    authority = {
+        "generation": 7,
+        "manifest-path": "/var/lib/profiles/system/gen-7/manifest.json",
+        "policy-pin": {
+            "store_path": "/nix/store/fixture-policy",
+            "document": "policy.json",
+            "document_sha256": evidence.sha256_bytes(policy_bytes),
+            "document_size": len(policy_bytes),
+        },
+        "policy-document": policy,
+    }
     cell_id = (
         "test-adapter/aos.test-effects/abi-1/apply/"
         "interrupt-after-durable-intent"
@@ -171,7 +201,7 @@ def main() -> None:
         ],
     )
     builder = evidence.EffectBoundaryEvidence({"cells": [cell]}, [cell_id])
-    builder.retain(cell_id, bundle_bytes, observation)
+    builder.retain(cell_id, bundle_bytes, authority, authority, observation)
     subjects, bundles, probes = builder.finish()
     subject = subjects[cell_id]
 
@@ -186,6 +216,13 @@ def main() -> None:
     rejected(
         lambda: cohort._validate_effect_boundary_subject(
             cell, wrong_handler, bundles[cell_id]
+        )
+    )
+    wrong_route = copy.deepcopy(subject)
+    wrong_route["native-route"]["mapping"]["revision"] = digest("b")
+    rejected(
+        lambda: cohort._validate_effect_boundary_subject(
+            cell, wrong_route, bundles[cell_id]
         )
     )
     wrong_foreign = copy.deepcopy(
