@@ -145,12 +145,21 @@ def inspect_recipe_shell(packages, directory, environment, emulator=None):
     return None
 
 
-def run_compiled_probe(compiler, source, directory, environment):
-    """Compiles and runs an optimized static probe using only exported tools."""
-    executable = Path(directory) / "program"
+def run_compiled_probe(
+    compiler, source, directory, environment, roots, readelf,
+    default_library_paths, dynamic,
+):
+    """Compiles, attributes, inspects, and runs one optimized probe."""
+    mode = "dynamic" if dynamic else "static"
+    executable = Path(directory) / f"program-{mode}"
+    arguments = [str(compiler), "-O2", "-Wl,-t"]
+    if not dynamic:
+        arguments.append("-static")
+    arguments.extend([str(Path(source).resolve()), "-o", str(executable)])
+
     # The floating-point printf regression requires the compiler's optimizer.
-    subprocess.run(
-        [str(compiler), "-O2", "-static", str(Path(source).resolve()), "-o", str(executable)],
+    result = subprocess.run(
+        arguments,
         cwd=directory,
         env=environment,
         check=True,
@@ -158,6 +167,22 @@ def run_compiled_probe(compiler, source, directory, environment):
         text=True,
         timeout=120,
     )
+    trace = result.stdout + result.stderr
+    selected_paths = {
+        Path(match.rstrip(".,:;"))
+        for match in re.findall(r"/nix/store/[^\s()]+", trace)
+    }
+    if not selected_paths:
+        raise RuntimeError(f"{mode} linker trace contains no selected store inputs")
+    for path in selected_paths:
+        if not path.exists() or not inside(path, roots):
+            raise RuntimeError(f"{mode} linker selected input outside exported tier: {path}")
+
+    if dynamic:
+        reasons = inspect_elf(executable, roots, readelf, default_library_paths)
+        if reasons:
+            raise RuntimeError(f"dynamic ELF contract failed: {'; '.join(reasons)}")
+
     subprocess.run(
         [str(executable)],
         cwd=directory,
@@ -298,7 +323,10 @@ def inspect_perl_compiler(executable, directory, environment):
     return None
 
 
-def inspect_runtime(name, packages, roots, syscall_source, cxx_source, reject, emulator=None):
+def inspect_runtime(
+    name, packages, roots, syscall_source, readelf, cxx_source, reject,
+    default_library_paths, emulator=None,
+):
     """Checks recipe execution and the C/C++ header and library contracts."""
     if syscall_source is None and cxx_source is None:
         return
@@ -349,13 +377,24 @@ def inspect_runtime(name, packages, roots, syscall_source, cxx_source, reject, e
         if cxx_source is not None and name not in C_ONLY_TIERS:
             probes.append(("g++", cxx_source, "C++ header/runtime contract"))
 
+        glibc = packages.get("glibc")
+        dynamic_loader_available = glibc is not None and any(
+            (Path(glibc) / "lib").glob("ld*.so*")
+        )
         for driver, source, description in probes:
             compiler = Path(packages["gcc"]) / "bin" / driver
-            try:
-                run_compiled_probe(compiler, source, directory, environment)
-            except (OSError, subprocess.SubprocessError) as error:
-                detail = getattr(error, "stderr", "") or str(error)
-                reject(compiler, f"{description} probe failed: {detail}")
+            for dynamic in (False, True):
+                if dynamic and not dynamic_loader_available:
+                    continue
+                try:
+                    run_compiled_probe(
+                        compiler, source, directory, environment, roots, readelf,
+                        default_library_paths, dynamic,
+                    )
+                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                    detail = getattr(error, "stderr", "") or str(error)
+                    mode = "dynamic" if dynamic else "static"
+                    reject(compiler, f"{description} {mode} probe failed: {detail}")
 
 
 def inspect_tier(name, packages, syscall_source=None, readelf=None, cxx_source=None, emulator=None):
@@ -396,7 +435,10 @@ def inspect_tier(name, packages, syscall_source=None, readelf=None, cxx_source=N
         return violations
 
     inspect_drivers(packages, reject)
-    inspect_runtime(name, packages, roots, syscall_source, cxx_source, reject, emulator)
+    inspect_runtime(
+        name, packages, roots, syscall_source, readelf, cxx_source, reject,
+        default_library_paths, emulator,
+    )
     return violations
 
 
