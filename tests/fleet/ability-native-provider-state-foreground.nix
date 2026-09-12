@@ -76,12 +76,18 @@ in
           return value
 
 
-      def foreground_pair(label, method):
+      def foreground_pair(label, method, scenario):
           if method == "start":
               return (
                   foreground_activation(label + "-retained", "full", "retained"),
                   foreground_activation(
-                      label + "-predecessor", "disable-main", "predecessor"
+                      label + "-predecessor",
+                      (
+                          "full"
+                          if scenario == "reject-unsupported-transfer"
+                          else "disable-main"
+                      ),
+                      "predecessor",
                   ),
               )
           if method == "stop":
@@ -103,7 +109,9 @@ in
           adapter, interface, _, method, scenario = state_cell_id.split("/")
           assert adapter == "foreground-process", state_cell_id
           label = f"provider-state-foreground-{index:03d}"
-          retained_host, predecessor_host = foreground_pair(label, method)
+          retained_host, predecessor_host = foreground_pair(
+              label, method, scenario
+          )
           retained_generation = settle_foreground(
               retained_host, label + "-retained"
           )

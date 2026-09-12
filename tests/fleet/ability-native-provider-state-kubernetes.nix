@@ -87,7 +87,8 @@ in
           return value
 
 
-      def kubernetes_pair(label, adapter, method):
+      def kubernetes_pair(label, adapter, method, scenario):
+          unsupported = scenario == "reject-unsupported-transfer"
           if adapter == "kubernetes-object" and method in {"apply", "observe"}:
               return (
                   kubernetes_activation(f"{label}-retained", 2, True),
@@ -106,7 +107,10 @@ in
               return (
                   kubernetes_activation(f"{label}-retained", 1, True),
                   kubernetes_activation(
-                      f"{label}-predecessor", 1, True, lifecycle="remove"
+                      f"{label}-predecessor",
+                      2 if unsupported else 1,
+                      True,
+                      lifecycle="full" if unsupported else "remove",
                   ),
                   "k3s",
                   "server-service",
@@ -137,7 +141,7 @@ in
               predecessor_host,
               target_provider,
               target_resource,
-          ) = kubernetes_pair(label, adapter, method)
+          ) = kubernetes_pair(label, adapter, method, scenario)
           retained_generation = settle_kubernetes(
               retained_host, label + "-retained"
           )

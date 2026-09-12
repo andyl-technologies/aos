@@ -146,11 +146,36 @@ def authority(
     }
 
 
-LEDGER = {
-    "consumers": [],
-    "owners": [],
-    "schema": "aos.ability.native-resource-ledger/v1",
-}
+def ledger(binding_key: str) -> dict:
+    """Returns one exact terminal-consumer claim for the logical resource."""
+
+    return {
+        "consumers": [
+            {
+                "artifacts": ["/nix/store/provider-runtime"],
+                "attempt": 1,
+                "binding": {"key": binding_key, "package": "test"},
+                "consumer": RESOURCE["provider"],
+                "desired_revision": "sha256:" + "44" * 32,
+                "generation": "gen-1",
+                "logical": RESOURCE,
+                "operation": OPERATION_KEY,
+                "physical": {
+                    "authority": "test-authority",
+                    "class": "test-resource",
+                    "object": "/var/lib/aos/test-resource",
+                },
+                "plan": PLAN,
+                "provider": RESOURCE["provider"],
+                "transaction": TRANSACTION,
+            }
+        ],
+        "owners": [],
+        "schema": "aos.ability.native-resource-ledger/v1",
+    }
+
+
+LEDGER = ledger("candidate-binding")
 RETAINED_POSTCONDITIONS = [
     "durable-attempt-state-classified",
     "at-most-one-resource-owner",
@@ -216,6 +241,7 @@ def unsupported_observation() -> object:
 
     source = authority("sha256:" + "aa" * 32, "source", "source-binding", "source", 9, 10)
     candidate = authority(PLAN, TRANSACTION, "candidate-binding", "candidate", 1, 20)
+    source_ledger = ledger("source-binding")
     return MODULE.UnsupportedTransferObservation(
         source_generation=2,
         candidate_generation=3,
@@ -228,8 +254,8 @@ def unsupported_observation() -> object:
         ],
         source_authority=source,
         candidate_authority=candidate,
-        ledger_before=LEDGER,
-        ledger_after=LEDGER,
+        ledger_before=source_ledger,
+        ledger_after=source_ledger,
         live_before={"revision": "source"},
         live_after={"revision": "source"},
         foreign_before={"revision": "foreign"},
@@ -296,6 +322,16 @@ must_reject(
         MATRIX, [UNSUPPORTED_CELL["id"]]
     ).retain_unsupported_transfer(
         UNSUPPORTED_CELL["id"], BUNDLE, unsupported_contract(), reused_incarnation
+    )
+)
+
+missing_owner = copy.deepcopy(unsupported_observation())
+missing_owner.ledger_before["consumers"] = []
+must_reject(
+    lambda: MODULE.ProviderStateEvidence(
+        MATRIX, [UNSUPPORTED_CELL["id"]]
+    ).retain_unsupported_transfer(
+        UNSUPPORTED_CELL["id"], BUNDLE, unsupported_contract(), missing_owner
     )
 )
 
