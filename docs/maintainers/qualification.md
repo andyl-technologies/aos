@@ -518,17 +518,33 @@ release admission still requires fresh executor observations for the exact
 frozen release subjects and acceptance checks. The x86 fleet topology also
 does not claim direct aarch64 execution.
 
-The x86 release executor maps five implemented policy IDs to native ability
-scenarios: activation, adapter matrix, Kubernetes, PostgreSQL, and recovery.
-The production-only image-rollout requirement remains unmapped until an
-eligible production executor is provisioned. Each mapped scenario selects the
-exact finalized server QCOW2, slot-A UKI, metadata, unsigned assembly, and
-finalized-set objects from the downloaded release case.
+The x86 release executor maps six implemented policy IDs to native ability
+scenarios: activation, adapter matrix, image rollout, Kubernetes, PostgreSQL,
+and recovery. Each mapped scenario selects the exact finalized server QCOW2,
+slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
+downloaded release case.
 It verifies their byte identities and cross-bindings, extracts the UKI's initrd,
 and checks the embedded static ability contract before booting that QCOW2 with
 KVM, UEFI Secure Boot, and a software TPM. It then confirms through the guest's
 recorded running generation, booted UKI digest, kernel, root hash, and host
 static contract that execution stayed on those published subjects.
+
+The production-only image-rollout scenario additionally requires the frozen
+predecessor manifest and its downloaded object bundle. It rejects a missing or
+mismatched bundle before boot, validates the predecessor's complete finalized
+server image controls, and starts independent healthy and failed-health flights
+from exact copies of that predecessor QCOW2. The candidate is obtained only by
+retaining the image's baked authenticated registry trust anchor, redirecting it
+to the bounded HTTPS staging Hub origin, and replacing its channel with the
+exact finalized release-version tag. The healthy flight independently observes
+the health hook and native journal before allowing physical boot commit, then
+proves expiry retires both rollout roots and retained UKIs. The failed-health
+flight observes the exact candidate boot before releasing the failure hook,
+then checks the exact predecessor boot, retained roots, native journal, and
+terminal fallback before allowing physical commit. A missing predecessor,
+untrusted registry configuration, inaccessible staging Hub, non-matching image
+object, absent branch result, or incomplete exact-boot observation leaves no
+scenario report and therefore cannot satisfy the gate.
 
 The scenario also reconstructs the complete published NAR graph rooted at the
 release's `aos`, `apm`, `apr`, and `packageRuntime` outputs. It verifies every

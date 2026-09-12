@@ -2,6 +2,7 @@
 {
   lib,
   pkgs,
+  guestTools ? false,
 }: let
   package = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
@@ -15,8 +16,53 @@
     }
   ];
   packageRoots = [package package.abilities];
+  drainHook = pkgs.writeShellScriptBin "aos-qualified-rollout-drain-hook" ''
+    set -eu
+
+    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
+    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
+    printf '%s\n' "$boot_id" > /var/lib/aos-test/drained-boot-id
+    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/drained-boot-id
+  '';
+  healthHook = pkgs.writeShellScriptBin "aos-qualified-rollout-health-hook" ''
+    set -eu
+
+    ${pkgs.coreutils}/bin/mkdir -p /var/lib/aos-test
+    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id
+    booted=$(${pkgs.coreutils}/bin/readlink /run/current-system)
+    configured=$(${pkgs.coreutils}/bin/readlink -f /var/lib/profiles/system/current/toplevel)
+    printf '%s\t%s\t%s\n' "$boot_id" "$booted" "$configured" \
+      >> /var/lib/aos-test/health-observations
+    ${pkgs.coreutils}/bin/sync -f /var/lib/aos-test/health-observations
+    if [ -e /var/lib/aos-test/rollout-health-fail ]; then
+      while [ ! -e /var/lib/aos-test/allow-rollout-health-fail ]; do
+        ${pkgs.coreutils}/bin/sleep 1
+      done
+      exit 1
+    fi
+  '';
+  qualificationSetupBody = ''
+    aos.apm.drainScript = "${drainHook}/bin/aos-qualified-rollout-drain-hook";
+    aos.apm.healthScript = "${healthHook}/bin/aos-qualified-rollout-health-hook";
+  '';
+  qualificationCandidateRuntimeCompanions = [
+    {
+      name = "ability-reference-image-rollout";
+      primary = package;
+      abilities = package.abilities;
+      originalRuntime = pkgs.aos.packageRuntime;
+    }
+  ];
 in {
-  inherit orderedPackages package packageRoots;
+  inherit
+    drainHook
+    healthHook
+    orderedPackages
+    package
+    packageRoots
+    qualificationCandidateRuntimeCompanions
+    qualificationSetupBody
+    ;
 
   extraClosures =
     packageRoots
@@ -28,6 +74,8 @@ in {
       pkgs.jq
       pkgs.nix
       pkgs.util-linux
+      drainHook
+      healthHook
     ];
 
   testPrelude =
@@ -38,8 +86,16 @@ in {
       import shlex
       import textwrap
 
-      APM = "${pkgs.aos.apm}/bin/apm"
-      APR = "${pkgs.aos.apr}/bin/apr"
+      APM = ${
+        if guestTools
+        then ''runtime.guest_tool("apm")''
+        else builtins.toJSON "${pkgs.aos.apm}/bin/apm"
+      }
+      APR = ${
+        if guestTools
+        then ''runtime.guest_tool("apr")''
+        else builtins.toJSON "${pkgs.aos.apr}/bin/apr"
+      }
       COREUTILS = "${pkgs.coreutils}/bin"
       FIXTURE = "${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture"
       GIT = "${pkgs.git}/bin/git"
@@ -47,12 +103,20 @@ in {
       NIX_BIN = "${pkgs.nix}/bin"
       NIX_INSTANTIATE = "${pkgs.nix}/bin/nix-instantiate"
       PRLIMIT = "${pkgs.util-linux}/bin/prlimit"
-      ROLLOUT_PACKAGES = ${builtins.toJSON (map (entry: {
+      ROLLOUT_PACKAGES = ${
+        if guestTools
+        then "runtime.candidate_handler_packages("
+        else ""
+      }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
           abilities = builtins.toString entry.package.abilities;
         })
-        orderedPackages)}
+        orderedPackages)}${
+        if guestTools
+        then ")"
+        else ""
+      }
 
 
       def publish_rollout_package():

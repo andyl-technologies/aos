@@ -3,7 +3,7 @@
   lib,
   mkSystem,
   pkgs,
-  systems,
+  systems ? null,
   qualificationImage ? false,
 }: let
   observerController = pkgs.writeTextFile {
@@ -66,7 +66,292 @@
   image = imageLifecycle.abilityRolloutFixture;
   rollout = import ./_image-rollout-runtime-reference.nix {
     inherit lib pkgs;
+    guestTools = qualificationImage;
   };
+  qualificationTestScript =
+    rollout.testPrelude
+    + # python
+    ''
+      IMAGE_STATE = "/var/lib/profiles/image/state.json"
+      QUALIFICATION_HOST_BODY = ${builtins.toJSON rollout.qualificationSetupBody}
+
+
+      def image_state():
+          return json.loads(target.succeed(f"cat {IMAGE_STATE}"))
+
+
+      def generation(state, number):
+          matches = [entry for entry in state["generations"] if entry["number"] == number]
+          assert len(matches) == 1, (number, state)
+          return matches[0]
+
+
+      def hold_boot_commit():
+          target.succeed(textwrap.dedent("""
+              set -eu
+              mkdir -p /var/etc/systemd/system/aos-image-boot-commit.service.d
+              cat > /var/etc/systemd/system/aos-image-boot-commit.service.d/90-qualification-rollout.conf <<'EOF'
+              [Service]
+              ExecCondition=${pkgs.bash}/bin/bash -c 'test ! -e /var/lib/aos-test/hold-rollout-commit || test -e /var/lib/aos-test/allow-rollout-commit'
+              EOF
+              mkdir -p /var/lib/aos-test
+              touch /var/lib/aos-test/hold-rollout-commit
+              ${pkgs.coreutils}/bin/sync
+              systemctl daemon-reload
+          """))
+
+
+      def stage_candidate():
+          old_boot = target.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+          before = image_state()
+          assert before["running"] == before["default"], before
+          assert before.get("pending") is None, before
+          assert before.get("active_rollout") is None, before
+
+          runtime.stage_published_candidate()
+          target.succeed(
+              f"HOME=/tmp PATH={NIX_BIN}:$PATH {APM} upgrade --system --yes",
+              timeout=1800,
+          )
+          staged = image_state()
+          candidate = generation(staged, staged["pending"])
+          assert staged["running"] == before["running"], staged
+          assert staged["default"] == before["default"], staged
+          assert staged.get("active_rollout") is None, staged
+          assert target.succeed("cat /proc/sys/kernel/random/boot_id").strip() == old_boot
+          target.fail("test -e /var/lib/profiles/image/.transition-intent.json")
+          return candidate
+
+
+      def rollout_request(candidate):
+          state = image_state()
+          predecessor = generation(state, state["running"])
+
+          def identity(record):
+              return {
+                  "toplevel": record["toplevel"],
+                  "uki": record.get("uki_source_path") or record["uki_path"],
+                  "executor": record["native_executor_ref"],
+                  "state_format": record["state_version"],
+              }
+
+          now = int(target.succeed("date +%s%3N").strip())
+          return {
+              "strategy": "single-host-ab-v1",
+              "concurrency": 1,
+              "predecessor": identity(predecessor),
+              "candidate": identity(candidate),
+              "retention_expires_at_millis": now + 600000,
+          }
+
+
+      def write_qualification_host(path, activation):
+          activation_json = json.dumps(activation, separators=(",", ":"))
+          module = (
+              "{ lib, ... }: {\n"
+              "  aos.apm.desiredPackages = [ \"ability-reference-image-rollout\" ];\n"
+              "  aos.abilities.activationInput = builtins.fromJSON "
+              + json.dumps(activation_json)
+              + ";\n"
+              + QUALIFICATION_HOST_BODY
+              + "}\n"
+          )
+          encoded = base64.b64encode(module.encode()).decode()
+          target.succeed(
+              f"printf %s {shlex.quote(encoded)} | "
+              f"{COREUTILS}/base64 -d > {shlex.quote(path)}"
+          )
+
+
+      def begin_rollout(request, label):
+          activation = generate_rollout_activation(request, "desired", label)
+          host = f"/var/lib/aos-test/{label}-host.nix"
+          write_qualification_host(host, activation)
+          old_boot = target.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+          runtime.expect_published_image("candidate")
+          command = (
+              f"HOME=/tmp PATH={NIX_BIN}:$PATH {APM} switch "
+              f"--from {shlex.quote(host)} "
+              f"--eval-root /run/ability-rollout-{label}"
+          )
+          try:
+              target.succeed(command, timeout=1800)
+          except Exception as error:
+              print(f"{label} switch crossed reboot: {error}")
+          target.wait_until_succeeds(
+              "test \"$(cat /proc/sys/kernel/random/boot_id)\" != "
+              + shlex.quote(old_boot),
+              timeout=900,
+          )
+          runtime.assert_published_image("candidate")
+          return activation
+
+
+      def provider_state():
+          path = target.succeed(
+              "set -- /var/lib/profiles/image/ability-rollouts/*/state.json; "
+              "test \"$#\" -eq 1; printf '%s\\n' \"$1\""
+          ).strip()
+          return path, json.loads(target.succeed(f"cat {shlex.quote(path)}"))
+
+
+      def assert_health_observation(request, configured):
+          line = target.succeed(
+              f"{COREUTILS}/tail -n 1 /var/lib/aos-test/health-observations"
+          ).rstrip("\n")
+          boot_id, booted, observed_configured = line.split("\t")
+          assert boot_id == target.succeed(
+              "cat /proc/sys/kernel/random/boot_id"
+          ).strip(), line
+          assert booted == request["candidate"]["toplevel"], line
+          assert observed_configured == configured, line
+          assert configured != request["candidate"]["toplevel"], line
+
+
+      def settled_transaction():
+          config = json.loads(target.succeed("cat /var/lib/profiles/system/state.json"))
+          current = config["current"]
+          proof = json.loads(target.succeed(
+              f"cat /var/lib/profiles/system/gen-{current}/activation.json"
+          ))
+          transaction = proof["native_ability_transaction"]
+          root = (
+              f"/var/lib/profiles/system/gen-{current}/ability-transactions/"
+              f"{transaction}"
+          )
+          target.succeed(f"test -s {shlex.quote(root + '/execution.journal')}")
+          terminal = json.loads(target.succeed(
+              f"cat {shlex.quote(root + '/terminal.json')}"
+          ))
+          assert terminal["schema"] == "aos.ability.transaction-terminal/v1", terminal
+          assert terminal["terminal"] == "succeeded", terminal
+          return current, transaction
+
+
+      def assert_retention_roots(request, state_path):
+          root = state_path.rsplit("/", 1)[0]
+          for name, identity in (
+              ("predecessor-toplevel", request["predecessor"]),
+              ("candidate-toplevel", request["candidate"]),
+          ):
+              observed = target.succeed(
+                  f"{COREUTILS}/readlink {shlex.quote(root + '/' + name)}"
+              ).strip()
+              assert observed == identity["toplevel"], (name, observed, identity)
+          target.succeed(
+              "set -- /boot/EFI/.aos-rollout-retention/*.efi; test \"$#\" -eq 2"
+          )
+
+
+      def release_boot_commit():
+          target.succeed(
+              "touch /var/lib/aos-test/allow-rollout-commit && "
+              "systemctl start aos-image-boot-commit.service",
+              timeout=600,
+          )
+          target.wait_until_succeeds(
+              "systemctl is-active --quiet aos-image-boot-commit.service", timeout=420
+          )
+
+
+      target = runtime
+      hold_boot_commit()
+      publish_rollout_package()
+      candidate = stage_candidate()
+      request = rollout_request(candidate)
+      configured_before = target.succeed(
+          f"{COREUTILS}/readlink -f /var/lib/profiles/system/current/toplevel"
+      ).strip()
+
+      if runtime.rollout_branch == "healthy":
+          begin_rollout(request, "healthy")
+          target.wait_until_succeeds(
+              f"{JQ} -e '.active_rollout.status == \"candidate_booted\"' {IMAGE_STATE}",
+              timeout=900,
+          )
+          state_path, provider = provider_state()
+          target.wait_until_succeeds(
+              f"{JQ} -e '.phase == \"healthy-retained\"' {shlex.quote(state_path)}",
+              timeout=900,
+          )
+          provider = json.loads(target.succeed(f"cat {shlex.quote(state_path)}"))
+          assert provider["outcome"] == "candidate-healthy", provider
+          assert_health_observation(request, configured_before)
+          settled_transaction()
+          retained = image_state()
+          assert retained.get("active_rollout") is not None, retained
+          assert retained.get("last_rollout") is None, retained
+          assert_retention_roots(request, state_path)
+          release_boot_commit()
+          committed = image_state()
+          assert committed.get("active_rollout") is None, committed
+          assert committed["last_rollout"]["status"] == "succeeded", committed
+
+          deadline_seconds = request["retention_expires_at_millis"] // 1000 + 1
+          target.succeed(f"date -s @{deadline_seconds}")
+          retirement = generate_rollout_activation(request, "retire", "retire")
+          retirement_host = "/var/lib/aos-test/retirement-host.nix"
+          write_qualification_host(retirement_host, retirement)
+          target.succeed(
+              f"HOME=/tmp PATH={NIX_BIN}:$PATH {APM} switch "
+              f"--from {retirement_host} "
+              "--eval-root /run/ability-rollout-retire",
+              timeout=1200,
+          )
+          retired = json.loads(target.succeed(f"cat {shlex.quote(state_path)}"))
+          assert retired["phase"] == "retired", retired
+          root = state_path.rsplit("/", 1)[0]
+          target.fail(f"test -e {shlex.quote(root + '/predecessor-toplevel')}")
+          target.fail(f"test -e {shlex.quote(root + '/candidate-toplevel')}")
+          target.succeed(
+              "set -- /boot/EFI/.aos-rollout-retention/*.efi; "
+              "test \"$1\" = '/boot/EFI/.aos-rollout-retention/*.efi'"
+          )
+          runtime.assert_published_image("candidate")
+          ROLLOUT_BRANCH_EVIDENCE = {
+              "branch": "healthy",
+              "outcome": "candidate-healthy",
+              "retired": True,
+          }
+      elif runtime.rollout_branch == "fallback":
+          target.succeed("touch /var/lib/aos-test/rollout-health-fail")
+          begin_rollout(request, "fallback")
+          assert_health_observation(request, configured_before)
+          candidate_boot = target.succeed(
+              "cat /proc/sys/kernel/random/boot_id"
+          ).strip()
+          target.succeed("touch /var/lib/aos-test/allow-rollout-health-fail")
+          runtime.expect_published_image("predecessor")
+          target.wait_until_succeeds(
+              "test \"$(cat /proc/sys/kernel/random/boot_id)\" != "
+              + shlex.quote(candidate_boot),
+              timeout=900,
+          )
+          runtime.assert_published_image("predecessor")
+          state_path, provider = provider_state()
+          target.wait_until_succeeds(
+              f"{JQ} -e '.phase == \"fallback-retained\"' {shlex.quote(state_path)}",
+              timeout=900,
+          )
+          provider = json.loads(target.succeed(f"cat {shlex.quote(state_path)}"))
+          assert provider["outcome"] == "predecessor-fallback", provider
+          settled_transaction()
+          retained = image_state()
+          assert retained.get("active_rollout") is not None, retained
+          assert retained.get("last_rollout") is None, retained
+          assert_retention_roots(request, state_path)
+          release_boot_commit()
+          failed = image_state()
+          assert failed.get("active_rollout") is None, failed
+          assert failed["last_rollout"]["status"] == "health_failed", failed
+          ROLLOUT_BRANCH_EVIDENCE = {
+              "branch": "fallback",
+              "outcome": "predecessor-fallback",
+              "retired": False,
+          }
+      else:
+          raise RuntimeError(f"unknown rollout branch {runtime.rollout_branch!r}")
+    '';
   baseTarget = imageLifecycle.machines.target;
   targetClosures = (baseTarget.extraClosures or []) ++ rollout.extraClosures;
   fallbackHost = ''
@@ -798,4 +1083,13 @@ in {
       assert failed["last_rollout"]["status"] == "health_failed", failed
       target.succeed("test \"$(wc -l < /var/lib/aos-test/health-boot-ids)\" -ge 1")
     '';
+
+  qualification = lib.optionalAttrs qualificationImage {
+    inherit qualificationTestScript;
+    testScript = qualificationTestScript;
+    stagingHubUrl = "https://aos.staging.andyl.org";
+    inherit (rollout) extraClosures qualificationSetupBody;
+    setupBody = rollout.qualificationSetupBody;
+    candidateRuntimeCompanions = rollout.qualificationCandidateRuntimeCompanions;
+  };
 }

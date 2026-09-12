@@ -15,22 +15,27 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
+import urllib.parse
 from typing import Any
 
 
 ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
 OBJECTS = ROOT / "objects.json"
+PREDECESSOR_OBJECTS = ROOT / "predecessor-objects.json"
 REPORT = ROOT / "scenario-report.json"
 SCENARIO_REGISTRY = ROOT / "scenario-registry.json"
 
 PLATFORM = os.environ["AOS_QUALIFICATION_PLATFORM"]
 SCENARIO_ID = os.environ["AOS_QUALIFICATION_SCENARIO_ID"]
 EXPECTED_CHECKS = json.loads(os.environ["AOS_QUALIFICATION_CHECKS"])
+STAGING_HUB_URL = os.environ["AOS_QUALIFICATION_STAGING_HUB_URL"]
 FIXTURE_CONTRACT = os.environ["AOS_QUALIFICATION_FIXTURE_CONTRACT"]
 FIXTURE_ARCHIVE = pathlib.Path(os.environ["AOS_QUALIFICATION_FIXTURE_ARCHIVE"])
 RUNTIME_COMPANIONS = json.loads(
@@ -168,6 +173,8 @@ class PublishedImageMachine(IMAGE.VirtualMachine):
         self.native_package_runtime = ""
         self.hard_power_cycles = 0
         self.metadata_free_reboots = 0
+        self.expected_image_role = "candidate"
+        self.rollout_branch = ""
 
     def _arguments(self) -> list[str]:
         arguments = super()._arguments()
@@ -309,6 +316,24 @@ class PublishedImageMachine(IMAGE.VirtualMachine):
     def published_boot_identity(self) -> str:
         return self.scenario.boot_identity
 
+    def expect_published_image(self, role: str) -> None:
+        """Selects the exact release image expected at the next observation."""
+
+        if role not in {"candidate", "predecessor"}:
+            raise RuntimeError(f"unknown published image role {role!r}")
+        self.expected_image_role = role
+
+    def assert_published_image(self, role: str) -> None:
+        """Checks that the guest runs the selected finalized image subject."""
+
+        self.expect_published_image(role)
+        self.scenario.assert_running_published_boot(self)
+
+    def stage_published_candidate(self) -> None:
+        """Pins and fetches the exact candidate from the authenticated staging Hub."""
+
+        self.scenario.stage_candidate_registry(self)
+
     def assert_published_boot_contract(self, expected: str) -> tuple[str, bytes]:
         if expected != self.scenario.boot_identity:
             raise RuntimeError("fleet scenario expected another published boot identity")
@@ -366,6 +391,7 @@ class Scenario:
         self.request = read_json(REQUEST)
         self.case = self.request["qualification_case"]
         self.objects: dict[str, str] = read_json(OBJECTS)
+        self.predecessor_objects: dict[str, str] = read_json(PREDECESSOR_OBJECTS)
         self.started = time.time()
         self.started_at = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.started)
@@ -373,12 +399,19 @@ class Scenario:
         self.machine: PublishedImageMachine | None = None
         self.boot_assertions = 0
         self.boot_ids: set[str] = set()
+        self.rollout_boot_ids: dict[str, set[str]] = {
+            "candidate": set(),
+            "predecessor": set(),
+        }
         self.handoff_assertions = 0
         self.handoff_boot_ids: set[str] = set()
         self.candidate_closure: Any | None = None
         self.candidate_companions: dict[str, str] = {}
         self.used_candidate_companions: set[str] = set()
         self.guest_initially_absent: list[str] = []
+        self.total_warm_reboots = 0
+        self.total_hard_power_cycles = 0
+        self.total_metadata_free_reboots = 0
         self.fixture_namespace: dict[str, Any] = {}
         self.fixture_namespaces: dict[str, dict[str, Any]] = {}
         self.matrix_spec = (
@@ -410,6 +443,7 @@ class Scenario:
 
     def validate_inputs(self) -> None:
         matrix_case = SCENARIO_ID == "ability-native-adapter-matrix"
+        rollout_case = SCENARIO_ID == "ability-native-image-rollout"
         if PLATFORM != "x86_64-linux" or self.request["platform"] != PLATFORM:
             raise RuntimeError("native ability qualification requires x86_64 Linux")
         if (
@@ -439,7 +473,10 @@ class Scenario:
                 + raw_digest(self.matrix_spec).removeprefix("sha256:")
             ):
                 raise RuntimeError("matrix specification differs from the exact case")
-        elif self.case.get("predecessor") is not None:
+        elif rollout_case:
+            if not self.case.get("predecessor") or not self.predecessor_objects:
+                raise RuntimeError("image rollout case lacks its verified predecessor")
+        elif self.case.get("predecessor") is not None or self.predecessor_objects:
             raise RuntimeError("ordinary ability scenario unexpectedly names a predecessor")
 
         manifest = read_json(pathlib.Path(self.objects[MANIFEST_OBJECT]))
@@ -482,12 +519,14 @@ class Scenario:
 
         self.qcow2_artifact = self._cell_artifact("qcow2-image", "qcow2")
         self.uki_artifact = self._cell_artifact("uki", "uki-a")
+        self.uki_b_artifact = self._cell_artifact("uki", "uki-b")
         self.metadata_artifact = self._cell_artifact("image-metadata", "metadata")
         self.qcow2_path = pathlib.Path(self.objects[self.qcow2_artifact["id"]])
         self.uki_path = pathlib.Path(self.objects[self.uki_artifact["id"]])
         self.metadata = read_json(pathlib.Path(self.objects[self.metadata_artifact["id"]]))
         self._validate_object(self.qcow2_artifact)
         self._validate_object(self.uki_artifact)
+        self._validate_object(self.uki_b_artifact)
         self._validate_object(self.metadata_artifact)
 
         self.assembly_artifact = self._provenance_artifact(ASSEMBLY_MEDIA_TYPE)
@@ -497,6 +536,8 @@ class Scenario:
         self._validate_object(self.assembly_artifact)
         self._validate_object(self.finalized_artifact)
         self._validate_image_controls()
+        if rollout_case:
+            self._bind_predecessor_image()
         self._bind_published_package_outputs()
         self._prepare_candidate_handler_companions()
 
@@ -507,6 +548,158 @@ class Scenario:
                 self.assembly_artifact["id"],
             ]
         )
+
+    def _bind_predecessor_image(self) -> None:
+        """Binds the verified predecessor bundle to its finalized server image."""
+
+        manifest_path = self.predecessor_objects.get(MANIFEST_OBJECT)
+        if manifest_path is None:
+            raise RuntimeError("predecessor bundle lacks its manifest envelope")
+        manifest = read_json(pathlib.Path(manifest_path))
+        expected = self.case["predecessor"]
+        payload = manifest["payload"]
+        if (
+            payload["registry"] != expected["registry"]
+            or payload["release_id"] != expected["release_id"]
+            or manifest["payload_digest"] != expected["manifest_digest"]
+            or digest("aos.release.manifest/v1", payload)
+            != expected["manifest_digest"]
+        ):
+            raise RuntimeError("predecessor manifest differs from the frozen case")
+
+        artifacts = {entry["id"]: entry for entry in payload["artifacts"]}
+        if len(artifacts) != len(payload["artifacts"]):
+            raise RuntimeError("predecessor manifest repeats an artifact identity")
+        image = one(
+            [
+                entry
+                for entry in payload["images"]
+                if entry["system_variant"] == IMAGE_VARIANT
+            ],
+            "predecessor server image",
+        )
+        cell = one(
+            [entry for entry in image["platforms"] if entry["platform"] == PLATFORM],
+            "predecessor server x86_64 image cell",
+        )
+        if cell["decision"].get("state") != "artifact":
+            raise RuntimeError("predecessor server image cell is not finalized")
+        image_ids = cell["decision"]["artifact"]["artifact_ids"]
+        if any(
+            identity not in artifacts
+            or identity not in self.predecessor_objects
+            for identity in image_ids
+        ):
+            raise RuntimeError("predecessor image is outside its frozen object bundle")
+
+        def cell_artifact(kind: str, suffix: str) -> dict[str, Any]:
+            return one(
+                [
+                    artifacts[identity]
+                    for identity in image_ids
+                    if artifacts[identity]["kind"] == kind
+                    and local_artifact_id(identity) == suffix
+                ],
+                f"predecessor {suffix} artifact",
+            )
+
+        def provenance(media_type: str) -> dict[str, Any]:
+            return one(
+                [
+                    artifact
+                    for artifact in artifacts.values()
+                    if artifact["kind"] == "provenance"
+                    and artifact["platform"] == PLATFORM
+                    and artifact["media_type"] == media_type
+                    and f"/images/{IMAGE_VARIANT}/{PLATFORM}/"
+                    in f"/{artifact['path']}"
+                    and artifact["id"] in self.predecessor_objects
+                ],
+                f"predecessor {media_type} provenance",
+            )
+
+        def validate_object(artifact: dict[str, Any]) -> pathlib.Path:
+            path = pathlib.Path(self.predecessor_objects[artifact["id"]])
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError("predecessor image object is not a regular file")
+            if (
+                path.stat().st_size != artifact["size_bytes"]
+                or sha256_file(path) != artifact["sha256"]
+            ):
+                raise RuntimeError(
+                    f"predecessor object differs from {artifact['id']}"
+                )
+            return path
+
+        qcow2 = cell_artifact("qcow2-image", "qcow2")
+        uki = cell_artifact("uki", "uki-a")
+        uki_b = cell_artifact("uki", "uki-b")
+        metadata_artifact = cell_artifact("image-metadata", "metadata")
+        assembly_artifact = provenance(ASSEMBLY_MEDIA_TYPE)
+        finalized_artifact = provenance(FINALIZED_SET_MEDIA_TYPE)
+        qcow2_path = validate_object(qcow2)
+        uki_path = validate_object(uki)
+        validate_object(uki_b)
+        metadata = read_json(validate_object(metadata_artifact))
+        assembly = read_json(validate_object(assembly_artifact))
+        finalized = read_json(validate_object(finalized_artifact))
+        assembly_digest = digest(assembly["schema_version"], assembly)
+        finalized_facts = {entry["id"]: entry for entry in finalized["artifacts"]}
+        files = {entry["kind"]: entry for entry in assembly["files"]}
+        if (
+            assembly["schema_version"] != "aos.image.unsigned-assembly/v4"
+            or assembly["release_id"] != expected["release_id"]
+            or assembly["platform"] != PLATFORM
+            or assembly["system_variant"] != IMAGE_VARIANT
+            or finalized["schema_version"] != "aos.image.finalized-set/v1"
+            or finalized["assembly_digest"] != assembly_digest
+            or finalized["platform"] != PLATFORM
+            or finalized["system_variant"] != IMAGE_VARIANT
+            or len(finalized_facts) != len(finalized["artifacts"])
+            or metadata.get("schema_version") != "aos.image.metadata/v2"
+            or metadata["assembly_digest"] != assembly_digest
+            or metadata["release_id"] != expected["release_id"]
+            or metadata["version"] != assembly["version"]
+            or metadata["efi"]["normal_a"]["artifact"]["sha256"] != uki["sha256"]
+            or metadata["efi"]["normal_a"]["artifact"]["size_bytes"]
+            != uki["size_bytes"]
+            or metadata["efi"]["normal_b"]["artifact"]["sha256"]
+            != uki_b["sha256"]
+            or metadata["efi"]["normal_b"]["artifact"]["size_bytes"]
+            != uki_b["size_bytes"]
+            or "host-static-ability-contract" not in files
+        ):
+            raise RuntimeError("predecessor finalized image controls disagree")
+        for local_id, kind, artifact in (
+            ("qcow2", "qcow2", qcow2),
+            ("uki-a", "uki-a", uki),
+            ("uki-b", "uki-b", uki_b),
+            ("metadata", "metadata", metadata_artifact),
+        ):
+            fact = finalized_facts.get(local_id, {})
+            if (
+                fact.get("kind") != kind
+                or fact.get("sha256") != artifact["sha256"]
+                or fact.get("size_bytes") != artifact["size_bytes"]
+            ):
+                raise RuntimeError(
+                    f"predecessor finalized {local_id} differs from its manifest"
+                )
+
+        self.predecessor_image = {
+            "assembly": assembly,
+            "assembly_artifact": assembly_artifact,
+            "finalized_artifact": finalized_artifact,
+            "host_static_contract": files["host-static-ability-contract"],
+            "metadata": metadata,
+            "metadata_artifact": metadata_artifact,
+            "qcow2_artifact": qcow2,
+            "qcow2_path": qcow2_path,
+            "uki_artifact": uki,
+            "uki_b_artifact": uki_b,
+            "uki_path": uki_path,
+            "version": payload["version"],
+        }
 
     def _candidate_runtime_artifact(self) -> dict[str, str]:
         if self.candidate_closure is None:
@@ -781,6 +974,7 @@ class Scenario:
         for local_id, kind, artifact in (
             ("qcow2", "qcow2", self.qcow2_artifact),
             ("uki-a", "uki-a", self.uki_artifact),
+            ("uki-b", "uki-b", self.uki_b_artifact),
             ("metadata", "metadata", self.metadata_artifact),
         ):
             fact = finalized[local_id]
@@ -792,11 +986,14 @@ class Scenario:
                 raise RuntimeError(f"finalized {local_id} fact differs from the manifest")
 
         metadata_uki = self.metadata["efi"]["normal_a"]["artifact"]
+        metadata_uki_b = self.metadata["efi"]["normal_b"]["artifact"]
         if (
             metadata_uki["sha256"] != self.uki_artifact["sha256"]
             or metadata_uki["size_bytes"] != self.uki_artifact["size_bytes"]
+            or metadata_uki_b["sha256"] != self.uki_b_artifact["sha256"]
+            or metadata_uki_b["size_bytes"] != self.uki_b_artifact["size_bytes"]
         ):
-            raise RuntimeError("image metadata differs from the published slot-A UKI")
+            raise RuntimeError("image metadata differs from the published slot UKIs")
         self.initrd_contract = self.assembly["initrd_contract"]
         files = {entry["kind"]: entry for entry in self.assembly["files"]}
         required_files = {
@@ -914,6 +1111,18 @@ class Scenario:
         self.candidate_closure = closure
 
     def assert_running_published_boot(self, machine: PublishedImageMachine) -> None:
+        if machine.expected_image_role == "predecessor":
+            image = self.predecessor_image
+        else:
+            image = {
+                "assembly": self.assembly,
+                "host_static_contract": self.host_static_contract,
+                "metadata": self.metadata,
+                "qcow2_artifact": self.qcow2_artifact,
+                "uki_artifact": self.uki_artifact,
+                "uki_b_artifact": self.uki_b_artifact,
+            }
+
         boot_id = machine.ssh("cat /proc/sys/kernel/random/boot_id").strip()
         if re.fullmatch(
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
@@ -927,33 +1136,39 @@ class Scenario:
             [entry for entry in state["generations"] if entry["number"] == running],
             "running image generation",
         )
-        if generation["slot"] != "A":
-            raise RuntimeError("native ability scenario booted outside published slot A")
+        if generation["slot"] not in {"A", "B"}:
+            raise RuntimeError("native ability scenario booted outside a published slot")
         uki_path = generation["uki_path"]
         if re.fullmatch(r"EFI/Linux/[A-Za-z0-9+._-]+[.]efi", uki_path) is None:
             raise RuntimeError("running image records an unsafe UKI path")
         installed = machine.ssh(
             f"sha256sum /boot/{uki_path} | cut -d ' ' -f1"
         ).strip()
-        if "sha256:" + installed != self.uki_artifact["sha256"]:
-            raise RuntimeError("running guest did not boot the exact published slot-A UKI")
+        expected_uki = (
+            image["uki_artifact"]
+            if generation["slot"] == "A"
+            else image["uki_b_artifact"]
+        )
+        if "sha256:" + installed != expected_uki["sha256"]:
+            raise RuntimeError("running guest did not boot the exact published slot UKI")
         kernel = machine.ssh("uname -r").strip()
         if (
-            kernel != self.assembly["kernel_release"]
-            or kernel != self.metadata["capabilities"]["kernel_release"]
+            kernel != image["assembly"]["kernel_release"]
+            or kernel != image["metadata"]["capabilities"]["kernel_release"]
         ):
             raise RuntimeError("running kernel differs from the published image contract")
-        root_hash = self.metadata["root"]["root_hash"]
+        root_hash = image["metadata"]["root"]["root_hash"]
         machine.ssh(f"grep -Eq '(^| )roothash={re.escape(root_hash)}($| )' /proc/cmdline")
         host_contract = machine.ssh(
             f"sha256sum {HOST_STATIC_CONTRACT} | cut -d ' ' -f1"
         ).strip()
-        if "sha256:" + host_contract != self.host_static_contract["sha256"]:
+        if "sha256:" + host_contract != image["host_static_contract"]["sha256"]:
             raise RuntimeError("running root differs from its host static ability contract")
-        if machine.native_package_runtime:
+        if machine.native_package_runtime and machine.expected_image_role == "candidate":
             self.assert_initrd_handoff(machine, boot_id)
 
         self.boot_ids.add(boot_id)
+        self.rollout_boot_ids[machine.expected_image_role].add(boot_id)
         self.boot_assertions = len(self.boot_ids)
 
     def assert_initrd_handoff(
@@ -1053,7 +1268,19 @@ class Scenario:
         )
         machine.succeed(
             f"test -x {machine.native_package_runtime} && "
-            f"nix-store --verify-path {runtime_path} && "
+            f"nix-store --verify-path {runtime_path}",
+            timeout=1200,
+        )
+        if machine.expected_image_role == "candidate":
+            self.verify_native_package_runtime_service(machine)
+
+    def verify_native_package_runtime_service(
+        self, machine: PublishedImageMachine
+    ) -> None:
+        """Confirms that system activation selected the candidate runtime."""
+
+        runtime_path = self.package_outputs["packageRuntime"]["store_path"]
+        machine.succeed(
             "unit=$(systemctl show aos-activate.service -p ExecStart --value) && "
             "script=$(printf '%s' \"$unit\" | sed -n "
             "'s/.*path=\\([^ ;}}]*\\).*/\\1/p') && "
@@ -1074,6 +1301,76 @@ class Scenario:
             machine.native_tools[tool] = executable
 
         self.bind_native_package_runtime(machine)
+
+    def stage_candidate_registry(self, machine: PublishedImageMachine) -> None:
+        """Pins the guest registry to the exact candidate release in staging."""
+
+        registry_name = self.request["registry"]
+        registry_client = (
+            "andyl"
+            if registry_name == "andyl/main"
+            else registry_name.replace("/", "-")
+        )
+        if re.fullmatch(r"[A-Za-z0-9_-]+", registry_client) is None:
+            raise RuntimeError("request registry does not map to a safe client name")
+        staging_hub = urllib.parse.urlsplit(STAGING_HUB_URL)
+        if (
+            staging_hub.scheme != "https"
+            or not staging_hub.hostname
+            or staging_hub.username is not None
+            or staging_hub.password is not None
+            or staging_hub.query
+            or staging_hub.fragment
+            or staging_hub.path not in {"", "/"}
+        ):
+            raise RuntimeError("staging Hub URL is not a bounded HTTPS origin")
+
+        config_path = f"/etc/apm/registries.d/{registry_client}.toml"
+        source = machine.succeed(f"cat {shlex.quote(config_path)}")
+        config = tomllib.loads(source)
+        registry = config.get("registry", {})
+        signing = registry.get("signing", {})
+        if (
+            registry.get("name") != registry_client
+            or signing.get("required") is not True
+            or not isinstance(signing.get("public_key"), str)
+            or not signing["public_key"].startswith(registry_client + ":Ed25519:")
+        ):
+            raise RuntimeError("baked registry does not carry the required trust anchor")
+
+        lines = source.splitlines()
+        url_lines = [
+            index for index, line in enumerate(lines) if line.startswith("url = ")
+        ]
+        channel_lines = [
+            index for index, line in enumerate(lines) if line.startswith("channel = ")
+        ]
+        tag_lines = [
+            index for index, line in enumerate(lines) if line.startswith("tag = ")
+        ]
+        if len(url_lines) != 1 or len(channel_lines) != 1 or tag_lines:
+            raise RuntimeError(
+                "baked registry does not have the expected URL and channel selector"
+            )
+
+        registry_path = urllib.parse.quote(registry_name, safe="/")
+        staging_url = STAGING_HUB_URL.rstrip("/") + f"/{registry_path}/"
+        lines[url_lines[0]] = f"url = {json.dumps(staging_url)}"
+        lines[channel_lines[0]] = f"tag = {json.dumps(self.payload['version'])}"
+
+        overlay = self.work / f"{machine.name}-{registry_client}.toml"
+        overlay.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        destination = f"/var/lib/apm/config/registries.d/{registry_client}.toml"
+        machine.succeed("install -d -m 0755 /var/lib/apm/config/registries.d")
+        machine.copy_to(overlay, destination + ".new")
+        machine.succeed(
+            f"set -eu; install -m 0644 {shlex.quote(destination + '.new')} "
+            f"{shlex.quote(destination)}; "
+            f"rm {shlex.quote(destination + '.new')}; "
+            f"{machine.guest_tool('apm')} update --system "
+            f"--registry {shlex.quote(registry_client)}",
+            timeout=600,
+        )
 
     def import_candidate_tools(self, machine: PublishedImageMachine) -> None:
         if self.candidate_closure is None:
@@ -1178,7 +1475,8 @@ class Scenario:
             "SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c) -eq 1"
         )
         machine.ssh("test -e /dev/tpm0 && test -e /sys/class/tpm/tpm0")
-        self.bind_native_package_runtime(machine)
+        if machine.expected_image_role == "candidate":
+            self.bind_native_package_runtime(machine)
         self.assert_running_published_boot(machine)
         machine.ssh("PATH=/usr/bin:/usr/sbin:/bin:/sbin aos-sb-enroll", timeout=300)
         machine.reboot()
@@ -1208,6 +1506,7 @@ class Scenario:
             timeout=1800,
         )
         machine.succeed("systemd-tmpfiles --create", timeout=600)
+        self.verify_native_package_runtime_service(machine)
 
     def execute_fixture(
         self, machine: PublishedImageMachine, fixture_script: pathlib.Path = FIXTURE_SCRIPT
@@ -1393,16 +1692,45 @@ class Scenario:
         if self.matrix_spec is not None:
             return self.build_matrix_report(guest_kernel_release)
 
-        expected_boots = (
-            1 + machine.counts.reboot_cycles + machine.hard_power_cycles
-        )
-        if (
-            self.boot_ids != self.handoff_boot_ids
-            or self.boot_assertions != len(self.boot_ids)
-            or self.handoff_assertions != len(self.handoff_boot_ids)
-            or len(self.boot_ids) != expected_boots
-        ):
-            raise RuntimeError("unique boot and initrd handoff coverage is incomplete")
+        rollout_case = SCENARIO_ID == "ability-native-image-rollout"
+        if rollout_case:
+            branch_evidence = {
+                cohort_id: namespace.get("ROLLOUT_BRANCH_EVIDENCE")
+                for cohort_id, namespace in self.fixture_namespaces.items()
+            }
+            if (
+                set(branch_evidence) != {"healthy", "fallback"}
+                or branch_evidence["healthy"]
+                != {
+                    "branch": "healthy",
+                    "outcome": "candidate-healthy",
+                    "retired": True,
+                }
+                or branch_evidence["fallback"]
+                != {
+                    "branch": "fallback",
+                    "outcome": "predecessor-fallback",
+                    "retired": False,
+                }
+                or not self.rollout_boot_ids["candidate"]
+                or not self.rollout_boot_ids["predecessor"]
+                or self.handoff_boot_ids != self.rollout_boot_ids["candidate"]
+                or self.boot_ids
+                != self.rollout_boot_ids["candidate"]
+                | self.rollout_boot_ids["predecessor"]
+            ):
+                raise RuntimeError("published image rollout branch evidence is incomplete")
+        else:
+            expected_boots = (
+                1 + machine.counts.reboot_cycles + machine.hard_power_cycles
+            )
+            if (
+                self.boot_ids != self.handoff_boot_ids
+                or self.boot_assertions != len(self.boot_ids)
+                or self.handoff_assertions != len(self.handoff_boot_ids)
+                or len(self.boot_ids) != expected_boots
+            ):
+                raise RuntimeError("unique boot and initrd handoff coverage is incomplete")
 
         details = {
             check: {"passed": True, "detail": CHECK_DETAILS[check]}
@@ -1424,7 +1752,11 @@ class Scenario:
                 "uki_artifact": self.uki_artifact["id"],
                 "assembly_artifact": self.assembly_artifact["id"],
                 "metadata_artifact": self.metadata_artifact["id"],
-                "assertions": self.boot_assertions,
+                "assertions": (
+                    len(self.rollout_boot_ids["candidate"])
+                    if rollout_case
+                    else self.boot_assertions
+                ),
             },
             "published_tools": {
                 name: artifact["id"] for name, artifact in self.package_outputs.items()
@@ -1450,6 +1782,27 @@ class Scenario:
             "guest_kernel_release": guest_kernel_release,
             "host_kernel_release": os.uname().release,
         }
+        if rollout_case:
+            environment["boot"]["predecessor"] = {
+                "release_id": self.case["predecessor"]["release_id"],
+                "manifest_digest": self.case["predecessor"]["manifest_digest"],
+                "qcow2_artifact": self.predecessor_image["qcow2_artifact"]["id"],
+                "uki_artifact": self.predecessor_image["uki_artifact"]["id"],
+                "assembly_artifact": self.predecessor_image["assembly_artifact"]["id"],
+                "metadata_artifact": self.predecessor_image["metadata_artifact"]["id"],
+                "assertions": len(self.rollout_boot_ids["predecessor"]),
+            }
+            environment["production_rollout"] = {
+                "schema_version": "aos.release.native-image-rollout-environment/v1",
+                "status": "production",
+                "staging_hub_origin": STAGING_HUB_URL,
+                "registry": self.request["registry"],
+                "candidate_version": self.payload["version"],
+                "branches": {
+                    cohort_id: namespace["ROLLOUT_BRANCH_EVIDENCE"]
+                    for cohort_id, namespace in sorted(self.fixture_namespaces.items())
+                },
+            }
         finished = time.time()
         report = {
             "schema_version": "aos.release.qualification-scenario-report/v1",
@@ -1467,9 +1820,10 @@ class Scenario:
             "operations": {
                 "published_boot_assertions": self.boot_assertions,
                 "initrd_handoff_assertions": self.handoff_assertions,
-                "warm_reboots": machine.counts.reboot_cycles,
-                "hard_power_cycles": machine.hard_power_cycles,
-                "metadata_free_reboots": machine.metadata_free_reboots,
+                "warm_reboots": self.total_warm_reboots,
+                "hard_power_cycles": self.total_hard_power_cycles,
+                "metadata_free_reboots": self.total_metadata_free_reboots,
+                "rollout_branches": len(self.fixture_namespaces) if rollout_case else 0,
             },
             "environment": environment,
         }
@@ -1479,14 +1833,27 @@ class Scenario:
         guest_kernel_release: str | None = None
         try:
             self.validate_inputs()
-            cohorts = MATRIX_COHORTS if self.matrix_spec is not None else [
-                {
-                    "id": "ability",
-                    "script": str(FIXTURE_SCRIPT),
-                    "setup": str(SETUP_MODULE),
-                    "qualifiedCells": [],
-                }
-            ]
+            if self.matrix_spec is not None:
+                cohorts = MATRIX_COHORTS
+            elif SCENARIO_ID == "ability-native-image-rollout":
+                cohorts = [
+                    {
+                        "id": branch,
+                        "script": str(FIXTURE_SCRIPT),
+                        "setup": str(SETUP_MODULE),
+                        "qualifiedCells": [],
+                    }
+                    for branch in ("healthy", "fallback")
+                ]
+            else:
+                cohorts = [
+                    {
+                        "id": "ability",
+                        "script": str(FIXTURE_SCRIPT),
+                        "setup": str(SETUP_MODULE),
+                        "qualifiedCells": [],
+                    }
+                ]
             if not isinstance(cohorts, list) or not cohorts:
                 raise RuntimeError("matrix qualification lacks a production cohort")
             qualified_cells = [
@@ -1513,14 +1880,23 @@ class Scenario:
                 ):
                     raise RuntimeError("matrix production cohort input is malformed")
 
+                rollout_case = SCENARIO_ID == "ability-native-image-rollout"
+                image_path = (
+                    self.predecessor_image["qcow2_path"]
+                    if rollout_case
+                    else self.qcow2_path
+                )
                 machine = PublishedImageMachine(
-                    f"ability-candidate-{index}",
-                    self.qcow2_path,
+                    f"ability-{cohort['id']}-{index}",
+                    image_path,
                     self.host_config,
                     self.key,
                     IMAGE.Counts(),
                     scenario=self,
                 )
+                if rollout_case:
+                    machine.expect_published_image("predecessor")
+                    machine.rollout_branch = cohort["id"]
                 self.machine = machine
                 try:
                     self.enroll(machine)
@@ -1533,12 +1909,17 @@ class Scenario:
                     self.fixture_namespaces[cohort["id"]] = namespace
                     self.assert_running_published_boot(machine)
                     observed_kernel = machine.ssh("uname -r").strip()
-                    if guest_kernel_release is None:
+                    if rollout_case and cohort["id"] == "fallback":
+                        pass
+                    elif guest_kernel_release is None:
                         guest_kernel_release = observed_kernel
                     elif guest_kernel_release != observed_kernel:
                         raise RuntimeError(
                             "matrix cohorts observed different guest kernels"
                         )
+                    self.total_warm_reboots += machine.counts.reboot_cycles
+                    self.total_hard_power_cycles += machine.hard_power_cycles
+                    self.total_metadata_free_reboots += machine.metadata_free_reboots
                 finally:
                     machine.stop_processes()
             if self.used_candidate_companions != set(self.candidate_companions):
@@ -1576,7 +1957,7 @@ CHECK_DETAILS = {
         "The same production executor configuration without the opt-in profile retained no "
         "ability adapter or Crucible guest emitter in its realized closure."
     ),
-    "native-adapter-matrix-v1-sha256-5c28bf325246634bcb7c6f76032b712f16138044e9d4b34f65e622364fe535a9": (
+    "native-adapter-matrix-v1-sha256-91e2b2ee0a87b824294f293128670308b8f6c852397491fda5d1908d85649350": (
         "The closed native-adapter matrix bound every durability and authority "
         "cell to the exact adapter interface name, ABI, and descriptor."
     ),

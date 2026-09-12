@@ -11,6 +11,7 @@
   setupBody,
   extraClosures,
   candidateRuntimeCompanions,
+  stagingHubUrl ? null,
   matrixSpec ? null,
   matrixQualifiedCells ? [],
   matrixAdditionalCohorts ? [],
@@ -269,6 +270,11 @@
     export AOS_QUALIFICATION_FIXTURE_CONTRACT=${lib.escapeShellArg fixtureContractDigest}
     export AOS_QUALIFICATION_FIXTURE_ARCHIVE=${lib.escapeShellArg fixtureArchive}
     export AOS_QUALIFICATION_CANDIDATE_RUNTIME_COMPANIONS=${lib.escapeShellArg (builtins.toJSON allCandidateRuntimeCompanions)}
+    export AOS_QUALIFICATION_STAGING_HUB_URL=${lib.escapeShellArg (
+      if stagingHubUrl == null
+      then ""
+      else stagingHubUrl
+    )}
     export AOS_QUALIFICATION_FIXTURE_SCRIPT=${lib.escapeShellArg fixtureScript}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC=${lib.escapeShellArg matrixSpecPath}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS=${lib.escapeShellArg (builtins.toJSON matrixQualifiedCells)}
@@ -336,6 +342,7 @@ in
     "ability-crucible-baseline"
     "ability-native-activation"
     "ability-native-adapter-matrix"
+    "ability-native-image-rollout"
     "ability-native-kubernetes"
     "ability-native-postgresql"
     "ability-native-recovery"
@@ -353,6 +360,8 @@ in
     && cohort.candidateRuntimeCompanions != [])
   matrixAdditionalCohorts;
   assert checks != [];
+  assert (stagingHubUrl != null) == (scenarioId == "ability-native-image-rollout");
+  assert stagingHubUrl == null || builtins.match "https://[^/]+/?" stagingHubUrl != null;
     executable
     // {
       passthru =

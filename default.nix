@@ -428,7 +428,8 @@
       identity = qualificationExecutorIdentity;
       inherit scenarioId;
       checks = qualificationRequirementChecks scenarioId;
-      inherit (spec) testScript;
+      testScript = spec.qualification.testScript or spec.testScript;
+      stagingHubUrl = spec.qualification.stagingHubUrl or null;
       inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };
   nativeAdapterMatrixCohort = import ./tests/fleet/ability-native-power-loss.nix {
@@ -502,6 +503,10 @@
       mkNativeAbilityScenario
       "ability-native-activation"
       ./tests/fleet/ability-native-activation.nix;
+    ability-native-image-rollout =
+      mkNativeAbilityScenario
+      "ability-native-image-rollout"
+      ./tests/fleet/ability-native-image-rollout.nix;
     ability-native-kubernetes =
       mkNativeAbilityScenario
       "ability-native-kubernetes"
