@@ -9,7 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::num::NonZeroUsize;
 use std::os::unix::fs::OpenOptionsExt;
