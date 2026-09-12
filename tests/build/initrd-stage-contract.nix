@@ -56,8 +56,16 @@
   baseLib = system.config.aos.config.evalAtBoot.baseLib;
   frozenHostAbilities = baseLib.passthru.frozenArtifacts."host-static-ability-contract";
   moduleAbi = system.config.aos.system.moduleAbi;
-  emptyHost = builtins.toFile "static-contract-runtime-host.nix" "{}\n";
+  emptyHostSource = pkgs.runCommand "source" {} ''
+    mkdir -p "$out"
+    printf '{}\n' > "$out/host.nix"
+  '';
+  emptyHost = "${emptyHostSource}/host.nix";
   emptyFacts = builtins.toFile "static-contract-runtime-facts.json" "{}\n";
+  runtimeEvalInputClosure = import ../../lib/build/closure-info.nix {inherit pkgs lib;} {
+    pname = "initrd-stage-contract-eval-input-closure";
+    rootPaths = [baseLib emptyHostSource emptyFacts];
+  };
   securityDisabledInitrdServices = securityDisabledSystem.config.boot.initrd.systemd.services;
   securityDisabledHostServices = securityDisabledSystem.config.systemd.services;
 in
@@ -91,7 +99,27 @@ in
       pname = "aos-initrd-stage-contract-check";
       version = "1";
       src = null;
-      buildDeps = [assembly baseLib frozenHostAbilities hostAbilities initrdAbilities pkgs.aos.packageRuntime pkgs.aos.testSupport pkgs.coreutils pkgs.cpio pkgs.erofs-utils pkgs.gawk pkgs.grep pkgs.jq pkgs.zstd];
+      buildDeps =
+        [
+          assembly
+          baseLib
+          frozenHostAbilities
+          hostAbilities
+          initrdAbilities
+          pkgs.aos.packageRuntime
+          pkgs.aos.testSupport
+          pkgs.coreutils
+          pkgs.cpio
+          pkgs.erofs-utils
+          pkgs.gawk
+          pkgs.grep
+          pkgs.jq
+          pkgs.nix
+          pkgs.zstd
+          runtimeEvalInputClosure
+        ]
+        ++ hostAbilities.passthru.abilityPackageManifests
+        ++ initrdAbilities.passthru.abilityPackageManifests;
       phases = [
         {
           name = "check";
@@ -131,6 +159,20 @@ in
               "$runtime_eval"
 
             runtime_store="local?root=$TMPDIR/static-contract-runtime-store"
+            mkdir -p "$TMPDIR/static-contract-runtime-store/nix/store"
+            while IFS= read -r store_path; do
+              cp -a --no-preserve=ownership \
+                "$store_path" "$TMPDIR/static-contract-runtime-store/nix/store/"
+            done < ${runtimeEvalInputClosure}/store-paths
+
+            ${pkgs.nix}/bin/nix-store --store "$runtime_store" --init
+            ${pkgs.nix}/bin/nix-store --store "$runtime_store" \
+              --load-db < ${runtimeEvalInputClosure}/registration
+            for runtime_input in "$base_lib" ${emptyHostSource} ${emptyFacts}; do
+              ${pkgs.nix}/bin/nix-store --store "$runtime_store" \
+                --check-validity "$runtime_input"
+            done
+
             export AOS_ROOT="$runtime_state"
             export AOS_PROFILE_ROOT="$runtime_profile"
             export APM_SYSTEM_CONFIG_DIR="$runtime_config"
@@ -253,6 +295,22 @@ in
               done < required-units
             }
 
+            resolve_archived_store_path() {
+              store_root=$1
+              store_path=$2
+              case "$store_path" in
+                /nix/store/*)
+                  archived_path="$store_root/store/''${store_path#/nix/store/}"
+                  ;;
+                *)
+                  echo "archive reference is not an absolute store path: $store_path" >&2
+                  return 1
+                  ;;
+              esac
+              test -e "$archived_path" || return 1
+              printf '%s\n' "$archived_path"
+            }
+
             finish_canonical_json() {
               candidate=$1
               candidate_size=$(stat -c %s "$candidate")
@@ -316,7 +374,8 @@ in
             )
             cmp "$initrd_abilities" \
               unit-graph/usr/lib/aos/initrd/static-ability-contract.json
-            initrd_fs_target=unit-graph/etc/systemd/system/initrd-fs.target
+            initrd_fs_target=$(resolve_archived_store_path unit-graph/nix \
+              "$(readlink unit-graph/lib/systemd/system/initrd-fs.target)")
             grep -Fx "OnFailure=emergency.target" "$initrd_fs_target" >/dev/null
             grep -Fx "OnFailureJobMode=replace-irreversibly" \
               "$initrd_fs_target" >/dev/null
@@ -349,14 +408,18 @@ in
             truncate -s $((canonical_activation_size - 1)) canonical-activation.json
             cmp canonical-activation.json "$activation_selection"
 
-            initrd_controller=unit-graph/etc/systemd/system/aos-ability-initrd-controller.service
+            initrd_controller=$(resolve_archived_store_path unit-graph/nix \
+              "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-controller.service)")
             grep -F "Before=initrd-fs.target initrd-switch-root.target" \
               "$initrd_controller" >/dev/null
             grep -F "RemainAfterExit=true" "$initrd_controller" >/dev/null
-            grep -F "__ability-stage-run" "$initrd_controller" >/dev/null
+            initrd_controller_script=$(resolve_archived_store_path unit-graph/nix \
+              "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$initrd_controller")")
+            grep -F "__ability-stage-run" "$initrd_controller_script" >/dev/null
             grep -F -- "--input /etc/aos/initrd-ability-activation.json" \
-              "$initrd_controller" >/dev/null
-            initrd_barrier=unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service
+              "$initrd_controller_script" >/dev/null
+            initrd_barrier=$(resolve_archived_store_path unit-graph/nix \
+              "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service)")
             grep -F "Requires=aos-ability-initrd-controller.service" \
               "$initrd_barrier" >/dev/null
             grep -F "After=aos-ability-initrd-controller.service" \
@@ -364,11 +427,13 @@ in
             grep -F "Before=initrd-fs.target initrd-switch-root.target" \
               "$initrd_barrier" >/dev/null
             grep -F "RemainAfterExit=true" "$initrd_barrier" >/dev/null
-            grep -F "__ability-stage-validate" "$initrd_barrier" >/dev/null
-            grep -F -- "--from-stage initrd" "$initrd_barrier" >/dev/null
-            grep -F -- "--root /sysroot" "$initrd_barrier" >/dev/null
+            initrd_barrier_script=$(resolve_archived_store_path unit-graph/nix \
+              "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$initrd_barrier")")
+            grep -F "__ability-stage-validate" "$initrd_barrier_script" >/dev/null
+            grep -F -- "--from-stage initrd" "$initrd_barrier_script" >/dev/null
+            grep -F -- "--root /sysroot" "$initrd_barrier_script" >/dev/null
             grep -F -- "--image-profile /sysroot/var/lib/profiles/image" \
-              "$initrd_barrier" >/dev/null
+              "$initrd_barrier_script" >/dev/null
             ${pkgs.erofs-utils}/bin/fsck.erofs \
               --extract=root-tree --xattrs --preserve \
               ${assembly}/inputs/root.img >/dev/null
@@ -376,13 +441,17 @@ in
               root-tree/usr/lib/aos/host/static-ability-contract.json
             cmp "$initrd_abilities" \
               root-tree/usr/lib/aos/initrd/static-ability-contract.json
-            receiver_unit=root-tree/etc/systemd/system/aos-ability-host-receiver.service
-            test -e "$receiver_unit"
+            root_toplevel=$(resolve_archived_store_path root-tree/nix.lower \
+              "$(readlink root-tree/aos-toplevel)")
+            root_system_units=$(resolve_archived_store_path root-tree/nix.lower \
+              "$(readlink "$root_toplevel/systemd-units")")
+            receiver_unit="$root_system_units/aos-ability-host-receiver.service"
+            test -L "$receiver_unit"
             for dependent in \
               aos-eval.service \
               aos-graph-compile.service \
               aos-config.target; do
-              requirement="root-tree/etc/systemd/system/$dependent.requires/aos-ability-host-receiver.service"
+              requirement="$root_system_units/$dependent.requires/aos-ability-host-receiver.service"
               test -L "$requirement"
               requirement_target=$(readlink "$requirement")
               resolved_requirement=$(realpath -m -s \
