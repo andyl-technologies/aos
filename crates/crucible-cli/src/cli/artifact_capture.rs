@@ -420,20 +420,6 @@ pub(crate) fn decode_lifecycle_artifact_bundle(
     decode_artifact_object_records(bytes, HEADER_BYTES, "lifecycle", maximum_payload_bytes)
 }
 
-/// Restores and authenticates the legacy signal-only object closure.
-pub(crate) fn decode_signal_artifact_bundle(
-    bytes: &[u8],
-    maximum_payload_bytes: u64,
-) -> Result<std::sync::Arc<crucible::MemoryDagStore>, CliError> {
-    const HEADER_BYTES: usize = 16;
-    if bytes.len() < HEADER_BYTES || bytes.get(..8) != Some(&b"CSAB\0\0\0\x01"[..]) {
-        return Err(artifact_error(
-            "signal artifact bundle has an invalid header",
-        ));
-    }
-    decode_artifact_object_records(bytes, HEADER_BYTES, "signal", maximum_payload_bytes)
-}
-
 fn decode_artifact_object_records(
     bytes: &[u8],
     header_bytes: usize,

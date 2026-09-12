@@ -513,17 +513,11 @@ fn validate_synchronous_finding_exact_retention(
         );
     }
 
-    let disposition_matches = match (policy.retention(), retention) {
-        (None, PreparedFindingExactRetention::Incomplete { reason, .. }) => {
-            *reason == FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis
-        }
-        (Some(policy), PreparedFindingExactRetention::Disabled { .. }) => !policy.exact_findings(),
-        (Some(policy), PreparedFindingExactRetention::Captured { .. }) => policy.exact_findings(),
-        (Some(policy), PreparedFindingExactRetention::Incomplete { reason, .. }) => {
-            policy.exact_findings()
-                && *reason != FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis
-        }
-        (None, _) => false,
+    let policy = policy.retention();
+    let disposition_matches = match retention {
+        PreparedFindingExactRetention::Disabled { .. } => !policy.exact_findings(),
+        PreparedFindingExactRetention::Captured { .. } => policy.exact_findings(),
+        PreparedFindingExactRetention::Incomplete { .. } => policy.exact_findings(),
     };
     if !disposition_matches {
         return Err(
@@ -1247,9 +1241,9 @@ mod lock_tests {
 
     use crate::AllowAllAttemptAdmission;
     use crucible_campaign::{
-        AssignmentId, AttemptId, AttemptResourceLimits, AttemptRetentionPolicyBasis,
-        CampaignExecutorStore, CampaignLineageId, CampaignRepository, ExactCheckpointId,
-        ExecutionRetentionIntent, ExecutorCompatibilityProfile,
+        AssignmentId, AttemptId, AttemptResourceLimits, CampaignExecutorStore, CampaignLineageId,
+        CampaignRepository, ExactCheckpointId, ExecutionRetentionIntent,
+        ExecutorCompatibilityProfile,
     };
     use crucible_cas::content_store::{
         ContentId, DirectoryBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
@@ -1340,12 +1334,7 @@ mod lock_tests {
             .expect("recorded retention policy")
             .expect("model received retention policy");
         assert_eq!(recorded.basis(), basis);
-        assert!(
-            recorded
-                .retention()
-                .expect("authenticated retention policy")
-                .exact_findings()
-        );
+        assert!(recorded.retention().exact_findings());
     }
 
     #[test]
@@ -1519,72 +1508,6 @@ mod lock_tests {
             error,
             SynchronousCampaignExecutorError::FindingExactRetentionMismatch { .. }
         ));
-    }
-
-    #[test]
-    fn synchronous_executor_rejects_a_foreign_finding_retention_policy_basis() {
-        let repository = Arc::new(CampaignRepository::new(
-            Arc::new(MemoryBlobBackend::new(
-                "synchronous-retention-negative",
-                64 * 1024 * 1024,
-            )),
-            Arc::new(MemoryRefBackend::new()),
-        ));
-        let (lineage, _policy, _branch, admitted, candidate) =
-            crate::executor_pool::tests::campaign_attempt_fixture(
-                &repository,
-                "synchronous-retention-negative",
-            );
-        let basis = repository
-            .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
-            .expect("retention policy basis");
-        let foreign_basis =
-            AttemptRetentionPolicyBasis::new(basis.snapshot(), basis.admission(), None);
-        let epoch = DaemonEpoch::from_bytes([0x73; 16]).expect("daemon epoch");
-        let resources = AttemptResourceLimits::new(1, 4096, 8192, 64).expect("resources");
-        let request = SubmitAttemptRequest::new(
-            AssignmentId::from_bytes([0x74; 16]).expect("assignment"),
-            epoch,
-            lineage.id().expect("lineage ID"),
-            admitted.attempt,
-            resources,
-            ExecutionRetentionIntent::Discard,
-        )
-        .expect("submit request")
-        .with_retention_policy_basis(foreign_basis)
-        .expect("foreign policy-bound request");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let model = RetentionRecordingModel {
-            product: Some(AttemptExecutionProduct::observation(candidate)),
-            observed: Arc::new(Mutex::new(None)),
-            calls: Arc::clone(&calls),
-        };
-        let mut executor = SynchronousCampaignExecutor::new(
-            CampaignExecutorStore::new(Arc::clone(&repository)),
-            model,
-            RepositoryAttemptAdmission::new(
-                Arc::clone(&repository),
-                ExecutorCompatibilityProfile::from_lineage(&lineage),
-            ),
-            epoch,
-            resources,
-            ExecutionCancellation::default(),
-        );
-
-        let response = executor
-            .submit_attempt(&request)
-            .expect("foreign policy rejection response");
-
-        assert!(
-            matches!(
-                response.disposition(),
-                SubmitAttemptDisposition::Rejected {
-                    reason: ExecutorRejection::Incompatible,
-                }
-            ),
-            "{response:?}"
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

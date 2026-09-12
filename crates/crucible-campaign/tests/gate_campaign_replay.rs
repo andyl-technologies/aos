@@ -432,9 +432,16 @@ fn observation(
         1,
         format!("strict planner child {label}").into_bytes(),
     )?;
-    let measurements = fixture
-        .repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new())?)?;
+    let measurements =
+        fixture
+            .repository
+            .publish_measurement_set(&MeasurementSet::from_evaluation(
+                hash("replay.measurement-definitions"),
+                1,
+                hash("replay.measurement-evaluation"),
+                b"replay-measurements".to_vec(),
+                BTreeSet::new(),
+            )?)?;
     let properties = fixture
         .repository
         .publish_property_verdict_set(&PropertyVerdictSet::new(BTreeMap::new())?)?;

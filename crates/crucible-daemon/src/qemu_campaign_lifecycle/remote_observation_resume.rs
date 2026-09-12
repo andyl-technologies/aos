@@ -18,7 +18,7 @@ use crucible_campaign::{AttemptResourceLimits, ExecutionRetentionIntent, Observa
 use crucible_cas::content_store::DirectoryBlobBackend;
 use crucible_qemu::LinuxQemuAttemptHostConfig;
 
-use super::legacy_run::{
+use super::campaign_run::{
     GuardedCampaignReplayClosure, GuardedDefaultCampaignObservationSource,
     GuardedDefaultCampaignRunRequest, run_guarded_default_campaign_with_host,
 };

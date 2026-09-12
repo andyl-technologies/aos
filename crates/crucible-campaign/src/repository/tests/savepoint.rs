@@ -710,47 +710,6 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
             .is_empty()
     );
 
-    let discard = SavepointCaptureResolution {
-        command: CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"discard-coexisting-capture",
-        )),
-        expected_snapshot: resolved.new_snapshot,
-        request: accepted.request,
-        outcome: SavepointCaptureOutcome::Discarded,
-    };
-    assert!(matches!(
-        repository.resolve_savepoint_capture("savepoint-coexist", &discard, &assignment, &status,),
-        Err(CampaignRepositoryError::InvalidRequest {
-            reason: "savepoint-capture-discard-is-not-yet-supported"
-        })
-    ));
-    assert_eq!(
-        repository
-            .head("savepoint-coexist")
-            .expect("discard rejection leaves head unchanged")
-            .snapshot_id(),
-        resolved.new_snapshot
-    );
-
-    let discarded = repository
-        .install_historical_savepoint_capture_resolution(
-            "savepoint-coexist",
-            &discard,
-            &assignment,
-            &status,
-        )
-        .expect("install formerly supported discard history");
-    assert_eq!(discarded.outcome, SavepointCaptureOutcome::Discarded);
-    assert_eq!(
-        repository
-            .savepoint_capture_resolution_at(discarded.new_snapshot, accepted.request)
-            .expect("historical capture disposition")
-            .expect("historical capture is resolved")
-            .outcome,
-        SavepointCaptureOutcome::Discarded
-    );
-
     let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     assert!(
         restarted
@@ -761,14 +720,9 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
     );
     let ready_replay = restarted
         .resolve_savepoint_capture("savepoint-coexist", &resolution, &assignment, &status)
-        .expect("ready resolution replay after discard");
+        .expect("ready resolution replay after restart");
     assert_eq!(ready_replay.new_snapshot, resolved.new_snapshot);
     assert!(ready_replay.replayed);
-    let discard_replay = restarted
-        .resolve_savepoint_capture("savepoint-coexist", &discard, &assignment, &status)
-        .expect("historical discard command replay after restart");
-    assert_eq!(discard_replay.new_snapshot, discarded.new_snapshot);
-    assert!(discard_replay.replayed);
 }
 
 #[test]
@@ -983,32 +937,6 @@ fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
         .expect("exact first command replay");
     assert_eq!(replay.new_snapshot, first.new_snapshot);
     assert!(replay.replayed);
-
-    let discard = SavepointCaptureResolution {
-        command: CampaignCommandId::from_hash(CampaignHash::derive(
-            "test",
-            b"discard-first-selected-source",
-        )),
-        expected_snapshot: second.new_snapshot,
-        request: first_capture.request,
-        outcome: SavepointCaptureOutcome::Discarded,
-    };
-    let discarded = repository
-        .install_historical_savepoint_capture_resolution(
-            CAMPAIGN,
-            &discard,
-            &first_assignment,
-            &first_status,
-        )
-        .expect("historical selected-source discard");
-
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
-    let selected = restarted
-        .savepoint_continuation_source_at(discarded.new_snapshot, second.continuation)
-        .expect("cold selected source")
-        .expect("selected source exists");
-    assert_eq!(selected.selection(), first.selection);
-    assert_eq!(selected.provenance(), &first_selection);
 }
 
 #[test]

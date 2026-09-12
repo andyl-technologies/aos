@@ -542,6 +542,9 @@ impl CampaignRepository {
             planner_scan_index_anchor_key(),
             empty,
         )?;
+        let ledger = self.put_budget_ledger(crate::CampaignBudgetLedger::empty(
+            MerkleMap::empty_content_id()?,
+        )?)?;
         let snapshot = CampaignSnapshot::genesis(
             CampaignLineageId::from_content_id(lineage_content)?,
             CampaignPolicyId::from_content_id(policy_content)?,
@@ -556,13 +559,8 @@ impl CampaignRepository {
                 accounting: empty,
                 coordination: empty,
             },
-        )?
-        .with_budget_ledger(
-            self.put_budget_ledger(
-                crate::CampaignBudgetLedger::empty()
-                    .with_request_spending(MerkleMap::empty_content_id()?)?,
-            )?,
-        );
+            ledger,
+        )?;
         let content_id = self.put_snapshot(&snapshot)?;
         self.validate_complete_head(content_id)?;
         match self

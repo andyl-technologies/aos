@@ -1784,7 +1784,7 @@ mod tests {
         let candidate = observation_candidate(
             marker,
             attempt,
-            MeasurementSet::new(BTreeMap::new()).expect("measurements"),
+            crate::crucible_measurement::empty_test_measurement_set(),
         );
         PreparedSemanticAttemptResult::new(candidate, None).expect("prepared result")
     }

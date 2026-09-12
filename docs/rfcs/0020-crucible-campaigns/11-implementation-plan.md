@@ -3595,8 +3595,7 @@ non-default before this gate.
 Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 
 - [ ] **T-CAM-8.1** Implement campaign create/validate/start/pause/resume/stop,
-  budget, steer, semantic `branch`, campaign `derive`, status, and watch, with
-  `fork` only as a deprecated compatibility alias for `branch` if needed. The
+  budget, steer, semantic `branch`, campaign `derive`, status, and watch. The
   checked local client now exposes canonical create/derive inputs and exact
   finite or already-imported generated operator branch requests in addition to
   lifecycle control. Exhaustive `--all` authenticates the exact current or
@@ -3736,57 +3735,23 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel
   explicit-fork/search-expansion state models. The non-interactive local-QEMU
-  `run` path, including `--watch`, now executes through the authenticated
-  scenario-default campaign owner. Watch records name the exact campaign and
-  snapshot and pair that head with the scheduler evidence captured at the same
-  incorporation boundary; the CLI retains them under the owner's fixed bound
-  until its synchronous backend result is rendered. Campaign-produced replay
-  and historical selection-free `run` replay now use the same owner; unsupported
-  historical decision kinds remain on their compatible session path. Standard
-  local production-QEMU virtual-time saves now reach the requested stop through
-  that campaign owner, replay the accepted attempt once through scoped exact
-  capture, authenticate the Ready request/resolution, source attempt, stop,
-  configuration, physical closure, and scheduler evidence, and remove the
-  temporary physical closure before returning. They export the version-5
-  handle and version-3 logical DAG closure index described below, so current
-  resume and fork readers consume the result without native exact-resume
-  acceleration. Campaign-backed
-  marker saves now use the same exact-capture owner with a named-boundary stop.
-  They export a version-5 handle with a campaign-marker-event proof containing
-  the retained, canonically recomputable scheduler event and a required,
-  digest-bound campaign replay closure. Campaign virtual-time saves use the same
-  v5 closure contract. Export authenticates the canonical closure against the
-  exact schedule before durable writes, stores it as a content-addressed object,
-  and retains it through the opaque reference in local checkpoint closure-index
-  v3. Readers preserve version-3 session handles, selection-free version-4
-  marker handles, and closure-index v2 compatibility. Typed schedules missing a
-  closure, tampered closure bytes, and missing referenced objects fail before
-  execution.
+  `run` path, including `--watch`, executes through the authenticated
+  scenario-default campaign owner. Watch records bind the exact campaign head
+  to scheduler evidence captured at the same incorporation boundary, and the
+  CLI retains them under the owner's fixed bound until rendering completes.
+  Current campaign-produced replay uses that same owner and requires its typed,
+  authenticated schedule and replay closure.
 
-  Standard non-interactive local-QEMU resume now uses the campaign owner for
-  version-3, version-4, and version-5 handles and bare checkpoint hashes backed
-  by closure-index v2 or v3. Delivery-order, random-draw, preemption, and typed
-  guest Selection schedules authenticate the logical source and replay closure,
-  capture and restore the exact source, continue to quiescence, virtual-time, or
-  terminal completion, apply replayed guest replies through the live selectable
-  boundary, and replay-validate the descendant checkpoint. Standard unattended
-  unchanged local-QEMU fork targeting virtual time or stopped completion uses
-  the same continuation owner and projects its source and terminal proof through
-  the fork contract. Its reproduction artifact retains the authenticated replay
-  closure and rematerializes the full schedule through campaign replay.
-  Remote fat-checkpoint resume now carries a versioned replay-closure envelope
-  only for typed Selection schedules. The envelope identity binds the exact
-  scenario, configuration, checkpoint bytes, schema version, size, and
-  canonical closure. A newly started daemon reconstructs and authenticates the
-  closure after ordinary checkpoint validation and before backend or session
-  allocation, then retains the existing interactive, watch, stop, and cleanup
-  controls. Selection-free requests preserve their prior wire bytes. Local thin
-  replay and session-owned fork fallbacks still reject typed Selection evidence
-  before launch.
-  Historical override/application-randomness resume schedules, divergent typed
-  fork execution, property stops, quiescence and property saves, search, fuzz,
-  remaining replay producers, triage, and broader long-lived session migration
-  remain open.
+  Production local-QEMU saves reach their requested boundary through campaign
+  ownership and export the current authenticated handle. Local-QEMU resume and
+  fork consume that handle through campaign continuation ownership. They reject
+  unsupported command shapes, missing or tampered closure evidence, and
+  unrecognized handle schemas before execution; they never change ownership to
+  a Session fallback. The distinct remote interactive Session surface remains a
+  separately selected current capability.
+
+  Search, fuzz, remaining replay producers, triage, and broader long-lived
+  Session migration remain open.
 - [x] **T-CAM-8.5** Publish user documentation and the worked network campaign
   as an executable fixture. The public Crucible guide now documents the
   shipped single-host campaign surface: strict offline import, managed daemon

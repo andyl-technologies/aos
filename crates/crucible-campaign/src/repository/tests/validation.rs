@@ -221,6 +221,7 @@ fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_ato
         published_snapshot.snapshot.active_policy(),
         forged_roots,
         transition,
+        published_snapshot.snapshot.budget_ledger(),
     )
     .expect("forged objective successor");
     let forged_content = repository
@@ -854,7 +855,9 @@ fn generated_observation_with_coverage(
         )
         .expect("publish progressive child");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(
+            &MeasurementSet::test_evaluation(b"empty", BTreeSet::new()).expect("measurements"),
+        )
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(
@@ -941,6 +944,7 @@ fn cold_ancestry_rejects_a_forged_branch_acceptance_summary() {
         accepted_snapshot.snapshot.active_policy(),
         accepted_snapshot.snapshot.roots(),
         CampaignFactId::from_content_id(forged_fact).expect("forged fact ID"),
+        accepted_snapshot.snapshot.budget_ledger(),
     )
     .expect("forge acceptance successor");
     let forged_content = repository
@@ -992,8 +996,14 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
         .put_branch_request(&request)
         .expect("put request");
     let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, &request)
+        .expect("branch acceptance summary");
     let transition_content = repository
-        .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
         .expect("put transition");
     let mut roots = parent.snapshot.roots();
     roots.exploration = repository
@@ -1060,6 +1070,7 @@ fn ancestry_rejects_branch_request_with_an_unrelated_root_change() {
         parent.snapshot.active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1106,8 +1117,14 @@ fn ancestry_rejects_a_forged_initial_frontier_projection() {
         .put_branch_request(&request)
         .expect("put request");
     let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, &request)
+        .expect("branch acceptance summary");
     let transition_content = repository
-        .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
         .expect("put transition");
 
     let mut roots = parent.snapshot.roots();
@@ -1162,6 +1179,7 @@ fn ancestry_rejects_a_forged_initial_frontier_projection() {
         parent.snapshot.active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1224,6 +1242,7 @@ fn imported_ancestry_rejects_cross_type_mutation_command_reuse() {
         head.snapshot().active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1489,7 +1508,7 @@ fn pin_rejects_stale_or_nonauthoritative_configuration_before_writes() {
         command: CampaignCommandId::from_hash(CampaignHash::derive("test", b"stale-pin")),
         expected_snapshot: CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"stale-pin-snapshot",
         ))
         .expect("stale snapshot id"),
@@ -1536,6 +1555,7 @@ fn imported_pin_transition_requires_the_exact_pin_projection() {
         source.snapshot().active_policy(),
         roots,
         transition,
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1567,7 +1587,7 @@ fn stale_and_invalid_transitions_do_not_advance_head() {
         "stale",
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"stale",
         ))
         .expect("stale snapshot id"),
@@ -1767,7 +1787,7 @@ fn head_rejects_a_snapshot_with_missing_parent_and_transition() {
         .expect("create");
     let missing_parent = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"missing-parent",
     ))
     .expect("parent id");
@@ -1783,6 +1803,7 @@ fn head_rejects_a_snapshot_with_missing_parent_and_transition() {
         created.snapshot().active_policy(),
         created.snapshot().roots(),
         missing_transition,
+        crate::test_budget_ledger_id(),
     )
     .expect("damaged snapshot");
     let damaged_content = repository.put_snapshot(&damaged).expect("put damaged");
@@ -1831,6 +1852,7 @@ fn head_rejects_forged_control_successors_and_noncontrol_transitions() {
         created.snapshot().active_policy(),
         changed_roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1860,6 +1882,7 @@ fn head_rejects_forged_control_successors_and_noncontrol_transitions() {
         created.snapshot().active_policy(),
         created.snapshot().roots(),
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged snapshot");
     let forged_content = repository
@@ -1904,6 +1927,7 @@ fn imported_derivation_rejects_changed_semantic_roots() {
         source.snapshot().active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged derivation");
     let forged_content = repository
@@ -1984,6 +2008,7 @@ fn imported_derivation_enforces_the_bounded_generator_closure() {
         oversized_policy_id,
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged derivation");
     let forged_content = repository
@@ -2033,6 +2058,11 @@ fn head_rejects_genesis_without_canonical_configuration_membership() {
             accounting: empty,
             coordination: empty,
         },
+        repository
+            .put_budget_ledger(
+                crate::CampaignBudgetLedger::empty(empty).expect("empty budget ledger"),
+            )
+            .expect("publish budget ledger"),
     )
     .expect("malformed genesis");
     let content = repository.put_snapshot(&malformed).expect("snapshot");
@@ -2271,11 +2301,28 @@ fn planner_invocations_bind_artifact_and_state_to_one_engine() {
 
 #[test]
 fn unowned_fact_reference_families_fail_closed() {
-    let (repository, lineage, _) = fixture();
-    let lineage_content = repository.put_lineage(&lineage).expect("lineage");
-    let asserted_branch_request = crate::BranchRequestId::from_content_id(lineage_content)
-        .expect("same broad-kind asserted ID");
-    let fact = CampaignFact::BranchRequestIssued(asserted_branch_request);
+    let (repository, _, _) = fixture();
+    let budget_ledger = crate::CampaignBudgetLedger::empty(
+        MerkleMap::empty_content_id().expect("empty spending root"),
+    )
+    .expect("budget ledger");
+    let budget_ledger_content = repository
+        .put_budget_ledger(budget_ledger)
+        .expect("put budget ledger");
+    let asserted_branch_request =
+        crate::BranchRequestId::from_content_id(budget_ledger_content.content_id())
+            .expect("same broad-kind and schema asserted ID");
+    let fact = CampaignFact::BranchRequestAccepted {
+        request: asserted_branch_request,
+        summary: BranchAcceptanceSummary::new(
+            BranchAcceptanceCount::Exact(1),
+            BranchAcceptanceCount::Exact(0),
+            BranchAcceptanceCount::Exact(1),
+            1,
+            1,
+        )
+        .expect("branch summary"),
+    };
     let fact_content = repository.put_fact(&fact).expect("put fact");
     assert!(matches!(
         repository.verify_campaign_closure(fact_content),

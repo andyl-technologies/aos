@@ -26,7 +26,7 @@ impl TemporalGraphFork {
         finding_fingerprint: ContentHash,
     ) -> Result<FindingReproductionArtifact, EngineError> {
         FindingReproductionArtifact::capture(
-            FindingDiscoveryPath::InteractiveFork,
+            FindingDiscoveryPath::CampaignFork,
             finding_fingerprint,
             scenario,
             &self.branch,

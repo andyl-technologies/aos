@@ -25,9 +25,9 @@ use crucible_campaign::{
     FindingCandidateBundle, FindingCandidateBundleId, FindingExactCheckpointAuthenticationError,
     FindingExactCheckpointAuthenticator, FindingExactPins, FindingKind,
     FindingMinimizationEvidence, FindingSignature, FindingSignatureMinimizationEvidence,
-    FindingTarget, MeasurementSet, Observation, ObservationCandidate, PinChange, PinRequest,
-    PinRetention, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy, RetentionPolicy,
-    ScenarioDefId, StopOutcome, SubmitAttemptRequest,
+    FindingTarget, Observation, ObservationCandidate, PinChange, PinRequest, PinRetention,
+    ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy, RetentionPolicy, ScenarioDefId,
+    StopOutcome, SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_cas::content_store::{
@@ -993,7 +993,7 @@ fn retain_packaged_pending_finding(
         .load_attempt(attempt)
         .expect("load packaged attempt");
     let measurements = repository
-        .publish_measurement_set(&MeasurementSet::new(BTreeMap::new()).expect("measurements"))
+        .publish_measurement_set(&crate::crucible_measurement::empty_test_measurement_set())
         .expect("publish measurements");
     let properties = repository
         .publish_property_verdict_set(

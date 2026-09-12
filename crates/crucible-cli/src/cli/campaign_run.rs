@@ -1,8 +1,8 @@
-//! Thin CLI projection for guarded campaign-backed legacy runs.
+//! CLI projection for campaign-owned local QEMU runs and continuations.
 //!
 //! This module validates command compatibility, translates the deployment and
 //! backend configuration into one shared daemon request, and renders the
-//! daemon-owned campaign result through the existing run output contract.
+//! daemon-owned campaign result through the shared run output contract.
 
 use super::*;
 
@@ -26,25 +26,30 @@ use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
 };
 
-/// Returns whether the shared campaign owner can resume this logical checkpoint exactly.
-pub(super) fn guarded_campaign_resume_eligible(
+/// Validates that the shared campaign owner can resume this logical checkpoint exactly.
+fn validate_campaign_resume_contract(
     plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
-) -> bool {
-    plan.execution_mode == RunExecutionMode::ToCompletion
+) -> Result<(), CliError> {
+    let supported = plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
         && guarded_resume_stop(plan, evidence).is_ok()
-        && campaign_resume_evidence_supported(evidence)
+        && campaign_resume_evidence_supported(evidence);
+    supported.then_some(()).ok_or_else(|| {
+        backend_error(
+            "the requested checkpoint, stop, or control mode does not satisfy the campaign QEMU resume contract",
+        )
+    })
 }
 
-/// Returns whether the shared campaign owner can execute a standard fork exactly.
-pub(super) fn guarded_campaign_fork_eligible(
+/// Validates that the shared campaign owner can execute a standard fork exactly.
+fn validate_campaign_fork_contract(
     plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
-) -> bool {
-    plan.execution_mode == RunExecutionMode::ToCompletion
+) -> Result<(), CliError> {
+    let supported = plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.startup_commands == [SessionCommandKind::Fork, SessionCommandKind::Continue]
         && plan.initial_control_commands == [SessionCommandKind::Query]
         && plan.accepted_interactive_commands.is_empty()
@@ -54,7 +59,12 @@ pub(super) fn guarded_campaign_fork_eligible(
             &evidence.scenario_form,
         )
         .is_ok()
-        && campaign_resume_evidence_supported(evidence)
+        && campaign_resume_evidence_supported(evidence);
+    supported.then_some(()).ok_or_else(|| {
+        backend_error(
+            "the requested checkpoint, fork recipe, stop, or control mode does not satisfy the campaign QEMU fork contract",
+        )
+    })
 }
 
 fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
@@ -88,16 +98,12 @@ fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
 }
 
 /// Resumes one local-QEMU checkpoint through campaign ownership.
-pub(super) fn run_local_qemu_campaign_resume_workflow(
+pub(crate) fn run_local_qemu_campaign_resume_workflow(
     backend: &ResolvedLocalBackend,
     resume_plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<ResumeWorkflowReport, CliError> {
-    if !guarded_campaign_resume_eligible(resume_plan, evidence) {
-        return Err(backend_error(
-            "the requested checkpoint, stop, or control mode does not have an exact campaign-backed QEMU resume adapter",
-        ));
-    }
+    validate_campaign_resume_contract(resume_plan, evidence)?;
 
     run_local_qemu_campaign_continuation_workflow(backend, resume_plan, evidence, None)
 }
@@ -128,7 +134,7 @@ fn run_local_qemu_campaign_continuation_workflow(
         .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
     let checkpoint_root = checkpoint_directory.path().to_path_buf();
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "legacy-campaign-resume-checkpoints",
+        "campaign-resume-checkpoints",
         &checkpoint_root,
     ));
     let checkpoints = Arc::new(
@@ -226,11 +232,7 @@ pub(super) fn run_local_qemu_campaign_fork_workflow(
     fork_plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<ForkWorkflowReport, CliError> {
-    if !guarded_campaign_fork_eligible(fork_plan, evidence) {
-        return Err(backend_error(
-            "the requested checkpoint, fork recipe, stop, or control mode does not have an exact campaign-backed QEMU fork adapter",
-        ));
-    }
+    validate_campaign_fork_contract(fork_plan, evidence)?;
 
     let resume_plan = ResumeInvocationPlan {
         savepoint: fork_plan.source.clone(),
@@ -380,12 +382,19 @@ pub(super) fn run_local_qemu_campaign_replay(
     campaign_run_report(run_plan, &campaign, terminal_outcome, status)
 }
 
-/// Returns whether the shared campaign owner can execute this run exactly.
-pub(super) fn guarded_campaign_run_eligible(plan: &RunInvocationPlan) -> bool {
-    guarded_discovery_stop(plan).is_ok() && guarded_campaign_execution_shape_eligible(plan)
+/// Validates that the shared campaign owner can execute this run exactly.
+fn validate_campaign_run_contract(plan: &RunInvocationPlan) -> Result<(), CliError> {
+    guarded_discovery_stop(plan)?;
+    guarded_campaign_execution_shape_supported(plan)
+        .then_some(())
+        .ok_or_else(|| {
+            backend_error(
+                "the requested control mode does not satisfy the campaign QEMU run contract",
+            )
+        })
 }
 
-fn guarded_campaign_execution_shape_eligible(plan: &RunInvocationPlan) -> bool {
+fn guarded_campaign_execution_shape_supported(plan: &RunInvocationPlan) -> bool {
     plan.execution_mode == RunExecutionMode::ToCompletion
         && plan.save_policy == RunSavePolicy::Never
         && plan.startup_commands == [SessionCommandKind::Start, SessionCommandKind::Continue]
@@ -395,10 +404,10 @@ fn guarded_campaign_execution_shape_eligible(plan: &RunInvocationPlan) -> bool {
         && !plan.collect_execution_fingerprints
 }
 
-/// Returns whether the shared campaign owner can capture this save exactly.
-pub(super) fn guarded_campaign_save_eligible(plan: &SaveInvocationPlan) -> bool {
-    guarded_campaign_save_stop(plan).is_ok()
-        && guarded_campaign_execution_shape_eligible(&plan.run_plan)
+/// Validates that the shared campaign owner can capture this save exactly.
+fn validate_campaign_save_contract(plan: &SaveInvocationPlan) -> Result<(), CliError> {
+    guarded_campaign_save_stop(plan)?;
+    validate_campaign_run_contract(&plan.run_plan)
 }
 
 /// Runs one local-QEMU semantic save through campaign savepoint capture.
@@ -409,11 +418,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     save_plan: &SaveInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    if !guarded_campaign_save_eligible(save_plan) {
-        return Err(backend_error(
-            "the requested save boundary or control mode does not have an exact campaign-backed QEMU adapter",
-        ));
-    }
+    validate_campaign_save_contract(save_plan)?;
 
     let run_plan = &save_plan.run_plan;
     let deployment_path =
@@ -438,7 +443,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
         .map_err(|error| campaign_run_error("create transient exact checkpoint store", error))?;
     let checkpoint_root = checkpoint_directory.path().to_path_buf();
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "legacy-campaign-savepoints",
+        "campaign-savepoints",
         &checkpoint_root,
     ));
     let checkpoints = Arc::new(
@@ -475,7 +480,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
 
     let mut outcome =
         finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)?;
-    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-live-checkpoint");
+    append_qemu_control_plane_execution_proof(&mut outcome, backend, "save-campaign-default-path");
     Ok(outcome)
 }
 
@@ -517,7 +522,7 @@ fn campaign_save_workflow_report(
     let evidence = savepoint.evidence();
     let frontier = evidence.frontier();
     let checkpoint = recorded_checkpoint_for_configuration(configuration, frontier)
-        .map_err(|error| campaign_run_error("build legacy logical checkpoint", error))?;
+        .map_err(|error| campaign_run_error("build logical checkpoint", error))?;
     let oracle = validate_savepoint_checkpoint(save_plan, configuration, &checkpoint, frontier)?;
     let mut run = campaign_run_report(
         &save_plan.run_plan,
@@ -590,7 +595,7 @@ fn campaign_resume_workflow_report(
             .any(|observation| observation.id() == resume.source_observation())
     {
         return Err(CliError::Identity(String::from(
-            "campaign resume source proof differs from the requested legacy checkpoint",
+            "campaign resume source proof differs from the requested checkpoint",
         )));
     }
     match (
@@ -951,11 +956,7 @@ pub(super) fn run_local_qemu_campaign_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    if !guarded_campaign_run_eligible(run_plan) {
-        return Err(backend_error(
-            "the requested stop, budget, save, or interactive mode does not have an exact campaign-backed QEMU adapter",
-        ));
-    }
+    validate_campaign_run_contract(run_plan)?;
 
     let deployment_path =
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
@@ -1381,5 +1382,5 @@ fn campaign_run_error(context: &str, error: impl fmt::Display) -> CliError {
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #[allow(clippy::expect_used)]
-#[path = "legacy_campaign/tests.rs"]
+#[path = "campaign_run/tests.rs"]
 mod tests;

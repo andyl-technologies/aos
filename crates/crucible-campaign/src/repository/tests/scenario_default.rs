@@ -92,8 +92,14 @@ fn forge_branch_request_successor(
         .put_branch_request(request)
         .expect("put forged branch request");
     let request_id = BranchRequestId::from_content_id(request_content).expect("request id");
+    let summary = repository
+        .branch_acceptance_summary(parent.snapshot.roots().graph, request)
+        .expect("branch acceptance summary");
     let transition_content = repository
-        .put_fact(&CampaignFact::BranchRequestIssued(request_id))
+        .put_fact(&CampaignFact::BranchRequestAccepted {
+            request: request_id,
+            summary,
+        })
         .expect("put forged request fact");
 
     let mut roots = parent.snapshot.roots();
@@ -148,6 +154,7 @@ fn forge_branch_request_successor(
         parent.snapshot.active_policy(),
         roots,
         CampaignFactId::from_content_id(transition_content).expect("transition id"),
+        crate::test_budget_ledger_id(),
     )
     .expect("forged branch-request successor");
     repository
@@ -260,7 +267,7 @@ fn scenario_default_request_uses_the_ordinary_snapshot_bound_service_path() {
     assert_eq!(admitted.admission.content_id().schema_version(), 3);
     assert_eq!(
         admission.retention_policy(),
-        Some(policy.id().expect("active policy ID"))
+        policy.id().expect("active policy ID")
     );
     assert_eq!(
         admission.role(),
@@ -274,48 +281,6 @@ fn scenario_default_request_uses_the_ordinary_snapshot_bound_service_path() {
     let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
     cold.validate_complete_head(admitted.new_snapshot.content_id())
         .expect("cold validation accepts admitted exact default");
-
-    let parent = repository
-        .read_snapshot(proposed.new_snapshot.content_id())
-        .expect("scenario-default admission parent");
-    let valid = repository
-        .read_snapshot(admitted.new_snapshot.content_id())
-        .expect("scenario-default admission successor");
-    let legacy = AttemptAdmission::new(admission.attempt(), admission.role());
-    assert_eq!(legacy.schema_version(), 2);
-    let legacy_content = repository
-        .put_attempt_admission(&legacy)
-        .expect("publish historical v2 admission");
-    let mut legacy_roots = valid.snapshot.roots();
-    legacy_roots.accounting = parent.snapshot.roots().accounting;
-    for (key, value) in
-        attempt_admission_upserts(legacy_content, legacy).expect("historical v2 upserts")
-    {
-        legacy_roots.accounting = repository
-            .merkle
-            .insert(legacy_roots.accounting, key, value)
-            .expect("historical v2 accounting")
-            .content_id();
-    }
-    let legacy_fact = repository
-        .put_fact(&CampaignFact::AttemptAdmitted(
-            legacy.id().expect("historical v2 admission ID"),
-        ))
-        .expect("historical v2 fact");
-    let legacy_successor = repository
-        .budgeted_successor(
-            parent.snapshot.id().expect("admission parent ID"),
-            parent.snapshot.lineage(),
-            parent.snapshot.active_policy(),
-            legacy_roots,
-            CampaignFactId::from_content_id(legacy_fact).expect("historical v2 fact ID"),
-        )
-        .expect("historical v2 successor");
-    let legacy_successor = repository
-        .put_snapshot(&legacy_successor)
-        .expect("publish historical v2 successor");
-    cold.validate_complete_head(legacy_successor)
-        .expect("cold validation preserves historical v2 admission");
 }
 
 #[test]
