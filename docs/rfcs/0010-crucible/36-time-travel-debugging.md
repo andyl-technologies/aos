@@ -701,7 +701,7 @@ the CLI catalogue in [`23-cli.md`](23-cli.md)**.
 
   TARGET (choose one)
     <artifact>            a reproduction artifact (06 §7.1) to attach to
-    <savepoint>           a savepoint / checkpoint hash (07)
+    <savepoint>           a current portable savepoint handle (07)
     --session <id:epoch:seed>  attach to a running session via the daemon (21);
                                seed is 64 lowercase hexadecimal digits
 
@@ -1366,18 +1366,15 @@ peer-credential completion remain open in T-DBG-11.
   `(seed, scenario, schedule)` artifacts. Completion remains open until the session
   and CLI expose the explicit transition and prove that forbidden requests never
   fork as a side effect.
-- [x] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
+- [ ] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
   `--at-failure` = first assertion-violation point, `--at-checkpoint`), accept a
   divergence-bisection `(node, icount, kind)` coordinate directly as a goto target,
   and accepts `--at-failure` as an explicit target. — satisfies [DBG-27], [DBG-28];
   spec §36.6.
-  Completed by `checks.crucible.phase6.debugTargetResolver`:
-  `TemporalGraph::debug_resolve_target` accepts direct `--at` coordinates,
-  event-log `--at-event` sequences, `--at-failure` by scanning for the first
-  assertion-state violation, `--at-checkpoint` content addresses, and node-local
-  divergence-bisection coordinates, then returns the `DebugGotoRequest` consumed by
-  restore-plus-replay `debug_goto`.
-- [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
+  The previous gate depended on retired artifact/savepoint debug ownership and
+  has been removed. Completion requires executable coverage through the current
+  authenticated daemon Session owner.
+- [ ] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,
   `--checkpoint-stride`) and verbs attach-gdb/fork-debug/goto/reverse-step/reverse-continue
@@ -1388,41 +1385,12 @@ peer-credential completion remain open in T-DBG-11.
   read/mutate boundary. — satisfies [DBG-7], [DBG-30], [DBG-31], [DBG-32], [DBG-33],
   [DBG-34], [DBG-35], [DBG-36], [DBG-37], [DBG-38], [DBG-39], [DBG-40]; spec §36.7,
   §36.8, §36.9, §36.10.
-  Completed under `checks.crucible.phase6.debugCliSurface`:
-  `crucible debug` now parses artifact/savepoint and `--session` targets plus
-  `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, `--node`,
-  `--gdb-listen`, `--read-only`, `--allow-mutate`, `--checkpoint-stride`, and the
-  attach-gdb/goto/reverse-step/reverse-continue verbs. The CLI planner records only
-  delegated session commands and mediated gdbstub-proxy operations, defaults
-  artifacts to `--at-failure`, savepoints to their checkpoint coordinate, and
-  sessions to the current coordinate, realizes reverse-step through the debug
-  reverse-step/goto restore-plus-replay path rather than unsupported forward session
-  step modes, proves that the CLI holds no debugger state, defaults to read-only
-  inspection, exposes the no
-  symbol server policy, requires coherent multi-vCPU gdb threads, and keeps raw gdb
-  single-step disabled. The daemonless local route fails with exit `4` before a
-  generic QEMU admission probe because its instantiate/replay executor remains
-  open under T-DBG-9/T-DBG-10; it never returns a successful planned-only result.
-  The remote unary client now implements an
-  explicit `fork-debug` plus argv `exec`, interactive `pty`, and configured
-  in-guest `ssh` byte bridging. The fork RPC requires the transport-derived
-  controller to hold `control`, `mutate`, and `shell`, records a typed
-  guest-introspection trigger/action on the whole-world branch, and every guest
-  record is rejected while the session remains canonical. Authenticated remote
-  `goto`, `reverse-step`, and `reverse-continue` send only operator intent under
-  the exclusive controller lease. The actor overwrites caller state with its
-  current configuration, checked scheduler-event prefix, and
-  event-to-schedule-prefix map before invoking the existing
-  replay-oracle-checked time-travel path. Each schedule-matching causal decision
-  advances that map to its exact prefix, quantum boundaries bind the completed
-  configuration, and other records retain the deterministic
-  scheduler boundary at which forward stepping would expose them. A per-session
-  operation gate prevents controller release or reassignment between lease
-  authorization and actor completion. Checkpoint-only resume inputs do not carry
-  the historical event log, so reverse event-like operations fail explicitly at
-  the actor's resume-history floor while instruction and coordinate `goto`
-  remain available. The CLI accepts the closed reverse grain set and
-  `quiescent`, `at:<ticks>`, or canonical compact-binary 17a conditions.
+  The authenticated remote Session client implements explicit `fork-debug`,
+  GDB relay, argv `exec`, interactive `pty`, and configured in-guest `ssh`
+  byte bridging. The fork RPC requires the transport-derived controller to hold
+  `control`, `mutate`, and `shell`. The previous gate mixed this current
+  surface with retired artifact/savepoint targets and has been removed; a
+  focused Session-only gate remains required.
 - [x] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
   debugger gateway, a stable asynchronous GDB listener, bounded fail-closed RSP
   parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced

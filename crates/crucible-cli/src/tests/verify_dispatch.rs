@@ -2544,7 +2544,7 @@ pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
     };
     let error = replay_reproduction_artifact(&hash_replay_cli, hash_args)
         .expect_err("offline replay must reject a bare checkpoint hash");
-    assert!(error.to_string().contains("active session"));
+    assert!(error.to_string().contains("not a portable savepoint"));
 
     Ok(())
 }

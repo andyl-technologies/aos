@@ -637,12 +637,7 @@ pub(super) fn replay_to_savepoint(
     artifact: &CliReproductionArtifact,
 ) -> Result<ReplayToSavepointReport, CliError> {
     let savepoint = resolve_savepoint_ref("replay --to", Some(target))?;
-    let evidence = match savepoint_evidence("replay --to", &savepoint) {
-        Ok(evidence) => evidence,
-        Err(store_error) => {
-            embedded_terminal_savepoint_evidence(artifact, &savepoint)?.ok_or(store_error)?
-        }
-    };
+    let evidence = savepoint_evidence("replay --to", &savepoint)?;
     validate_embedded_scenario_identity("replay --to savepoint", &evidence.scenario, artifact)
         .map_err(|error| match error {
             CliError::Identity(message) => CliError::Artifact(message),
@@ -666,71 +661,6 @@ pub(super) fn replay_to_savepoint(
         oracle,
         materialization,
     })
-}
-
-fn embedded_terminal_savepoint_evidence(
-    artifact: &CliReproductionArtifact,
-    savepoint: &ResumeSavepointRef,
-) -> Result<Option<ResumeHandleEvidence>, CliError> {
-    let ResumeSavepointRef::CheckpointHash(target) = savepoint else {
-        return Ok(None);
-    };
-    let Some(contract_bytes) = optional_single_component_payload(
-        artifact,
-        LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
-        "live QEMU replay contract",
-    )?
-    else {
-        return Ok(None);
-    };
-    let contract = LiveQemuReplayContract::decode(contract_bytes)?;
-    if contract.terminal_configuration != format_content_hash_ref(*target) {
-        return Ok(None);
-    }
-    let model_bytes = required_single_component_payload(
-        artifact,
-        MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE,
-        "model reproduction",
-    )?;
-    let model = crucible::ReproductionArtifact::from_compact_binary(model_bytes)
-        .map_err(|error| artifact_error(format!("decode replay --to embedded model: {error}")))?;
-    let scenario_form = model.scenario_form().clone();
-    let scenario = model.scenario_def();
-    let schedule = model.schedule().clone();
-    let replay_closure_bytes = optional_single_component_payload(
-        artifact,
-        CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE,
-        "campaign replay closure",
-    )?;
-    let replay_closure = authenticated_replay_closure(
-        &scenario_form,
-        &schedule,
-        replay_closure_bytes,
-        "replay --to embedded savepoint",
-    )?;
-    let configuration = crucible::Configuration {
-        def: scenario.clone(),
-        schedule: schedule.clone(),
-    };
-    if configuration.id() != *target {
-        return Err(CliError::Identity(format!(
-            "replay --to embedded terminal configuration {} did not match target {}",
-            format_content_hash_ref(configuration.id()),
-            format_content_hash_ref(*target)
-        )));
-    }
-    let frontier = validate_resume_handle_frontier(&schedule, contract.final_frontier_ticks)?;
-    let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
-    Ok(Some(ResumeHandleEvidence {
-        scenario_form,
-        scenario,
-        schedule,
-        configuration,
-        checkpoint,
-        replay_closure,
-        source_observation_proof: None,
-        source_observation_evidence: None,
-    }))
 }
 
 pub(super) fn prove_replay_schedule_prefix(

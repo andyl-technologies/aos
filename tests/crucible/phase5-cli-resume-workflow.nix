@@ -59,7 +59,7 @@
       }
       {
         label = "T-CLI-10 local resume progress";
-        needle = "handle- or store-backed local-double resume";
+        needle = "handle-backed local-double resume";
       }
       {
         label = "T-CLI-10 remote daemon resume progress";
@@ -135,7 +135,7 @@
       }
       {
         label = "resume savepoint ref";
-        needle = "enum ResumeSavepointRef";
+        needle = "struct ResumeSavepointRef";
       }
       {
         label = "savepoint handle decoder";
@@ -148,10 +148,6 @@
       {
         label = "resume resolver";
         needle = "fn resolve_resume_savepoint";
-      }
-      {
-        label = "checkpoint hash parser";
-        needle = "fn parse_blake3_content_hash";
       }
       {
         label = "resume handle scenario payload";
@@ -275,7 +271,7 @@
       }
       {
         label = "resume planning test";
-        needle = "cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs";
+        needle = "cli_resume_workflow_plans_handles_and_rejects_nonportable_inputs";
       }
       {
         label = "resume execution test";
