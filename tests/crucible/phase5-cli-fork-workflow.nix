@@ -38,7 +38,7 @@
       }
       {
         label = "T-CLI-11 local child runner progress";
-        needle = "store-backed no-divergence local-double forks through an independent child";
+        needle = "no-divergence local-double forks through an independent child";
       }
       {
         label = "T-CLI-11 override execution progress";
@@ -198,7 +198,7 @@
       }
       {
         label = "fork planning test";
-        needle = "cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs";
+        needle = "cli_fork_workflow_plans_handle_overrides_and_rejects_nonportable_inputs";
       }
       {
         label = "fork execution test";

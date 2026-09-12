@@ -428,22 +428,7 @@ pub(crate) fn savepoint_handle_bytes(
         .save_boundary_evidence
         .as_ref()
         .map(|evidence| &evidence.proof);
-    let schema = if matches!(
-        boundary_proof,
-        Some(SaveBoundaryProof::CampaignObservation { .. })
-    ) {
-        CAMPAIGN_OBSERVATION_SAVEPOINT_HANDLE_SCHEMA
-    } else if outcome.savepoint_replay_closure.is_some() {
-        REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA
-    } else if matches!(
-        boundary_proof,
-        Some(SaveBoundaryProof::CampaignMarkerEvent { .. })
-    ) {
-        CAMPAIGN_MARKER_SAVEPOINT_HANDLE_SCHEMA
-    } else {
-        SAVEPOINT_HANDLE_SCHEMA
-    };
-    artifact_line(&mut text, &["schema", schema]);
+    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
     artifact_line(&mut text, &["label", &plan.label]);
     artifact_line(&mut text, &["checkpoint", checkpoint]);
     artifact_line(

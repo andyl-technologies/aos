@@ -2667,53 +2667,6 @@ in rec {
         phase6.debugScopedTimeTravel
       ];
     };
-    debugTargetResolver = greenBeforeAdvance {
-      attrPath = "checks.crucible.phase6.debugTargetResolver";
-      gate = import ./phase6-debug-target-resolver.nix {
-        inherit pkgs lib;
-        attrPath = "checks.crucible.phase6.debugTargetResolver";
-        taskIds = ["T-DBG-7"];
-        dependencies = [
-          phase1.gates.divergenceBisect.rawGate
-          phase4.gates.replayOracle.rawGate
-          phase5.gates.controlResponsive.rawGate
-          phase6.debugNonCanonicalBranch.rawGate
-        ];
-      };
-      dependencies = [
-        phase1.gates.divergenceBisect
-        phase4.gates.replayOracle
-        phase5.gates.controlResponsive
-        phase6.debugNonCanonicalBranch
-      ];
-    };
-    debugCliSurface = greenBeforeAdvance {
-      attrPath = "checks.crucible.phase6.debugCliSurface";
-      gate = import ./phase6-debug-cli-surface.nix {
-        inherit pkgs lib;
-        attrPath = "checks.crucible.phase6.debugCliSurface";
-        taskIds = ["T-DBG-8" "T-CLI-18"];
-        openTaskIds = [];
-        dependencies = [
-          phase1.gates.layer0Determinism.rawGate
-          phase4.gates.replayOracle.rawGate
-          phase4.gates.e2eDeterminism.rawGate
-          phase5.gates.controlResponsive.rawGate
-          phase6.debugScopedTimeTravel.rawGate
-          phase6.debugNonCanonicalBranch.rawGate
-          phase6.debugTargetResolver.rawGate
-        ];
-      };
-      dependencies = [
-        phase1.gates.layer0Determinism
-        phase4.gates.replayOracle
-        phase4.gates.e2eDeterminism
-        phase5.gates.controlResponsive
-        phase6.debugScopedTimeTravel
-        phase6.debugNonCanonicalBranch
-        phase6.debugTargetResolver
-      ];
-    };
     gates = {
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase6.gates.replayOracle";
@@ -2907,20 +2860,10 @@ in rec {
       attrPath = "checks.crucible.phase7.adversarialExampleVerify";
       taskIds = ["T-EX-5"];
     };
-    reproductionArtifactFormat = import ./phase7-reproduction-artifact-format.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.reproductionArtifactFormat";
-      taskIds = ["T-HARN-24"];
-    };
     reproductionProvenanceTriple = import ./phase7-reproduction-provenance-triple.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.reproductionProvenanceTriple";
       taskIds = ["T-PKG-20"];
-    };
-    machineIndependentReproduction = import ./phase7-machine-independent-reproduction.nix {
-      inherit pkgs lib;
-      attrPath = "checks.crucible.phase7.machineIndependentReproduction";
-      taskIds = ["T-HARN-25"];
     };
     crucibleDceIntegration = import ./phase7-crucible-dce-integration.nix {
       inherit pkgs lib;

@@ -1541,7 +1541,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "interactive",
                 "watch",
             ][..],
-            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A savepoint handle / checkpoint content hash (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
+            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A current portable savepoint handle (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
         ),
         (
             "fork",
@@ -1554,12 +1554,12 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "interactive",
                 "watch",
             ][..],
-            "about=Fork a run from a savepoint with a new seed or decision override\nusage=Usage: crucible fork [OPTIONS] <SAVEPOINT>\nsavepoint=The fork point: a savepoint handle / checkpoint hash (07)\noverrides=Override a decision at/after the fork point (05 §3). Repeatable\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nlabel=Label the forked branch\ninteractive=Drive the forked session interactively\nwatch=Stream the live status line (20 §9)\n",
+            "about=Fork a run from a savepoint with a new seed or decision override\nusage=Usage: crucible fork [OPTIONS] <SAVEPOINT>\nsavepoint=The fork point: a current portable savepoint handle (07)\noverrides=Override a decision at/after the fork point (05 §3). Repeatable\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nlabel=Label the forked branch\ninteractive=Drive the forked session interactively\nwatch=Stream the live status line (20 §9)\n",
         ),
         (
             "replay",
             &["artifact", "check", "to", "bisect"][..],
-            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle or checkpoint hash\nbisect=Bisect this artifact against another (24 §5)\n",
+            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle\nbisect=Bisect this artifact against another (24 §5)\n",
         ),
         (
             "search",

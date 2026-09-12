@@ -115,7 +115,7 @@ fn resume_evidence_for_scenario(
 
 fn default_resume_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ResumeInvocationPlan {
     ResumeInvocationPlan {
-        savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+        savepoint: resume_savepoint_ref(evidence),
         store_root: store.to_path_buf(),
         terminal_condition: RunTerminalCondition::Stopped,
         max_virtual_time: None,
@@ -130,7 +130,7 @@ fn default_resume_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ResumeI
 
 fn default_fork_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ForkInvocationPlan {
     ForkInvocationPlan {
-        source: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+        source: resume_savepoint_ref(evidence),
         label: String::from("campaign-unchanged-fork"),
         artifact_dir: store.join("artifacts"),
         store_root: store.to_path_buf(),
@@ -144,6 +144,33 @@ fn default_fork_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ForkInvoc
         startup_commands: vec![SessionCommandKind::Fork, SessionCommandKind::Continue],
         initial_control_commands: vec![SessionCommandKind::Query],
         accepted_interactive_commands: Vec::new(),
+    }
+}
+
+fn resume_savepoint_ref(evidence: &ResumeHandleEvidence) -> ResumeSavepointRef {
+    ResumeSavepointRef {
+        path: PathBuf::from("campaign-test.crucible-savepoint"),
+        handle: SavepointHandle {
+            label: String::from("campaign-test"),
+            checkpoint: evidence.checkpoint.id,
+            scenario_id_hex: evidence.scenario.id().to_hex(),
+            scenario_label: String::from("campaign-test.scn"),
+            scenario_payload: evidence.scenario_form.to_compact_binary(),
+            schedule_payload: evidence.schedule.to_compact_binary(),
+            replay_closure_payload: evidence.replay_closure.to_canonical_bytes().ok(),
+            frontier_ticks: evidence.checkpoint.virtual_time.ticks,
+            at: SaveAtArg::VirtualTime,
+            selector: None,
+            boundary_proof: Some(SavepointBoundaryProof::Coordinate {
+                frontier_ticks: evidence.checkpoint.virtual_time.ticks,
+                quanta: evidence.schedule.len() as u64,
+            }),
+            boundary_predicate: None,
+            terminal_condition: RunTerminalCondition::VirtualTime,
+            materialization: String::from("campaign-test"),
+            oracle_status: String::from("campaign-test"),
+            canonical_log_digest: content_address_bytes(b"campaign-test"),
+        },
     }
 }
 
@@ -1206,7 +1233,7 @@ fn campaign_virtual_time_save_exports_closure_for_unchanged_resume_and_fork_read
 }
 
 #[test]
-fn campaign_marker_save_exports_v4_event_proof_for_resume_and_fork_readers() {
+fn campaign_marker_save_exports_current_event_proof_for_resume_and_fork_readers() {
     let marker = "guarded-campaign-save-fixture-marker";
     assert_campaign_save_exports_closure(
         &["--at", "marker", "--marker", marker],
@@ -1611,8 +1638,8 @@ fn assert_campaign_save_exports_closure(
                 marker_entry.event_payload().string("marker"),
                 Some(proved_marker.name.as_str())
             );
-            let handle = std::fs::read_to_string(&output).expect("marker v5 handle");
-            assert!(handle.contains("schema\tcrucible.savepoint-handle.v5\n"));
+            let handle = std::fs::read_to_string(&output).expect("marker v6 handle");
+            assert!(handle.contains("schema\tcrucible.savepoint-handle.v6\n"));
             assert!(handle.contains("campaign-replay-closure\tcrucible-hash:"));
             assert!(handle.contains("boundary-proof\tcampaign-marker-event\t"));
             assert!(handle.contains("boundary-predicate\t"));
@@ -1638,38 +1665,12 @@ fn assert_campaign_save_exports_closure(
                 decoded.boundary_predicate,
                 Some(crucible::Predicate::guest_marker(proved_marker.clone()))
             );
-            if !with_selection {
-                let v4_handle = handle
-                    .lines()
-                    .filter(|line| !line.starts_with("campaign-replay-closure\t"))
-                    .map(|line| {
-                        if line == "schema\tcrucible.savepoint-handle.v5" {
-                            String::from("schema\tcrucible.savepoint-handle.v4")
-                        } else {
-                            line.to_owned()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    + "\n";
-                let v4_handle = decode_savepoint_handle(v4_handle.as_bytes())
-                    .expect("historical selection-free v4 marker handle remains readable");
-                savepoint_handle_evidence("resume", &v4_handle)
-                    .expect("historical v4 marker evidence synthesizes an empty closure");
-            }
-
-            let mislabeled_v3 = handle.replace(
-                "schema\tcrucible.savepoint-handle.v5",
-                "schema\tcrucible.savepoint-handle.v4",
-            );
-            assert!(decode_savepoint_handle(mislabeled_v3.as_bytes()).is_err());
-
             let wrong_hash = handle.replace(
                 &format_content_hash_ref(*content_hash),
                 &format_content_hash_ref(crucible::ContentHash::default()),
             );
             let error = decode_savepoint_handle(wrong_hash.as_bytes())
-                .expect_err("v5 campaign marker hash must bind its canonical event");
+                .expect_err("v6 campaign marker hash must bind its canonical event");
             assert!(error.to_string().contains("canonical event"));
 
             let wrong_predicate = handle
@@ -1750,30 +1751,11 @@ fn assert_campaign_save_exports_closure(
                     .proof,
                 SaveBoundaryProof::Coordinate
             );
-            let handle = std::fs::read_to_string(&output).expect("virtual-time v5 handle");
-            assert!(handle.contains("schema\tcrucible.savepoint-handle.v5\n"));
+            let handle = std::fs::read_to_string(&output).expect("virtual-time v6 handle");
+            assert!(handle.contains("schema\tcrucible.savepoint-handle.v6\n"));
             assert!(handle.contains("campaign-replay-closure\tcrucible-hash:"));
             decode_savepoint_handle(handle.as_bytes())
-                .expect("v5 decoder accepts campaign coordinate proof");
-            if !with_selection {
-                let v3_handle = handle
-                    .lines()
-                    .filter(|line| !line.starts_with("campaign-replay-closure\t"))
-                    .map(|line| {
-                        if line == "schema\tcrucible.savepoint-handle.v5" {
-                            String::from("schema\tcrucible.savepoint-handle.v3")
-                        } else {
-                            line.to_owned()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    + "\n";
-                let v3_handle = decode_savepoint_handle(v3_handle.as_bytes())
-                    .expect("historical selection-free v3 coordinate handle remains readable");
-                savepoint_handle_evidence("resume", &v3_handle)
-                    .expect("historical v3 coordinate evidence synthesizes an empty closure");
-            }
+                .expect("v6 decoder accepts campaign coordinate proof");
         }
         StopCondition::Observation(condition) => {
             let boundary = outcome
@@ -1820,12 +1802,6 @@ fn assert_campaign_save_exports_closure(
                 pending.source_observation_evidence.as_deref(),
                 Some(&retained_evidence)
             );
-
-            let mislabeled = handle.replace(
-                "schema\tcrucible.savepoint-handle.v6",
-                "schema\tcrucible.savepoint-handle.v5",
-            );
-            assert!(decode_savepoint_handle(mislabeled.as_bytes()).is_err());
 
             let wrong_checkpoint = handle
                 .lines()
@@ -2110,7 +2086,7 @@ fn assert_campaign_save_exports_closure(
         handle_evidence
             .replay_closure
             .validate_for_schedule(&handle_evidence.scenario_form, &handle_evidence.schedule)
-            .expect("v5 handle closure authenticates its typed schedule");
+            .expect("v6 handle closure authenticates its typed schedule");
         assert!(
             ensure_session_replay_evidence_supported(
                 "typed fork regression",
@@ -2171,7 +2147,7 @@ fn assert_campaign_save_exports_closure(
         }
 
         for (reader, mut plan, mut fork_plan, evidence) in [(
-            "v5 handle",
+            "v6 handle",
             handle_resume_plan.clone(),
             handle_fork_plan.clone(),
             handle_evidence.clone(),
@@ -2317,39 +2293,21 @@ fn assert_campaign_save_exports_closure(
             );
         }
 
-        let handle_text = std::fs::read_to_string(&output).expect("read v5 handle");
+        let handle_text = std::fs::read_to_string(&output).expect("read v6 handle");
         let missing_closure = handle_text
             .lines()
             .filter(|line| !line.starts_with("campaign-replay-closure\t"))
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        assert!(decode_savepoint_handle(missing_closure.as_bytes()).is_err());
         if handle_evidence.source_observation_proof.is_some() {
+            assert!(decode_savepoint_handle(missing_closure.as_bytes()).is_err());
             return;
         }
-        let historical_schema = match stop {
-            StopCondition::NamedBoundary(_) => "crucible.savepoint-handle.v4",
-            StopCondition::VirtualTimeNanoseconds(_) => "crucible.savepoint-handle.v3",
-            _ => panic!("typed portable-save regression uses marker or virtual time"),
-        };
-        let typed_v4_handle = handle_text
-            .lines()
-            .filter(|line| !line.starts_with("campaign-replay-closure\t"))
-            .map(|line| {
-                if line == "schema\tcrucible.savepoint-handle.v5" {
-                    format!("schema\t{historical_schema}")
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        let typed_v4_handle = decode_savepoint_handle(typed_v4_handle.as_bytes())
-            .expect("historical schema remains structurally readable");
-        let error = savepoint_handle_evidence("resume", &typed_v4_handle)
-            .expect_err("historical typed handle without closure must fail closed");
+        let missing_closure =
+            decode_savepoint_handle(missing_closure.as_bytes()).expect("decode current handle");
+        let error = savepoint_handle_evidence("resume", &missing_closure)
+            .expect_err("typed handle without its replay closure must fail closed");
         assert!(error.to_string().contains("missing the replay closure"));
         let empty_closure =
             GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&Schedule::empty())

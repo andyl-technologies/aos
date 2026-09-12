@@ -227,7 +227,7 @@ fn campaign_virtual_time_save_feeds_native_resume_and_fork() -> Result<(), Box<d
     );
 
     let handle_text = fs::read_to_string(&handle)?;
-    assert!(handle_text.contains("schema\tcrucible.savepoint-handle.v3\n"));
+    assert!(handle_text.contains("schema\tcrucible.savepoint-handle.v6\n"));
     assert_eq!(artifact_field(&handle_text, "frontier")?, "2000000");
     assert!(handle_text.contains("boundary-proof\tcoordinate\t2000000\t"));
     let checkpoint = artifact_field(&handle_text, "checkpoint")?;

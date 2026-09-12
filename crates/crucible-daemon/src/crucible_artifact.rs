@@ -5,11 +5,8 @@
 //! nested payload schemas:
 //!
 //! ```text
-//! CrucibleScenarioPayloadV1      = ScenarioDefForm compact binary V5
-//! CrucibleScenarioPayloadV2      = ScenarioDefForm compact binary V6
 //! CrucibleScenarioPayloadV3      = ScenarioDefForm compact binary V7
 //! CrucibleConfigurationPayloadV2 = Schedule compact binary V2
-//! CrucibleReproductionPayloadV2  = ReproductionArtifact compact binary V6
 //! CrucibleReproductionPayloadV3  = ReproductionArtifact compact binary V7
 //! ```
 //!
