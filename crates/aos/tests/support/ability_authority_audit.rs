@@ -1,4 +1,4 @@
-//! Executes the closed native-adapter role-revocation qualification cohort.
+//! Executes the closed native-adapter runtime-control qualification cohort.
 //!
 //! This binary is installed beside the private package runtime so release
 //! qualification executes the candidate's linked ability runtime. It accepts
@@ -11,16 +11,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregateId, ArtifactReference, ControllerAssignment,
-    IndeterminateSemantics, InterfaceDocument, InterfaceKey, LocalKey, MethodDescriptor,
-    MethodReference, Operation, ProviderAssignment, ProviderImplementationReference,
-    ResourceAccess, ResourceId, RetryPolicy, StringSyntax, TransactionId, ValueExpression,
-    ValueSchema,
+    AbilityValue, AccessMode, AggregateId, ArtifactReference, ControllerAssignment, DependencyEdge,
+    DependencyKind, IndeterminateSemantics, InterfaceDocument, InterfaceKey, LocalKey,
+    MethodDescriptor, MethodReference, Operation, PlanNodeKey, ProviderAssignment,
+    ProviderImplementationReference, ResourceAccess, ResourceId, RetryPolicy, StringSyntax,
+    TransactionId, ValueExpression, ValueSchema, compare_edges, compare_operation_keys,
 };
 use aos_ability_runtime::adapter::{
     AdapterCompletion, AdapterRecord, CancellationDisposition, CancellationToken,
@@ -32,7 +33,8 @@ use aos_ability_runtime::adapter::{
 use aos_ability_runtime::execution::{
     AdmissionError, AuthorityCheckBoundary, AuthorityRejection, CheckedExecutionJournalSnapshot,
     ExecutionBoundaryControl, ExecutionBoundaryObservation, ExecutionBoundaryObserver,
-    ExecutionError, ExecutionEventKind, ExecutionTransaction, RuntimeAuthorityRole,
+    ExecutionError, ExecutionEventKind, ExecutionStep, ExecutionTransaction,
+    OperationInterventionReason, ResourceReleaseError, RuntimeAuthorityRole,
     TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
 };
 use aos_ability_runtime::journal::JournalLimits;
@@ -43,9 +45,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
-const OUTPUT_SCHEMA: &str = "aos.qualification.authority-revocation-audit/v1";
-const SUBJECT_SCHEMA: &str = "aos.qualification.authority-revocation-subject/v1";
-const PLAN_BUNDLE_SCHEMA: &str = "aos.qualification.authority-revocation-plan/v1";
+const OUTPUT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-audit/v1";
+const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-runtime-subject/v1";
+const PLAN_BUNDLE_SCHEMA: &str = "aos.qualification.native-adapter-runtime-plan/v1";
 const ROLE_SCENARIOS: [&str; 12] = [
     "revoke-caller-before-acquisition",
     "revoke-caller-after-acquisition",
@@ -59,6 +61,12 @@ const ROLE_SCENARIOS: [&str; 12] = [
     "revoke-assignment-before-acquisition",
     "revoke-assignment-after-acquisition",
     "revoke-assignment-before-external-effect",
+];
+const FAILURE_CONTROL_SCENARIOS: [&str; 4] = [
+    "cancel-unsettled-attempt",
+    "expire-attempt-deadline",
+    "fail-cleanup",
+    "fail-release",
 ];
 
 #[derive(Deserialize)]
@@ -143,12 +151,14 @@ impl AdapterCompletion for AuditRecord {
 
 #[derive(Default)]
 struct NoDispatchAdapter {
-    calls: usize,
+    execute_calls: usize,
+    reconcile_calls: usize,
+    cancel_calls: usize,
 }
 
 impl NoDispatchAdapter {
-    fn record_unexpected_dispatch(&mut self) {
-        self.calls += 1;
+    fn calls(&self) -> usize {
+        self.execute_calls + self.reconcile_calls + self.cancel_calls
     }
 }
 
@@ -190,7 +200,7 @@ impl TrustedAdapter for NoDispatchAdapter {
         request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> EffectDisposition<Self::Completion, Self::Observation> {
-        self.record_unexpected_dispatch();
+        self.execute_calls += 1;
         EffectDisposition::RejectedBeforeEffect(AuditRecord {
             evidence: request.clone(),
             outputs: BTreeMap::new(),
@@ -202,8 +212,8 @@ impl TrustedAdapter for NoDispatchAdapter {
         request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> ReconcileDisposition<Self::Completion, Self::Observation> {
-        self.record_unexpected_dispatch();
-        ReconcileDisposition::StillIndeterminate(AuditRecord {
+        self.reconcile_calls += 1;
+        ReconcileDisposition::RejectedBeforeEffect(AuditRecord {
             evidence: request.clone(),
             outputs: BTreeMap::new(),
         })
@@ -214,7 +224,7 @@ impl TrustedAdapter for NoDispatchAdapter {
         request: &Self::Request,
         _control: &dyn RuntimeControl,
     ) -> CancellationDisposition<Self::Completion, Self::Observation> {
-        self.record_unexpected_dispatch();
+        self.cancel_calls += 1;
         CancellationDisposition::Indeterminate(AuditRecord {
             evidence: request.clone(),
             outputs: BTreeMap::new(),
@@ -222,15 +232,32 @@ impl TrustedAdapter for NoDispatchAdapter {
     }
 }
 
-struct AuditClock;
+struct AuditClock {
+    now: Cell<u64>,
+    restart_stable: Cell<u64>,
+}
+
+impl AuditClock {
+    fn new(now: u64) -> Self {
+        Self {
+            now: Cell::new(now),
+            restart_stable: Cell::new(now),
+        }
+    }
+
+    fn advance_to(&self, now: u64) {
+        self.now.set(now);
+        self.restart_stable.set(now);
+    }
+}
 
 impl MonotonicClock for AuditClock {
     fn now_millis(&self) -> u64 {
-        1
+        self.now.get()
     }
 
     fn restart_stable_millis(&self) -> u64 {
-        1
+        self.restart_stable.get()
     }
 }
 
@@ -351,6 +378,25 @@ impl ExecutionBoundaryObserver for RevokeAtBoundary {
     }
 }
 
+struct FailAtBoundary {
+    target: aos_ability_runtime::execution::Boundary,
+    observed: bool,
+}
+
+impl ExecutionBoundaryObserver for FailAtBoundary {
+    fn observe(
+        &mut self,
+        observation: ExecutionBoundaryObservation<'_>,
+        _control: &dyn RuntimeControl,
+    ) -> anyhow::Result<ExecutionBoundaryControl> {
+        if observation.boundary() == self.target {
+            self.observed = true;
+            bail!("injected qualification boundary failure");
+        }
+        Ok(ExecutionBoundaryControl::Continue)
+    }
+}
+
 struct DurableStore {
     directory: PathBuf,
     plan_bundle: Vec<u8>,
@@ -410,6 +456,7 @@ impl TrustedRootStore for DurableStore {
 struct ReservationState {
     acquire_calls: usize,
     release_calls: usize,
+    release_failures: usize,
     owners: usize,
     max_owners: usize,
 }
@@ -417,6 +464,7 @@ struct ReservationState {
 struct DurableCatalog {
     ledger: PathBuf,
     state: ReservationState,
+    fail_releases: usize,
 }
 
 impl DurableCatalog {
@@ -424,6 +472,7 @@ impl DurableCatalog {
         let bytes = canonical_bytes(&json!({
             "acquire-calls": self.state.acquire_calls,
             "release-calls": self.state.release_calls,
+            "release-failures": self.state.release_failures,
             "owners": self.state.owners,
             "max-owners": self.state.max_owners,
         }))
@@ -466,6 +515,12 @@ impl TrustedResourceCatalog for DurableCatalog {
         _handle: &mut Self::Handle,
     ) -> Result<(), Self::Error> {
         self.state.release_calls += 1;
+        if self.fail_releases > 0 {
+            self.fail_releases -= 1;
+            self.state.release_failures += 1;
+            self.persist()?;
+            return Err(io::Error::other("injected catalog release failure"));
+        }
         self.state.owners = self.state.owners.saturating_sub(1);
         self.persist()
     }
@@ -555,10 +610,44 @@ fn main() -> Result<()> {
                     "duplicate audit cell"
                 );
             }
+            for scenario_name in FAILURE_CONTROL_SCENARIOS {
+                if scenario_name == "cancel-unsettled-attempt" && method.cancel.is_some() {
+                    continue;
+                }
+                let cell_id = format!(
+                    "{}/{}/abi-{}/{}/{}",
+                    adapter.adapter,
+                    adapter.interface_name,
+                    adapter.interface_abi,
+                    method.method,
+                    scenario_name,
+                );
+                let cell = matrix_cells
+                    .get(&cell_id)
+                    .with_context(|| format!("matrix lacks failure-control cell {cell_id}"))?;
+                validate_cell(cell, adapter, method, scenario_name)?;
+                let audit = run_failure_control_cell(
+                    &evidence_root,
+                    &cell_id,
+                    cell,
+                    interface,
+                    descriptor,
+                    method,
+                    scenario_name,
+                )
+                .with_context(|| format!("failure-control cell {cell_id} failed"))?;
+                ensure!(
+                    cells.insert(cell_id, audit).is_none(),
+                    "duplicate audit cell"
+                );
+            }
         }
     }
 
-    ensure!(cells.len() == 564, "expected 564 role-revocation cells");
+    ensure!(
+        cells.len() == 711,
+        "expected 711 role-revocation and shared failure-control cells"
+    );
     let output = AuditOutput {
         schema: OUTPUT_SCHEMA,
         matrix_spec_digest: digest_value(&spec_value)?,
@@ -634,12 +723,12 @@ fn run_cell(
     write_durable(&foreign_path, b"independent-foreign-resource\n")?;
     let foreign_before = digest_file(&foreign_path)?;
 
-    let (plan, plan_bundle) = checked_plan(interface, descriptor, matrix_method)?;
+    let (plan, plan_bundle, operation_key, _dependent_key) =
+        checked_plan(interface, descriptor, matrix_method, false)?;
     let transaction_id = TransactionId(LocalKey::new(&format!(
         "authority-{}",
         &digest_bytes(cell_id.as_bytes())[7..23]
     ))?);
-    let operation_key = plan.operations()[0].key.clone();
     let mut store = DurableStore {
         directory: directory.clone(),
         plan_bundle,
@@ -655,6 +744,7 @@ fn run_cell(
     let mut catalog = DurableCatalog {
         ledger: ledger_path.clone(),
         state: ReservationState::default(),
+        fail_releases: 0,
     };
     catalog.persist()?;
     let revoked = Rc::new(Cell::new(None));
@@ -667,23 +757,18 @@ fn run_cell(
         observed: None,
     };
     let mut adapter = NoDispatchAdapter::default();
+    let clock = AuditClock::new(1);
 
     match scenario.boundary {
         aos_ability_runtime::execution::Boundary::FinalDispatch => {
             let admitted = transaction
-                .admit(
-                    &operation_key,
-                    &adapter,
-                    &mut catalog,
-                    &mut policy,
-                    &AuditClock,
-                )
+                .admit(&operation_key, &adapter, &mut catalog, &mut policy, &clock)
                 .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
             let error = match transaction.drive_admitted_with_observer(
                 &admitted,
                 &mut adapter,
                 &mut policy,
-                &AuditClock,
+                &clock,
                 &CancellationToken::default(),
                 &mut observer,
             ) {
@@ -692,7 +777,7 @@ fn run_cell(
             };
             assert_execution_rejection(&error, scenario)?;
             transaction
-                .release_admitted::<NoDispatchAdapter, _, _>(admitted, &mut catalog, &AuditClock)
+                .release_admitted::<NoDispatchAdapter, _, _>(admitted, &mut catalog, &clock)
                 .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
         }
         _ => {
@@ -701,7 +786,7 @@ fn run_cell(
                 &adapter,
                 &mut catalog,
                 &mut policy,
-                &AuditClock,
+                &clock,
                 &mut observer,
             ) {
                 Ok(_) => bail!("admission unexpectedly succeeded"),
@@ -716,7 +801,7 @@ fn run_cell(
         "revocation boundary was not observed"
     );
     ensure!(
-        adapter.calls == 0,
+        adapter.calls() == 0,
         "authority fence allowed adapter dispatch"
     );
     ensure!(
@@ -804,7 +889,7 @@ fn run_cell(
             "max-owners": catalog.state.max_owners,
             "owners": catalog.state.owners,
         },
-        "dispatch-calls": adapter.calls,
+        "dispatch-calls": adapter.calls(),
         "foreign-before": foreign_before,
         "foreign-after": foreign_after,
     });
@@ -821,15 +906,330 @@ fn run_cell(
     })
 }
 
+fn run_failure_control_cell(
+    evidence_root: &Path,
+    cell_id: &str,
+    cell: &Value,
+    interface: &InterfaceDocument,
+    descriptor: &MethodDescriptor,
+    matrix_method: &MatrixMethod,
+    scenario: &str,
+) -> Result<AuditCell> {
+    use aos_ability_runtime::execution::Boundary;
+
+    let directory =
+        evidence_root.join(digest_bytes(cell_id.as_bytes()).trim_start_matches("sha256:"));
+    fs::create_dir_all(&directory)?;
+    let journal_path = directory.join("execution.journal");
+    let ledger_path = directory.join("reservation-ledger.json");
+    let foreign_path = directory.join("foreign-resource");
+    write_durable(&foreign_path, b"independent-foreign-resource\n")?;
+    let foreign_before = digest_file(&foreign_path)?;
+
+    let (plan, plan_bundle, operation_key, dependent_key) =
+        checked_plan(interface, descriptor, matrix_method, true)?;
+    let transaction_id = TransactionId(LocalKey::new(&format!(
+        "control-{}",
+        &digest_bytes(cell_id.as_bytes())[7..23]
+    ))?);
+    let mut store = DurableStore {
+        directory: directory.clone(),
+        plan_bundle,
+        bundle_digest: None,
+    };
+    let mut transaction = ExecutionTransaction::open(
+        &plan,
+        transaction_id.clone(),
+        &journal_path,
+        JournalLimits::default(),
+        &mut store,
+    )?;
+    let mut catalog = DurableCatalog {
+        ledger: ledger_path.clone(),
+        state: ReservationState::default(),
+        fail_releases: 0,
+    };
+    catalog.persist()?;
+    let revoked = Rc::new(Cell::new(None));
+    let mut policy = RevocablePolicy { revoked };
+    let mut adapter = NoDispatchAdapter::default();
+    let clock = AuditClock::new(1);
+    let cancellation = CancellationToken::default();
+    let classification: String;
+    let retained_resources: usize;
+    let cleanup_errors: usize;
+    let owners_at_failure: usize;
+
+    match scenario {
+        "cancel-unsettled-attempt" => {
+            let admitted = transaction
+                .admit(&operation_key, &adapter, &mut catalog, &mut policy, &clock)
+                .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
+            cancellation.cancel();
+            ensure!(
+                matrix_method.cancel.is_none(),
+                "supported cancellation requires a provider-specific oracle"
+            );
+            transaction.record_unsupported_cancellation(&admitted, &clock)?;
+            ensure!(
+                adapter.cancel_calls == 0,
+                "unsupported cancellation dispatched"
+            );
+            classification = "cancellation-unsupported-intervention".to_string();
+            retained_resources = admitted.resources().count();
+            owners_at_failure = catalog.state.owners;
+            cleanup_errors = 0;
+        }
+        "expire-attempt-deadline" => {
+            let admitted = transaction
+                .admit(&operation_key, &adapter, &mut catalog, &mut policy, &clock)
+                .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
+            let deadline = admitted.operation().deadline.attempt_timeout_millis.get();
+            clock.advance_to(1_u64.saturating_add(deadline));
+            let error = transaction
+                .drive_admitted(&admitted, &mut adapter, &mut policy, &clock, &cancellation)
+                .expect_err("trusted clock deadline must stop dispatch");
+            ensure!(
+                matches!(error, ExecutionError::DeadlineBeforeIntent),
+                "deadline produced an unexpected runtime error: {error}"
+            );
+            retained_resources = admitted.resources().count();
+            owners_at_failure = catalog.state.owners;
+            cleanup_errors = 0;
+            classification = "trusted-clock-deadline-expired".to_string();
+        }
+        "fail-cleanup" => {
+            catalog.fail_releases = 1;
+            let mut observer = FailAtBoundary {
+                target: Boundary::ResourcesAcquired,
+                observed: false,
+            };
+            let failure = transaction
+                .admit_with_observer(
+                    &operation_key,
+                    &adapter,
+                    &mut catalog,
+                    &mut policy,
+                    &clock,
+                    &mut observer,
+                )
+                .expect_err("injected admission cleanup must fail");
+            ensure!(
+                observer.observed,
+                "cleanup failure boundary was not observed"
+            );
+            retained_resources = failure.retained_resources().count();
+            cleanup_errors = failure.cleanup_errors().len();
+            owners_at_failure = catalog.state.owners;
+            ensure!(
+                retained_resources == 1 && cleanup_errors == 1 && owners_at_failure == 1,
+                "cleanup failure did not retain its exact ownership token"
+            );
+            failure.retry_cleanup(&mut catalog).map_err(|failure| {
+                anyhow::anyhow!("cleanup retry remained failed: {}", failure.error())
+            })?;
+            classification = "cleanup-failure-retained-then-released".to_string();
+        }
+        "fail-release" => {
+            let admitted = transaction
+                .admit(&operation_key, &adapter, &mut catalog, &mut policy, &clock)
+                .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
+            let step = transaction.drive_admitted(
+                &admitted,
+                &mut adapter,
+                &mut policy,
+                &clock,
+                &cancellation,
+            )?;
+            ensure!(
+                step == ExecutionStep::RejectedBeforeEffect,
+                "release setup did not settle before effect"
+            );
+            catalog.fail_releases = 1;
+            let failure = transaction
+                .release_admitted::<NoDispatchAdapter, _, _>(admitted, &mut catalog, &clock)
+                .expect_err("injected release must fail");
+            ensure!(
+                matches!(failure.error(), ResourceReleaseError::Catalog { .. }),
+                "release injection produced an unexpected error"
+            );
+            retained_resources = failure.retained_resources().count();
+            owners_at_failure = catalog.state.owners;
+            cleanup_errors = 0;
+            ensure!(
+                retained_resources == 1 && owners_at_failure == 1,
+                "release failure did not retain its exact ownership token"
+            );
+            failure
+                .retry(&mut transaction, &mut catalog, &clock)
+                .map_err(|failure| anyhow::anyhow!("release retry failed: {}", failure.error()))?;
+            classification = "release-failure-retained-then-released".to_string();
+        }
+        other => bail!("unknown failure-control scenario {other}"),
+    }
+
+    ensure!(catalog.state.max_owners == 1, "ownership was not exclusive");
+    ensure!(owners_at_failure == 1, "failure did not retain ownership");
+    ensure!(
+        retained_resources == 1,
+        "failure retained an unexpected resource set"
+    );
+    let ready = transaction.schedule_ready(
+        NonZeroUsize::new(plan.operations().len()).context("plan has no operations")?,
+    )?;
+    ensure!(
+        ready
+            .iter()
+            .all(|entry| entry.operation() != &dependent_key),
+        "required-success dependent became executable"
+    );
+
+    drop(transaction);
+    let snapshot =
+        CheckedExecutionJournalSnapshot::read(&plan, &journal_path, JournalLimits::default())?;
+    let dependent_events = snapshot
+        .records()
+        .iter()
+        .filter(|record| {
+            record
+                .body()
+                .body()
+                .operation()
+                .is_some_and(|operation| operation.operation == dependent_key)
+        })
+        .count();
+    ensure!(
+        dependent_events == 0,
+        "dependent operation reached the journal"
+    );
+    let cancellation_requested = count_events(&snapshot, |event| {
+        matches!(event, ExecutionEventKind::CancellationRequested { .. })
+    });
+    let cancellation_observed = count_events(&snapshot, |event| {
+        matches!(event, ExecutionEventKind::CancellationObserved { .. })
+    });
+    let cancellation_interventions = count_events(&snapshot, |event| {
+        matches!(
+            event,
+            ExecutionEventKind::OperationInterventionRequired {
+                reason: OperationInterventionReason::CancellationUnsupported,
+                ..
+            }
+        )
+    });
+    match scenario {
+        "cancel-unsettled-attempt" => ensure!(
+            cancellation_interventions == 1,
+            "unsupported cancellation intervention was not durable"
+        ),
+        _ => {}
+    }
+    let foreign_after = digest_file(&foreign_path)?;
+    ensure!(foreign_before == foreign_after, "foreign sentinel changed");
+
+    let cell_digest = digest_value(cell)?;
+    let bundle_digest = store
+        .bundle_digest
+        .context("plan bundle was not retained")?;
+    let subject = json!({
+        "schema": SUBJECT_SCHEMA,
+        "cell-id": cell_id,
+        "cell-digest": cell_digest,
+        "interface": interface.interface_key()?,
+        "method": matrix_method.method,
+        "plan": plan.id(),
+        "transaction": transaction_id,
+    });
+    let retained_bundle = fs::read(directory.join("plan-bundle.json"))?;
+    let evidence = json!({
+        "scenario": scenario,
+        "classification": classification,
+        "recovery-routes": {
+            "reconcile": matrix_method.reconcile,
+            "cancel": matrix_method.cancel,
+        },
+        "journal": {
+            "digest": digest_file(&journal_path)?,
+            "head": snapshot.head_digest(),
+            "cancellation-requested": cancellation_requested,
+            "cancellation-observed": cancellation_observed,
+            "cancellation-interventions": cancellation_interventions,
+            "dependent-events": dependent_events,
+        },
+        "reservation-ledger": {
+            "digest": digest_file(&ledger_path)?,
+            "acquire-calls": catalog.state.acquire_calls,
+            "release-calls": catalog.state.release_calls,
+            "release-failures": catalog.state.release_failures,
+            "max-owners": catalog.state.max_owners,
+            "owners-at-failure": owners_at_failure,
+            "owners-final": catalog.state.owners,
+            "retained-resources": retained_resources,
+            "cleanup-errors": cleanup_errors,
+        },
+        "adapter": {
+            "execute-calls": adapter.execute_calls,
+            "reconcile-calls": adapter.reconcile_calls,
+            "cancel-calls": adapter.cancel_calls,
+        },
+        "clock": {
+            "now-millis": clock.now_millis(),
+            "restart-stable-millis": clock.restart_stable_millis(),
+        },
+        "foreign-before": foreign_before,
+        "foreign-after": foreign_after,
+    });
+
+    Ok(AuditCell {
+        cell_digest,
+        subject,
+        plan_bundle: json!({
+            "schema": PLAN_BUNDLE_SCHEMA,
+            "digest": format!("{bundle_digest}"),
+            "bytes-sha256": digest_bytes(&retained_bundle),
+        }),
+        evidence,
+    })
+}
+
+fn count_events(
+    snapshot: &CheckedExecutionJournalSnapshot,
+    predicate: impl Fn(&ExecutionEventKind) -> bool,
+) -> usize {
+    snapshot
+        .records()
+        .iter()
+        .filter(|record| predicate(record.body().body()))
+        .count()
+}
+
 fn checked_plan(
     interface: &InterfaceDocument,
     descriptor: &MethodDescriptor,
     matrix_method: &MatrixMethod,
-) -> Result<(CheckedEffectPlan, Vec<u8>)> {
+    preserve_recovery_routes: bool,
+) -> Result<(
+    CheckedEffectPlan,
+    Vec<u8>,
+    aos_ability_model::ScopedOperationKey,
+    aos_ability_model::ScopedOperationKey,
+)> {
     let mut fixture: PlanFixture = plan_fixture();
     fixture.interfaces = vec![interface.clone()];
     fixture.refresh_interface_with_features(interface.required_features.iter().cloned().collect());
-    let methods = vec![LocalKey::new(&matrix_method.method)?];
+    let mut methods = vec![LocalKey::new(&matrix_method.method)?];
+    if preserve_recovery_routes {
+        for route in [&matrix_method.reconcile, &matrix_method.cancel]
+            .into_iter()
+            .flatten()
+        {
+            let route = LocalKey::new(route)?;
+            if !methods.contains(&route) {
+                methods.push(route);
+            }
+        }
+    }
+    methods.sort_unstable();
 
     fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
     fixture.binding_plan.requests[0].methods = methods.clone();
@@ -855,16 +1255,41 @@ fn checked_plan(
 
     let input = AbilityValue::new(minimal_value(&descriptor.parameters, &fixture)?)?;
     let interface_key = fixture.effect_plan.operations[0].interface.clone();
-    let reconcile = if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
+    let reconcile = if preserve_recovery_routes {
+        matrix_method
+            .reconcile
+            .as_ref()
+            .map(|method| {
+                Ok::<MethodReference, anyhow::Error>(MethodReference {
+                    interface: interface_key.clone(),
+                    method: LocalKey::new(method)?,
+                })
+            })
+            .transpose()?
+    } else if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
         Some(MethodReference {
-            interface: interface_key,
+            interface: interface_key.clone(),
             method: LocalKey::new(&matrix_method.method)?,
         })
     } else {
         None
     };
+    let cancel = if preserve_recovery_routes {
+        matrix_method
+            .cancel
+            .as_ref()
+            .map(|method| {
+                Ok::<MethodReference, anyhow::Error>(MethodReference {
+                    interface: interface_key.clone(),
+                    method: LocalKey::new(method)?,
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let operation = &mut fixture.effect_plan.operations[0];
-    operation.key.key = LocalKey::new(&matrix_method.method)?;
+    operation.key.key = LocalKey::new("matrix-primary")?;
     operation.method = LocalKey::new(&matrix_method.method)?;
     operation.family = descriptor.operation_family.clone();
     operation.target.resource.key = LocalKey::new("qualified-resource")?;
@@ -874,7 +1299,7 @@ fn checked_plan(
     operation.accesses[0].mode = access;
     operation.recovery.retry = RetryPolicy::Disabled;
     operation.recovery.reconcile = reconcile;
-    operation.recovery.cancel = None;
+    operation.recovery.cancel = cancel;
     operation.recovery.compensate = None;
     let qualified_resource = operation.target.resource.clone();
     let controller = if matrix_method.effect_class == "mutation" {
@@ -902,6 +1327,25 @@ fn checked_plan(
         fixture.binding_inputs.desired_state.controllers = vec![assignment.clone()];
         fixture.effect_plan.controllers = vec![assignment];
     }
+    let operation_key = fixture.effect_plan.operations[0].key.clone();
+    let mut dependent = fixture.effect_plan.operations[0].clone();
+    dependent.key.key = LocalKey::new("matrix-dependent")?;
+    let dependent_key = dependent.key.clone();
+    fixture.effect_plan.operations.push(dependent);
+    fixture.effect_plan.edges.push(DependencyEdge {
+        from: PlanNodeKey::Operation {
+            key: operation_key.clone(),
+        },
+        to: PlanNodeKey::Operation {
+            key: dependent_key.clone(),
+        },
+        kind: DependencyKind::RequiredSuccess,
+    });
+    fixture
+        .effect_plan
+        .operations
+        .sort_by(|left, right| compare_operation_keys(&left.key, &right.key));
+    fixture.effect_plan.edges.sort_by(compare_edges);
     fixture.refresh_commitments();
     let plan = fixture
         .clone()
@@ -920,7 +1364,7 @@ fn checked_plan(
         "effect-plan": fixture.effect_plan,
     }))?;
 
-    Ok((plan, plan_bundle))
+    Ok((plan, plan_bundle, operation_key, dependent_key))
 }
 
 fn minimal_value(schema: &ValueSchema, fixture: &PlanFixture) -> Result<Value> {

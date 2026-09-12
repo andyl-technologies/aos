@@ -189,6 +189,17 @@
     (builtins.elemAt (lib.splitString "/" cell.id) 4)
     != null)
   nativeCells;
+  nativeFailureControlCells = builtins.filter (cell: let
+    scenario = builtins.elemAt (lib.splitString "/" cell.id) 4;
+  in
+    builtins.elem scenario ["expire-attempt-deadline" "fail-cleanup" "fail-release"]
+    || (scenario == "cancel-unsettled-attempt" && cell.recovery.cancel == null))
+  nativeCells;
+  unsupportedCancellationCells = builtins.filter (cell:
+    builtins.elemAt (lib.splitString "/" cell.id) 4
+    == "cancel-unsettled-attempt"
+    && cell.recovery.cancel == null)
+  nativeCells;
   replaceFirstNativeCell = replacement: [replacement] ++ remainingNativeCells;
   rejectsNativeMatrix = arguments:
     !(builtins.tryEval (builtins.deepSeq (import ../../qualification/modules/_native-adapter-matrix.nix ({inherit lib;} // arguments)) true)).success;
@@ -374,6 +385,9 @@ in
   assert nativeAdapterMatrix.required_production_vm_cells == 1400;
   assert builtins.length nativeRoleRevocationCells == 600;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
+  assert builtins.length nativeFailureControlCells == 147;
+  assert builtins.length unsupportedCancellationCells == 6;
+  assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeFailureControlCells;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
   assert abilityRequirements.ability-native-adapter-matrix.checks

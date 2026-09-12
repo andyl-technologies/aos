@@ -472,9 +472,24 @@
       builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterRoleScenarios)
     nativeAdapterMatrix.cells
   );
+  nativeAdapterFailureControlScenarios = [
+    "cancel-unsettled-attempt"
+    "expire-attempt-deadline"
+    "fail-cleanup"
+    "fail-release"
+  ];
+  nativeAdapterFailureControlCells = map (cell: cell.id) (
+    builtins.filter (cell: let
+      scenario = builtins.elemAt (lib.splitString "/" cell.id) 4;
+    in
+      builtins.elem scenario (builtins.tail nativeAdapterFailureControlScenarios)
+      || (scenario == "cancel-unsettled-attempt" && cell.recovery.cancel == null))
+    nativeAdapterMatrix.cells
+  );
   nativeAdapterQualifiedCells =
     nativeAdapterPrimaryCells
     ++ nativeAdapterRoleCells
+    ++ nativeAdapterFailureControlCells
     ++ nativePostgresqlReplacementCells;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =

@@ -57,14 +57,35 @@ POSTGRESQL_CELL_IDS = [
     "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
 ]
 QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
-AUTHORITY_AUDIT_SCHEMA = "aos.qualification.authority-revocation-audit/v1"
-AUTHORITY_SUBJECT_SCHEMA = "aos.qualification.authority-revocation-subject/v1"
-AUTHORITY_PLAN_SCHEMA = "aos.qualification.authority-revocation-plan/v1"
+RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v1"
+RUNTIME_SUBJECT_SCHEMA = "aos.qualification.native-adapter-runtime-subject/v1"
+RUNTIME_PLAN_SCHEMA = "aos.qualification.native-adapter-runtime-plan/v1"
 ROLE_SCENARIOS = {
     f"revoke-{role}-{timing}"
     for role in ["caller", "provider", "enforcement", "assignment"]
     for timing in ["before-acquisition", "after-acquisition", "before-external-effect"]
 }
+FAILURE_CONTROL_SCENARIOS = {
+    "cancel-unsettled-attempt",
+    "expire-attempt-deadline",
+    "fail-cleanup",
+    "fail-release",
+}
+
+
+def _runtime_audit_cell(cell: dict[str, Any]) -> bool:
+    """Returns whether the shared runtime can qualify this exact matrix cell."""
+
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    if scenario in ROLE_SCENARIOS:
+        return True
+    if scenario in FAILURE_CONTROL_SCENARIOS - {"cancel-unsettled-attempt"}:
+        return True
+
+    return (
+        scenario == "cancel-unsettled-attempt"
+        and cell.get("recovery", {}).get("cancel") is None
+    )
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
 POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
     "aos.qualification.postgresql-provider-replacement-cohort-subject/v1"
@@ -239,20 +260,20 @@ def build_cells(
     cohort_evidence: dict[str, bytes],
     subject_digest: str,
     environment_digest: str,
-    authority_audit: dict[str, Any] | None = None,
+    runtime_audit: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds all cell observations and proves every positive claim is expected."""
 
-    has_authority_audit = authority_audit is not None
-    authority_audit = authority_audit or {
-        "schema": AUTHORITY_AUDIT_SCHEMA,
+    has_runtime_audit = runtime_audit is not None
+    runtime_audit = runtime_audit or {
+        "schema": RUNTIME_AUDIT_SCHEMA,
         "matrix_spec_digest": "sha256:" + "0" * 64,
         "cells": {},
     }
-    authority_cells = authority_audit.get("cells")
-    if not isinstance(authority_cells, dict):
-        raise RuntimeError("authority audit cells are malformed")
-    submitted_cells = set(submissions) | set(authority_cells)
+    runtime_cells = runtime_audit.get("cells")
+    if not isinstance(runtime_cells, dict):
+        raise RuntimeError("runtime audit cells are malformed")
+    submitted_cells = set(submissions) | set(runtime_cells)
     if submitted_cells != set(expected_qualified_cells):
         raise RuntimeError("cohort probe cells differ from its explicit qualification scope")
     if len(set(expected_qualified_cells)) != len(expected_qualified_cells):
@@ -264,14 +285,22 @@ def build_cells(
     if any(cell_id not in specification_cells for cell_id in submitted_cells):
         raise RuntimeError("cohort submitted a probe outside the exact matrix surface")
     allowed_cells = QUALIFIED_CELL_IDS
-    if has_authority_audit:
+    if has_runtime_audit:
+        runtime_failure_cells = [
+            cell["id"]
+            for cell in spec["cells"]
+            if _runtime_audit_cell(cell)
+            and cell["id"].rsplit("/", 1)[-1] in FAILURE_CONTROL_SCENARIOS
+        ]
+        runtime_role_cells = [
+            cell["id"]
+            for cell in spec["cells"]
+            if cell["id"].rsplit("/", 1)[-1] in ROLE_SCENARIOS
+        ]
         allowed_cells = [
             *PRIMARY_COHORT_CELL_IDS,
-            *[
-                cell["id"]
-                for cell in spec["cells"]
-                if cell["id"].rsplit("/", 1)[-1] in ROLE_SCENARIOS
-            ],
+            *runtime_role_cells,
+            *runtime_failure_cells,
             *POSTGRESQL_CELL_IDS,
         ]
     if (
@@ -291,24 +320,26 @@ def build_cells(
             cohort_subjects[cell_id],
             cohort_evidence[cell_id],
         )
-    if has_authority_audit:
-        _validate_authority_audit(authority_audit, spec, specification_cells)
+    if has_runtime_audit:
+        _validate_runtime_audit(runtime_audit, spec, specification_cells)
 
     observed_cells = []
     postcondition_count = 0
     probe_digests = set()
     for cell in spec["cells"]:
         submitted = submissions.get(cell["id"])
-        authority_record = authority_cells.get(cell["id"])
+        runtime_record = runtime_cells.get(cell["id"])
         names = cell["postconditions"]
         postcondition_count += len(names)
-        if authority_record is not None:
-            bound_subject, postconditions, probes = _validated_authority_cell(
-                cell,
-                authority_record,
-                subject_digest,
-                probe_digests,
-            )
+        if runtime_record is not None:
+            if cell["id"].rsplit("/", 1)[-1] in ROLE_SCENARIOS:
+                bound_subject, postconditions, probes = _validated_authority_cell(
+                    cell, runtime_record, subject_digest, probe_digests
+                )
+            else:
+                bound_subject, postconditions, probes = _validated_failure_control_cell(
+                    cell, runtime_record, subject_digest, probe_digests
+                )
         elif submitted is None:
             postconditions = {
                 name: {
@@ -344,7 +375,7 @@ def build_cells(
     return observed_cells, postcondition_count
 
 
-def _validate_authority_audit(
+def _validate_runtime_audit(
     audit: dict[str, Any],
     spec: dict[str, Any],
     specification_cells: dict[str, dict[str, Any]],
@@ -354,15 +385,15 @@ def _validate_authority_audit(
     expected = {
         cell_id
         for cell_id in specification_cells
-        if cell_id.rsplit("/", 1)[-1] in ROLE_SCENARIOS
+        if _runtime_audit_cell(specification_cells[cell_id])
     }
     if (
         set(audit) != {"schema", "matrix_spec_digest", "cells"}
-        or audit.get("schema") != AUTHORITY_AUDIT_SCHEMA
+        or audit.get("schema") != RUNTIME_AUDIT_SCHEMA
         or audit.get("matrix_spec_digest") != sha256(spec)
         or set(audit.get("cells", {})) != expected
     ):
-        raise RuntimeError("authority audit differs from the closed role cohort")
+        raise RuntimeError("runtime audit differs from the closed control cohort")
 
 
 def _validated_authority_cell(
@@ -405,7 +436,7 @@ def _validated_authority_cell(
         or not isinstance(subject, dict)
         or set(subject)
         != {"schema", "cell-id", "cell-digest", "interface", "method", "plan", "transaction"}
-        or subject.get("schema") != AUTHORITY_SUBJECT_SCHEMA
+        or subject.get("schema") != RUNTIME_SUBJECT_SCHEMA
         or subject.get("cell-id") != cell["id"]
         or subject.get("cell-digest") != cell_digest
         or subject.get("interface") != cell["interface"]
@@ -414,7 +445,7 @@ def _validated_authority_cell(
         or not _matches(LOCAL_KEY, subject.get("transaction"))
         or not isinstance(plan_bundle, dict)
         or set(plan_bundle) != {"schema", "digest", "bytes-sha256"}
-        or plan_bundle.get("schema") != AUTHORITY_PLAN_SCHEMA
+        or plan_bundle.get("schema") != RUNTIME_PLAN_SCHEMA
         or not _matches(DIGEST, plan_bundle.get("digest"))
         or plan_bundle.get("bytes-sha256") != plan_bundle.get("digest")
         or not isinstance(evidence, dict)
@@ -513,6 +544,238 @@ def _validated_authority_cell(
             "cell_id": cell["id"],
             "cell_digest": cell_digest,
             "disposition": "rejected-before-effect",
+            "subject_digest": subject_digest,
+            "cohort_subject_digest": cohort_subject_digest,
+            "observation_digest": observation_digest,
+            "observations": facts,
+        }
+    return bound_subject, postconditions, probes
+
+
+def _validated_failure_control_cell(
+    cell: dict[str, Any],
+    record: dict[str, Any],
+    subject_digest: str,
+    probe_digests: set[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validates one runtime-owned failure control and derives its exact probes."""
+
+    if set(record) != {"cell_digest", "subject", "plan_bundle", "evidence"}:
+        raise RuntimeError("runtime control audit cell is malformed")
+    cell_digest = sha256(cell)
+    subject = record["subject"]
+    plan_bundle = record["plan_bundle"]
+    evidence = record["evidence"]
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    if scenario not in FAILURE_CONTROL_SCENARIOS:
+        raise RuntimeError("runtime control audit names an unsupported scenario")
+    if (
+        record.get("cell_digest") != cell_digest
+        or not isinstance(subject, dict)
+        or set(subject)
+        != {
+            "schema",
+            "cell-id",
+            "cell-digest",
+            "interface",
+            "method",
+            "plan",
+            "transaction",
+        }
+        or subject.get("schema") != RUNTIME_SUBJECT_SCHEMA
+        or subject.get("cell-id") != cell["id"]
+        or subject.get("cell-digest") != cell_digest
+        or subject.get("interface") != cell["interface"]
+        or subject.get("method") != cell["method"]
+        or not _matches(DIGEST, subject.get("plan"))
+        or not _matches(LOCAL_KEY, subject.get("transaction"))
+        or not isinstance(plan_bundle, dict)
+        or set(plan_bundle) != {"schema", "digest", "bytes-sha256"}
+        or plan_bundle.get("schema") != RUNTIME_PLAN_SCHEMA
+        or not _matches(DIGEST, plan_bundle.get("digest"))
+        or plan_bundle.get("bytes-sha256") != plan_bundle.get("digest")
+        or not isinstance(evidence, dict)
+        or set(evidence)
+        != {
+            "scenario",
+            "classification",
+            "recovery-routes",
+            "journal",
+            "reservation-ledger",
+            "adapter",
+            "clock",
+            "foreign-before",
+            "foreign-after",
+        }
+        or evidence.get("scenario") != scenario
+        or evidence.get("recovery-routes") != cell["recovery"]
+        or not _matches(DIGEST, evidence.get("foreign-before"))
+        or evidence.get("foreign-after") != evidence.get("foreign-before")
+    ):
+        raise RuntimeError("runtime control subject or retained evidence is invalid")
+
+    journal = evidence["journal"]
+    ledger = evidence["reservation-ledger"]
+    adapter = evidence["adapter"]
+    clock = evidence["clock"]
+    if (
+        not isinstance(journal, dict)
+        or set(journal)
+        != {
+            "digest",
+            "head",
+            "cancellation-requested",
+            "cancellation-observed",
+            "cancellation-interventions",
+            "dependent-events",
+        }
+        or not _matches(DIGEST, journal.get("digest"))
+        or not _matches(DIGEST, journal.get("head"))
+        or journal.get("dependent-events") != 0
+        or not isinstance(ledger, dict)
+        or set(ledger)
+        != {
+            "digest",
+            "acquire-calls",
+            "release-calls",
+            "release-failures",
+            "max-owners",
+            "owners-at-failure",
+            "owners-final",
+            "retained-resources",
+            "cleanup-errors",
+        }
+        or not _matches(DIGEST, ledger.get("digest"))
+        or ledger.get("acquire-calls") != 1
+        or ledger.get("max-owners") != 1
+        or ledger.get("owners-at-failure") != 1
+        or ledger.get("retained-resources") != 1
+        or not isinstance(adapter, dict)
+        or set(adapter)
+        != {
+            "execute-calls",
+            "reconcile-calls",
+            "cancel-calls",
+        }
+        or adapter.get("reconcile-calls") != 0
+        or not isinstance(clock, dict)
+        or set(clock) != {"now-millis", "restart-stable-millis"}
+        or clock.get("now-millis") != clock.get("restart-stable-millis")
+        or not _is_nonnegative_int(clock.get("now-millis"))
+    ):
+        raise RuntimeError("runtime control durable journal or ownership evidence is invalid")
+
+    cancel_supported = cell["recovery"]["cancel"] is not None
+    if scenario == "cancel-unsettled-attempt":
+        if (
+            cancel_supported
+            or evidence.get("classification") != "cancellation-unsupported-intervention"
+            or ledger.get("release-calls") != 0
+            or ledger.get("release-failures") != 0
+            or ledger.get("owners-final") != 1
+            or ledger.get("cleanup-errors") != 0
+            or adapter.get("execute-calls") != 0
+            or adapter.get("cancel-calls") != 0
+            or journal.get("cancellation-requested") != 0
+            or journal.get("cancellation-observed") != 0
+            or journal.get("cancellation-interventions") != 1
+        ):
+            raise RuntimeError("cancellation acknowledgement evidence is invalid")
+    elif scenario == "expire-attempt-deadline":
+        if (
+            evidence.get("classification") != "trusted-clock-deadline-expired"
+            or clock.get("now-millis", 0) <= 1
+            or ledger.get("release-calls") != 0
+            or ledger.get("release-failures") != 0
+            or ledger.get("owners-final") != 1
+            or ledger.get("cleanup-errors") != 0
+            or adapter.get("execute-calls") != 0
+            or adapter.get("cancel-calls") != 0
+            or any(journal.get(name) != 0 for name in [
+                "cancellation-requested",
+                "cancellation-observed",
+                "cancellation-interventions",
+            ])
+        ):
+            raise RuntimeError("trusted-clock deadline evidence is invalid")
+    elif scenario == "fail-cleanup":
+        if (
+            evidence.get("classification") != "cleanup-failure-retained-then-released"
+            or ledger.get("release-calls") != 2
+            or ledger.get("release-failures") != 1
+            or ledger.get("owners-final") != 0
+            or ledger.get("cleanup-errors") != 1
+            or adapter.get("execute-calls") != 0
+            or adapter.get("cancel-calls") != 0
+        ):
+            raise RuntimeError("cleanup failure evidence is invalid")
+    elif (
+        evidence.get("classification") != "release-failure-retained-then-released"
+        or ledger.get("release-calls") != 2
+        or ledger.get("release-failures") != 1
+        or ledger.get("owners-final") != 0
+        or ledger.get("cleanup-errors") != 0
+        or adapter.get("execute-calls") != 1
+        or adapter.get("cancel-calls") != 0
+    ):
+        raise RuntimeError("release failure evidence is invalid")
+
+    bound_subject = _bound_cohort_subject(cell, subject)
+    cohort_subject_digest = sha256(bound_subject)
+    observations = {
+        "durable-attempt-state-classified": {
+            "cell": cell["id"],
+            "transaction": subject["transaction"],
+            "plan": subject["plan"],
+            "journal": journal["digest"],
+            "journal-head": journal["head"],
+            "scenario": scenario,
+            "classification": evidence["classification"],
+            "recovery-routes": evidence["recovery-routes"],
+        },
+        "at-most-one-resource-owner": {
+            "cell": cell["id"],
+            "ledger": ledger["digest"],
+            "max-owners": ledger["max-owners"],
+            "owners-at-failure": ledger["owners-at-failure"],
+            "owners-final": ledger["owners-final"],
+            "retained-resources": ledger["retained-resources"],
+            "release-failures": ledger["release-failures"],
+        },
+        "foreign-resources-unchanged": {
+            "cell": cell["id"],
+            "snapshot-before": evidence["foreign-before"],
+            "snapshot-after": evidence["foreign-after"],
+            "unchanged": True,
+        },
+        "dependent-effects-not-executed": {
+            "cell": cell["id"],
+            "dependent-events": journal["dependent-events"],
+            "blocked": True,
+        },
+    }
+    if set(cell["postconditions"]) != set(observations):
+        raise RuntimeError("failure-control postconditions differ from its evidence contract")
+
+    postconditions = {}
+    probes = {}
+    disposition = _expected_disposition(cell)
+    for name in cell["postconditions"]:
+        facts = observations[name]
+        observation_digest = sha256(facts)
+        if observation_digest in probe_digests:
+            raise RuntimeError("passing matrix postconditions replay a production probe")
+        probe_digests.add(observation_digest)
+        postconditions[name] = {
+            "passed": True,
+            "detail": "The candidate runtime retained exact ownership and durably classified the injected failure control.",
+        }
+        probes[name] = {
+            "schema_version": PROBE_SCHEMA,
+            "kind": POSTCONDITION_KINDS[name],
+            "cell_id": cell["id"],
+            "cell_digest": cell_digest,
+            "disposition": disposition,
             "subject_digest": subject_digest,
             "cohort_subject_digest": cohort_subject_digest,
             "observation_digest": observation_digest,
