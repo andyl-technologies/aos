@@ -7,7 +7,9 @@
         {options.value = lib.mkOption declaration;}
         {config.value = definition;}
       ];
-    }).config.value;
+    })
+    .config
+    .value;
   rejects = value: !(builtins.tryEval (builtins.deepSeq value value)).success;
 
   invalidDefault =
@@ -20,7 +22,9 @@
           };
         }
       ];
-    }).config.value;
+    })
+    .config
+    .value;
   nested = lib.types.submodule {
     options.count = lib.mkOption {type = positive;};
   };

@@ -127,13 +127,17 @@
             stderr.exact = "";
           }
           {
-            argv = ["@python@" "-c" ''
-              import pathlib, subprocess
-              loader = next(pathlib.Path("@out@/lib").glob("ld-linux*.so*"))
-              result = subprocess.run([str(loader), "--library-path", "@out@/lib", "@work@/primary/primary"], capture_output=True, text=True)
-              assert result.returncode == 0 and result.stderr == ""
-              print(result.stdout, end="")
-            ''];
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import pathlib, subprocess
+                loader = next(pathlib.Path("@out@/lib").glob("ld-linux*.so*"))
+                result = subprocess.run([str(loader), "--library-path", "@out@/lib", "@work@/primary/primary"], capture_output=True, text=True)
+                assert result.returncode == 0 and result.stderr == ""
+                print(result.stdout, end="")
+              ''
+            ];
             exit_code = 0;
             stdout.exact = "5,17,23,42\n";
             stderr.exact = "";
@@ -171,15 +175,19 @@
             stderr.exact = "";
           }
           {
-            argv = ["@python@" "-c" ''
-              import pathlib, subprocess, sys
-              loader = next(pathlib.Path("@out@/lib").glob("ld-linux*.so*"))
-              result = subprocess.run([str(loader), "--library-path", "@out@/lib", "@work@/bad-input/bad-input"], capture_output=True)
-              if result.returncode != 7 or result.stderr != b"glibc rejected invalid input\n":
-                  raise SystemExit(2)
-              sys.stderr.write("glibc rejected invalid input\n")
-              raise SystemExit(7)
-            ''];
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import pathlib, subprocess, sys
+                loader = next(pathlib.Path("@out@/lib").glob("ld-linux*.so*"))
+                result = subprocess.run([str(loader), "--library-path", "@out@/lib", "@work@/bad-input/bad-input"], capture_output=True)
+                if result.returncode != 7 or result.stderr != b"glibc rejected invalid input\n":
+                    raise SystemExit(2)
+                sys.stderr.write("glibc rejected invalid input\n")
+                raise SystemExit(7)
+              ''
+            ];
             exit_code = 7;
             stdout.exact = "";
             stderr.exact = "glibc rejected invalid input\n";
@@ -226,14 +234,18 @@
             stderr.exact = "";
           }
           {
-            argv = ["@python@" "-c" ''
-              import os, subprocess
-              environment = os.environ.copy()
-              environment["LOCPATH"] = "@out@/lib/locale"
-              result = subprocess.run(["@work@/primary/primary"], env=environment, capture_output=True, text=True)
-              assert result.returncode == 0 and result.stderr == ""
-              print(result.stdout, end="")
-            ''];
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import os, subprocess
+                environment = os.environ.copy()
+                environment["LOCPATH"] = "@out@/lib/locale"
+                result = subprocess.run(["@work@/primary/primary"], env=environment, capture_output=True, text=True)
+                assert result.returncode == 0 and result.stderr == ""
+                print(result.stdout, end="")
+              ''
+            ];
             exit_code = 0;
             stdout.exact = "glibc-locales data passed\n";
             stderr.exact = "";
@@ -265,16 +277,20 @@
             stderr.exact = "";
           }
           {
-            argv = ["@python@" "-c" ''
-              import os, subprocess, sys
-              environment = os.environ.copy()
-              environment["LOCPATH"] = "@out@/lib/locale"
-              result = subprocess.run(["@work@/bad-input/bad-input"], env=environment, capture_output=True)
-              if result.returncode != 7 or result.stderr != b"glibc-locales rejected invalid input\n":
-                  raise SystemExit(2)
-              sys.stderr.write("glibc-locales rejected invalid input\n")
-              raise SystemExit(7)
-            ''];
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import os, subprocess, sys
+                environment = os.environ.copy()
+                environment["LOCPATH"] = "@out@/lib/locale"
+                result = subprocess.run(["@work@/bad-input/bad-input"], env=environment, capture_output=True)
+                if result.returncode != 7 or result.stderr != b"glibc-locales rejected invalid input\n":
+                    raise SystemExit(2)
+                sys.stderr.write("glibc-locales rejected invalid input\n")
+                raise SystemExit(7)
+              ''
+            ];
             exit_code = 7;
             stdout.exact = "";
             stderr.exact = "glibc-locales rejected invalid input\n";
