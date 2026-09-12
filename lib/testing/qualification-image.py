@@ -93,6 +93,14 @@ PACKAGE_CHECKS = {
 MAX_RECOVERY_INITRD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_RECOVERY_EXECUTABLE_BYTES = 128 * 1024 * 1024
 
+# Hosted AArch64 boots under TCG and can advance guest time several times more
+# slowly than wall time when image qualifications share the build host. Keep
+# native KVM deadlines tight while allowing the emulated guest to finish the
+# same boot and reboot sequence.
+BOOT_READY_TIMEOUT = 1800 if PLATFORM == "aarch64-linux" else 600
+REBOOT_TIMEOUT = 1800 if PLATFORM == "aarch64-linux" else 720
+REBOOT_READY_TIMEOUT = 1200 if PLATFORM == "aarch64-linux" else 420
+
 
 def canonical(value: Any) -> bytes:
     """Encodes the canonical JSON form used by release evidence."""
@@ -428,7 +436,7 @@ class VirtualMachine:
         self.serial = socket.socket(socket.AF_UNIX)
         self.serial.connect(str(self.serial_socket))
         threading.Thread(target=self._drain_serial, args=(self.serial,), daemon=True).start()
-        self.wait_for_ssh(600)
+        self.wait_for_ssh(BOOT_READY_TIMEOUT)
 
     def _drain_serial(self, serial: socket.socket) -> None:
         while True:
@@ -512,7 +520,7 @@ class VirtualMachine:
     def reboot(self) -> None:
         before = self.ssh("cat /proc/sys/kernel/random/boot_id").strip()
         response = self.ssh("systemctl reboot", timeout=30, check=False)
-        deadline = time.monotonic() + 720
+        deadline = time.monotonic() + REBOOT_TIMEOUT
         while time.monotonic() < deadline:
             try:
                 after = self.ssh(
@@ -526,7 +534,7 @@ class VirtualMachine:
                 continue
 
             if after and after != before:
-                self.wait_for_ssh(420)
+                self.wait_for_ssh(REBOOT_READY_TIMEOUT)
                 self.counts.reboot_cycles += 1
                 return
 
