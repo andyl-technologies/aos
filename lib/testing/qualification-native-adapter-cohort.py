@@ -230,6 +230,30 @@ CANCELLATION_HANDLER_ENTRY_POINTS = {
         "libexec/aos-network-endpoint-handler-v1",
     ),
     "aos.nginx-validation": ("nginx-terminal", "bin/nginx"),
+    "aos.postgresql-effects": (
+        "native-postgresql-v1",
+        "libexec/aos-postgresql-handler-v1",
+    ),
+    "aos.kubernetes-object-effects": (
+        "native-kubernetes-object-v1",
+        "libexec/aos-kubernetes-object-handler-v1",
+    ),
+    "aos.systemd-provider-bootstrap": (
+        "systemd-bootstrap-terminal",
+        "bin/.aos-package-runtime-unwrapped",
+    ),
+    "aos.systemd-manager": (
+        "native-systemd-manager-v1",
+        "libexec/aos-systemd-manager-handler-v1",
+    ),
+    "aos.systemd-service-effects": (
+        "systemd-terminal",
+        "bin/.aos-package-runtime-unwrapped",
+    ),
+    "aos.ab-image-rollout-effects": (
+        "native-ab-image-rollout-v1",
+        "libexec/aos-ab-image-rollout-handler-v1",
+    ),
 }
 CANCELLATION_ORACLE_KINDS = {
     "credential-delivery": "filesystem",
@@ -489,7 +513,6 @@ def build_cells(
             *effect_boundary_cells,
             *supported_cancellation_cells,
         ]
-
     if has_interruption_audit:
         before_acquisition_cells = [
             cell["id"]
@@ -502,11 +525,20 @@ def build_cells(
             *before_acquisition_cells,
             *allowed_cells[insertion:],
         ]
+
+    ordered_expected_cells = [
+        cell_id
+        for cell_id in expected_qualified_cells
+        if cell_id not in supported_cancellation_cells
+    ]
+    ordered_allowed_cells = [
+        cell_id for cell_id in allowed_cells if cell_id not in supported_cancellation_cells
+    ]
     if (
         not expected_qualified_cells
         or any(cell_id not in allowed_cells for cell_id in expected_qualified_cells)
-        or expected_qualified_cells
-        != [cell_id for cell_id in allowed_cells if cell_id in expected_qualified_cells]
+        or ordered_expected_cells
+        != [cell_id for cell_id in ordered_allowed_cells if cell_id in ordered_expected_cells]
     ):
         raise RuntimeError("cohort qualification scope differs from its fixed fixture")
     if set(cohort_subjects) != set(submissions):
