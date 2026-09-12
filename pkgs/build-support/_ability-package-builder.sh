@@ -155,7 +155,13 @@ jq --slurpfile artifacts work/artifact-references.json '
   | .package.source |= artifact
   | .artifacts |= map(artifact) | .artifacts |= unique_by(.content) | .artifacts |= sort_by(.content)
   | .module_entry_points |= with_entries(.value |= artifact)
-  | .implementation.providers |= map(.artifact |= artifact)
+  | .implementation.providers |= map(
+      .artifact |= artifact
+      | if .state_format == null
+        then .
+        else .state_format.artifact |= artifact
+        end
+    )
   | .implementation.handlers |= with_entries(.value.artifact |= artifact)
 ' "$abilityTemplateFile" > work/package.artifacts.json
 
