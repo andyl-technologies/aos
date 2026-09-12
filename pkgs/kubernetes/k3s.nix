@@ -5,6 +5,7 @@
   fetchGoModules,
   buildPackages,
   gnumake,
+  lib,
 }: let
   version = "1.35.1-k3s1";
   srcVersion = "1.35.1+k3s1";
@@ -30,6 +31,9 @@ in
       buildPackages.go
     ];
     runtimeDeps = [];
+
+    # Role packages consume this artifact and own the service lifecycle.
+    abilityPackage = (import ./_ability-contracts.nix {inherit lib;}).payloadPackage;
 
     phases = [
       {
