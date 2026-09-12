@@ -1,3 +1,6 @@
+from copy import deepcopy
+
+
 # Stateful PostgreSQL provider replacement, interruption, and retention flight.
 NATIVE_OWNER_LEDGER = "/var/lib/profiles/system/.ability-native-resources.json"
 ADOPTION_CONSUMER = "ability-reference-postgresql-consumer"
@@ -1466,3 +1469,83 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
         ),
     },
 }
+
+
+def add_ordered_postgresql_state_cell(
+    method,
+    scenario,
+    base_cell,
+    generation,
+    transaction,
+    root,
+    bundle,
+    bundle_bytes,
+):
+    cell = f"postgresql/aos.postgresql-effects/abi-1/{method}/{scenario}"
+    subject = postgresql_cohort_subject(bundle, method, bundle_bytes)
+    probes = deepcopy(NATIVE_ADAPTER_MATRIX_PROBES[base_cell])
+    durable = probes["durable-attempt-state-classified"]
+    durable["detail"] = (
+        f"The production journal completed the exact PostgreSQL {method} "
+        "operation under the adopted provider authority."
+    )
+    durable["observations"]["operation"] = subject["operation"]
+    durable["observations"]["timeline"] = operation_timeline(
+        generation,
+        transaction,
+        subject["operation"],
+    )
+    durable["observations"]["record-digest"] = transaction_journal_digest(root)
+
+    adoption_method = subject["candidate"]["handler_method"]
+    if method != adoption_method:
+        adoption_subject = postgresql_cohort_subject(
+            bundle,
+            adoption_method,
+            bundle_bytes,
+        )
+        durable["observations"]["adoption-operation"] = adoption_subject[
+            "operation"
+        ]
+        durable["observations"]["adoption-timeline"] = operation_timeline(
+            generation,
+            transaction,
+            adoption_subject["operation"],
+        )
+
+    NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS[cell] = subject
+    NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE[cell] = bundle_bytes
+    NATIVE_ADAPTER_MATRIX_PROBES[cell] = probes
+
+
+for state_method in ("observe", "restart"):
+    add_ordered_postgresql_state_cell(
+        state_method,
+        "adopt-compatible-state",
+        compatible_cell,
+        generation_adoption_v2,
+        transaction_adoption_v2,
+        root_adoption_v2,
+        bundle_adoption_v2,
+        bundle_bytes_adoption_v2,
+    )
+
+for state_method in ("materialize", "observe"):
+    add_ordered_postgresql_state_cell(
+        state_method,
+        "activate-retained-target",
+        retained_cell,
+        generation_adoption_final_v1,
+        transaction_adoption_final_v1,
+        root_adoption_final_v1,
+        bundle_adoption_final_v1,
+        bundle_bytes_adoption_final_v1,
+    )
+
+# Every PostgreSQL probe carries its exact cell operation. Besides binding the
+# provider-specific facts to the method, this prevents replay across cells that
+# share one durable adoption transition.
+for cell_id, probes in NATIVE_ADAPTER_MATRIX_PROBES.items():
+    matrix_operation = NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS[cell_id]["operation"]
+    for probe in probes.values():
+        probe["observations"]["matrix-operation"] = matrix_operation

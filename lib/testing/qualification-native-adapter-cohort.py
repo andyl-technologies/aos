@@ -55,6 +55,10 @@ POSTGRESQL_CELL_IDS = [
     "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer",
     "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result",
     "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
+    "postgresql/aos.postgresql-effects/abi-1/materialize/activate-retained-target",
+    "postgresql/aos.postgresql-effects/abi-1/observe/adopt-compatible-state",
+    "postgresql/aos.postgresql-effects/abi-1/observe/activate-retained-target",
+    "postgresql/aos.postgresql-effects/abi-1/restart/adopt-compatible-state",
 ]
 QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
 RUNTIME_AUDIT_SCHEMA = "aos.qualification.native-adapter-runtime-audit/v2"
@@ -2822,6 +2826,10 @@ def _validate_postgresql_probe_facts(
     scenario = cell["id"].rsplit("/", 1)[-1]
     operation = subject["operation"]
     resource = subject["resource"]
+    observations = dict(observations)
+    if observations.pop("matrix-operation", None) != operation:
+        raise RuntimeError("PostgreSQL probe is not bound to its exact matrix operation")
+
     if postcondition == "durable-attempt-state-classified":
         expected_timelines = {
             "adopt-compatible-state": [
@@ -2844,6 +2852,34 @@ def _validate_postgresql_probe_facts(
             ],
         }
         timeline = observations.get("timeline")
+        adoption_operation = observations.pop("adoption-operation", None)
+        adoption_timeline = observations.pop("adoption-timeline", None)
+        requires_ordered_adoption = (
+            scenario in {"adopt-compatible-state", "activate-retained-target"}
+            and operation["method"] != subject["candidate"]["handler_method"]
+        )
+        ordered_adoption = (
+            isinstance(adoption_operation, dict)
+            and adoption_operation.get("interface") == operation["interface"]
+            and adoption_operation.get("method")
+            == subject["candidate"]["handler_method"]
+            and adoption_operation.get("target", {}).get("interface")
+            == operation["target"]["interface"]
+            and adoption_operation.get("target", {}).get("resource")
+            == operation["target"]["resource"]
+            and isinstance(adoption_timeline, list)
+            and [event.get("kind") for event in adoption_timeline]
+            == ["operation-admitted", "effect-started", "effect-completed"]
+            and all(
+                isinstance(event, dict)
+                and set(event) == {"sequence", "kind", "node-ordinal"}
+                and _is_nonnegative_int(event.get("sequence"))
+                and event.get("node-ordinal") == adoption_operation.get("ordinal")
+                for event in adoption_timeline
+            )
+            and bool(timeline)
+            and adoption_timeline[-1]["sequence"] < timeline[0]["sequence"]
+        )
         expected = expected_timelines.get(scenario)
         if (
             set(observations)
@@ -2861,6 +2897,9 @@ def _validate_postgresql_probe_facts(
             or observations.get("operation") != operation
             or not _matches(DIGEST, observations.get("record-digest"))
             or observations.get("classified") is not True
+            or requires_ordered_adoption != ordered_adoption
+            or (not requires_ordered_adoption and adoption_operation is not None)
+            or (not requires_ordered_adoption and adoption_timeline is not None)
             or expected is None
             or [event.get("kind") for event in timeline or []] != expected
             or any(
@@ -3977,7 +4016,7 @@ def _validate_postgresql_cohort_subject(
         or cell.get("interface", {}).get("abi") != 1
         or cell.get("interface", {}).get("descriptor")
         != "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6"
-        or cell.get("method") not in {"materialize", "restart"}
+        or cell.get("method") not in {"materialize", "observe", "restart"}
     ):
         raise RuntimeError("PostgreSQL cohort is bound to another adapter method")
 

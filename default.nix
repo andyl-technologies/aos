@@ -452,6 +452,10 @@
     "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer"
     "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result"
     "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target"
+    "postgresql/aos.postgresql-effects/abi-1/materialize/activate-retained-target"
+    "postgresql/aos.postgresql-effects/abi-1/observe/adopt-compatible-state"
+    "postgresql/aos.postgresql-effects/abi-1/observe/activate-retained-target"
+    "postgresql/aos.postgresql-effects/abi-1/restart/adopt-compatible-state"
   ];
   nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
     inherit lib;
