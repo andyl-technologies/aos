@@ -686,7 +686,14 @@ accepted or nested result is interpreted.
 
 Acquire requests contain that nonzero session binding, an exact expected
 client-to-provider sequence, exact canonical logical-binding bytes and digest and
-the complete deadline-free canonical Mount `AOSMSEM1` field envelope. The
+the complete deadline-free canonical Mount `AOSMSEM1` field envelope. For the
+Mount source-acquisition feature this is specifically the pre-catalog Create
+template: exact fields 1 through 27, Create action, canonical empty field 13,
+and every other field final. Ordinary final Create semantics still require a
+nonzero verified catalog commitment. Before final Create admission, Mount must
+reproduce the pre-catalog template by projecting only final field 13 back to
+empty; accepting an arbitrary structurally decodable `AOSMSEM1` envelope is not
+sufficient. The
 prospective template digest is SHA-256 over
 `aos-source-provider-prospective-mount-template-v1\0 || AOSMSEM1-bytes`; the
 SourceProvider decoder checks exact fields 1 through 27, magic, and format
@@ -786,15 +793,193 @@ evidence derived from the received descriptor before production integration.
 Release and Inventory have equivalent signed, holder-scoped composite entry
 points and never transfer descriptors.
 
-The SourceProvider 1.0 foundation alone grants no source authority and opens no
-socket. Mount does not yet expose Acquire, release-acquisition, or acquisition
-inventory methods, has no `AOSMSA01` attempt ledger or provider router, and
-still omits `aos.sandbox.mount.source-acquisition, 1, 0`. Production Create
-therefore remains closed. A later tranche must durably bind an acquisition to
-the prospective Apply digest, populate protected trust/route/session inputs
-from real configuration and kernel observations, verify backend evidence, and
-obtain authoritative positive PID 1 custody evidence before any Active pin or
-Create resource can commit.
+Mount 2.0 predeclares the additive
+`aos.sandbox.mount.source-acquisition,1.0` profile. It contains exactly three
+methods: numeric tags 22 `MOUNT_ACQUIRE_SOURCE`, 23
+`MOUNT_RELEASE_SOURCE_ACQUISITION`, and 24
+`MOUNT_INVENTORY_SOURCE_ACQUISITIONS`. Acquire and Release are effects and use
+the exact signed-plan/ownership-lease carrier; Inventory is an observation and
+rejects authorization. All three directions carry zero controller-to-Mount or
+Mount-to-controller descriptors. The provider `SourceRoot` terminates at Mount
+and PID 1 custody; it is never returned to or nominated by the controller.
+
+Advertisement is feature-conditioned as well as feature-gated. A Mount server
+must strip all three methods from the effective server hello unless the client
+hello required the exact source-acquisition feature. If the feature is
+required and negotiated, the server must advertise all three methods. A client
+rejects any server hello that advertises one of the methods without the feature
+or only a partial method group. This preserves exact-2.0 legacy clients, which
+validate every server-advertised method rather than only their required subset.
+
+`AcquireMountSourceRequest` has exact fields: header 1, assignment fence 2,
+pre-catalog template bytes and digest 3 and 4, canonical logical binding bytes
+and digest 5 and 6, requested lease seconds 7, requested maximum submounts 8,
+and kernel-coupled flag 9. It accepts no provider identity, route, key,
+acquisition ID, revocation state, node, boot, holder, session, provider request
+ID, or sequence from the controller. Mount derives recursive authority from
+the canonical attributes; the six Boolean attribute bytes are closed, no-suid
+and no-device are true, read-only is equivalent to immutable mutation class,
+and kernel-coupled is equivalent to local-live consistency. A nonrecursive
+request has a zero maximum-submount count. The outer Mount request ID is the
+Acquire operation identity and is distinct from the later Create request ID.
+Live admission and durable recovery use one time-independent exact decoder for
+the canonical Acquire body, NodeController header shape, logical binding, and
+all 27 pre-catalog Create fields; live peer authentication and deadline
+currentness remain additional admission gates. Provider proof class must equal
+the binding consistency mapping: immutable revision to ImmutableTree, local
+live to LocalLive, and best-effort replica to BestEffortReplica.
+
+`ReleaseMountSourceAcquisitionRequest` has header 1, assignment fence 2,
+acquisition ID 3, expected revision 4, and expected record digest 5. The caller
+cannot replace provider or lease identity. Release must remain in the same
+sandbox/incarnation lineage under current or dominating teardown authority.
+An equal assignment epoch and desired generation requires the exact Acquire
+assignment digest; a higher desired generation dominates only within the same
+epoch; and a higher epoch dominates with its own nonzero generation and
+digest. A lower epoch never dominates, even with a larger desired generation.
+Mount durably retains and canonically reproduces the exact Release body,
+teardown fence, acquisition ID, operation/request identity, and predecessor
+revision/record-digest CAS. Release response correlation applies this same
+dominance relation to the immutable Acquire assignment projected by the row.
+`InventoryMountSourceAcquisitionsRequest` contains only header 1. Acquire and
+Release each return one shared acquisition record; Inventory returns kernel
+boot ID 1, journal sequence 2, at most 1,024 acquisition-ID-sorted records 3,
+and broker process instance 4. Records retain exact Acquire and optional
+Release correlations, assignment, provider route/authority/key/resource,
+catalog and selection generations and digests, lease/proof/descriptor and
+physical-source commitments, disposition digests, release/inventory evidence,
+fault origin, revision, phase, and corruption-detecting record digest. They are
+an authenticated public projection of the durable row, not a raw provider
+envelope or a claim that scalar kernel fields prove provenance.
+
+Mount mints
+`SHA256("aos.sandbox.mount.source-acquisition-id.v1\0" ||
+acquire-operation-id[16] || SHA256(exact Mount Acquire body))` as the 32-byte
+acquisition ID. Namespace 40 stores the version-1 `AOSMSA01` format. Acquisition
+keys are `"aos.mount.source-acquisition.v1\0" || acquisition-id`; the record
+digest domain is
+`"aos.sandbox.mount.source-acquisition-record.v1\0"`. Separate tagged
+transaction domains distinguish acquisition rows, provider-head/session
+changes, and inventory commits.
+
+The closed lifecycle is `PendingQuery`, `DescriptorCustodied`, `Active`,
+`Consumed`, `Releasing`, `Released`, and `Faulted`. A first PendingQuery is
+durable before provider I/O and binds exact Mount request and semantic identity,
+plan and lease digests, pre-catalog template and binding bytes/digests,
+protected holder/node/boot/route/trust/session snapshots, signed provider
+request bytes, and sequence reservation. Each stable holder/provider pair also
+has a provider-head control row. It owns one outstanding request reservation,
+both direction-local sequence heads, current session/boot/route/key identity,
+and the stable inventory and catalog floor. The client-to-provider sequence is
+reserved atomically before I/O; a verified signed disposition consumes the
+reservation and advances the response head atomically with its acquisition row
+or inventory reconciliation. Multiple acquisition rows never infer or share a
+sequence by scanning lifecycle state. A Complete inventory's exact signed
+bytes are retained once in the stable floor; its disposition checkpoint retains
+the signed status and result digest rather than duplicating the large result.
+The head also advances a checked durable inventory-observation ordinal for
+every newly consumed Complete response, including a fresh authenticated query
+whose provider generation and stable content equal the preceding floor. Exact
+redelivery of an already committed checkpoint does not advance the ordinal.
+The canonical maximum SourceProvider inventory therefore remains below the
+four-MiB AOSMSA01 value ceiling. Reconciliation commits that one provider-head
+record and its aggregate residual/conflict result; it does not rewrite every
+matching acquisition row in the same transaction. When a terminal inventory
+later authorizes manager-confirmed release, that row records the exact current
+floor digest and observation ordinal in its own bounded lifecycle transaction.
+Release admission captures the preceding observation ordinal, so an omission
+or exact Released entry must come from a strictly later Complete Inventory;
+an older floor cannot prove terminality. Thus maximum-cardinality reconciliation
+never scales one journal transaction with retained row history. Before the
+Inventory reservation is committed, Mount preflights that reservation followed
+by one maximum four-MiB provider-head replacement against the exclusively held
+journal's transaction, file, and materialized-state limits. Production wiring
+must preserve that exclusive no-unmodeled-commit interval through completion.
+
+Transport close records no provider outcome and leaves the exact reservation
+ambiguous. Signed Pending, Rejected, and Unavailable dispositions consume their
+sequences and retain exact bytes without inventing Complete. Bounded retry
+history preserves those dispositions before a new sequence is reserved. Exact
+controller replay returns the current row or tombstone; request-ID reuse with
+different body or authority is equivocation. Exact provider response redelivery
+is a no-write replay, while a different response at a consumed sequence fails
+closed. Session replacement cannot erase an outstanding reservation or rewrite
+a PendingQuery into a new session. Such an attempt must first be resolved or
+faulted; retry after fault requires a new controller operation and acquisition
+ID. Stable inventory floors survive permitted session, boot, route, and key
+replacement. The stable route ID and resource-namespace digest may not change
+through ordinary session replacement; changing either scope requires a
+distinct authenticated migration contract and old-head tombstone, which Stage
+2B does not yet expose.
+
+For Complete Acquire, Mount first verifies and adapter-brands the received
+descriptor, then atomically records the complete signed graph and sequence CAS
+while the phase remains PendingQuery. It may attempt PID 1 handoff only after
+that commit. `DescriptorCustodied` requires an authoritative handoff
+acknowledgement and remains unusable. `Active` requires authoritative positive
+PID 1 readback; neither a local mutex nor `BARRIER=1` is evidence. Mount maps
+only the SourceProvider resource/proof commitment into the existing AOSMSP01
+`provider_resource_digest`, maps provider proof classes explicitly rather than
+by numeric cast, and mints the realization handle. `Active` becomes `Consumed`
+only in one transaction with the exact AOSMSP01 activation and one final Create
+effect/operation admission whose field-13 projection equals the prospective
+template. AOSMSP01 itself is not folded into or silently changed by AOSMSA01.
+
+Release retains the original signed lease and derives its provider request from
+the row and current protected session. It retains that release-time protected
+holder/route/authority/key/session snapshot separately from immutable Acquire
+evidence, so authenticated cleanup survives provider rekey and restart without
+accepting an old-key response. `Releasing` and the exact signed request are
+durable before provider I/O. `Released` requires either an exact signed
+terminal release receipt or reconciled terminal inventory plus authoritative
+negative PID 1 custody evidence. Complete-but-not-yet-custodied and custodied
+failures remain eligible for cleanup. Released is terminal. Faulted retains its
+source phase and sanitized failure commitment; it cannot erase preceding
+provider, descriptor, or custody evidence.
+
+Signed provider inventory currentness is durable per stable holder/provider
+pair. Lower generation is rollback; equal generation with changed canonical
+inventory, provider/key/route/catalog tuple, or entries is equivocation; equal
+stable content under a fresh authenticated query legitimately consumes the new
+request/response sequences and advances the observation ordinal; higher
+generation advances atomically with full reconciliation. Stored residual and
+conflict booleans are diagnostics for the row projection at observation time,
+not current authority after later row mutations. Consumers recompute the exact
+current reconciliation from the retained signed floor and current rows.
+Unknown provider leases are untracked residuals and are never adopted. Missing
+locally Active or Consumed leases, a nonterminal reappearance of a Released
+local tombstone, and resource/proof changes are authority conflicts recorded
+without wedging the authenticated response reservation. Releasing/Reaping
+remains pending; a post-Release omission or exact matching Released entry may
+establish provider terminality but cannot substitute for manager-negative
+custody.
+
+On reopen, canonical validation method-decodes every retained Complete provider
+result. It reproduces Acquire lease/resource/proof/physical-realization
+evidence, Release lease/provider/generation evidence, and the complete
+Inventory request/result/floor graph. Recovery also rechecks global operation-ID
+and session-sequence uniqueness, direction-head reachability,
+provider-history partial ordering, and bidirectional pending-owner integrity
+before exposing any row.
+
+Controller inventory currentness follows the same fail-closed observation
+rules as other Mount inventories: exact query/response bytes and complete
+controller-state commitment, current boot/process pairing, monotonic journal
+sequence, identical bytes at an equal sequence, unique query ID, live-row boot
+agreement, physical-alias exclusion, and equal-generation anti-equivocation
+across provider route/authority/key/resource/catalog/selection facts. This is a
+kernel-nominated, broker-returned observation, not authenticated broker-writer
+proof. Production use remains gated by `SBX-BPROTO-05` session authentication,
+MAC/confinement, protected key custody, and branded kernel evidence.
+
+This Stage 2B contract remains deliberately inert. No production feature
+advertisement, provider router/backend verifier, protected trust/route/key
+loader, process-exclusive CSPRNG, durable authenticated socket adapter,
+authoritative manager positive/negative query, controller acquisition
+integration, or Create enablement is installed. Private opaque seams prevent
+public scalar observations from activating, consuming, or releasing an
+acquisition. SourceProvider 1.0 and AOSMSP01 retain their exact wire and durable
+formats. Production Create therefore remains closed.
 
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and

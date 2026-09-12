@@ -72,6 +72,31 @@ pub struct CanonicalMountSemanticsV1 {
     target: BrokerGrantTarget,
 }
 
+/// Carries the exact pre-catalog Create template sent to SourceProvider 1.0.
+///
+/// It is a normal `AOSMSEM1` field sequence except that field 13 is the
+/// canonical empty catalog value. Every other field is final. Only the
+/// feature-gated Mount Acquire method may consume this representation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalPrecatalogMountCreateV1 {
+    bytes: Vec<u8>,
+    digest: ObjectDigest,
+}
+
+impl CanonicalPrecatalogMountCreateV1 {
+    /// Returns the exact deadline-free pre-catalog `AOSMSEM1` bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the SourceProvider-defined prospective-template digest.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
+}
+
 impl CanonicalMountSemanticsV1 {
     /// Returns the exact bytes whose meaning the mount grant commits.
     #[must_use]
@@ -115,6 +140,69 @@ pub fn canonical_mount_semantics_v1(
         return Err(MountSemanticError::CatalogCommitmentMismatch);
     }
 
+    let bytes = encode_mount_semantics(request, catalog, descriptor_roles, action_code)?;
+    Ok(CanonicalMountSemanticsV1 {
+        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+        bytes,
+        verb,
+        target,
+    })
+}
+
+/// Canonicalizes the sole pre-catalog Mount Create template.
+///
+/// The ordinary [`canonical_mount_semantics_v1`] contract remains unchanged:
+/// a final Create always requires a verified catalog commitment. This helper is
+/// exclusively for the preceding source-acquisition query and projects only
+/// field 13 to its canonical empty form.
+///
+/// # Errors
+///
+/// Returns [`MountSemanticError`] unless `request` is Create, descriptor roles
+/// are valid, or the exact encoding exceeds the V1 ceiling.
+pub fn canonical_precatalog_mount_create_template_v1(
+    request: &ValidatedMountRequest,
+    descriptor_roles: &[BrokerDescriptorRole],
+) -> Result<CanonicalPrecatalogMountCreateV1, MountSemanticError> {
+    validate_roles(descriptor_roles)?;
+    let (_, _, action_code, requires_catalog) = action_semantics(request)?;
+    if !requires_catalog || request.action() != MountAction::MOUNT_ACTION_CREATE_DETACHED {
+        return Err(MountSemanticError::InvalidTarget);
+    }
+    let bytes = encode_mount_semantics(request, None, descriptor_roles, action_code)?;
+    let digest =
+        aos_sandbox_source_provider_protocol::prospective_mount_apply_template_digest_v1(&bytes)
+            .map_err(|_| MountSemanticError::EncodingTooLarge)?;
+    Ok(CanonicalPrecatalogMountCreateV1 { bytes, digest })
+}
+
+/// Checks that a final Create reproduces an earlier pre-catalog template.
+///
+/// The final Create is first required to satisfy the ordinary nonzero catalog
+/// contract. Equality then compares the exact template obtained by projecting
+/// only field 13 back to its canonical empty value.
+///
+/// # Errors
+///
+/// Returns [`MountSemanticError`] for a non-Create request, invalid descriptor
+/// roles, a missing catalog commitment, or an encoding bound violation.
+pub fn final_mount_create_matches_precatalog_template_v1(
+    request: &ValidatedMountRequest,
+    catalog: MountCatalogBindingV1,
+    descriptor_roles: &[BrokerDescriptorRole],
+    expected_template: &[u8],
+) -> Result<bool, MountSemanticError> {
+    canonical_mount_semantics_v1(request, Some(catalog), descriptor_roles)?;
+    let projected = canonical_precatalog_mount_create_template_v1(request, descriptor_roles)?;
+    Ok(projected.canonical_bytes() == expected_template)
+}
+
+fn encode_mount_semantics(
+    request: &ValidatedMountRequest,
+    catalog: Option<MountCatalogBindingV1>,
+    descriptor_roles: &[BrokerDescriptorRole],
+    action_code: u8,
+) -> Result<Vec<u8>, MountSemanticError> {
     let mut encoder = Encoder::new();
     encoder.field(1, FORMAT_MAGIC)?;
     encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
@@ -155,13 +243,7 @@ pub fn canonical_mount_semantics_v1(
         &request.attachment_lease_expires_seconds().to_be_bytes(),
     )?;
     encoder.field(27, &encode_view_source(request.source_handle()))?;
-    let bytes = encoder.finish();
-    Ok(CanonicalMountSemanticsV1 {
-        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
-        bytes,
-        verb,
-        target,
-    })
+    Ok(encoder.finish())
 }
 
 fn action_semantics(

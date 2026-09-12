@@ -80,6 +80,54 @@ pub struct SourceProviderTrustAnchorV1 {
 }
 
 impl SourceProviderTrustAnchorV1 {
+    /// Returns the protected stable authority ID.
+    #[must_use]
+    pub const fn authority_id(&self) -> [u8; 16] {
+        self.authority_id
+    }
+
+    /// Returns the protected stable authority generation.
+    #[must_use]
+    pub const fn authority_generation(&self) -> u64 {
+        self.authority_generation
+    }
+
+    /// Returns the protected authority-state digest.
+    #[must_use]
+    pub const fn authority_digest(&self) -> ObjectDigest {
+        self.authority_digest
+    }
+
+    /// Returns the protected active key ID.
+    #[must_use]
+    pub const fn key_id(&self) -> [u8; 16] {
+        self.key_id
+    }
+
+    /// Returns the protected active key generation.
+    #[must_use]
+    pub const fn key_generation(&self) -> u64 {
+        self.key_generation
+    }
+
+    /// Returns the protected provider route ID.
+    #[must_use]
+    pub const fn route_id(&self) -> [u8; 16] {
+        self.route_id
+    }
+
+    /// Returns the protected provider route generation.
+    #[must_use]
+    pub const fn route_generation(&self) -> u64 {
+        self.route_generation
+    }
+
+    /// Returns the protected provider route digest.
+    #[must_use]
+    pub const fn route_digest(&self) -> ObjectDigest {
+        self.route_digest
+    }
+
     /// Constructs an exact protected trust-anchor snapshot.
     ///
     /// Construction validates shape only. The caller must load this value from
@@ -172,6 +220,12 @@ impl SourceProviderTrustAnchorV1 {
         &self.public_key
     }
 
+    /// Returns SHA-256 over the protected raw Ed25519 public key.
+    #[must_use]
+    pub fn public_key_digest(&self) -> ObjectDigest {
+        ObjectDigest::from_bytes(sha2::Sha256::digest(self.public_key).into())
+    }
+
     /// Returns the exact allowed signature use.
     #[must_use]
     pub const fn usage(&self) -> SourceProviderKeyUsageV1 {
@@ -235,6 +289,36 @@ pub struct ProtectedSourceProviderRouteV1 {
 }
 
 impl ProtectedSourceProviderRouteV1 {
+    /// Returns the protected route ID.
+    #[must_use]
+    pub const fn route_id(&self) -> [u8; 16] {
+        self.route_id
+    }
+
+    /// Returns the protected route generation.
+    #[must_use]
+    pub const fn route_generation(&self) -> u64 {
+        self.route_generation
+    }
+
+    /// Returns the protected route-state digest.
+    #[must_use]
+    pub const fn route_digest(&self) -> ObjectDigest {
+        self.route_digest
+    }
+
+    /// Returns the protected provider authority ID.
+    #[must_use]
+    pub const fn provider_authority_id(&self) -> [u8; 16] {
+        self.provider_authority_id
+    }
+
+    /// Returns the protected resource-namespace digest.
+    #[must_use]
+    pub const fn resource_namespace_digest(&self) -> ObjectDigest {
+        self.resource_namespace_digest
+    }
+
     /// Constructs one shaped provider-route snapshot.
     ///
     /// Construction does not establish configuration provenance. The caller
@@ -517,9 +601,5 @@ impl ProtectedSourceProviderRouteV1 {
 
     pub(crate) const fn allows_kernel_coupled(&self) -> bool {
         self.allow_kernel_coupled
-    }
-
-    pub(crate) const fn resource_namespace_digest(&self) -> ObjectDigest {
-        self.resource_namespace_digest
     }
 }

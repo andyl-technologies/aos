@@ -7719,3 +7719,86 @@ not advertise `aos.sandbox.mount.source-acquisition, 1, 0`. The current systemd
 adapter also still lacks authoritative manager readback. Consequently this
 work does not enable production Create and does not complete the broader Mount,
 provider, manager-readback, deployment, or qualification tasks.
+
+### Mount source-acquisition protocol and durable attempt ledger (in progress)
+
+Stage 2B predeclares the exact Mount 2.0 source-acquisition feature without
+advertising it in production. Broker method tags 22 through 24 are Acquire,
+release-acquisition, and holder inventory. Negotiation emits all three only to
+a client that required exact `aos.sandbox.mount.source-acquisition,1.0`; legacy
+exact-2.0 clients see none. Acquire and Release keep the signed plan/ownership
+carrier, Inventory rejects it, and all controller-facing packets have zero
+descriptors. SourceProvider's `SourceRoot` terminates at Mount/PID 1.
+
+The request codec now validates a feature-specific pre-catalog Create template:
+the exact deadline-free `AOSMSEM1` fields 1 through 27 with field 13 empty and
+every other field final. It checks closed attributes, recursive topology,
+logical source and assignment cross-links, and local-live kernel coupling. The
+ordinary final Create compiler still requires a nonzero catalog commitment and
+provides an exact field-13 projection comparison. SourceProvider 1.0 and the
+physical source-pin `AOSMSP01` format are unchanged.
+
+Namespace 40 now owns version-1 `AOSMSA01` acquisition and provider-head
+records. Acquisition rows retain exact Mount and provider query bytes, plan,
+lease, binding, protected route/trust/session snapshots, disposition history,
+lease/resource/proof/descriptor commitments, custody evidence, release and
+inventory terminality, and corruption digest. Closed phases are PendingQuery,
+DescriptorCustodied, Active, Consumed, Releasing, Released, and Faulted.
+Provider heads retain one exact outstanding query, direction-local sequence
+heads, current holder/provider/route/key/session identity, and stable signed
+inventory/catalog floors. Admission reserves the request sequence atomically
+before provider I/O; verified signed dispositions clear that reservation and
+advance the response sequence atomically with the affected row. Exact replay is
+no-write, changed reuse fails closed, transport ambiguity remains reserved, and
+session replacement cannot erase an outstanding or PendingQuery attempt.
+Complete inventory bytes have one durable floor copy; the linked checkpoint
+retains its signed status and result digest, keeping a maximum protocol-valid
+inventory within the fixed AOSMSA01 value ceiling.
+Inventory reconciliation updates only that bounded provider-head floor and its
+aggregate conflict/residual flags. It does not batch-rewrite acquisition rows;
+a checked inventory-observation ordinal advances for every fresh Complete query,
+including equal-generation byte-exact stable content. Release admission freezes
+the preceding ordinal, and an inventory-proven Released row records the exact
+strictly newer floor digest and ordinal with authoritative negative custody.
+The cached conflict/residual flags are observation-time diagnostics; lifecycle
+consumers dynamically reconcile the current rows against the retained signed
+floor. Inventory reservation also preflights a worst-case four-MiB head
+replacement against the exclusively held journal, avoiding both transaction
+growth proportional to row history and a known capacity-failure reservation
+wedge.
+Ordinary replacement preserves the stable route ID and resource-namespace
+scope. Release rows separately retain their authenticated current-session
+context so provider rekey does not invalidate immutable acquisition evidence or
+strand cleanup. They also retain and reproduce the canonical Mount Release
+body, predecessor CAS, and same-lineage teardown fence; higher epochs dominate,
+while generations dominate only within an equal epoch and equal coordinates
+require the exact assignment digest. Recovery method-decodes Complete Acquire,
+Release, and Inventory graphs and rechecks operation/sequence uniqueness, head
+reachability, pending ownership, and provider-history partial ordering. It also
+reuses the live time-independent Mount Acquire decoder for canonical header,
+binding, and complete pre-catalog Create semantics, and reproduces Root Mount
+query and provider receipt signer authority from retained signed envelopes.
+
+Complete Acquire remains PendingQuery through durable signature/sequence and
+branded descriptor evidence, becomes DescriptorCustodied only after PID 1
+handoff acknowledgement, and becomes Active only after authoritative positive
+readback. Consumption requires an opaque exact source-pin/final-Create commit
+and persists the three companion-record commitments in the same transaction.
+Release persists Releasing and its exact provider request before I/O and needs
+signed provider terminality plus authoritative negative manager evidence for
+Released. Public scalar evidence has no constructor for those production
+transitions. Inventory generation, exact equal-generation bytes, catalog
+generation, entry evidence, omissions, residuals, and Released reappearance are
+reconciled fail closed; authenticated semantic contradictions commit as
+blocking diagnostics instead of leaving a reservation wedged. Current dynamic
+conflicts block source consumption, while target cleanup accepts only an exact
+post-Release omission or matching Released entry. Stale terminal inventory
+cannot authorize release.
+
+This is still source qualification, not production enablement. Provider
+routing/backend verification, protected configuration loading, CSPRNG/session
+construction, authenticated broker-writer confinement, branded Linux descriptor
+evidence, authoritative manager queries, controller acquisition orchestration,
+Create advertisement, readiness wiring, Nix builds, and VM qualification remain
+open. Accordingly `SBX-MOUNT-01`, `SBX-BPROTO-05`, `SBX-P0-10`, and the broader
+filesystem-view provider/manager integration tasks remain unchecked.

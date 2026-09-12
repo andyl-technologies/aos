@@ -17,6 +17,7 @@ pub mod mount_catalog;
 pub mod mount_destination_slot;
 mod mount_result;
 pub mod mount_scope;
+mod mount_source_acquisition;
 pub mod network_inventory;
 pub mod payload_scope;
 pub mod semantics;
@@ -51,6 +52,17 @@ pub use mount_destination_slot::{
 pub use mount_result::{
     ValidatedMountResult, decode_mount_result_for_apply, detached_mount_handle_v1,
 };
+pub use mount_source_acquisition::{
+    MAXIMUM_MOUNT_SOURCE_ACQUISITION_RECORDS, ValidatedAcquireMountSourceRequest,
+    ValidatedMountSourceAcquisitionInventory, ValidatedMountSourceAcquisitionRecord,
+    ValidatedReleaseMountSourceAcquisitionRequest, decode_acquire_mount_source_request,
+    decode_acquire_mount_source_response, decode_historical_acquire_mount_source_request,
+    decode_mount_source_acquisition_inventory_request,
+    decode_mount_source_acquisition_inventory_response,
+    decode_release_mount_source_acquisition_request,
+    decode_release_mount_source_acquisition_response, mount_source_acquisition_id_v1,
+    mount_source_acquisition_request_digest_v1,
+};
 pub use network_inventory::{
     MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, ValidatedNetworkInventory,
     ValidatedNetworkNamespace, decode_network_resource_inventory_request,
@@ -58,8 +70,8 @@ pub use network_inventory::{
 };
 pub use source_realization::{
     MountSourcePhysicalProofV1, MountSourceProofClassV1, MountSourceProviderHistoryV1,
-    mount_source_physical_proof_digest_v1, mount_source_provider_history_is_valid_v1,
-    mount_source_realization_handle_v1,
+    mount_source_physical_proof_digest_v1, mount_source_proof_class_from_provider_v1,
+    mount_source_provider_history_is_valid_v1, mount_source_realization_handle_v1,
 };
 pub use storage_inventory::{
     MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS, ValidatedStorageInventory,
@@ -1945,6 +1957,192 @@ mod tests {
                 "attachment generation ordering"
             ))
         );
+    }
+
+    #[test]
+    fn precatalog_create_is_generated_and_matches_only_field_thirteen_projection() {
+        let request = decode_mount_request(&valid_mount_request(), peer(), policy(), 100)
+            .unwrap_or_else(|error| panic!("valid Create failed: {error}"));
+        let template = semantics::canonical_precatalog_mount_create_template_v1(&request, &[])
+            .unwrap_or_else(|error| panic!("pre-catalog template failed: {error}"));
+        let catalog = semantics::MountCatalogBindingV1::from_verified_digest(
+            ObjectDigest::from_bytes([31; 32]),
+        )
+        .unwrap_or_else(|error| panic!("catalog failed: {error}"));
+
+        assert!(
+            semantics::final_mount_create_matches_precatalog_template_v1(
+                &request,
+                catalog,
+                &[],
+                template.canonical_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("projection comparison failed: {error}"))
+        );
+        assert_eq!(
+            semantics::canonical_mount_semantics_v1(&request, None, &[]),
+            Err(semantics::MountSemanticError::CatalogCommitmentMismatch)
+        );
+
+        let mut substituted = template.canonical_bytes().to_vec();
+        let last = substituted
+            .last_mut()
+            .unwrap_or_else(|| panic!("template unexpectedly empty"));
+        *last ^= 1;
+        assert!(
+            !semantics::final_mount_create_matches_precatalog_template_v1(
+                &request,
+                catalog,
+                &[],
+                &substituted,
+            )
+            .unwrap_or_else(|error| panic!("projection comparison failed: {error}"))
+        );
+    }
+
+    #[test]
+    fn historical_acquire_reuses_complete_precatalog_semantic_validation() {
+        let raw_mount = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+            .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+        let mount = decode_mount_request(&raw_mount.encode_to_vec(), peer(), policy(), 100)
+            .unwrap_or_else(|error| panic!("valid Create failed: {error}"));
+        let template = semantics::canonical_precatalog_mount_create_template_v1(&mount, &[])
+            .unwrap_or_else(|error| panic!("pre-catalog template failed: {error}"));
+        let binding = mount
+            .source_binding()
+            .unwrap_or_else(|| panic!("Create fixture lacks source binding"));
+        let binding_bytes = binding.canonical_bytes();
+        let template_digest =
+            aos_sandbox_source_provider_protocol::prospective_mount_apply_template_digest_v1(
+                template.canonical_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("template digest failed: {error}"))
+            .as_bytes()
+            .to_vec();
+        let binding_digest =
+            aos_sandbox_source_provider_protocol::digest_logical_binding_bytes(&binding_bytes)
+                .as_bytes()
+                .to_vec();
+        let acquire = aos_proto::aos::sandbox::local::v1::AcquireMountSourceRequest {
+            header: raw_mount.header,
+            fence: raw_mount.fence,
+            prospective_mount_template: template.canonical_bytes().to_vec(),
+            prospective_mount_template_digest: template_digest,
+            source_binding: binding_bytes,
+            source_binding_digest: binding_digest,
+            requested_lease_seconds: 60,
+            requested_maximum_submounts: 0,
+            ..Default::default()
+        };
+
+        assert!(
+            mount_source_acquisition::decode_historical_acquire_mount_source_request(
+                &acquire.encode_to_vec(),
+            )
+            .is_ok()
+        );
+
+        let mut changed_template = acquire.clone();
+        changed_template.prospective_mount_template[template.canonical_bytes().len() - 1] ^= 1;
+        changed_template.prospective_mount_template_digest =
+            aos_sandbox_source_provider_protocol::prospective_mount_apply_template_digest_v1(
+                &changed_template.prospective_mount_template,
+            )
+            .unwrap_or_else(|error| panic!("changed template digest failed: {error}"))
+            .as_bytes()
+            .to_vec();
+        assert!(
+            mount_source_acquisition::decode_historical_acquire_mount_source_request(
+                &changed_template.encode_to_vec(),
+            )
+            .is_err()
+        );
+
+        let mut changed_binding = acquire.clone();
+        let last = changed_binding
+            .source_binding
+            .last_mut()
+            .unwrap_or_else(|| panic!("binding unexpectedly empty"));
+        *last ^= 1;
+        changed_binding.source_binding_digest =
+            aos_sandbox_source_provider_protocol::digest_logical_binding_bytes(
+                &changed_binding.source_binding,
+            )
+            .as_bytes()
+            .to_vec();
+        assert!(
+            mount_source_acquisition::decode_historical_acquire_mount_source_request(
+                &changed_binding.encode_to_vec(),
+            )
+            .is_err()
+        );
+
+        let mut changed_header = acquire;
+        changed_header.header.get_or_insert_default().audience =
+            Audience::AUDIENCE_MOUNT_WORKER.into();
+        assert!(
+            mount_source_acquisition::decode_historical_acquire_mount_source_request(
+                &changed_header.encode_to_vec(),
+            )
+            .is_err()
+        );
+        changed_header.header.get_or_insert_default().audience =
+            Audience::AUDIENCE_NODE_CONTROLLER.into();
+        changed_header
+            .header
+            .get_or_insert_default()
+            .maximum_response_bytes = MINIMUM_RESPONSE_BYTES - 1;
+        assert!(
+            mount_source_acquisition::decode_historical_acquire_mount_source_request(
+                &changed_header.encode_to_vec(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn source_acquisition_inventory_enforces_the_request_response_ceiling() {
+        let mut request =
+            aos_proto::aos::sandbox::local::v1::InventoryMountSourceAcquisitionsRequest::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = 2;
+        header.protocol_minor = 0;
+        header.request_id = vec![44; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.deadline_boottime_nanoseconds = 101;
+        header.maximum_response_bytes = 4096;
+        let validated =
+            mount_source_acquisition::decode_mount_source_acquisition_inventory_request(
+                &request.encode_to_vec(),
+                peer(),
+                policy(),
+                100,
+            )
+            .unwrap_or_else(|error| panic!("valid Inventory request failed: {error}"));
+
+        assert!(matches!(
+            mount_source_acquisition::decode_mount_source_acquisition_inventory_response(
+                &vec![0; 4097],
+                &validated,
+            ),
+            Err(ProtocolValidationError::ResponseTooLarge)
+        ));
+
+        let zero_sequence =
+            aos_proto::aos::sandbox::local::v1::InventoryMountSourceAcquisitionsResponse {
+                kernel_boot_id: vec![45; 16],
+                journal_sequence: 0,
+                broker_instance_id: vec![46; 16],
+                ..Default::default()
+            }
+            .encode_to_vec();
+        assert!(matches!(
+            mount_source_acquisition::decode_mount_source_acquisition_inventory_response(
+                &zero_sequence,
+                &validated,
+            ),
+            Err(ProtocolValidationError::InvalidField("journal_sequence"))
+        ));
     }
 
     #[test]

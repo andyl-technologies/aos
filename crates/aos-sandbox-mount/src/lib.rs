@@ -12,7 +12,8 @@
 //! - [`spawn`] performs the sole audited `posix_spawn` descriptor mapping;
 //! - [`helper`] executes one namespace-local syscall plan and exits;
 //! - [`transport`] and [`peer`] authenticate bounded local requests;
-//! - [`service`] owns the synchronous broker loop.
+//! - [`service`] owns the synchronous broker loop;
+//! - [`source_acquisition`] owns durable provider-backed source attempts;
 //! - `state` encodes the broker's bounded journal records;
 //! - [`worker`] defines the closed effect interface.
 
@@ -26,6 +27,7 @@ pub mod keeper;
 pub mod peer;
 pub mod plan;
 pub mod service;
+pub mod source_acquisition;
 pub mod source_pin;
 pub mod spawn;
 mod state;

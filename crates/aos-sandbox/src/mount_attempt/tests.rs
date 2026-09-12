@@ -1049,6 +1049,12 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_2_0() {
         FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(), 1, 0).unwrap(),
     ];
     let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
+    let advertised_methods = [
+        method,
+        BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+        BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+        BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
+    ];
     let peer = PeerCredentials {
         uid: 811,
         gid: 812,
@@ -1069,7 +1075,7 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_2_0() {
             policy,
             ProtocolId::MountBroker,
             &features,
-            &[method],
+            &advertised_methods,
         )
         .is_err()
     );
@@ -1080,7 +1086,7 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_2_0() {
         policy,
         ProtocolId::MountBroker,
         &features,
-        &[method],
+        &advertised_methods,
     )
     .unwrap();
     let client_session = decode_server_hello(

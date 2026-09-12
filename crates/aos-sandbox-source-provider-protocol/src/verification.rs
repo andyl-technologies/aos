@@ -143,6 +143,30 @@ pub struct SourceRootObservationV1 {
 }
 
 impl SourceRootObservationV1 {
+    /// Returns the observed kernel boot identity.
+    #[must_use]
+    pub const fn kernel_boot_id(&self) -> [u8; 16] {
+        self.kernel_boot_id
+    }
+
+    /// Returns the observed device identity.
+    #[must_use]
+    pub const fn device(&self) -> u64 {
+        self.device
+    }
+
+    /// Returns the observed inode identity.
+    #[must_use]
+    pub const fn inode(&self) -> u64 {
+        self.inode
+    }
+
+    /// Returns the observed kernel-lifetime unique mount identity.
+    #[must_use]
+    pub const fn unique_mount_id(&self) -> u64 {
+        self.unique_mount_id
+    }
+
     /// Constructs one shaped `O_PATH` directory descriptor observation.
     ///
     /// # Errors

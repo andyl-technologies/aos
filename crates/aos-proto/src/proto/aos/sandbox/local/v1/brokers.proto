@@ -80,6 +80,9 @@ enum BrokerMethod {
   BROKER_METHOD_NETWORK_INVENTORY_RESOURCES = 19;
   BROKER_METHOD_STORAGE_PREPARE_CATALOG = 20;
   BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN = 21;
+  BROKER_METHOD_MOUNT_ACQUIRE_SOURCE = 22;
+  BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION = 23;
+  BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS = 24;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -526,6 +529,112 @@ message PrepareMountCatalogResponse {
   uint64 valid_until_boottime_nanoseconds = 2;
 }
 
+// Mount 2.0 source acquisition is additive and available only when the client
+// requires aos.sandbox.mount.source-acquisition,1.0. Provider routing,
+// identity, session, sequence, and revocation inputs are resolved exclusively
+// from protected Mount state and never accepted from the controller.
+message AcquireMountSourceRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes prospective_mount_template = 3; // Exact deadline-free AOSMSEM1 bytes.
+  bytes prospective_mount_template_digest = 4; // SourceProvider V1 domain.
+  bytes source_binding = 5; // Exact canonical logical binding.
+  bytes source_binding_digest = 6;
+  uint64 requested_lease_seconds = 7;
+  uint32 requested_maximum_submounts = 8;
+  bool kernel_coupled = 9;
+}
+
+message ReleaseMountSourceAcquisitionRequest {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes acquisition_id = 3; // Mount-minted, exactly 32 bytes.
+  uint64 expected_revision = 4;
+  bytes expected_record_digest = 5; // Exactly 32 bytes.
+}
+
+message InventoryMountSourceAcquisitionsRequest { RequestHeader header = 1; }
+
+enum MountSourceAcquisitionPhase {
+  MOUNT_SOURCE_ACQUISITION_PHASE_UNSPECIFIED = 0;
+  MOUNT_SOURCE_ACQUISITION_PHASE_PENDING_QUERY = 1;
+  MOUNT_SOURCE_ACQUISITION_PHASE_DESCRIPTOR_CUSTODIED = 2;
+  MOUNT_SOURCE_ACQUISITION_PHASE_ACTIVE = 3;
+  MOUNT_SOURCE_ACQUISITION_PHASE_CONSUMED = 4;
+  MOUNT_SOURCE_ACQUISITION_PHASE_RELEASING = 5;
+  MOUNT_SOURCE_ACQUISITION_PHASE_RELEASED = 6;
+  MOUNT_SOURCE_ACQUISITION_PHASE_FAULTED = 7;
+}
+
+// Authenticated public projection of one AOSMSA01 row. Exact signed provider
+// envelopes and manager-custody evidence remain private Mount recovery state;
+// their stable facts, lifecycle phase, and corruption-protected row digest are
+// exposed here for controller correlation.
+message MountSourceAcquisitionRecord {
+  bytes acquisition_id = 1;
+  uint64 revision = 2;
+  MountSourceAcquisitionPhase phase = 3;
+  MountOperationCorrelation acquire = 4;
+  MountOperationCorrelation release = 5;
+  MountAssignmentBinding assignment = 6;
+  bytes prospective_mount_template_digest = 7;
+  bytes source_binding_digest = 8;
+  bytes provider_route_id = 9;
+  uint64 provider_route_generation = 10;
+  bytes provider_route_digest = 11;
+  bytes provider_authority_id = 12;
+  uint64 provider_authority_generation = 13;
+  bytes provider_authority_digest = 14;
+  bytes provider_key_id = 15;
+  uint64 provider_key_generation = 16;
+  bytes provider_public_key_digest = 17;
+  bytes resource_namespace_digest = 18;
+  bytes provider_resource_id = 19;
+  uint64 provider_resource_generation = 20;
+  bytes provider_resource_digest = 21;
+  uint64 provider_catalog_generation = 22;
+  bytes provider_catalog_digest = 23;
+  uint64 provider_selection_generation = 24;
+  bytes provider_selection_digest = 25;
+  MountSourceProofClass proof_class = 26;
+  bytes provider_proof_digest = 27;
+  bytes lease_id = 28;
+  bytes signed_lease_digest = 29;
+  int64 lease_issued_seconds = 30;
+  int64 lease_expires_seconds = 31;
+  bytes source_realization_handle = 32;
+  bytes source_physical_proof_digest = 33;
+  bytes source_kernel_boot_id = 34;
+  optional uint64 source_device = 35;
+  optional uint64 source_inode = 36;
+  optional uint64 source_unique_mount_id = 37;
+  bytes descriptor_commitment = 38;
+  bytes provider_acquire_request_digest = 39;
+  bytes provider_acquire_status_digest = 40;
+  bytes provider_release_request_digest = 41;
+  bytes provider_release_status_digest = 42;
+  bytes provider_inventory_digest = 43;
+  uint64 release_generation = 44;
+  MountSourceAcquisitionFault fault = 45;
+  bytes record_digest = 46;
+}
+
+message MountSourceAcquisitionFault {
+  MountSourceAcquisitionPhase from = 1;
+  bytes failure_digest = 2;
+}
+
+message AcquireMountSourceResponse { MountSourceAcquisitionRecord record = 1; }
+
+message ReleaseMountSourceAcquisitionResponse { MountSourceAcquisitionRecord record = 1; }
+
+message InventoryMountSourceAcquisitionsResponse {
+  bytes kernel_boot_id = 1;
+  uint64 journal_sequence = 2;
+  repeated MountSourceAcquisitionRecord acquisitions = 3; // At most 1024, strict ID order.
+  bytes broker_instance_id = 4;
+}
+
 // Mount 2.0 materialize, reap, and rematerialize effects
 // operate only on broker-derived paths. The exact canonical sandbox
 // specification proves the portable declaration; its descriptor prevents
@@ -815,6 +924,11 @@ service MountBroker {
   rpc ApplyDestinationSlot(ApplyDestinationSlotRequest) returns (ApplyDestinationSlotResponse);
   rpc InventoryDestinationSlots(InventoryDestinationSlotsRequest)
       returns (InventoryDestinationSlotsResponse);
+  rpc AcquireSource(AcquireMountSourceRequest) returns (AcquireMountSourceResponse);
+  rpc ReleaseSourceAcquisition(ReleaseMountSourceAcquisitionRequest)
+      returns (ReleaseMountSourceAcquisitionResponse);
+  rpc InventorySourceAcquisitions(InventoryMountSourceAcquisitionsRequest)
+      returns (InventoryMountSourceAcquisitionsResponse);
 }
 
 enum NetworkAction {

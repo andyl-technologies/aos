@@ -158,6 +158,8 @@ pub enum RecordNamespace {
     ControllerIdentity = 38,
     /// Broker-owned physical source realizations retained for Mount resources.
     MountSourcePin = 39,
+    /// Authenticated Mount source-provider acquisition attempts and tombstones.
+    MountSourceAcquisition = 40,
 }
 
 impl RecordNamespace {
@@ -202,6 +204,7 @@ impl RecordNamespace {
             37 => Ok(Self::StorageResolverPolicyFloor),
             38 => Ok(Self::ControllerIdentity),
             39 => Ok(Self::MountSourcePin),
+            40 => Ok(Self::MountSourceAcquisition),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -2076,13 +2079,14 @@ mod tests {
             RecordNamespace::StorageResolverPolicyFloor,
             RecordNamespace::ControllerIdentity,
             RecordNamespace::MountSourcePin,
+            RecordNamespace::MountSourceAcquisition,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 40, 255] {
+        for code in [0, 41, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

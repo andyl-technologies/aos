@@ -787,6 +787,7 @@ dependencies = [
  "aos-sandbox-linux",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-protocol",
  "axum",
  "buffa",
  "connectrpc",
@@ -891,6 +892,7 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-protocol",
  "buffa",
  "ed25519-dalek",
  "hex",
@@ -969,6 +971,7 @@ version = "0.1.0"
 dependencies = [
  "aos-proto",
  "aos-sandbox-core",
+ "aos-sandbox-source-provider-protocol",
  "buffa",
  "serde",
  "serde_json",

@@ -216,6 +216,7 @@ impl BrokerDispatchTemplateV1 {
         semantics: BrokerDispatchSemanticIdentityV1,
     ) -> Result<Self, BrokerDispatchTemplateError> {
         validate_method(&signed_plan, method)?;
+        validate_method_semantics(method, semantics.verb())?;
         validate_descriptor_roles(&descriptor_roles)?;
 
         let maximum_body = body_without_deadline
@@ -807,6 +808,8 @@ fn validate_method(
             method,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
                 | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+                | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+                | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
         ),
         ProtocolId::StorageBroker => method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
         ProtocolId::NetworkBroker => method == BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
@@ -818,6 +821,24 @@ fn validate_method(
         return Err(BrokerDispatchTemplateError::MethodMismatch);
     }
     Ok(())
+}
+
+fn validate_method_semantics(
+    method: BrokerMethod,
+    verb: BrokerVerb,
+) -> Result<(), BrokerDispatchTemplateError> {
+    let semantics_match = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => verb == BrokerVerb::MountAcquireSource,
+        BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
+            verb == BrokerVerb::MountReleaseSourceAcquisition
+        }
+        _ => true,
+    };
+    if semantics_match {
+        Ok(())
+    } else {
+        Err(BrokerDispatchTemplateError::PlanGrantMismatch)
+    }
 }
 
 fn validate_descriptor_roles(
@@ -1947,6 +1968,141 @@ mod tests {
             ),
             Err(BrokerDispatchTemplateError::PlanGrantMismatch)
         );
+    }
+
+    #[test]
+    fn source_acquisition_methods_require_their_exact_plan_verbs() {
+        let fixture = fixture();
+        let signing_key = SigningKey::from_bytes(&[42; 32]);
+        let acquire_semantics = BrokerDispatchSemanticIdentityV1::new(
+            BrokerVerb::MountAcquireSource,
+            BrokerGrantTarget::Assignment,
+            BrokerArgumentCommitment::for_canonical_bytes(b"acquire-source"),
+        );
+        let release_semantics = BrokerDispatchSemanticIdentityV1::new(
+            BrokerVerb::MountReleaseSourceAcquisition,
+            BrokerGrantTarget::Resource(
+                aos_sandbox_core::BrokerResourceHandle::from_bytes([47; 32])
+                    .unwrap_or_else(|error| panic!("test handle failed: {error}")),
+            ),
+            BrokerArgumentCommitment::for_canonical_bytes(b"release-source"),
+        );
+        let plan = aos_sandbox_core::BrokerAuthorizationPlan::new(
+            BrokerAudience::Mount,
+            ProtocolId::MountBroker,
+            ProtocolVersion::new(2, 0),
+            fixture.assignment,
+            fixture.node,
+            fixture.lease_authority.clone(),
+            vec![
+                BrokerGrant::new(
+                    acquire_semantics.verb(),
+                    acquire_semantics.target(),
+                    acquire_semantics.argument_commitment(),
+                    4096,
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("test Acquire grant failed: {error}")),
+                BrokerGrant::new(
+                    release_semantics.verb(),
+                    release_semantics.target(),
+                    release_semantics.argument_commitment(),
+                    4096,
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("test Release grant failed: {error}")),
+            ],
+            ObjectDigest::from_bytes([48; 32]),
+            RevocationScopeId::from_bytes([49; 16]),
+            100,
+            200,
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test source-acquisition plan failed: {error}"));
+        let plan = signed_plan(plan, &signing_key);
+        let body = vec![0x0a, 0x02, 0x08, 0x01];
+
+        assert_eq!(
+            validate_method_semantics(
+                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+                BrokerVerb::MountAcquireSource,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_method_semantics(
+                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+                BrokerVerb::MountReleaseSourceAcquisition,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_method_semantics(
+                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+                BrokerVerb::MountReleaseSourceAcquisition,
+            ),
+            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
+        );
+        assert_eq!(
+            validate_method_semantics(
+                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+                BrokerVerb::MountAcquireSource,
+            ),
+            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
+        );
+        assert!(
+            BrokerDispatchTemplateV1::new(
+                plan.clone(),
+                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+                body.clone(),
+                Vec::new(),
+                acquire_semantics,
+            )
+            .is_ok()
+        );
+        assert!(
+            BrokerDispatchTemplateV1::new(
+                plan.clone(),
+                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+                body.clone(),
+                Vec::new(),
+                release_semantics,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            BrokerDispatchTemplateV1::new(
+                plan.clone(),
+                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+                body.clone(),
+                Vec::new(),
+                release_semantics,
+            ),
+            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
+        );
+        assert_eq!(
+            BrokerDispatchTemplateV1::new(
+                plan,
+                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+                body,
+                Vec::new(),
+                acquire_semantics,
+            ),
+            Err(BrokerDispatchTemplateError::PlanGrantMismatch)
+        );
+
+        for method in [
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+            BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+        ] {
+            assert_eq!(
+                validate_method_semantics(method, BrokerVerb::MountCreate),
+                Ok(())
+            );
+        }
     }
 
     #[test]

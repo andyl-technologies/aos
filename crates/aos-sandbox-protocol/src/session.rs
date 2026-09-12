@@ -58,7 +58,7 @@ pub const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize =
 /// Maximum exact completed Host Apply receipt carried by an effect query.
 pub const MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES: usize = 1024 * 1024;
 const MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES: usize = 960 * 1024;
-const MAXIMUM_BROKER_METHODS: usize = 19;
+const MAXIMUM_BROKER_METHODS: usize = 22;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
 const MAXIMUM_SAFE_ERROR_MESSAGE_BYTES: usize = 1024;
 
@@ -450,10 +450,24 @@ pub fn negotiate_client_hello(
 
     validate_canonical_feature_refs(advertised_features)?;
     validate_canonical_methods(advertised_methods, protocol, "advertised_methods")?;
-    let advertised_methods = advertised_methods.to_vec();
     let required_features =
         validate_feature_set(&hello.required_features, "hello.required_features")?;
     ensure_feature_subset(&required_features, advertised_features)?;
+    let source_acquisition_requested = required_features
+        .iter()
+        .any(is_mount_source_acquisition_feature);
+    let advertised_features = advertised_features
+        .iter()
+        .filter(|feature| {
+            source_acquisition_requested || !is_mount_source_acquisition_feature(feature)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let advertised_methods = feature_conditioned_mount_methods(
+        protocol,
+        advertised_methods,
+        source_acquisition_requested,
+    )?;
     let required_methods =
         validate_proto_methods(&hello.required_methods, protocol, "hello.required_methods")?;
     validate_role_methods(policy.audience, &required_methods)?;
@@ -464,13 +478,14 @@ pub fn negotiate_client_hello(
         &required_features,
         &required_methods,
     )?;
+    validate_mount_source_acquisition_profile(protocol, &required_features, &required_methods)?;
 
     Ok(NegotiatedBrokerSession {
         protocol,
         version,
         audience: policy.audience,
         required_features,
-        advertised_features: advertised_features.to_vec(),
+        advertised_features,
         required_methods,
         advertised_methods,
         maximum_request_bytes: maximum_request_bytes(protocol, version),
@@ -538,6 +553,12 @@ pub fn decode_server_hello(
     validate_role_methods(audience, required_methods)?;
     let advertised_methods =
         validate_proto_methods(&hello.methods, protocol, "server_hello.methods")?;
+    validate_server_source_acquisition_advertisement(
+        protocol,
+        required_features,
+        &advertised_features,
+        &advertised_methods,
+    )?;
     ensure_method_subset(required_methods, &advertised_methods)?;
     validate_negotiated_authorization_profile(
         protocol,
@@ -545,6 +566,7 @@ pub fn decode_server_hello(
         required_features,
         required_methods,
     )?;
+    validate_mount_source_acquisition_profile(protocol, required_features, required_methods)?;
 
     Ok(NegotiatedBrokerSession {
         protocol,
@@ -1050,6 +1072,96 @@ fn validate_negotiated_authorization_profile(
     Ok(())
 }
 
+fn validate_mount_source_acquisition_profile(
+    protocol: ProtocolId,
+    required_features: &[FeatureRef],
+    required_methods: &[BrokerMethod],
+) -> Result<(), ProtocolValidationError> {
+    let requests_source_acquisition = required_methods.iter().any(|method| {
+        matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+                | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+        )
+    });
+    if requests_source_acquisition
+        && (protocol != ProtocolId::MountBroker
+            || !required_features
+                .iter()
+                .any(is_mount_source_acquisition_feature))
+    {
+        return Err(ProtocolValidationError::RequiredFeatureUnavailable(
+            MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn feature_conditioned_mount_methods(
+    protocol: ProtocolId,
+    advertised_methods: &[BrokerMethod],
+    source_acquisition_requested: bool,
+) -> Result<Vec<BrokerMethod>, ProtocolValidationError> {
+    let source_method_count = advertised_methods
+        .iter()
+        .filter(|method| is_mount_source_acquisition_method(**method))
+        .count();
+    if protocol == ProtocolId::MountBroker
+        && (source_acquisition_requested && source_method_count != 3
+            || !source_acquisition_requested && !matches!(source_method_count, 0 | 3))
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "advertised source-acquisition method group",
+        ));
+    }
+    Ok(advertised_methods
+        .iter()
+        .copied()
+        .filter(|method| {
+            source_acquisition_requested || !is_mount_source_acquisition_method(*method)
+        })
+        .collect())
+}
+
+fn validate_server_source_acquisition_advertisement(
+    protocol: ProtocolId,
+    required_features: &[FeatureRef],
+    advertised_features: &[FeatureRef],
+    advertised_methods: &[BrokerMethod],
+) -> Result<(), ProtocolValidationError> {
+    if protocol != ProtocolId::MountBroker {
+        return Ok(());
+    }
+    let requested = required_features
+        .iter()
+        .any(is_mount_source_acquisition_feature);
+    let advertises_feature = advertised_features
+        .iter()
+        .any(is_mount_source_acquisition_feature);
+    let method_count = advertised_methods
+        .iter()
+        .filter(|method| is_mount_source_acquisition_method(**method))
+        .count();
+    if (!requested && (advertises_feature || method_count != 0))
+        || (requested && (!advertises_feature || method_count != 3))
+    {
+        return Err(ProtocolValidationError::RequiredFeatureUnavailable(
+            MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
+    matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+            | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+    )
+}
+
 fn validate_authorization_profile(
     protocol: ProtocolId,
     version: ProtocolVersion,
@@ -1093,6 +1205,8 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+            | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
@@ -1160,6 +1274,9 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
+        | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+        | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
@@ -1181,6 +1298,12 @@ fn validate_outbound_carriers(
 
 fn is_signed_plan_lease_feature(feature: &FeatureRef) -> bool {
     feature.namespace() == SIGNED_PLAN_LEASE_FEATURE_NAMESPACE
+        && feature.major() == 1
+        && feature.minor() == 0
+}
+
+fn is_mount_source_acquisition_feature(feature: &FeatureRef) -> bool {
+    feature.namespace() == MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE
         && feature.major() == 1
         && feature.minor() == 0
 }
@@ -1446,6 +1569,10 @@ pub fn decode_response_envelope(
         {
             return Err(ProtocolValidationError::DescriptorTableMismatch);
         }
+    } else if is_mount_source_acquisition_method(expected_method) {
+        if !request_descriptors.is_empty() || !descriptors.is_empty() {
+            return Err(ProtocolValidationError::DescriptorTableMismatch);
+        }
     } else if descriptors
         .iter()
         .any(|entry| crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.contains(&entry.role))
@@ -1554,6 +1681,9 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
                 | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
+                | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+                | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
         ) | (
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -3898,5 +4028,110 @@ mod tests {
                 Err(ProtocolValidationError::MethodMismatch)
             );
         }
+    }
+
+    #[test]
+    fn mount_source_acquisition_advertisement_is_all_or_nothing_and_feature_conditioned() {
+        let source_feature = feature(MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE);
+        let methods = [
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+            BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
+        ];
+        let legacy = BrokerClientHello {
+            protocol_major: 2,
+            protocol_minor: 0,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 8192,
+            required_methods: vec![BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES.into()],
+            ..Default::default()
+        };
+        let legacy_session = negotiate_client_hello(
+            &legacy.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            std::slice::from_ref(&source_feature),
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("legacy Mount negotiation failed: {error}"));
+        assert_eq!(
+            legacy_session.advertised_methods(),
+            &[BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES]
+        );
+        assert!(legacy_session.advertised_features().is_empty());
+
+        let source_client = BrokerClientHello {
+            required_features: vec![proto_feature(&source_feature)],
+            required_methods: vec![
+                BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS.into(),
+            ],
+            ..legacy.clone()
+        };
+        let source_session = negotiate_client_hello(
+            &source_client.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            std::slice::from_ref(&source_feature),
+            &methods,
+        )
+        .unwrap_or_else(|error| panic!("source Mount negotiation failed: {error}"));
+        assert_eq!(source_session.advertised_methods(), &methods);
+        assert_eq!(
+            source_session.advertised_features(),
+            std::slice::from_ref(&source_feature)
+        );
+
+        let incomplete = &methods[..3];
+        assert!(matches!(
+            negotiate_client_hello(
+                &source_client.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::MountBroker,
+                std::slice::from_ref(&source_feature),
+                incomplete,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "advertised source-acquisition method group"
+            ))
+        ));
+        assert!(matches!(
+            negotiate_client_hello(
+                &source_client.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::MountBroker,
+                std::slice::from_ref(&source_feature),
+                &methods[..1],
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "advertised source-acquisition method group"
+            ))
+        ));
+
+        let hostile_server = BrokerServerHello {
+            protocol_major: 2,
+            protocol_minor: 0,
+            maximum_request_bytes: MAXIMUM_REQUEST_BYTES as u32,
+            maximum_response_bytes: 8192,
+            features: vec![proto_feature(&source_feature)],
+            methods: methods.iter().copied().map(Into::into).collect(),
+            ..Default::default()
+        };
+        assert!(
+            decode_server_hello(
+                &hostile_server.encode_to_vec(),
+                ProtocolId::MountBroker,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+                ProtocolVersion::new(2, 0),
+                &[],
+                &[BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES],
+                8192,
+            )
+            .is_err()
+        );
     }
 }

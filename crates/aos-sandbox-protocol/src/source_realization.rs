@@ -42,6 +42,29 @@ impl MountSourceProofClassV1 {
     }
 }
 
+/// Maps an authenticated SourceProvider proof variant to Mount's closed class.
+///
+/// ZFS held snapshots and immutable publisher trees share Mount's immutable
+/// class. The mapping is explicit so SourceProvider class 3 is never treated
+/// as a native Mount enum discriminant.
+#[must_use]
+pub const fn mount_source_proof_class_from_provider_v1(
+    proof: &aos_sandbox_source_provider_protocol::SourceProviderProofV1,
+) -> MountSourceProofClassV1 {
+    use aos_sandbox_source_provider_protocol::SourceProviderProofV1;
+
+    match proof {
+        SourceProviderProofV1::ZfsHeldSnapshot { .. }
+        | SourceProviderProofV1::ImmutablePublisherTree { .. } => {
+            MountSourceProofClassV1::ImmutableTree
+        }
+        SourceProviderProofV1::LocalLiveExport { .. } => MountSourceProofClassV1::LocalLive,
+        SourceProviderProofV1::BestEffortReplica { .. } => {
+            MountSourceProofClassV1::BestEffortReplica
+        }
+    }
+}
+
 /// Contains the fixed-width authority and kernel facts committed by a proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MountSourcePhysicalProofV1 {

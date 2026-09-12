@@ -475,6 +475,8 @@ mod tests {
             BrokerVerb::NetworkDestroy,
             BrokerVerb::NetworkInventory,
             BrokerVerb::GuardianArm,
+            BrokerVerb::MountAcquireSource,
+            BrokerVerb::MountReleaseSourceAcquisition,
         ];
         let resource = BrokerResourceHandle::from_bytes([30; 32])
             .unwrap_or_else(|error| panic!("test resource failed: {error}"));
@@ -489,13 +491,17 @@ mod tests {
                 | BrokerVerb::MountCreate
                 | BrokerVerb::MountInventorySummary
                 | BrokerVerb::MountInventoryResources
+                | BrokerVerb::MountAcquireSource
                 | BrokerVerb::StorageCreateWorkspace
                 | BrokerVerb::StorageInventory
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::NetworkPrepare
                 | BrokerVerb::NetworkInventory
                 | BrokerVerb::GuardianArm => BrokerGrantTarget::Assignment,
-                BrokerVerb::StorageRepairWorkspacePin => BrokerGrantTarget::Resource(resource),
+                BrokerVerb::StorageRepairWorkspacePin
+                | BrokerVerb::MountReleaseSourceAcquisition => {
+                    BrokerGrantTarget::Resource(resource)
+                }
                 BrokerVerb::MountReplace => BrokerGrantTarget::ResourcePair {
                     previous: resource,
                     successor,

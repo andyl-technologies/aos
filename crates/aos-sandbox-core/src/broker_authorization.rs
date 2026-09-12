@@ -129,6 +129,10 @@ pub enum BrokerVerb {
     MountReapDestinationSlot,
     /// Recreates an exact stale destination-slot anchor after host reboot.
     MountRematerializeDestinationSlot,
+    /// Acquires one provider-backed source for a prospective Mount Create.
+    MountAcquireSource,
+    /// Releases one exact Mount source acquisition.
+    MountReleaseSourceAcquisition,
     /// Creates an assignment workspace and mints its storage handle.
     StorageCreateWorkspace,
     /// Snapshots an existing workspace.
@@ -208,6 +212,8 @@ impl BrokerVerb {
             32 => Ok(Self::StoragePrepareCatalog),
             33 => Ok(Self::StorageRepairWorkspacePin),
             34 => Ok(Self::GuardianArm),
+            35 => Ok(Self::MountAcquireSource),
+            36 => Ok(Self::MountReleaseSourceAcquisition),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -250,6 +256,8 @@ impl BrokerVerb {
             Self::StoragePrepareCatalog => 32,
             Self::StorageRepairWorkspacePin => 33,
             Self::GuardianArm => 34,
+            Self::MountAcquireSource => 35,
+            Self::MountReleaseSourceAcquisition => 36,
         }
     }
 
@@ -273,7 +281,9 @@ impl BrokerVerb {
             | Self::MountInventoryResources
             | Self::MountMaterializeDestinationSlot
             | Self::MountReapDestinationSlot
-            | Self::MountRematerializeDestinationSlot => BrokerAudience::Mount,
+            | Self::MountRematerializeDestinationSlot
+            | Self::MountAcquireSource
+            | Self::MountReleaseSourceAcquisition => BrokerAudience::Mount,
             Self::StorageCreateWorkspace
             | Self::StorageSnapshot
             | Self::StorageHoldSnapshot
@@ -302,6 +312,7 @@ impl BrokerVerb {
             | Self::MountInventorySummary
             | Self::MountInventoryResources
             | Self::MountMaterializeDestinationSlot
+            | Self::MountAcquireSource
             | Self::StorageCreateWorkspace
             | Self::StorageInventory
             | Self::StoragePrepareCatalog
@@ -318,6 +329,7 @@ impl BrokerVerb {
             | Self::MountRelease
             | Self::MountReapDestinationSlot
             | Self::MountRematerializeDestinationSlot
+            | Self::MountReleaseSourceAcquisition
             | Self::StorageSnapshot
             | Self::StorageHoldSnapshot
             | Self::StorageReleaseHold
@@ -1448,6 +1460,8 @@ mod tests {
             (32, BrokerVerb::StoragePrepareCatalog),
             (33, BrokerVerb::StorageRepairWorkspacePin),
             (34, BrokerVerb::GuardianArm),
+            (35, BrokerVerb::MountAcquireSource),
+            (36, BrokerVerb::MountReleaseSourceAcquisition),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1456,7 +1470,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(35),
+            BrokerVerb::from_code(37),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1576,6 +1590,7 @@ mod tests {
             BrokerVerb::MountInventorySummary,
             BrokerVerb::MountInventoryResources,
             BrokerVerb::MountMaterializeDestinationSlot,
+            BrokerVerb::MountAcquireSource,
             BrokerVerb::StorageCreateWorkspace,
             BrokerVerb::StorageInventory,
             BrokerVerb::StoragePrepareCatalog,
@@ -1594,6 +1609,7 @@ mod tests {
             BrokerVerb::MountRelease,
             BrokerVerb::MountReapDestinationSlot,
             BrokerVerb::MountRematerializeDestinationSlot,
+            BrokerVerb::MountReleaseSourceAcquisition,
             BrokerVerb::StorageSnapshot,
             BrokerVerb::StorageHoldSnapshot,
             BrokerVerb::StorageReleaseHold,
