@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 use aos_ability_model::builtin::{
     credential_delivery_effects_interface, credential_view_schema, host_network_policy_interface,
     host_network_policy_loopback_tcp_egress_guarantee,
-    host_network_policy_loopback_tcp_ingress_guarantee, network_endpoint_interface,
+    host_network_policy_loopback_tcp_ingress_guarantee, host_storage_interface,
+    network_endpoint_interface,
 };
 use aos_ability_model::document::{
     Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
@@ -207,6 +208,7 @@ impl ReferenceFixture {
                 "aos.nginx-validation",
                 "aos.network-endpoint-effects",
                 "aos.host-network-policy-effects",
+                "aos.host-storage-effects",
             ] {
                 providers.push(ProviderInventory {
                     provider: provider.clone(),
@@ -505,7 +507,12 @@ impl Deployment<'_> {
         let interface = request.accepted_interfaces[0].clone();
         let terminal = matches!(
             request.id.key.as_str(),
-            "effects" | "validation-terminal" | "service-terminal" | "endpoint" | "network-policy"
+            "effects"
+                | "validation-terminal"
+                | "service-terminal"
+                | "endpoint"
+                | "network-policy"
+                | "storage"
         );
         let (provider, provider_package, implementation, resources, contributions) = if terminal {
             let provider = if request.id.key.as_str() == "service-terminal" {
@@ -2434,6 +2441,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
     let mut documents = vec![
         network_endpoint_interface().unwrap(),
         host_network_policy_interface().unwrap(),
+        host_storage_interface().unwrap(),
         interface_document(
             "aos.http-backend",
             ValueSchema::Boolean,
