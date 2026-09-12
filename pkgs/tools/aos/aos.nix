@@ -721,19 +721,23 @@ in
             "$out/bin/.aos-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped" \
             "$apr/bin/.apr-unwrapped" \
-            "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
+            "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped" \
+            "$packageRuntime/bin/aos-ability-authority-audit" \
+            "$packageRuntime/bin/aos-ability-interruption-audit"; do
             strip -s "$binary"
           done
 
           # Cargo links the binaries before they are distributed among the
           # named outputs, so its default install-prefix RPATH names $out/lib.
           # No output ships Rust shared libraries. Remove that nonexistent
-          # entry so apm/apr/runtime do not retain the aos output itself.
+          # entry so split outputs do not retain the aos output itself.
           if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
             for binary in \
               "$apm/bin/.aos-package-runtime-unwrapped" \
               "$apr/bin/.apr-unwrapped" \
-              "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped"; do
+              "$metadataRuntime/bin/.aos-metadata-runtime-unwrapped" \
+              "$packageRuntime/bin/aos-ability-authority-audit" \
+              "$packageRuntime/bin/aos-ability-interruption-audit"; do
               rpath=$(patchelf --print-rpath "$binary")
               rpath=$(printf '%s' "$rpath" | sed \
                 -e "s|$out/lib:||g" \
@@ -745,6 +749,11 @@ in
                 exit 1
               fi
             done
+
+            if grep -aFrq "$out" "$packageRuntime"; then
+              echo "$packageRuntime retains the aos output" >&2
+              exit 1
+            fi
           fi
 
           # Cargo links all five command surfaces in one build environment, so
