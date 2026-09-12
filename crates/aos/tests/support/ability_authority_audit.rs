@@ -676,8 +676,8 @@ fn main() -> Result<()> {
     }
 
     ensure!(
-        cells.len() == 711,
-        "expected 711 role-revocation and shared failure-control cells"
+        cells.len() == 756,
+        "expected 756 role-revocation and shared failure-control cells"
     );
     let output = AuditOutput {
         schema: OUTPUT_SCHEMA,

@@ -385,7 +385,7 @@ in
   assert nativeAdapterMatrix.required_production_vm_cells == 1400;
   assert builtins.length nativeRoleRevocationCells == 600;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
-  assert builtins.length nativeFailureControlCells == 147;
+  assert builtins.length nativeFailureControlCells == 156;
   assert builtins.length unsupportedCancellationCells == 6;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeFailureControlCells;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
