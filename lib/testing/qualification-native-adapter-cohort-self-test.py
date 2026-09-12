@@ -903,6 +903,7 @@ def assert_postgresql_cohort(module):
         },
     }
     for name, observation in facts.items():
+        observation["matrix-operation"] = subject["operation"]
         module._validate_postgresql_probe_facts(name, observation, subject, cell)
 
         invalid = copy.deepcopy(observation)
@@ -1006,6 +1007,7 @@ def assert_postgresql_cohort(module):
         },
     }
     for name, observation in incompatible_facts.items():
+        observation["matrix-operation"] = rejection_subject["operation"]
         module._validate_postgresql_probe_facts(
             name, observation, rejection_subject, rejection_cell
         )
@@ -1028,6 +1030,59 @@ def assert_postgresql_cohort(module):
             raise AssertionError(f"PostgreSQL {name} validator accepted false facts")
 
     restart_subject = module._postgresql_plan_subject(bundle_bytes, "restart")
+    restart_adoption_cell = {
+        **cell,
+        "id": (
+            "postgresql/aos.postgresql-effects/abi-1/restart/"
+            "adopt-compatible-state"
+        ),
+        "method": "restart",
+    }
+    module._validate_cohort_subject(
+        restart_adoption_cell, restart_subject, bundle_bytes
+    )
+    ordered_restart = {
+        "matrix-operation": restart_subject["operation"],
+        "transaction": "transaction-postgresql",
+        "plan": restart_subject["plan"],
+        "operation": restart_subject["operation"],
+        "timeline": [
+            {"sequence": index + 3, "kind": kind, "node-ordinal": 1}
+            for index, kind in enumerate(
+                ["operation-admitted", "effect-started", "effect-completed"]
+            )
+        ],
+        "adoption-operation": subject["operation"],
+        "adoption-timeline": [
+            {"sequence": index, "kind": kind, "node-ordinal": 0}
+            for index, kind in enumerate(
+                ["operation-admitted", "effect-started", "effect-completed"]
+            )
+        ],
+        "record-digest": digest("1"),
+        "terminal": "complete",
+        "classified": True,
+    }
+    module._validate_postgresql_probe_facts(
+        "durable-attempt-state-classified",
+        ordered_restart,
+        restart_subject,
+        restart_adoption_cell,
+    )
+    reversed_restart = copy.deepcopy(ordered_restart)
+    reversed_restart["adoption-timeline"][-1]["sequence"] = 6
+    try:
+        module._validate_postgresql_probe_facts(
+            "durable-attempt-state-classified",
+            reversed_restart,
+            restart_subject,
+            restart_adoption_cell,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("PostgreSQL adoption accepted reversed method ordering")
+
     lost_cell = {
         **cell,
         "id": module.POSTGRESQL_CELL_IDS[2],
@@ -1045,6 +1100,7 @@ def assert_postgresql_cohort(module):
     module._validate_cohort_subject(retained_cell, restart_subject, bundle_bytes)
 
     restart_timeline = {
+        "matrix-operation": restart_subject["operation"],
         "transaction": "transaction-postgresql",
         "plan": restart_subject["plan"],
         "operation": restart_subject["operation"],
@@ -1073,6 +1129,7 @@ def assert_postgresql_cohort(module):
     module._validate_postgresql_probe_facts(
         "dependent-effects-not-executed",
         {
+            "matrix-operation": restart_subject["operation"],
             "predecessor-operation": restart_subject["operation"],
             "dependent-operations": [],
             "dependent-timelines-before-settlement": [],
@@ -1103,6 +1160,7 @@ def assert_postgresql_cohort(module):
         },
     }
     for name, observation in retained_facts.items():
+        observation["matrix-operation"] = restart_subject["operation"]
         module._validate_postgresql_probe_facts(
             name, observation, restart_subject, retained_cell
         )
