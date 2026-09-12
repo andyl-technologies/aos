@@ -118,6 +118,8 @@ in
       }
     ];
     postUnpack = ''
+      ${prev.patch}/bin/patch --fuzz=0 -p1 < ${./patches/gcc-16.2.0-strict-bootstrap-compare.patch}
+
       # GCC bootstrap runs "make all" for bundled ISL. ISL 0.26 includes its
       # C++17 test programs in noinst_PROGRAMS, so remove those test-only
       # binaries from the generated makefile before GCC configures it.
@@ -155,6 +157,11 @@ in
         's|^LTCPPASCOMPILE = $(LIBTOOL) $(AM_V_lt) $(AM_LIBTOOLFLAGS) \\|LTCPPASCOMPILE = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \\|' \
         libitm/Makefile.in
       ${prev.grep}/bin/grep -Fq 'LTCPPASCOMPILE = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \' libitm/Makefile.in
+    '';
+    postBuild = ''
+      test -s .stage2_compare_files
+      ${prev.diffutils}/bin/cmp .stage2_compare_files .stage3_compare_files
+      cp .stage3_compare_files "$TMPDIR/gcc-bootstrap-compare-files"
     '';
     preConfigure = ''
       # Target sysroot against this tier's glibc and linux headers.
@@ -246,6 +253,10 @@ in
       ''LDFLAGS_FOR_TARGET="-static"''
     ];
     postInstall = ''
+      mkdir -p "$out/nix-support"
+      install -m 644 "$TMPDIR/gcc-bootstrap-compare-files" \
+        "$out/nix-support/gcc-bootstrap-compare-files"
+
       # Link this tier's binutils so raw gcc/g++ can find as and ld without
       # relying on the caller's PATH. These point at gcc16.binutils, not the
       # predecessor tier, so they preserve the final compiler's tier boundary.
