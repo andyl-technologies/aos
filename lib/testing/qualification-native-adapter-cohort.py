@@ -128,6 +128,25 @@ EFFECT_BOUNDARY_ATTEMPT_TIMELINES = {
         "effect-completed",
     ],
 }
+
+
+def _effect_boundary_attempt_timeline(
+    scenario: str, effect_class: str
+) -> list[str]:
+    """Returns the exact recovery classification for one effect class."""
+
+    if (
+        scenario == "interrupt-after-durable-intent"
+        and effect_class == "observation"
+    ):
+        return [
+            "operation-admitted",
+            "effect-started",
+            "operation-admitted",
+            "reconciliation-started",
+            "reconciled-completed",
+        ]
+    return EFFECT_BOUNDARY_ATTEMPT_TIMELINES[scenario]
 EFFECT_BOUNDARY_ADAPTER_GROUPS = [
     {
         "credential-delivery",
@@ -2148,7 +2167,9 @@ def _validate_effect_boundary_probe_facts(
         boundaries = observations.get("boundary-timeline")
         interruption = observations.get("interruption-position")
         timeline = observations.get("timeline")
-        expected_timeline = EFFECT_BOUNDARY_ATTEMPT_TIMELINES[scenario]
+        expected_timeline = _effect_boundary_attempt_timeline(
+            scenario, cell["effect_class"]
+        )
         if (
             set(observations) != expected_fields
             or not _matches(LOCAL_KEY, observations.get("transaction"))
