@@ -409,8 +409,23 @@ in {
               f"{shlex.quote(RESUMED_EVENT)} {shlex.quote(CONTINUE)}"
           )
           write_canonical(TARGET, {
+              "action": "disconnect",
               "boundary": "effect-returned",
               "operation_key": PUBLISH_OPERATION,
+              "purpose": "effect",
+              "sequence": sequence,
+          })
+
+
+      def arm_pause(sequence, operation_key, boundary="effect-intent-durable"):
+          runtime.succeed(
+              f"{COREUTILS}/rm -f {shlex.quote(HELD_EVENT)} "
+              f"{shlex.quote(RESUMED_EVENT)} {shlex.quote(CONTINUE)}"
+          )
+          write_canonical(TARGET, {
+              "action": "pause",
+              "boundary": boundary,
+              "operation_key": operation_key,
               "purpose": "effect",
               "sequence": sequence,
           })
@@ -475,16 +490,20 @@ in {
           assert "another system switch is active" in journal, (unit, journal)
 
 
-      def held_boundary(sequence):
+      def held_boundary(
+          sequence,
+          expected_boundary="effect-returned",
+          expected_operation=PUBLISH_OPERATION,
+      ):
           runtime.wait_until_succeeds(
               f"test -s {shlex.quote(HELD_EVENT)}", timeout=120
           )
           held = read_json(HELD_EVENT)
           event = held["event"]
           assert held["sequence"] == sequence, held
-          assert event["boundary"] == "effect-returned", held
+          assert event["boundary"] == expected_boundary, held
           assert event["purpose"] == "effect", held
-          assert event["operation"]["operation"]["key"] == PUBLISH_OPERATION, held
+          assert event["operation"]["operation"]["key"] == expected_operation, held
           assert event["cancelled"] is False, held
           return held
 
@@ -888,6 +907,182 @@ in {
               activation_v1, "nginx-primary"
           )
       )
+      secondary_mapping_before, secondary_content_before = (
+          assert_managed_configuration_selected(
+              activation_v1, "nginx-secondary"
+          )
+      )
+
+      # Pause a real Publish after its durable intent and fresh acquisition,
+      # then replace its ownership marker with an independently injected
+      # foreign resource identity. The adapter must reject before mutation,
+      # and the checked reload successor must remain absent because its
+      # prerequisite failed.
+      print("rejecting a foreign managed resource and blocking its dependent")
+      activation_negative = generate_activation_fixture(
+          f"{BOUNDARY_ROOT}/activation-negative",
+          "alpha-v1",
+          "gamma-negative",
+          f"{BOUNDARY_ROOT}/authority-negative",
+      )
+      provision_operator_authority(
+          activation_negative, f"{BOUNDARY_ROOT}/authority-negative"
+      )
+      host_negative = f"{BOUNDARY_ROOT}/host-negative.nix"
+      write_activation_host(host_negative, activation_negative, OBSERVER_HOST_MODULE)
+      persist_fixture_file(host_negative)
+      secondary_service_pid_before = runtime.succeed(
+          f"{SYSTEMCTL} show nginx-nginx-secondary.service "
+          "-p MainPID --value"
+      ).strip()
+      assert secondary_service_pid_before not in {"", "0"}
+      arm_pause("foreign-resource", PUBLISH_OPERATION)
+      start_switch("ability-boundary-negative.service", host_negative, "negative")
+
+      held_negative = held_boundary(
+          "foreign-resource", "effect-intent-durable"
+      )
+      negative_state = transaction_at_boundary(held_negative)
+      negative_dependency = required_success_dependent(
+          negative_state[4], negative_state[5]
+      )
+      secondary_destination = secondary_mapping_before["qualification"][
+          "destination"
+      ]
+      secondary_marker_path = (
+          "/var/lib/aos/ability-runtime/managed-configuration/revisions/"
+          "sha256:" + hashlib.sha256(secondary_destination.encode()).hexdigest()
+      )
+      secondary_marker_before = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(secondary_marker_path)}"
+      )
+      injected_foreign_marker = json.loads(secondary_marker_before)
+      injected_foreign_marker["resource"]["key"] = (
+          "foreign-secondary-configuration"
+      )
+      encoded_foreign_marker = base64.b64encode(
+          json.dumps(
+              injected_foreign_marker,
+              ensure_ascii=False,
+              separators=(",", ":"),
+              sort_keys=True,
+          ).encode()
+      ).decode()
+      runtime.succeed(
+          f"{COREUTILS}/printf '%s' {shlex.quote(encoded_foreign_marker)} "
+          f"| {COREUTILS}/base64 -d > {shlex.quote(secondary_marker_path)}"
+      )
+      foreign_target_before = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(secondary_destination)}"
+      )
+      foreign_ownership_before = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(secondary_marker_path)}"
+      )
+      assert json.loads(foreign_ownership_before) == injected_foreign_marker
+      foreign_resource_snapshot_before = json.dumps(
+          {
+              "content": foreign_target_before,
+              "ownership": foreign_ownership_before,
+          },
+          ensure_ascii=False,
+          separators=(",", ":"),
+          sort_keys=True,
+      )
+      foreign_primary_before = runtime.succeed(
+          f"{COREUTILS}/cat "
+          f"{shlex.quote(foreign_mapping_before['qualification']['destination'])}"
+      )
+
+      release_reconciliation("foreign-resource")
+      wait_switch("ability-boundary-negative.service", False)
+      foreign_target_after = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(secondary_destination)}"
+      )
+      foreign_ownership_after = runtime.succeed(
+          f"{COREUTILS}/cat {shlex.quote(secondary_marker_path)}"
+      )
+      foreign_resource_snapshot_after = json.dumps(
+          {
+              "content": foreign_target_after,
+              "ownership": foreign_ownership_after,
+          },
+          ensure_ascii=False,
+          separators=(",", ":"),
+          sort_keys=True,
+      )
+      foreign_primary_after = runtime.succeed(
+          f"{COREUTILS}/cat "
+          f"{shlex.quote(foreign_mapping_before['qualification']['destination'])}"
+      )
+      assert foreign_target_after == foreign_target_before
+      assert foreign_ownership_after == foreign_ownership_before
+      assert foreign_primary_after == foreign_primary_before
+      assert_route("gamma.example", 18082, "app-c", "gamma-v1")
+      negative_route_after = route_body("gamma.example", 18082)
+      secondary_service_pid_after = runtime.succeed(
+          f"{SYSTEMCTL} show nginx-nginx-secondary.service "
+          "-p MainPID --value"
+      ).strip()
+      assert secondary_service_pid_after == secondary_service_pid_before
+
+      negative_diagnostic = json.loads(runtime.succeed(
+          f"{AOS} --json ability diagnostic "
+          f"/var/lib/profiles/system/gen-{negative_state[0]} "
+          f"{shlex.quote(negative_state[1])}"
+      ))
+      negative_publish_timeline = timeline_events(
+          negative_diagnostic, negative_state[5]
+      )
+      negative_dependent_timeline = timeline_events(
+          negative_diagnostic, negative_dependency[0]
+      )
+      assert [event["kind"] for event in negative_publish_timeline] == [
+          "operation-admitted",
+          "effect-started",
+          "rejected-before-effect",
+      ], negative_diagnostic
+      assert negative_dependent_timeline == [], negative_diagnostic
+      negative_publish_boundaries = boundary_events(
+          negative_state[1], negative_state[2]
+      )
+      assert [
+          (event["purpose"], event["boundary"])
+          for event in negative_publish_boundaries
+      ] == [
+          ("effect", "effect-intent-durable"),
+          ("effect", "effect-returned"),
+          ("effect", "effect-outcome-durable"),
+      ], negative_publish_boundaries
+      negative_failure_record = runtime.succeed(
+          f"{COREUTILS}/sha256sum "
+          f"{shlex.quote(negative_state[3] + '/execution.journal')}"
+      ).split()[0]
+
+      # Restore the independently corrupted marker before returning to the
+      # completed baseline. The unchanged marker must authenticate exactly one
+      # owner again, while the failed generation remains available as evidence.
+      encoded_secondary_marker = base64.b64encode(
+          secondary_marker_before.encode()
+      ).decode()
+      runtime.succeed(
+          f"{COREUTILS}/printf '%s' {shlex.quote(encoded_secondary_marker)} "
+          f"| {COREUTILS}/base64 -d > {shlex.quote(secondary_marker_path)}; "
+          f"{COREUTILS}/rm -f {shlex.quote(TARGET)} {shlex.quote(HELD_EVENT)} "
+          f"{shlex.quote(CONTINUE)}"
+      )
+      secondary_mapping_restored, secondary_content_restored = (
+          assert_managed_configuration_selected(
+              activation_v1, "nginx-secondary"
+          )
+      )
+      assert secondary_mapping_restored == secondary_mapping_before
+      assert secondary_content_restored == secondary_content_before
+      runtime.succeed(
+          f"{APM} rollback --system --generation {baseline_generation}",
+          timeout=600,
+      )
+      assert current_generation() == baseline_generation
+      assert_route("gamma.example", 18082, "app-c", "gamma-v1")
 
       # Kill the exact native executor after Publish returned success but
       # before the journal can record its outcome. A second invocation of the
@@ -1237,10 +1432,30 @@ in {
       ).encode() == power_state[4]
       assert_route("gamma.example", 18082, "app-c", "gamma-power")
 
-      NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT = process_dependency[3]
-      NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE = process_state[4]
+      lost_result_cell = (
+          "managed-configuration/aos.managed-configuration-effects/abi-1/"
+          "publish/lose-external-result"
+      )
+      foreign_resource_cell = (
+          "managed-configuration/aos.managed-configuration-effects/abi-1/"
+          "publish/reject-foreign-resource-mutation"
+      )
+      blocked_dependent_cell = (
+          "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+          "reload/block-dependent-effect"
+      )
+      NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS = {
+          lost_result_cell: process_dependency[3],
+          foreign_resource_cell: negative_dependency[3],
+          blocked_dependent_cell: negative_dependency[3],
+      }
+      NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES = {
+          lost_result_cell: process_state[4],
+          foreign_resource_cell: negative_state[4],
+          blocked_dependent_cell: negative_state[4],
+      }
       NATIVE_ADAPTER_MATRIX_PROBES = {
-          "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result": {
+          lost_result_cell: {
               "durable-attempt-state-classified": {
                   "kind": "journal-timeline",
                   "disposition": "reconciled-completed",
@@ -1337,6 +1552,185 @@ in {
                           dependent_route_while_unsettled
                           != dependent_route_after_recovery
                       ),
+                  },
+              },
+          },
+          foreign_resource_cell: {
+              "durable-attempt-state-classified": {
+                  "kind": "journal-timeline",
+                  "disposition": "foreign-mutation-rejected",
+                  "detail": (
+                      "The production journal durably classified Publish as a "
+                      "settled rejection after the owned bytes became foreign."
+                  ),
+                  "observations": {
+                      "transaction": negative_state[1],
+                      "plan": negative_state[2],
+                      "operation": negative_state[6],
+                      "timeline": negative_publish_timeline,
+                      "cause-operation": negative_state[6],
+                      "cause-timeline": negative_publish_timeline,
+                      "boundary-timeline": boundary_timeline(
+                          negative_publish_boundaries
+                      ),
+                      "failure-record": negative_failure_record,
+                      "classified": True,
+                  },
+              },
+              "at-most-one-resource-owner": {
+                  "kind": "ownership-inventory",
+                  "disposition": "foreign-mutation-rejected",
+                  "detail": (
+                      "The foreign target retained its one ownership marker "
+                      "throughout the rejected effect."
+                  ),
+                  "observations": {
+                      "resource": negative_state[6]["target"]["resource"],
+                      "owner-count-before": 1,
+                      "owner-count-after": 1,
+                      "one-owner-throughout": True,
+                      "owner-evidence-before": foreign_ownership_before,
+                      "owner-evidence-after": foreign_ownership_after,
+                  },
+              },
+              "foreign-resources-unchanged": {
+                  "kind": "foreign-resource-snapshot",
+                  "disposition": "foreign-mutation-rejected",
+                  "detail": (
+                      "The foreign marker and target content retained exact bytes "
+                      "throughout the rejected publication."
+                  ),
+                  "observations": {
+                      "resource": injected_foreign_marker["resource"],
+                      "snapshot-before": foreign_resource_snapshot_before,
+                      "snapshot-after": foreign_resource_snapshot_after,
+                      "unchanged": (
+                          foreign_resource_snapshot_before
+                          == foreign_resource_snapshot_after
+                      ),
+                  },
+              },
+              "dependent-effects-not-executed": {
+                  "kind": "dependency-barrier",
+                  "disposition": "foreign-mutation-rejected",
+                  "detail": (
+                      "The checked reload successor retained no journal or effect "
+                      "boundary after the foreign Publish rejection."
+                  ),
+                  "observations": {
+                      "predecessor-operation": negative_state[6],
+                      "dependent-operation": negative_dependency[1],
+                      "dependency-edge": negative_dependency[2],
+                      "dependent-timeline": negative_dependent_timeline,
+                      "dependent-effect-boundaries": [],
+                      "behavior-before": "app-c:gamma-v1\n",
+                      "behavior-after": negative_route_after,
+                      "blocked": True,
+                  },
+              },
+              "foreign-attempt-rejected-before-mutation": {
+                  "kind": "foreign-attempt-rejection",
+                  "disposition": "foreign-mutation-rejected",
+                  "detail": (
+                      "Publish observed foreign bytes after admission and left "
+                      "those bytes unchanged when it rejected the effect."
+                  ),
+                  "observations": {
+                      "foreign-resource": injected_foreign_marker["resource"],
+                      "attempted-resource": injected_foreign_marker["resource"],
+                      "authorized-resources": [
+                          negative_state[6]["target"]["resource"]
+                      ],
+                      "rejection": "foreign-authority-rejected",
+                      "mutation-count": 0,
+                      "rejected-before-mutation": True,
+                  },
+              },
+          },
+          blocked_dependent_cell: {
+              "durable-attempt-state-classified": {
+                  "kind": "journal-timeline",
+                  "disposition": "dependent-effect-blocked",
+                  "detail": (
+                      "The production journal retained the failed Publish and no "
+                      "admission for its required-success reload successor."
+                  ),
+                  "observations": {
+                      "transaction": negative_state[1],
+                      "plan": negative_state[2],
+                      "operation": negative_dependency[1],
+                      "timeline": negative_dependent_timeline,
+                      "cause-operation": negative_state[6],
+                      "cause-timeline": negative_publish_timeline,
+                      "boundary-timeline": boundary_timeline(
+                          negative_publish_boundaries
+                      ),
+                      "failure-record": negative_failure_record,
+                      "classified": True,
+                  },
+              },
+              "at-most-one-resource-owner": {
+                  "kind": "ownership-inventory",
+                  "disposition": "dependent-effect-blocked",
+                  "detail": (
+                      "The blocked service resource retained one live baseline owner."
+                  ),
+                  "observations": {
+                      "resource": negative_dependency[1]["target"]["resource"],
+                      "owner-count-before": 1,
+                      "owner-count-after": 1,
+                      "one-owner-throughout": True,
+                      "owner-evidence-before": secondary_service_pid_before,
+                      "owner-evidence-after": secondary_service_pid_after,
+                  },
+              },
+              "foreign-resources-unchanged": {
+                  "kind": "foreign-resource-snapshot",
+                  "disposition": "dependent-effect-blocked",
+                  "detail": (
+                      "The independent primary configuration retained exact bytes "
+                      "while the secondary reload remained blocked."
+                  ),
+                  "observations": {
+                      "resource": foreign_mapping_before["resource"],
+                      "snapshot-before": foreign_primary_before,
+                      "snapshot-after": foreign_primary_after,
+                      "unchanged": foreign_primary_before == foreign_primary_after,
+                      "cell": blocked_dependent_cell,
+                  },
+              },
+              "dependent-effects-not-executed": {
+                  "kind": "dependency-barrier",
+                  "disposition": "dependent-effect-blocked",
+                  "detail": (
+                      "The required-success reload had no journal or boundary "
+                      "events and the live route retained the predecessor result."
+                  ),
+                  "observations": {
+                      "predecessor-operation": negative_state[6],
+                      "dependent-operation": negative_dependency[1],
+                      "dependency-edge": negative_dependency[2],
+                      "dependent-timeline": negative_dependent_timeline,
+                      "dependent-effect-boundaries": [],
+                      "behavior-before": "app-c:gamma-v1\n",
+                      "behavior-after": negative_route_after,
+                      "blocked": True,
+                      "cell": blocked_dependent_cell,
+                  },
+              },
+              "prerequisite-failure-recorded": {
+                  "kind": "prerequisite-failure",
+                  "disposition": "dependent-effect-blocked",
+                  "detail": (
+                      "The predecessor failure remains in the durable execution "
+                      "journal and the dependent effect count is zero."
+                  ),
+                  "observations": {
+                      "predecessor-operation": negative_state[6],
+                      "dependent-operation": negative_dependency[1],
+                      "dependency-edge": negative_dependency[2],
+                      "failure-record": f"sha256:{negative_failure_record}",
+                      "dependent-effect-count": 0,
                   },
               },
           },

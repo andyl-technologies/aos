@@ -31,10 +31,20 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}").fullmatch
 RAW_DIGEST = re.compile(r"[0-9a-f]{64}").fullmatch
 MAX_PROBE_FACTS = 32
 MAX_PROBE_BYTES = 64 * 1024
-QUALIFIED_CELL_ID = (
-    "managed-configuration/aos.managed-configuration-effects/abi-1/"
-    "publish/lose-external-result"
-)
+QUALIFIED_CELL_IDS = [
+    (
+        "managed-configuration/aos.managed-configuration-effects/abi-1/"
+        "publish/lose-external-result"
+    ),
+    (
+        "managed-configuration/aos.managed-configuration-effects/abi-1/"
+        "publish/reject-foreign-resource-mutation"
+    ),
+    (
+        "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+        "reload/block-dependent-effect"
+    ),
+]
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
 PUBLISH_ORDINAL = 5
 DEPENDENT_ORDINAL = 2
@@ -101,6 +111,16 @@ DEPENDENT_EFFECT_BOUNDARY_TIMELINE = [
     ("effect", "effect-returned"),
     ("effect", "effect-outcome-durable"),
 ]
+REJECTED_EFFECT_TIMELINE = [
+    "operation-admitted",
+    "effect-started",
+    "rejected-before-effect",
+]
+REJECTED_EFFECT_BOUNDARY_TIMELINE = [
+    ("effect", "effect-intent-durable"),
+    ("effect", "effect-returned"),
+    ("effect", "effect-outcome-durable"),
+]
 SCENARIO_DISPOSITIONS = {
     "interrupt-before-acquisition": "rejected-before-acquisition",
     "interrupt-after-acquisition": "unsettled-after-acquisition",
@@ -150,8 +170,8 @@ def build_cells(
     spec: dict[str, Any],
     submissions: dict[str, Any],
     expected_qualified_cells: list[str],
-    cohort_subject: dict[str, Any],
-    cohort_plan_bundle: bytes,
+    cohort_subjects: dict[str, dict[str, Any]],
+    cohort_plan_bundles: dict[str, bytes],
     subject_digest: str,
     environment_digest: str,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -167,10 +187,24 @@ def build_cells(
         raise RuntimeError("matrix specification repeats a cell identity")
     if any(cell_id not in specification_cells for cell_id in submissions):
         raise RuntimeError("cohort submitted a probe outside the exact matrix surface")
-    if expected_qualified_cells != [QUALIFIED_CELL_ID]:
+    allowed_cells = set(QUALIFIED_CELL_IDS)
+    if (
+        not expected_qualified_cells
+        or any(cell_id not in allowed_cells for cell_id in expected_qualified_cells)
+        or expected_qualified_cells
+        != [cell_id for cell_id in QUALIFIED_CELL_IDS if cell_id in expected_qualified_cells]
+    ):
         raise RuntimeError("cohort qualification scope differs from its fixed fixture")
-    qualified_cell = specification_cells[QUALIFIED_CELL_ID]
-    _validate_cohort_subject(qualified_cell, cohort_subject, cohort_plan_bundle)
+    if set(cohort_subjects) != set(expected_qualified_cells):
+        raise RuntimeError("cohort subjects differ from its explicit qualification scope")
+    if set(cohort_plan_bundles) != set(expected_qualified_cells):
+        raise RuntimeError("cohort plan bundles differ from its explicit qualification scope")
+    for cell_id in expected_qualified_cells:
+        _validate_cohort_subject(
+            specification_cells[cell_id],
+            cohort_subjects[cell_id],
+            cohort_plan_bundles[cell_id],
+        )
 
     observed_cells = []
     postcondition_count = 0
@@ -189,6 +223,7 @@ def build_cells(
             }
             probes = {}
         else:
+            cohort_subject = cohort_subjects[cell["id"]]
             bound_subject = _bound_cohort_subject(cell, cohort_subject)
             postconditions, probes = _validated_probes(
                 cell,
@@ -282,10 +317,62 @@ def _validate_probe_facts(
 ) -> None:
     """Checks semantic facts for one exact matrix postcondition."""
 
+    scenario = cell["id"].rsplit("/", 1)[-1]
     if postcondition == "durable-attempt-state-classified":
         operation = observations.get("operation")
         timeline = observations.get("timeline")
         boundary_timeline = observations.get("boundary-timeline")
+        if scenario in {
+            "block-dependent-effect",
+            "reject-foreign-resource-mutation",
+        }:
+            cause = observations.get("cause-operation")
+            expected_operation = (
+                cohort_subject["dependent-operation"]
+                if scenario == "block-dependent-effect"
+                else cohort_subject["publish-operation"]
+            )
+            if (
+                set(observations)
+                != {
+                    "transaction",
+                    "plan",
+                    "operation",
+                    "timeline",
+                    "cause-operation",
+                    "cause-timeline",
+                    "boundary-timeline",
+                    "failure-record",
+                    "classified",
+                }
+                or not _matches(LOCAL_KEY, observations.get("transaction"))
+                or observations.get("plan") != cohort_subject["plan"]
+                or operation != expected_operation
+                or cause != cohort_subject["publish-operation"]
+                or (
+                    scenario == "block-dependent-effect"
+                    and timeline != []
+                )
+                or (
+                    scenario == "reject-foreign-resource-mutation"
+                    and not _is_exact_timeline(
+                        timeline, REJECTED_EFFECT_TIMELINE, operation.get("ordinal")
+                    )
+                )
+                or not _is_exact_timeline(
+                    observations.get("cause-timeline"),
+                    REJECTED_EFFECT_TIMELINE,
+                    cause.get("ordinal"),
+                )
+                or not _is_exact_boundary_timeline(
+                    boundary_timeline, REJECTED_EFFECT_BOUNDARY_TIMELINE
+                )
+                or not _matches(RAW_DIGEST, observations.get("failure-record"))
+                or observations.get("classified") is not True
+            ):
+                raise RuntimeError("journal probe does not prove durable negative classification")
+            return
+
         expected_fields = {
             "transaction",
             "plan",
@@ -316,6 +403,32 @@ def _validate_probe_facts(
         ):
             raise RuntimeError("journal probe does not prove lost-result reconciliation")
     elif postcondition == "at-most-one-resource-owner":
+        if scenario in {
+            "block-dependent-effect",
+            "reject-foreign-resource-mutation",
+        }:
+            if (
+                set(observations)
+                != {
+                    "resource",
+                    "owner-count-before",
+                    "owner-count-after",
+                    "one-owner-throughout",
+                    "owner-evidence-before",
+                    "owner-evidence-after",
+                }
+                or not isinstance(observations.get("resource"), dict)
+                or observations.get("owner-count-before") != 1
+                or observations.get("owner-count-after") != 1
+                or observations.get("one-owner-throughout") is not True
+                or not isinstance(observations.get("owner-evidence-before"), str)
+                or not observations.get("owner-evidence-before")
+                or observations.get("owner-evidence-after")
+                != observations.get("owner-evidence-before")
+            ):
+                raise RuntimeError("ownership probe does not prove one negative-flight owner")
+            return
+
         if (
             set(observations)
             != {"resource", "destination", "revision", "matching-markers", "selected-after-gc"}
@@ -329,6 +442,33 @@ def _validate_probe_facts(
         ):
             raise RuntimeError("ownership probe does not prove one retained owner")
     elif postcondition == "foreign-resources-unchanged":
+        if scenario in {
+            "block-dependent-effect",
+            "reject-foreign-resource-mutation",
+        }:
+            allowed_fields = {
+                "resource",
+                "snapshot-before",
+                "snapshot-after",
+                "unchanged",
+            }
+            if scenario == "block-dependent-effect":
+                allowed_fields.add("cell")
+            if (
+                set(observations) != allowed_fields
+                or not isinstance(observations.get("resource"), dict)
+                or not isinstance(observations.get("snapshot-before"), str)
+                or observations.get("snapshot-after")
+                != observations.get("snapshot-before")
+                or observations.get("unchanged") is not True
+                or (
+                    scenario == "block-dependent-effect"
+                    and observations.get("cell") != cell["id"]
+                )
+            ):
+                raise RuntimeError("foreign-resource probe changed during negative flight")
+            return
+
         snapshots = [
             observations.get("content-before"),
             observations.get("content-unsettled"),
@@ -351,6 +491,47 @@ def _validate_probe_facts(
         ):
             raise RuntimeError("foreign-resource probe changed across the cohort")
     elif postcondition == "dependent-effects-not-executed":
+        if scenario in {
+            "block-dependent-effect",
+            "reject-foreign-resource-mutation",
+        }:
+            allowed_fields = {
+                "predecessor-operation",
+                "dependent-operation",
+                "dependency-edge",
+                "dependent-timeline",
+                "dependent-effect-boundaries",
+                "behavior-before",
+                "behavior-after",
+                "blocked",
+            }
+            if scenario == "block-dependent-effect":
+                allowed_fields.add("cell")
+            predecessor = observations.get("predecessor-operation")
+            dependent = observations.get("dependent-operation")
+            if (
+                set(observations) != allowed_fields
+                or predecessor != cohort_subject["publish-operation"]
+                or dependent != cohort_subject["dependent-operation"]
+                or observations.get("dependency-edge")
+                != {
+                    "from": {"kind": "operation", "key": predecessor["key"]},
+                    "to": {"kind": "operation", "key": dependent["key"]},
+                    "kind": "required-success",
+                }
+                or observations.get("dependent-timeline") != []
+                or observations.get("dependent-effect-boundaries") != []
+                or observations.get("behavior-before")
+                != observations.get("behavior-after")
+                or observations.get("blocked") is not True
+                or (
+                    scenario == "block-dependent-effect"
+                    and observations.get("cell") != cell["id"]
+                )
+            ):
+                raise RuntimeError("dependency probe does not prove negative-flight blocking")
+            return
+
         before = observations.get("route-while-unsettled")
         after = observations.get("route-after-recovery")
         publish = observations.get("publish-operation")
@@ -645,6 +826,13 @@ def _strictly_increasing_nonnegative(before: Any, after: Any) -> bool:
 def _validate_cohort_subject(
     cell: dict[str, Any], subject: Any, plan_bundle_bytes: Any
 ) -> None:
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    expected_interface = (
+        SYSTEMD_SERVICE_INTERFACE
+        if scenario == "block-dependent-effect"
+        else MANAGED_CONFIGURATION_INTERFACE
+    )
+    expected_method = "reload" if scenario == "block-dependent-effect" else "publish"
     if not isinstance(subject, dict) or set(subject) != {
         "schema",
         "plan",
@@ -663,8 +851,8 @@ def _validate_cohort_subject(
         or not _matches(DIGEST, subject.get("plan-bundle-digest"))
         or not isinstance(authors, dict)
         or set(authors) != {"publish", "dependent"}
-        or cell.get("interface") != MANAGED_CONFIGURATION_INTERFACE
-        or cell.get("method") != "publish"
+        or cell.get("interface") != expected_interface
+        or cell.get("method") != expected_method
         or not _is_expected_author(authors.get("publish"), "shared-configuration")
         or not _is_expected_author(authors.get("dependent"), "nginx-secondary")
         or not _is_expected_operation(
