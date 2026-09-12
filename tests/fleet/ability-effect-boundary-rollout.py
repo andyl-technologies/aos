@@ -244,7 +244,7 @@ def run_rollout_cell(cell_id: str, evidence_builder: Any) -> None:
         runtime.succeed(f"{DATE} -s @{deadline}")
         host = rollout_host(request, "retire", label)
     else:
-        if method == "withdraw":
+        if method in {"hold", "withdraw"}:
             runtime.succeed(f"{COREUTILS}/touch /var/lib/aos-test/rollout-health-fail")
         host = rollout_host(request, "desired", label)
 
