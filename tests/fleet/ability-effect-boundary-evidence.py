@@ -58,6 +58,23 @@ SCENARIO_TIMELINES = {
 }
 
 
+def expected_timeline(scenario: str, effect_class: str) -> list[str]:
+    """Returns the exact recovery classification for one matrix effect class."""
+
+    if (
+        scenario == "interrupt-after-durable-intent"
+        and effect_class == "observation"
+    ):
+        return [
+            "operation-admitted",
+            "effect-started",
+            "operation-admitted",
+            "reconciliation-started",
+            "reconciled-completed",
+        ]
+    return SCENARIO_TIMELINES[scenario]
+
+
 def canonical(value: Any) -> bytes:
     """Encodes one value with the release evidence canonical JSON profile."""
 
@@ -171,9 +188,9 @@ class EffectBoundaryEvidence:
             for event in observation.boundary_timeline
         ):
             raise RuntimeError("boundary transcript lacks the selected interruption")
-        if [event.get("kind") for event in observation.timeline] != SCENARIO_TIMELINES[
-            scenario
-        ]:
+        if [event.get("kind") for event in observation.timeline] != expected_timeline(
+            scenario, cell["effect_class"]
+        ):
             raise RuntimeError("durable journal has another recovery classification")
         ownership_inventories = (
             observation.owner_baseline,
