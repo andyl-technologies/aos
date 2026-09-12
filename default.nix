@@ -452,8 +452,28 @@
     "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result"
     "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target"
   ];
+  nativeAdapterRoleScenarios = [
+    "revoke-caller-before-acquisition"
+    "revoke-caller-after-acquisition"
+    "revoke-caller-before-external-effect"
+    "revoke-provider-before-acquisition"
+    "revoke-provider-after-acquisition"
+    "revoke-provider-before-external-effect"
+    "revoke-enforcement-before-acquisition"
+    "revoke-enforcement-after-acquisition"
+    "revoke-enforcement-before-external-effect"
+    "revoke-assignment-before-acquisition"
+    "revoke-assignment-after-acquisition"
+    "revoke-assignment-before-external-effect"
+  ];
+  nativeAdapterRoleCells = map (cell: cell.id) (
+    builtins.filter (cell:
+      builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) nativeAdapterRoleScenarios)
+    nativeAdapterMatrix.cells
+  );
   nativeAdapterQualifiedCells =
     nativeAdapterPrimaryCells
+    ++ nativeAdapterRoleCells
     ++ nativePostgresqlReplacementCells;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =

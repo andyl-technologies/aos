@@ -57,6 +57,14 @@ POSTGRESQL_CELL_IDS = [
     "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
 ]
 QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
+AUTHORITY_AUDIT_SCHEMA = "aos.qualification.authority-revocation-audit/v1"
+AUTHORITY_SUBJECT_SCHEMA = "aos.qualification.authority-revocation-subject/v1"
+AUTHORITY_PLAN_SCHEMA = "aos.qualification.authority-revocation-plan/v1"
+ROLE_SCENARIOS = {
+    f"revoke-{role}-{timing}"
+    for role in ["caller", "provider", "enforcement", "assignment"]
+    for timing in ["before-acquisition", "after-acquisition", "before-external-effect"]
+}
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
 POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
     "aos.qualification.postgresql-provider-replacement-cohort-subject/v1"
@@ -231,10 +239,21 @@ def build_cells(
     cohort_evidence: dict[str, bytes],
     subject_digest: str,
     environment_digest: str,
+    authority_audit: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Builds all cell observations and proves every positive claim is expected."""
 
-    if sorted(submissions) != sorted(expected_qualified_cells):
+    has_authority_audit = authority_audit is not None
+    authority_audit = authority_audit or {
+        "schema": AUTHORITY_AUDIT_SCHEMA,
+        "matrix_spec_digest": "sha256:" + "0" * 64,
+        "cells": {},
+    }
+    authority_cells = authority_audit.get("cells")
+    if not isinstance(authority_cells, dict):
+        raise RuntimeError("authority audit cells are malformed")
+    submitted_cells = set(submissions) | set(authority_cells)
+    if submitted_cells != set(expected_qualified_cells):
         raise RuntimeError("cohort probe cells differ from its explicit qualification scope")
     if len(set(expected_qualified_cells)) != len(expected_qualified_cells):
         raise RuntimeError("cohort qualification scope repeats a matrix cell")
@@ -242,34 +261,55 @@ def build_cells(
     specification_cells = {cell["id"]: cell for cell in spec["cells"]}
     if len(specification_cells) != len(spec["cells"]):
         raise RuntimeError("matrix specification repeats a cell identity")
-    if any(cell_id not in specification_cells for cell_id in submissions):
+    if any(cell_id not in specification_cells for cell_id in submitted_cells):
         raise RuntimeError("cohort submitted a probe outside the exact matrix surface")
+    allowed_cells = QUALIFIED_CELL_IDS
+    if has_authority_audit:
+        allowed_cells = [
+            *PRIMARY_COHORT_CELL_IDS,
+            *[
+                cell["id"]
+                for cell in spec["cells"]
+                if cell["id"].rsplit("/", 1)[-1] in ROLE_SCENARIOS
+            ],
+            *POSTGRESQL_CELL_IDS,
+        ]
     if (
         not expected_qualified_cells
-        or any(cell_id not in QUALIFIED_CELL_IDS for cell_id in expected_qualified_cells)
+        or any(cell_id not in allowed_cells for cell_id in expected_qualified_cells)
         or expected_qualified_cells
-        != [cell_id for cell_id in QUALIFIED_CELL_IDS if cell_id in expected_qualified_cells]
+        != [cell_id for cell_id in allowed_cells if cell_id in expected_qualified_cells]
     ):
         raise RuntimeError("cohort qualification scope differs from its fixed fixture")
-    if set(cohort_subjects) != set(expected_qualified_cells):
+    if set(cohort_subjects) != set(submissions):
         raise RuntimeError("cohort subjects differ from its explicit qualification scope")
-    if set(cohort_evidence) != set(expected_qualified_cells):
+    if set(cohort_evidence) != set(submissions):
         raise RuntimeError("cohort evidence differs from its explicit qualification scope")
-    for cell_id in expected_qualified_cells:
+    for cell_id in submissions:
         _validate_cohort_subject(
             specification_cells[cell_id],
             cohort_subjects[cell_id],
             cohort_evidence[cell_id],
         )
+    if has_authority_audit:
+        _validate_authority_audit(authority_audit, spec, specification_cells)
 
     observed_cells = []
     postcondition_count = 0
     probe_digests = set()
     for cell in spec["cells"]:
         submitted = submissions.get(cell["id"])
+        authority_record = authority_cells.get(cell["id"])
         names = cell["postconditions"]
         postcondition_count += len(names)
-        if submitted is None:
+        if authority_record is not None:
+            bound_subject, postconditions, probes = _validated_authority_cell(
+                cell,
+                authority_record,
+                subject_digest,
+                probe_digests,
+            )
+        elif submitted is None:
             postconditions = {
                 name: {
                     "passed": False,
@@ -302,6 +342,183 @@ def build_cells(
         observed_cells.append(observation)
 
     return observed_cells, postcondition_count
+
+
+def _validate_authority_audit(
+    audit: dict[str, Any],
+    spec: dict[str, Any],
+    specification_cells: dict[str, dict[str, Any]],
+) -> None:
+    """Checks the audit envelope and its exact role-cell coverage."""
+
+    expected = {
+        cell_id
+        for cell_id in specification_cells
+        if cell_id.rsplit("/", 1)[-1] in ROLE_SCENARIOS
+    }
+    if (
+        set(audit) != {"schema", "matrix_spec_digest", "cells"}
+        or audit.get("schema") != AUTHORITY_AUDIT_SCHEMA
+        or audit.get("matrix_spec_digest") != sha256(spec)
+        or set(audit.get("cells", {})) != expected
+    ):
+        raise RuntimeError("authority audit differs from the closed role cohort")
+
+
+def _validated_authority_cell(
+    cell: dict[str, Any],
+    record: dict[str, Any],
+    subject_digest: str,
+    probe_digests: set[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validates one real runtime authority fence result and derives its probes."""
+
+    if set(record) != {"cell_digest", "subject", "plan_bundle", "evidence"}:
+        raise RuntimeError("authority audit cell is malformed")
+    cell_digest = sha256(cell)
+    subject = record["subject"]
+    plan_bundle = record["plan_bundle"]
+    evidence = record["evidence"]
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    role_name = scenario.removeprefix("revoke-").split("-before", 1)[0].split("-after", 1)[0]
+    expected_role = {
+        "caller": "caller-binding-grant",
+        "provider": "provider-method-implementation",
+        "enforcement": "enforcement-platform-guarantee",
+        "assignment": "assignment-incarnation",
+    }[role_name]
+    if scenario.endswith("before-acquisition"):
+        expected_authority_boundary = "before-resource-acquisition"
+        expected_runtime_boundary = "BeforeResourceAcquisition"
+        expected_acquisitions = 0
+    elif scenario.endswith("after-acquisition"):
+        expected_authority_boundary = "after-resource-acquisition"
+        expected_runtime_boundary = "ResourcesAcquired"
+        expected_acquisitions = 1
+    else:
+        expected_authority_boundary = "final-dispatch"
+        expected_runtime_boundary = "FinalDispatch"
+        expected_acquisitions = 1
+
+    if (
+        record.get("cell_digest") != cell_digest
+        or not isinstance(subject, dict)
+        or set(subject)
+        != {"schema", "cell-id", "cell-digest", "interface", "method", "plan", "transaction"}
+        or subject.get("schema") != AUTHORITY_SUBJECT_SCHEMA
+        or subject.get("cell-id") != cell["id"]
+        or subject.get("cell-digest") != cell_digest
+        or subject.get("interface") != cell["interface"]
+        or subject.get("method") != cell["method"]
+        or not _matches(DIGEST, subject.get("plan"))
+        or not _matches(LOCAL_KEY, subject.get("transaction"))
+        or not isinstance(plan_bundle, dict)
+        or set(plan_bundle) != {"schema", "digest", "bytes-sha256"}
+        or plan_bundle.get("schema") != AUTHORITY_PLAN_SCHEMA
+        or not _matches(DIGEST, plan_bundle.get("digest"))
+        or plan_bundle.get("bytes-sha256") != plan_bundle.get("digest")
+        or not isinstance(evidence, dict)
+        or set(evidence)
+        != {
+            "role",
+            "authority-boundary",
+            "runtime-boundary",
+            "journal",
+            "reservation-ledger",
+            "dispatch-calls",
+            "foreign-before",
+            "foreign-after",
+        }
+        or evidence.get("role") != expected_role
+        or evidence.get("authority-boundary") != expected_authority_boundary
+        or evidence.get("runtime-boundary") != expected_runtime_boundary
+        or evidence.get("dispatch-calls") != 0
+        or not _matches(DIGEST, evidence.get("foreign-before"))
+        or evidence.get("foreign-after") != evidence.get("foreign-before")
+    ):
+        raise RuntimeError("authority audit subject or fence evidence is invalid")
+
+    journal = evidence["journal"]
+    ledger = evidence["reservation-ledger"]
+    if (
+        not isinstance(journal, dict)
+        or set(journal) != {"digest", "head", "authority-rejections", "effect-outcomes"}
+        or not _matches(DIGEST, journal.get("digest"))
+        or not _matches(DIGEST, journal.get("head"))
+        or journal.get("authority-rejections") != 1
+        or journal.get("effect-outcomes") != 0
+        or not isinstance(ledger, dict)
+        or set(ledger) != {"digest", "acquire-calls", "release-calls", "max-owners", "owners"}
+        or not _matches(DIGEST, ledger.get("digest"))
+        or ledger.get("acquire-calls") != expected_acquisitions
+        or ledger.get("release-calls") != expected_acquisitions
+        or ledger.get("max-owners") != expected_acquisitions
+        or ledger.get("owners") != 0
+    ):
+        raise RuntimeError("authority audit durable evidence is invalid")
+
+    bound_subject = _bound_cohort_subject(cell, subject)
+    cohort_subject_digest = sha256(bound_subject)
+    observations = {
+        "durable-attempt-state-classified": {
+            "cell": cell["id"],
+            "transaction": subject["transaction"],
+            "plan": subject["plan"],
+            "journal": journal["digest"],
+            "authority-role": evidence["role"],
+            "authority-boundary": evidence["authority-boundary"],
+            "runtime-boundary": evidence["runtime-boundary"],
+            "authority-rejections": journal["authority-rejections"],
+            "adapter-outcomes": journal["effect-outcomes"],
+        },
+        "at-most-one-resource-owner": {
+            "cell": cell["id"],
+            "ledger": ledger["digest"],
+            "acquire-calls": ledger["acquire-calls"],
+            "release-calls": ledger["release-calls"],
+            "max-owners": ledger["max-owners"],
+            "owners": ledger["owners"],
+        },
+        "foreign-resources-unchanged": {
+            "cell": cell["id"],
+            "snapshot-before": evidence["foreign-before"],
+            "snapshot-after": evidence["foreign-after"],
+            "unchanged": True,
+        },
+        "dependent-effects-not-executed": {
+            "cell": cell["id"],
+            "dispatch-calls": evidence["dispatch-calls"],
+            "adapter-outcomes": journal["effect-outcomes"],
+            "blocked": True,
+        },
+    }
+    if set(cell["postconditions"]) != set(observations):
+        raise RuntimeError("authority cell postconditions differ from its evidence contract")
+
+    postconditions = {}
+    probes = {}
+    for name in cell["postconditions"]:
+        facts = observations[name]
+        observation_digest = sha256(facts)
+        if observation_digest in probe_digests:
+            raise RuntimeError("passing matrix postconditions replay a production probe")
+        probe_digests.add(observation_digest)
+        postconditions[name] = {
+            "passed": True,
+            "detail": "The candidate runtime rejected the exact revoked role at its authority fence before adapter dispatch.",
+        }
+        probes[name] = {
+            "schema_version": PROBE_SCHEMA,
+            "kind": POSTCONDITION_KINDS[name],
+            "cell_id": cell["id"],
+            "cell_digest": cell_digest,
+            "disposition": "rejected-before-effect",
+            "subject_digest": subject_digest,
+            "cohort_subject_digest": cohort_subject_digest,
+            "observation_digest": observation_digest,
+            "observations": facts,
+        }
+    return bound_subject, postconditions, probes
 
 
 def _validated_probes(

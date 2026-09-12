@@ -13,6 +13,31 @@
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
   };
+  postgresqlFixture = import ./_postgresql-runtime-reference.nix {
+    inherit lib mkSystem pkgs;
+    guestTools = qualificationImage;
+  };
+  kubernetesFixture = import ./_kubernetes-runtime-reference.nix {
+    inherit lib mkSystem pkgs;
+    guestTools = qualificationImage;
+  };
+  imageRolloutFixture = import ./_image-rollout-runtime-reference.nix {
+    inherit lib pkgs;
+  };
+  authorityInterfaceRoots =
+    map (entry: entry.package.abilities) fixture.orderedPackages
+    ++ [
+      postgresqlFixture.packageSet.suite.abilities
+      kubernetesFixture.packageSet.kubernetes.abilities
+      kubernetesFixture.packageSet.systemd.abilities
+      imageRolloutFixture.package.abilities
+    ];
+  authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  authorityMatrixSpec = pkgs.writeTextFile {
+    name = "aos-authority-revocation-matrix-spec";
+    destination = "/matrix-spec.json";
+    text = builtins.toJSON authorityMatrix.spec;
+  };
 
   observerController = pkgs.writeTextFile {
     name = "aos-ability-boundary-controller";
@@ -106,7 +131,11 @@ in {
   machines.runtime = {
     system = observerSystem;
     extraModules = [bootInitrdIdentityModule];
-    extraClosures = fixture.extraClosures ++ additionalClosures;
+    extraClosures =
+      fixture.extraClosures
+      ++ additionalClosures
+      ++ authorityInterfaceRoots
+      ++ [authorityMatrixSpec];
     varSizeMiB = 8192;
     memoryMiB = 4096;
   };
@@ -129,6 +158,8 @@ in {
           "${observerController}/bin/aos-ability-boundary-controller"
       )
       PACKAGE_RUNTIME = ${packageRuntime}
+      AUTHORITY_MATRIX_SPEC = ${builtins.toJSON "${authorityMatrixSpec}/matrix-spec.json"}
+      AUTHORITY_INTERFACE_ROOTS = ${builtins.toJSON (map builtins.toString authorityInterfaceRoots)}
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
       FLOCK = "${pkgs.util-linux}/bin/flock"
@@ -2072,12 +2103,33 @@ in {
               },
           },
       })
+      authority_output = "/var/lib/aos/qualification-authority-revocation.json"
+      authority_arguments = " ".join(
+          shlex.quote(value)
+          for value in [
+              AUTHORITY_MATRIX_SPEC,
+              authority_output,
+              *AUTHORITY_INTERFACE_ROOTS,
+          ]
+      )
+      runtime.succeed(
+          f"{Path(PACKAGE_RUNTIME).parent}/aos-ability-authority-audit "
+          f"{authority_arguments}",
+          timeout=1800,
+      )
+      NATIVE_ADAPTER_MATRIX_AUTHORITY_AUDIT = json.loads(
+          runtime.succeed(f"{COREUTILS}/cat {shlex.quote(authority_output)}")
+      )
     '';
   }
   // lib.optionalAttrs qualificationImage {
     qualification = {
       candidateRuntimeCompanions = fixture.qualificationCandidateRuntimeCompanions;
-      extraClosures = fixture.extraClosures ++ [observerController] ++ additionalClosures;
+      extraClosures =
+        fixture.extraClosures
+        ++ additionalClosures
+        ++ authorityInterfaceRoots
+        ++ [authorityMatrixSpec observerController];
       setupBody = fixture.qualificationSetupBody + observerHostModule;
     };
   }
