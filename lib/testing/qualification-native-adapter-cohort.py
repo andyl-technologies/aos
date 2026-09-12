@@ -195,6 +195,7 @@ PROVIDER_NEGATIVE_SCENARIOS = {
 }
 PROVIDER_ORACLE_KINDS = {
     "credential-delivery": "credential-view",
+    "foreground-process": "foreground-process",
     "host-network-policy": "nft-policy",
     "host-storage": "storage-tree",
     "image-rollout": "boot-slot",
@@ -209,6 +210,7 @@ PROVIDER_ORACLE_KINDS = {
 }
 PROVIDER_ADAPTER_BY_INTERFACE = {
     "aos.credential-delivery-effects": "credential-delivery",
+    "aos.foreground-process": "foreground-process",
     "aos.host-network-policy-effects": "host-network-policy",
     "aos.host-storage-effects": "host-storage",
     "aos.ab-image-rollout-effects": "image-rollout",
@@ -223,6 +225,7 @@ PROVIDER_ADAPTER_BY_INTERFACE = {
 }
 PROVIDER_ENTRY_POINTS = {
     "credential-delivery": "libexec/aos-credential-delivery-handler-v1",
+    "foreground-process": "libexec/aos-foreground-process-handler-v1",
     "host-network-policy": "libexec/aos-host-network-policy-handler-v1",
     "host-storage": "libexec/aos-host-storage-handler-v1",
     "image-rollout": "libexec/aos-ab-image-rollout-handler-v1",
@@ -664,7 +667,6 @@ def build_cells(
             provider_negative_audit, spec, specification_cells
         )
 
-
     observed_cells = []
     postcondition_count = 0
     probe_digests = set()
@@ -1100,24 +1102,16 @@ def _validated_provider_negative_cell(
         for operation in [foreign_operation, dependent_operation]
     ):
         raise RuntimeError("provider-negative plan operations are malformed")
-    expected_cell_operation = (
-        foreign_operation
-        if scenario == "reject-foreign-resource-mutation"
-        else dependent_operation
-    )
+    expected_cell_operation = foreign_operation
     if (
         expected_cell_operation.get("interface") != cell["interface"]
         or expected_cell_operation.get("method") != cell["method"]
-        or foreign_operation.get("method") != dependent_operation.get("method")
-        or foreign_operation.get("interface") != dependent_operation.get("interface")
-        or foreign_operation.get("resource") == dependent_operation.get("resource")
     ):
-        raise RuntimeError("provider-negative paired operations differ from the exact cell")
+        raise RuntimeError("provider-negative selected operation differs from the exact cell")
     if cell["effect_class"] == "observation":
         if (
             not isinstance(behavioral_witness, dict)
             or behavioral_witness.get("resource") is None
-            or behavioral_witness.get("resource") == foreign_operation.get("resource")
         ):
             raise RuntimeError("observation cell lacks its distinct mutation witness")
     elif behavioral_witness is not None:
@@ -1131,6 +1125,7 @@ def _validated_provider_negative_cell(
         "foreign-resource",
         "blocked-successor",
         "blocked-witness",
+        "provider-sentinel",
     }:
         raise RuntimeError("provider-negative evidence has unexpected fields")
     provider_route = evidence.get("provider-route")
@@ -1139,6 +1134,7 @@ def _validated_provider_negative_cell(
     foreign = evidence.get("foreign-resource")
     successor = evidence.get("blocked-successor")
     blocked_witness = evidence.get("blocked-witness")
+    provider_sentinel = evidence.get("provider-sentinel")
     expected_foreign_timeline = [
         "operation-admitted",
         "effect-started",
@@ -1207,14 +1203,23 @@ def _validated_provider_negative_cell(
         "maximum-owner-count": 1,
     }:
         raise RuntimeError("provider-negative ownership is not exclusive")
-    for label, oracle, operation, must_be_live in [
-        ("foreign", foreign, foreign_operation, True),
-        ("successor", successor, dependent_operation, False),
+    successor_adapter = PROVIDER_ADAPTER_BY_INTERFACE.get(
+        dependent_operation.get("interface", {}).get("name")
+    )
+    for label, oracle, operation, oracle_kind, must_be_live in [
+        ("foreign", foreign, foreign_operation, expected_oracle, True),
+        (
+            "successor",
+            successor,
+            dependent_operation,
+            PROVIDER_ORACLE_KINDS.get(successor_adapter),
+            False,
+        ),
     ]:
         if (
             set(oracle)
             != {"kind", "resource", "before", "after", "unchanged", "live"}
-            or oracle.get("kind") != expected_oracle
+            or oracle.get("kind") != oracle_kind
             or oracle.get("resource") != operation.get("resource")
             or not _matches(DIGEST, oracle.get("before"))
             or oracle.get("after") != oracle.get("before")
@@ -1246,6 +1251,22 @@ def _validated_provider_negative_cell(
     ):
         raise RuntimeError("observation cell does not prove mutation-witness nonexecution")
 
+    if adapter == "foreground-process":
+        if (
+            not isinstance(provider_sentinel, dict)
+            or set(provider_sentinel)
+            != {"kind", "resource", "before", "after", "unchanged", "live"}
+            or provider_sentinel.get("kind") != "foreground-process"
+            or not _matches(DIGEST, provider_sentinel.get("before"))
+            or provider_sentinel.get("after") != provider_sentinel.get("before")
+            or provider_sentinel.get("unchanged") is not True
+            or provider_sentinel.get("live") is not True
+            or provider_sentinel.get("resource") == foreign_operation.get("resource")
+        ):
+            raise RuntimeError("foreground provider sentinel is not independent and live")
+    elif provider_sentinel is not None:
+        raise RuntimeError("non-foreground provider flight unexpectedly has a sentinel")
+
     bound_subject = {
         "schema": CELL_SUBJECT_SCHEMA,
         "cell": {
@@ -1264,10 +1285,18 @@ def _validated_provider_negative_cell(
         if scenario == "block-dependent-effect"
         else "foreign-attempt-rejected-before-mutation"
     )
+    foreign_resources = (
+        foreign
+        if provider_sentinel is None
+        else {
+            "foreign-target": foreign,
+            "provider-sentinel": provider_sentinel,
+        }
+    )
     observations = {
         "durable-attempt-state-classified": journal,
         "at-most-one-resource-owner": ownership,
-        "foreign-resources-unchanged": foreign,
+        "foreign-resources-unchanged": foreign_resources,
         "dependent-effects-not-executed": successor,
         scenario_probe: {
             "boundary": evidence["boundary"],
@@ -1386,9 +1415,7 @@ def _validated_rollout_provider_negative_cell(
         or plan.get("required-success")
         != {"from": foreign, "to": dependent, "kind": "required-success"}
         or foreign.get("interface") != cell["interface"]
-        or dependent.get("interface") != cell["interface"]
         or foreign.get("method") != cell["method"]
-        or dependent.get("method") != cell["method"]
     ):
         raise RuntimeError("rollout provider-negative plan is not exact")
     same_machine = foreign.get("resource") == dependent.get("resource")
@@ -1398,15 +1425,19 @@ def _validated_rollout_provider_negative_cell(
         if (
             not isinstance(witness, dict)
             or not _provider_negative_operation(witness)
-            or witness.get("method") not in {
-                "drain",
-                "hold",
-                "prepare",
-                "retain",
-                "retire",
-                "select",
-                "withdraw",
-            }
+            or (
+                witness != dependent
+                and witness.get("method")
+                not in {
+                    "drain",
+                    "hold",
+                    "prepare",
+                    "retain",
+                    "retire",
+                    "select",
+                    "withdraw",
+                }
+            )
         ):
             raise RuntimeError("rollout observation lacks a real mutation witness")
     elif witness is not None:

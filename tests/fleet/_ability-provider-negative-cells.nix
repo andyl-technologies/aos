@@ -28,6 +28,7 @@
       "systemd-service-legacy"
     ];
     postgresql = byAdapters ["postgresql"];
+    foreground-process = byAdapters ["foreground-process"];
     systemd-manager = byAdapters ["systemd-manager"];
     kubernetes-object = byAdapters ["kubernetes-object"];
     systemd-bootstrap = byAdapters ["systemd-bootstrap"];
@@ -37,15 +38,17 @@
   all =
     groups.reference
     ++ groups.postgresql
+    ++ groups.foreground-process
     ++ groups.systemd-manager
     ++ groups.kubernetes
     ++ groups.rollout;
 in
-  assert builtins.length matrix.cells == 1316;
-  assert builtins.length all == 92;
-  assert builtins.length (lib.unique all) == 92;
+  assert builtins.length matrix.cells == 1400;
+  assert builtins.length all == 98;
+  assert builtins.length (lib.unique all) == 98;
   assert builtins.length groups.reference == 42;
   assert builtins.length groups.postgresql == 10;
+  assert builtins.length groups.foreground-process == 6;
   assert builtins.length groups.systemd-manager == 10;
   assert builtins.length groups.kubernetes == 12;
   assert builtins.length groups.rollout == 18; {

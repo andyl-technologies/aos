@@ -31,6 +31,7 @@ EXCLUDED_CELLS = {
 }
 ORACLE_KINDS = {
     "credential-delivery": "credential-view",
+    "foreground-process": "foreground-process",
     "host-network-policy": "nft-policy",
     "host-storage": "storage-tree",
     "image-rollout": "boot-slot",
@@ -45,6 +46,7 @@ ORACLE_KINDS = {
 }
 ENTRY_POINTS = {
     "credential-delivery": "libexec/aos-credential-delivery-handler-v1",
+    "foreground-process": "libexec/aos-foreground-process-handler-v1",
     "host-network-policy": "libexec/aos-host-network-policy-handler-v1",
     "host-storage": "libexec/aos-host-storage-handler-v1",
     "image-rollout": "libexec/aos-ab-image-rollout-handler-v1",
@@ -120,6 +122,7 @@ class PairedFlightObservation:
     foreign: LiveOracle
     successor: LiveOracle
     witness: LiveOracle | None = None
+    sentinel: LiveOracle | None = None
 
 
 @dataclass(frozen=True)
@@ -183,34 +186,38 @@ class ProviderNegativeEvidence:
             if operation["interface"] == self._interface(adapter, method)
             and operation["method"] == method
         ]
-        if len(matches) != 2:
-            raise RuntimeError(
-                "paired provider plan must contain two exact method operations"
-            )
         foreign_matches = [
             pair
             for pair in matches
             if pair[1]["target"]["resource"] == observation.foreign.resource
         ]
-        dependent_matches = [
-            pair
-            for pair in matches
-            if pair[1]["target"]["resource"] == observation.successor.resource
-        ]
-        if len(foreign_matches) != 1 or len(dependent_matches) != 1:
-            raise RuntimeError("paired provider observations do not select exact operations")
+        if len(foreign_matches) != 1:
+            raise RuntimeError("provider observation does not select one exact operation")
         foreign_ordinal, foreign = foreign_matches[0]
+        outgoing = sorted(
+            [
+                edge
+                for edge in bundle["transition"]["effect_document"]["edges"]
+                if edge["from"] == {"kind": "operation", "key": foreign["key"]}
+                and edge["kind"] == "required-success"
+                and edge["to"]["kind"] == "operation"
+            ],
+            key=lambda edge: canonical(edge["to"]["key"]),
+        )
+        if not outgoing:
+            raise RuntimeError("provider operation lacks a real RequiredSuccess successor")
+        expected_edge = outgoing[0]
+        dependent_matches = [
+            (ordinal, operation)
+            for ordinal, operation in enumerate(operations)
+            if operation["key"] == expected_edge["to"]["key"]
+        ]
+        if len(dependent_matches) != 1:
+            raise RuntimeError("RequiredSuccess edge does not select one exact operation")
         dependent_ordinal, dependent = dependent_matches[0]
         foreign_identity = operation_identity(foreign, foreign_ordinal)
         dependent_identity = operation_identity(dependent, dependent_ordinal)
-        expected_edge = {
-            "from": {"kind": "operation", "key": foreign["key"]},
-            "to": {"kind": "operation", "key": dependent["key"]},
-            "kind": "required-success",
-        }
-        if expected_edge not in bundle["transition"]["effect_document"]["edges"]:
-            raise RuntimeError("paired provider plan lacks its required-success edge")
-        witness = self._behavioral_witness(bundle, dependent)
+        witness = self._behavioral_witness(bundle, foreign, dependent)
         if observation.foreign.resource != foreign_identity["resource"]:
             raise RuntimeError("foreign oracle observes another logical resource")
         if observation.successor.resource != dependent_identity["resource"]:
@@ -281,7 +288,10 @@ class ProviderNegativeEvidence:
                 "maximum-owner-count": observation.maximum_owner_count,
             },
             "foreign-resource": self._oracle(oracle_kind, observation.foreign),
-            "blocked-successor": self._oracle(oracle_kind, observation.successor),
+            "blocked-successor": self._oracle(
+                ORACLE_KINDS[self._adapter_for_operation(dependent_identity)],
+                observation.successor,
+            ),
             "blocked-witness": (
                 None
                 if observation.witness is None
@@ -289,6 +299,11 @@ class ProviderNegativeEvidence:
                     ORACLE_KINDS[self._adapter_for_operation(witness)],
                     observation.witness,
                 )
+            ),
+            "provider-sentinel": (
+                None
+                if observation.sentinel is None
+                else self._oracle(oracle_kind, observation.sentinel)
             ),
         }
         for scenario in [FOREIGN_SCENARIO, DEPENDENCY_SCENARIO]:
@@ -345,34 +360,41 @@ class ProviderNegativeEvidence:
         if canonical(bundle) != plan_bundle:
             raise RuntimeError("rollout dependency plan bundle is not canonical")
         effect = bundle["transition"]["effect_document"]
-        dependency_edges = [
+        predecessor_ordinals = {
+            event["node-ordinal"] for event in observation.predecessor_timeline
+        }
+        if len(predecessor_ordinals) != 1:
+            raise RuntimeError("rollout dependency timeline lacks one predecessor")
+        predecessor_ordinal = next(iter(predecessor_ordinals))
+        predecessor = effect["operations"][predecessor_ordinal]
+        dependency_edges = sorted(
+            [
             edge
             for edge in effect["edges"]
             if edge["kind"] == "required-success"
             and edge["from"]["kind"] == "operation"
             and edge["to"]["kind"] == "operation"
-            and edge["to"]["key"]["key"].startswith("matrix-dependent-")
-        ]
-        if len(dependency_edges) != 1:
-            raise RuntimeError("rollout plan lacks one selected dependency edge")
+            and edge["from"]["key"] == predecessor["key"]
+            ],
+            key=lambda edge: canonical(edge["to"]["key"]),
+        )
+        if not dependency_edges:
+            raise RuntimeError("rollout plan lacks a real selected dependency edge")
         edge = dependency_edges[0]
         indexed = {
             canonical(operation["key"]): (ordinal, operation)
             for ordinal, operation in enumerate(effect["operations"])
         }
-        predecessor_ordinal, predecessor = indexed[canonical(edge["from"]["key"])]
         dependent_ordinal, dependent = indexed[canonical(edge["to"]["key"])]
         if (
             predecessor["interface"] != self._interface("image-rollout", method)
             or predecessor["method"] != method
-            or dependent["interface"] != predecessor["interface"]
-            or dependent["method"] != method
             or dependent["target"]["resource"] != predecessor["target"]["resource"]
         ):
-            raise RuntimeError("rollout dependency does not bind one method and machine")
+            raise RuntimeError("rollout dependency does not bind the selected method and machine")
         predecessor_identity = operation_identity(predecessor, predecessor_ordinal)
         dependent_identity = operation_identity(dependent, dependent_ordinal)
-        witness = self._behavioral_witness(bundle, dependent)
+        witness = self._behavioral_witness(bundle, predecessor, dependent)
         if observation.machine.resource != predecessor_identity["resource"]:
             raise RuntimeError("rollout dependency observed another machine resource")
         if (
@@ -626,16 +648,30 @@ class ProviderNegativeEvidence:
         return next(iter(matches))
 
     def _behavioral_witness(
-        self, bundle: dict[str, Any], dependent: dict[str, Any]
+        self,
+        bundle: dict[str, Any],
+        selected: dict[str, Any],
+        dependent: dict[str, Any],
     ) -> dict[str, Any] | None:
         effect_class = {
+            cell["effect_class"]
+            for cell in self._cells.values()
+            if cell["interface"] == selected["interface"]
+            and cell["method"] == selected["method"]
+        }
+        if effect_class != {"observation"}:
+            return None
+        dependent_class = {
             cell["effect_class"]
             for cell in self._cells.values()
             if cell["interface"] == dependent["interface"]
             and cell["method"] == dependent["method"]
         }
-        if effect_class != {"observation"}:
-            return None
+        if dependent_class == {"mutation"}:
+            return operation_identity(
+                dependent,
+                bundle["transition"]["effect_document"]["operations"].index(dependent),
+            )
         effect = bundle["transition"]["effect_document"]
         targets = set()
         frontier = {dependent["key"]}
@@ -663,7 +699,10 @@ class ProviderNegativeEvidence:
             if classes == {"mutation"}:
                 matches.append(operation_identity(operation, ordinal))
         if not matches:
-            raise RuntimeError("observation pair lacks a real mutation witness")
+            return operation_identity(
+                dependent,
+                effect["operations"].index(dependent),
+            )
         matches.sort(key=lambda operation: canonical(operation["key"]))
         return matches[0]
 

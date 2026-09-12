@@ -8,7 +8,7 @@
   fixture = import ./_ability-runtime-reference.nix {
     inherit lib mkSystem pkgs;
     guestTools = qualificationImage;
-    transitionTransform = import ../abilities/provider-negative-transition.nix {inherit lib;};
+    effectQualification = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   cells = import ./_ability-provider-negative-cells.nix {inherit lib matrix;};

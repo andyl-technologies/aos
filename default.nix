@@ -539,6 +539,10 @@
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
+  nativeProviderNegativeForeground = import ./tests/fleet/ability-native-provider-negative-foreground.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
   nativeProviderNegativeSystemdManager = import ./tests/fleet/ability-native-provider-negative-systemd-manager.nix {
     inherit lib mkSystem pkgs;
     qualificationImage = true;
@@ -772,6 +776,12 @@
             qualifiedCells = nativeProviderNegativeCells.groups.postgresql;
             inherit (nativeProviderNegativePostgresql) testScript;
             inherit (nativeProviderNegativePostgresql.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-negative-foreground";
+            qualifiedCells = nativeProviderNegativeCells.groups.foreground-process;
+            inherit (nativeProviderNegativeForeground) testScript;
+            inherit (nativeProviderNegativeForeground.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-negative-systemd-manager";

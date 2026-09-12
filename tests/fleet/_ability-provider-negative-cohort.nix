@@ -128,8 +128,19 @@ in {
           ),
           PROVIDER_EVIDENCE.__dict__,
       )
+      EFFECT_ORACLES = types.ModuleType("ability_effect_boundary_oracles")
+      EFFECT_ORACLES.__dict__.update(globals())
+      exec(
+          compile(
+              ${builtins.toJSON (builtins.readFile ./ability-effect-boundary-oracles.py)},
+              "ability-effect-boundary-oracles.py",
+              "exec",
+          ),
+          EFFECT_ORACLES.__dict__,
+      )
       PROVIDER_ORACLES = types.ModuleType("ability_provider_negative_oracles")
       PROVIDER_ORACLES.__dict__.update(globals())
+      PROVIDER_ORACLES.__dict__["EFFECT_ORACLES"] = EFFECT_ORACLES
       exec(
           compile(
               ${builtins.toJSON (builtins.readFile ./ability-provider-negative-oracles.py)},

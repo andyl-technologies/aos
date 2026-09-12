@@ -18,10 +18,6 @@
     select = "select";
     withdraw = "withdraw";
   };
-  transition = import ../abilities/rollout-provider-negative-transition.nix {
-    inherit lib method;
-    operationKey = operationKeys.${method};
-  };
   imageLifecycle = import ./system-image-rollback.nix {
     inherit lib mkSystem pkgs systems;
     extraFixtureModules = [observerModule];
@@ -29,8 +25,7 @@
   image = imageLifecycle.abilityRolloutFixture;
   rollout = import ./_image-rollout-runtime-reference.nix {
     inherit lib pkgs;
-    qualificationImage = true;
-    transitionTransform = transition;
+    guestTools = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   matrixSpec = pkgs.writeTextFile {
