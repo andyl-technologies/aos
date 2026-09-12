@@ -184,6 +184,9 @@
   nativeCells = nativeAdapterMatrix.cells;
   firstNativeCell = builtins.head nativeCells;
   remainingNativeCells = builtins.tail nativeCells;
+  applicableNativeIds = nativeAdapterMatrix.applicable_cell_ids;
+  inapplicableNativeIds = nativeAdapterMatrix.inapplicable_cell_ids;
+  partitionedNativeIds = builtins.sort builtins.lessThan (applicableNativeIds ++ inapplicableNativeIds);
   nativeRoleRevocationCells = builtins.filter (cell:
     builtins.match "revoke-(caller|provider|enforcement|assignment)-(before-acquisition|after-acquisition|before-external-effect)"
     (builtins.elemAt (lib.splitString "/" cell.id) 4)
@@ -382,7 +385,21 @@ in
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
   assert nativeAdapterMatrix.cell_count == 1400;
-  assert nativeAdapterMatrix.required_production_vm_cells == 1400;
+  assert nativeAdapterMatrix.required_production_vm_cells == 1355;
+  assert builtins.length nativeAdapterMatrix.applicable_cells == 1355;
+  assert builtins.length nativeAdapterMatrix.inapplicable_cells == 45;
+  assert builtins.length applicableNativeIds
+  == builtins.length (lib.unique applicableNativeIds);
+  assert builtins.length inapplicableNativeIds
+  == builtins.length (lib.unique inapplicableNativeIds);
+  assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
+  assert partitionedNativeIds == map (cell: cell.id) nativeCells;
+  assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") nativeAdapterMatrix.inapplicable_cells)
+  == 36;
+  assert builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") nativeAdapterMatrix.inapplicable_cells)
+  == 9;
+  assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
+  assert nativeAdapterMatrix.applicability_digest == "sha256:12615a636200a1b6fc6b001333631b858e1c6fd81a5178f11ce9dbd9947fc517";
   assert builtins.length nativeRoleRevocationCells == 600;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
   assert builtins.length nativeFailureControlCells == 156;
@@ -397,6 +414,27 @@ in
   ];
   assert containerExecutionMatrix.missing_container_cells == 1;
   assert rejectsNativeMatrix {cells = remainingNativeCells;};
+  assert rejectsNativeMatrix {
+    applicability =
+      nativeAdapterMatrix.applicability
+      // {required_production_vm_cells = 1354;};
+  };
+  assert rejectsNativeMatrix {
+    applicability =
+      nativeAdapterMatrix.applicability
+      // {inapplicable_cells = builtins.tail nativeAdapterMatrix.inapplicable_cells;};
+  };
+  assert rejectsNativeMatrix {
+    applicability =
+      nativeAdapterMatrix.applicability
+      // {
+        inapplicable_cells =
+          [
+            ((builtins.head nativeAdapterMatrix.inapplicable_cells) // {reason = "foreign";})
+          ]
+          ++ builtins.tail nativeAdapterMatrix.inapplicable_cells;
+      };
+  };
   assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
   assert rejectsNativeMatrix {cells = [(builtins.elemAt nativeCells 1) firstNativeCell] ++ lib.drop 2 nativeCells;};
   assert rejectsNativeMatrix {subject = nativeAdapterMatrix.subject // {surface_digest = "sha256:stale";};};

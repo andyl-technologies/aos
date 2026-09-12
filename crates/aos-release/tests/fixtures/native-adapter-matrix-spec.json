@@ -1,4 +1,190 @@
 {
+  "applicability": {
+    "inapplicable_cells": [
+      {
+        "cell_id": "credential-delivery/aos.credential-delivery-effects/abi-1/acquire/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "credential-delivery/aos.credential-delivery-effects/abi-1/deliver/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "credential-delivery/aos.credential-delivery-effects/abi-1/release/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "foreground-process/aos.foreground-process/abi-1/observe/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "foreground-process/aos.foreground-process/abi-1/start/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "foreground-process/aos.foreground-process/abi-1/stop/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "host-storage/aos.host-storage-effects/abi-1/ensure/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "host-storage/aos.host-storage-effects/abi-1/observe/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "host-storage/aos.host-storage-effects/abi-1/release/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/drain/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/hold/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/observe-boot/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/observe-health/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/prepare/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/retain/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/retire/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/select/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/withdraw/adopt-compatible-state",
+        "reason": "missing-authenticated-state-format"
+      },
+      {
+        "cell_id": "kubernetes-object/aos.kubernetes-object-effects/abi-1/apply/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "kubernetes-object/aos.kubernetes-object-effects/abi-1/delete/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "kubernetes-object/aos.kubernetes-object-effects/abi-1/observe/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "managed-configuration/aos.managed-configuration-effects/abi-1/prepare/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "managed-configuration/aos.managed-configuration-effects/abi-1/publish/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "managed-configuration/aos.managed-configuration-effects/abi-1/release/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "network-endpoint/aos.network-endpoint-effects/abi-1/materialize/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "network-endpoint/aos.network-endpoint-effects/abi-1/observe/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "network-endpoint/aos.network-endpoint-effects/abi-1/release/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "nginx-validation/aos.nginx-validation/abi-1/record/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "nginx-validation/aos.nginx-validation/abi-1/release/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "nginx-validation/aos.nginx-validation/abi-1/validate/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-bootstrap/aos.systemd-provider-bootstrap/abi-1/observe-manager/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-bootstrap/aos.systemd-provider-bootstrap/abi-1/start/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-bootstrap/aos.systemd-provider-bootstrap/abi-1/stop/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-manager/aos.systemd-manager/abi-1/observe/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-manager/aos.systemd-manager/abi-1/reload/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-manager/aos.systemd-manager/abi-1/restart/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-manager/aos.systemd-manager/abi-1/start/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-manager/aos.systemd-manager/abi-1/stop/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/observe/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/start/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      },
+      {
+        "cell_id": "systemd-service-legacy/aos.systemd-service-effects/abi-1/stop/adopt-compatible-state",
+        "reason": "non-persistent-lifetime"
+      }
+    ],
+    "required_production_vm_cells": 1355,
+    "schema": "aos.qualification.native-adapter-matrix-applicability/v1"
+  },
   "cells": [
     {
       "adapter": "credential-delivery",

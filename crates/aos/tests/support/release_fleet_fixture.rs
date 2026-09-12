@@ -1030,9 +1030,8 @@ fn fixture_evidence(
                 _ => anyhow::bail!("synthetic matrix fixture has an unknown postcondition"),
             })
         };
-        let cells = spec
-            .cells
-            .iter()
+        let cells = aos_release::qualification_evidence::native_adapter_applicable_cells(&spec)
+            .into_iter()
             .map(|cell| {
                 let cell_digest = Sha256Digest::of_bytes(canonical::to_vec(cell)?);
                 let disposition =

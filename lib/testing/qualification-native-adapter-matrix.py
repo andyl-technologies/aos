@@ -21,6 +21,20 @@ REPORT = ROOT / "scenario-report.json"
 SPEC = pathlib.Path(os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC"])
 EXPECTED_CHECK = os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_CHECK"]
 SCENARIO_REGISTRY = ROOT / "scenario-registry.json"
+APPLICABILITY_SCHEMA = "aos.qualification.native-adapter-matrix-applicability/v1"
+INSTANCE_LIFETIME_ADAPTERS = {
+    "credential-delivery",
+    "foreground-process",
+    "host-network-policy",
+    "host-storage",
+    "kubernetes-object",
+    "managed-configuration",
+    "network-endpoint",
+    "nginx-validation",
+    "systemd-bootstrap",
+    "systemd-manager",
+    "systemd-service-legacy",
+}
 
 
 def canonical(value: Any) -> bytes:
@@ -56,6 +70,40 @@ def read_json(path: pathlib.Path) -> Any:
         return json.load(source)
 
 
+def applicable_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validates the exact exclusion partition and returns its complement."""
+
+    cells = spec.get("cells")
+    applicability = spec.get("applicability")
+    if not isinstance(cells, list) or not isinstance(applicability, dict):
+        raise RuntimeError("matrix applicability is missing")
+
+    expected = []
+    for cell in cells:
+        if cell["id"].rsplit("/", 1)[-1] != "adopt-compatible-state":
+            continue
+        if cell["adapter"] in INSTANCE_LIFETIME_ADAPTERS:
+            reason = "non-persistent-lifetime"
+        elif cell["adapter"] == "image-rollout":
+            reason = "missing-authenticated-state-format"
+        else:
+            continue
+        expected.append({"cell_id": cell["id"], "reason": reason})
+
+    if (
+        set(applicability)
+        != {"schema", "required_production_vm_cells", "inapplicable_cells"}
+        or applicability.get("schema") != APPLICABILITY_SCHEMA
+        or applicability.get("inapplicable_cells") != expected
+        or applicability.get("required_production_vm_cells")
+        != len(cells) - len(expected)
+    ):
+        raise RuntimeError("matrix applicability differs from provider contracts")
+
+    excluded = {entry["cell_id"] for entry in expected}
+    return [cell for cell in cells if cell["id"] not in excluded]
+
+
 def main() -> None:
     """Writes an exact, uniformly unqualified matrix report."""
 
@@ -89,7 +137,7 @@ def main() -> None:
     environment_digest = sha256(environment)
     cells = []
     postcondition_count = 0
-    for cell in spec["cells"]:
+    for cell in applicable_cells(spec):
         postconditions = {
             name: {
                 "passed": False,

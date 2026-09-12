@@ -4,6 +4,7 @@
   surface ? builtins.fromJSON (builtins.readFile ../native-adapter-surface.json),
   cells ? null,
   subject ? null,
+  applicability ? null,
   invalidatedBy ? ["subject" "policy" "executor" "environment"],
   regressions ? [
     "checks.fleet.ability-native-activation"
@@ -19,6 +20,19 @@
   expectedMethodKeys = ["cancel" "effect_class" "method" "reconcile"];
   expectedScenarioKeys = ["boundary" "candidate" "failure" "id" "predecessor"];
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
+  instanceLifetimeAdapters = [
+    "credential-delivery"
+    "foreground-process"
+    "host-network-policy"
+    "host-storage"
+    "kubernetes-object"
+    "managed-configuration"
+    "network-endpoint"
+    "nginx-validation"
+    "systemd-bootstrap"
+    "systemd-manager"
+    "systemd-service-legacy"
+  ];
   allowedRegressions = [
     "checks.fleet.ability-native-activation"
     "checks.fleet.ability-native-foreground-container"
@@ -28,6 +42,7 @@
     "checks.fleet.ability-native-power-loss"
   ];
   expectedSurfaceDigest = "9e508420352823db510e6d4a24c221dd04046f82a1ebd5b49328241097e25d2a";
+  expectedApplicabilityDigest = "12615a636200a1b6fc6b001333631b858e1c6fd81a5178f11ce9dbd9947fc517";
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0
@@ -121,6 +136,41 @@
   expectedCells = builtins.sort (left: right: builtins.lessThan left.id right.id) (
     builtins.concatMap (pair: map (cellFor pair) surface.scenarios) adapterMethods
   );
+  inapplicableReason = cell:
+    if !lib.hasSuffix "/adopt-compatible-state" cell.id
+    then null
+    else if builtins.elem cell.adapter instanceLifetimeAdapters
+    then "non-persistent-lifetime"
+    else if cell.adapter == "image-rollout"
+    then "missing-authenticated-state-format"
+    else null;
+  inapplicableCells = builtins.filter (entry: entry != null) (
+    map (
+      cell: let
+        reason = inapplicableReason cell;
+      in
+        if reason == null
+        then null
+        else {
+          cell_id = cell.id;
+          inherit reason;
+        }
+    )
+    expectedCells
+  );
+  inapplicableCellIds = map (entry: entry.cell_id) inapplicableCells;
+  applicableCells = builtins.filter (cell: !builtins.elem cell.id inapplicableCellIds) expectedCells;
+  applicableCellIds = map (cell: cell.id) applicableCells;
+  canonicalApplicability = {
+    schema = "aos.qualification.native-adapter-matrix-applicability/v1";
+    required_production_vm_cells = builtins.length applicableCells;
+    inapplicable_cells = inapplicableCells;
+  };
+  selectedApplicability =
+    if applicability == null
+    then canonicalApplicability
+    else applicability;
+  applicabilityDigest = builtins.hashString "sha256" (builtins.toJSON canonicalApplicability);
   selectedCells =
     if cells == null
     then expectedCells
@@ -130,6 +180,7 @@
     inherit surface;
     subject = canonicalSubject;
     cells = selectedCells;
+    applicability = selectedApplicability;
   };
   matrixDigest = builtins.hashString "sha256" (builtins.toJSON matrixSpec);
   selectedIds = map (cell: cell.id or "") selectedCells;
@@ -217,14 +268,34 @@ in
   assert selectedSubject == canonicalSubject;
   assert invalidatedBy == requiredInvalidation;
   assert regressions == allowedRegressions;
-  assert exactCells; {
+  assert exactCells;
+  assert selectedApplicability == canonicalApplicability;
+  assert applicabilityDigest == expectedApplicabilityDigest;
+  assert builtins.length applicableCells == 1355;
+  assert builtins.length inapplicableCells == 45;
+  assert builtins.length inapplicableCellIds
+  == builtins.length (lib.unique inapplicableCellIds);
+  assert builtins.all (cell: !builtins.elem cell.id inapplicableCellIds) applicableCells;
+  assert builtins.sort builtins.lessThan (applicableCellIds ++ inapplicableCellIds)
+  == map (cell: cell.id) expectedCells;
+  assert builtins.length (lib.unique (applicableCellIds ++ inapplicableCellIds)) == 1400;
+  assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") inapplicableCells)
+  == 36;
+  assert builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") inapplicableCells)
+  == 9; {
     schema = surface.matrix_schema;
     subject = canonicalSubject;
     spec = matrixSpec;
     matrix_digest = "sha256:${matrixDigest}";
     cells = selectedCells;
     cell_count = builtins.length selectedCells;
-    required_production_vm_cells = builtins.length selectedCells;
+    required_production_vm_cells = builtins.length applicableCells;
+    applicable_cells = applicableCells;
+    applicable_cell_ids = applicableCellIds;
+    inapplicable_cells = inapplicableCells;
+    inapplicable_cell_ids = inapplicableCellIds;
+    applicability = canonicalApplicability;
+    applicability_digest = "sha256:${applicabilityDigest}";
     inherit check;
     requirement = {
       phase = "staging";

@@ -37,8 +37,8 @@ effects out of portable model/validation/inspection code.
 | VM/fleet and release qualification | Existing test harnesses and qualification catalog | Production path is exercised with independent probes; fresh evidence binds exact subjects and required coverage; cached regression output is not release admission |
 | Optional Crucible instrumentation | AOS guest adapter and existing generic interfaces | Ordinary runtime needs no Crucible; enabled assertions/choices use the same execution; advanced campaign gates track PR #194 explicitly |
 
-The Nix schemas-and-helpers row now has one checked-in version-1 corpus with 39
-cases: 20 forced accepts and 19 exact coded rejects. It inventories the public
+The Nix schemas-and-helpers row now has one checked-in version-1 corpus with 46
+cases: 22 forced accepts and 24 exact coded rejects. It inventories the public
 request, output, method, schema, and effect helpers and exercises the same values
 through Nix authoring, the restricted evaluator, and the Rust decoders and
 validator where each surface applies. Restricted cases attempt secret reads,
@@ -139,8 +139,12 @@ journal, required-success settlement, and an independent provider observation.
 PostgreSQL supplies the only authenticated persistent state-format contract in
 this surface. The other 36 non-rollout methods have instance lifetime, and the
 nine rollout methods have no authenticated state format; their corresponding
-compatible-adoption cells remain unqualified until those product contracts
-change.
+compatible-adoption cells are explicitly inapplicable until those product
+contracts change. The matrix retains all 1,400 Cartesian cells and binds the 45
+exact exclusions and reasons into its immutable specification. Nix and Rust
+derive the same disjoint partition, leaving 1,355 mandatory production cells
+and 5,780 postconditions. Unsupported-transfer siblings remain mandatory and
+prove the rejection side of the replacement invariant before provider effects.
 
 Supported cancellation is divided by production adapter because the physical
 state that establishes a safe cancellation result differs by provider:

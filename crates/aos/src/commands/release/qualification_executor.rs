@@ -869,6 +869,11 @@ mod tests {
         let surface_digest = Sha256Digest::of_bytes(canonical::to_vec(&surface)?);
         Ok(serde_json::from_value(serde_json::json!({
             "schema": "aos.qualification.native-adapter-matrix-spec/v1",
+            "applicability": {
+                "schema": "aos.qualification.native-adapter-matrix-applicability/v1",
+                "required_production_vm_cells": 1,
+                "inapplicable_cells": [],
+            },
             "surface": surface,
             "subject": {
                 "schema": "aos.qualification.native-adapter-subject/v1",

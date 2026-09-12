@@ -184,8 +184,9 @@ in {
         assertion =
           nativeAdapterMatrix.cell_count
           == 1400
-          && nativeAdapterMatrix.required_production_vm_cells == nativeAdapterMatrix.cell_count;
-        message = "Every native adapter method and failure boundary must retain a mandatory production-VM qualification cell.";
+          && nativeAdapterMatrix.required_production_vm_cells == 1355
+          && builtins.length nativeAdapterMatrix.inapplicable_cells == 45;
+        message = "The native adapter matrix must retain every surface cell and its exact fail-closed production applicability partition.";
       }
       {
         assertion = containerExecutionMatrix.missing_container_cells == 1;
