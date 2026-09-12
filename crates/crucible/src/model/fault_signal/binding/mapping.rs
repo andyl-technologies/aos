@@ -46,7 +46,7 @@ pub enum MappedEffectParameter {
 impl MappedEffectParameter {
     /// Returns the stable campaign-facing parameter identifier.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Probability => "probability",
             Self::DurationNanos => "duration-nanos",
@@ -61,7 +61,7 @@ impl MappedEffectParameter {
 
     /// Parses one stable campaign-facing parameter identifier.
     #[must_use]
-    pub fn from_key(value: &str) -> Option<Self> {
+    pub(crate) fn from_key(value: &str) -> Option<Self> {
         match value {
             "probability" => Some(Self::Probability),
             "duration-nanos" => Some(Self::DurationNanos),

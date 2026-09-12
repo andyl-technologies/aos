@@ -46,7 +46,7 @@ pub enum BindingSearchCandidateSemantics {
 impl BindingSearchCandidateSemantics {
     /// Returns the exact typed candidate at one zero-based finite-search index.
     #[must_use]
-    pub fn candidate(&self, candidate_index: u32) -> Option<BindingSearchCandidate> {
+    pub(crate) fn candidate(&self, candidate_index: u32) -> Option<BindingSearchCandidate> {
         let index = usize::try_from(candidate_index).ok()?;
         match self {
             Self::Outcome if candidate_index < 2 => {
@@ -72,7 +72,7 @@ impl BindingSearchCandidateSemantics {
 
     /// Returns whether the semantic candidate sequence has the expected size.
     #[must_use]
-    pub fn is_valid_for_count(&self, candidate_count: u32) -> bool {
+    fn is_valid_for_count(&self, candidate_count: u32) -> bool {
         match self {
             Self::Outcome => candidate_count == 2,
             Self::Transition(candidates) | Self::Parameter { candidates, .. } => {
