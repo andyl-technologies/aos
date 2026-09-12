@@ -437,13 +437,15 @@ pub use executor_worker::{
     PublishedAttemptResultAbortError, PublishedCheckpointResult, RepositoryAttemptWorker,
     RepositoryAttemptWorkerError, ResolvedAttemptStart, StagedAttemptResult,
     StagedCheckpointResult, abort_checkpoint_result, abort_prepared_attempt_result,
-    abort_published_attempt_result, abort_staged_attempt_result, journal_prepared_attempt_result,
-    prepare_attempt_result, publish_prepared_attempt_result, publish_staged_checkpoint_result,
-    reconcile_attempt_failure, reconcile_published_attempt_result,
-    reconcile_published_checkpoint_result, recover_prepared_attempt_result,
+    abort_published_attempt_result, abort_staged_attempt_result, prepare_attempt_result,
+    publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
+    reconcile_published_attempt_result, reconcile_published_checkpoint_result,
     resolve_attempt_execution_input, resolve_attempt_execution_input_with_resources,
     retry_pending_attempt_result, retry_pending_checkpoint_result, stage_prepared_attempt_result,
     stage_prepared_checkpoint_result,
+};
+pub(crate) use executor_worker::{
+    journal_prepared_attempt_result, recover_prepared_attempt_result,
 };
 pub use finding_production_replay::{
     FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION, FindingProductionReplayAsset,
@@ -571,9 +573,10 @@ pub use planner_process::{
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     serve_canonical_planner_process_once,
 };
-pub use prepared_result_journal::{
+pub use prepared_result_journal::PreparedResultJournalError;
+pub(crate) use prepared_result_journal::{
     DirectoryPreparedResultJournal, PreparedResultJournalCreateDisposition,
-    PreparedResultJournalError,
+    PreparedResultJournalNamespace,
 };
 pub use qemu_baked_genesis::{
     ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,

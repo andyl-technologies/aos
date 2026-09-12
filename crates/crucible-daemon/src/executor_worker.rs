@@ -19,7 +19,6 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::ObjectKind;
 use std::collections::BTreeSet;
-use std::path::Path;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -1765,6 +1764,7 @@ fn repository_worker_failure<E>(
 mod result;
 
 pub use result::*;
+pub(crate) use result::{journal_prepared_attempt_result, recover_prepared_attempt_result};
 
 #[cfg(test)]
 mod tests;

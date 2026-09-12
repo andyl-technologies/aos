@@ -92,20 +92,23 @@ const POOL_POISONED: u8 = 2;
 /// Durable prepared-result location used by production semantic workers.
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedResultJournalConfig {
-    namespace: PathBuf,
+    pub(crate) namespace: crate::PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
     #[cfg(test)]
     before_journal: Option<Arc<PreparedResultJournalTestBarrier>>,
 }
 
 impl PreparedResultJournalConfig {
-    pub(crate) fn new(namespace: PathBuf, maximum_payload_bytes: usize) -> Self {
-        Self {
-            namespace,
+    pub(crate) fn new(
+        namespace: PathBuf,
+        maximum_payload_bytes: usize,
+    ) -> Result<Self, PreparedResultJournalError> {
+        Ok(Self {
+            namespace: crate::PreparedResultJournalNamespace::open(namespace)?,
             maximum_payload_bytes,
             #[cfg(test)]
             before_journal: None,
-        }
+        })
     }
 
     #[cfg(test)]

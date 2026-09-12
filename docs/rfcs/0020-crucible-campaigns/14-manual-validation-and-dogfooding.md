@@ -344,13 +344,18 @@ receipt, and any unauthenticated source. It writes authenticated source-to-
 output provenance before replacing records, migrates assignment attempt-state
 records before prepared results while retaining the writer lock, and appends an
 authenticated completion record to its startup fence only after both phases are
-durable. Every removal is first renamed to a bounded identity-bearing migration
-name, so interruption before unlink remains recognizable and retryable. If
-power or the process is lost at any point, normal daemon startup refuses the
-active migration. Run the identical command with the same receipt path to
-reconcile bounded staging and removal state and resume. That retry is
-idempotent; changing paths or bounds requires operator review of the retained
-receipt rather than deletion of markers or staging by hand.
+durable. Migration file cleanup renames each source to a bounded
+identity-bearing name and truncates the retained file descriptor; the
+authenticated zero-length file remains as terminal state. Normal journal
+orphan cleanup retains a terminal directory containing its authenticated
+receipt and zero-length child tombstones. Receipts bind the original directory
+and child identities, and the namespace admits at most one terminal staged or
+retired directory per execution key. If power or the process is lost at any
+point, normal daemon startup refuses the active migration. Run the identical
+command with the same receipt path. It reconciles bounded staging and removal
+state before resuming. That retry is idempotent;
+changing paths or bounds requires operator review of the retained receipt
+rather than deletion of markers or staging by hand.
 
 - **[CMAN-15]** Destructive acceptance MUST exercise every failure class in the
   table on both the constrained host and each backend whose failure semantics it

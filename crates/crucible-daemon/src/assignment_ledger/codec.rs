@@ -1,6 +1,7 @@
 //! Durable assignment, attempt-state, and retention-state codecs.
 
 use super::*;
+use rustix::fs::{Mode, OFlags, open};
 
 pub(super) fn encode_assignment_record(record: &AssignmentRecord) -> Vec<u8> {
     let request = record.request.canonical_bytes();
@@ -878,30 +879,6 @@ pub(super) fn require_existing_directory(path: &Path) -> Result<(), AssignmentLe
         return Err(corrupt("existing-root-not-directory"));
     }
     Ok(())
-}
-
-pub(super) fn open_existing_writer_lock(path: &Path) -> Result<File, AssignmentLedgerError> {
-    let file = File::from(
-        open(
-            path,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|source| {
-            io_error(
-                "open-writer-lock",
-                path,
-                std::io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?,
-    );
-    let metadata = file
-        .metadata()
-        .map_err(|source| io_error("inspect-writer-lock", path, source))?;
-    if !metadata.file_type().is_file() {
-        return Err(corrupt("writer-lock-not-regular-file"));
-    }
-    Ok(file)
 }
 
 pub(super) fn sync_directory(path: &Path) -> Result<(), AssignmentLedgerError> {

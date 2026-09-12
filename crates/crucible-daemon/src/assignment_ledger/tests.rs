@@ -91,6 +91,7 @@ fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("first writer");
     let inherited = ledger
         .writer_lock
+        .file()
         .try_clone()
         .expect("duplicate inherited writer descriptor");
 
@@ -101,6 +102,56 @@ fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
         .expect("owner drop releases inherited lock");
     drop(replacement);
     drop(inherited);
+}
+
+#[test]
+fn writer_lock_replacement_during_open_fails_closed() {
+    let directory = tempfile::tempdir().expect("ledger directory");
+    let moved_parent = tempfile::tempdir().expect("moved lock parent");
+    drop(DirectoryAssignmentLedger::open(directory.path()).expect("initialize ledger"));
+    let lock = directory.path().join("writer.lock");
+    let moved = moved_parent.path().join("writer.lock");
+    crate::owned_advisory_lock::install_lock_race_hook({
+        let lock = lock.clone();
+        let moved = moved.clone();
+        move || {
+            fs::rename(&lock, &moved).expect("move locked file");
+            fs::write(&lock, b"replacement").expect("replace lock file");
+        }
+    });
+
+    assert!(DirectoryAssignmentLedger::open_existing(directory.path()).is_err());
+    assert_eq!(fs::read(lock).expect("replacement remains"), b"replacement");
+}
+
+#[test]
+fn writer_lock_replacement_after_open_blocks_subsequent_mutation() {
+    let directory = tempfile::tempdir().expect("ledger directory");
+    let moved_parent = tempfile::tempdir().expect("moved lock parent");
+    let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("first writer");
+    let lock = directory.path().join("writer.lock");
+    let moved = moved_parent.path().join("writer.lock");
+    fs::rename(&lock, &moved).expect("move locked file");
+    fs::write(&lock, b"replacement").expect("replace lock file");
+    let replacement_inode = fs::metadata(&lock).expect("replacement metadata").ino();
+    let second = DirectoryAssignmentLedger::open_existing(directory.path())
+        .expect("replacement lock has an independent owner");
+
+    let request = request(0x71, 0x72, 1);
+    let response = SubmitAttemptResponse::new(
+        &request,
+        SubmitAttemptDisposition::Accepted {
+            execution: execution(0x73),
+        },
+    )
+    .expect("accepted response");
+    let record = AssignmentRecord::new(request, response).expect("assignment record");
+    assert!(ledger.publish_assignment(&record).is_err());
+    assert_eq!(
+        fs::metadata(&lock).expect("replacement survives").ino(),
+        replacement_inode
+    );
+    drop(second);
 }
 
 #[test]
@@ -617,6 +668,34 @@ fn assignment_migration_validates_all_records_before_replacement() {
 }
 
 #[test]
+fn assignment_migration_rejects_a_raced_forged_receipt_before_replacement() {
+    let directory = tempfile::tempdir().expect("ledger tempdir");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
+    let request = request(0x36, 0x56, 1);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let state = publishing_state(&request, 0x76, 0x96);
+    let record = write_v14_attempt_state(&ledger, key, state);
+    let original = fs::read(&record).expect("legacy source");
+    let receipt_parent = tempfile::tempdir().expect("receipt parent");
+    let receipt_path = receipt_parent.path().join("receipt");
+    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
+        &receipt_path,
+    )
+    .expect("receipt directory");
+    crate::operational_state_migration::receipt::install_receipt_publish_race_hook({
+        let destination =
+            receipt_path.join(crate::operational_state_migration::receipt::ASSIGNMENT_RECEIPT);
+        move || fs::write(destination, b"forged receipt").expect("install forged receipt")
+    });
+
+    assert!(matches!(
+        ledger.migrate_attempt_records(&receipt, 257, u64::MAX),
+        Err(crate::OperationalStateMigrationError::InvalidReceipt)
+    ));
+    assert_eq!(fs::read(record).expect("legacy source remains"), original);
+}
+
+#[test]
 fn assignment_migration_resumes_a_mixed_current_and_v14_inventory() {
     let directory = tempfile::tempdir().expect("ledger tempdir");
     let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("ledger");
@@ -673,7 +752,7 @@ fn assignment_migration_reconciles_bounded_orphan_staging() {
     ));
 
     let receipt_parent = tempfile::tempdir().expect("receipt parent");
-    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
         &receipt_parent.path().join("receipt"),
     )
     .expect("receipt directory");
@@ -739,7 +818,7 @@ fn assignment_migration_recovers_an_interrupted_destination_write() {
     let record = write_v14_attempt_state(&ledger, key, state);
     let current = encode_attempt_state(key, state);
     let receipt_parent = tempfile::tempdir().expect("receipt parent");
-    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
         &receipt_parent.path().join("receipt"),
     )
     .expect("receipt directory");
@@ -771,7 +850,7 @@ fn assignment_generated_staging_cleanup_is_presealed_and_resumable() {
     let record = write_v14_attempt_state(&ledger, key, state);
     let current = encode_attempt_state(key, state);
     let receipt_parent = tempfile::tempdir().expect("receipt parent");
-    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory(
+    let receipt = crate::operational_state_migration::receipt::prepare_receipt_directory_for_test(
         &receipt_parent.path().join("receipt"),
     )
     .expect("receipt directory");
