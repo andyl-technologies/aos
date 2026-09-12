@@ -94,6 +94,64 @@ REPLACEMENT_SCENARIOS = {
     "replace-executor-incarnation",
     "replace-provider-incarnation",
 }
+MATRIX_APPLICABILITY_SCHEMA = (
+    "aos.qualification.native-adapter-matrix-applicability/v1"
+)
+INSTANCE_LIFETIME_ADAPTERS = {
+    "credential-delivery",
+    "foreground-process",
+    "host-network-policy",
+    "host-storage",
+    "kubernetes-object",
+    "managed-configuration",
+    "network-endpoint",
+    "nginx-validation",
+    "systemd-bootstrap",
+    "systemd-manager",
+    "systemd-service-legacy",
+}
+
+
+def _inapplicable_reason(cell: dict[str, Any]) -> str | None:
+    """Returns the exact provider-contract reason that excludes one cell."""
+
+    if _cell_scenario(cell) != "adopt-compatible-state":
+        return None
+    if cell.get("adapter") in INSTANCE_LIFETIME_ADAPTERS:
+        return "non-persistent-lifetime"
+    if cell.get("adapter") == "image-rollout":
+        return "missing-authenticated-state-format"
+    return None
+
+
+def _applicable_specification_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validates and applies the matrix's fail-closed applicability partition."""
+
+    cells = spec.get("cells")
+    if not isinstance(cells, list):
+        raise RuntimeError("matrix specification cells are malformed")
+
+    expected = [
+        {"cell_id": cell["id"], "reason": reason}
+        for cell in cells
+        if (reason := _inapplicable_reason(cell)) is not None
+    ]
+    applicability = spec.get("applicability")
+    if (
+        not isinstance(applicability, dict)
+        or set(applicability)
+        != {"schema", "required_production_vm_cells", "inapplicable_cells"}
+        or applicability.get("schema") != MATRIX_APPLICABILITY_SCHEMA
+        or applicability.get("inapplicable_cells") != expected
+        or applicability.get("required_production_vm_cells")
+        != len(cells) - len(expected)
+    ):
+        raise RuntimeError(
+            "matrix applicability differs from exact provider contract semantics"
+        )
+
+    excluded = {entry["cell_id"] for entry in expected}
+    return [cell for cell in cells if cell["id"] not in excluded]
 
 
 def _runtime_audit_cell(cell: dict[str, Any]) -> bool:
@@ -570,11 +628,18 @@ def build_cells(
     if len(set(expected_qualified_cells)) != len(expected_qualified_cells):
         raise RuntimeError("cohort qualification scope repeats a matrix cell")
 
+    applicable_specification_cells = _applicable_specification_cells(spec)
     specification_cells = {cell["id"]: cell for cell in spec["cells"]}
     if len(specification_cells) != len(spec["cells"]):
         raise RuntimeError("matrix specification repeats a cell identity")
     if any(cell_id not in specification_cells for cell_id in submitted_cells):
         raise RuntimeError("cohort submitted a probe outside the exact matrix surface")
+    if "schema" in spec and set(expected_qualified_cells) != {
+        cell["id"] for cell in applicable_specification_cells
+    }:
+        raise RuntimeError(
+            "cohort qualification scope differs from the applicable matrix partition"
+        )
     allowed_cells = QUALIFIED_CELL_IDS
     effect_boundary_cells = [
         cell["id"]
@@ -694,7 +759,7 @@ def build_cells(
     observed_cells = []
     postcondition_count = 0
     probe_digests = set()
-    for cell in spec["cells"]:
+    for cell in applicable_specification_cells:
         submitted = submissions.get(cell["id"])
         runtime_record = runtime_cells.get(cell["id"])
         interruption_record = interruption_cells.get(cell["id"])

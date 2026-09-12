@@ -133,6 +133,10 @@ pub const NATIVE_IMAGE_ROLLOUT_REQUIREMENT: &str = "ability-native-image-rollout
 /// Canonical schema for an immutable native adapter matrix specification.
 pub const NATIVE_ADAPTER_MATRIX_SPEC_V1: &str = "aos.qualification.native-adapter-matrix-spec/v1";
 
+/// Canonical schema for the exact production applicability partition.
+pub const NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1: &str =
+    "aos.qualification.native-adapter-matrix-applicability/v1";
+
 /// Canonical schema for observed native adapter matrix results.
 pub const NATIVE_ADAPTER_MATRIX_OBSERVATION_V1: &str =
     "aos.release.native-adapter-matrix-observation/v1";
@@ -310,6 +314,28 @@ pub struct NativeAdapterCellSpec {
     pub invalidated_by: Vec<String>,
 }
 
+/// One matrix cell excluded by an exact provider contract constraint.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterInapplicableCell {
+    /// Exact cell identity from the complete Cartesian matrix.
+    pub cell_id: String,
+    /// Stable provider contract reason for the exclusion.
+    pub reason: String,
+}
+
+/// Fail-closed partition of complete matrix cells by production applicability.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterMatrixApplicability {
+    /// Exact applicability schema.
+    pub schema: String,
+    /// Number of cells that require production VM evidence.
+    pub required_production_vm_cells: usize,
+    /// Ordered exact cells whose provider contracts make adoption inapplicable.
+    pub inapplicable_cells: Vec<NativeAdapterInapplicableCell>,
+}
+
 /// Complete immutable native adapter matrix committed by release policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -322,6 +348,8 @@ pub struct NativeAdapterMatrixSpec {
     pub subject: NativeAdapterMatrixSubject,
     /// Ordered complete cell specifications.
     pub cells: Vec<NativeAdapterCellSpec>,
+    /// Exact partition that identifies production-applicable cells.
+    pub applicability: NativeAdapterMatrixApplicability,
 }
 
 /// Qualification state represented by a native adapter matrix environment.
@@ -457,7 +485,7 @@ pub struct NativeAdapterMatrixObservation {
     pub spec_digest: Sha256Digest,
     /// Typed execution environment whose digest appears in every cell.
     pub environment: NativeAdapterMatrixEnvironment,
-    /// Ordered one-to-one cell observations.
+    /// Ordered one-to-one observations for every production-applicable cell.
     pub cells: Vec<NativeAdapterCellObservation>,
 }
 
@@ -1125,8 +1153,9 @@ pub fn assess_observations(
 ///
 /// The release case supplies the trusted specification digest through one
 /// exact native-adapter-matrix acceptance-check token. The observation must
-/// retain the full preimage and one result for every cell in the same order.
-/// No aggregate status is trusted.
+/// retain the full preimage and one result for every applicable cell in the
+/// same order. The specification enumerates and authenticates every excluded
+/// cell and its exact provider contract reason. No aggregate status is trusted.
 ///
 /// # Errors
 ///
@@ -1161,13 +1190,14 @@ pub fn validate_native_adapter_matrix_observation(
         bail!("native adapter matrix environment differs from its observation identity");
     }
     validate_native_adapter_matrix_environment(case, executor_digest, observation)?;
-    if observation.cells.len() != observation.spec.cells.len() {
+    let applicable_cells = native_adapter_applicable_cells(&observation.spec);
+    if observation.cells.len() != applicable_cells.len() {
         bail!("native adapter matrix result count differs from its specification");
     }
 
     let mut passed = true;
     let mut probe_digests = BTreeSet::new();
-    for (spec, result) in observation.spec.cells.iter().zip(&observation.cells) {
+    for (spec, result) in applicable_cells.into_iter().zip(&observation.cells) {
         if result.id != spec.id {
             bail!("native adapter matrix cells are missing, extra, duplicated, or reordered");
         }
@@ -1565,7 +1595,66 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
         bail!("native adapter matrix cells differ from their deterministic surface expansion");
     }
 
+    let expected_inapplicable_cells = expected_cells
+        .iter()
+        .filter_map(|cell| {
+            native_adapter_inapplicable_reason(cell).map(|reason| NativeAdapterInapplicableCell {
+                cell_id: cell.id.clone(),
+                reason: reason.into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let expected_required_cells = expected_cells
+        .len()
+        .checked_sub(expected_inapplicable_cells.len())
+        .ok_or_else(|| anyhow::anyhow!("native adapter applicability count underflows"))?;
+    if spec.applicability.schema != NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1
+        || spec.applicability.inapplicable_cells != expected_inapplicable_cells
+        || spec.applicability.required_production_vm_cells != expected_required_cells
+    {
+        bail!("native adapter applicability differs from provider contract semantics");
+    }
+
     Ok(())
+}
+
+/// Returns the ordered production-applicable cells from a validated matrix spec.
+pub fn native_adapter_applicable_cells(
+    spec: &NativeAdapterMatrixSpec,
+) -> Vec<&NativeAdapterCellSpec> {
+    let excluded = spec
+        .applicability
+        .inapplicable_cells
+        .iter()
+        .map(|cell| cell.cell_id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    spec.cells
+        .iter()
+        .filter(|cell| !excluded.contains(cell.id.as_str()))
+        .collect()
+}
+
+fn native_adapter_inapplicable_reason(cell: &NativeAdapterCellSpec) -> Option<&'static str> {
+    if !cell.id.ends_with("/adopt-compatible-state") {
+        return None;
+    }
+
+    match cell.adapter.as_str() {
+        "credential-delivery"
+        | "foreground-process"
+        | "host-network-policy"
+        | "host-storage"
+        | "kubernetes-object"
+        | "managed-configuration"
+        | "network-endpoint"
+        | "nginx-validation"
+        | "systemd-bootstrap"
+        | "systemd-manager"
+        | "systemd-service-legacy" => Some("non-persistent-lifetime"),
+        "image-rollout" => Some("missing-authenticated-state-format"),
+        _ => None,
+    }
 }
 
 fn expand_native_adapter_surface(

@@ -473,18 +473,21 @@ descriptor), authority scope, mutation or observation class, and exact
 reconcile and cancellation routes.
 Qualification expands those methods over 28 durability, revocation, upgrade,
 adoption, retained-target, dependency, and foreign-resource scenarios.
-The resulting 1,400 cells and 6,050 postconditions retain every dimension, full
-interface key, and exact surface digest.
-Their mandatory postconditions include durable classification, one resource
+The resulting 1,400 Cartesian cells retain every dimension, full interface key,
+and exact surface digest. A schema-bound applicability partition enumerates 45
+compatible-adoption cells that cannot exist under their current provider
+contracts. The remaining 1,355 production-VM cells carry 5,780 mandatory
+postconditions, including durable classification, one resource
 owner, dependent nonexecution after failure, and independent confirmation that
 foreign resources did not change. Adoption, unsupported transfer, and retained
 target cells add fresh-authority and exact-owner requirements.
 
-All matrix cells require a production VM observation. Their source regressions
-exercise contract closure but remain marked separately and never satisfy those
-cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 1,355 cells and 5,780
-of the 6,050 postconditions. The primary cohort covers managed-configuration
+Every applicable matrix cell requires a production VM observation. Source
+regressions exercise contract closure but remain marked separately and never
+satisfy those cells. The x86 release executor maps
+`ability-native-adapter-matrix` to independent published-image cohorts that
+exercise all 1,355 applicable cells and 5,780 postconditions. The primary
+cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
 independently injected foreign resource and required-success blocking of the
@@ -573,9 +576,14 @@ flights retain those exact production-contract reasons. Adding a compatible
 adoption cell requires a new valid product lifetime or state-format contract;
 qualification does not infer one from fixture labels.
 
-The other 45 cells remain explicit failures, so the mandatory
-aggregate gate cannot pass. Expand the mapping only with exact cell-bound
-subjects and independent provider-specific observations.
+The matrix specification records those 45 exact cell IDs and reasons as
+inapplicable. Nix policy, the production evidence builder, and the Rust release
+verifier independently recompute the same ordered partition and reject missing,
+overlapping, reordered, or reason-mutated exclusions. Their corresponding
+unsupported-transfer cells remain mandatory and prove rejection before effects,
+so the replacement invariant is preserved. A product-contract change must
+remove the affected exclusions and add exact cell-bound production evidence in
+the same release.
 
 Every passing probe carries the exact cell ID and digest, the scenario's
 validated disposition, and the digest of a subject wrapper that binds the

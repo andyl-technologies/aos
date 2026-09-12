@@ -21,6 +21,23 @@ def load(path: pathlib.Path):
     return module
 
 
+def classify(module, spec):
+    """Adds the exact applicability envelope to one bounded matrix fixture."""
+
+    expected = [
+        {"cell_id": cell["id"], "reason": reason}
+        for cell in spec["cells"]
+        if (reason := module._inapplicable_reason(cell)) is not None
+    ]
+    spec["schema"] = "aos.qualification.native-adapter-matrix-spec/v1"
+    spec["applicability"] = {
+        "schema": module.MATRIX_APPLICABILITY_SCHEMA,
+        "required_production_vm_cells": len(spec["cells"]) - len(expected),
+        "inapplicable_cells": expected,
+    }
+    return spec
+
+
 def rejected(module, spec, probes, scope, subject, plan_bundle):
     """Requires one mutated probe population to fail closed."""
 
@@ -1579,6 +1596,7 @@ def main() -> None:
         }
 
     spec["cells"].sort(key=lambda cell: cell["id"])
+    classify(module, spec)
     cells, count = module.build_cells(
         spec,
         probes,
@@ -1609,6 +1627,25 @@ def main() -> None:
     assert {
         probe["cell_digest"] for probe in cell_observation["probes"].values()
     } == {module.sha256(cell_spec)}
+
+    module.build_cells(
+        spec,
+        probes,
+        scope,
+        {qualified: subject for qualified in scope},
+        {qualified: plan_bundle for qualified in scope},
+        "sha256:" + "11" * 32,
+        "sha256:" + "22" * 32,
+    )
+    wrong_count = copy.deepcopy(spec)
+    wrong_count["applicability"]["required_production_vm_cells"] -= 1
+    rejected(module, wrong_count, probes, scope, subject, plan_bundle)
+    wrong_reason = copy.deepcopy(spec)
+    wrong_reason["applicability"]["inapplicable_cells"] = [
+        {"cell_id": cell_id, "reason": "non-persistent-lifetime"}
+    ]
+    rejected(module, wrong_reason, probes, scope, subject, plan_bundle)
+
     assert_semantic_validators(module, subject, cell_spec, observations)
     provider_negative_cell, provider_negative_record = (
         assert_provider_negative_validator(module, cell_spec)
@@ -1849,7 +1886,7 @@ def main() -> None:
     executor_record["evidence"]["reservation-ledger"].update(
         {"release-calls": 0, "owners": 1}
     )
-    runtime_spec = {
+    runtime_spec = classify(module, {
         "cells": [
             *spec["cells"],
             authority_cell,
@@ -1857,7 +1894,7 @@ def main() -> None:
             executor_cell,
             control_cell,
         ]
-    }
+    })
     runtime_audit = {
         "schema": "aos.qualification.native-adapter-runtime-audit/v2",
         "matrix_spec_digest": module.sha256(runtime_spec),
@@ -2091,13 +2128,13 @@ def main() -> None:
             "foreign-after": "sha256:" + "c6" * 32,
         },
     }
-    combined_spec = {
+    combined_spec = classify(module, {
         "cells": [
             *runtime_spec["cells"],
             interruption_cell,
             provider_negative_cell,
         ]
-    }
+    })
     interruption_audit = {
         "schema": "aos.qualification.interruption-audit/v1",
         "matrix_spec_digest": module.sha256(combined_spec),

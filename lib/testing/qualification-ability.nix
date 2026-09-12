@@ -73,6 +73,17 @@
     candidateRuntimeCompanions
     ++ lib.concatMap (cohort: cohort.candidateRuntimeCompanions) additionalCohorts;
   additionalQualifiedCells = lib.concatMap (cohort: cohort.qualifiedCells) additionalCohorts;
+  matrixInapplicableCellIds =
+    if matrixSpec == null
+    then []
+    else map (entry: entry.cell_id) matrixSpec.applicability.inapplicable_cells;
+  matrixApplicableCellIds =
+    if matrixSpec == null
+    then []
+    else
+      map (cell: cell.id) (
+        builtins.filter (cell: !builtins.elem cell.id matrixInapplicableCellIds) matrixSpec.cells
+      );
   primaryQualifiedCells =
     builtins.filter (
       cellId: !builtins.elem cellId additionalQualifiedCells
@@ -378,6 +389,8 @@ in
   assert (matrixQualifiedCells != []) == (matrixSpec != null);
   assert matrixQualifiedCells == lib.concatMap (cohort: cohort.qualifiedCells) matrixCohortInputs;
   assert builtins.length matrixQualifiedCells == builtins.length (lib.unique matrixQualifiedCells);
+  assert builtins.sort builtins.lessThan matrixQualifiedCells == matrixApplicableCellIds;
+  assert matrixSpec == null || matrixSpec.applicability.required_production_vm_cells == builtins.length matrixQualifiedCells;
   assert builtins.length matrixCohortInputs == builtins.length (lib.unique (map (cohort: cohort.id) matrixCohortInputs));
   assert builtins.all (cohort:
     cohort.id

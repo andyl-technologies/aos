@@ -8,16 +8,17 @@ use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
 use crate::qualification::{QualificationMethod, QualificationPhase};
 use crate::qualification_evidence::{
-    CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
-    NATIVE_ADAPTER_MATRIX_SPEC_V1, NativeAdapterCellObservation, NativeAdapterCellSpec,
-    NativeAdapterInterfaceIdentity, NativeAdapterMatrixComponentIdentity,
-    NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
-    NativeAdapterMatrixObservation, NativeAdapterMatrixSpec, NativeAdapterMatrixSubject,
-    NativeAdapterPostconditionProbe, NativeAdapterRecoverySpec, NativeAdapterSurfaceAdapter,
-    NativeAdapterSurfaceLimits, NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario,
-    NativeAdapterSurfaceSpec, QualificationCase, QualificationObservation,
-    QualificationPredecessor, native_adapter_matrix_check, validate_matrix_for_case,
-    validate_native_adapter_matrix_observation, validate_native_adapter_matrix_spec,
+    CheckObservation, NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1,
+    NATIVE_ADAPTER_MATRIX_REQUIREMENT, NATIVE_ADAPTER_MATRIX_SPEC_V1, NativeAdapterCellObservation,
+    NativeAdapterCellSpec, NativeAdapterInterfaceIdentity, NativeAdapterMatrixApplicability,
+    NativeAdapterMatrixComponentIdentity, NativeAdapterMatrixEnvironment,
+    NativeAdapterMatrixEnvironmentStatus, NativeAdapterMatrixObservation, NativeAdapterMatrixSpec,
+    NativeAdapterMatrixSubject, NativeAdapterPostconditionProbe, NativeAdapterRecoverySpec,
+    NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits, NativeAdapterSurfaceMethod,
+    NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec, QualificationCase,
+    QualificationObservation, QualificationPredecessor, native_adapter_matrix_check,
+    validate_matrix_for_case, validate_native_adapter_matrix_observation,
+    validate_native_adapter_matrix_spec,
 };
 use crate::verify::tests::{observations, qualification_fixture};
 
@@ -170,6 +171,11 @@ fn fixture() -> Result<(
         surface,
         subject,
         cells,
+        applicability: NativeAdapterMatrixApplicability {
+            schema: NATIVE_ADAPTER_MATRIX_APPLICABILITY_V1.into(),
+            required_production_vm_cells: 4,
+            inapplicable_cells: Vec::new(),
+        },
     };
     let spec_digest = Sha256Digest::of_bytes(crate::canonical::to_vec(&spec)?);
     let component =
@@ -852,6 +858,22 @@ fn specification_order_and_v1_bounds_are_enforced() -> Result<()> {
     let (_, _, mut oversized) = fixture()?;
     oversized.spec.subject.adapter_count = 13;
     assert!(validate_native_adapter_matrix_spec(&oversized.spec).is_err());
+
+    let (_, _, mut wrong_applicability_count) = fixture()?;
+    wrong_applicability_count
+        .spec
+        .applicability
+        .required_production_vm_cells = 3;
+    assert!(validate_native_adapter_matrix_spec(&wrong_applicability_count.spec).is_err());
+
+    let (_, _, mut forged_exclusion) = fixture()?;
+    forged_exclusion.spec.applicability.inapplicable_cells.push(
+        crate::qualification_evidence::NativeAdapterInapplicableCell {
+            cell_id: forged_exclusion.spec.cells[0].id.clone(),
+            reason: "non-persistent-lifetime".into(),
+        },
+    );
+    assert!(validate_native_adapter_matrix_spec(&forged_exclusion.spec).is_err());
 
     let (mut case, _, mut incomplete_interfaces) = fixture()?;
     let first_interface = incomplete_interfaces.spec.subject.interfaces[0].clone();
