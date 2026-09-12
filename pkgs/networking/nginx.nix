@@ -375,9 +375,19 @@ in
                 and ([.implementation.providers[].interface.name]
                   == ["aos.nginx", "aos.nginx-validation"])
                 and ([.implementation.providers[]
-                      | select(.interface.name == "aos.nginx")
-                      | .requirements[].alias]
-                  == ["configuration", "credential", "service", "service-terminal", "validation-terminal"])
+                  | select(.interface.name == "aos.nginx")
+                  | .requirements[].alias]
+                  == [
+                    "configuration",
+                    "credential",
+                    "endpoint",
+                    "network-policy",
+                    "service",
+                    "service-terminal",
+                    "service-terminal-foreground",
+                    "service-terminal-system-container",
+                    "validation-terminal"
+                  ])
                 and ([.implementation.providers[]
                       | select(.interface.name == "aos.nginx-validation")
                       | .artifact]

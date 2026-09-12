@@ -5,7 +5,7 @@
   credentialRuntime ? ./providers/credential,
   hostResourceRuntime ? systemdRuntime,
   managedConfigurationRuntime ? ./providers/managed-configuration,
-  nginxRuntime ? ./providers/nginx,
+  nginxRuntime ? ../../../pkgs/networking/_nginx-ability-provider,
   systemdRuntime ? ./providers/systemd,
 }: let
   inherit (lib.abilities) schemas;
