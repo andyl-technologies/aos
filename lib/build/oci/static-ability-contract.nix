@@ -82,6 +82,10 @@
       contracts
     then contractPaths
     else common.fail "static ability contract inputs must be produced by mkStaticAbilityContract";
+  abilityPackageManifests =
+    if platformMode
+    then map (entry: entry.manifest) packages
+    else lib.unique (lib.concatMap (contract: contract.passthru.abilityPackageManifests) contracts);
   runtimeRootPaths = map builtins.toString runtimeRoots;
   checkedRuntimeRoots =
     if
@@ -142,7 +146,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [abilityContractValidator coreutils jq];
+    buildDeps = [abilityContractValidator coreutils jq] ++ abilityPackageManifests;
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
     outputChecks.out = {};
@@ -414,6 +418,7 @@ in
     passthru = {
       ociStaticAbilityContract = true;
       inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
+      inherit abilityPackageManifests;
       inputContractPaths = contractPaths;
       selectedPayloadPaths = map (entry: entry.payload) packagePaths;
     };

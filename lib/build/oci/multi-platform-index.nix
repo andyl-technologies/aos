@@ -117,7 +117,9 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [abilityContractValidator coreutils findutils gzip jq tar];
+    buildDeps =
+      [abilityContractValidator coreutils findutils gzip jq tar]
+      ++ checkedAbilityContract.passthru.abilityPackageManifests;
 
     outputChecks.out = {};
     inherit indexSpec;
