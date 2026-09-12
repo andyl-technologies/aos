@@ -27,6 +27,7 @@ SCENARIO_BOUNDARIES = {
     "lose-external-result": "effect-returned",
     "interrupt-after-durable-outcome": "effect-outcome-durable",
 }
+CANCELLATION_BOUNDARY = "effect-intent-durable"
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,16 @@ def write_target(
             "sequence": sequence,
         },
     )
+
+
+def arm_cancellation(flight: EffectFlight) -> None:
+    """Pauses after durable effect intent so SIGTERM selects cancellation."""
+
+    runtime.succeed(
+        f"{COREUTILS}/rm -f {shlex.quote(HELD_EVENT)} "
+        f"{shlex.quote(RESUMED_EVENT)} {shlex.quote(CONTINUE)}"
+    )
+    write_target(flight, CANCELLATION_BOUNDARY, flight.label, "pause")
 
 
 def arm(flight: EffectFlight) -> None:
@@ -410,6 +421,26 @@ def kill_candidate_runtime() -> None:
     assert killed.strip().isdigit(), killed
 
 
+def cancel_switch(unit: str) -> int:
+    """Sends SIGTERM to the exact transient switch process."""
+
+    runtime.wait_until_succeeds(
+        f"process=$({SYSTEMCTL} show -p MainPID --value {shlex.quote(unit)}); "
+        'test "$process" -gt 0; '
+        f"test \"$({COREUTILS}/readlink /proc/$process/exe)\" = "
+        f"{shlex.quote(PACKAGE_RUNTIME)}; "
+        f"{COREUTILS}/tr '\\000' ' ' < /proc/$process/cmdline "
+        f"| {GREP} -F ' __activate-config ' >/dev/null",
+        timeout=120,
+    )
+    process = runtime.succeed(
+        f"{SYSTEMCTL} show -p MainPID --value {shlex.quote(unit)}"
+    ).strip()
+    assert process.isdigit() and process != "0", (unit, process)
+    runtime.succeed(f"{COREUTILS}/kill -TERM {shlex.quote(process)}")
+    return int(process)
+
+
 def wait_switch_failed(unit: str) -> None:
     """Waits for the switch whose candidate runtime was interrupted."""
 
@@ -591,6 +622,102 @@ def run_effect_flight(
         dependent_before=state["dependent-before"],
         dependent_after=dependent_after,
         dependent_boundary_after=dependent_boundaries,
+    )
+    evidence_builder.retain(
+        flight.cell_id,
+        state["bundle-bytes"],
+        state["source-authority"],
+        state["candidate-authority"],
+        observation,
+    )
+    return state
+
+
+def run_cancellation_flight(
+    flight: EffectFlight,
+    host: str,
+    evidence_builder: Any,
+    observe: Callable[[dict[str, Any]], dict[str, Any]],
+    launch: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
+    """Cancels one intent-held operation and retains its provider observations."""
+
+    unit = f"ability-cancel-{flight.label}.service"
+    start = launch or start_switch
+    source_generation = current_generation()
+    source_authority = generation_authority(source_generation)
+
+    baseline_sequence = arm_baseline(flight)
+    start(unit, host)
+    baseline_held = wait_held(
+        flight,
+        sequence=baseline_sequence,
+        boundary="resources-acquired",
+    )
+    baseline_state, baseline = acquisition_state(
+        baseline_held, flight, observe
+    )
+    arm_cancellation(flight)
+    write_canonical(CONTINUE, {"sequence": baseline_sequence})
+
+    held = wait_held(
+        flight,
+        boundary=CANCELLATION_BOUNDARY,
+    )
+    state = transaction_state(held, flight)
+    assert state["transaction"] == baseline_state["transaction"], (
+        state,
+        baseline_state,
+    )
+    assert state["operation"] == baseline_state["operation"], (
+        state,
+        baseline_state,
+    )
+    state["source-generation"] = source_generation
+    state["source-authority"] = source_authority
+    state["candidate-authority"] = generation_authority(state["generation"])
+    state["runtime-authority-acquisition"] = current_runtime_authority(state)
+
+    unsettled = observe(state["operation-document"])
+    state["switch-process"] = cancel_switch(unit)
+    wait_switch_failed(unit)
+
+    after = observe(state["operation-document"])
+    diagnostic = ability_diagnostic(state["generation"], state["transaction"])
+    timeline = timeline_events(diagnostic, state["operation"]["ordinal"])
+    boundaries = operation_boundaries(
+        state["transaction"], state["plan"], state["operation"]["key"]
+    )
+    dependent_after = timeline_events(
+        diagnostic, state["dependent"]["ordinal"]
+    )
+    dependent_boundaries = operation_boundaries(
+        state["transaction"], state["plan"], state["dependent"]["key"]
+    )
+    assert timeline and boundaries, (timeline, boundaries)
+    assert dependent_after == [], dependent_after
+    assert dependent_boundaries == [], dependent_boundaries
+
+    observation = CANCELLATION_EVIDENCE.CancellationObservation(
+        transaction=state["transaction"],
+        switch_process=state["switch-process"],
+        operation_key=state["operation"]["key"],
+        journal_before_signal=state["journal-before-loss"],
+        timeline=timeline,
+        boundary_timeline=boundaries,
+        owner_before=baseline["owner"],
+        owner_unsettled=unsettled["owner"],
+        owner_after=after["owner"],
+        live_before=baseline["live"],
+        live_unsettled=unsettled["live"],
+        live_after=after["live"],
+        foreign_before=baseline["foreign"],
+        foreign_unsettled=unsettled["foreign"],
+        foreign_after=after["foreign"],
+        dependent_operation=state["dependent"],
+        dependent_before=state["dependent-before"],
+        dependent_after=dependent_after,
+        dependent_boundaries=dependent_boundaries,
     )
     evidence_builder.retain(
         flight.cell_id,
