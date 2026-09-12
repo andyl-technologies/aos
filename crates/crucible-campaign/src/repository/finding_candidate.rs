@@ -5,8 +5,8 @@ use crate::{
     CampaignName, ConfigurationId, ExecutionId, FindingCandidateBundle, FindingCandidateBundleId,
     FindingExactPins, FindingExactRetentionDisposition, FindingId, FindingTarget,
     FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
-    FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
-    ScenarioArtifactId, ScenarioDefId,
+    FindingTriageReplayStorageObjectRole, ScenarioArtifactId, ScenarioDefId,
+    MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
 };
 use ed25519_dalek::Signature;
 

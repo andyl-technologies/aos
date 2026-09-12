@@ -1085,6 +1085,27 @@ pub trait ImmutableBlobBackend: Send + Sync {
     /// Returns [`StoreError::Corrupt`] when the source does not authenticate as
     /// `id`, or another backend failure when placement cannot complete.
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError>;
+
+    /// Publishes authenticated bytes through an admitted physical repair capability.
+    ///
+    /// The default uses ordinary conditional publication. Backends whose
+    /// observational graph mode suppresses logical writes may override this
+    /// method for the separately fenced physical repair capability. Such an
+    /// override must recheck `expected_generation` while holding its mutation
+    /// fence through publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when the source does not authenticate as
+    /// `id`, or another backend failure when fenced placement cannot complete.
+    fn repair_put_if_absent(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+        _expected_generation: InventoryGeneration,
+    ) -> Result<PutReceipt, StoreError> {
+        self.put_if_absent(id, source)
+    }
 }
 
 /// Authoritative mutable-reference backend.

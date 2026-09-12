@@ -31,7 +31,7 @@
 //! operation.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -410,22 +410,23 @@ impl DirectoryPreparedResultJournal {
         staged: bool,
     ) -> Result<Self, PreparedResultJournalError> {
         reject_active_migration(&namespace_guard)?;
-        let anchored_root = namespace_guard
-            .anchored_path_for(&root)
+        let root_guard = namespace_guard
+            .open_child(&root, "open-current-journal")
             .map_err(migration_guard_error)?;
-        validate_journal_directory(&anchored_root)?;
-        sync_directory(&anchored_root, "sync-journal-directory-on-open")?;
-        sync_parent(&anchored_root, "sync-journal-parent-on-open")?;
+        root_guard.sync().map_err(migration_guard_error)?;
+        namespace_guard.sync().map_err(migration_guard_error)?;
 
-        let (state_file, result_file) = journal_files(&anchored_root)?;
-        let state = read_bounded_file(
-            &anchored_root.join(state_file),
+        let (state_file, result_file) = journal_files(&root_guard.anchored_path())?;
+        let state = read_bounded_anchored_file(
+            &root_guard,
+            state_file,
             MAX_JOURNAL_STATE_BYTES,
             "read-journal-state",
         )?;
         let envelope = decode_state(&state, key, expected_execution, maximum_payload_bytes)?;
-        let payload = read_bounded_file(
-            &anchored_root.join(result_file),
+        let payload = read_bounded_anchored_file(
+            &root_guard,
+            result_file,
             maximum_payload_bytes,
             "read-journal-result",
         )?;
@@ -591,14 +592,13 @@ impl DirectoryPreparedResultJournal {
 ///
 /// The caller must retain the assignment ledger's exclusive writer lock. This
 /// function acquires per-key namespace locks in sorted key order, authenticates
-/// the complete bounded inventory before staging anything, and publishes each
-/// conversion with an atomic directory exchange. A rerun completes either
-/// side of an interrupted exchange.
+/// the complete bounded inventory before staging anything, and rewrites each
+/// journal through pinned files. A rerun completes an interrupted rewrite.
 ///
 /// # Errors
 ///
 /// Returns [`PreparedResultJournalError`] when the namespace is invalid, its
-/// inventory exceeds `maximum_journals`, a journal or ledger binding is
+/// inventory exceeds `maximum_entries`, a journal or ledger binding is
 /// invalid, a per-key lock is held, or durable conversion fails.
 pub(crate) fn migrate_prepared_result_journals(
     namespace: &crate::anchored_fs::AnchoredDirectory,
@@ -889,6 +889,13 @@ fn journal_files(root: &Path) -> Result<(&'static str, &'static str), PreparedRe
     {
         let entry = entry
             .map_err(|source| io_error("read-current-journal-directory-entry", root, source))?;
+        if !entry
+            .file_type()
+            .map_err(|source| io_error("stat-current-journal-entry", &entry.path(), source))?
+            .is_file()
+        {
+            return Err(PreparedResultJournalError::Incomplete);
+        }
         let name = entry.file_name();
         match name.to_str() {
             Some(JOURNAL_STATE_FILE) if !state => state = true,
@@ -1084,33 +1091,18 @@ fn is_owned_orphan_file(name: &str) -> bool {
         || name.starts_with(&format!(".{JOURNAL_RESULT_FILE}."))
 }
 
-fn read_bounded_file(
-    path: &Path,
+fn read_bounded_anchored_file(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    name: &str,
     maximum: usize,
     operation: &'static str,
 ) -> Result<Vec<u8>, PreparedResultJournalError> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Err(PreparedResultJournalError::Incomplete);
-        }
-        Err(source) => return Err(io_error(operation, path, source)),
-    };
-    let length = file
-        .metadata()
-        .map_err(|source| io_error(operation, path, source))?
-        .len();
-    if length > maximum as u64 {
-        return Err(PreparedResultJournalError::InvalidState);
-    }
-    let mut bytes = Vec::with_capacity(length as usize);
-    file.take(maximum as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|source| io_error(operation, path, source))?;
-    if bytes.len() > maximum {
-        return Err(PreparedResultJournalError::InvalidState);
-    }
-    Ok(bytes)
+    let path = root.path().join(name);
+    root.open_regular_optional(&path, operation)
+        .map_err(migration_guard_error)?
+        .ok_or(PreparedResultJournalError::Incomplete)?
+        .read_bounded(maximum as u64)
+        .map_err(migration_guard_error)
 }
 
 fn acquire_namespace_lock(
@@ -1179,7 +1171,7 @@ fn reject_runtime_migration_state(
     namespace: &crate::anchored_fs::AnchoredDirectory,
 ) -> Result<(), PreparedResultJournalError> {
     reject_active_migration(namespace)?;
-    reject_unfenced_migration_entries(&namespace.anchored_path())
+    reject_unfenced_migration_entries(namespace)
 }
 
 fn migration_guard_error(error: crate::anchored_fs::AnchoredFsError) -> PreparedResultJournalError {
@@ -1187,38 +1179,34 @@ fn migration_guard_error(error: crate::anchored_fs::AnchoredFsError) -> Prepared
     io_error(operation, &path, source)
 }
 
-fn validate_journal_directory(path: &Path) -> Result<(), PreparedResultJournalError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
-        Ok(_) => Err(PreparedResultJournalError::InvalidDirectory),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            Err(PreparedResultJournalError::InvalidDirectory)
-        }
-        Err(source) => Err(io_error("inspect-journal-directory", path, source)),
-    }
-}
-
-fn reject_unfenced_migration_entries(namespace: &Path) -> Result<(), PreparedResultJournalError> {
+fn reject_unfenced_migration_entries(
+    namespace: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<(), PreparedResultJournalError> {
+    let anchored_namespace = namespace.anchored_path();
     let mut entries = 0usize;
-    for entry in fs::read_dir(namespace)
-        .map_err(|source| io_error("read-runtime-journal-namespace", namespace, source))?
-    {
-        entries = entries
-            .checked_add(1)
-            .ok_or(PreparedResultJournalError::RecoveryRequired)?;
+    let mut bytes = 0u64;
+    for entry in fs::read_dir(&anchored_namespace).map_err(|source| {
+        io_error(
+            "read-runtime-journal-namespace",
+            &anchored_namespace,
+            source,
+        )
+    })? {
         let entry = entry.map_err(|source| {
-            io_error("read-runtime-journal-namespace-entry", namespace, source)
+            io_error(
+                "read-runtime-journal-namespace-entry",
+                &anchored_namespace,
+                source,
+            )
         })?;
+        admit_runtime_entry(&mut entries, &mut bytes, &entry.path())?;
         let name = entry.file_name();
         let name = name
             .to_str()
             .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-        if entries > crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES {
-            return Err(PreparedResultJournalError::RecoveryRequired);
-        }
-        let file_type = entry
-            .file_type()
+        let metadata = fs::symlink_metadata(entry.path())
             .map_err(|source| io_error("stat-runtime-journal-entry", &entry.path(), source))?;
+        let file_type = metadata.file_type();
         if name == crate::operational_state_migration::receipt::ACTIVE_MARKER {
             if !file_type.is_file() {
                 return Err(PreparedResultJournalError::InvalidDirectory);
@@ -1242,23 +1230,98 @@ fn reject_unfenced_migration_entries(namespace: &Path) -> Result<(), PreparedRes
             if !key.is_some_and(|name| is_lower_hex(name, 64)) || !file_type.is_dir() {
                 return Err(PreparedResultJournalError::InvalidDirectory);
             }
+            let root = namespace
+                .open_child(&entry.path(), "open-runtime-journal-orphan")
+                .map_err(migration_guard_error)?;
+            inspect_runtime_journal_directory(&root, true, &mut entries, &mut bytes)?;
             continue;
         }
         if !is_lower_hex(name, 64) || !file_type.is_dir() {
             return Err(PreparedResultJournalError::InvalidDirectory);
         }
-        journal_files(&entry.path()).map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
+        let root = namespace
+            .open_child(&entry.path(), "open-runtime-journal")
+            .map_err(migration_guard_error)?;
+        inspect_runtime_journal_directory(&root, false, &mut entries, &mut bytes)
+            .map_err(|_| PreparedResultJournalError::RecoveryRequired)?;
     }
     Ok(())
 }
 
-fn is_lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+fn inspect_runtime_journal_directory(
+    root: &crate::anchored_fs::AnchoredDirectory,
+    orphan: bool,
+    entries: &mut usize,
+    bytes: &mut u64,
+) -> Result<(), PreparedResultJournalError> {
+    let anchored = root.anchored_path();
+    let mut state = false;
+    let mut result = false;
+    for entry in fs::read_dir(&anchored)
+        .map_err(|source| io_error("read-runtime-journal", &anchored, source))?
+    {
+        let entry =
+            entry.map_err(|source| io_error("read-runtime-journal-entry", &anchored, source))?;
+        admit_runtime_entry(entries, bytes, &entry.path())?;
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|source| io_error("stat-runtime-journal-file", &entry.path(), source))?;
+        let name = entry
+            .file_name()
+            .to_str()
+            .ok_or(PreparedResultJournalError::InvalidDirectory)?
+            .to_owned();
+        if !metadata.file_type().is_file()
+            || metadata.len() > runtime_journal_file_limit(&name) as u64
+        {
+            return Err(PreparedResultJournalError::InvalidDirectory);
+        }
+        match name.as_str() {
+            JOURNAL_STATE_FILE if !state => state = true,
+            JOURNAL_RESULT_FILE if !result => result = true,
+            name if orphan && is_owned_orphan_file(name) => {}
+            _ => return Err(PreparedResultJournalError::InvalidDirectory),
+        }
+    }
+    if !orphan && !(state && result) {
+        return Err(PreparedResultJournalError::RecoveryRequired);
+    }
+    Ok(())
 }
 
+fn admit_runtime_entry(
+    entries: &mut usize,
+    bytes: &mut u64,
+    path: &Path,
+) -> Result<(), PreparedResultJournalError> {
+    *entries = entries
+        .checked_add(1)
+        .ok_or(PreparedResultJournalError::RecoveryRequired)?;
+    if *entries > crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES {
+        return Err(PreparedResultJournalError::RecoveryRequired);
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|source| io_error("bound-runtime-journal-entry", path, source))?;
+    *bytes = bytes
+        .checked_add(metadata.len())
+        .ok_or(PreparedResultJournalError::RecoveryRequired)?;
+    let maximum = crate::operational_state_migration::MAX_OPERATIONAL_STATE_MIGRATION_ENTRIES
+        as u64
+        * (MAX_PREPARED_SEMANTIC_RESULT_BYTES as u64 + MAX_JOURNAL_STATE_BYTES as u64);
+    if *bytes > maximum {
+        return Err(PreparedResultJournalError::RecoveryRequired);
+    }
+    Ok(())
+}
+
+fn runtime_journal_file_limit(name: &str) -> usize {
+    if name == JOURNAL_RESULT_FILE || name.starts_with(&format!(".{JOURNAL_RESULT_FILE}.")) {
+        MAX_PREPARED_SEMANTIC_RESULT_BYTES
+    } else {
+        MAX_JOURNAL_STATE_BYTES
+    }
+}
+
+#[cfg(test)]
 fn sync_directory(path: &Path, operation: &'static str) -> Result<(), PreparedResultJournalError> {
     let directory = File::open(path).map_err(|source| io_error(operation, path, source))?;
     directory
@@ -1266,11 +1329,11 @@ fn sync_directory(path: &Path, operation: &'static str) -> Result<(), PreparedRe
         .map_err(|source| io_error(operation, path, source))
 }
 
-fn sync_parent(path: &Path, operation: &'static str) -> Result<(), PreparedResultJournalError> {
-    let parent = path
-        .parent()
-        .ok_or(PreparedResultJournalError::InvalidDirectory)?;
-    sync_directory(parent, operation)
+fn is_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> PreparedResultJournalError {
@@ -1436,7 +1499,7 @@ mod tests {
 
     #[test]
     fn legacy_semantic_payload_rewrite_resumes_after_every_file_cut() {
-        for (marker, cut) in (0x69..=0x6e).zip(0..=5) {
+        for (marker, cut) in (0x69..=0x70).zip(0..=7) {
             let mut fixture = legacy_journal_fixture(marker);
             fixture.migrate().expect("migrate journal file pair");
             let root = journal_path(fixture.namespace.path(), fixture.key);
@@ -1479,36 +1542,69 @@ mod tests {
             let current_state = fs::read(root.join(JOURNAL_STATE_FILE)).expect("current state");
             fs::write(root.join(JOURNAL_RESULT_FILE), legacy_payload).expect("restore old payload");
             fs::write(root.join(JOURNAL_STATE_FILE), legacy_state).expect("restore old state");
-            if cut >= 1 {
+            if cut >= 5 {
                 fs::write(
                     root.join(migration::CURRENT_RESULT_PENDING),
                     &current_payload,
                 )
-                .expect("stage interrupted result");
-            }
-            if cut >= 2 {
+                .expect("retain pending result during replacement");
                 fs::write(root.join(migration::CURRENT_STATE_PENDING), &current_state)
-                    .expect("stage interrupted state");
+                    .expect("retain pending state during replacement");
             }
-            if cut >= 3 {
-                fs::write(
+            match cut {
+                0 => {}
+                1 => fs::write(
+                    root.join(migration::CURRENT_RESULT_PENDING),
+                    &current_payload[..current_payload.len() / 2],
+                )
+                .expect("interrupt pending result write"),
+                2 => fs::write(
+                    root.join(migration::CURRENT_RESULT_PENDING),
+                    &current_payload,
+                )
+                .expect("complete pending result write"),
+                3 => {
+                    fs::write(
+                        root.join(migration::CURRENT_RESULT_PENDING),
+                        &current_payload,
+                    )
+                    .expect("complete pending result write");
+                    fs::write(
+                        root.join(migration::CURRENT_STATE_PENDING),
+                        &current_state[..current_state.len() / 2],
+                    )
+                    .expect("interrupt pending state write");
+                }
+                4 => {
+                    fs::write(
+                        root.join(migration::CURRENT_RESULT_PENDING),
+                        &current_payload,
+                    )
+                    .expect("complete pending result write");
+                    fs::write(root.join(migration::CURRENT_STATE_PENDING), &current_state)
+                        .expect("complete pending state write");
+                }
+                5 => fs::write(
                     root.join(JOURNAL_RESULT_FILE),
                     &current_payload[..current_payload.len() / 2],
                 )
-                .expect("interrupt result replacement");
-            }
-            if cut >= 4 {
-                fs::write(root.join(JOURNAL_RESULT_FILE), &current_payload)
-                    .expect("complete result replacement");
-                fs::write(
-                    root.join(JOURNAL_STATE_FILE),
-                    &current_state[..current_state.len() / 2],
-                )
-                .expect("interrupt state replacement");
-            }
-            if cut >= 5 {
-                fs::write(root.join(JOURNAL_STATE_FILE), &current_state)
-                    .expect("complete state replacement");
+                .expect("interrupt result replacement"),
+                6 => {
+                    fs::write(root.join(JOURNAL_RESULT_FILE), &current_payload)
+                        .expect("complete result replacement");
+                    fs::write(
+                        root.join(JOURNAL_STATE_FILE),
+                        &current_state[..current_state.len() / 2],
+                    )
+                    .expect("interrupt state replacement");
+                }
+                7 => {
+                    fs::write(root.join(JOURNAL_RESULT_FILE), &current_payload)
+                        .expect("complete result replacement");
+                    fs::write(root.join(JOURNAL_STATE_FILE), &current_state)
+                        .expect("complete state replacement");
+                }
+                _ => unreachable!(),
             }
 
             migrate_prepared_result_journals(
@@ -1767,6 +1863,33 @@ mod tests {
                 .is_err()
             );
             assert!(!staged_path(namespace.path(), key).exists());
+        }
+    }
+
+    #[test]
+    fn runtime_inventory_rejects_nonregular_or_oversized_journal_children() {
+        for kind in ["visible-symlink", "staged-symlink", "retired-oversized"] {
+            let namespace = TempDir::new().expect("journal namespace");
+            let key = semantic_key(kind.as_bytes());
+            let root = match kind {
+                "visible-symlink" => journal_path(namespace.path(), key),
+                "staged-symlink" => staged_path(namespace.path(), key),
+                "retired-oversized" => retired_path(namespace.path(), key),
+                _ => unreachable!(),
+            };
+            fs::create_dir(&root).expect("journal directory");
+            if kind.ends_with("symlink") {
+                std::os::unix::fs::symlink("missing", root.join(JOURNAL_RESULT_FILE))
+                    .expect("journal symlink");
+            } else {
+                let file = File::create(root.join(JOURNAL_RESULT_FILE)).expect("oversized result");
+                file.set_len(MAX_PREPARED_SEMANTIC_RESULT_BYTES as u64 + 1)
+                    .expect("extend result");
+            }
+
+            assert!(
+                DirectoryPreparedResultJournal::artifacts_present(namespace.path(), key).is_err()
+            );
         }
     }
 
