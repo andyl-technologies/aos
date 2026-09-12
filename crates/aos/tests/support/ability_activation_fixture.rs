@@ -65,12 +65,13 @@ use serde::{Deserialize, Serialize};
 const CREDENTIAL_SOURCE_ROOT: &str = "/var/lib/aos/ability-runtime/credential-sources";
 const MAX_TLS_BUNDLE_BYTES: u64 = 64 * 1024;
 
-const PACKAGE_NAMES: [&str; 5] = [
+const PACKAGE_NAMES: [&str; 6] = [
     "ability-reference-nginx-consumer",
     "ability-reference-nginx",
     "ability-reference-managed-configuration",
     "ability-reference-credential",
     "ability-reference-systemd",
+    "ability-reference-systemd-manager",
 ];
 
 struct ReferenceFixture {
@@ -79,6 +80,7 @@ struct ReferenceFixture {
     packages: Vec<PackageDocument>,
     consumer_package: Sha256Digest,
     nginx_package: Sha256Digest,
+    systemd_manager_package: Sha256Digest,
     lower_packages: BTreeMap<String, Sha256Digest>,
     terminal_packages: BTreeMap<String, Sha256Digest>,
     implementations: BTreeMap<String, ProviderImplementationReference>,
@@ -100,6 +102,12 @@ struct ComposedReference {
 struct ReferenceTls {
     version: String,
     bundle: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct SystemdManagerMatrix {
+    method: String,
+    revision: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -157,7 +165,9 @@ impl ReferenceLifecycle {
 /// [--execution-stage STAGE]`, where the
 /// responses become the bodies for `alpha.example` and `gamma.example`.
 /// `SCENARIO` selects a bounded removal or disable transition for lifecycle
-/// qualification. The generated descriptor is written to
+/// qualification. The optional paired `--systemd-manager-method` and
+/// `--systemd-manager-revision` arguments add the authenticated matrix driver
+/// whose real operations target three disposable host units. The generated descriptor is written to
 /// `OUTPUT/activation.json` and names two fixed-output sidecars added to the
 /// local Nix store. The separate authority directory receives the explicit
 /// operator anchor that the VM provisions.
@@ -172,7 +182,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         || (arguments.len() - 5) % 2 != 0
     {
         bail!(
-            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO] [--execution-stage host|application-container] [--tls-version VERSION --tls-bundle PATH]"
+            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO] [--execution-stage host|application-container] [--tls-version VERSION --tls-bundle PATH] [--systemd-manager-method METHOD --systemd-manager-revision REVISION]"
         );
     }
     let output = Path::new(&arguments[0]);
@@ -183,6 +193,8 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let mut tls_version = None;
     let mut tls_bundle = None;
     let mut execution_stage = ExecutionStage::Host;
+    let mut systemd_manager_method = None;
+    let mut systemd_manager_revision = None;
     for option in arguments[5..].chunks_exact(2) {
         match option[0].as_str() {
             "--lifecycle" => lifecycle = ReferenceLifecycle::parse(&option[1])?,
@@ -195,6 +207,8 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
                     value => bail!("unknown reference execution stage {value:?}"),
                 }
             }
+            "--systemd-manager-method" => systemd_manager_method = Some(option[1].clone()),
+            "--systemd-manager-revision" => systemd_manager_revision = Some(option[1].clone()),
             unknown => bail!("unknown reference activation option {unknown:?}"),
         }
     }
@@ -216,6 +230,28 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         }
         (None, None) => None,
         _ => bail!("TLS credential version and bundle must be provided together"),
+    };
+    let systemd_manager = match (systemd_manager_method, systemd_manager_revision) {
+        (Some(method), Some(revision)) => {
+            ensure!(
+                matches!(
+                    method.as_str(),
+                    "observe" | "reload" | "restart" | "start" | "stop"
+                ),
+                "systemd-manager matrix method is not one of the five production methods"
+            );
+            ensure!(
+                !revision.is_empty()
+                    && revision.len() <= 128
+                    && revision
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte)),
+                "systemd-manager matrix revision is outside the safe fixture subset"
+            );
+            Some(SystemdManagerMatrix { method, revision })
+        }
+        (None, None) => None,
+        _ => bail!("systemd-manager method and revision must be provided together"),
     };
     ensure!(
         authority_output != output,
@@ -243,6 +279,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         secondary_response,
         lifecycle,
         tls.as_ref(),
+        systemd_manager.as_ref(),
     )?;
 
     if let Some(tls) = &tls {
@@ -471,6 +508,7 @@ impl ReferenceFixture {
 
         let mut consumer_package = None;
         let mut nginx_package = None;
+        let mut systemd_manager_package = None;
         let mut lower_packages = BTreeMap::new();
         let mut terminal_packages = BTreeMap::new();
         let mut implementations = BTreeMap::new();
@@ -489,6 +527,8 @@ impl ReferenceFixture {
                         implementations.insert(name.to_string(), reference);
                         if name == "aos.nginx" {
                             nginx_package = Some(package_digest);
+                        } else if name == "aos.test.systemd-manager-matrix" {
+                            systemd_manager_package = Some(package_digest);
                         } else {
                             lower_packages.insert(name.to_string(), package_digest);
                         }
@@ -597,6 +637,23 @@ impl ReferenceFixture {
                 });
             }
         }
+        let systemd_matrix = instance(&environment_id, "matrix-systemd")?;
+        providers.push(ProviderInventory {
+            provider: systemd_matrix,
+            interface: interfaces
+                .get("aos.systemd-manager")
+                .context("missing built-in systemd-manager interface")?
+                .clone(),
+            implementation: terminal_implementations
+                .get("aos.systemd-manager")
+                .context("missing native systemd-manager implementation")?
+                .clone(),
+            state: ProviderState::Available,
+            incarnation: Some(aos_ability_model::IncarnationId::new(
+                "reference-systemd-manager-terminal",
+            )?),
+            guarantees: vec![aos_ability_model::builtin::local_systemd_manager_guarantee()?],
+        });
         providers.sort_by(|left, right| {
             left.provider
                 .cmp(&right.provider)
@@ -637,6 +694,8 @@ impl ReferenceFixture {
             packages,
             consumer_package: consumer_package.context("reference consumer package is absent")?,
             nginx_package: nginx_package.context("reference nginx package is absent")?,
+            systemd_manager_package: systemd_manager_package
+                .context("reference systemd-manager package is absent")?,
             lower_packages,
             terminal_packages,
             implementations,
@@ -653,8 +712,15 @@ impl ReferenceFixture {
         secondary_response: &str,
         lifecycle: ReferenceLifecycle,
         tls: Option<&ReferenceTls>,
+        systemd_manager: Option<&SystemdManagerMatrix>,
     ) -> Result<ComposedReference> {
-        let seed = self.seed(primary_response, secondary_response, lifecycle, tls)?;
+        let seed = self.seed(
+            primary_response,
+            secondary_response,
+            lifecycle,
+            tls,
+            systemd_manager,
+        )?;
         let mut policies = Vec::new();
         loop {
             match RecursiveComposer::new(&self.context).compose(
@@ -687,6 +753,7 @@ impl ReferenceFixture {
         secondary_response: &str,
         lifecycle: ReferenceLifecycle,
         tls: Option<&ReferenceTls>,
+        systemd_manager: Option<&SystemdManagerMatrix>,
     ) -> Result<DesiredStateDocument> {
         let environment = self.environment.content_digest()?;
         let nginx_main = instance(&self.environment.environment, "nginx-main")?;
@@ -738,6 +805,17 @@ impl ReferenceFixture {
                 configuration: Some(configuration("nginx-secondary", 18082, 18444)?),
             },
         ];
+        if let Some(matrix) = systemd_manager {
+            instances.push(DesiredInstance {
+                instance: instance(&self.environment.environment, "matrix-systemd")?,
+                package: self.systemd_manager_package,
+                enabled: true,
+                configuration: Some(AbilityValue::new(serde_json::json!({
+                    "action": matrix.method,
+                    "revision": matrix.revision,
+                }))?),
+            });
+        }
         let mut child_requests = Vec::new();
         let mut contributions = Vec::new();
         let mut applications = vec![(
@@ -830,25 +908,53 @@ impl ReferenceFixture {
         let mut enabled_providers = desired
             .instances
             .iter()
-            .filter(|desired| desired.enabled && desired.package == self.nginx_package)
-            .map(|desired| {
-                let nginx = desired.instance.clone();
+            .filter(|instance_selection| {
+                instance_selection.enabled
+                    && (instance_selection.package == self.nginx_package
+                        || instance_selection.package == self.systemd_manager_package)
+            })
+            .map(|instance_selection| {
+                let provider = instance_selection.instance.clone();
+                let is_systemd_matrix = instance_selection.package == self.systemd_manager_package;
+                let interface_name = if is_systemd_matrix {
+                    "aos.test.systemd-manager-matrix"
+                } else {
+                    "aos.nginx"
+                };
+                let resources = if is_systemd_matrix {
+                    let operations = ["observe", "reload", "restart", "start", "stop"]
+                        .into_iter()
+                        .map(key)
+                        .collect::<Result<Vec<_>>>()?;
+                    desired
+                        .resources
+                        .iter()
+                        .filter(|revision| revision.resource.provider == provider)
+                        .map(|revision| ResourcePermission {
+                            resource: revision.resource.clone(),
+                            access: AccessMode::ExclusiveWrite,
+                            operations: operations.clone(),
+                        })
+                        .collect()
+                } else {
+                    vec![ResourcePermission {
+                        resource: ResourceId {
+                            provider: provider.clone(),
+                            key: key("virtual-hosts")?,
+                        },
+                        access: AccessMode::ExclusiveWrite,
+                        operations: Vec::new(),
+                    }]
+                };
                 Ok(EnabledProviderSelection {
-                    instance: nginx.clone(),
-                    interface: self.interface("aos.nginx")?,
-                    implementation: self.implementation("aos.nginx")?,
+                    instance: provider.clone(),
+                    interface: self.interface(interface_name)?,
+                    implementation: self.implementation(interface_name)?,
                     provider_grant: aos_ability_model::AuthorityGrant {
-                        principal: nginx.clone(),
+                        principal: provider,
                         methods: Vec::new(),
                         contributions: Vec::new(),
-                        resources: vec![ResourcePermission {
-                            resource: ResourceId {
-                                provider: nginx,
-                                key: key("virtual-hosts")?,
-                            },
-                            access: AccessMode::ExclusiveWrite,
-                            operations: Vec::new(),
-                        }],
+                        resources,
                     },
                     policy_revision: self.policy_revision,
                     lifetime: ResourceLifetime::Instance,
@@ -903,15 +1009,16 @@ impl ReferenceFixture {
             .first()
             .context("reference request has no accepted interface")?
             .clone();
-        let terminal = matches!(
-            request.id.key.as_str(),
-            "effects"
-                | "validation-terminal"
-                | "service-terminal"
-                | "endpoint"
-                | "network-policy"
-                | "storage"
-        );
+        let terminal = interface.name.as_str() == "aos.systemd-manager"
+            || matches!(
+                request.id.key.as_str(),
+                "effects"
+                    | "validation-terminal"
+                    | "service-terminal"
+                    | "endpoint"
+                    | "network-policy"
+                    | "storage"
+            );
         let (provider, provider_package, implementation, resources, contributions) = if terminal {
             let provider = if request.id.key.as_str() == "service-terminal" {
                 lower_provider(&self.environment.environment, "service")?
@@ -1056,13 +1163,17 @@ impl ReferenceFixture {
                 })
                 .collect(),
         };
-        let guarantees = if interface.name.as_str() == "aos.host-network-policy-effects" {
-            vec![
-                host_network_policy_loopback_tcp_egress_guarantee()?,
-                host_network_policy_loopback_tcp_ingress_guarantee()?,
-            ]
-        } else {
-            Vec::new()
+        let guarantees = match interface.name.as_str() {
+            "aos.host-network-policy-effects" => {
+                vec![
+                    host_network_policy_loopback_tcp_egress_guarantee()?,
+                    host_network_policy_loopback_tcp_ingress_guarantee()?,
+                ]
+            }
+            "aos.systemd-manager" => {
+                vec![aos_ability_model::builtin::local_systemd_manager_guarantee()?]
+            }
+            _ => Vec::new(),
         };
         Ok(BindingCandidate {
             key: binding_key(&request.id)?,
@@ -1309,6 +1420,68 @@ fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeR
                     },
                 )?);
             }
+        }
+    }
+
+    let matrix_provider = instance(environment, "matrix-systemd")?;
+    if composed
+        .desired_state
+        .instances
+        .iter()
+        .any(|desired| desired.enabled && desired.instance == matrix_provider)
+    {
+        let driver_interface = composed
+            .desired_state
+            .outputs
+            .iter()
+            .find(|output| {
+                output.aggregate.provider == matrix_provider
+                    && output.aggregate.group.as_str() == "matrix-systemd"
+                    && output.port.as_str() == "managers"
+            })
+            .context("systemd-manager matrix output is absent")?
+            .interface
+            .clone();
+        for (field, resource_key, unit) in [
+            (
+                "primary",
+                "aos-matrix-primary-service",
+                "aos-matrix-primary.service",
+            ),
+            (
+                "secondary",
+                "aos-matrix-secondary-service",
+                "aos-matrix-secondary.service",
+            ),
+            (
+                "witness",
+                "aos-matrix-witness-service",
+                "aos-matrix-witness.service",
+            ),
+            (
+                "foreign",
+                "aos-matrix-foreign-service",
+                "aos-matrix-foreign.service",
+            ),
+        ] {
+            mappings.push(native_mapping(
+                composed,
+                &matrix_provider,
+                resource_key,
+                &matrix_provider,
+                "manager",
+                NativeResourceQualification::SystemdService {
+                    unit: unit.to_string(),
+                    resource_reference: output_locator(
+                        &matrix_provider,
+                        "matrix-systemd",
+                        driver_interface.clone(),
+                        "managers",
+                        &[field],
+                    )?,
+                    consumer_observation: None,
+                },
+            )?);
         }
     }
 
@@ -1699,6 +1872,61 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                 },
             )],
         )?,
+        aos_ability_model::builtin::systemd_manager_interface()?,
+        InterfaceDocument {
+            schema: InterfaceDocument::SCHEMA.to_string(),
+            required_features: Vec::new(),
+            interface: InterfaceDescriptor {
+                name: InterfaceName::new("aos.test.systemd-manager-matrix")?,
+                abi: NonZeroU32::new(1).context("interface ABI must be nonzero")?,
+                request: ValueSchema::Boolean,
+                configuration: Some(ValueSchema::Record {
+                    fields: BTreeMap::from([
+                        (
+                            key("action")?,
+                            ValueSchema::StringEnum {
+                                values: ["observe", "reload", "restart", "start", "stop"]
+                                    .into_iter()
+                                    .map(ToString::to_string)
+                                    .collect(),
+                            },
+                        ),
+                        (
+                            key("revision")?,
+                            ValueSchema::String {
+                                max_length: 128,
+                                syntax: None,
+                            },
+                        ),
+                    ]),
+                    optional_fields: Vec::new(),
+                }),
+                outputs: BTreeMap::from([(
+                    key("managers")?,
+                    OutputDescriptor {
+                        schema: ValueSchema::Map {
+                            key: StringConstraint {
+                                max_length: 128,
+                                syntax: Some(StringSyntax::LocalKeyV1),
+                            },
+                            value: Box::new(ValueSchema::ResourceReference),
+                            max_entries: 8,
+                        },
+                        phase: ValuePhase::Planning,
+                        visibility: ValueVisibility::Protected,
+                        lifetime: ResourceLifetime::Instance,
+                    },
+                )]),
+                methods: BTreeMap::new(),
+                lifecycle: LifecycleSemantics {
+                    stable_resource_identity: true,
+                    releases_ephemeral_on_disable: false,
+                    retains_persistent_by_default: true,
+                    persistent_delete_method: None,
+                },
+                guarantees: Vec::new(),
+            },
+        },
         interface_document(
             "aos.nginx",
             nginx_request.clone(),
