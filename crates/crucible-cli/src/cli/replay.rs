@@ -291,10 +291,7 @@ fn replay_live_qemu_evidence(
     let preemption_evidence =
         bounded_scheduler_preemption_evidence_from_env(REPLAY_BOUNDED_SCHEDULER_PREEMPTION_ENV, 1)?
             .and_then(|mut evidence| evidence.pop());
-    validate_live_qemu_campaign_replay_contract(
-        &contract,
-        true,
-    )?;
+    validate_live_qemu_campaign_replay_contract(&contract, true)?;
     if preemption_evidence.is_some() {
         return Err(backend_error(
             "campaign-owned artifact replay rejects session scheduler-preemption evidence",
