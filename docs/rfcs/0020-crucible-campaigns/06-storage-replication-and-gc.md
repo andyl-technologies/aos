@@ -163,8 +163,9 @@ This primitive does not compute reachability or confer deletion authority on
 `ImmutableBlobBackend`. The single-host daemon composes it with authenticated
 root reachability, the canonical store-graph identity, ref and operational-root
 generations, and the interruption-safe external journal specified below.
-Policy-aware tier eviction, broader transform administration, and the complete
-operator flight remain mandatory before T-CAM-8.3 is complete.
+Policy-aware tier and completed write-back staging eviction now reuse this
+administrative boundary. The complete operator flight remains mandatory before
+T-CAM-8.3 is complete.
 
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
 and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
@@ -1901,7 +1902,7 @@ repeated candidate_count times:
     backend_length:u16be || backend_utf8
     content_id_length:u16be || canonical_content_id_utf8
     logical_length:u64be
-    reason:u8  # 0 unreachable, 1 reachable read-through cache
+    reason:u8  # 0 unreachable, 1 reachable reconstructible cache
     if reason == 1:
         required_backend_length:u16be || required_backend_utf8
 ```
@@ -1938,13 +1939,15 @@ copied instance is conservatively treated as an alias.
 
 The graph derives a retention role for each physical boundary and admitted
 object kind. Transparent wrappers preserve the incoming role. A read-through
-cache edge marks its cache subtree `ReadThroughCache` and preserves the source
-subtree's incoming role; any independently required path dominates a cache
-role. A reachable cache placement becomes a v2 candidate only when its physical
-identity occurs once, a matching required placement has a different identity
-that also occurs once, and the required placement authenticates to EOF between
-matching complete inventory generations. Ambiguous aliases and missing,
-changed, or unauthenticated required copies are retained.
+cache edge marks its cache subtree `Cache` and preserves the source subtree's
+incoming role. A tier marks its configured write child with the incoming role
+and every other child `Cache`. A write-back edge marks staging `Cache` and
+preserves the incoming role for its destination. Any independently required
+path dominates a cache role. A reachable cache placement becomes a v2 candidate
+only when its physical identity occurs once, a matching required placement has
+a different identity that also occurs once, and the required placement
+authenticates to EOF between matching complete inventory generations. Ambiguous
+aliases and missing, changed, or unauthenticated required copies are retained.
 
 The daemon now persists the exact header and both streamed manifests in an
 external directory journal that is not part of any inventoried blob leaf. The
@@ -2009,7 +2012,7 @@ deletion, apply acquires the cache and source fences in physical-identity order,
 checks both exact bases and placements, removes only the cache placement, and
 uses the post-delete cache inventory as the basis for the next candidate on
 that boundary. All root fences remain held throughout. Reports separate
-unreachable deletions from reachable read-through cache evictions and record
+unreachable deletions from reachable cache evictions and record
 the required-copy backend, identity, generation, and logical length.
 
 Construction-time graph administration now supplies the exact memory,
@@ -2025,8 +2028,12 @@ deletion. A public-process flight composes profile validation, verification,
 kind routing, compressed-directory read-through caching, and durable compressed
 write-back staging; it proves cache eviction against the required directory
 copy, bounded maintenance transfer of a known object, exact pending-root
-removal, and restart at the unchanged campaign head. Broader tier policy and
-administrative surfaces remain open beyond this physical-leaf apply.
+removal, and restart at the unchanged campaign head. Graph-derived policy also
+marks each tier's write child and each write-back destination as required while
+treating non-write tiers and write-back staging as reconstructible caches. A
+pending journal root or missing destination retains staging; after transfer,
+the existing policy-aware apply requires an independent EOF-authenticated
+destination copy under matching generation fences before eviction.
 
 The single-host daemon composes these sources into one logical root inventory:
 authoritative refs, current exact-pin selections, durable observation and
@@ -2101,14 +2108,15 @@ plan/apply and logical candidate deletion under its exclusive lifecycle fence;
 the S3 integration regression persists and reopens the journal and graph,
 revalidates its remote monotonic generation, deletes only the unreachable
 committed object, and reauthenticates the retained object. A publication after
-planning changes that generation and prevents every deletion. Composed broader
-transform tiers still require their additional policy-specific administration
-before global deletion. The physical-quota integration regression revokes its
+planning changes that generation and prevents every deletion. Transparent
+transforms preserve graph-derived retention roles, write-through paths remain
+required, and tier/write-back cache edges use the same independent-copy
+preflight. The physical-quota integration regression revokes its
 operational guard after planning, proves global apply retains the complete
 candidate set and planned journal, and completes exact deletion only after the
 guard is restored. Read-through cache eviction is implemented for unique,
 physically independent cache and required-source placements under the v2
-policy-aware plan.
+policy-aware plan, including non-write tiers and completed write-back staging.
 
 - **[CSTORE-19]** GC MUST derive liveness from authenticated refs, pins, and
   child references, never access time, cache temperature, or backend listing

@@ -1685,7 +1685,7 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
   extents where valid.
 - [x] **T-CAM-5.4** Implement immutable disk backing plus child overlay
   manifests and content-deduplicated changed-object storage.
-- [ ] **T-CAM-5.5** Implement and validate an acyclic store-composition graph
+- [x] **T-CAM-5.5** Implement and validate an acyclic store-composition graph
   with verified, routed, tiered, read-through, write-through, write-back,
   compressed, encrypted, quota, metrics, and namespaced layers, including a
   durable GC-protected transfer journal for write-back operation.
@@ -1700,7 +1700,7 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
   archival transfer/import, incompatible restore, retention, and plan/apply GC
   flights across multiple derived refs and active publication/transfer/write-
   back roots.
-- [ ] **T-CAM-5.9** Implement metadata/findings/debug/executable/mirror closure
+- [x] **T-CAM-5.9** Implement metadata/findings/debug/executable/mirror closure
   policies, durability receipts, pins, sensitive-export reporting, resumable
   missing-object transfer, and offline maintenance transfer. Do not implement
   demand paging or worker fanout.
@@ -1911,18 +1911,38 @@ debris, and proves the retained scenario and exact running head survive service
 restart. Automatic deployment discovery and the representative-product outage,
 credential, transfer, repack, and operator flights remain open under Phase 5
 and T-CAM-5.8.
-Policy-aware GC v2 now derives per-kind `Required` and `ReadThroughCache` roles
-through transparent wrappers, binds each physical basis to a persisted storage
-identity, and evicts a reachable read-through placement only when a unique,
-independent required placement authenticates to EOF between matching inventory
-generations. Apply recomputes reachability and graph roles, authenticates the
-required source again, acquires paired physical fences in identity order, and
-advances a rolling post-delete cache basis while retaining all root fences.
+Policy-aware GC v2 derives per-kind `Required` and `Cache` roles
+through the complete graph. Transparent transforms and write-through mirrors
+preserve the incoming role. A tier's configured write child is required while
+its other children are reconstructible cache placements; a write-back
+destination is required while its staging child becomes a cache placement once
+the durable transfer journal no longer owns that object. A second required path
+always dominates a cache-only path. GC evicts a reachable cache placement only
+when a unique, independent required placement authenticates to EOF between
+matching inventory generations. Apply recomputes reachability and graph roles,
+authenticates the required source again, acquires paired physical fences in
+identity order, and advances a rolling post-delete cache basis while retaining
+all root fences. Pending write-back roots and a missing destination therefore
+retain staging; focused tests prove staging becomes eligible only after transfer
+completion and remains readable from the authenticated destination after apply.
 The v1 plan and candidate encodings remain byte-stable and unreachable-only;
-v2 journals require matching plan/manifest versions. Wrapped-cache, same-path
-alias, strict codec, and forged swapped-role regressions cover the new boundary.
-Broader layered transforms and tier-specific policies remain open;
-therefore T-CAM-5.5 is not checked by this checkpoint.
+v2 journals require matching plan/manifest versions. Wrapped cache, tier,
+write-back staging, shared required-path, same-path alias, strict-codec, and
+forged swapped-role regressions cover the policy boundary. This completes the
+automated T-CAM-5.5 graph and layer contract. Representative product flights
+remain under T-CAM-5.8.
+
+Archive planning implements the closed metadata, findings, debug, executable,
+and mirror policies as a canonical selected/omitted object partition. It binds
+durability requirements and exact-pin checkpoint selections, reports logical
+replication obligations and sensitive classes before transfer, copies only
+missing objects while authenticating existing and copied destination streams,
+and replays idempotently from durable source and destination transfer journals.
+The stopped-owner transfer path authenticates executable compatibility and
+exact selections before publishing archive or optional campaign refs, and its
+incomplete direct roots participate in GC. This completes the automated
+T-CAM-5.9 contract. Hibernate/restart and representative offline-movement
+flights remain under T-CAM-5.8 and are not claimed here.
 
 The packed leaf now provides immutable bounded multi-object pack files, a
 checksummed persistent logical index with monotonic generations, full logical
@@ -1938,9 +1958,9 @@ closed. Tests cover one-object-to-multi-object pack identity stability,
 authenticated range reads, concurrent old-generation readers, restart replay,
 stale and corrupt plans, sparse logical deletion, pack-before-index recovery,
 index corruption, referenced-pack loss, empty objects, accounting, graph
-admission, and physical configuration mismatch. Phase 5's composed-tier, S3,
-global-GC, archival, and realistic operator flights remain under T-CAM-5.7
-through T-CAM-5.9 rather than weakening this completed leaf contract.
+admission, and physical configuration mismatch. The remaining representative
+composed-tier, S3, global-GC, archival, and operator flights are tracked by
+T-CAM-5.8 rather than weakening this completed leaf contract.
 
 The memory, directory, compressed-directory, encrypted-directory,
 compressed-encrypted-directory, and packed
@@ -3702,12 +3722,13 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   materialization selection is now
   restart-safe, exact-configuration/fact-bound, and consumed by both planning
   and apply; stale records cease to root checkpoint closures after unpin.
-  Policy-aware v2 planning and apply now evict reachable read-through cache
-  placements only across unique, physically independent cache/source
-  identities with graph-derived roles, EOF-authenticated required bytes, and
-  paired exact-generation fences. Broader transform-specific administration
-  and full operator-flight tests remain open. Implement
-  replay/debug, export/import, push/pull/sync, and plan/apply GC.
+  Policy-aware v2 planning and apply now cover read-through caches, non-write
+  tiers, and completed write-back staging across unique, physically independent
+  cache/source identities with graph-derived roles, EOF-authenticated required
+  bytes, and paired exact-generation fences. The stopped-owner archive and
+  store status/ensure/verify/GC/repack porcelain cover the bounded store-admin
+  subset. Replay/debug, the final command-family aliases, and full operator
+  flights remain open, so T-CAM-8.3 remains unchecked.
 - [ ] **T-CAM-8.4** Route existing run/search/fuzz/save/resume/fork/replay/triage
   through common branch-request and campaign primitives and remove parallel
   explicit-fork/search-expansion state models. The non-interactive local-QEMU
