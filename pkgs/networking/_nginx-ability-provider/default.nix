@@ -286,10 +286,10 @@ let
         else []
       );
     endpointRequest =
-      (childRequest context scope "endpoint" endpointEffects)
+      (childRequest context scope "endpoint" endpointEffects [])
       // {methods = ["materialize" "observe" "release"];};
     networkPolicyRequest =
-      (childRequest context scope "network-policy" networkPolicyEffects)
+      (childRequest context scope "network-policy" networkPolicyEffects [])
       // {
         methods = ["apply" "observe" "remove"];
         guarantees = [loopbackIngressGuarantee];

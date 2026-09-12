@@ -93,6 +93,15 @@ pub struct RuntimePackagePin {
     pub legacy_config: Option<ExposeConfigMeta>,
 }
 
+impl RuntimePackagePin {
+    /// Returns whether the authenticated ability graph owns package effects.
+    pub(super) fn uses_structured_effects(&self) -> bool {
+        self.ability
+            .as_ref()
+            .is_some_and(|ability| ability.activation_mode == "structured-effects")
+    }
+}
+
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }

@@ -654,88 +654,133 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
 }
 
 #[test]
-fn structured_runtime_does_not_project_legacy_exposed_units() {
+fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
     use super::runtime::{
-        RuntimeClosurePin, RuntimePackageOrigin, RuntimePackagePin, RuntimeRealisationPin,
-        RuntimeResolution,
+        RuntimeClosurePin, RuntimeExposeConfigPin, RuntimePackageOrigin, RuntimePackagePin,
+        RuntimeRealisationPin, RuntimeResolution,
     };
     use crate::types::{AbilityPackageMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
 
-    let output = "/nix/store/0000000000000000000000000000000a-postgresql-18.6";
-    let expose_artifact = "/nix/store/0000000000000000000000000000000b-expose-postgresql";
-    let nar_hash = format!("sha256:{}", "0".repeat(52));
-    let runtime = RuntimeResolution {
-        packages: BTreeMap::from([(
-            "postgresql".to_string(),
-            RuntimePackagePin {
-                version: "18.6".to_string(),
-                platform: "x86_64-linux".to_string(),
-                registry: "aos-core".to_string(),
-                origin: RuntimePackageOrigin::Registry,
-                store_path: output.to_string(),
+    let structured_package = |name: &str, version: &str, units: &[&str], store_ids: [char; 4]| {
+        let [runtime_id, expose_id, ability_id, config_id] = store_ids;
+        let runtime_hash = runtime_id.to_string().repeat(32);
+        let expose_hash = expose_id.to_string().repeat(32);
+        let ability_hash = ability_id.to_string().repeat(32);
+        let config_hash = config_id.to_string().repeat(32);
+        let output = format!("/nix/store/{runtime_hash}-{name}-{version}");
+        let expose_artifact = format!("/nix/store/{expose_hash}-expose-{name}");
+        let nar_hash = format!("sha256:{}", "0".repeat(52));
+
+        RuntimePackagePin {
+            version: version.to_string(),
+            platform: "x86_64-linux".to_string(),
+            registry: "aos-core".to_string(),
+            origin: RuntimePackageOrigin::Registry,
+            store_path: output.clone(),
+            nar_hash: nar_hash.clone(),
+            nar_size: 1,
+            config_dependency_outputs: BTreeMap::new(),
+            closure: vec![
+                RuntimeClosurePin {
+                    store_path_hash: runtime_hash,
+                    store_path: Some(output),
+                    realisations: vec![RuntimeRealisationPin {
+                        nar_hash: nar_hash.clone(),
+                        nar_size: 1,
+                    }],
+                },
+                RuntimeClosurePin {
+                    store_path_hash: expose_hash,
+                    store_path: Some(expose_artifact.clone()),
+                    realisations: vec![RuntimeRealisationPin {
+                        nar_hash: nar_hash.clone(),
+                        nar_size: 1,
+                    }],
+                },
+            ],
+            expose: Some(ExposeMeta {
+                target: format!("aos-pkg-{name}.target"),
+                units: units.iter().map(|unit| (*unit).to_string()).collect(),
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: ExposeConfigMeta::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: Some(ExposeArtifactMeta {
+                store_path: expose_artifact,
                 nar_hash: nar_hash.clone(),
                 nar_size: 1,
-                config_dependency_outputs: BTreeMap::new(),
-                closure: vec![
-                    RuntimeClosurePin {
-                        store_path_hash: "0000000000000000000000000000000a".to_string(),
-                        store_path: Some(output.to_string()),
-                        realisations: vec![RuntimeRealisationPin {
-                            nar_hash: nar_hash.clone(),
-                            nar_size: 1,
-                        }],
-                    },
-                    RuntimeClosurePin {
-                        store_path_hash: "0000000000000000000000000000000b".to_string(),
-                        store_path: Some(expose_artifact.to_string()),
-                        realisations: vec![RuntimeRealisationPin {
-                            nar_hash: nar_hash.clone(),
-                            nar_size: 1,
-                        }],
-                    },
-                ],
-                expose: Some(ExposeMeta {
-                    target: "aos-pkg-postgresql.target".to_string(),
-                    units: vec![
-                        "aos-pkg-postgresql.target".to_string(),
-                        "postgresql.service".to_string(),
+            }),
+            config_projection: Some(RuntimeExposeConfigPin {
+                config_output: format!("/nix/store/{config_hash}-{name}-config"),
+                config_nar_hash: format!("sha256:{}", "8".repeat(52)),
+                config: ExposeConfigMeta::default(),
+            }),
+            ability: Some(AbilityPackageMeta {
+                store_path: format!("/nix/store/{ability_hash}-{name}-abilities"),
+                nar_hash: format!("sha256:{}", "5".repeat(64)),
+                nar_size: 1,
+                references: Vec::new(),
+                manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+                manifest_size: 1,
+                package_digest: format!("sha256:{}", "7".repeat(64)),
+                activation_mode: "structured-effects".to_string(),
+                artifacts: Vec::new(),
+                provenance: format!("provenance/{name}.ability.intoto.jsonl"),
+            }),
+            legacy_config: None,
+        }
+    };
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([
+            (
+                "nginx".to_string(),
+                structured_package(
+                    "nginx",
+                    "1.29.1",
+                    &["aos-pkg-nginx.target", "nginx.service"],
+                    ['a', 'b', 'c', 'd'],
+                ),
+            ),
+            (
+                "postgresql".to_string(),
+                structured_package(
+                    "postgresql",
+                    "18.6",
+                    &[
+                        "aos-pkg-postgresql.target",
+                        "postgresql-init.service",
+                        "postgresql.service",
                     ],
-                    images: Vec::new(),
-                    requires: Vec::new(),
-                    config: ExposeConfigMeta::default(),
-                    provides: Vec::new(),
-                    uses: Vec::new(),
-                }),
-                expose_artifact: Some(ExposeArtifactMeta {
-                    store_path: expose_artifact.to_string(),
-                    nar_hash,
-                    nar_size: 1,
-                }),
-                config_projection: None,
-                ability: Some(AbilityPackageMeta {
-                    store_path: "/nix/store/0000000000000000000000000000000c-postgresql-abilities"
-                        .to_string(),
-                    nar_hash: format!("sha256:{}", "5".repeat(64)),
-                    nar_size: 1,
-                    references: Vec::new(),
-                    manifest_sha256: format!("sha256:{}", "6".repeat(64)),
-                    manifest_size: 1,
-                    package_digest: format!("sha256:{}", "7".repeat(64)),
-                    activation_mode: "structured-effects".to_string(),
-                    artifacts: Vec::new(),
-                    provenance: "provenance/postgresql.ability.intoto.jsonl".to_string(),
-                }),
-                legacy_config: Some(ExposeConfigMeta::default()),
-            },
-        )]),
-        edges: BTreeMap::from([("postgresql".to_string(), Vec::new())]),
+                    ['f', 'g', 'h', 'i'],
+                ),
+            ),
+        ]),
+        edges: BTreeMap::from([
+            ("nginx".to_string(), Vec::new()),
+            ("postgresql".to_string(), Vec::new()),
+        ]),
     };
     let mut manifest = serde_json::json!({
         "etc": {},
         "presets": [],
         "storePaths": [],
+        "configProjectionBindings": {
+            "nginx": {
+                "schema": "aos.expose-config-binding/v1",
+                "schema_hash": format!("sha256:{}", "9".repeat(64))
+            },
+            "postgresql": {
+                "schema": "aos.expose-config-binding/v1",
+                "schema_hash": format!("sha256:{}", "9".repeat(64))
+            }
+        },
         "ownership": {
             "etc": {},
+            "units": {},
+            "jobScripts": {},
+            "users": {},
             "presets": {},
             "storePaths": {}
         }
@@ -743,8 +788,140 @@ fn structured_runtime_does_not_project_legacy_exposed_units() {
 
     enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime).unwrap();
 
-    assert_eq!(manifest["etc"], serde_json::json!({}));
+    for unit in [
+        "aos-pkg-nginx.target",
+        "nginx.service",
+        "aos-pkg-postgresql.target",
+        "postgresql-init.service",
+        "postgresql.service",
+    ] {
+        assert!(
+            manifest["etc"]
+                .get(format!("systemd/system/{unit}"))
+                .is_some()
+        );
+    }
+    assert!(
+        manifest["etc"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|path| !path.contains("multi-user.target.wants"))
+    );
     assert_eq!(manifest["presets"], serde_json::json!([]));
+    assert_eq!(manifest["configProjections"], serde_json::json!({}));
+    for package in ["nginx", "postgresql"] {
+        let output = &manifest["packageOutputs"][package];
+        assert!(output.get("expose").is_some());
+        assert!(output.get("config_projection").is_some());
+        assert!(output.get("ability").is_some());
+        assert!(output.get("permissions").is_none());
+    }
+
+    let sidecar = |name: &str, store_id: char| {
+        serde_json::json!({
+            "store_path": format!(
+                "/nix/store/{}-{name}",
+                store_id.to_string().repeat(32)
+            ),
+            "nar_hash": format!("sha256:{}", "1".repeat(52)),
+            "nar_size": 1,
+            "references": [],
+            "document": format!("{name}.json"),
+            "document_sha256": format!("sha256:{}", "2".repeat(64)),
+            "document_size": 1
+        })
+    };
+    let activation = super::enrich_ability_activation(
+        Some(serde_json::json!({
+            "schema": "aos.ability.activation-input/v1",
+            "required_features": ["abilities-v1", "ability-effects-v1"],
+            "desired_state": sidecar("desired-state", 'j'),
+            "authenticated_policy_set": sidecar("policy-set", 'k')
+        })),
+        &runtime,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(activation["packages"][0]["name"], "nginx");
+    assert_eq!(
+        activation["packages"][0]["ability_store_path"],
+        "/nix/store/cccccccccccccccccccccccccccccccc-nginx-abilities"
+    );
+    assert_eq!(activation["packages"][1]["name"], "postgresql");
+
+    super::retain_ability_sidecar_roots(manifest.as_object_mut().unwrap(), &activation).unwrap();
+    let content_hash = format!("sha256:{}", "a".repeat(64));
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .extend(serde_json::Map::from_iter([
+            (
+                "schema".to_string(),
+                serde_json::json!(super::materialize::ConfigManifest::SCHEMA_V3),
+            ),
+            ("units".to_string(), serde_json::json!({})),
+            ("jobScripts".to_string(), serde_json::json!({})),
+            ("users".to_string(), serde_json::json!([])),
+            ("module_abi".to_string(), serde_json::json!(1)),
+            (
+                "inputs".to_string(),
+                serde_json::json!({
+                    "base_lib": {
+                        "store_path": "/nix/store/11111111111111111111111111111111-base-lib",
+                        "abi_hash": content_hash,
+                        "module_abi": 1
+                    },
+                    "evaluator": {
+                        "store_path": "/nix/store/22222222222222222222222222222222-evaluator",
+                        "store_hash": format!("sha256:{}", "b".repeat(40))
+                    },
+                    "config_modules": {
+                        "closure_hash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                        "count": 0,
+                        "store_paths": [],
+                        "nar_hashes": [],
+                        "package_names": [],
+                        "module_abi_compat": []
+                    },
+                    "host_nix": {
+                        "content_hash": content_hash,
+                        "trust_mode": "platform",
+                        "platform": "test",
+                        "signer_key": null,
+                        "store_path": "/nix/store/33333333333333333333333333333333-host-nix"
+                    },
+                    "expected_current_generation": 7,
+                    "ability_activation": activation,
+                    "instance_facts": {
+                        "facts_hash": content_hash,
+                        "platform": "test",
+                        "store_path": "/nix/store/44444444444444444444444444444444-facts"
+                    }
+                }),
+            ),
+        ]));
+    let decoded: super::materialize::ConfigManifest =
+        serde_json::from_value(manifest.clone()).unwrap();
+    decoded.validate().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest_path = tmp.path().join("manifest.json");
+    let etc_root = tmp.path().join("etc");
+    std::fs::write(&manifest_path, serde_json::to_vec(&decoded).unwrap()).unwrap();
+    std::fs::create_dir(&etc_root).unwrap();
+    let error = super::materialize::materialize_manifest(
+        &manifest_path,
+        &etc_root,
+        super::materialize::DEFAULT_JOB_SCRIPTS_RUNTIME_DIR,
+    )
+    .expect_err("legacy materialization must not execute structured package metadata");
+    assert!(
+        error
+            .to_string()
+            .contains("legacy materialization is disabled")
+    );
+    assert_eq!(std::fs::read_dir(&etc_root).unwrap().count(), 0);
 }
 
 #[test]

@@ -2256,17 +2256,6 @@ fn enrich_exposed_units(
                 crate::types::validate_expose_artifact_meta(artifact)
                     .with_context(|| format!("validating runtime expose artifact for {package}"))?;
 
-                if pin
-                    .ability
-                    .as_ref()
-                    .is_some_and(|ability| ability.activation_mode == "structured-effects")
-                {
-                    // The structured graph is the sole lifecycle owner. Retain
-                    // legacy metadata for old-client publication without also
-                    // enabling its units in a native activation generation.
-                    continue;
-                }
-
                 let unit_owner = existing_store_owners
                     .get(&artifact.store_path)
                     .and_then(serde_json::Value::as_str)
@@ -2282,6 +2271,12 @@ fn enrich_exposed_units(
                         unit_owner.to_string(),
                         package.clone(),
                     ));
+                }
+                if pin.uses_structured_effects() {
+                    // The native dispatcher still needs the authenticated unit
+                    // files to load concrete units. The structured graph owns
+                    // start/stop lifecycle, so omit only legacy enablement.
+                    continue;
                 }
                 entries.push((
                     format!("systemd/system/multi-user.target.wants/{}", expose.target),
@@ -2387,10 +2382,22 @@ fn enrich_expose_config_projections(
     let bindings = bindings
         .as_object()
         .context("evaluated configProjectionBindings must be an object")?;
+    let mut bindings = bindings.clone();
+    for (package, pin) in &runtime.packages {
+        if pin.uses_structured_effects() {
+            // The config module remains available to parse old host settings,
+            // but its rendered files and unit actions belong to the structured
+            // effect graph once that graph is selected.
+            bindings.remove(package);
+        }
+    }
     let expected = runtime
         .packages
         .iter()
-        .filter_map(|(package, pin)| pin.config_projection.as_ref().map(|_| package.as_str()))
+        .filter_map(|(package, pin)| {
+            (!pin.uses_structured_effects() && pin.config_projection.is_some())
+                .then_some(package.as_str())
+        })
         .collect::<BTreeSet<_>>();
     let actual = bindings.keys().map(String::as_str).collect::<BTreeSet<_>>();
     if expected != actual {

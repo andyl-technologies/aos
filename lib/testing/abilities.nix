@@ -310,6 +310,9 @@
   productionKubernetes = import ../../tests/abilities/production-kubernetes.nix {
     inherit pkgs lib;
   };
+  productionPackageAdoption = import ../../tests/abilities/production-package-adoption.nix {
+    inherit pkgs lib;
+  };
   acceptedEffectImageFamily =
     (builtins.head
       (effectFixture.familyPlan {
@@ -698,6 +701,7 @@ in
   assert postgresqlReconciliation.reconcile_stopped == ["materialize" "observe" "start" "stop"];
   assert postgresqlReconciliation.reconcile_divergent == ["materialize" "observe" "restart" "stop"];
   assert productionKubernetes;
+  assert productionPackageAdoption;
   assert fails (lib.abilities.effects.normalize [] effectFixture.missingReference);
   assert fails (lib.abilities.effects.normalize [] effectFixture.cycle);
   assert fails (lib.abilities.effects.normalize [] effectFixture.incompleteBoolean);

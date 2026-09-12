@@ -726,8 +726,6 @@ pub fn validate_supported_package_meta_with(
         }
     }
 
-    validate_ability_activation_ownership(meta)?;
-
     if meta.expose.is_some() {
         require_feature(meta, FEATURE_EXPOSE_V1)?;
         require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
@@ -844,30 +842,6 @@ pub fn validate_supported_package_meta_with(
 
     validate_permissions_meta(&meta.name, &meta.permissions)?;
 
-    Ok(())
-}
-
-/// Preserves one activation owner for packages using structured effects.
-fn validate_ability_activation_ownership(meta: &PackageMeta) -> Result<()> {
-    let Some(ability) = &meta.ability else {
-        return Ok(());
-    };
-    if ability.activation_mode != "structured-effects" {
-        return Ok(());
-    }
-
-    let carries_legacy_activation = rfc0001_metadata_requires_provenance(
-        meta.expose.as_ref(),
-        meta.expose_artifact.as_ref(),
-        &meta.permissions,
-        meta.bpf_lsm.as_ref(),
-    ) || meta.config_module.is_some();
-    if carries_legacy_activation {
-        bail!(
-            "package '{}' declares structured ability effects together with legacy activation metadata",
-            meta.name
-        );
-    }
     Ok(())
 }
 
@@ -6555,32 +6529,25 @@ provenance = "provenance/firewall.jsonl"
     }
 
     #[test]
-    fn structured_ability_cannot_retain_legacy_activation_owner() {
+    fn ability_aware_reader_accepts_structured_effects_with_legacy_metadata() {
         let mut meta = sample_package_meta();
         meta.requires_features = vec![
+            FEATURE_ATTESTATION_V1.to_string(),
             FEATURE_ABILITIES_V1.to_string(),
             FEATURE_ABILITY_EFFECTS_V1.to_string(),
             FEATURE_CONFIG_MODULE_V1.to_string(),
         ];
         meta.config_module = Some(sample_config_module());
         meta.ability = Some(structured_ability_meta());
+        meta.attestation.provenance =
+            Some("provenance/f/firewall/x86_64-linux/package.intoto.jsonl".to_string());
 
-        let error = validate_supported_package_meta_with(
-            &meta,
-            PACKAGE_META_FORMAT,
-            &[
-                FEATURE_ABILITIES_V1,
-                FEATURE_ABILITY_EFFECTS_V1,
-                FEATURE_CONFIG_MODULE_V1,
-            ],
-        )
-        .expect_err("structured effects and legacy configuration activation need one owner");
+        validate_ability_aware_package_meta(&meta)
+            .expect("the structured runtime can retain legacy metadata for old readers");
 
-        assert!(
-            error
-                .to_string()
-                .contains("structured ability effects together with legacy activation metadata")
-        );
+        let error = validate_supported_package_meta(&meta)
+            .expect_err("ordinary readers must still reject structured effects");
+        assert!(error.to_string().contains(FEATURE_ABILITY_EFFECTS_V1));
     }
 
     fn structured_ability_meta() -> AbilityPackageMeta {
