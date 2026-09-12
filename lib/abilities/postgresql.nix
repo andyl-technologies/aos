@@ -20,7 +20,7 @@
   storageEffects =
     interface
     "aos.host-storage-effects"
-    "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f";
+    "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
   networkPolicyEffects =
     interface
     "aos.host-network-policy-effects"
@@ -108,6 +108,8 @@
   storageRequest = schemas.record {
     fields = {
       cluster = localKey;
+      lifetime = schemas.enum ["instance" "persistent"];
+      owner = schemas.enum ["postgresql-slot" "root"];
       purpose = localKey;
     };
     optional = [];
@@ -270,7 +272,7 @@
         action = "ensure";
       }
       storageRequest {
-        path = runtimeOutput path "persistent";
+        path = runtimeOutput path "instance";
       }
       storageObservation;
     observe =
@@ -279,7 +281,7 @@
         action = "observe";
       }
       storageRequest {
-        path = runtimeOutput path "persistent";
+        path = runtimeOutput path "instance";
       }
       storageObservation;
     release =
@@ -398,13 +400,14 @@
     methods,
     persistent,
     guarantees ? [],
+    selectedLifecycle ? lifecycle persistent,
   }:
     lib.abilities.define {
       interface = selected.name;
       abi = selected.abi;
       inherit requestSchema methods handler;
       outputs = {};
-      lifecycle = lifecycle persistent;
+      lifecycle = selectedLifecycle;
       inherit guarantees;
       aggregation = aggregation group;
       requires = {};
