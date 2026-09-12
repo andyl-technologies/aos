@@ -195,6 +195,7 @@ pub use model::{
     lint_guidance_determinism_source, materialize_search_plans, preemption_branch_decisions,
     reduce, run_adaptive_strategy_selection, step, try_step,
 };
+pub use model::{LegacyScheduleDecisionKind, LegacyScheduleMigrationError};
 pub use node_time::{NodeTimeMapping, NodeTimeProjection};
 #[cfg(feature = "test-double")]
 pub use scheduler::SchedulerRunCeilingHandoffError;
