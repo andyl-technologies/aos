@@ -465,7 +465,7 @@ invalidates its observation.
 
 `qualification/native-adapter-surface.json` is the canonical version-1 source
 for the adapter matrix. The `aos-package` build validates its closed limits and
-compiles the same 12-adapter, 47-method table used by dispatcher and
+compiles the same 13-adapter, 50-method table used by dispatcher and
 host-resource preflight. Its exact canonical digest is pinned by both the Rust
 generator and Nix policy; changing the surface requires a deliberate schema and
 digest update. Each method records its full interface key (name, ABI, and
@@ -473,7 +473,7 @@ descriptor), authority scope, mutation or observation class, and exact
 reconcile and cancellation routes.
 Qualification expands those methods over 28 durability, revocation, upgrade,
 adoption, retained-target, dependency, and foreign-resource scenarios.
-The resulting 1,316 cells and 5,687 postconditions retain every dimension, full
+The resulting 1,400 cells and 6,050 postconditions retain every dimension, full
 interface key, and exact surface digest.
 Their mandatory postconditions include durable classification, one resource
 owner, dependent nonexecution after failure, and independent confirmation that
@@ -483,8 +483,8 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 720 cells and 2,889
-of the 5,687 postconditions. The primary cohort covers managed-configuration
+independent published-image cohorts that currently exercise 765 cells and 3,069
+of the 6,050 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
 independently injected foreign resource and required-success blocking of the
@@ -492,21 +492,21 @@ corresponding legacy systemd `reload`. A separate production PostgreSQL cohort
 covers compatible `materialize` adoption, incompatible `materialize` rejection
 before effects,
 interrupted `restart` reconciliation, and `restart` activation of the retained
-target under current authority. The candidate package runtime also runs all 564
+target under current authority. The candidate package runtime also runs all 600
 role-revocation timing cells through the real admission and dispatch fences,
 using the published interface descriptors and a no-dispatch sentinel adapter.
 The same candidate runtime proves trusted-clock deadline expiry for every
 method, injected cleanup and release failures for every method, and durable
 unsupported-cancellation intervention for the six methods without a declared
-cancellation route. These 147 cells use runtime-owned controls and never infer
+cancellation route. These 156 cells use runtime-owned controls and never infer
 provider behavior from a generic adapter. The evidence records each declared
 provider route separately from the type-compatible fixture route, which is
 never invoked for these controls. Each run retains an execution
 journal, reservation ledger, exact re-loadable plan bundle, and an independent
-foreign-resource sentinel. The 41 cancellation cells with a declared route
+foreign-resource sentinel. The 44 cancellation cells with a declared route
 remain explicit failures until each production provider's cancellation handler
 has an exact semantic oracle. A generic indeterminate cancellation callback is
-insufficient. The other 596 cells remain explicit failures, so the mandatory
+insufficient. The other 635 cells remain explicit failures, so the mandatory
 aggregate gate cannot pass. Expand the mapping only with exact cell-bound
 subjects and independent provider-specific observations.
 
