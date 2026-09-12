@@ -603,6 +603,14 @@
         system.config.boot.initrd.systemd.services."mount-var".requiredBy)
     then throw "initrd-fs.target must require the persistent /var substrate"
     else if
+      system.config.boot.initrd.systemd.services."mount-var".unitConfig.DefaultDependencies
+      != "no"
+    then throw "the initrd /var mount must not pull stage-2 default dependencies into switch-root"
+    else if
+      system.config.boot.initrd.systemd.services."nix-overlay-setup".unitConfig.DefaultDependencies
+      != "no"
+    then throw "the initrd /nix overlay must not pull stage-2 default dependencies into switch-root"
+    else if
       !(builtins.elem
         "aos-provisioning-eval.service"
         system.config.boot.initrd.systemd.services.aos-repart.requires)

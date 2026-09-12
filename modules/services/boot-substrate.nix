@@ -259,9 +259,12 @@
         ++ lib.optional (!zfsState && disksUnit != null) disksUnit
         ++ lib.optional zfsState "aos-zfs-unlock.service"
         ++ ["systemd-udev-settle.service"];
-      unitConfig = lib.optionalAttrs (!zfsState) {
-        ConditionPathExists = "/dev/disk/by-partlabel/var";
-      };
+      # Normal service defaults pull stage-2 targets back into the switch-root isolate.
+      unitConfig =
+        {DefaultDependencies = "no";}
+        // lib.optionalAttrs (!zfsState) {
+          ConditionPathExists = "/dev/disk/by-partlabel/var";
+        };
       environment.PATH = bootPath + lib.optionalString zfsState ":${zfsPackage}/bin:${zfsPackage}/sbin";
       serviceConfig = {
         Type = "oneshot";
@@ -449,6 +452,8 @@
         "mount-var.service"
         "initrd-root-fs.target"
       ];
+      # This initrd-only mount must not acquire normal-boot target dependencies.
+      unitConfig.DefaultDependencies = "no";
       environment.PATH = bootPath;
       serviceConfig = {
         Type = "oneshot";
