@@ -66,7 +66,8 @@
     x86_64 = "x64";
     aarch64 = "aa64";
   };
-  efiArchitecture = efiArchitectures.${stdenv.hostPlatform.constraints.cpu}
+  efiArchitecture =
+    efiArchitectures.${stdenv.hostPlatform.constraints.cpu}
     or (throw "aos-uki: unsupported EFI target ${stdenv.hostPlatform.system}");
 
   # Assembly and signing run on the build platform; only the stub and kernel

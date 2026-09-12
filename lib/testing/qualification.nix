@@ -18,7 +18,11 @@
           else "aos.release.qualification-scenarios/v2";
         inherit platform scenarios;
       }
-      // (if caseScenarios == {} then {} else {case_scenarios = caseScenarios;}));
+      // (
+        if caseScenarios == {}
+        then {}
+        else {case_scenarios = caseScenarios;}
+      ));
   };
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
   registryPath = "${registry}/scenarios.json";
