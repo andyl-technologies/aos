@@ -148,6 +148,59 @@
     pname = "oci-fixture-multi-platform-static-abilities";
     contracts = [arm64AbilityContract amd64AbilityContract];
   };
+  forgeStaticAbilityContract = pname: sourceContract:
+    pkgs.runCommand pname {
+      buildDeps = [pkgs.coreutils pkgs.jq];
+      passthru = sourceContract.passthru;
+    } ''
+      mkdir -p "$out"
+      jq -cS '.platforms[0].semantic_validation_was_bypassed = true' \
+        ${sourceContract}/contract.json > "$out/contract.with-newline.json"
+      size=$(stat -c %s "$out/contract.with-newline.json")
+      truncate -s "$((size - 1))" "$out/contract.with-newline.json"
+      mv "$out/contract.with-newline.json" "$out/contract.json"
+
+      contract_size=$(stat -c %s "$out/contract.json")
+      contract_hex=$(sha256sum "$out/contract.json" | cut -d ' ' -f 1)
+      jq -cS -n \
+        --arg mediaType ${lib.escapeShellArg sourceContract.passthru.mediaType} \
+        --arg digest "sha256:$contract_hex" \
+        --argjson size "$contract_size" \
+        '{mediaType: $mediaType, digest: $digest, size: $size}' \
+        > "$out/descriptor.json"
+    '';
+  forgedPlatformAbilityContract =
+    forgeStaticAbilityContract
+    "oci-fixture-forged-platform-static-abilities"
+    amd64AbilityContract;
+  forgedAggregateAbilityContract = (forgeStaticAbilityContract
+    "oci-fixture-forged-aggregate-static-abilities"
+    multiPlatformAbilityContract).overrideAttrs (_: {
+    passthru =
+      multiPlatformAbilityContract.passthru
+      // {
+        inputContractPaths = map builtins.toString [
+          arm64AbilityContract
+          forgedPlatformAbilityContract
+        ];
+      };
+  });
+
+  # The probe makes the integration call observable while the production
+  # validator assertions below establish that the same forged bytes fail.
+  semanticValidationProbe = pkgs.writeShellScriptBin "aos-ability-contract-validator" ''
+    set -eu
+    test "$1" = static-contract
+    if ${pkgs.jq}/bin/jq -e '.platforms[] | has("semantic_validation_was_bypassed")' "$2" >/dev/null; then
+      . "$NIX_ATTRS_SH_FILE"
+      touch "''${outputs[out]}/semantic-validator-observed-forged-marker"
+    fi
+  '';
+  probeOci = import ../../lib/build/oci {
+    inherit lib;
+    inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    abilityContractValidator = semanticValidationProbe;
+  };
 
   mkPlatformImage = {
     architecture,
@@ -202,6 +255,53 @@
     abilityContract = changedAmd64AbilityContract;
   };
   arm64Image = mkPlatformImage {architecture = "arm64";};
+  forgedAmd64Image =
+    pkgs.runCommand "oci-fixture-forged-amd64-image" {
+      buildDeps = [pkgs.coreutils pkgs.jq];
+      passthru =
+        amd64Image.passthru
+        // {
+          checkedAbilityContract = forgedPlatformAbilityContract;
+        };
+    } ''
+      cp -a ${amd64Image}/. "$out"
+      chmod -R u+w "$out"
+      cp ${forgedPlatformAbilityContract}/contract.json "$out/static-ability-contract.json"
+      cp ${forgedPlatformAbilityContract}/descriptor.json \
+        "$out/static-ability-contract.descriptor.json"
+
+      contract_digest=$(jq -r .digest ${forgedPlatformAbilityContract}/descriptor.json)
+      jq -cS \
+        --arg digest "$contract_digest" \
+        '.annotations."dev.andyl.aos.ability-contract.digest" = $digest' \
+        ${amd64Image}/manifest.json > "$out/manifest.with-newline.json"
+      manifest_size=$(stat -c %s "$out/manifest.with-newline.json")
+      truncate -s "$((manifest_size - 1))" "$out/manifest.with-newline.json"
+      mv "$out/manifest.with-newline.json" "$out/manifest.json"
+
+      manifest_size=$(stat -c %s "$out/manifest.json")
+      manifest_hex=$(sha256sum "$out/manifest.json" | cut -d ' ' -f 1)
+      cp "$out/manifest.json" "$out/layout/blobs/sha256/$manifest_hex"
+      jq -cS \
+        --arg digest "sha256:$manifest_hex" \
+        --argjson size "$manifest_size" \
+        '.digest = $digest | .size = $size' \
+        ${amd64Image}/manifest-descriptor.json > "$out/manifest-descriptor.with-newline.json"
+      descriptor_size=$(stat -c %s "$out/manifest-descriptor.with-newline.json")
+      truncate -s "$((descriptor_size - 1))" "$out/manifest-descriptor.with-newline.json"
+      mv "$out/manifest-descriptor.with-newline.json" "$out/manifest-descriptor.json"
+    '';
+  forgedMarkerImageProbe = probeOci.mkImageLayout {
+    pname = "oci-fixture-forged-marker-image-probe";
+    layers = [baseLayerA applicationDelta abilityLayer metadata];
+    runtimeAudit = runtimeAudit;
+    abilityContract = forgedPlatformAbilityContract;
+    platform = {
+      architecture = "amd64";
+      os = "linux";
+    };
+    config.entrypoint = ["/bin/base-tool"];
+  };
   multiPlatform = oci.mkMultiPlatformIndex {
     pname = "oci-fixture-multi-platform";
     images = [arm64Image amd64Image];
@@ -210,6 +310,11 @@
     annotations = {
       "org.opencontainers.image.title" = "AOS multi-platform fixture";
     };
+  };
+  forgedMarkerIndexProbe = probeOci.mkMultiPlatformIndex {
+    pname = "oci-fixture-forged-marker-index-probe";
+    images = [arm64Image forgedAmd64Image];
+    abilityContract = forgedAggregateAbilityContract;
   };
   # With one platform and identical empty index annotations, the composed
   # image-index blob is byte-identical to the input layout's index blob. This
@@ -424,6 +529,11 @@ in
       changedAmd64Image
       arm64Image
       multiPlatform
+      forgedPlatformAbilityContract
+      forgedAggregateAbilityContract
+      forgedAmd64Image
+      forgedMarkerImageProbe
+      forgedMarkerIndexProbe
       dockerArchive
     ];
     dontStrip = true;
@@ -440,6 +550,21 @@ in
             echo "FAIL: $1" >&2
             exit 1
           }
+
+          test -f ${forgedMarkerImageProbe}/semantic-validator-observed-forged-marker \
+            || fail "image layout bypassed static ability semantic validation"
+          test -f ${forgedMarkerIndexProbe}/semantic-validator-observed-forged-marker \
+            || fail "multi-platform index bypassed static ability semantic validation"
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${forgedPlatformAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "forged image-layout static ability contract passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${forgedAggregateAbilityContract}/contract.json \
+            container - 2>/dev/null; then
+            fail "forged aggregate static ability contract passed semantic validation"
+          fi
 
           ${oci.common.realizedStorePolicyScript}
 

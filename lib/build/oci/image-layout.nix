@@ -1,9 +1,10 @@
 ##! lib/build/oci/image-layout.nix -- OCI image layout and archive assembly.
 ##!
 ##! The assembler treats layer outputs as untrusted build inputs: it verifies
-##! descriptor syntax, size, SHA-256, and DiffID shape before copying blobs.  All
-##! layout members are regular files, so the result can be copied away from the
-##! Nix store without retaining or resolving its input derivations.
+##! descriptor syntax, size, SHA-256, and DiffID shape before copying blobs.  It
+##! also reruns static ability contract semantics rather than trusting a Nix
+##! passthru marker.  All layout members are regular files, so the result can be
+##! copied away from the Nix store without retaining its input derivations.
 {
   lib,
   mkDerivation,
@@ -12,6 +13,7 @@
   gzip,
   jq,
   tar,
+  abilityContractValidator,
   common,
 }: {
   layers,
@@ -169,12 +171,21 @@
     lib.concatMapStringsSep " "
     (layer: lib.escapeShellArg (builtins.toString layer))
     layers;
+  abilityContractPlatformArguments = lib.concatMapStringsSep " " lib.escapeShellArg [
+    checkedPlatform.os
+    checkedPlatform.architecture
+    (
+      if checkedPlatform.variant == null
+      then "-"
+      else checkedPlatform.variant
+    )
+  ];
 in
   builtins.deepSeq validated (mkDerivation {
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar];
+    buildDeps = [abilityContractValidator coreutils findutils gzip jq tar];
 
     outputChecks.out = {};
     inherit imageSpec;
@@ -204,6 +215,9 @@ in
           jq '.imageSpec' "$NIX_ATTRS_JSON_FILE" > image-spec.input.json
           test -f ${checkedAbilityContract}/contract.json
           test -f ${checkedAbilityContract}/descriptor.json
+          ${abilityContractValidator}/bin/aos-ability-contract-validator \
+            static-contract ${checkedAbilityContract}/contract.json \
+            container - ${abilityContractPlatformArguments}
           contract_digest=$(jq -r .digest ${checkedAbilityContract}/descriptor.json)
           contract_media_type=$(jq -r .mediaType ${checkedAbilityContract}/descriptor.json)
           contract_size=$(jq -r .size ${checkedAbilityContract}/descriptor.json)

@@ -3,7 +3,8 @@
 ##! This builder composes already-built platform manifests without unpacking a
 ##! layer.  Platform descriptors are sorted by canonical platform identity, and
 ##! every referenced blob is copied into the resulting layout with digest and
-##! collision verification.
+##! collision verification.  Static ability semantics are rerun for both the
+##! aggregate contract and each input image contract.
 {
   lib,
   mkDerivation,
@@ -12,6 +13,7 @@
   gzip,
   jq,
   tar,
+  abilityContractValidator,
   common,
 }: {
   images,
@@ -115,7 +117,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [coreutils findutils gzip jq tar];
+    buildDeps = [abilityContractValidator coreutils findutils gzip jq tar];
 
     outputChecks.out = {};
     inherit indexSpec;
@@ -140,6 +142,8 @@ in
           jq '.indexSpec' "$NIX_ATTRS_JSON_FILE" > index-spec.input.json
           test -f ${checkedAbilityContract}/contract.json
           test -f ${checkedAbilityContract}/descriptor.json
+          ${abilityContractValidator}/bin/aos-ability-contract-validator \
+            static-contract ${checkedAbilityContract}/contract.json container -
           contract_digest=$(jq -r .digest ${checkedAbilityContract}/descriptor.json)
           contract_media_type=$(jq -r .mediaType ${checkedAbilityContract}/descriptor.json)
           contract_size=$(jq -r .size ${checkedAbilityContract}/descriptor.json)
@@ -171,6 +175,12 @@ in
             test -f "$image_path/manifest.json"
             test -f "$image_path/static-ability-contract.json"
             test -f "$image_path/static-ability-contract.descriptor.json"
+            platform_os=$(jq -er .platform.os "$image_path/manifest-descriptor.json")
+            platform_architecture=$(jq -er .platform.architecture "$image_path/manifest-descriptor.json")
+            platform_variant=$(jq -r '.platform.variant // "-"' "$image_path/manifest-descriptor.json")
+            ${abilityContractValidator}/bin/aos-ability-contract-validator \
+              static-contract "$image_path/static-ability-contract.json" \
+              container - "$platform_os" "$platform_architecture" "$platform_variant"
             jq -e '
               type == "object"
               and .mediaType == ${builtins.toJSON common.manifestMediaType}
