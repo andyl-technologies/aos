@@ -3,7 +3,7 @@
 //! Materialization requests carry the exact canonical portable sandbox
 //! specification that declares the slot. Inventory carries only the proven
 //! descriptor and the broker's lossless node-local lifecycle record. Mount
-//! 1.0 supports materialization, rematerialization, and reap, and reports the
+//! 2.0 supports materialization, rematerialization, and reap, and reports the
 //! exact current namespace-generation anchors that contain Ready slots:
 //!
 //! ```text
@@ -438,7 +438,7 @@ pub fn attachment_anchor_handle_v1(
         .into()
 }
 
-/// Decodes and validates one hostile Mount 1.0 destination-slot effect body.
+/// Decodes and validates one hostile Mount 2.0 destination-slot effect body.
 ///
 /// # Errors
 ///
@@ -1152,7 +1152,7 @@ mod tests {
         let (_, spec_bytes, spec_descriptor) = specification([4; 16]);
         ApplyDestinationSlotRequest {
             header: Some(RequestHeader {
-                protocol_major: 1,
+                protocol_major: 2,
                 protocol_minor: 0,
                 request_id: vec![operation_byte; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
@@ -1393,7 +1393,7 @@ mod tests {
             Err(ProtocolValidationError::Protocol(_))
         ));
 
-        wrong_version.header.get_or_insert_default().protocol_major = 2;
+        wrong_version.header.get_or_insert_default().protocol_major = 1;
         wrong_version.header.get_or_insert_default().protocol_minor = 0;
         assert!(matches!(
             decode_destination_slot_request(&wrong_version.encode_to_vec(), peer(), policy(), 1),
@@ -1607,7 +1607,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_and_inventory_codecs_preserve_the_complete_mount_1_0_contract() {
+    fn apply_and_inventory_codecs_preserve_the_complete_mount_2_0_contract() {
         let ready = inventory_record(
             4,
             30,

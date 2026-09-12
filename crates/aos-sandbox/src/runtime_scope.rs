@@ -58,6 +58,8 @@ mod namespace_target;
 mod tests;
 mod transport;
 
+#[cfg(all(test, feature = "kernel-tests"))]
+pub(crate) use current::tests::CurrentNamespaceFixture;
 pub use current::{
     CurrentAssignmentTarget, CurrentRuntimeScope, CurrentRuntimeScopeError,
     CurrentRuntimeScopePolicy, RuntimeScopeHolder,

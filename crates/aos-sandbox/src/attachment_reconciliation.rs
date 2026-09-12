@@ -1013,13 +1013,18 @@ mod tests {
         AssignmentFence, Descriptor, InventoryMountResourcesResponse, MountAssignmentBinding,
         MountAttributes as WireMountAttributes, MountInventoryRecord,
         MountInventorySourceAuthority, MountKernelObservation, MountOperationCorrelation,
-        MountPublicationCorrelation, MountRecipe,
+        MountPublicationCorrelation, MountRecipe, MountSourceProofClass,
     };
-    use aos_sandbox_core::format::encode_view_source;
+    use aos_sandbox_core::format::{decode_view_source, encode_view_source};
     use aos_sandbox_core::model::{AttachmentLease, MountAttributes};
     use aos_sandbox_core::{
-        AttachmentId, AttachmentSlotId, DesiredGeneration, IncarnationId, LeaseId, MediaType,
-        NamespaceGeneration, ObjectDescriptor, ObjectDigest, Revision, SandboxId, ViewId,
+        AttachmentId, AttachmentSlotId, DecodeLimits, DesiredGeneration, IncarnationId, LeaseId,
+        MediaType, NamespaceGeneration, ObjectDescriptor, ObjectDigest, Revision, SandboxId,
+        ViewId,
+    };
+    use aos_sandbox_protocol::{
+        MountSourcePhysicalProofV1, MountSourceProofClassV1, SourceRealizationBindingV1,
+        mount_source_physical_proof_digest_v1, mount_source_realization_handle_v1,
     };
     use buffa::Message as _;
 
@@ -1131,6 +1136,39 @@ mod tests {
     }
 
     fn installed_wire_resource() -> MountInventoryRecord {
+        let source = source_handle();
+        let source_binding_digest = *SourceRealizationBindingV1::new(
+            [6; 16],
+            2,
+            ObjectDescriptor::new(
+                MediaType::new("application/vnd.aos.sandbox.view.v1+cbor").unwrap(),
+                ObjectDigest::from_bytes([7; 32]),
+                8,
+            ),
+            source.clone(),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
+            None,
+        )
+        .unwrap()
+        .digest()
+        .as_bytes();
+        let source_physical_proof_digest =
+            mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+                binding_digest: source_binding_digest,
+                proof_class: MountSourceProofClassV1::ImmutableTree,
+                provider_authority_id: [30; 16],
+                provider_authority_generation: 31,
+                provider_authority_digest: [24; 32],
+                provider_resource_id: [25; 32],
+                provider_resource_generation: 26,
+                provider_resource_digest: [27; 32],
+                provider_catalog_generation: 28,
+                provider_catalog_digest: [29; 32],
+                kernel_boot_id: [12; 16],
+                device: 32,
+                inode: 33,
+                unique_mount_id: 23,
+            });
         MountInventoryRecord {
             mount_handle: vec![11; 32],
             resource_revision: 1,
@@ -1174,9 +1212,30 @@ mod tests {
                 source_view_id: vec![6; 16],
                 source_consistency:
                     MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION.into(),
-                source_handle: encode_view_source(&source_handle()),
+                source_handle: encode_view_source(&source),
                 source_authority:
                     MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT.into(),
+                source_binding_digest: source_binding_digest.to_vec(),
+                source_realization_handle: mount_source_realization_handle_v1(
+                    source_binding_digest,
+                    source_physical_proof_digest,
+                )
+                .to_vec(),
+                source_physical_proof_digest: source_physical_proof_digest.to_vec(),
+                source_unique_mount_id: 23,
+                source_provider_authority_id: vec![30; 16],
+                source_provider_authority_generation: 31,
+                source_provider_authority_digest: vec![24; 32],
+                source_provider_resource_id: vec![25; 32],
+                source_provider_resource_generation: 26,
+                source_provider_resource_digest: vec![27; 32],
+                source_provider_catalog_generation: 28,
+                source_provider_catalog_digest: vec![29; 32],
+                source_kernel_boot_id: vec![12; 16],
+                source_device: 32,
+                source_inode: 33,
+                source_proof_class: MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE
+                    .into(),
                 ..Default::default()
             })
             .into(),
@@ -1215,9 +1274,88 @@ mod tests {
         }
     }
 
-    fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRecord {
+    fn validated_resource(mut record: MountInventoryRecord) -> ValidatedMountInventoryRecord {
+        let recipe = record.recipe.get_or_insert_default();
+        let descriptor = recipe.view_revision.as_option().unwrap();
+        let view_descriptor = ObjectDescriptor::new(
+            MediaType::new(descriptor.media_type.clone()).unwrap(),
+            ObjectDigest::from_bytes(descriptor.sha256.as_slice().try_into().unwrap()),
+            descriptor.encoded_size,
+        );
+        let source = decode_view_source(&recipe.source_handle, DecodeLimits::default()).unwrap();
+        let source_incarnation = (!recipe.source_incarnation_id.is_empty())
+            .then(|| recipe.source_incarnation_id.as_slice().try_into().unwrap());
+        let source_binding = SourceRealizationBindingV1::new(
+            recipe.source_view_id.as_slice().try_into().unwrap(),
+            recipe.source_generation,
+            view_descriptor,
+            source,
+            recipe.source_consistency.as_known().unwrap(),
+            source_incarnation,
+        )
+        .unwrap();
+        recipe.source_binding_digest = source_binding.digest().as_bytes().to_vec();
+        let (proof_class, wire_proof_class) = match recipe.source_consistency.as_known().unwrap() {
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => (
+                MountSourceProofClassV1::ImmutableTree,
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE,
+            ),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE => (
+                MountSourceProofClassV1::LocalLive,
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE,
+            ),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA => (
+                MountSourceProofClassV1::BestEffortReplica,
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA,
+            ),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED
+            | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE => {
+                unreachable!()
+            }
+        };
+        recipe.source_proof_class = wire_proof_class.into();
+        let proof = mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+            binding_digest: *source_binding.digest().as_bytes(),
+            proof_class,
+            provider_authority_id: recipe
+                .source_provider_authority_id
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_authority_generation: recipe.source_provider_authority_generation,
+            provider_authority_digest: recipe
+                .source_provider_authority_digest
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_resource_id: recipe
+                .source_provider_resource_id
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_resource_generation: recipe.source_provider_resource_generation,
+            provider_resource_digest: recipe
+                .source_provider_resource_digest
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_catalog_generation: recipe.source_provider_catalog_generation,
+            provider_catalog_digest: recipe
+                .source_provider_catalog_digest
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            kernel_boot_id: recipe.source_kernel_boot_id.as_slice().try_into().unwrap(),
+            device: recipe.source_device,
+            inode: recipe.source_inode,
+            unique_mount_id: recipe.source_unique_mount_id,
+        });
+        recipe.source_physical_proof_digest = proof.to_vec();
+        recipe.source_realization_handle =
+            mount_source_realization_handle_v1(*source_binding.digest().as_bytes(), proof).to_vec();
+
         let response = InventoryMountResourcesResponse {
-            kernel_boot_id: vec![12; 16],
+            kernel_boot_id: record.resource_kernel_boot_id.clone(),
             journal_sequence: 1,
             mounts: vec![record],
             broker_instance_id: vec![19; 16],
@@ -1538,6 +1676,39 @@ mod tests {
             crate::attachment_verification::mount_resource_digest(&exact)
         );
 
+        let mut physical_substitutions = Vec::new();
+
+        let mut changed = base.clone();
+        changed.resource_kernel_boot_id = vec![41; 16];
+        changed.recipe.get_or_insert_default().source_kernel_boot_id = vec![41; 16];
+        physical_substitutions.push(changed);
+
+        for change in [
+            |recipe: &mut MountRecipe| recipe.source_device += 1,
+            |recipe: &mut MountRecipe| recipe.source_inode += 1,
+            |recipe: &mut MountRecipe| recipe.source_unique_mount_id += 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_authority_id[0] ^= 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_authority_generation += 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_authority_digest[0] ^= 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_resource_id[0] ^= 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_resource_generation += 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_resource_digest[0] ^= 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_catalog_generation += 1,
+            |recipe: &mut MountRecipe| recipe.source_provider_catalog_digest[0] ^= 1,
+        ] {
+            let mut changed = base.clone();
+            change(changed.recipe.get_or_insert_default());
+            physical_substitutions.push(changed);
+        }
+
+        for substitution in physical_substitutions {
+            let changed = validated_resource(substitution);
+            assert_ne!(
+                crate::attachment_verification::mount_resource_digest(&changed),
+                crate::attachment_verification::mount_resource_digest(&exact)
+            );
+        }
+
         let mut substitutions = Vec::new();
 
         let mut changed = base.clone();
@@ -1617,5 +1788,41 @@ mod tests {
                 &source_handle,
             ));
         }
+    }
+
+    #[test]
+    fn released_source_reuse_history_does_not_block_current_reconciliation() {
+        let base = installed_wire_resource();
+        let mut released_rows = Vec::new();
+        for (handle, provider_resource) in [(21_u8, 41_u8), (22, 42)] {
+            let mut released = base.clone();
+            released.mount_handle = vec![handle; 32];
+            released.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_RELEASED.into();
+            released.installed_observation = None.into();
+            released.publication = None.into();
+            let recipe = released.recipe.get_or_insert_default();
+            recipe.resource_attachment_generation = 1;
+            recipe.source_provider_resource_id = vec![provider_resource; 32];
+            recipe.source_provider_resource_digest = vec![provider_resource + 1; 32];
+            released_rows.push(validated_resource(released));
+        }
+        released_rows.push(validated_resource(base));
+
+        let expected = intent(2);
+        let expected_source = source_handle();
+        let resources = released_rows
+            .iter()
+            .map(|resource| {
+                project_resource(resource, &expected, &expected_source, target(), false)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            decide_present_for(&resources, &[]),
+            AttachmentReconciliationActionV1::Verify {
+                mount_handle: [11; 32],
+                unique_mount_id: 13,
+            }
+        );
     }
 }

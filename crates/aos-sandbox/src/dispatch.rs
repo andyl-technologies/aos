@@ -1440,7 +1440,7 @@ mod tests {
         let plan = aos_sandbox_core::BrokerAuthorizationPlan::new(
             BrokerAudience::Mount,
             ProtocolId::MountBroker,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             assignment,
             node,
             lease_authority.clone(),

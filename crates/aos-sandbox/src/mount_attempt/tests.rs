@@ -18,9 +18,9 @@ use aos_sandbox_core::model::{
 };
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerGrant, DesiredGeneration, FeatureRef, IncarnationId,
-    LeaseAssignment, MediaType, NodeId, ObjectDescriptor, OperationId, OwnershipLease, ProtocolId,
-    ProtocolVersion, Revision, RevocationScopeId, SandboxId, TrustScopeId, encode_view_source,
-    sign_statement,
+    InvalidBrokerAuthorizationPlan, LeaseAssignment, MediaType, NodeId, ObjectDescriptor,
+    OperationId, OwnershipLease, ProtocolId, ProtocolVersion, RawClockProvenance, Revision,
+    RevocationScopeId, SandboxId, TrustScopeId, encode_view_source, sign_statement,
 };
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
@@ -33,7 +33,8 @@ use ed25519_dalek::SigningKey;
 
 use crate::{
     BrokerPlanPreparation, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
-    JournalLimits, Reconciler, ReturnedSignature, SigningAuthority, SingleNodeEffectExecutor,
+    JournalLimits, Reconciler, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
+    SingleNodeEffectExecutor,
 };
 
 use super::*;
@@ -98,7 +99,7 @@ fn request(assignment: BrokerAssignment, deadline: u64, action: MountAction) -> 
     let creates = action == MountAction::MOUNT_ACTION_CREATE_DETACHED;
     ApplyMountRequest {
         header: Some(RequestHeader {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             request_id: vec![10; 16],
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
@@ -164,6 +165,13 @@ pub(super) fn record() -> Record {
 }
 
 fn record_for_action(action: MountAction) -> Record {
+    try_record_for_action_and_version(action, ProtocolVersion::new(2, 0)).unwrap()
+}
+
+fn try_record_for_action_and_version(
+    action: MountAction,
+    protocol_version: ProtocolVersion,
+) -> Result<Record, InvalidBrokerAuthorizationPlan> {
     let broker_key = SigningKey::from_bytes(&[42; 32]);
     let lease_key = SigningKey::from_bytes(&[43; 32]);
     let lease_authority =
@@ -205,7 +213,7 @@ fn record_for_action(action: MountAction) -> Record {
     let plan = aos_sandbox_core::BrokerAuthorizationPlan::new(
         BrokerAudience::Mount,
         ProtocolId::MountBroker,
-        AUTHORITY_VERSION,
+        protocol_version,
         assignment,
         NodeId::from_bytes([6; 16]),
         lease_authority.clone(),
@@ -224,8 +232,7 @@ fn record_for_action(action: MountAction) -> Record {
         100,
         200,
         Vec::new(),
-    )
-    .unwrap();
+    )?;
     let preparation = BrokerPlanPreparation::new(plan, signing_authority(&broker_key)).unwrap();
     let signature = sign_statement(
         preparation.signing_request().statement().clone(),
@@ -327,7 +334,318 @@ fn record_for_action(action: MountAction) -> Record {
         digest: [0; 32],
     };
     record.digest = record.compute_digest();
-    record
+    Ok(record)
+}
+
+#[test]
+fn mount_authorization_plan_type_rejects_non_two_zero_versions() {
+    for action in [
+        MountAction::MOUNT_ACTION_CREATE_DETACHED,
+        MountAction::MOUNT_ACTION_RELEASE,
+    ] {
+        try_record_for_action_and_version(action, ProtocolVersion::new(2, 0))
+            .unwrap()
+            .validate_contents()
+            .unwrap();
+        for rejected in [ProtocolVersion::new(1, 0), ProtocolVersion::new(2, 1)] {
+            assert_eq!(
+                try_record_for_action_and_version(action, rejected),
+                Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch),
+                "{action:?} constructed authority version {rejected:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "kernel-tests")]
+fn current_mount_plan(
+    assignment: BrokerAssignment,
+    node: NodeId,
+    semantics: BrokerDispatchSemanticIdentityV1,
+) -> SignedBrokerPlan {
+    let broker_key = SigningKey::from_bytes(&[40; 32]);
+    let lease_key = SigningKey::from_bytes(&[41; 32]);
+    let lease_authority = key_reference("lease", KeyUsage::OwnershipLease, &lease_key);
+    let plan = aos_sandbox_core::BrokerAuthorizationPlan::new(
+        BrokerAudience::Mount,
+        ProtocolId::MountBroker,
+        ProtocolVersion::new(2, 0),
+        assignment,
+        node,
+        lease_authority,
+        vec![
+            BrokerGrant::new(
+                semantics.verb(),
+                semantics.target(),
+                semantics.argument_commitment(),
+                u32::try_from(MAXIMUM_REQUEST_BYTES).unwrap(),
+                0,
+            )
+            .unwrap(),
+        ],
+        ObjectDigest::from_bytes([50; 32]),
+        RevocationScopeId::from_bytes([51; 16]),
+        100,
+        180,
+        Vec::new(),
+    )
+    .unwrap();
+    let authority = current_controller_signing_authority(&broker_key);
+    let preparation = BrokerPlanPreparation::new(plan, authority).unwrap();
+    let signature = sign_statement(
+        preparation.signing_request().statement().clone(),
+        &broker_key,
+    )
+    .unwrap();
+    preparation
+        .complete(ReturnedSignature::Bytes(signature.signature()), 150)
+        .unwrap()
+}
+
+#[cfg(feature = "kernel-tests")]
+fn current_controller_signing_authority(key: &SigningKey) -> SigningAuthority {
+    let signer = key_reference("controller", KeyUsage::BrokerAuthorization, key);
+    let scope = TrustScopeId::from_bytes([20; 16]);
+    let policy = TrustPolicy::new(
+        scope,
+        SignaturePurpose::BrokerAuthorization,
+        vec![signer.clone()],
+        Vec::new(),
+    )
+    .unwrap();
+    let canonical_policy = encode_trust_policy(&policy);
+    let descriptor =
+        artifact_descriptor(PortableMediaType::TrustPolicy, &canonical_policy).unwrap();
+    SigningAuthority::new(
+        canonical_policy,
+        descriptor,
+        scope,
+        signer,
+        key.verifying_key().to_bytes(),
+        SignaturePurpose::BrokerAuthorization,
+        DecodeLimits::default(),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "kernel-tests")]
+fn hostile_mount_version(valid: &SignedBrokerPlan, version: ProtocolVersion) -> SignedBrokerPlan {
+    let key = SigningKey::from_bytes(&[40; 32]);
+    let signer = key_reference("controller", KeyUsage::BrokerAuthorization, &key);
+    let scope = TrustScopeId::from_bytes([20; 16]);
+    let policy = TrustPolicy::new(
+        scope,
+        SignaturePurpose::BrokerAuthorization,
+        vec![signer.clone()],
+        Vec::new(),
+    )
+    .unwrap();
+    let policy_bytes = encode_trust_policy(&policy);
+    let policy_descriptor =
+        artifact_descriptor(PortableMediaType::TrustPolicy, &policy_bytes).unwrap();
+    let mut canonical_plan = valid.canonical_plan().to_vec();
+    assert_eq!(&canonical_plan[..6], &[0x8e, 1, 1, 1, 2, 0]);
+    canonical_plan[4] = u8::try_from(version.major()).unwrap();
+    canonical_plan[5] = u8::try_from(version.minor()).unwrap();
+    let plan_descriptor =
+        artifact_descriptor(PortableMediaType::BrokerAuthorizationPlan, &canonical_plan).unwrap();
+    let statement = SignatureStatement::new(
+        plan_descriptor,
+        scope,
+        signer,
+        SignaturePurpose::BrokerAuthorization,
+        100,
+        Some(180),
+        policy_descriptor,
+    )
+    .unwrap();
+    let signature = encode_signature(&sign_statement(statement, &key).unwrap());
+    SignedBrokerPlan::from_hostile_canonical_bytes_for_test(
+        valid.plan().clone(),
+        canonical_plan,
+        signature,
+    )
+}
+
+#[cfg(feature = "kernel-tests")]
+#[test]
+fn exact_mount_two_zero_apply_and_release_bind_admit_and_resume() {
+    use crate::mount_preparation::{
+        MountCatalogIntentV1, bind_signed_mount_plan, bind_signed_mount_release_plan,
+        prepare_current_release, prepare_current_release_replay, prepared_catalog_for_test,
+        prepared_catalog_replay_for_test,
+    };
+    use crate::runtime_scope::CurrentNamespaceFixture;
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = CurrentNamespaceFixture::new(directory.path());
+    let mut clock = || {
+        Ok(RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted([91; 16]).unwrap(),
+            aos_sandbox_linux::boot::KernelBootId::current()
+                .unwrap()
+                .into_bytes(),
+            150,
+            crate::mount_preparation::transport::boottime().unwrap(),
+        )
+        .unwrap())
+    };
+
+    let target = fixture.current_target();
+    let assignment = target
+        .runtime_generation()
+        .scope()
+        .binding()
+        .manifest()
+        .broker_assignment()
+        .unwrap();
+    let node = target
+        .runtime_generation()
+        .scope()
+        .binding()
+        .manifest()
+        .manifest()
+        .node();
+    let mut create = request(assignment, 0, MountAction::MOUNT_ACTION_CREATE_DETACHED);
+    create.header = None.into();
+    create.fence = None.into();
+    create.namespace_generation = 0;
+    let catalog_digest = ObjectDigest::from_bytes([71; 32]);
+    let create_intent = MountCatalogIntentV1::new(create).unwrap();
+    let prepared = prepared_catalog_for_test(
+        fixture.journal_mut(),
+        target,
+        &create_intent,
+        [81; 16],
+        catalog_digest,
+        &mut clock,
+    )
+    .unwrap();
+    let plan = current_mount_plan(assignment, node, prepared.semantics());
+    assert_eq!(plan.plan().protocol_version(), ProtocolVersion::new(2, 0));
+    let prepared =
+        bind_signed_mount_plan(fixture.journal_mut(), prepared, plan.clone(), &mut clock).unwrap();
+    let deadline = crate::mount_preparation::transport::boottime()
+        .unwrap()
+        .checked_add(5_000_000_000)
+        .unwrap();
+    let admitted = admit_current(fixture.journal_mut(), prepared, deadline, &mut clock).unwrap();
+    let record = replay_record(fixture.journal_mut(), [81; 16], admitted.target()).unwrap();
+    let template_body = record.template_body.clone();
+    drop(admitted);
+
+    let replay_target = fixture.current_target();
+    let prepared = prepared_catalog_replay_for_test(
+        fixture.journal_mut(),
+        replay_target,
+        &template_body,
+        deadline,
+        catalog_digest,
+        &mut clock,
+    )
+    .unwrap();
+    let prepared =
+        bind_signed_mount_plan(fixture.journal_mut(), prepared, plan, &mut clock).unwrap();
+    let resumed = resume_current(fixture.journal_mut(), record, prepared, &mut clock).unwrap();
+    assert_eq!(resumed.outcome(), MountAttemptAdmissionOutcomeV1::Replay);
+    drop(resumed);
+
+    let target = fixture.current_target();
+    let mut release = request(assignment, 0, MountAction::MOUNT_ACTION_RELEASE);
+    release.header = None.into();
+    release.fence = None.into();
+    release.namespace_generation = 0;
+    let release_intent = release.clone();
+    let prepared =
+        prepare_current_release(fixture.journal_mut(), target, release, &mut clock).unwrap();
+    let release_plan = current_mount_plan(assignment, node, prepared.semantics());
+    let prepared = bind_signed_mount_release_plan(
+        fixture.journal_mut(),
+        prepared,
+        release_plan.clone(),
+        &mut clock,
+    )
+    .unwrap();
+    let release_request_id: [u8; 16] =
+        ApplyMountRequest::decode_from_slice(prepared.release().body_without_deadline())
+            .unwrap()
+            .header
+            .as_option()
+            .unwrap()
+            .request_id
+            .as_slice()
+            .try_into()
+            .unwrap();
+    let admitted =
+        admit_current_release(fixture.journal_mut(), prepared, deadline, &mut clock).unwrap();
+    let record =
+        replay_record(fixture.journal_mut(), release_request_id, admitted.target()).unwrap();
+    let template_body = record.template_body.clone();
+    drop(admitted);
+
+    let replay_target = fixture.current_target();
+    let prepared = prepare_current_release_replay(
+        fixture.journal_mut(),
+        replay_target,
+        &template_body,
+        deadline,
+        &mut clock,
+    )
+    .unwrap();
+    let prepared =
+        bind_signed_mount_release_plan(fixture.journal_mut(), prepared, release_plan, &mut clock)
+            .unwrap();
+    let resumed =
+        resume_current_release(fixture.journal_mut(), record, prepared, &mut clock).unwrap();
+    assert_eq!(resumed.outcome(), MountAttemptAdmissionOutcomeV1::Replay);
+    drop(resumed);
+
+    for (index, rejected) in [ProtocolVersion::new(1, 0), ProtocolVersion::new(2, 1)]
+        .into_iter()
+        .enumerate()
+    {
+        let target = fixture.current_target();
+        let prepared = prepared_catalog_for_test(
+            fixture.journal_mut(),
+            target,
+            &create_intent,
+            [u8::try_from(90 + index).unwrap(); 16],
+            catalog_digest,
+            &mut clock,
+        )
+        .unwrap();
+        let valid = current_mount_plan(assignment, node, prepared.semantics());
+        assert!(
+            bind_signed_mount_plan(
+                fixture.journal_mut(),
+                prepared,
+                hostile_mount_version(&valid, rejected),
+                &mut clock,
+            )
+            .is_err(),
+            "Apply binding accepted Mount {rejected:?}"
+        );
+
+        let target = fixture.current_target();
+        let prepared = prepare_current_release(
+            fixture.journal_mut(),
+            target,
+            release_intent.clone(),
+            &mut clock,
+        )
+        .unwrap();
+        let valid = current_mount_plan(assignment, node, prepared.semantics());
+        assert!(
+            bind_signed_mount_release_plan(
+                fixture.journal_mut(),
+                prepared,
+                hostile_mount_version(&valid, rejected),
+                &mut clock,
+            )
+            .is_err(),
+            "Release binding accepted Mount {rejected:?}"
+        );
+    }
 }
 
 fn journal() -> (tempfile::TempDir, Journal) {
@@ -716,12 +1034,20 @@ fn completion_codec_binds_one_exact_success_receipt() {
 }
 
 #[test]
-fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_1_0() {
-    let hello = completion::mount_apply_client_hello();
-    assert_eq!(hello.protocol_major, 1);
+fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_2_0() {
+    let hello = completion::mount_apply_client_hello(MountAction::MOUNT_ACTION_CREATE_DETACHED);
+    assert_eq!(hello.protocol_major, 2);
     assert_eq!(hello.protocol_minor, 0);
 
-    let feature = FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(), 1, 0).unwrap();
+    let features = [
+        FeatureRef::new(
+            aos_sandbox_protocol::session::MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE.to_owned(),
+            1,
+            0,
+        )
+        .unwrap(),
+        FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(), 1, 0).unwrap(),
+    ];
     let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
     let peer = PeerCredentials {
         uid: 811,
@@ -742,7 +1068,7 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_1_0() {
             peer,
             policy,
             ProtocolId::MountBroker,
-            std::slice::from_ref(&feature),
+            &features,
             &[method],
         )
         .is_err()
@@ -753,7 +1079,7 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_1_0() {
         peer,
         policy,
         ProtocolId::MountBroker,
-        std::slice::from_ref(&feature),
+        &features,
         &[method],
     )
     .unwrap();
@@ -761,8 +1087,8 @@ fn mount_apply_dispatch_is_end_to_end_bound_to_exact_carrier_1_0() {
         &server_session.server_hello().encode_to_vec(),
         ProtocolId::MountBroker,
         Audience::AUDIENCE_NODE_CONTROLLER,
-        ProtocolVersion::new(1, 0),
-        std::slice::from_ref(&feature),
+        ProtocolVersion::new(2, 0),
+        &features,
         &[method],
         hello.maximum_response_bytes,
     )

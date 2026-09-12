@@ -1,6 +1,6 @@
 //! Authenticates, records, and reconciles Mount destination-slot inventories.
 //!
-//! The controller stores only the latest complete protocol 1.0 snapshot, which
+//! The controller stores only the latest complete Mount 2.0 snapshot, which
 //! includes current attachment anchors for Ready slots. Each record binds the
 //! exact query and response to the complete controller state that existed
 //! before the query. Reconciliation compares one current logical slot with
@@ -38,7 +38,7 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotInventory;
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 const REMATERIALIZATION_OPERATION_DOMAIN: &[u8] =
     b"aos.sandbox.destination-slot-rematerialization.operation.v1\0";
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS;
@@ -318,7 +318,7 @@ impl DurableDestinationSlotInventorySnapshotV1 {
 
     /// Finds one exact current Mount attachment anchor by logical generation.
     ///
-    /// Under the sole Mount 1.0 schema, a missing result means there is no
+    /// Under the sole Mount 2.0 schema, a missing result means there is no
     /// current-boot Ready row for that logical generation or the requested
     /// sandbox incarnation is unrelated. Such absence must block a Host 1.0
     /// launch that requires the anchor handle.

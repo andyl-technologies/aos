@@ -75,8 +75,8 @@ pub use publisher::{
 };
 pub use registry::{
     DescriptorRole, PortableMediaType, ProtocolId, ProtocolVersion, RegistryError,
-    negotiate_protocol, validate_descriptor_role, validate_required_features,
-    validate_signature_subject,
+    negotiate_protocol, supported_protocol_version, validate_descriptor_role,
+    validate_required_features, validate_signature_subject,
 };
 pub use resources::{
     AccountingError, AncestryAdmissionError, ReservationClass, ResourceAccount, ResourceBudget,

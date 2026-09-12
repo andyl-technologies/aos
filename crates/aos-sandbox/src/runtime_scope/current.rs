@@ -37,7 +37,7 @@ use crate::runtime_authority::{
 mod validity;
 use validity::ObservationValidity;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Selects an already authenticated holder without supplying assignment facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,18 +281,6 @@ impl CurrentRuntimeScope {
         self.recheck(journal, clock)
     }
 
-    pub(crate) fn verify_mount_plan<T>(
-        &self,
-        journal: &mut Journal,
-        signed: &SignedBrokerPlan,
-        clock: &mut T,
-    ) -> Result<(), CurrentRuntimeScopeError>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        self.verify_mount_plan_version(journal, signed, AUTHORITY_VERSION, clock)
-    }
-
     /// Verifies a Mount plan under an exact registered authority version.
     pub(crate) fn verify_mount_plan_version<T>(
         &self,
@@ -312,25 +300,6 @@ impl CurrentRuntimeScope {
             read_clock(&self.policy, clock)?,
         )?;
         self.recheck(journal, clock)
-    }
-
-    pub(crate) fn prepare_mount_attempt<T>(
-        &self,
-        journal: &mut Journal,
-        template: &crate::BrokerDispatchTemplateV1,
-        deadline_boottime_nanoseconds: u64,
-        clock: &mut T,
-    ) -> Result<crate::BrokerDispatchAttemptV1, CurrentRuntimeScopeError>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        self.prepare_mount_attempt_version(
-            journal,
-            template,
-            deadline_boottime_nanoseconds,
-            AUTHORITY_VERSION,
-            clock,
-        )
     }
 
     /// Builds one Mount envelope under an exact registered authority version.

@@ -10,6 +10,13 @@
 
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+#[cfg(feature = "kernel-tests")]
+use std::fs::File;
+#[cfg(feature = "kernel-tests")]
+use std::num::NonZeroU32;
+#[cfg(feature = "kernel-tests")]
+use std::path::Path;
+
 use aos_sandbox_core::format::{descriptor_for_bytes, encode_trust_policy};
 use aos_sandbox_core::model::{KeyReference, KeyUsage, SignaturePurpose, StableKeyId, TrustPolicy};
 use aos_sandbox_core::{
@@ -27,6 +34,25 @@ use crate::{
     EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey, JournalLimits,
     OperationPlan, Reconciler, SingleNodeEffectExecutor,
 };
+
+#[cfg(feature = "kernel-tests")]
+use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+#[cfg(feature = "kernel-tests")]
+use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+#[cfg(feature = "kernel-tests")]
+use aos_sandbox_linux::pidfd::PidFd;
+#[cfg(feature = "kernel-tests")]
+use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+#[cfg(feature = "kernel-tests")]
+use aos_sandbox_protocol::payload_scope::{
+    decode_payload_scope_response, encode_payload_scope_response,
+};
+#[cfg(feature = "kernel-tests")]
+use aos_sandbox_protocol::{
+    AuthorizationArtifactBytes, decode_request_envelope, encode_authorized_request_envelope,
+};
+#[cfg(feature = "kernel-tests")]
+use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
 
 use super::*;
 
@@ -188,6 +214,151 @@ fn clock(wall: i64) -> RawPairedClockSample {
         1_000,
     )
     .unwrap()
+}
+
+#[cfg(feature = "kernel-tests")]
+pub(crate) struct CurrentNamespaceFixture {
+    reconciler: Reconciler<NoEffects>,
+    selection: RuntimeScopeHolder,
+}
+
+#[cfg(feature = "kernel-tests")]
+impl CurrentNamespaceFixture {
+    pub(crate) fn new(directory: &Path) -> Self {
+        let mut reconciler = Reconciler::new(open(directory), NoEffects);
+        let selection = activate(&mut reconciler, 1, bind(None), true);
+        Self {
+            reconciler,
+            selection,
+        }
+    }
+
+    pub(crate) fn journal_mut(&mut self) -> &mut Journal {
+        self.reconciler.journal_mut()
+    }
+
+    pub(crate) fn current_target(&mut self) -> CurrentNamespaceTarget {
+        let boottime = crate::runtime_scope::transport::boottime().unwrap();
+        let mut clock = || Ok(clock_at_boottime(150, boottime));
+        let prepared = prepare(
+            self.reconciler.journal_mut(),
+            self.selection,
+            &policy(),
+            clock_at_boottime(150, boottime),
+        )
+        .unwrap();
+        let request = decode_local_body(&prepared.body, boottime).unwrap();
+        let authorization_packet = encode_authorized_request_envelope(
+            ProtocolId::HostBroker,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+            &prepared.body,
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: prepared.template.canonical_plan(),
+                broker_plan_signature: prepared.template.canonical_plan_signature(),
+                ownership_lease: prepared.lease.canonical_lease(),
+                ownership_lease_signature: prepared.lease.canonical_signature(),
+            },
+        )
+        .unwrap();
+        let authorization =
+            decode_request_envelope(&authorization_packet, ProtocolId::HostBroker, 0)
+                .unwrap()
+                .authorization()
+                .unwrap()
+                .clone();
+
+        let (host_anchor, payload_anchor) = current_cgroup_anchors();
+        let (receiver, sender) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let mut receiver = DescriptorSubjectSocket::from_owned(receiver).unwrap();
+        let mut sender = DescriptorSubjectSocket::from_owned(sender).unwrap();
+        sender.send(b"current namespace fixture").unwrap();
+        let (_, subject, _) = receiver.receive(64, 0).unwrap().into_parts();
+        let host = HostExecution::new(
+            HostServiceIdentity {
+                uid: rustix::process::geteuid().as_raw(),
+                gid: rustix::process::getegid().as_raw(),
+                cgroup: host_anchor,
+            },
+            subject,
+        )
+        .unwrap();
+        let payload = PidFd::open(NonZeroU32::new(std::process::id()).unwrap()).unwrap();
+        let response = encode_payload_scope_response(
+            request.fence(),
+            request.runtime_handle(),
+            &[72; 32],
+            b"",
+        )
+        .unwrap();
+        let metadata =
+            decode_payload_scope_response(&response, request.fence(), request.runtime_handle())
+                .unwrap();
+        let payload_info = observe_payload(&payload, &payload_anchor, b"").unwrap();
+        let observed = ObservedPayloadScope {
+            host,
+            payload,
+            anchor: payload_anchor,
+            metadata,
+            payload_info,
+            authorization,
+            request_deadline_boottime_nanoseconds: prepared.validity.deadline(),
+        };
+        let scope = CurrentRuntimeScope {
+            selection: self.selection,
+            policy: policy(),
+            binding: prepared.binding,
+            observed,
+            validity: prepared.validity,
+        };
+        let generation =
+            CurrentRuntimeGeneration::track(scope, self.reconciler.journal_mut(), &mut clock)
+                .unwrap();
+        match CurrentNamespaceTarget::bind(generation, self.reconciler.journal_mut(), &mut clock)
+            .unwrap()
+        {
+            NamespaceTargetOutcome::Current(target) => *target,
+            NamespaceTargetOutcome::AdvanceRequired(_) => {
+                panic!("fixture assignment must name its first namespace target")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "kernel-tests")]
+fn clock_at_boottime(wall: i64, boottime: u64) -> RawPairedClockSample {
+    RawPairedClockSample::new_untrusted(
+        RawClockProvenance::new_untrusted([91; 16]).unwrap(),
+        KernelBootId::current().unwrap().into_bytes(),
+        wall,
+        boottime,
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "kernel-tests")]
+fn current_cgroup_anchors() -> (RetainedCgroupAnchor, RetainedCgroupAnchor) {
+    let membership = std::fs::read_to_string("/proc/self/cgroup").unwrap();
+    let relative = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::/"))
+        .unwrap();
+    let relative = Path::new(if relative.is_empty() { "." } else { relative });
+    let first = CgroupV2Root::from_owned(File::open("/sys/fs/cgroup").unwrap().into())
+        .unwrap()
+        .resolve(relative)
+        .unwrap();
+    let second = CgroupV2Root::from_owned(File::open("/sys/fs/cgroup").unwrap().into())
+        .unwrap()
+        .resolve(relative)
+        .unwrap();
+    (first, second)
 }
 
 #[test]

@@ -7563,3 +7563,46 @@ pre-existing generated `aos-proto` diagnostics. One earlier parallel run
 transiently encountered `AlreadyLocked`, while its exact rerun and the full
 deterministic single-thread run passed. No Nix build, VM run, or AOS package
 qualification was performed.
+
+### Mount source-realization and PID 1 custody foundation (in progress)
+
+The current source tranche hard-cuts the preproduction Mount protocol to exact
+2.0 and removes the persisted source path. The versioned `AOSMSP01` journal
+table retains canonical logical binding bytes and digest, a Mount-minted
+physical realization handle, provider authority/resource/catalog generations
+and digests, boot-scoped device/inode/unique-mount identity, proof class and
+digest, admission correlation, and the `Active`, `Reaping`, or `Released`
+lifecycle. Mount resources retain the same realization evidence. Source-pin
+activation and resource/effect admission, and last-reference retirement and
+resource release, have single-journal transaction plans; live references are
+derived from authenticated resource phases rather than mutable counters.
+Released history remains anti-rollback evidence but does not reserve a physical
+source alias after custody is gone.
+
+Startup accepts canonical mount and source activation names, authenticates the
+journal tables before mutation, checks same-boot source directories against
+device, inode, unique mount ID, proof, and Mount handle, removes orphans, and
+repairs noncurrent zero-reference pins. Old-boot resources are faulted and their
+pins enter cleanup without treating old descriptor numbers as authority.
+Existing-resource INSTALL, REPLACE, and DETACH reconstruct the exact historical
+recipe and realization from the protected catalog under current monotonic
+operation authority; RELEASE remains catalogless. A provider outage therefore
+does not block containment or cleanup of an authenticated existing resource.
+
+PID 1 acceptance proof remains the production blocker. systemd 259's
+`sd_notify` `BARRIER=1` acknowledges processing order but offers no exact
+descriptor-store property readback. The production systemd adapter therefore
+reports a fresh `FDSTORE` and removal of a present name as unconfirmed. It does
+not authorize an `Active` admission or a terminal `Released` tombstone from its
+own mutex. A complete socket-activation inventory at process start is accepted
+as manager evidence for exact presence or absence; an unconfirmed running-
+service removal remains `Reaping` until such a restart snapshot proves absence.
+An exact manager-query backend is still required for fresh production source
+admission and prompt terminal removal publication.
+
+The authenticated provider acquisition protocol is also not implemented.
+Production advertises neither the source-acquisition feature nor CREATE/Apply
+authority, and cannot create a new Active source pin. This tranche therefore
+qualifies durable state, recovery, inventory, catalog, and cleanup foundations
+only. It does not close `SBX-MOUNT-01`, the production filesystem-view provider
+task, any manager-readback task, or any Nix/VM qualification checkbox.

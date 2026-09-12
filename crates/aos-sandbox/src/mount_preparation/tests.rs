@@ -58,11 +58,12 @@ fn create_intent() -> ApplyMountRequest {
 
 #[test]
 fn catalog_client_hello_offers_the_exact_mount_baseline() {
-    let hello = mount_catalog_client_hello();
+    let hello = mount_catalog_client_hello(MountAction::MOUNT_ACTION_CREATE_DETACHED);
 
-    assert_eq!(hello.protocol_major, 1);
+    assert_eq!(hello.protocol_major, 2);
     assert_eq!(hello.protocol_minor, 0);
     assert_eq!(hello.required_methods.len(), 1);
+    assert_eq!(hello.required_features.len(), 1);
     assert_eq!(
         hello.required_methods[0],
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG

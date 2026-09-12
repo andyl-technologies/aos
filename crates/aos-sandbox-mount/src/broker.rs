@@ -11,7 +11,7 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryMountResourcesResponse, MountAction, MountAssignmentBinding, MountAttributes,
     MountFaultCorrelation, MountFaultPhase, MountInventoryRecord, MountInventorySourceAuthority,
     MountKernelObservation, MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation,
-    MountRecipe, MountResult, MountSourceConsistency, MountState,
+    MountRecipe, MountResult, MountSourceConsistency, MountSourceProofClass, MountState,
 };
 use aos_sandbox::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
@@ -42,6 +42,7 @@ use crate::destination_slot::{
     DestinationSlotStoreV1,
 };
 use crate::host_scope::ObservedMountScope;
+use crate::source_pin::{SourcePinRowV1, SourcePinTableV1, SourceRealizationEvidenceV1};
 use crate::state::authorization_v1::{MountEffectIntentV1, MountEffectStatusV1};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
@@ -51,8 +52,9 @@ use crate::state::mount_resource_v1::{
     canonical_fd_store_key,
 };
 use crate::worker::{
-    EffectDeadlineV1, EffectHandles, MountTargetObservation, MountWorker, RetainedMountObservation,
-    WorkerObservation, expected_handles,
+    CatalogAuthorizationV1, DurableMountExecutionV1, EffectDeadlineV1, EffectHandles,
+    MountTargetObservation, MountWorker, RetainedMountObservation, WorkerObservation,
+    expected_handles,
 };
 use crate::{MountError, Result};
 
@@ -61,6 +63,7 @@ pub struct MountBroker<W> {
     journal: Journal,
     worker: W,
     resources: MountResourceTableV1,
+    source_pins: SourcePinTableV1,
     kernel_boot_id: [u8; 16],
     broker_instance_id: [u8; 16],
     authority: MountAuthorityV1,
@@ -68,10 +71,10 @@ pub struct MountBroker<W> {
 }
 
 impl<W: MountWorker> MountBroker<W> {
-    /// Reports whether the complete native Apply backend is executable now.
+    /// Reports whether existing durable resources can be changed or cleaned up.
     #[must_use]
-    pub fn supports_mount_apply(&self) -> bool {
-        self.worker.supports_mount_apply()
+    pub fn supports_existing_resource_actions(&self) -> bool {
+        self.worker.supports_existing_resource_actions()
     }
 
     /// Reports whether catalog preparation can create executable authority now.
@@ -126,6 +129,10 @@ impl<W: MountWorker> MountBroker<W> {
             MountResourceLimitsV1::default(),
             kernel_boot_id,
         )?;
+        let source_pins = SourcePinTableV1::recover(&journal, kernel_boot_id)?;
+        let custody = worker.custody_inventory()?;
+        validate_pre_repair_state(&resources, &source_pins, kernel_boot_id, &custody)?;
+
         fault_stale_boot_resources(&mut journal, &mut resources, kernel_boot_id)?;
         fault_unverifiable_allocated_custody(
             &mut journal,
@@ -134,6 +141,7 @@ impl<W: MountWorker> MountBroker<W> {
             &mut worker,
         )?;
         validate_custody(&resources, kernel_boot_id, &worker.custody_inventory()?)?;
+        source_pins.validate_resource_references(&resources)?;
         let destination_slots = destination_slot_root
             .map(|(path, owner)| DestinationSlotStoreV1::recover(path, owner, &journal))
             .transpose()?;
@@ -141,6 +149,7 @@ impl<W: MountWorker> MountBroker<W> {
             journal,
             worker,
             resources,
+            source_pins,
             kernel_boot_id,
             broker_instance_id,
             authority,
@@ -155,6 +164,7 @@ impl<W: MountWorker> MountBroker<W> {
     /// Returns an error if an internally produced row violates the current
     /// closed wire schema.
     pub fn inventory_resources(&self) -> Result<Vec<u8>> {
+        self.ensure_authority_healthy()?;
         let response = InventoryMountResourcesResponse {
             kernel_boot_id: self.kernel_boot_id.to_vec(),
             journal_sequence: self.journal.snapshot_sequence(),
@@ -178,6 +188,7 @@ impl<W: MountWorker> MountBroker<W> {
     /// Returns an error when destination-slot ownership is not configured or
     /// an internally produced row violates the closed wire schema.
     pub fn inventory_destination_slots(&self) -> Result<Vec<u8>> {
+        self.ensure_authority_healthy()?;
         let slots = self.destination_slots.as_ref().ok_or_else(|| {
             MountError::State("destination-slot ownership is not configured".to_owned())
         })?;
@@ -244,6 +255,7 @@ impl<W: MountWorker> MountBroker<W> {
     where
         F: FnMut() -> Result<RawPairedClockSample>,
     {
+        self.ensure_authority_healthy()?;
         if self.destination_slots.is_none() {
             return Err(MountError::State(
                 "destination-slot ownership is not configured".to_owned(),
@@ -464,6 +476,7 @@ impl<W: MountWorker> MountBroker<W> {
         request: &ValidatedMountCatalogPreparation,
         scope: ObservedMountScope,
     ) -> Result<Vec<u8>> {
+        self.ensure_authority_healthy()?;
         if scope.metadata().fence() != request.mount_request().fence()
             || scope.metadata().runtime_handle() != request.host_request().runtime_handle()
             || scope.metadata().payload_scope_handle()
@@ -475,9 +488,11 @@ impl<W: MountWorker> MountBroker<W> {
         }
 
         let valid_until = scope.valid_until_boottime_nanoseconds();
-        let commitment = self
-            .worker
-            .prepare_catalog(request.mount_request(), scope)?;
+        let expected_source =
+            expected_source_for_request(&self.resources, request.mount_request())?;
+        let commitment =
+            self.worker
+                .prepare_catalog(request.mount_request(), scope, expected_source)?;
         encode_mount_catalog_preparation_response(request, commitment, valid_until)
             .map_err(Into::into)
     }
@@ -501,6 +516,7 @@ impl<W: MountWorker> MountBroker<W> {
     where
         F: FnMut() -> Result<RawPairedClockSample>,
     {
+        self.ensure_authority_healthy()?;
         let verification_clock = trusted_clock()?;
         let request = decode_mount_request(
             request_bytes,
@@ -515,7 +531,11 @@ impl<W: MountWorker> MountBroker<W> {
         }
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
         let handle = operation_handle(&request, request_digest)?;
-        let catalog_commitment = self.worker.catalog_commitment(&request)?;
+        let expected_source = expected_source_for_request(&self.resources, &request)?;
+        let catalog_authorization = self.worker.catalog_commitment(&request, expected_source)?;
+        let catalog_commitment = catalog_authorization
+            .as_ref()
+            .map(CatalogAuthorizationV1::commitment);
         let catalog_semantics = catalog_commitment
             .map(MountCatalogCommitmentV1::from_verified_digest)
             .transpose()
@@ -553,6 +573,7 @@ impl<W: MountWorker> MountBroker<W> {
                 let effect = self.effect(request.header().request_id())?;
                 validate_effect_matches(&effect, &admission, request_digest)?;
                 if effect.status() == MountEffectStatusV1::Complete {
+                    self.finish_source_reaping()?;
                     return Ok(effect.receipt().to_vec());
                 }
                 if effect.plan_digest() != admission.effect.plan_digest()
@@ -567,11 +588,16 @@ impl<W: MountWorker> MountBroker<W> {
                     &idempotency,
                     operation_id,
                     request_digest,
-                    catalog_commitment,
+                    catalog_authorization,
                     &admission,
                 )?;
             }
         }
+
+        // A zero-reference predecessor may enter Reaping in the CREATE intent
+        // transaction. Retire its custody before attempting the unrelated new
+        // mount effect, including when that later effect fails or is replayed.
+        self.finish_source_reaping()?;
 
         let effect = self.effect(request.header().request_id())?;
         validate_effect_matches(&effect, &admission, request_digest)?;
@@ -609,23 +635,26 @@ impl<W: MountWorker> MountBroker<W> {
             })
         };
         let observation = if request.action() == MountAction::MOUNT_ACTION_DETACH {
-            execute_durable_detach(
-                &mut self.worker,
-                &request,
+            let durable = DurableMountExecutionV1 {
+                request: &request,
                 request_digest,
-                &current,
-                handles,
-                catalog_commitment.ok_or(MountError::Fence(
+                handle: current.handle,
+                expected_mount_id: mount_id(installed_mount_id(&current)?)?,
+                expected_catalog_commitment: catalog_commitment.ok_or(MountError::Fence(
                     "detach lost its admitted catalog commitment",
                 ))?,
-                &mut before_effect,
-            )?
+                expected_source: expected_source.ok_or_else(|| {
+                    MountError::State("detach lost its durable source realization".to_owned())
+                })?,
+            };
+            execute_durable_detach(&mut self.worker, durable, handles, &mut before_effect)?
         } else {
             self.worker.execute(
                 &request,
                 request_digest,
                 handles,
                 catalog_commitment,
+                expected_source,
                 &mut before_effect,
             )?
         };
@@ -639,6 +668,7 @@ impl<W: MountWorker> MountBroker<W> {
             ));
         }
         self.persist_completion(&request, &current, &observation, &response, effect)?;
+        self.finish_source_reaping()?;
         Ok(response)
     }
 
@@ -680,14 +710,53 @@ impl<W: MountWorker> MountBroker<W> {
         idempotency: &IdempotencyKey,
         operation_id: OperationId,
         request_digest: [u8; 32],
-        catalog_commitment: Option<ObjectDigest>,
+        catalog_authorization: Option<CatalogAuthorizationV1>,
         admission: &VerifiedMountAdmissionV1,
     ) -> Result<()> {
         let correlation = operation_correlation(request, request_digest);
+        let catalog_commitment = catalog_authorization
+            .as_ref()
+            .map(CatalogAuthorizationV1::commitment);
+        let mut fresh_source_activation = false;
         let mut resource_records = match request.action() {
-            MountAction::MOUNT_ACTION_CREATE_DETACHED => self.resources.plan_allocate(
-                &allocated_resource(request, request_digest, self.kernel_boot_id, correlation)?,
-            )?,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+                let source_realization = catalog_authorization
+                    .as_ref()
+                    .ok_or(MountError::Fence("CREATE lost its source realization"))?
+                    .source_realization();
+                let resource = allocated_resource(
+                    request,
+                    request_digest,
+                    self.kernel_boot_id,
+                    correlation,
+                    source_realization,
+                )?;
+                let binding = request.source_binding().ok_or_else(|| {
+                    MountError::State("CREATE lost its canonical source binding".to_owned())
+                })?;
+                if self.source_pins.get(&source_realization.handle).is_some() {
+                    self.source_pins
+                        .validate_existing_reference(binding, source_realization)?;
+                    self.resources.plan_allocate(&resource)?
+                } else {
+                    fresh_source_activation = true;
+                    let row = SourcePinRowV1::active(
+                        binding,
+                        source_realization,
+                        *request.header().request_id(),
+                        request_digest,
+                    )?;
+                    let expected_current = self
+                        .source_pins
+                        .current_handle(*binding.digest().as_bytes());
+                    self.source_pins.plan_activate_with_resource(
+                        &self.resources,
+                        &row,
+                        expected_current,
+                        &resource,
+                    )?
+                }
+            }
             MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => self
                 .plan_publication_intent(
                     request,
@@ -732,12 +801,30 @@ impl<W: MountWorker> MountBroker<W> {
             ),
         ];
         records.append(&mut resource_records);
-        self.journal.commit(&JournalTransaction::new(
-            intent_transaction(*request.header().request_id()),
-            records,
-        )?)?;
-        if !applied_records.is_empty() {
-            self.resources.apply_committed(&applied_records)?;
+        let transaction =
+            JournalTransaction::new(intent_transaction(*request.header().request_id()), records)?;
+        self.journal
+            .preflight_transactions(std::slice::from_ref(&transaction))?;
+        if fresh_source_activation {
+            self.worker.establish_source_custody(
+                catalog_authorization
+                    .as_ref()
+                    .ok_or(MountError::Fence("CREATE lost its source realization"))?,
+            )?;
+        }
+        self.journal.commit(&transaction)?;
+        if applied_records
+            .iter()
+            .any(|record| record.namespace() == RecordNamespace::MountSourcePin)
+        {
+            self.source_pins.apply_committed(&applied_records)?;
+        }
+        let mount_records: Vec<_> = applied_records
+            .into_iter()
+            .filter(|record| record.namespace() == RecordNamespace::Operation)
+            .collect();
+        if !mount_records.is_empty() {
+            self.resources.apply_committed(&mount_records)?;
         }
         Ok(())
     }
@@ -767,12 +854,15 @@ impl<W: MountWorker> MountBroker<W> {
             })
             .transpose()?;
         let preflight = self.worker.preflight_publication(
-            request,
-            request_digest,
-            current.handle,
-            expected_mount_id,
+            DurableMountExecutionV1 {
+                request,
+                request_digest,
+                handle: current.handle,
+                expected_mount_id,
+                expected_catalog_commitment: catalog_commitment,
+                expected_source: source_evidence(&current.recipe),
+            },
             predecessor_identity,
-            catalog_commitment,
         )?;
         let valid = match request.action() {
             MountAction::MOUNT_ACTION_INSTALL => {
@@ -884,7 +974,50 @@ impl<W: MountWorker> MountBroker<W> {
             completion_transaction(request_digest),
             records,
         )?)?;
-        self.resources.apply_committed(&resource_records)?;
+        if resource_records
+            .iter()
+            .any(|record| record.namespace() == RecordNamespace::MountSourcePin)
+        {
+            self.source_pins.apply_committed(&resource_records)?;
+        }
+        let mount_records: Vec<_> = resource_records
+            .into_iter()
+            .filter(|record| record.namespace() == RecordNamespace::Operation)
+            .collect();
+        self.resources.apply_committed(&mount_records)?;
+        Ok(())
+    }
+
+    fn finish_source_reaping(&mut self) -> Result<()> {
+        let handles: Vec<_> = self.source_pins.reaping_handles().collect();
+        for handle in handles {
+            if self
+                .resources
+                .source_realization_references()?
+                .contains_key(&handle)
+            {
+                return Err(MountError::State(
+                    "Reaping source realization regained a live reference".to_owned(),
+                ));
+            }
+            let revision = self
+                .source_pins
+                .get(&handle)
+                .ok_or_else(|| MountError::State("Reaping source pin disappeared".to_owned()))?
+                .revision;
+            let records = self.source_pins.plan_finish_reaping(handle)?;
+            let transaction = JournalTransaction::new(
+                derived_transaction_id(b"aos.mount.source-reaping.v1\0", handle, revision),
+                records.clone(),
+            )?;
+            self.journal
+                .preflight_transactions(std::slice::from_ref(&transaction))?;
+            if !self.worker.release_source_custody(handle)? {
+                continue;
+            }
+            self.journal.commit(&transaction)?;
+            self.source_pins.apply_committed(&records)?;
+        }
         Ok(())
     }
 
@@ -958,7 +1091,17 @@ impl<W: MountWorker> MountBroker<W> {
                     last_detached_mount_id,
                     last_installed_mount_id,
                 };
-                self.resources.plan_transition(current.revision, &next)
+                let mut records = self.resources.plan_transition(current.revision, &next)?;
+                if self
+                    .source_pins
+                    .is_noncurrent_active(current.recipe.source_realization_handle)
+                {
+                    records.extend(
+                        self.source_pins
+                            .plan_reaping_after_release_if_last_reference(&self.resources, &next)?,
+                    );
+                }
+                Ok(records)
             }
             MountAction::MOUNT_ACTION_RELEASE => self.plan_release_completion(current),
             MountAction::MOUNT_ACTION_UNSPECIFIED => Err(invalid_pending_state()),
@@ -974,10 +1117,10 @@ impl<W: MountWorker> MountBroker<W> {
             last_installed_mount_id,
         };
         let MountResourceStateV1::Releasing { replaced_by, .. } = &current.state else {
-            return self.resources.plan_transition(current.revision, &released);
+            return self.plan_single_release(current, &released);
         };
         let Some(replaced_by) = replaced_by else {
-            return self.resources.plan_transition(current.revision, &released);
+            return self.plan_single_release(current, &released);
         };
         let successor = self.resources.get(replaced_by).ok_or_else(|| {
             MountError::State("draining resource successor is unknown".to_owned())
@@ -1001,12 +1144,40 @@ impl<W: MountWorker> MountBroker<W> {
             installed: installed.clone(),
             publication: retired_publication,
         };
-        self.resources.plan_finish_replacement(
+        let mut records = self.resources.plan_finish_replacement(
             successor.revision,
             &retired_successor,
             current.revision,
             &released,
-        )
+        )?;
+        if self
+            .source_pins
+            .is_noncurrent_active(current.recipe.source_realization_handle)
+        {
+            records.extend(
+                self.source_pins
+                    .plan_reaping_after_release_if_last_reference(&self.resources, &released)?,
+            );
+        }
+        Ok(records)
+    }
+
+    fn plan_single_release(
+        &self,
+        current: &MountResourceV1,
+        released: &MountResourceV1,
+    ) -> Result<Vec<JournalRecord>> {
+        let mut records = self.resources.plan_transition(current.revision, released)?;
+        if self
+            .source_pins
+            .is_noncurrent_active(current.recipe.source_realization_handle)
+        {
+            records.extend(
+                self.source_pins
+                    .plan_reaping_after_release_if_last_reference(&self.resources, released)?,
+            );
+        }
+        Ok(records)
     }
 
     fn persist_destination_slot_authority_refresh(
@@ -1119,26 +1290,20 @@ impl<W: MountWorker> MountBroker<W> {
             )
             .map_err(|_| MountError::Fence("durable mount effect authentication failed"))
     }
+
+    fn ensure_authority_healthy(&self) -> Result<()> {
+        self.journal.ensure_healthy()?;
+        self.worker.ensure_authority_healthy()
+    }
 }
 
 fn execute_durable_detach<W: MountWorker>(
     worker: &mut W,
-    request: &ValidatedMountRequest,
-    request_digest: [u8; 32],
-    current: &MountResourceV1,
+    durable: DurableMountExecutionV1<'_>,
     handles: EffectHandles,
-    catalog_commitment: aos_sandbox_core::ObjectDigest,
     before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
 ) -> Result<WorkerObservation> {
-    let expected = mount_id(installed_mount_id(current)?)?;
-    worker.reconcile_detach(
-        request,
-        request_digest,
-        current.handle,
-        expected,
-        catalog_commitment,
-        before_effect,
-    )?;
+    worker.reconcile_detach(durable, before_effect)?;
     Ok(WorkerObservation {
         state: MountState::MOUNT_STATE_REVOKED,
         handles,
@@ -1194,6 +1359,7 @@ fn allocated_resource(
     request_digest: [u8; 32],
     kernel_boot_id: [u8; 16],
     creation: OperationCorrelationV1,
+    source_realization: crate::source_pin::SourceRealizationEvidenceV1,
 ) -> Result<MountResourceV1> {
     let attributes = request.attributes().ok_or_else(|| {
         MountError::State("create request lost validated mount attributes".to_owned())
@@ -1225,6 +1391,21 @@ fn allocated_resource(
                 })?
                 .digest()
                 .as_bytes(),
+            source_realization_handle: source_realization.handle,
+            source_physical_proof_digest: source_realization.physical_proof_digest,
+            source_kernel_boot_id: source_realization.kernel_boot_id,
+            source_device: source_realization.device,
+            source_inode: source_realization.inode,
+            source_proof_class: source_realization.proof_class,
+            source_unique_mount_id: source_realization.unique_mount_id,
+            source_provider_authority_id: source_realization.provider_authority_id,
+            source_provider_authority_generation: source_realization.provider_authority_generation,
+            source_provider_authority_digest: source_realization.provider_authority_digest,
+            source_provider_resource_id: source_realization.provider_resource_id,
+            source_provider_resource_generation: source_realization.provider_resource_generation,
+            source_provider_resource_digest: source_realization.provider_resource_digest,
+            source_provider_catalog_generation: source_realization.provider_catalog_generation,
+            source_provider_catalog_digest: source_realization.provider_catalog_digest,
             policy: mount_policy(attributes),
         },
         state: MountResourceStateV1::Allocated { creation },
@@ -1309,19 +1490,24 @@ fn validate_request_resource(
 ) -> Result<()> {
     let source_handle = resource.recipe.source_handle.as_slice();
     let request_binding = binding(request);
-    let teardown_binding_matches = matches!(
-        request.action(),
-        MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE
-    ) && request_binding.sandbox_id == resource.binding.sandbox_id
+    let existing_resource_binding_matches = request.action()
+        != MountAction::MOUNT_ACTION_CREATE_DETACHED
+        && request_binding.sandbox_id == resource.binding.sandbox_id
         && request_binding.incarnation_id == resource.binding.incarnation_id
         && request_binding.namespace_generation == resource.binding.namespace_generation
-        && (
+        && ((
             request_binding.assignment_epoch,
             request_binding.desired_generation,
-        ) >= (
+        ) > (
             resource.binding.assignment_epoch,
             resource.binding.desired_generation,
-        );
+        ) || ((
+            request_binding.assignment_epoch,
+            request_binding.desired_generation,
+        ) == (
+            resource.binding.assignment_epoch,
+            resource.binding.desired_generation,
+        ) && request_binding.assignment_digest == resource.binding.assignment_digest));
     let attributes_match = request
         .attributes()
         .is_none_or(|attributes| resource.recipe.policy == mount_policy(attributes));
@@ -1330,7 +1516,7 @@ fn validate_request_resource(
             .is_ok_and(|value| value == resource.recipe.view_revision)
     });
     if resource.kernel_boot_id != kernel_boot_id
-        || (resource.binding != request_binding && !teardown_binding_matches)
+        || (resource.binding != request_binding && !existing_resource_binding_matches)
         || resource.recipe.attachment_id != *request.attachment_id()
         || resource.recipe.destination_slot_id != *request.destination_slot_id()
         || resource.recipe.source_generation != request.source_generation()
@@ -1405,6 +1591,40 @@ fn operation_handle(request: &ValidatedMountRequest, request_digest: [u8; 32]) -
     }
 }
 
+fn expected_source_for_request(
+    resources: &MountResourceTableV1,
+    request: &ValidatedMountRequest,
+) -> Result<Option<SourceRealizationEvidenceV1>> {
+    if matches!(
+        request.action(),
+        MountAction::MOUNT_ACTION_CREATE_DETACHED | MountAction::MOUNT_ACTION_RELEASE
+    ) {
+        return Ok(None);
+    }
+    let resource = resource_for_supplied_handle(resources, request)?;
+    Ok(Some(source_evidence(&resource.recipe)))
+}
+
+fn source_evidence(recipe: &MountRecipeV1) -> SourceRealizationEvidenceV1 {
+    SourceRealizationEvidenceV1 {
+        handle: recipe.source_realization_handle,
+        physical_proof_digest: recipe.source_physical_proof_digest,
+        unique_mount_id: recipe.source_unique_mount_id,
+        provider_authority_digest: recipe.source_provider_authority_digest,
+        provider_authority_id: recipe.source_provider_authority_id,
+        provider_authority_generation: recipe.source_provider_authority_generation,
+        provider_resource_id: recipe.source_provider_resource_id,
+        provider_resource_generation: recipe.source_provider_resource_generation,
+        provider_resource_digest: recipe.source_provider_resource_digest,
+        provider_catalog_generation: recipe.source_provider_catalog_generation,
+        provider_catalog_digest: recipe.source_provider_catalog_digest,
+        kernel_boot_id: recipe.source_kernel_boot_id,
+        device: recipe.source_device,
+        inode: recipe.source_inode,
+        proof_class: recipe.source_proof_class,
+    }
+}
+
 fn operation_correlation(
     request: &ValidatedMountRequest,
     request_digest: [u8; 32],
@@ -1422,6 +1642,38 @@ fn installed_mount_id(resource: &MountResourceV1) -> Result<u64> {
         | MountResourceStateV1::Draining { installed, .. } => Ok(installed.unique_mount_id),
         _ => Err(invalid_pending_state()),
     }
+}
+
+/// Authenticates all Mount recovery tables and retained mount custody without mutation.
+///
+/// The daemon calls this before source-custody reconciliation because that
+/// reconciliation may conservatively fault stale-boot resources. Direct broker
+/// construction performs the same preflight internally before any journal
+/// mutation or retained-descriptor removal.
+///
+/// # Errors
+///
+/// Returns an error for corrupt or contradictory Mount resources, source pins,
+/// cross-table references, boot identities, or retained mount descriptors.
+pub fn preflight_recovery_state(
+    journal: &Journal,
+    current_boot_id: [u8; 16],
+    custody: &[RetainedMountObservation],
+) -> Result<()> {
+    let resources =
+        MountResourceTableV1::recover(journal, MountResourceLimitsV1::default(), current_boot_id)?;
+    let source_pins = SourcePinTableV1::recover(journal, current_boot_id)?;
+    validate_pre_repair_state(&resources, &source_pins, current_boot_id, custody)
+}
+
+fn validate_pre_repair_state(
+    resources: &MountResourceTableV1,
+    source_pins: &SourcePinTableV1,
+    current_boot_id: [u8; 16],
+    custody: &[RetainedMountObservation],
+) -> Result<()> {
+    source_pins.validate_resource_references_before_reboot_repair(resources)?;
+    validate_custody(resources, current_boot_id, custody)
 }
 
 fn release_ids(state: &MountResourceStateV1) -> (Option<u64>, Option<u64>) {
@@ -1509,7 +1761,7 @@ fn fault_unverifiable_allocated_custody<W: MountWorker>(
     Ok(())
 }
 
-fn fault_stale_boot_resources(
+pub(crate) fn fault_stale_boot_resources(
     journal: &mut Journal,
     resources: &mut MountResourceTableV1,
     current_boot_id: [u8; 16],
@@ -2214,6 +2466,33 @@ fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
         source_handle: value.source_handle.clone(),
         source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
             .into(),
+        source_binding_digest: value.source_binding_digest.to_vec(),
+        source_realization_handle: value.source_realization_handle.to_vec(),
+        source_physical_proof_digest: value.source_physical_proof_digest.to_vec(),
+        source_kernel_boot_id: value.source_kernel_boot_id.to_vec(),
+        source_device: value.source_device,
+        source_inode: value.source_inode,
+        source_proof_class: match value.source_proof_class {
+            crate::source_pin::SourcePinProofClassV1::ImmutableTree => {
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE
+            }
+            crate::source_pin::SourcePinProofClassV1::LocalLive => {
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE
+            }
+            crate::source_pin::SourcePinProofClassV1::BestEffortReplica => {
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA
+            }
+        }
+        .into(),
+        source_unique_mount_id: value.source_unique_mount_id,
+        source_provider_authority_id: value.source_provider_authority_id.to_vec(),
+        source_provider_authority_generation: value.source_provider_authority_generation,
+        source_provider_authority_digest: value.source_provider_authority_digest.to_vec(),
+        source_provider_resource_id: value.source_provider_resource_id.to_vec(),
+        source_provider_resource_generation: value.source_provider_resource_generation,
+        source_provider_resource_digest: value.source_provider_resource_digest.to_vec(),
+        source_provider_catalog_generation: value.source_provider_catalog_generation,
+        source_provider_catalog_digest: value.source_provider_catalog_digest.to_vec(),
         attributes: Some(MountAttributes {
             read_only: value
                 .policy
@@ -2430,6 +2709,8 @@ mod tests {
     #[cfg(feature = "kernel-tests")]
     mod host_scope_exchange;
 
+    use std::collections::BTreeSet;
+
     use aos_proto::aos::sandbox::local::v1::{
         ApplyDestinationSlotRequest, ApplyMountRequest, AssignmentFence, Audience,
         BrokerAuthorizationArtifactsV1, BrokerMethod, BrokerRequestEnvelope, Descriptor,
@@ -2472,6 +2753,7 @@ mod tests {
     use std::num::NonZeroU32;
     use std::os::unix::ffi::OsStringExt as _;
     use std::os::unix::fs::PermissionsExt as _;
+    use std::rc::Rc;
 
     use super::*;
     use crate::worker::{
@@ -2625,7 +2907,7 @@ mod tests {
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Mount,
                 ProtocolId::MountBroker,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
                 assignment,
                 TEST_NODE,
                 self.lease_signer.clone(),
@@ -2706,7 +2988,7 @@ mod tests {
                 lease_generation,
                 authorized_requests,
                 plan_key,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
             )
         }
 
@@ -2958,17 +3240,22 @@ mod tests {
         request_bytes: &[u8],
         authorized_requests: &[&[u8]],
     ) -> Result<Vec<u8>> {
-        let catalog = broker.worker.catalog_commitment(&decode_mount_request(
+        let request =
+            decode_mount_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)?;
+        let expected_source = expected_source_for_request(&broker.resources, &request)?;
+        let catalog = broker
+            .worker
+            .catalog_commitment(&request, expected_source)?;
+        let artifacts = fixture.artifacts(
             request_bytes,
-            peer(),
-            policy(),
-            TEST_BOOTTIME_NANOSECONDS,
-        )?)?;
-        let artifacts = fixture.artifacts(request_bytes, catalog, 1, authorized_requests);
+            catalog.map(|value| value.commitment()),
+            1,
+            authorized_requests,
+        );
         broker.apply_mount(
             request_bytes,
             &artifacts,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -2985,7 +3272,7 @@ mod tests {
         broker.apply_destination_slot(
             request_bytes,
             &artifacts,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             peer(),
             policy(),
             || Ok(clock()),
@@ -3023,8 +3310,13 @@ mod tests {
         catalog_calls: Cell<usize>,
         fail_after_custody_once: bool,
         fail_release_after_custody_once: bool,
+        fail_source_custody_once: bool,
+        source_acquisition_available: bool,
+        source_custody: BTreeSet<[u8; 32]>,
         custody: Vec<RetainedMountObservation>,
+        discard_calls: Rc<Cell<usize>>,
         catalog_byte: u8,
+        source_realization_byte: u8,
     }
 
     impl Default for ScriptedWorker {
@@ -3034,20 +3326,71 @@ mod tests {
                 catalog_calls: Cell::new(0),
                 fail_after_custody_once: false,
                 fail_release_after_custody_once: false,
+                fail_source_custody_once: false,
+                source_acquisition_available: true,
+                source_custody: BTreeSet::new(),
                 custody: Vec::new(),
+                discard_calls: Rc::new(Cell::new(0)),
                 catalog_byte: 77,
+                source_realization_byte: 77,
             }
         }
     }
 
     impl MountWorker for ScriptedWorker {
+        fn ensure_authority_healthy(&self) -> Result<()> {
+            Ok(())
+        }
+
         fn catalog_commitment(
             &self,
             request: &ValidatedMountRequest,
-        ) -> Result<Option<aos_sandbox_core::ObjectDigest>> {
+            expected_source: Option<SourceRealizationEvidenceV1>,
+        ) -> Result<Option<CatalogAuthorizationV1>> {
             self.catalog_calls.set(self.catalog_calls.get() + 1);
-            Ok((request.action() != MountAction::MOUNT_ACTION_RELEASE)
-                .then(|| aos_sandbox_core::ObjectDigest::from_bytes([self.catalog_byte; 32])))
+            if request.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED
+                && !self.source_acquisition_available
+            {
+                return Err(MountError::Worker(
+                    "authenticated source acquisition is unavailable".to_owned(),
+                ));
+            }
+            Ok(
+                (request.action() != MountAction::MOUNT_ACTION_RELEASE).then(|| {
+                    let source_realization = expected_source.unwrap_or_else(|| {
+                        crate::source_pin::SourceRealizationEvidenceV1::authenticated_fixture(
+                            request.source_binding().unwrap(),
+                            self.source_realization_byte,
+                            KernelBootId::current().unwrap().into_bytes(),
+                        )
+                        .unwrap()
+                    });
+                    CatalogAuthorizationV1::new(
+                        aos_sandbox_core::ObjectDigest::from_bytes([self.catalog_byte; 32]),
+                        source_realization,
+                    )
+                }),
+            )
+        }
+
+        fn establish_source_custody(
+            &mut self,
+            authorization: &CatalogAuthorizationV1,
+        ) -> Result<()> {
+            self.source_custody
+                .insert(authorization.source_realization().handle);
+            if self.fail_source_custody_once {
+                self.fail_source_custody_once = false;
+                return Err(MountError::State(
+                    "injected source custody readback ambiguity".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+
+        fn release_source_custody(&mut self, handle: [u8; 32]) -> Result<bool> {
+            self.source_custody.remove(&handle);
+            Ok(true)
         }
 
         fn custody_inventory(&self) -> Result<Vec<RetainedMountObservation>> {
@@ -3055,18 +3398,15 @@ mod tests {
         }
 
         fn discard_retained(&mut self, handle: [u8; 32]) -> Result<()> {
+            self.discard_calls.set(self.discard_calls.get() + 1);
             self.custody.retain(|value| value.handle != handle);
             Ok(())
         }
 
         fn preflight_publication(
             &self,
-            _request: &ValidatedMountRequest,
-            _request_digest: [u8; 32],
-            _handle: [u8; 32],
-            _expected_mount_id: MountId,
+            _durable: DurableMountExecutionV1<'_>,
             predecessor: Option<([u8; 32], MountId)>,
-            _expected_catalog_commitment: aos_sandbox_core::ObjectDigest,
         ) -> Result<PublicationPreflight> {
             Ok(PublicationPreflight {
                 target_mount_namespace_id: 500,
@@ -3080,17 +3420,13 @@ mod tests {
 
         fn reconcile_detach(
             &mut self,
-            _request: &ValidatedMountRequest,
-            _request_digest: [u8; 32],
-            handle: [u8; 32],
-            expected_mount_id: MountId,
-            _expected_catalog_commitment: aos_sandbox_core::ObjectDigest,
+            durable: DurableMountExecutionV1<'_>,
             before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
         ) -> Result<ReleasedMountObservation> {
             before_effect()?;
-            self.custody.retain(|value| value.handle != handle);
+            self.custody.retain(|value| value.handle != durable.handle);
             Ok(ReleasedMountObservation {
-                mount_id: expected_mount_id,
+                mount_id: durable.expected_mount_id,
             })
         }
 
@@ -3100,6 +3436,7 @@ mod tests {
             _request_digest: [u8; 32],
             handles: EffectHandles,
             _expected_catalog_commitment: Option<aos_sandbox_core::ObjectDigest>,
+            _expected_source: Option<SourceRealizationEvidenceV1>,
             before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
         ) -> Result<WorkerObservation> {
             before_effect()?;
@@ -3228,7 +3565,7 @@ mod tests {
 
         ApplyDestinationSlotRequest {
             header: Some(RequestHeader {
-                protocol_major: 1,
+                protocol_major: 2,
                 protocol_minor: 0,
                 request_id: vec![request_id; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
@@ -3309,7 +3646,7 @@ mod tests {
     fn request(request_id: u8) -> Vec<u8> {
         ApplyMountRequest {
             header: Some(RequestHeader {
-                protocol_major: 1,
+                protocol_major: 2,
                 protocol_minor: 0,
                 request_id: vec![request_id; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
@@ -3387,6 +3724,7 @@ mod tests {
         );
 
         let mut host_header = mount.header.as_option().unwrap().clone();
+        host_header.protocol_major = 1;
         host_header.protocol_minor = 0;
         host_header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
         host_header.maximum_response_bytes = 16 * 1024;
@@ -3531,9 +3869,14 @@ mod tests {
         let request =
             decode_mount_request(&request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
                 .unwrap();
-        let catalog = broker.worker.catalog_commitment(&request).unwrap();
+        let catalog = broker.worker.catalog_commitment(&request, None).unwrap();
         let supplied_version = ProtocolVersion::new(1, 1);
-        let artifacts = fixture.artifacts(&request_bytes, catalog, 1, &[&request_bytes]);
+        let artifacts = fixture.artifacts(
+            &request_bytes,
+            catalog.map(|value| value.commitment()),
+            1,
+            &[&request_bytes],
+        );
         let journal_sequence = broker.journal.snapshot_sequence();
         let catalog_calls = broker.worker.catalog_calls.get();
 
@@ -3943,7 +4286,7 @@ mod tests {
                     .apply_destination_slot(
                         &presented,
                         &artifacts,
-                        ProtocolVersion::new(1, 0),
+                        ProtocolVersion::new(2, 0),
                         peer(),
                         policy(),
                         || Ok(clock()),
@@ -4056,7 +4399,7 @@ mod tests {
                     .apply_mount(
                         &presented,
                         &artifacts,
-                        ProtocolVersion::new(1, 0),
+                        ProtocolVersion::new(2, 0),
                         peer(),
                         policy(),
                         || Ok(clock()),
@@ -4085,7 +4428,7 @@ mod tests {
                 .apply_mount(
                     &bytes,
                     &artifacts,
-                    ProtocolVersion::new(1, 0),
+                    ProtocolVersion::new(2, 0),
                     peer(),
                     policy(),
                     || Ok(clock_at(301)),
@@ -4120,7 +4463,7 @@ mod tests {
                 .apply_mount(
                     &bytes,
                     &artifacts,
-                    ProtocolVersion::new(1, 0),
+                    ProtocolVersion::new(2, 0),
                     peer(),
                     policy(),
                     || {
@@ -4144,6 +4487,92 @@ mod tests {
     }
 
     #[test]
+    fn source_custody_readback_failure_prevents_active_or_resource_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                fail_source_custody_once: true,
+                ..Default::default()
+            },
+        );
+        let bytes = request(64);
+
+        assert!(apply(&mut broker, &fixture, &bytes).is_err());
+        assert!(broker.resources.resources().next().is_none());
+        assert!(broker.source_pins.rows().next().is_none());
+        assert_eq!(broker.worker.source_custody.len(), 1);
+        assert!(
+            broker
+                .journal
+                .get(RecordNamespace::Effect, &[64; 16])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn zero_reference_cutover_retires_old_custody_before_a_failed_create_effect() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let create_first = action_request(
+            65,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let first_mount = detached_mount_handle_v1(Sha256::digest(&create_first).into());
+        let release_first = action_request(
+            66,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(first_mount),
+            None,
+        );
+        let first_generation = [&create_first[..], &release_first[..]];
+
+        apply_authorized(&mut broker, &fixture, &create_first, &first_generation).unwrap();
+        let old_source = broker
+            .resources
+            .get(&first_mount)
+            .unwrap()
+            .recipe
+            .source_realization_handle;
+        apply_authorized(&mut broker, &fixture, &release_first, &first_generation).unwrap();
+        assert!(broker.worker.source_custody.contains(&old_source));
+
+        let create_second = action_request(
+            67,
+            2,
+            2,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        broker.worker.source_realization_byte = 78;
+        broker.worker.fail_after_custody_once = true;
+
+        assert!(
+            apply_authorized(&mut broker, &fixture, &create_second, &[&create_second]).is_err()
+        );
+        assert_eq!(
+            broker.source_pins.get(&old_source).unwrap().lifecycle,
+            crate::source_pin::SourcePinLifecycleV1::Released
+        );
+        assert!(!broker.worker.source_custody.contains(&old_source));
+        let current = broker.source_pins.rows().find(|row| row.current).unwrap();
+        assert_ne!(current.handle, old_source);
+        assert!(broker.worker.source_custody.contains(&current.handle));
+    }
+
+    #[test]
     fn pending_replay_accepts_a_fresher_lease_without_reallocating() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
@@ -4162,7 +4591,7 @@ mod tests {
                 .apply_mount(
                     &bytes,
                     &first,
-                    ProtocolVersion::new(1, 0),
+                    ProtocolVersion::new(2, 0),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4177,7 +4606,7 @@ mod tests {
             .apply_mount(
                 &bytes,
                 &renewed,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
                 peer(),
                 policy(),
                 || Ok(clock()),
@@ -4223,6 +4652,52 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn recovery_rejects_cross_table_custody_contradiction_before_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let bytes = request(11);
+        let (mut broker, fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                fail_after_custody_once: true,
+                ..Default::default()
+            },
+        );
+        assert!(apply(&mut broker, &fixture, &bytes).is_err());
+
+        let mut source = broker.source_pins.rows().next().unwrap().clone();
+        source.revision = 2;
+        source.current = false;
+        source.lifecycle = crate::source_pin::SourcePinLifecycleV1::Reaping;
+        let source_record = crate::source_pin::source_pin_record_for_test(&source).unwrap();
+        broker
+            .journal
+            .commit(&JournalTransaction::new([99; 16], vec![source_record]).unwrap())
+            .unwrap();
+
+        let custody = broker.worker.custody.clone();
+        let journal_before = std::fs::read(&path).unwrap();
+        let discard_calls = Rc::new(Cell::new(0));
+        drop(broker);
+
+        assert!(
+            MountBroker::new(
+                open(&path),
+                ScriptedWorker {
+                    custody: custody.clone(),
+                    discard_calls: discard_calls.clone(),
+                    ..Default::default()
+                },
+                fixture.authority(),
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), journal_before);
+        assert_eq!(discard_calls.get(), 0);
+        assert_eq!(custody.len(), 1);
     }
 
     #[test]
@@ -4315,7 +4790,7 @@ mod tests {
                 .apply_mount(
                     &competing_release,
                     &release_artifacts,
-                    ProtocolVersion::new(1, 0),
+                    ProtocolVersion::new(2, 0),
                     peer(),
                     policy(),
                     || Ok(clock()),
@@ -4335,6 +4810,97 @@ mod tests {
         apply_authorized(&mut recovered, &recovered_fixture, &release, &authorized).unwrap();
         assert!(matches!(
             recovered.resources.get(&handle).unwrap().state,
+            MountResourceStateV1::Released { .. }
+        ));
+    }
+
+    #[test]
+    fn provider_outage_blocks_create_but_not_existing_install_detach_or_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let create = action_request(
+            90,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let handle = detached_mount_handle_v1(Sha256::digest(&create).into());
+        let create_releasable = action_request(
+            95,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let releasable = detached_mount_handle_v1(Sha256::digest(&create_releasable).into());
+        let install = action_request(
+            91,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_INSTALL,
+            Some(handle),
+            None,
+        );
+        let detach = action_request(
+            92,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_DETACH,
+            Some(handle),
+            None,
+        );
+        let release = action_request(
+            93,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(releasable),
+            None,
+        );
+        let authorized = [
+            &create[..],
+            &create_releasable[..],
+            &install[..],
+            &detach[..],
+            &release[..],
+        ];
+
+        apply_authorized(&mut broker, &fixture, &create, &authorized).unwrap();
+        apply_authorized(&mut broker, &fixture, &create_releasable, &authorized).unwrap();
+        broker.worker.source_acquisition_available = false;
+        apply_authorized(&mut broker, &fixture, &install, &authorized).unwrap();
+        apply_authorized(&mut broker, &fixture, &detach, &authorized).unwrap();
+        apply_authorized(&mut broker, &fixture, &release, &authorized).unwrap();
+
+        let unavailable_create = action_request(
+            94,
+            2,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        assert!(
+            apply_authorized(
+                &mut broker,
+                &fixture,
+                &unavailable_create,
+                &[&unavailable_create],
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            broker.resources.get(&handle).unwrap().state,
             MountResourceStateV1::Released { .. }
         ));
     }
@@ -4368,7 +4934,7 @@ mod tests {
             22,
             2,
             2,
-            2,
+            1,
             MountAction::MOUNT_ACTION_CREATE_DETACHED,
             None,
             None,
@@ -4378,7 +4944,7 @@ mod tests {
             23,
             2,
             2,
-            2,
+            1,
             MountAction::MOUNT_ACTION_REPLACE,
             Some(successor),
             Some(predecessor),
@@ -4397,7 +4963,15 @@ mod tests {
 
         apply_authorized(&mut broker, &fixture, &create_predecessor, &generation_one).unwrap();
         apply_authorized(&mut broker, &fixture, &install_predecessor, &generation_one).unwrap();
+        let predecessor_source = broker
+            .resources
+            .get(&predecessor)
+            .unwrap()
+            .recipe
+            .source_realization_handle;
+        broker.worker.source_realization_byte = 78;
         apply_authorized(&mut broker, &fixture, &create_successor, &generation_two).unwrap();
+        broker.worker.source_acquisition_available = false;
         apply_authorized(&mut broker, &fixture, &replace, &generation_two).unwrap();
         assert!(matches!(
             broker.resources.get(&predecessor).unwrap().state,
@@ -4419,6 +4993,15 @@ mod tests {
             MountResourceStateV1::Installed { publication, .. }
                 if publication.replaces.is_none()
         ));
+        assert_eq!(
+            broker
+                .source_pins
+                .get(&predecessor_source)
+                .unwrap()
+                .lifecycle,
+            crate::source_pin::SourcePinLifecycleV1::Released
+        );
+        assert!(!broker.worker.source_custody.contains(&predecessor_source));
     }
 
     #[test]

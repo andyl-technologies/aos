@@ -9,18 +9,22 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use aos_sandbox::journal::{Journal, JournalLimits};
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_mount::authorization::MountAuthorityV1;
-use aos_sandbox_mount::broker::MountBroker;
+use aos_sandbox_mount::broker::{MountBroker, preflight_recovery_state};
 use aos_sandbox_mount::catalog::{FileMountCatalog, PreparedMountCatalog};
 use aos_sandbox_mount::helper::PosixSpawnNamespaceHelper;
 use aos_sandbox_mount::keeper::SystemdFdStore;
 use aos_sandbox_mount::peer::ControllerPeerVerifier;
 use aos_sandbox_mount::service::MountService;
+use aos_sandbox_mount::source_pin::recover_source_custody;
 use aos_sandbox_mount::transport::ActivatedSeqpacketListener;
 use aos_sandbox_mount::worker::DescriptorMountWorker;
+use aos_sandbox_mount::worker::RetainedMountObservation;
 use aos_sandbox_mount::{MountError, Result};
 
 const EXPECTED_FD_NAME: &str = "aos-sandbox-mount";
@@ -51,22 +55,42 @@ fn run() -> Result<()> {
     let activation = unsafe {
         SystemdFdStore::adopt_service_activation(EXPECTED_FD_NAME, MAXIMUM_RETAINED_MOUNTS)?
     };
-    if !activation.source_pins.is_empty() {
-        return Err(MountError::State(
-            "retained source pins are unsupported without a configured fixed provider".to_owned(),
-        ));
-    }
     let retained_names: BTreeSet<_> = activation.mounts.keys().cloned().collect();
+    let retained_sources: BTreeSet<_> = activation.source_pins.keys().cloned().collect();
     let listener = ActivatedSeqpacketListener::from_owned(activation.listener)?;
-    let keeper =
-        SystemdFdStore::from_environment_with_inventory(retained_names, MAXIMUM_RETAINED_MOUNTS)?;
+    let keeper = Arc::new(SystemdFdStore::from_environment_with_inventories(
+        retained_names,
+        retained_sources,
+        MAXIMUM_RETAINED_MOUNTS,
+    )?);
     let (controller_identity, helper_executable) = arguments()?;
     validate_private_root(Path::new(STATE_ROOT))?;
-    let (journal, _) = Journal::open(
+    let (mut journal, _) = Journal::open(
         Path::new(STATE_ROOT).join("mount.journal"),
         JournalLimits::default(),
     )?;
-    let catalog = PreparedMountCatalog::new(FileMountCatalog::open_root_owned(CATALOG_ROOT)?);
+    let kernel_boot_id = KernelBootId::current()
+        .map_err(|error| MountError::State(error.to_string()))?
+        .into_bytes();
+    let retained_mounts = activation
+        .mounts
+        .iter()
+        .map(|(name, mount)| RetainedMountObservation {
+            handle: name.digest(),
+            mount_id: mount.mount_id(),
+        })
+        .collect::<Vec<_>>();
+    preflight_recovery_state(&journal, kernel_boot_id, &retained_mounts)?;
+    let reopened_sources = recover_source_custody(
+        &mut journal,
+        activation.source_pins,
+        &keeper,
+        kernel_boot_id,
+    )?;
+    let catalog = PreparedMountCatalog::with_reopened_sources(
+        FileMountCatalog::open_root_owned(CATALOG_ROOT)?,
+        reopened_sources,
+    );
     let helper = PosixSpawnNamespaceHelper::new(helper_executable)?;
     let worker = DescriptorMountWorker::new(catalog, helper, keeper, activation.mounts)?;
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {

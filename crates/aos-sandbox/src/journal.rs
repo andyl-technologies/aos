@@ -156,6 +156,8 @@ pub enum RecordNamespace {
     StorageResolverPolicyFloor = 37,
     /// Fixed node identity bound to one controller state directory.
     ControllerIdentity = 38,
+    /// Broker-owned physical source realizations retained for Mount resources.
+    MountSourcePin = 39,
 }
 
 impl RecordNamespace {
@@ -199,6 +201,7 @@ impl RecordNamespace {
             36 => Ok(Self::HostExecution),
             37 => Ok(Self::StorageResolverPolicyFloor),
             38 => Ok(Self::ControllerIdentity),
+            39 => Ok(Self::MountSourcePin),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -735,7 +738,10 @@ impl Journal {
     /// an I/O failure, but they may precede a transaction that reached disk.
     /// Authority consumers must use this guard before reading, including when
     /// rebuilding a facade around the same exclusively borrowed journal.
-    pub(crate) fn ensure_healthy(&self) -> Result<(), JournalError> {
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation.
+    pub fn ensure_healthy(&self) -> Result<(), JournalError> {
         if self.poisoned {
             Err(JournalError::Poisoned)
         } else {
@@ -2069,13 +2075,14 @@ mod tests {
             RecordNamespace::HostExecution,
             RecordNamespace::StorageResolverPolicyFloor,
             RecordNamespace::ControllerIdentity,
+            RecordNamespace::MountSourcePin,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 39, 255] {
+        for code in [0, 40, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

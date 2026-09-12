@@ -22,6 +22,7 @@ pub mod payload_scope;
 pub mod semantics;
 pub mod session;
 mod source_binding;
+mod source_realization;
 pub mod storage_inventory;
 
 pub use host_catalog_snapshot::{
@@ -54,6 +55,11 @@ pub use network_inventory::{
     MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, ValidatedNetworkInventory,
     ValidatedNetworkNamespace, decode_network_resource_inventory_request,
     decode_network_resource_inventory_response,
+};
+pub use source_realization::{
+    MountSourcePhysicalProofV1, MountSourceProofClassV1, MountSourceProviderHistoryV1,
+    mount_source_physical_proof_digest_v1, mount_source_provider_history_is_valid_v1,
+    mount_source_realization_handle_v1,
 };
 pub use storage_inventory::{
     MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS, ValidatedStorageInventory,
@@ -89,7 +95,8 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest,
     ProtocolId, ProtocolVersion, RegistryError, decode_view_source, encode_view_source,
-    model::ViewSource, negotiate_protocol, validate_descriptor_role, validate_required_features,
+    model::ViewSource, negotiate_protocol, supported_protocol_version, validate_descriptor_role,
+    validate_required_features,
 };
 use buffa::Message as _;
 
@@ -103,7 +110,7 @@ const OPAQUE_HANDLE_BYTES: usize = 32;
 const MAXIMUM_ATTACHMENTS: usize = 256;
 const MAXIMUM_RESOURCE_LIMITS: usize = 16;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
-const MOUNT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const MOUNT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 
 #[cfg(test)]
 fn immutable_source_handle_fixture() -> Vec<u8> {
@@ -1037,6 +1044,7 @@ fn validate_header_protocol(
     header: &RequestHeader,
     protocol: ProtocolId,
 ) -> Result<ProtocolVersion, ProtocolValidationError> {
+    let local = supported_protocol_version(protocol);
     Ok(negotiate_protocol(
         protocol,
         ProtocolVersion::new(
@@ -1045,8 +1053,8 @@ fn validate_header_protocol(
                     protocol,
                     offered_major: u16::MAX,
                     offered_minor: u16::MAX,
-                    local_major: 1,
-                    local_minor: 0,
+                    local_major: local.major(),
+                    local_minor: local.minor(),
                 }
             })?,
             u16::try_from(header.protocol_minor).map_err(|_| {
@@ -1054,8 +1062,8 @@ fn validate_header_protocol(
                     protocol,
                     offered_major: u16::MAX,
                     offered_minor: u16::MAX,
-                    local_major: 1,
-                    local_minor: 0,
+                    local_major: local.major(),
+                    local_minor: local.minor(),
                 }
             })?,
         ),
@@ -1717,7 +1725,7 @@ mod tests {
     fn valid_mount_request() -> Vec<u8> {
         let mut request = ApplyMountRequest::default();
         let header = request.header.get_or_insert_default();
-        header.protocol_major = 1;
+        header.protocol_major = 2;
         header.protocol_minor = 0;
         header.request_id = vec![1; 16];
         header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
@@ -1799,6 +1807,34 @@ mod tests {
             decode_mount_request(&encoded, wrong_peer, policy(), 100),
             Err(ProtocolValidationError::PeerCredentialMismatch)
         );
+    }
+
+    #[test]
+    fn mount_header_overflow_reports_the_exact_local_two_zero_version() {
+        for field in ["major", "minor"] {
+            let mut request = ApplyMountRequest::decode_from_slice(&valid_mount_request())
+                .unwrap_or_else(|error| panic!("fixture decode failed: {error}"));
+            let header = request.header.get_or_insert_default();
+            match field {
+                "major" => header.protocol_major = u32::MAX,
+                "minor" => header.protocol_minor = u32::MAX,
+                _ => unreachable!(),
+            }
+
+            assert_eq!(
+                decode_mount_request(&request.encode_to_vec(), peer(), policy(), 100),
+                Err(ProtocolValidationError::Protocol(
+                    RegistryError::IncompatibleProtocol {
+                        protocol: ProtocolId::MountBroker,
+                        offered_major: u16::MAX,
+                        offered_minor: u16::MAX,
+                        local_major: 2,
+                        local_minor: 0,
+                    }
+                )),
+                "{field} overflow reported the wrong local version"
+            );
+        }
     }
 
     #[test]

@@ -750,6 +750,21 @@ fn mount_recipe_digest(resource: &ValidatedMountInventoryRecord) -> [u8; 32] {
 
 fn update_exact_inventoried_source(digest: &mut Sha256, recipe: &ValidatedMountRecipe) {
     update_bytes(digest, &encode_view_source(recipe.source().source()));
+    digest.update(recipe.source_realization_handle());
+    digest.update(recipe.source_physical_proof_digest());
+    digest.update(recipe.source_kernel_boot_id());
+    digest.update(recipe.source_device().to_be_bytes());
+    digest.update(recipe.source_inode().to_be_bytes());
+    digest.update((recipe.source_proof_class() as i32).to_be_bytes());
+    digest.update(recipe.source_unique_mount_id().to_be_bytes());
+    digest.update(recipe.source_provider_authority_id());
+    digest.update(recipe.source_provider_authority_generation().to_be_bytes());
+    digest.update(recipe.source_provider_authority_digest());
+    digest.update(recipe.source_provider_resource_id());
+    digest.update(recipe.source_provider_resource_generation().to_be_bytes());
+    digest.update(recipe.source_provider_resource_digest());
+    digest.update(recipe.source_provider_catalog_generation().to_be_bytes());
+    digest.update(recipe.source_provider_catalog_digest());
 }
 
 fn desired_recipe_digest(intent: &AttachmentIntent) -> [u8; 32] {

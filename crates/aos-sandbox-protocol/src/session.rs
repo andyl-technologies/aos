@@ -24,7 +24,7 @@ use aos_sandbox_core::format::{
 };
 use aos_sandbox_core::{
     DecodeLimits, FeatureRef, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
-    validate_required_features,
+    supported_protocol_version, validate_required_features,
 };
 use buffa::Message as _;
 
@@ -42,6 +42,8 @@ pub const MAXIMUM_HANDSHAKE_BYTES: usize = 64 * 1024;
 pub const MAXIMUM_PACKET_DESCRIPTORS: usize = 16;
 /// Feature that makes signed plan and lease artifacts mandatory for effects.
 pub const SIGNED_PLAN_LEASE_FEATURE_NAMESPACE: &str = "aos.sandbox.authorization.signed-plan-lease";
+/// Feature required by Mount 2.0 clients that request a fresh source realization.
+pub const MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE: &str = "aos.sandbox.mount.source-acquisition";
 /// Maximum canonical broker-plan bytes carried in one local request.
 pub const MAXIMUM_BROKER_PLAN_BYTES: usize = 768 * 1024;
 /// Maximum canonical ownership-lease bytes carried in one local request.
@@ -1517,12 +1519,13 @@ fn validate_server_bounds(
 }
 
 fn incompatible_protocol(protocol: ProtocolId, major: u32, minor: u32) -> RegistryError {
+    let local = supported_protocol_version(protocol);
     RegistryError::IncompatibleProtocol {
         protocol,
         offered_major: u16::try_from(major).unwrap_or(u16::MAX),
         offered_minor: u16::try_from(minor).unwrap_or(u16::MAX),
-        local_major: 1,
-        local_minor: 0,
+        local_major: local.major(),
+        local_minor: local.minor(),
     }
 }
 
@@ -1949,7 +1952,7 @@ mod tests {
     fn client_hello() -> BrokerClientHello {
         let features = client_features();
         BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: features.iter().map(proto_feature).collect(),
@@ -2015,7 +2018,7 @@ mod tests {
         let plan = BrokerAuthorizationPlan::new(
             BrokerAudience::Mount,
             ProtocolId::MountBroker,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             assignment,
             NodeId::from_bytes([7; 16]),
             authority.clone(),
@@ -2509,7 +2512,7 @@ mod tests {
     }
 
     #[test]
-    fn mount_1_0_effects_require_exact_untrusted_authorization_artifacts() {
+    fn mount_2_0_effects_require_exact_untrusted_authorization_artifacts() {
         let mut features = vec![
             feature(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE),
             feature("aos.sandbox.enforcement.broker-ledger"),
@@ -2520,7 +2523,7 @@ mod tests {
             BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
         ];
         let hello = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: features.iter().map(proto_feature).collect(),
@@ -2536,31 +2539,38 @@ mod tests {
             &features,
             &methods,
         )
-        .unwrap_or_else(|error| panic!("valid Mount 1.0 hello failed: {error}"));
+        .unwrap_or_else(|error| panic!("valid Mount 2.0 hello failed: {error}"));
         decode_server_hello(
             &session.server_hello().encode_to_vec(),
             ProtocolId::MountBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             &features,
             &methods,
             8192,
         )
-        .unwrap_or_else(|error| panic!("valid Mount 1.0 server hello failed: {error}"));
+        .unwrap_or_else(|error| panic!("valid Mount 2.0 server hello failed: {error}"));
 
         let mut wrong_version = hello;
         wrong_version.protocol_minor = 1;
-        assert!(matches!(
-            negotiate_client_hello(
-                &wrong_version.encode_to_vec(),
-                peer(),
-                policy(),
-                ProtocolId::MountBroker,
-                &features,
-                &methods,
-            ),
-            Err(ProtocolValidationError::Protocol(_))
-        ));
+        let error = negotiate_client_hello(
+            &wrong_version.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::MountBroker,
+            &features,
+            &methods,
+        )
+        .unwrap_err();
+        let ProtocolValidationError::Protocol(RegistryError::IncompatibleProtocol {
+            local_major,
+            local_minor,
+            ..
+        }) = error
+        else {
+            panic!("unexpected version mismatch: {error}");
+        };
+        assert_eq!((local_major, local_minor), (2, 0));
 
         let artifacts = authorization_artifacts();
         let envelope = BrokerRequestEnvelope {
@@ -2623,7 +2633,7 @@ mod tests {
         let features = [feature("aos.sandbox.enforcement.broker-ledger")];
         let methods = [BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES];
         let inventory_hello = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: features.iter().map(proto_feature).collect(),
             maximum_response_bytes: 8192,
@@ -2702,7 +2712,7 @@ mod tests {
             BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
         ];
         let hello = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: features.iter().map(proto_feature).collect(),
@@ -2733,7 +2743,7 @@ mod tests {
         );
 
         let missing_authority_feature = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             required_features: features.iter().map(proto_feature).collect(),
             maximum_response_bytes: 8192,
@@ -2775,7 +2785,7 @@ mod tests {
             &session.server_hello().encode_to_vec(),
             ProtocolId::MountBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             session.required_features(),
             session.required_methods(),
             8192,
@@ -2804,7 +2814,7 @@ mod tests {
         );
 
         let mut server = BrokerServerHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             maximum_request_bytes: 4096,
             maximum_response_bytes: 4096,
@@ -2820,7 +2830,7 @@ mod tests {
                 &server.encode_to_vec(),
                 ProtocolId::MountBroker,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
                 &features,
                 &methods,
                 4096,
@@ -2835,7 +2845,7 @@ mod tests {
                 &server.encode_to_vec(),
                 ProtocolId::MountBroker,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
                 &features,
                 &methods,
                 4096,
@@ -3269,7 +3279,7 @@ mod tests {
     }
 
     #[test]
-    fn mount_catalog_preparation_is_read_only_at_mount_1_0() {
+    fn mount_catalog_preparation_is_read_only_at_mount_2_0() {
         let method = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
         let methods = [
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
@@ -3277,7 +3287,7 @@ mod tests {
             method,
         ];
         let hello = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 8192,
@@ -3292,8 +3302,8 @@ mod tests {
             &client_features(),
             &methods,
         )
-        .unwrap_or_else(|error| panic!("valid Mount 1.0 preparation hello failed: {error}"));
-        assert_eq!(session.version(), ProtocolVersion::new(1, 0));
+        .unwrap_or_else(|error| panic!("valid Mount 2.0 preparation hello failed: {error}"));
+        assert_eq!(session.version(), ProtocolVersion::new(2, 0));
         assert_eq!(
             session.maximum_request_bytes(),
             MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
@@ -3332,13 +3342,13 @@ mod tests {
     }
 
     #[test]
-    fn destination_slot_methods_keep_distinct_authorization_profiles_at_mount_1_0() {
+    fn destination_slot_methods_keep_distinct_authorization_profiles_at_mount_2_0() {
         let apply = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
         let inventory = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS;
         let methods = [apply, inventory];
         let features = client_features();
         let hello = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 8192,
@@ -3354,8 +3364,8 @@ mod tests {
             &features,
             &methods,
         )
-        .unwrap_or_else(|error| panic!("valid Mount 1.0 slot hello failed: {error}"));
-        assert_eq!(session.version(), ProtocolVersion::new(1, 0));
+        .unwrap_or_else(|error| panic!("valid Mount 2.0 slot hello failed: {error}"));
+        assert_eq!(session.version(), ProtocolVersion::new(2, 0));
 
         let authorized_apply = BrokerRequestEnvelope {
             method: apply.into(),
@@ -3408,10 +3418,10 @@ mod tests {
     }
 
     #[test]
-    fn mount_resource_inventory_hello_is_supported_at_exact_1_0() {
+    fn mount_resource_inventory_hello_is_supported_at_exact_2_0() {
         let method = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES;
         let hello = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 8192,
@@ -3426,32 +3436,41 @@ mod tests {
             &[],
             &[method],
         )
-        .unwrap_or_else(|error| panic!("valid Mount 1.0 inventory hello failed: {error}"));
-        assert_eq!(session.version(), ProtocolVersion::new(1, 0));
+        .unwrap_or_else(|error| panic!("valid Mount 2.0 inventory hello failed: {error}"));
+        assert_eq!(session.version(), ProtocolVersion::new(2, 0));
         decode_server_hello(
             &session.server_hello().encode_to_vec(),
             ProtocolId::MountBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             &[],
             &[method],
             8192,
         )
         .unwrap();
 
-        let mut unsupported = hello;
-        unsupported.protocol_minor = 1;
-        assert!(matches!(
-            negotiate_client_hello(
-                &unsupported.encode_to_vec(),
-                peer(),
-                policy(),
-                ProtocolId::MountBroker,
-                &[],
-                &[method],
-            ),
-            Err(ProtocolValidationError::Protocol(_))
-        ));
+        for unsupported in [
+            BrokerClientHello {
+                protocol_major: 1,
+                ..hello.clone()
+            },
+            BrokerClientHello {
+                protocol_minor: 1,
+                ..hello.clone()
+            },
+        ] {
+            assert!(matches!(
+                negotiate_client_hello(
+                    &unsupported.encode_to_vec(),
+                    peer(),
+                    policy(),
+                    ProtocolId::MountBroker,
+                    &[],
+                    &[method],
+                ),
+                Err(ProtocolValidationError::Protocol(_))
+            ));
+        }
     }
 
     #[test]

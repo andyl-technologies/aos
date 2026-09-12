@@ -353,7 +353,7 @@ struct FeatureDefinition {
     minor: u32,
 }
 
-const BASE_FEATURES: [FeatureDefinition; 15] = [
+const BASE_FEATURES: [FeatureDefinition; 16] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -362,6 +362,7 @@ const BASE_FEATURES: [FeatureDefinition; 15] = [
     feature("aos.sandbox.enforcement.cgroup-v2"),
     feature("aos.sandbox.enforcement.broker-ledger"),
     feature("aos.sandbox.authorization.signed-plan-lease"),
+    feature("aos.sandbox.mount.source-acquisition"),
     feature("aos.sandbox.enforcement.zfs-quota"),
     feature("aos.sandbox.residency.node-bounded-shared"),
     feature("aos.sandbox.residency.hard-isolated"),
@@ -445,7 +446,7 @@ pub fn negotiate_protocol(
     protocol: ProtocolId,
     offered: ProtocolVersion,
 ) -> Result<ProtocolVersion, RegistryError> {
-    let local = protocol_version(protocol);
+    let local = supported_protocol_version(protocol);
     let compatible = if matches!(
         protocol,
         ProtocolId::HostBroker
@@ -471,10 +472,12 @@ pub fn negotiate_protocol(
     }
 }
 
-const fn protocol_version(protocol: ProtocolId) -> ProtocolVersion {
+/// Returns the exact local version used to diagnose protocol mismatches.
+#[must_use]
+pub const fn supported_protocol_version(protocol: ProtocolId) -> ProtocolVersion {
     match protocol {
         ProtocolId::HostBroker => ProtocolVersion::new(1, 0),
-        ProtocolId::MountBroker => ProtocolVersion::new(1, 0),
+        ProtocolId::MountBroker => ProtocolVersion::new(2, 0),
         ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
         ProtocolId::NetworkBroker => ProtocolVersion::new(1, 0),
         ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 0),
@@ -616,10 +619,10 @@ mod tests {
     #[test]
     fn protocol_domains_negotiate_independently_and_fail_newer_versions() {
         assert_eq!(
-            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(1, 0)),
-            Ok(ProtocolVersion::new(1, 0))
+            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(2, 0)),
+            Ok(ProtocolVersion::new(2, 0))
         );
-        for version in [ProtocolVersion::new(1, 1), ProtocolVersion::new(2, 0)] {
+        for version in [ProtocolVersion::new(1, 0), ProtocolVersion::new(2, 1)] {
             assert!(matches!(
                 negotiate_protocol(ProtocolId::MountBroker, version),
                 Err(RegistryError::IncompatibleProtocol { .. })

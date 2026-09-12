@@ -11,16 +11,18 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryMountResourcesResponse, InventoryMountsRequest, MountFaultCorrelation,
     MountFaultPhase, MountInventoryRecord, MountInventorySourceAuthority, MountKernelObservation,
     MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
-    MountSourceConsistency,
+    MountSourceConsistency, MountSourceProofClass,
 };
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId};
 use buffa::Message as _;
 
 use crate::{
-    MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, PeerCredentials,
-    PeerPolicy, ProtocolValidationError, SourceRealizationBindingV1, ValidatedAssignmentFence,
-    ValidatedHeader, ValidatedMountAttributes, exact_nonzero, validate_descriptor, validate_fence,
-    validate_mount_attributes, validate_mount_source_handle, validate_request_header,
+    MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES,
+    MountSourceProviderHistoryV1, PeerCredentials, PeerPolicy, ProtocolValidationError,
+    SourceRealizationBindingV1, ValidatedAssignmentFence, ValidatedHeader,
+    ValidatedMountAttributes, exact_nonzero, mount_source_provider_history_is_valid_v1,
+    validate_descriptor, validate_fence, validate_mount_attributes, validate_mount_source_handle,
+    validate_request_header,
 };
 
 /// Maximum durable mount rows accepted in one complete inventory snapshot.
@@ -105,6 +107,21 @@ pub struct ValidatedMountRecipe {
     source_incarnation_id: Option<[u8; 16]>,
     source_consistency: MountSourceConsistency,
     source: Box<SourceRealizationBindingV1>,
+    source_realization_handle: [u8; 32],
+    source_physical_proof_digest: [u8; 32],
+    source_kernel_boot_id: [u8; 16],
+    source_device: u64,
+    source_inode: u64,
+    source_proof_class: MountSourceProofClass,
+    source_unique_mount_id: u64,
+    source_provider_authority_id: [u8; 16],
+    source_provider_authority_generation: u64,
+    source_provider_authority_digest: [u8; 32],
+    source_provider_resource_id: [u8; 32],
+    source_provider_resource_generation: u64,
+    source_provider_resource_digest: [u8; 32],
+    source_provider_catalog_generation: u64,
+    source_provider_catalog_digest: [u8; 32],
 }
 
 impl ValidatedMountRecipe {
@@ -166,6 +183,96 @@ impl ValidatedMountRecipe {
     #[must_use]
     pub const fn source(&self) -> &SourceRealizationBindingV1 {
         &self.source
+    }
+
+    /// Returns the Mount-minted physical realization handle.
+    #[must_use]
+    pub const fn source_realization_handle(&self) -> &[u8; 32] {
+        &self.source_realization_handle
+    }
+
+    /// Returns the authenticated physical source-proof digest.
+    #[must_use]
+    pub const fn source_physical_proof_digest(&self) -> &[u8; 32] {
+        &self.source_physical_proof_digest
+    }
+
+    /// Returns the kernel boot in which the source identity was observed.
+    #[must_use]
+    pub const fn source_kernel_boot_id(&self) -> &[u8; 16] {
+        &self.source_kernel_boot_id
+    }
+
+    /// Returns the source descriptor's device identity.
+    #[must_use]
+    pub const fn source_device(&self) -> u64 {
+        self.source_device
+    }
+
+    /// Returns the source descriptor's inode identity.
+    #[must_use]
+    pub const fn source_inode(&self) -> u64 {
+        self.source_inode
+    }
+
+    /// Returns the closed physical proof class.
+    #[must_use]
+    pub const fn source_proof_class(&self) -> MountSourceProofClass {
+        self.source_proof_class
+    }
+
+    /// Returns the source mount's kernel-lifetime identity.
+    #[must_use]
+    pub const fn source_unique_mount_id(&self) -> u64 {
+        self.source_unique_mount_id
+    }
+
+    /// Returns the stable provider authority identity.
+    #[must_use]
+    pub const fn source_provider_authority_id(&self) -> &[u8; 16] {
+        &self.source_provider_authority_id
+    }
+
+    /// Returns the stable provider authority generation.
+    #[must_use]
+    pub const fn source_provider_authority_generation(&self) -> u64 {
+        self.source_provider_authority_generation
+    }
+
+    /// Returns the stable provider authority digest.
+    #[must_use]
+    pub const fn source_provider_authority_digest(&self) -> &[u8; 32] {
+        &self.source_provider_authority_digest
+    }
+
+    /// Returns the stable provider resource identity.
+    #[must_use]
+    pub const fn source_provider_resource_id(&self) -> &[u8; 32] {
+        &self.source_provider_resource_id
+    }
+
+    /// Returns the stable provider resource generation.
+    #[must_use]
+    pub const fn source_provider_resource_generation(&self) -> u64 {
+        self.source_provider_resource_generation
+    }
+
+    /// Returns the stable provider resource digest.
+    #[must_use]
+    pub const fn source_provider_resource_digest(&self) -> &[u8; 32] {
+        &self.source_provider_resource_digest
+    }
+
+    /// Returns the provider catalog generation used for admission.
+    #[must_use]
+    pub const fn source_provider_catalog_generation(&self) -> u64 {
+        self.source_provider_catalog_generation
+    }
+
+    /// Returns the provider catalog digest used for admission.
+    #[must_use]
+    pub const fn source_provider_catalog_digest(&self) -> &[u8; 32] {
+        &self.source_provider_catalog_digest
     }
 }
 
@@ -457,7 +564,7 @@ pub fn decode_mount_inventory_request(
     )
 }
 
-/// Validates and encodes one authoritative Mount 1.0 inventory.
+/// Validates and encodes one authoritative Mount 2.0 inventory.
 ///
 /// # Errors
 ///
@@ -556,6 +663,7 @@ pub fn decode_mount_inventory_response(
         }
         mounts.push(record);
     }
+    validate_source_realizations(&mounts)?;
     validate_replacement_correlations(&mounts)?;
     validate_slot_ownership(&mounts, kernel_boot_id)?;
 
@@ -565,6 +673,129 @@ pub fn decode_mount_inventory_response(
         journal_sequence: response.journal_sequence,
         mounts,
     })
+}
+
+fn validate_source_realizations(
+    mounts: &[ValidatedMountInventoryRecord],
+) -> Result<(), ProtocolValidationError> {
+    let mut handles: BTreeMap<[u8; 32], &ValidatedMountRecipe> = BTreeMap::new();
+    let mut files = BTreeMap::new();
+    let mut mount_ids = BTreeMap::new();
+    let mut authority_generations = BTreeMap::new();
+    let mut catalog_generations = BTreeMap::new();
+    let mut resource_generations = BTreeMap::new();
+    let mut provider_history = Vec::with_capacity(mounts.len());
+    for record in mounts {
+        let recipe = &record.recipe;
+        if let Some(prior) = handles.insert(recipe.source_realization_handle, recipe)
+            && !same_source_realization(prior, recipe)
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "inventory source realization handle correlation",
+            ));
+        }
+        if record.lifecycle != MountLifecycle::MOUNT_LIFECYCLE_RELEASED {
+            for prior_handle in files
+                .insert(
+                    (
+                        recipe.source_kernel_boot_id,
+                        recipe.source_device,
+                        recipe.source_inode,
+                    ),
+                    recipe.source_realization_handle,
+                )
+                .into_iter()
+                .chain(mount_ids.insert(
+                    (recipe.source_kernel_boot_id, recipe.source_unique_mount_id),
+                    recipe.source_realization_handle,
+                ))
+            {
+                if prior_handle != recipe.source_realization_handle {
+                    return Err(ProtocolValidationError::InvalidField(
+                        "inventory physical source alias",
+                    ));
+                }
+            }
+        }
+        check_generation_digest(
+            &mut authority_generations,
+            (
+                recipe.source_provider_authority_id,
+                recipe.source_provider_authority_generation,
+            ),
+            recipe.source_provider_authority_digest,
+            "inventory source provider authority equivocation",
+        )?;
+        check_generation_digest(
+            &mut catalog_generations,
+            (
+                recipe.source_provider_authority_id,
+                recipe.source_provider_catalog_generation,
+            ),
+            recipe.source_provider_catalog_digest,
+            "inventory source provider catalog equivocation",
+        )?;
+        check_generation_digest(
+            &mut resource_generations,
+            (
+                recipe.source_provider_authority_id,
+                recipe.source_provider_resource_id,
+                recipe.source_provider_resource_generation,
+            ),
+            recipe.source_provider_resource_digest,
+            "inventory source provider resource equivocation",
+        )?;
+        provider_history.push(MountSourceProviderHistoryV1 {
+            authority_id: recipe.source_provider_authority_id,
+            authority_generation: recipe.source_provider_authority_generation,
+            authority_digest: recipe.source_provider_authority_digest,
+            resource_id: recipe.source_provider_resource_id,
+            resource_generation: recipe.source_provider_resource_generation,
+            resource_digest: recipe.source_provider_resource_digest,
+            catalog_generation: recipe.source_provider_catalog_generation,
+            catalog_digest: recipe.source_provider_catalog_digest,
+            physical_proof_digest: recipe.source_physical_proof_digest,
+        });
+    }
+    if !mount_source_provider_history_is_valid_v1(&provider_history) {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory source provider history",
+        ));
+    }
+    Ok(())
+}
+
+fn check_generation_digest<K: Ord>(
+    generations: &mut BTreeMap<K, [u8; 32]>,
+    key: K,
+    digest: [u8; 32],
+    field: &'static str,
+) -> Result<(), ProtocolValidationError> {
+    if generations
+        .insert(key, digest)
+        .is_some_and(|prior| prior != digest)
+    {
+        return Err(ProtocolValidationError::InvalidField(field));
+    }
+    Ok(())
+}
+
+fn same_source_realization(left: &ValidatedMountRecipe, right: &ValidatedMountRecipe) -> bool {
+    left.source == right.source
+        && left.source_physical_proof_digest == right.source_physical_proof_digest
+        && left.source_kernel_boot_id == right.source_kernel_boot_id
+        && left.source_device == right.source_device
+        && left.source_inode == right.source_inode
+        && left.source_proof_class == right.source_proof_class
+        && left.source_unique_mount_id == right.source_unique_mount_id
+        && left.source_provider_authority_id == right.source_provider_authority_id
+        && left.source_provider_authority_generation == right.source_provider_authority_generation
+        && left.source_provider_authority_digest == right.source_provider_authority_digest
+        && left.source_provider_resource_id == right.source_provider_resource_id
+        && left.source_provider_resource_generation == right.source_provider_resource_generation
+        && left.source_provider_resource_digest == right.source_provider_resource_digest
+        && left.source_provider_catalog_generation == right.source_provider_catalog_generation
+        && left.source_provider_catalog_digest == right.source_provider_catalog_digest
 }
 
 fn validate_slot_ownership(
@@ -770,6 +1001,11 @@ fn validate_record(
             .as_option()
             .ok_or(ProtocolValidationError::MissingField("inventory.recipe"))?,
     )?;
+    if recipe.source_kernel_boot_id != resource_kernel_boot_id {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory recipe source kernel boot",
+        ));
+    }
     let creation = record
         .creation
         .as_option()
@@ -972,6 +1208,123 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         )
         .map_err(|_| ProtocolValidationError::InvalidField("inventory.recipe.source_binding"))?,
     );
+    if source.digest().as_bytes() != value.source_binding_digest.as_slice() {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory.recipe.source_binding_digest",
+        ));
+    }
+    let source_realization_handle = exact_nonzero::<32>(
+        &value.source_realization_handle,
+        "inventory.recipe.source_realization_handle",
+    )?;
+    let source_physical_proof_digest = exact_nonzero::<32>(
+        &value.source_physical_proof_digest,
+        "inventory.recipe.source_physical_proof_digest",
+    )?;
+    let source_kernel_boot_id = exact_nonzero::<16>(
+        &value.source_kernel_boot_id,
+        "inventory.recipe.source_kernel_boot_id",
+    )?;
+    let source_device = nonzero(value.source_device, "inventory.recipe.source_device")?;
+    let source_inode = nonzero(value.source_inode, "inventory.recipe.source_inode")?;
+    let source_proof_class = value
+        .source_proof_class
+        .as_known()
+        .filter(|proof| {
+            matches!(
+                (*proof, source_consistency),
+                (
+                    MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE,
+                    MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                ) | (
+                    MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE,
+                    MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+                ) | (
+                    MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA,
+                    MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA
+                )
+            )
+        })
+        .ok_or(ProtocolValidationError::InvalidField(
+            "inventory.recipe.source_proof_class",
+        ))?;
+    let source_unique_mount_id = nonzero(
+        value.source_unique_mount_id,
+        "inventory.recipe.source_unique_mount_id",
+    )?;
+    let source_provider_authority_id = exact_nonzero::<16>(
+        &value.source_provider_authority_id,
+        "inventory.recipe.source_provider_authority_id",
+    )?;
+    let source_provider_authority_generation = nonzero(
+        value.source_provider_authority_generation,
+        "inventory.recipe.source_provider_authority_generation",
+    )?;
+    let source_provider_authority_digest = exact_nonzero::<32>(
+        &value.source_provider_authority_digest,
+        "inventory.recipe.source_provider_authority_digest",
+    )?;
+    let source_provider_resource_id = exact_nonzero::<32>(
+        &value.source_provider_resource_id,
+        "inventory.recipe.source_provider_resource_id",
+    )?;
+    let source_provider_resource_generation = nonzero(
+        value.source_provider_resource_generation,
+        "inventory.recipe.source_provider_resource_generation",
+    )?;
+    let source_provider_resource_digest = exact_nonzero::<32>(
+        &value.source_provider_resource_digest,
+        "inventory.recipe.source_provider_resource_digest",
+    )?;
+    let source_provider_catalog_generation = nonzero(
+        value.source_provider_catalog_generation,
+        "inventory.recipe.source_provider_catalog_generation",
+    )?;
+    let source_provider_catalog_digest = exact_nonzero::<32>(
+        &value.source_provider_catalog_digest,
+        "inventory.recipe.source_provider_catalog_digest",
+    )?;
+    let proof_class = match source_proof_class {
+        MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE => {
+            crate::MountSourceProofClassV1::ImmutableTree
+        }
+        MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE => {
+            crate::MountSourceProofClassV1::LocalLive
+        }
+        MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA => {
+            crate::MountSourceProofClassV1::BestEffortReplica
+        }
+        MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_UNSPECIFIED => {
+            return Err(ProtocolValidationError::InvalidField(
+                "inventory.recipe.source_proof_class",
+            ));
+        }
+    };
+    let reproduced_proof =
+        crate::mount_source_physical_proof_digest_v1(crate::MountSourcePhysicalProofV1 {
+            binding_digest: *source.digest().as_bytes(),
+            proof_class,
+            provider_authority_id: source_provider_authority_id,
+            provider_authority_generation: source_provider_authority_generation,
+            provider_authority_digest: source_provider_authority_digest,
+            provider_resource_id: source_provider_resource_id,
+            provider_resource_generation: source_provider_resource_generation,
+            provider_resource_digest: source_provider_resource_digest,
+            provider_catalog_generation: source_provider_catalog_generation,
+            provider_catalog_digest: source_provider_catalog_digest,
+            kernel_boot_id: source_kernel_boot_id,
+            device: source_device,
+            inode: source_inode,
+            unique_mount_id: source_unique_mount_id,
+        });
+    if reproduced_proof != source_physical_proof_digest
+        || crate::mount_source_realization_handle_v1(*source.digest().as_bytes(), reproduced_proof)
+            != source_realization_handle
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory.recipe.source_realization_handle",
+        ));
+    }
     let attributes = validate_mount_attributes(value.attributes.as_option().ok_or(
         ProtocolValidationError::MissingField("inventory.recipe.attributes"),
     )?)?;
@@ -986,6 +1339,21 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         source_incarnation_id,
         source_consistency,
         source,
+        source_realization_handle,
+        source_physical_proof_digest,
+        source_kernel_boot_id,
+        source_device,
+        source_inode,
+        source_proof_class,
+        source_unique_mount_id,
+        source_provider_authority_id,
+        source_provider_authority_generation,
+        source_provider_authority_digest,
+        source_provider_resource_id,
+        source_provider_resource_generation,
+        source_provider_resource_digest,
+        source_provider_catalog_generation,
+        source_provider_catalog_digest,
     })
 }
 
@@ -1203,6 +1571,10 @@ fn reject_unknown(fields: &buffa::UnknownFields) -> Result<(), ProtocolValidatio
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        MountSourcePhysicalProofV1, MountSourceProofClassV1, mount_source_physical_proof_digest_v1,
+        mount_source_realization_handle_v1,
+    };
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, Descriptor, InventoryMountResourcesResponse, MountAssignmentBinding,
         MountAttributes, MountFaultCorrelation, MountFaultPhase, MountInventoryRecord,
@@ -1242,6 +1614,39 @@ mod tests {
             recursive: true,
             ..Default::default()
         };
+        let source_handle = crate::immutable_source_handle_fixture();
+        let source_binding_digest = SourceRealizationBindingV1::new(
+            [14; 16],
+            11,
+            validate_descriptor(&revision, DescriptorRole::FilesystemViewRevision)
+                .unwrap_or_else(|error| panic!("test descriptor failed: {error}")),
+            validate_mount_source_handle(
+                &source_handle,
+                MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
+                None,
+            )
+            .unwrap_or_else(|error| panic!("test source handle failed: {error}")),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("test source binding failed: {error}"))
+        .digest();
+        let source_proof = mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+            binding_digest: *source_binding_digest.as_bytes(),
+            proof_class: MountSourceProofClassV1::ImmutableTree,
+            provider_authority_id: [24; 16],
+            provider_authority_generation: 25,
+            provider_authority_digest: [18; 32],
+            provider_resource_id: [19; 32],
+            provider_resource_generation: 20,
+            provider_resource_digest: [21; 32],
+            provider_catalog_generation: 22,
+            provider_catalog_digest: [23; 32],
+            kernel_boot_id: [16; 16],
+            device: 26,
+            inode: 27,
+            unique_mount_id: 17,
+        });
         let recipe = MountRecipe {
             attachment_id: vec![9; 16],
             destination_slot_id: vec![10; 16],
@@ -1251,10 +1656,31 @@ mod tests {
             source_view_id: vec![14; 16],
             source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
                 .into(),
-            source_handle: crate::immutable_source_handle_fixture(),
+            source_handle,
             source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
                 .into(),
             attributes: Some(attributes).into(),
+            source_binding_digest: source_binding_digest.as_bytes().to_vec(),
+            source_realization_handle: mount_source_realization_handle_v1(
+                *source_binding_digest.as_bytes(),
+                source_proof,
+            )
+            .to_vec(),
+            source_physical_proof_digest: source_proof.to_vec(),
+            source_kernel_boot_id: vec![16; 16],
+            source_device: 26,
+            source_inode: 27,
+            source_proof_class: MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE
+                .into(),
+            source_unique_mount_id: 17,
+            source_provider_authority_id: vec![24; 16],
+            source_provider_authority_generation: 25,
+            source_provider_authority_digest: vec![18; 32],
+            source_provider_resource_id: vec![19; 32],
+            source_provider_resource_generation: 20,
+            source_provider_resource_digest: vec![21; 32],
+            source_provider_catalog_generation: 22,
+            source_provider_catalog_digest: vec![23; 32],
             ..Default::default()
         };
         let observation = MountKernelObservation {
@@ -1321,11 +1747,121 @@ mod tests {
         }
     }
 
+    fn released_source_record(handle_byte: u8, mount_id: u64) -> MountInventoryRecord {
+        let mut record = installed_record(handle_byte, mount_id);
+        record.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_RELEASED.into();
+        record.installed_observation = None.into();
+        record.publication = None.into();
+        record
+    }
+
+    fn set_resource_boot(record: &mut MountInventoryRecord, boot_id: [u8; 16]) {
+        record.resource_kernel_boot_id = boot_id.to_vec();
+        record.recipe.get_or_insert_default().source_kernel_boot_id = boot_id.to_vec();
+        recompute_source_commitments(record.recipe.get_or_insert_default());
+    }
+
+    fn set_earlier_provider_history(record: &mut MountInventoryRecord) {
+        let recipe = record.recipe.get_or_insert_default();
+        recipe.source_provider_authority_generation = 24;
+        recipe.source_provider_authority_digest = vec![31; 32];
+        recipe.source_provider_catalog_generation = 21;
+        recipe.source_provider_catalog_digest = vec![32; 32];
+        recipe.source_provider_resource_generation = 19;
+        recipe.source_provider_resource_digest = vec![33; 32];
+        recompute_source_commitments(recipe);
+    }
+
+    fn recompute_source_commitments(recipe: &mut MountRecipe) {
+        let binding_digest: [u8; 32] = recipe.source_binding_digest.as_slice().try_into().unwrap();
+        let proof_class = match recipe.source_proof_class.as_known().unwrap() {
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE => {
+                MountSourceProofClassV1::ImmutableTree
+            }
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE => {
+                MountSourceProofClassV1::LocalLive
+            }
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA => {
+                MountSourceProofClassV1::BestEffortReplica
+            }
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_UNSPECIFIED => unreachable!(),
+        };
+        let proof = mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+            binding_digest,
+            proof_class,
+            provider_authority_id: recipe
+                .source_provider_authority_id
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_authority_generation: recipe.source_provider_authority_generation,
+            provider_authority_digest: recipe
+                .source_provider_authority_digest
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_resource_id: recipe
+                .source_provider_resource_id
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_resource_generation: recipe.source_provider_resource_generation,
+            provider_resource_digest: recipe
+                .source_provider_resource_digest
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            provider_catalog_generation: recipe.source_provider_catalog_generation,
+            provider_catalog_digest: recipe
+                .source_provider_catalog_digest
+                .as_slice()
+                .try_into()
+                .unwrap(),
+            kernel_boot_id: recipe.source_kernel_boot_id.as_slice().try_into().unwrap(),
+            device: recipe.source_device,
+            inode: recipe.source_inode,
+            unique_mount_id: recipe.source_unique_mount_id,
+        });
+        recipe.source_physical_proof_digest = proof.to_vec();
+        recipe.source_realization_handle =
+            mount_source_realization_handle_v1(binding_digest, proof).to_vec();
+    }
+
+    fn move_physical_source(recipe: &mut MountRecipe, offset: u64) {
+        recipe.source_device += offset;
+        recipe.source_inode += offset;
+        recipe.source_unique_mount_id += offset;
+        recompute_source_commitments(recipe);
+    }
+
+    fn move_logical_binding(recipe: &mut MountRecipe, source_view_id: [u8; 16]) {
+        recipe.source_view_id = source_view_id.to_vec();
+        let consistency = recipe.source_consistency.as_known().unwrap();
+        let source_incarnation_id = (!recipe.source_incarnation_id.is_empty())
+            .then(|| recipe.source_incarnation_id.as_slice().try_into().unwrap());
+        let binding = SourceRealizationBindingV1::new(
+            source_view_id,
+            recipe.source_generation,
+            validate_descriptor(
+                recipe.view_revision.as_option().unwrap(),
+                DescriptorRole::FilesystemViewRevision,
+            )
+            .unwrap(),
+            validate_mount_source_handle(&recipe.source_handle, consistency, source_incarnation_id)
+                .unwrap(),
+            consistency,
+            source_incarnation_id,
+        )
+        .unwrap();
+        recipe.source_binding_digest = binding.digest().as_bytes().to_vec();
+        recompute_source_commitments(recipe);
+    }
+
     #[test]
     fn inventory_request_binds_the_mount_broker_header() {
         let mut request = InventoryMountsRequest::default();
         let header = request.header.get_or_insert_default();
-        header.protocol_major = 1;
+        header.protocol_major = 2;
         header.protocol_minor = 0;
         header.request_id = vec![15; 16];
         header.audience =
@@ -1424,6 +1960,23 @@ mod tests {
             )
             .is_err()
         );
+
+        for field in ["proof", "handle"] {
+            let mut forged = installed_record(1, 101);
+            let recipe = forged.recipe.get_or_insert_default();
+            match field {
+                "proof" => recipe.source_physical_proof_digest[0] ^= 1,
+                "handle" => recipe.source_realization_handle[0] ^= 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                decode_mount_inventory_response(
+                    &response(vec![forged]).encode_to_vec(),
+                    MINIMUM_RESPONSE_BYTES,
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
@@ -1475,7 +2028,7 @@ mod tests {
         for mut record in [
             allocated, prepared, publishing, installed, detaching, draining, releasing,
         ] {
-            record.resource_kernel_boot_id = vec![15; 16];
+            set_resource_boot(&mut record, [15; 16]);
             let encoded = response(vec![record]).encode_to_vec();
             assert_eq!(
                 decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES),
@@ -1490,13 +2043,15 @@ mod tests {
     fn historical_terminal_rows_may_precede_the_inventory_boot() {
         let mut released = installed_record(2, 101);
         released.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_RELEASED.into();
-        released.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut released, [15; 16]);
+        set_earlier_provider_history(&mut released);
         released.installed_observation = None.into();
         released.publication = None.into();
 
         let mut faulted = installed_record(3, 102);
         faulted.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
-        faulted.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut faulted, [15; 16]);
+        set_earlier_provider_history(&mut faulted);
         faulted.fault = Some(MountFaultCorrelation {
             from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
             failure_digest: vec![20; 32],
@@ -1511,6 +2066,164 @@ mod tests {
         let inventory = decode_mount_inventory_response(&encoded, MINIMUM_RESPONSE_BYTES)
             .unwrap_or_else(|error| panic!("historical inventory failed: {error}"));
         assert_eq!(inventory.mounts().len(), 3);
+    }
+
+    #[test]
+    fn inventory_rejects_physical_source_aliases_across_distinct_handles() {
+        let first = installed_record(1, 101);
+        let mut second = installed_record(2, 102);
+        let recipe = second.recipe.get_or_insert_default();
+        recipe.source_provider_resource_id = vec![31; 32];
+        recipe.source_provider_resource_generation += 1;
+        recipe.source_provider_resource_digest = vec![32; 32];
+        recompute_source_commitments(recipe);
+
+        let error = decode_mount_inventory_response(
+            &response(vec![first, second]).encode_to_vec(),
+            MINIMUM_RESPONSE_BYTES,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ProtocolValidationError::InvalidField("inventory physical source alias")
+        );
+    }
+
+    #[test]
+    fn released_history_does_not_reserve_a_reused_physical_source() {
+        let first = released_source_record(1, 101);
+        let mut second = released_source_record(2, 102);
+        let second_recipe = second.recipe.get_or_insert_default();
+        move_physical_source(second_recipe, 10);
+        second_recipe.source_provider_resource_id = vec![31; 32];
+        second_recipe.source_provider_resource_digest = vec![32; 32];
+        recompute_source_commitments(second_recipe);
+
+        let mut reused = installed_record(3, 103);
+        let reused_recipe = reused.recipe.get_or_insert_default();
+        reused_recipe.source_provider_resource_id = vec![41; 32];
+        reused_recipe.source_provider_resource_digest = vec![42; 32];
+        recompute_source_commitments(reused_recipe);
+
+        let inventory = decode_mount_inventory_response(
+            &response(vec![first, second, reused]).encode_to_vec(),
+            MINIMUM_RESPONSE_BYTES,
+        )
+        .unwrap_or_else(|error| panic!("released source reuse failed: {error}"));
+        assert_eq!(inventory.mounts().len(), 3);
+    }
+
+    #[test]
+    fn inventory_rejects_provider_generation_equivocation_across_realizations() {
+        let first = released_source_record(1, 101);
+        let mut second = released_source_record(2, 102);
+        let recipe = second.recipe.get_or_insert_default();
+        recipe.source_device += 10;
+        recipe.source_inode += 10;
+        recipe.source_unique_mount_id += 10;
+        recipe.source_provider_authority_digest = vec![33; 32];
+        recompute_source_commitments(recipe);
+
+        let error = decode_mount_inventory_response(
+            &response(vec![first, second]).encode_to_vec(),
+            MINIMUM_RESPONSE_BYTES,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ProtocolValidationError::InvalidField(
+                "inventory source provider authority equivocation"
+            )
+        );
+    }
+
+    #[test]
+    fn inventory_rejects_crossed_provider_authority_and_catalog_history() {
+        let first = released_source_record(1, 101);
+        let mut crossed = released_source_record(2, 102);
+        let recipe = crossed.recipe.get_or_insert_default();
+        move_physical_source(recipe, 10);
+        recipe.source_provider_authority_generation += 1;
+        recipe.source_provider_authority_digest = vec![31; 32];
+        recipe.source_provider_catalog_generation -= 1;
+        recipe.source_provider_catalog_digest = vec![32; 32];
+        recompute_source_commitments(recipe);
+
+        assert_eq!(
+            decode_mount_inventory_response(
+                &response(vec![first, crossed]).encode_to_vec(),
+                MINIMUM_RESPONSE_BYTES,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory source provider history"
+            ))
+        );
+    }
+
+    #[test]
+    fn inventory_rejects_resource_rollback_across_logical_bindings() {
+        let first = released_source_record(1, 101);
+        let mut rollback = released_source_record(2, 102);
+        let recipe = rollback.recipe.get_or_insert_default();
+        move_logical_binding(recipe, [44; 16]);
+        move_physical_source(recipe, 10);
+        recipe.source_provider_authority_generation += 1;
+        recipe.source_provider_authority_digest = vec![31; 32];
+        recipe.source_provider_catalog_generation += 1;
+        recipe.source_provider_catalog_digest = vec![32; 32];
+        recipe.source_provider_resource_generation -= 1;
+        recipe.source_provider_resource_digest = vec![33; 32];
+        recompute_source_commitments(recipe);
+
+        assert_eq!(
+            decode_mount_inventory_response(
+                &response(vec![first, rollback]).encode_to_vec(),
+                MINIMUM_RESPONSE_BYTES,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory source provider history"
+            ))
+        );
+    }
+
+    #[test]
+    fn inventory_rejects_equal_resource_generation_proof_equivocation() {
+        let first = released_source_record(1, 101);
+        let mut equivocation = released_source_record(2, 102);
+        move_physical_source(equivocation.recipe.get_or_insert_default(), 10);
+
+        assert_eq!(
+            decode_mount_inventory_response(
+                &response(vec![first, equivocation]).encode_to_vec(),
+                MINIMUM_RESPONSE_BYTES,
+            ),
+            Err(ProtocolValidationError::InvalidField(
+                "inventory source provider history"
+            ))
+        );
+    }
+
+    #[test]
+    fn released_rows_reject_proof_and_handle_substitution_independently() {
+        let released = released_source_record(1, 101);
+        for field in ["proof", "handle"] {
+            let mut forged = released.clone();
+            let recipe = forged.recipe.get_or_insert_default();
+            match field {
+                "proof" => recipe.source_physical_proof_digest[0] ^= 1,
+                "handle" => recipe.source_realization_handle[0] ^= 1,
+                _ => unreachable!(),
+            }
+
+            assert!(
+                decode_mount_inventory_response(
+                    &response(vec![forged]).encode_to_vec(),
+                    MINIMUM_RESPONSE_BYTES,
+                )
+                .is_err(),
+                "accepted released {field} substitution"
+            );
+        }
     }
 
     #[test]
@@ -1604,7 +2317,8 @@ mod tests {
     fn reciprocal_replacement_rows_must_share_one_kernel_boot() {
         let mut predecessor = installed_record(1, 101);
         predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
-        predecessor.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut predecessor, [15; 16]);
+        set_earlier_provider_history(&mut predecessor);
         predecessor.publication = None.into();
         predecessor.replaced_by_mount_handle = vec![2; 32];
         predecessor.fault = Some(MountFaultCorrelation {
@@ -1640,7 +2354,7 @@ mod tests {
     #[test]
     fn historical_installed_forward_edge_requires_draining_reciprocity() {
         let mut predecessor = installed_record(1, 101);
-        predecessor.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut predecessor, [15; 16]);
         predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
         predecessor.fault = Some(MountFaultCorrelation {
             from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
@@ -1650,7 +2364,7 @@ mod tests {
         .into();
 
         let mut successor = installed_record(2, 102);
-        successor.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut successor, [15; 16]);
         advance_replacement_generation(&mut successor);
         successor
             .publication
@@ -1676,7 +2390,7 @@ mod tests {
     #[test]
     fn historical_publishing_cannot_replace_a_draining_row() {
         let mut predecessor = installed_record(1, 101);
-        predecessor.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut predecessor, [15; 16]);
         predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
         predecessor.publication = None.into();
         predecessor.replaced_by_mount_handle = vec![2; 32];
@@ -1688,7 +2402,7 @@ mod tests {
         .into();
 
         let mut successor = installed_record(2, 102);
-        successor.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut successor, [15; 16]);
         advance_replacement_generation(&mut successor);
         successor
             .publication
@@ -1715,7 +2429,7 @@ mod tests {
     #[test]
     fn historical_publishing_to_installed_one_way_edge_is_valid() {
         let mut predecessor = installed_record(1, 101);
-        predecessor.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut predecessor, [15; 16]);
         predecessor.lifecycle = MountLifecycle::MOUNT_LIFECYCLE_FAULTED.into();
         predecessor.fault = Some(MountFaultCorrelation {
             from: MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED.into(),
@@ -1725,7 +2439,7 @@ mod tests {
         .into();
 
         let mut successor = installed_record(2, 102);
-        successor.resource_kernel_boot_id = vec![15; 16];
+        set_resource_boot(&mut successor, [15; 16]);
         advance_replacement_generation(&mut successor);
         successor
             .publication

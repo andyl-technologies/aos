@@ -508,13 +508,18 @@ mod tests {
         ApplyMountRequest, AssignmentFence, Audience, Descriptor, InventoryMountResourcesResponse,
         MountAssignmentBinding, MountAttributes, MountFaultCorrelation, MountInventoryRecord,
         MountInventorySourceAuthority, MountKernelObservation, MountOperationCorrelation,
-        MountPublicationCorrelation, MountRecipe, MountSourceConsistency, RequestHeader,
+        MountPublicationCorrelation, MountRecipe, MountSourceConsistency, MountSourceProofClass,
+        RequestHeader,
     };
     use aos_sandbox_core::model::ViewSource;
     use aos_sandbox_core::{
         IncarnationId, MediaType, ObjectDescriptor, ObjectDigest, SandboxId, encode_view_source,
     };
-    use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_mount_request};
+    use aos_sandbox_protocol::{
+        MountSourcePhysicalProofV1, MountSourceProofClassV1, PeerCredentials, PeerPolicy,
+        SourceRealizationBindingV1, decode_mount_request, mount_source_physical_proof_digest_v1,
+        mount_source_realization_handle_v1,
+    };
     use buffa::Message as _;
 
     use super::*;
@@ -533,7 +538,7 @@ mod tests {
         let carries_handle = action != MountAction::MOUNT_ACTION_CREATE_DETACHED;
         let wire = ApplyMountRequest {
             header: Some(RequestHeader {
-                protocol_major: 1,
+                protocol_major: 2,
                 protocol_minor: 0,
                 request_id: REQUEST_ID.to_vec(),
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
@@ -679,6 +684,45 @@ mod tests {
             namespace_generation: request.namespace_generation,
             ..Default::default()
         };
+        let source = ViewSource::ImmutableTree {
+            tree: ObjectDescriptor::new(
+                MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor").unwrap(),
+                ObjectDigest::from_bytes([26; 32]),
+                27,
+            ),
+        };
+        let source_binding_digest = *SourceRealizationBindingV1::new(
+            request.source_view_id.as_slice().try_into().unwrap(),
+            request.source_generation,
+            ObjectDescriptor::new(
+                MediaType::new("application/vnd.aos.sandbox.view.v1+cbor").unwrap(),
+                ObjectDigest::from_bytes([9; 32]),
+                10,
+            ),
+            source,
+            request.source_consistency.as_known().unwrap(),
+            None,
+        )
+        .unwrap()
+        .digest()
+        .as_bytes();
+        let source_physical_proof_digest =
+            mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+                binding_digest: source_binding_digest,
+                proof_class: MountSourceProofClassV1::ImmutableTree,
+                provider_authority_id: [37; 16],
+                provider_authority_generation: 38,
+                provider_authority_digest: [31; 32],
+                provider_resource_id: [32; 32],
+                provider_resource_generation: 33,
+                provider_resource_digest: [34; 32],
+                provider_catalog_generation: 35,
+                provider_catalog_digest: [36; 32],
+                kernel_boot_id: [16; 16],
+                device: 39,
+                inode: 40,
+                unique_mount_id: 30,
+            });
         let recipe = MountRecipe {
             attachment_id: vec![7; 16],
             destination_slot_id: vec![8; 16],
@@ -696,6 +740,27 @@ mod tests {
             source_consistency: request.source_consistency,
             source_handle: request.source_handle.clone(),
             source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
+                .into(),
+            source_binding_digest: source_binding_digest.to_vec(),
+            source_realization_handle: mount_source_realization_handle_v1(
+                source_binding_digest,
+                source_physical_proof_digest,
+            )
+            .to_vec(),
+            source_physical_proof_digest: source_physical_proof_digest.to_vec(),
+            source_unique_mount_id: 30,
+            source_provider_authority_id: vec![37; 16],
+            source_provider_authority_generation: 38,
+            source_provider_authority_digest: vec![31; 32],
+            source_provider_resource_id: vec![32; 32],
+            source_provider_resource_generation: 33,
+            source_provider_resource_digest: vec![34; 32],
+            source_provider_catalog_generation: 35,
+            source_provider_catalog_digest: vec![36; 32],
+            source_kernel_boot_id: vec![16; 16],
+            source_device: 39,
+            source_inode: 40,
+            source_proof_class: MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE
                 .into(),
             attributes: Some(MountAttributes {
                 read_only: true,

@@ -783,7 +783,7 @@ where
     /// Verifies and binds the separately signed Mount plan for a prepared catalog.
     ///
     /// The plan must use the pinned controller trust anchor, current assignment
-    /// and ownership authority, Mount audience, authority protocol 1.0, and the
+    /// and ownership authority, Mount audience, authority protocol 2.0, and the
     /// exact catalog-dependent semantics returned by preparation. Success still
     /// performs no broker effect and writes no durable operation.
     ///
@@ -990,7 +990,7 @@ where
     /// Queries and durably records Mount's complete destination-slot inventory.
     ///
     /// The one-shot client authenticates the actual hello and response writers,
-    /// validates the exact protocol 1.0 response, and commits the exact query
+    /// validates the exact Mount protocol 2.0 response, and commits the exact query
     /// and response. The resulting snapshot is observation evidence only.
     ///
     /// # Errors

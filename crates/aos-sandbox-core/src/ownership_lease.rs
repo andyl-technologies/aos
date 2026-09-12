@@ -1760,7 +1760,7 @@ mod tests {
         let plan = BrokerAuthorizationPlan::new(
             BrokerAudience::Mount,
             ProtocolId::MountBroker,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             fixture.assignment,
             fixture.node,
             fixture.authority.clone(),

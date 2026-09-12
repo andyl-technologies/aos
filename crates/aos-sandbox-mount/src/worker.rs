@@ -11,7 +11,10 @@ use aos_sandbox_protocol::{ValidatedMountRequest, detached_mount_handle_v1};
 
 use crate::catalog::{MountCatalog, ResolvedMountResources};
 use crate::host_scope::ObservedMountScope;
-use crate::keeper::{KernelMountName, KernelMountStore};
+use crate::keeper::{
+    KernelMountName, KernelMountStore, SourceCustodyEvidence, SourceDescriptorStore, SourcePinName,
+};
+use crate::source_pin::SourceRealizationEvidenceV1;
 use crate::{MountError, Result};
 
 /// Supplies broker-minted handles for one admitted mount effect.
@@ -50,6 +53,38 @@ pub struct RetainedMountObservation {
     pub handle: [u8; 32],
     /// Exact kernel-lifetime mount identity carried by the descriptor.
     pub mount_id: MountId,
+}
+
+/// Carries one verified catalog commitment and its internal source identity.
+#[derive(Debug)]
+pub struct CatalogAuthorizationV1 {
+    commitment: ObjectDigest,
+    source_realization: SourceRealizationEvidenceV1,
+    source: Option<aos_sandbox_linux::path::ResolvedPath>,
+}
+
+impl CatalogAuthorizationV1 {
+    #[cfg(test)]
+    pub(crate) const fn new(
+        commitment: ObjectDigest,
+        source_realization: SourceRealizationEvidenceV1,
+    ) -> Self {
+        Self {
+            commitment,
+            source_realization,
+            source: None,
+        }
+    }
+
+    /// Returns the authorization commitment exposed to the signed-plan compiler.
+    #[must_use]
+    pub const fn commitment(&self) -> ObjectDigest {
+        self.commitment
+    }
+
+    pub(crate) const fn source_realization(&self) -> SourceRealizationEvidenceV1 {
+        self.source_realization
+    }
 }
 
 /// Reports the exact read-only target disposition before publication.
@@ -103,6 +138,23 @@ pub struct EffectDeadlineV1 {
     pub boottime_nanoseconds: u64,
 }
 
+/// Binds one existing-resource effect to its authenticated durable recipe.
+#[derive(Clone, Copy, Debug)]
+pub struct DurableMountExecutionV1<'a> {
+    /// Validated request whose resource identity must be reproduced.
+    pub request: &'a ValidatedMountRequest,
+    /// Digest of the exact admitted transport request.
+    pub request_digest: [u8; 32],
+    /// Broker-minted handle of the durable detached mount.
+    pub handle: [u8; 32],
+    /// Kernel-lifetime identity retained in the durable resource.
+    pub expected_mount_id: MountId,
+    /// Exact catalog commitment admitted for this operation.
+    pub expected_catalog_commitment: ObjectDigest,
+    /// Exact authenticated source realization retained in the durable recipe.
+    pub expected_source: SourceRealizationEvidenceV1,
+}
+
 fn validate_catalog_commitment(
     resources: &ResolvedMountResources,
     expected: ObjectDigest,
@@ -117,9 +169,16 @@ fn validate_catalog_commitment(
 
 /// Applies one idempotent, descriptor-only mount transaction.
 pub trait MountWorker {
-    /// Reports whether the complete Apply backend is currently executable.
+    /// Confirms that cached descriptor authority is safe to use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after an ambiguous keeper mutation until restart.
+    fn ensure_authority_healthy(&self) -> Result<()>;
+
+    /// Reports whether durable-resource actions can run without source acquisition.
     #[must_use]
-    fn supports_mount_apply(&self) -> bool {
+    fn supports_existing_resource_actions(&self) -> bool {
         false
     }
 
@@ -142,6 +201,7 @@ pub trait MountWorker {
         &mut self,
         _request: &ValidatedMountRequest,
         _scope: ObservedMountScope,
+        _expected_source: Option<SourceRealizationEvidenceV1>,
     ) -> Result<ObjectDigest> {
         Err(MountError::Worker(
             "mount worker does not accept Host scope preparation".to_owned(),
@@ -158,7 +218,30 @@ pub trait MountWorker {
     ///
     /// Returns an error when the trusted catalog cannot resolve and verify the
     /// exact request generation.
-    fn catalog_commitment(&self, request: &ValidatedMountRequest) -> Result<Option<ObjectDigest>>;
+    fn catalog_commitment(
+        &self,
+        request: &ValidatedMountRequest,
+        expected_source: Option<SourceRealizationEvidenceV1>,
+    ) -> Result<Option<CatalogAuthorizationV1>>;
+
+    /// Establishes acknowledged PID 1 custody before a fresh pin is admitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the exact CREATE source descriptor is present
+    /// and the canonical keeper name is positively visible after its barrier.
+    fn establish_source_custody(&mut self, authorization: &CatalogAuthorizationV1) -> Result<()>;
+
+    /// Requests removal of one Reaping source from PID 1.
+    ///
+    /// Returns `true` only when an authoritative manager view confirms absence.
+    /// An acknowledged mutation without that proof returns `false` so the
+    /// durable row remains Reaping until restart inventory proves absence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if keeper removal or its negative readback is ambiguous.
+    fn release_source_custody(&mut self, handle: [u8; 32]) -> Result<bool>;
 
     /// Returns the complete bounded set of restart-retained mount descriptors.
     ///
@@ -182,12 +265,8 @@ pub trait MountWorker {
     /// observation failure, or a target that cannot be classified exactly.
     fn preflight_publication(
         &self,
-        request: &ValidatedMountRequest,
-        request_digest: [u8; 32],
-        handle: [u8; 32],
-        expected_mount_id: MountId,
+        durable: DurableMountExecutionV1<'_>,
         predecessor: Option<([u8; 32], MountId)>,
-        expected_catalog_commitment: ObjectDigest,
     ) -> Result<PublicationPreflight>;
 
     /// Reconciles an uncertain detach from durable identity alone.
@@ -198,11 +277,7 @@ pub trait MountWorker {
     /// failure, or unacknowledged descriptor-store removal.
     fn reconcile_detach(
         &mut self,
-        request: &ValidatedMountRequest,
-        request_digest: [u8; 32],
-        handle: [u8; 32],
-        expected_mount_id: MountId,
-        expected_catalog_commitment: ObjectDigest,
+        durable: DurableMountExecutionV1<'_>,
         before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<ReleasedMountObservation>;
 
@@ -223,6 +298,7 @@ pub trait MountWorker {
         request_digest: [u8; 32],
         handles: EffectHandles,
         expected_catalog_commitment: Option<ObjectDigest>,
+        expected_source: Option<SourceRealizationEvidenceV1>,
         before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<WorkerObservation>;
 }
@@ -318,7 +394,9 @@ impl<C, H, K> DescriptorMountWorker<C, H, K> {
     }
 }
 
-impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWorker<C, H, K> {
+impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore + SourceDescriptorStore>
+    DescriptorMountWorker<C, H, K>
+{
     /// Reconciles detach from a durable identity without requiring FD custody.
     ///
     /// The durable state layer may call this after a prior helper mutation and
@@ -331,26 +409,27 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
     /// helper failure, or unacknowledged descriptor-store removal.
     pub fn reconcile_detach(
         &mut self,
-        request: &ValidatedMountRequest,
-        request_digest: [u8; 32],
-        handle: [u8; 32],
-        expected_mount_id: MountId,
-        expected_catalog_commitment: ObjectDigest,
+        durable: DurableMountExecutionV1<'_>,
         before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<ReleasedMountObservation> {
-        let resources = self.catalog.resolve(request)?;
-        validate_catalog_commitment(&resources, expected_catalog_commitment)?;
-        match self
-            .helper
-            .observe(request, request_digest, &resources, expected_mount_id, None)?
-        {
+        let resources = self
+            .catalog
+            .resolve(durable.request, Some(durable.expected_source))?;
+        validate_catalog_commitment(&resources, durable.expected_catalog_commitment)?;
+        match self.helper.observe(
+            durable.request,
+            durable.request_digest,
+            &resources,
+            durable.expected_mount_id,
+            None,
+        )? {
             MountTargetObservation::Installed(_) => {
                 let deadline = before_effect()?;
                 self.helper.detach(
-                    request,
-                    request_digest,
+                    durable.request,
+                    durable.request_digest,
                     &resources,
-                    expected_mount_id,
+                    durable.expected_mount_id,
                     deadline,
                 )?;
             }
@@ -367,19 +446,24 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> DescriptorMountWo
             }
         }
         let _deadline = before_effect()?;
-        self.keeper.remove(&KernelMountName::from_digest(handle))?;
-        self.detached.remove(&handle);
+        self.keeper
+            .remove(&KernelMountName::from_digest(durable.handle))?;
+        self.detached.remove(&durable.handle);
         Ok(ReleasedMountObservation {
-            mount_id: expected_mount_id,
+            mount_id: durable.expected_mount_id,
         })
     }
 }
 
-impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
+impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore + SourceDescriptorStore> MountWorker
     for DescriptorMountWorker<C, H, K>
 {
-    fn supports_mount_apply(&self) -> bool {
-        self.catalog.supports_mount_apply()
+    fn ensure_authority_healthy(&self) -> Result<()> {
+        self.keeper.ensure_source_reconcilable()
+    }
+
+    fn supports_existing_resource_actions(&self) -> bool {
+        self.catalog.supports_existing_resource_actions()
     }
 
     fn supports_catalog_preparation(&self) -> bool {
@@ -390,17 +474,55 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
         &mut self,
         request: &ValidatedMountRequest,
         scope: ObservedMountScope,
+        expected_source: Option<SourceRealizationEvidenceV1>,
     ) -> Result<ObjectDigest> {
-        self.catalog.prepare(request, scope)
+        self.catalog.prepare(request, scope, expected_source)
     }
 
-    fn catalog_commitment(&self, request: &ValidatedMountRequest) -> Result<Option<ObjectDigest>> {
+    fn catalog_commitment(
+        &self,
+        request: &ValidatedMountRequest,
+        expected_source: Option<SourceRealizationEvidenceV1>,
+    ) -> Result<Option<CatalogAuthorizationV1>> {
         if request.action() == MountAction::MOUNT_ACTION_RELEASE {
             return Ok(None);
         }
         self.catalog
-            .resolve(request)
-            .map(|resources| Some(resources.authorization_commitment.digest()))
+            .resolve(request, expected_source)
+            .map(|resources| {
+                Some(CatalogAuthorizationV1 {
+                    commitment: resources.authorization_commitment.digest(),
+                    source_realization: resources.source_realization,
+                    source: resources.source,
+                })
+            })
+    }
+
+    fn establish_source_custody(&mut self, authorization: &CatalogAuthorizationV1) -> Result<()> {
+        let source = authorization.source.as_ref().ok_or_else(|| {
+            MountError::Worker("fresh source activation lacks a live descriptor".to_owned())
+        })?;
+        if source.identity().file_type != aos_sandbox_linux::path::FileType::Directory {
+            return Err(MountError::Worker(
+                "fresh source realization is not a directory".to_owned(),
+            ));
+        }
+        let name = SourcePinName::from_digest(authorization.source_realization.handle);
+        if self.keeper.store_source(&name, source.as_fd())?
+            != SourceCustodyEvidence::ManagerConfirmed
+        {
+            return Err(MountError::State(
+                "PID 1 did not provide manager-confirmed source custody".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn release_source_custody(&mut self, handle: [u8; 32]) -> Result<bool> {
+        let name = SourcePinName::from_digest(handle);
+        self.keeper
+            .remove_source(&name)
+            .map(|evidence| evidence == SourceCustodyEvidence::ManagerConfirmed)
     }
 
     fn custody_inventory(&self) -> Result<Vec<RetainedMountObservation>> {
@@ -422,17 +544,13 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
 
     fn preflight_publication(
         &self,
-        request: &ValidatedMountRequest,
-        request_digest: [u8; 32],
-        handle: [u8; 32],
-        expected_mount_id: MountId,
+        durable: DurableMountExecutionV1<'_>,
         predecessor: Option<([u8; 32], MountId)>,
-        expected_catalog_commitment: ObjectDigest,
     ) -> Result<PublicationPreflight> {
-        let mount = self.detached.get(&handle).ok_or_else(|| {
+        let mount = self.detached.get(&durable.handle).ok_or_else(|| {
             MountError::Worker("publication mount is not retained by this broker".to_owned())
         })?;
-        if mount.mount_id() != expected_mount_id {
+        if mount.mount_id() != durable.expected_mount_id {
             return Err(MountError::Worker(
                 "publication custody differs from durable mount identity".to_owned(),
             ));
@@ -448,8 +566,10 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
             }
         }
 
-        let resources = self.catalog.resolve(request)?;
-        validate_catalog_commitment(&resources, expected_catalog_commitment)?;
+        let resources = self
+            .catalog
+            .resolve(durable.request, Some(durable.expected_source))?;
+        validate_catalog_commitment(&resources, durable.expected_catalog_commitment)?;
         let namespace = MountNamespace::pinned(&resources.mount_namespace)
             .map_err(|error| MountError::Worker(error.to_string()))?;
         let root = namespace
@@ -468,10 +588,10 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                 MountError::Worker("target mount namespace has no observable root".to_owned())
             })?;
         let disposition = self.helper.observe(
-            request,
-            request_digest,
+            durable.request,
+            durable.request_digest,
             &resources,
-            expected_mount_id,
+            durable.expected_mount_id,
             predecessor.map(|(_, mount_id)| mount_id),
         )?;
         Ok(PublicationPreflight {
@@ -482,22 +602,10 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
 
     fn reconcile_detach(
         &mut self,
-        request: &ValidatedMountRequest,
-        request_digest: [u8; 32],
-        handle: [u8; 32],
-        expected_mount_id: MountId,
-        expected_catalog_commitment: ObjectDigest,
+        durable: DurableMountExecutionV1<'_>,
         before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<ReleasedMountObservation> {
-        DescriptorMountWorker::reconcile_detach(
-            self,
-            request,
-            request_digest,
-            handle,
-            expected_mount_id,
-            expected_catalog_commitment,
-            before_effect,
-        )
+        DescriptorMountWorker::reconcile_detach(self, durable, before_effect)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -507,6 +615,7 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
         request_digest: [u8; 32],
         handles: EffectHandles,
         expected_catalog_commitment: Option<ObjectDigest>,
+        expected_source: Option<SourceRealizationEvidenceV1>,
         before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
     ) -> Result<WorkerObservation> {
         if request.action() == MountAction::MOUNT_ACTION_RELEASE {
@@ -524,7 +633,7 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
             });
         }
 
-        let resources = self.catalog.resolve(request)?;
+        let resources = self.catalog.resolve(request, expected_source)?;
         let expected_catalog_commitment = expected_catalog_commitment.ok_or_else(|| {
             MountError::Worker("catalogued effect lost its authorization commitment".to_owned())
         })?;
@@ -658,11 +767,18 @@ impl<C: MountCatalog, H: NamespaceHelper, K: KernelMountStore> MountWorker
                 let expected_mount_id = mount.mount_id();
                 let _ = resources;
                 let _released = self.reconcile_detach(
-                    request,
-                    request_digest,
-                    handle,
-                    expected_mount_id,
-                    expected_catalog_commitment,
+                    DurableMountExecutionV1 {
+                        request,
+                        request_digest,
+                        handle,
+                        expected_mount_id,
+                        expected_catalog_commitment,
+                        expected_source: expected_source.ok_or_else(|| {
+                            MountError::State(
+                                "detach lost its durable source realization".to_owned(),
+                            )
+                        })?,
+                    },
                     before_effect,
                 )?;
                 Ok(WorkerObservation {
@@ -718,7 +834,9 @@ fn prepare_mount(
         .with_no_exec(attributes.no_exec())
         .with_no_atime(attributes.no_atime());
     DetachedMount::clone_with_attributes(
-        &resources.source,
+        resources.source.as_ref().ok_or_else(|| {
+            MountError::Worker("CREATE has no authenticated live source descriptor".to_owned())
+        })?,
         attributes.recursive(),
         linux_attributes,
         Some(&resources.user_namespace),

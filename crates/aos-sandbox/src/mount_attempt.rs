@@ -45,7 +45,7 @@ use crate::dispatch::{
     BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1, semantic_identity_digest,
     template_digest_from_parts, validate_durable_attempt_body, validate_durable_deadline_free_body,
 };
-use crate::mount_preparation::check_mount_deadline;
+use crate::mount_preparation::{MOUNT_VERSION, check_mount_deadline};
 use crate::mount_preparation::{
     MountCatalogPreparationError, PreparedCurrentMountDispatchV1,
     PreparedCurrentMountReleaseDispatchV1,
@@ -87,8 +87,8 @@ pub(crate) use inventory::{
 };
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountAttempt;
-const MOUNT_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
-const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const MOUNT_CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
+const AUTHORITY_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 const MAXIMUM_RESPONSE_BYTES: u32 = 16 * 1024;
 const MAXIMUM_ATTEMPTS: usize = 4096;
 const MAXIMUM_NAMESPACE_BYTES: usize = 256 * 1024 * 1024;
@@ -386,12 +386,16 @@ where
 
     let history = History::load(journal)?;
     let target = prepared.target();
-    let attempt = target.runtime_generation().scope().prepare_mount_attempt(
-        journal,
-        prepared.template(),
-        deadline_boottime_nanoseconds,
-        clock,
-    )?;
+    let attempt = target
+        .runtime_generation()
+        .scope()
+        .prepare_mount_attempt_version(
+            journal,
+            prepared.template(),
+            deadline_boottime_nanoseconds,
+            MOUNT_VERSION,
+            clock,
+        )?;
     check_mount_deadline(attempt.deadline_boottime_nanoseconds())?;
     let record = Record::from_attempt(&prepared, &attempt)?;
 
@@ -455,10 +459,11 @@ where
         .target()
         .runtime_generation()
         .scope()
-        .prepare_mount_attempt(
+        .prepare_mount_attempt_version(
             journal,
             prepared.template(),
             record.deadline_boottime_nanoseconds,
+            MOUNT_VERSION,
             clock,
         )?;
     if !record.matches_resumed_attempt(&prepared, &attempt)? {

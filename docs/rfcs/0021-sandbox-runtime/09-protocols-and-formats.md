@@ -610,9 +610,27 @@ detached lease signature. Host negotiates the carrier with
 methods. Observation and inventory methods reject the carrier. Every Host
 request uses exact protocol 1.0; unknown minor or major versions fail closed.
 
-Mount instead uses exact protocol 1.0. It negotiates the same signed-plan/lease
-feature and requires the carrier on every effect method, while its observation
-and inventory methods reject the carrier. The transport validator applies
+Mount instead uses exact protocol 2.0. Version 2.0 is a preproduction hard cut:
+1.0 peers and persisted source-path recipes are not migration inputs, and 2.1
+or any other unknown version fails closed. Mount negotiates the same
+signed-plan/lease feature and requires the carrier on every effect method,
+while its observation and inventory methods reject the carrier. CREATE and its
+catalog preparation additionally require
+`aos.sandbox.mount.source-acquisition, 1, 0`; production does not advertise
+that capability until an authenticated provider protocol is installed.
+Existing-resource INSTALL, REPLACE, DETACH, inventory, and catalog preparation
+remain available without source acquisition, and RELEASE remains catalogless.
+Fresh source admission additionally requires authoritative PID 1 confirmation
+that the canonical realization-handle name owns the exact source descriptor.
+The systemd 259 `sd_notify` processing barrier is not that confirmation: it
+does not expose an exact post-mutation descriptor-store snapshot. A backend
+limited to that interface must report fresh store and present-name removal as
+unconfirmed, must not publish `Active` or `Released` from its local bookkeeping,
+and may complete `Reaping` only when a complete subsequent socket-activation
+inventory proves the name absent. Until a manager-query backend can provide
+exact positive and negative evidence, production CREATE remains closed and an
+acknowledged removal can remain durably `Reaping` across the running service.
+The transport validator applies
 independent and aggregate byte limits, fully decodes each canonical object, and
 preserves the received bytes exactly; that structural validation grants no
 authority. Trust anchors, public keys, trusted clock samples, revocation state,
@@ -764,7 +782,7 @@ effect; the exact composite attempt must be committed first. An authenticated
 durable replacement before a new Apply. Transport ambiguity or `Pending` never
 authorizes construction of a different packet.
 
-Mount-broker protocol 1.0 includes `PrepareMountCatalog`. The authenticated node
+Mount-broker protocol 2.0 includes `PrepareMountCatalog`. The authenticated node
 controller sends no descriptors and no outer Mount authorization. Its bounded
 body contains a complete prospective `ApplyMountRequest` plus a complete
 authorized Host 1.0 `ObserveMountScope` envelope. The outer request, prospective
@@ -846,7 +864,7 @@ RELEASE and reconstructs portable semantics with the corresponding optional
 binding. A catalogless release remains durable-before-I/O and receipt-bound;
 only descriptor acquisition is omitted.
 
-The controller's Apply client negotiates exact Mount 1.0 with the
+The controller's Apply client negotiates exact Mount 2.0 with the
 signed-plan/lease feature and authenticates both the hello and result writers
 against the pinned Mount service execution. First issue sends the packet durably admitted above;
 pending resumption sends the same body and deadline under the exact plan with a
@@ -865,7 +883,7 @@ a durable intermediate resource, so authoritative inventory still decides
 retry, adoption, or cleanup.
 
 The controller queries `InventoryMountResources` over a separate one-shot
-Mount 1.0 session with no effect authorization. It authenticates the actual
+Mount 2.0 session with no effect authorization. It authenticates the actual
 hello and response writers, accepts no descriptors, and applies the complete
 resource-table validator before committing the exact query and response in a
 bounded `AOSMTI01` latest-snapshot record. The record also commits the complete
@@ -880,8 +898,14 @@ proof. It rejects any resource whose fence, namespace generation, recipe, or
 replacement predecessor contradicts the exact durable attempt. The immutable
 recipe includes its resource attachment generation, source-view identity,
 optional live incarnation, source consistency and generation, view descriptor,
-and recursive and security mount attributes. Creation and publication require
-the desired and resource generations to agree. Teardown may carry newer desired
+recursive and security mount attributes, canonical logical binding digest,
+Mount-minted realization handle, physical proof digest and class, source boot,
+device, inode and unique mount ID, and stable provider authority, resource, and
+catalog identities, generations, and digests. The validator reproduces the
+physical proof and realization handle, rejects physical aliases, and requires
+every repeated handle and provider generation to carry one exact tuple.
+Creation and publication require the desired and resource generations to agree.
+Teardown may carry newer desired
 authority while naming an older resource generation, but it must reproduce that
 older recipe exactly. Replacement inventory requires both its assignment and
 resource attachment generations to advance strictly. Each attempt is
@@ -947,10 +971,11 @@ It contains no arbitrary systemd property, mount option, host path, command, or
 backend expression. Delivery through the unprivileged node daemon does not add
 authority: a broker verifies the controller signature and its own audience.
 
-Host, Mount, Storage, Network, and Guardian each admit only their exact 1.0
-broker protocol. They do not negotiate earlier or later minor versions, and an
-unknown major or minor fails closed. Ownership remains an independently
-versioned protocol and does not lend its version range to a broker domain.
+Host, Storage, Network, and Guardian each admit only their exact 1.0 broker
+protocol, while Mount admits only exact 2.0. They do not negotiate earlier or
+later minor versions, and an unknown major or minor fails closed. Ownership
+remains an independently versioned protocol and does not lend its version range
+to a broker domain.
 
 Before acknowledging or performing an effect, each broker durably records its
 highest accepted semantic assignment tuple and plan digest, plus highest lease

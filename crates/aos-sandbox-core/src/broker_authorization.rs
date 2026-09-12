@@ -1137,7 +1137,7 @@ mod tests {
         let plan = BrokerAuthorizationPlan::new(
             BrokerAudience::Mount,
             ProtocolId::MountBroker,
-            ProtocolVersion::new(1, 0),
+            ProtocolVersion::new(2, 0),
             context_assignment,
             node,
             ownership_authority.clone(),
@@ -1206,7 +1206,7 @@ mod tests {
         BrokerPlanExpectation {
             audience: BrokerAudience::Mount,
             protocol: ProtocolId::MountBroker,
-            protocol_version: ProtocolVersion::new(1, 0),
+            protocol_version: ProtocolVersion::new(2, 0),
             assignment: fixture.context_assignment,
             node: fixture.node,
             now_seconds: 150,
@@ -1306,7 +1306,7 @@ mod tests {
             BrokerAuthorizationPlan::new(
                 BrokerAudience::Mount,
                 ProtocolId::MountBroker,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
                 fixture.context_assignment,
                 fixture.node,
                 fixture.ownership_authority.clone(),
@@ -1495,7 +1495,7 @@ mod tests {
             BrokerAuthorizationPlan::new(
                 BrokerAudience::Mount,
                 ProtocolId::MountBroker,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
                 fixture.context_assignment,
                 fixture.node,
                 fixture.ownership_authority.clone(),
@@ -1521,7 +1521,7 @@ mod tests {
             BrokerAuthorizationPlan::new(
                 BrokerAudience::Mount,
                 ProtocolId::MountBroker,
-                ProtocolVersion::new(1, 0),
+                ProtocolVersion::new(2, 0),
                 fixture.context_assignment,
                 fixture.node,
                 fixture.ownership_authority.clone(),

@@ -154,7 +154,7 @@ signature purpose 0..6: policy, tree, snapshot, distribution,
 key usage 0..6: policy, tree, snapshot, distribution, broker-authorization,
   ownership-lease, publisher-authorization
 broker audience/protocol 0..4: host, mount, storage, network, guardian
-broker protocol versions: host 1.0, mount 1.0, storage 1.0, network 1.0,
+broker protocol versions: host 1.0, mount 2.0, storage 1.0, network 1.0,
   guardian 1.0
 broker verb 1..28: host-launch, host-stop, host-freeze, host-thaw,
   host-kill, host-observe, host-inventory, mount-create, mount-install,

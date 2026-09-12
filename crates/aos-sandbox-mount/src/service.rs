@@ -1,11 +1,13 @@
 //! Negotiated one-request mount-broker service orchestration.
 
-use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
+use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod, MountAction};
 use aos_sandbox_core::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_protocol::mount_catalog::decode_mount_catalog_preparation;
-use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
+use aos_sandbox_protocol::session::{
+    MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE, SIGNED_PLAN_LEASE_FEATURE_NAMESPACE,
+};
 use aos_sandbox_protocol::{
     AuthorizationArtifactBytes, MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError,
     ValidatedBrokerRequestEnvelope, decode_destination_slot_inventory_request,
@@ -95,7 +97,7 @@ impl<W: MountWorker> MountService<W> {
         };
         let advertised_features = [signed_plan_lease_feature()?];
         let advertised_methods = advertised_mount_methods(
-            self.broker.supports_mount_apply(),
+            self.broker.supports_existing_resource_actions(),
             self.broker.supports_catalog_preparation(),
             self.broker.supports_destination_slots(),
         );
@@ -142,6 +144,11 @@ impl<W: MountWorker> MountService<W> {
                     return Ok(ConnectionOutcome::RequestRejected);
                 };
                 if session.validate_header(validated.header()).is_err() {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
+                if validated.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED
+                    && !source_acquisition_negotiated(session.required_features())
+                {
                     return Ok(ConnectionOutcome::RequestRejected);
                 }
                 let ceiling = validated.header().maximum_response_bytes();
@@ -236,6 +243,11 @@ impl<W: MountWorker> MountService<W> {
                 if session.validate_header(preparation.header()).is_err() {
                     return Ok(ConnectionOutcome::RequestRejected);
                 }
+                if preparation.mount_request().action() == MountAction::MOUNT_ACTION_CREATE_DETACHED
+                    && !source_acquisition_negotiated(session.required_features())
+                {
+                    return Ok(ConnectionOutcome::RequestRejected);
+                }
                 let artifacts = preparation.host_authorization();
                 let scope = HostMountScopeClient::connect(&self.host_cgroup_root)
                     .and_then(|client| {
@@ -273,12 +285,12 @@ impl<W: MountWorker> MountService<W> {
 }
 
 fn advertised_mount_methods(
-    supports_apply: bool,
+    supports_existing_resource_actions: bool,
     supports_preparation: bool,
     supports_destination_slots: bool,
 ) -> Vec<BrokerMethod> {
     let mut methods = Vec::with_capacity(5);
-    if supports_apply {
+    if supports_existing_resource_actions {
         methods.push(BrokerMethod::BROKER_METHOD_MOUNT_APPLY);
     }
     methods.push(BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES);
@@ -349,6 +361,14 @@ fn encode_dispatch_response(
 fn signed_plan_lease_feature() -> Result<FeatureRef> {
     FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE, 1, 0)
         .map_err(|error| MountError::State(error.to_string()))
+}
+
+fn source_acquisition_negotiated(features: &[FeatureRef]) -> bool {
+    features.iter().any(|feature| {
+        feature.namespace() == MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE
+            && feature.major() == 1
+            && feature.minor() == 0
+    })
 }
 
 /// Reads wall time and BOOTTIME from the kernel in one protected adapter call.
@@ -506,52 +526,93 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_source_authority_is_not_advertised_or_negotiable() {
-        let methods = advertised_mount_methods(false, false, true);
+    fn unavailable_source_authority_keeps_cleanup_open_but_create_unnegotiable() {
+        let methods = advertised_mount_methods(true, true, true);
         assert_eq!(
             methods,
             [
+                BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
                 BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+                BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
                 BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
                 BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
             ]
         );
 
-        for unavailable in [
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
-            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
-        ] {
-            let hello = BrokerClientHello {
-                protocol_major: 1,
-                protocol_minor: 0,
-                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-                maximum_response_bytes: 8192,
-                required_methods: vec![unavailable.into()],
-                ..Default::default()
-            };
-            assert_eq!(
-                negotiate_client_hello(
-                    &hello.encode_to_vec(),
-                    aos_sandbox_protocol::PeerCredentials {
-                        uid: 1000,
-                        gid: 1001,
-                        pid: Some(2),
-                    },
-                    PeerPolicy {
-                        uid: 1000,
-                        gid: Some(1001),
-                        audience: Audience::AUDIENCE_NODE_CONTROLLER,
-                    },
-                    ProtocolId::MountBroker,
-                    &[],
-                    &methods,
-                ),
-                Err(ProtocolValidationError::MethodMismatch)
-            );
-        }
+        let peer = aos_sandbox_protocol::PeerCredentials {
+            uid: 1000,
+            gid: 1001,
+            pid: Some(2),
+        };
+        let policy = PeerPolicy {
+            uid: 1000,
+            gid: Some(1001),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let preparation = BrokerClientHello {
+            protocol_major: 2,
+            protocol_minor: 0,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 8192,
+            required_methods: vec![BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG.into()],
+            ..Default::default()
+        };
+        assert!(
+            negotiate_client_hello(
+                &preparation.encode_to_vec(),
+                peer,
+                policy,
+                ProtocolId::MountBroker,
+                &[],
+                &methods,
+            )
+            .is_ok()
+        );
+
+        let authorization = signed_plan_lease_feature().unwrap();
+        let acquisition = FeatureRef::new(
+            aos_sandbox_protocol::session::MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE,
+            1,
+            0,
+        )
+        .unwrap();
+        assert!(!source_acquisition_negotiated(std::slice::from_ref(
+            &authorization
+        )));
+        assert!(source_acquisition_negotiated(std::slice::from_ref(
+            &acquisition
+        )));
+        let create = BrokerClientHello {
+            protocol_major: 2,
+            protocol_minor: 0,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            required_features: [&acquisition, &authorization]
+                .into_iter()
+                .map(|feature| aos_proto::aos::sandbox::local::v1::Feature {
+                    namespace: feature.namespace().to_owned(),
+                    major: feature.major(),
+                    minor: feature.minor(),
+                    ..Default::default()
+                })
+                .collect(),
+            maximum_response_bytes: 8192,
+            required_methods: vec![BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into()],
+            ..Default::default()
+        };
+        assert!(matches!(
+            negotiate_client_hello(
+                &create.encode_to_vec(),
+                peer,
+                policy,
+                ProtocolId::MountBroker,
+                std::slice::from_ref(&authorization),
+                &methods,
+            ),
+            Err(ProtocolValidationError::RequiredFeatureUnavailable(_))
+        ));
 
         let hello = BrokerClientHello {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
             maximum_response_bytes: 8192,
@@ -566,21 +627,13 @@ mod tests {
         };
         let session = negotiate_client_hello(
             &hello.encode_to_vec(),
-            aos_sandbox_protocol::PeerCredentials {
-                uid: 1000,
-                gid: 1001,
-                pid: Some(2),
-            },
-            PeerPolicy {
-                uid: 1000,
-                gid: Some(1001),
-                audience: Audience::AUDIENCE_NODE_CONTROLLER,
-            },
+            peer,
+            policy,
             ProtocolId::MountBroker,
             &[],
             &methods,
         )
         .unwrap();
-        assert_eq!(session.version(), ProtocolVersion::new(1, 0));
+        assert_eq!(session.version(), ProtocolVersion::new(2, 0));
     }
 }

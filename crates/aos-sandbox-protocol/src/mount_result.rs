@@ -380,7 +380,7 @@ mod tests {
         let carries_handle = !matches!(action, MountAction::MOUNT_ACTION_CREATE_DETACHED);
         let request = ApplyMountRequest {
             header: Some(RequestHeader {
-                protocol_major: 1,
+                protocol_major: 2,
                 protocol_minor: 0,
                 request_id: vec![1; 16],
                 audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),

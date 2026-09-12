@@ -1,7 +1,7 @@
 //! Drives signed destination-slot materialization and reaping from reconciliation.
 //!
 //! The controller derives every protocol field from protected logical state,
-//! binds the resulting deadline-free body to a separately signed Mount 1.0
+//! binds the resulting deadline-free body to a separately signed Mount 2.0
 //! plan, and records the exact lease-bound packet before broker I/O:
 //!
 //! ```text
@@ -54,7 +54,7 @@ pub use completion::{
     DestinationSlotDispatchClient,
 };
 
-pub(crate) const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+pub(crate) const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 pub(crate) const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
 pub(crate) const RESPONSE_BYTES: u32 = 16 * 1024;
 
@@ -263,7 +263,7 @@ impl PreparedCurrentDestinationSlotV1 {
         self.operation.semantics
     }
 
-    /// Borrows the exact deadline-free Mount protocol 1.0 request body.
+    /// Borrows the exact deadline-free Mount protocol 2.0 request body.
     #[must_use]
     pub fn body_without_deadline(&self) -> &[u8] {
         &self.operation.body_without_deadline

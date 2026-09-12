@@ -11,12 +11,16 @@
 use std::collections::BTreeMap;
 use std::os::fd::OwnedFd;
 
-use aos_proto::aos::sandbox::local::v1::{Audience, BrokerClientHello, BrokerMethod, Feature};
+use aos_proto::aos::sandbox::local::v1::{
+    Audience, BrokerClientHello, BrokerMethod, Feature, MountAction,
+};
 use aos_sandbox_core::{
     FeatureRef, ObjectDigest, ProtocolId, ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
-use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
+use aos_sandbox_protocol::session::{
+    MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE, SIGNED_PLAN_LEASE_FEATURE_NAMESPACE,
+};
 use aos_sandbox_protocol::{
     ValidatedMountResult, decode_mount_result_for_apply, decode_response_envelope,
     decode_server_hello,
@@ -38,7 +42,7 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountCompletion;
-const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
 const RESPONSE_BYTES: u32 = 16 * 1024;
 const MAXIMUM_COMPLETIONS: usize = 4096;
@@ -46,17 +50,27 @@ const MAXIMUM_NAMESPACE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_RECORD_BYTES: usize = RESPONSE_BYTES as usize + format::FIXED_RECORD_BYTES;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-completion.transaction.v1\0";
 
-pub(super) fn mount_apply_client_hello() -> BrokerClientHello {
+pub(super) fn mount_apply_client_hello(action: MountAction) -> BrokerClientHello {
+    let mut required_features = Vec::with_capacity(2);
+    if action == MountAction::MOUNT_ACTION_CREATE_DETACHED {
+        required_features.push(Feature {
+            namespace: MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+    }
+    required_features.push(Feature {
+        namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
+        major: 1,
+        minor: 0,
+        ..Default::default()
+    });
     BrokerClientHello {
         protocol_major: u32::from(CARRIER_VERSION.major()),
         protocol_minor: u32::from(CARRIER_VERSION.minor()),
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-        required_features: vec![Feature {
-            namespace: SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
-            major: 1,
-            minor: 0,
-            ..Default::default()
-        }],
+        required_features,
         maximum_response_bytes: RESPONSE_BYTES,
         required_methods: vec![METHOD.into()],
         ..Default::default()
@@ -112,13 +126,27 @@ impl MountDispatchClient {
         let deadline =
             transport::exchange_deadline(attempt.attempt.deadline_boottime_nanoseconds())
                 .map_err(MountAttemptError::Preparation)?;
-        let feature = FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(), 1, 0)
-            .map_err(|_| {
-                aos_sandbox_protocol::ProtocolValidationError::InvalidField(
-                    "required Mount authorization feature",
-                )
-            })?;
-        let hello = mount_apply_client_hello();
+        let authorization_feature =
+            FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(), 1, 0).map_err(
+                |_| {
+                    aos_sandbox_protocol::ProtocolValidationError::InvalidField(
+                        "required Mount authorization feature",
+                    )
+                },
+            )?;
+        let mut features = Vec::with_capacity(2);
+        if request.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED {
+            features.push(
+                FeatureRef::new(MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE.to_owned(), 1, 0)
+                    .map_err(|_| {
+                        aos_sandbox_protocol::ProtocolValidationError::InvalidField(
+                            "required Mount source-acquisition feature",
+                        )
+                    })?,
+            );
+        }
+        features.push(authorization_feature);
+        let hello = mount_apply_client_hello(request.action());
 
         transport::send(&mut self.socket, &hello.encode_to_vec(), deadline)
             .map_err(MountAttemptError::Preparation)?;
@@ -136,7 +164,7 @@ impl MountDispatchClient {
             ProtocolId::MountBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
             CARRIER_VERSION,
-            &[feature],
+            &features,
             &[METHOD],
             RESPONSE_BYTES,
         )?;

@@ -485,7 +485,7 @@ fn compile_plan(
         clock_provenance,
         host_boot_id,
         effect_deadline_boottime_nanoseconds,
-        source: resources.source.identity().into(),
+        source: resources.source_identity.into(),
         mount_namespace: resources.mount_namespace.identity().into(),
         target_root: resources.target_root.identity().into(),
         target_slot: resources.target_slot.identity().into(),

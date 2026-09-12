@@ -168,7 +168,7 @@ fn request(action: DestinationSlotAction, deadline: u64) -> Vec<u8> {
     let resource_transition = action != DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE;
     aos_proto::aos::sandbox::local::v1::ApplyDestinationSlotRequest {
         header: Some(RequestHeader {
-            protocol_major: 1,
+            protocol_major: 2,
             protocol_minor: 0,
             request_id: operation_id(action).to_vec(),
             audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),

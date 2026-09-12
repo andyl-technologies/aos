@@ -1,4 +1,4 @@
-//! Stable V1 durable state for broker-owned mount resources.
+//! Stable hard-cut durable state for broker-owned mount resources.
 //!
 //! A resource is allocated in the journal before the broker performs any
 //! kernel or descriptor-store effect. Its opaque handle and descriptor-store
@@ -10,7 +10,7 @@
 //! The serialized value is a versioned JSON envelope:
 //!
 //! ```text
-//! {"version":1,"resource":{...}}
+//! {"version":2,"resource":{...}}
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,17 +20,19 @@ use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, decode_view_source,
     encode_view_source, model::ViewSource, validate_descriptor_role,
 };
-use aos_sandbox_protocol::SourceRealizationBindingV1;
+use aos_sandbox_protocol::{
+    MountSourcePhysicalProofV1, SourceRealizationBindingV1, mount_source_physical_proof_digest_v1,
+    mount_source_realization_handle_v1,
+};
 use serde::{Deserialize, Serialize};
 
-#[cfg(test)]
-use crate::source_pin::{
-    RecoveredSourcePinReferencesV1, SourcePinReferenceCountsV1, SourcePinReferenceKind,
-};
+use crate::source_pin::{SourcePinProofClassV1, SourceRealizationHandleV1};
 use crate::{MountError, Result};
 
-const KEY_PREFIX: &[u8] = b"aos.mount.resource.v1\0";
-const FORMAT_VERSION: u16 = 1;
+const KEY_PREFIX: &[u8] = b"aos.mount.resource.v2\0";
+const RETIRED_KEY_PREFIX: &[u8] = b"aos.mount.resource.v1\0";
+const RESOURCE_FAMILY_PREFIX: &[u8] = b"aos.mount.resource.";
+const FORMAT_VERSION: u16 = 2;
 
 /// Opaque, stable identity of one broker-owned mount resource.
 pub(crate) type MountHandleV1 = [u8; 32];
@@ -214,6 +216,21 @@ pub(crate) struct MountRecipeV1 {
     pub(crate) source_consistency: MountSourceConsistencyV1,
     pub(crate) source_handle: Vec<u8>,
     pub(crate) source_binding_digest: [u8; 32],
+    pub(crate) source_realization_handle: SourceRealizationHandleV1,
+    pub(crate) source_physical_proof_digest: [u8; 32],
+    pub(crate) source_kernel_boot_id: [u8; 16],
+    pub(crate) source_device: u64,
+    pub(crate) source_inode: u64,
+    pub(crate) source_proof_class: SourcePinProofClassV1,
+    pub(crate) source_unique_mount_id: u64,
+    pub(crate) source_provider_authority_id: [u8; 16],
+    pub(crate) source_provider_authority_generation: u64,
+    pub(crate) source_provider_authority_digest: [u8; 32],
+    pub(crate) source_provider_resource_id: [u8; 32],
+    pub(crate) source_provider_resource_generation: u64,
+    pub(crate) source_provider_resource_digest: [u8; 32],
+    pub(crate) source_provider_catalog_generation: u64,
+    pub(crate) source_provider_catalog_digest: [u8; 32],
     pub(crate) policy: MountPolicyV1,
 }
 
@@ -419,21 +436,25 @@ impl MountResourceTableV1 {
         self.resources.values()
     }
 
-    /// Derives exact source-pin references from authenticated durable phases.
-    #[cfg(test)]
-    pub(crate) fn source_pin_references(&self) -> Result<RecoveredSourcePinReferencesV1> {
+    /// Derives exact source-realization references from authenticated phases.
+    pub(crate) fn source_realization_references(
+        &self,
+    ) -> Result<BTreeMap<SourceRealizationHandleV1, usize>> {
         let mut counts = BTreeMap::new();
         for resource in self.resources.values() {
-            let Some(kind) = source_pin_reference_kind(&resource.state) else {
+            if resource.kernel_boot_id != self.current_kernel_boot_id
+                || !resource.retains_source_reference()
+            {
                 continue;
-            };
-            let digest = ObjectDigest::from_bytes(resource.recipe.source_binding_digest);
-            counts
-                .entry(digest)
-                .or_insert_with(SourcePinReferenceCountsV1::default)
-                .increment(kind)?;
+            }
+            let count = counts
+                .entry(resource.recipe.source_realization_handle)
+                .or_insert(0usize);
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| state_error("source-realization reference count overflowed"))?;
         }
-        Ok(RecoveredSourcePinReferencesV1::from_counts(counts))
+        Ok(counts)
     }
 
     /// Reports whether no retained mount resource claims one physical slot.
@@ -775,6 +796,11 @@ impl MountResourceTableV1 {
 }
 
 impl MountResourceV1 {
+    /// Reports whether this durable phase still owns its source realization.
+    pub(crate) fn retains_source_reference(&self) -> bool {
+        !matches!(self.state, MountResourceStateV1::Released { .. })
+    }
+
     fn validate(&self, limits: MountResourceLimitsV1) -> Result<()> {
         if self.handle == [0; 32]
             || self.kernel_boot_id == [0; 16]
@@ -790,8 +816,48 @@ impl MountResourceV1 {
             || self.recipe.source_generation == 0
             || self.recipe.resource_attachment_generation == 0
             || self.recipe.source_view_id == [0; 16]
+            || self.recipe.source_realization_handle == [0; 32]
+            || self.recipe.source_physical_proof_digest == [0; 32]
+            || self.recipe.source_kernel_boot_id == [0; 16]
+            || self.recipe.source_device == 0
+            || self.recipe.source_inode == 0
+            || self.recipe.source_unique_mount_id == 0
+            || self.recipe.source_provider_authority_id == [0; 16]
+            || self.recipe.source_provider_authority_generation == 0
+            || self.recipe.source_provider_authority_digest == [0; 32]
+            || self.recipe.source_provider_resource_id == [0; 32]
+            || self.recipe.source_provider_resource_generation == 0
+            || self.recipe.source_provider_resource_digest == [0; 32]
+            || self.recipe.source_provider_catalog_generation == 0
+            || self.recipe.source_provider_catalog_digest == [0; 32]
         {
             return Err(state_error("mount resource contains a sentinel identity"));
+        }
+        if self.recipe.source_kernel_boot_id != self.kernel_boot_id {
+            return Err(state_error(
+                "mount resource and source realization belong to different kernel boots",
+            ));
+        }
+        let proof_matches_consistency = matches!(
+            (
+                self.recipe.source_proof_class,
+                self.recipe.source_consistency
+            ),
+            (
+                SourcePinProofClassV1::ImmutableTree,
+                MountSourceConsistencyV1::ImmutableRevision
+            ) | (
+                SourcePinProofClassV1::LocalLive,
+                MountSourceConsistencyV1::LocalLive
+            ) | (
+                SourcePinProofClassV1::BestEffortReplica,
+                MountSourceConsistencyV1::BestEffortReplica
+            )
+        );
+        if !proof_matches_consistency {
+            return Err(state_error(
+                "mount resource proof class differs from source consistency",
+            ));
         }
         if self.recipe.source_incarnation_id.is_some()
             != matches!(
@@ -868,6 +934,30 @@ fn validate_source_handle(
     if binding.digest().as_bytes() != source_binding_digest {
         return Err(state_error(
             "mount source binding digest differs from its canonical recipe",
+        ));
+    }
+    let physical_proof_digest = mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+        binding_digest: *source_binding_digest,
+        proof_class: recipe.source_proof_class,
+        provider_authority_id: recipe.source_provider_authority_id,
+        provider_authority_generation: recipe.source_provider_authority_generation,
+        provider_authority_digest: recipe.source_provider_authority_digest,
+        provider_resource_id: recipe.source_provider_resource_id,
+        provider_resource_generation: recipe.source_provider_resource_generation,
+        provider_resource_digest: recipe.source_provider_resource_digest,
+        provider_catalog_generation: recipe.source_provider_catalog_generation,
+        provider_catalog_digest: recipe.source_provider_catalog_digest,
+        kernel_boot_id: recipe.source_kernel_boot_id,
+        device: recipe.source_device,
+        inode: recipe.source_inode,
+        unique_mount_id: recipe.source_unique_mount_id,
+    });
+    if physical_proof_digest != recipe.source_physical_proof_digest
+        || mount_source_realization_handle_v1(*source_binding_digest, physical_proof_digest)
+            != recipe.source_realization_handle
+    {
+        return Err(state_error(
+            "mount source physical proof or realization handle is not canonical",
         ));
     }
     Ok(())
@@ -1337,51 +1427,6 @@ fn validate_operation(operation: &OperationCorrelationV1) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-fn source_pin_reference_kind(state: &MountResourceStateV1) -> Option<SourcePinReferenceKind> {
-    match state {
-        MountResourceStateV1::Allocated { .. } => Some(SourcePinReferenceKind::Preparing),
-        MountResourceStateV1::Prepared { .. } | MountResourceStateV1::Publishing { .. } => {
-            Some(SourcePinReferenceKind::Detached)
-        }
-        MountResourceStateV1::Installed { .. } | MountResourceStateV1::Detaching { .. } => {
-            Some(SourcePinReferenceKind::Installed)
-        }
-        MountResourceStateV1::Draining { .. } => Some(SourcePinReferenceKind::Draining),
-        MountResourceStateV1::Releasing {
-            installed,
-            replaced_by,
-            ..
-        }
-        | MountResourceStateV1::Faulted {
-            from: MountFaultPhaseV1::Releasing,
-            installed,
-            replaced_by,
-            ..
-        } => {
-            if replaced_by.is_some() {
-                Some(SourcePinReferenceKind::Draining)
-            } else if installed.is_some() {
-                Some(SourcePinReferenceKind::Installed)
-            } else {
-                Some(SourcePinReferenceKind::Detached)
-            }
-        }
-        MountResourceStateV1::Faulted { from, .. } => match from {
-            MountFaultPhaseV1::Allocated => Some(SourcePinReferenceKind::Preparing),
-            MountFaultPhaseV1::Prepared | MountFaultPhaseV1::Publishing => {
-                Some(SourcePinReferenceKind::Detached)
-            }
-            MountFaultPhaseV1::Installed | MountFaultPhaseV1::Detaching => {
-                Some(SourcePinReferenceKind::Installed)
-            }
-            MountFaultPhaseV1::Draining => Some(SourcePinReferenceKind::Draining),
-            MountFaultPhaseV1::Releasing => unreachable!("releasing faults matched above"),
-        },
-        MountResourceStateV1::Released { .. } => None,
-    }
-}
-
 fn creation(state: &MountResourceStateV1) -> Option<&OperationCorrelationV1> {
     match state {
         MountResourceStateV1::Allocated { creation }
@@ -1629,6 +1674,16 @@ fn encode_key(handle: MountHandleV1) -> Vec<u8> {
 }
 
 fn decode_key(key: &[u8]) -> Result<Option<MountHandleV1>> {
+    if key.starts_with(RETIRED_KEY_PREFIX) {
+        return Err(state_error(
+            "pre-source-realization Mount resource schema is unsupported",
+        ));
+    }
+    if key.starts_with(RESOURCE_FAMILY_PREFIX) && !key.starts_with(KEY_PREFIX) {
+        return Err(state_error(
+            "unknown Mount resource schema in the reserved key family",
+        ));
+    }
     if !key.starts_with(KEY_PREFIX) {
         return Ok(None);
     }
@@ -1664,6 +1719,7 @@ fn state_error(message: impl Into<String>) -> MountError {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use aos_sandbox::JournalTransaction;
     use aos_sandbox_core::PortableMediaType;
 
     use super::*;
@@ -1752,6 +1808,25 @@ mod tests {
         .unwrap()
         .digest()
         .as_bytes();
+        let source_physical_proof_digest =
+            mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+                binding_digest: source_binding_digest,
+                proof_class: SourcePinProofClassV1::ImmutableTree,
+                provider_authority_id: [51; 16],
+                provider_authority_generation: 52,
+                provider_authority_digest: [45; 32],
+                provider_resource_id: [46; 32],
+                provider_resource_generation: 47,
+                provider_resource_digest: [48; 32],
+                provider_catalog_generation: 49,
+                provider_catalog_digest: [50; 32],
+                kernel_boot_id: [10; 16],
+                device: 41,
+                inode: 42,
+                unique_mount_id: 44,
+            });
+        let source_realization_handle =
+            mount_source_realization_handle_v1(source_binding_digest, source_physical_proof_digest);
         MountResourceV1 {
             handle: [handle; 32],
             fd_store_key: [handle; 32],
@@ -1780,6 +1855,21 @@ mod tests {
                 source_consistency: MountSourceConsistencyV1::ImmutableRevision,
                 source_handle: encode_view_source(&source),
                 source_binding_digest,
+                source_realization_handle,
+                source_physical_proof_digest,
+                source_kernel_boot_id: [10; 16],
+                source_device: 41,
+                source_inode: 42,
+                source_proof_class: SourcePinProofClassV1::ImmutableTree,
+                source_unique_mount_id: 44,
+                source_provider_authority_id: [51; 16],
+                source_provider_authority_generation: 52,
+                source_provider_authority_digest: [45; 32],
+                source_provider_resource_id: [46; 32],
+                source_provider_resource_generation: 47,
+                source_provider_resource_digest: [48; 32],
+                source_provider_catalog_generation: 49,
+                source_provider_catalog_digest: [50; 32],
                 policy: policy(),
             },
             state: MountResourceStateV1::Allocated {
@@ -1789,10 +1879,10 @@ mod tests {
     }
 
     #[test]
-    fn source_pin_counts_are_derived_from_exact_resource_phases() {
+    fn source_references_are_derived_from_exact_resource_phases() {
         let mut resources = table();
         let allocated = resource(1, 1, None);
-        let digest = ObjectDigest::from_bytes(allocated.recipe.source_binding_digest);
+        let handle = allocated.recipe.source_realization_handle;
 
         let mut prepared = resource(2, 2, None);
         prepared.state = MountResourceStateV1::Prepared {
@@ -1820,21 +1910,13 @@ mod tests {
         for resource in [allocated, prepared, installed_resource, draining, released] {
             resources.resources.insert(resource.handle, resource);
         }
-        let counts = resources.source_pin_references().unwrap().into_counts();
+        let counts = resources.source_realization_references().unwrap();
 
-        assert_eq!(
-            counts.get(&digest),
-            Some(&SourcePinReferenceCountsV1 {
-                preparing: 1,
-                detached: 1,
-                installed: 1,
-                draining: 1,
-            })
-        );
+        assert_eq!(counts.get(&handle), Some(&4));
     }
 
     #[test]
-    fn exact_v1_resource_round_trips_and_rejects_other_versions() {
+    fn exact_v2_resource_round_trips_and_rejects_other_versions() {
         let resource = resource(1, 1, None);
         let encoded = encode_value(&resource, MountResourceLimitsV1::default()).unwrap();
         assert_eq!(
@@ -1843,7 +1925,7 @@ mod tests {
         );
 
         let mut future: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        future["version"] = serde_json::Value::from(2);
+        future["version"] = serde_json::Value::from(3);
         assert!(
             decode_value(
                 &serde_json::to_vec(&future).unwrap(),
@@ -1864,6 +1946,42 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn recovery_rejects_future_mount_resource_keys_but_ignores_other_operations() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("journal");
+        let (mut journal, _) = Journal::open(&path, Default::default()).unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [90; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Operation,
+                        b"aos.other.operation.v1\0fixture".to_vec(),
+                        b"unrelated".to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(MountResourceTableV1::recover(&journal, Default::default(), [10; 16]).is_ok());
+
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [91; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Operation,
+                        b"aos.mount.resource.v3\0future".to_vec(),
+                        b"{}".to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(MountResourceTableV1::recover(&journal, Default::default(), [10; 16]).is_err());
     }
 
     fn detached(_handle: u8, mount_id: u64) -> DetachedMountIdentityV1 {
@@ -1889,9 +2007,35 @@ mod tests {
         }
     }
 
+    fn set_kernel_boot(resource: &mut MountResourceV1, boot_id: [u8; 16]) {
+        resource.kernel_boot_id = boot_id;
+        resource.recipe.source_kernel_boot_id = boot_id;
+        resource.recipe.source_physical_proof_digest =
+            mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+                binding_digest: resource.recipe.source_binding_digest,
+                proof_class: resource.recipe.source_proof_class,
+                provider_authority_id: resource.recipe.source_provider_authority_id,
+                provider_authority_generation: resource.recipe.source_provider_authority_generation,
+                provider_authority_digest: resource.recipe.source_provider_authority_digest,
+                provider_resource_id: resource.recipe.source_provider_resource_id,
+                provider_resource_generation: resource.recipe.source_provider_resource_generation,
+                provider_resource_digest: resource.recipe.source_provider_resource_digest,
+                provider_catalog_generation: resource.recipe.source_provider_catalog_generation,
+                provider_catalog_digest: resource.recipe.source_provider_catalog_digest,
+                kernel_boot_id: resource.recipe.source_kernel_boot_id,
+                device: resource.recipe.source_device,
+                inode: resource.recipe.source_inode,
+                unique_mount_id: resource.recipe.source_unique_mount_id,
+            });
+        resource.recipe.source_realization_handle = mount_source_realization_handle_v1(
+            resource.recipe.source_binding_digest,
+            resource.recipe.source_physical_proof_digest,
+        );
+    }
+
     fn stale_faulted_replacement_pair() -> (MountResourceV1, MountResourceV1) {
         let mut predecessor = resource(70, 4, None);
-        predecessor.kernel_boot_id = [9; 16];
+        set_kernel_boot(&mut predecessor, [9; 16]);
         predecessor.revision = 5;
         predecessor.state = MountResourceStateV1::Faulted {
             from: MountFaultPhaseV1::Draining,
@@ -1906,7 +2050,7 @@ mod tests {
         };
 
         let mut successor = resource(71, 5, None);
-        successor.kernel_boot_id = [9; 16];
+        set_kernel_boot(&mut successor, [9; 16]);
         successor.revision = 5;
         successor.state = MountResourceStateV1::Faulted {
             from: MountFaultPhaseV1::Installed,
@@ -2156,7 +2300,7 @@ mod tests {
         transition(&mut table, 4, &stale);
 
         let mut current = resource(62, 5, None);
-        current.kernel_boot_id = [11; 16];
+        set_kernel_boot(&mut current, [11; 16]);
         allocate(&mut table, &current);
         current.revision = 2;
         current.state = MountResourceStateV1::Prepared {
@@ -2183,7 +2327,7 @@ mod tests {
         };
 
         let mut successor = resource(64, 5, None);
-        successor.kernel_boot_id = [11; 16];
+        set_kernel_boot(&mut successor, [11; 16]);
         successor.revision = 3;
         successor.state = MountResourceStateV1::Publishing {
             detached: detached(64, 164),
@@ -2214,7 +2358,7 @@ mod tests {
         };
 
         let mut current = resource(66, 5, None);
-        current.kernel_boot_id = [11; 16];
+        set_kernel_boot(&mut current, [11; 16]);
         current.revision = 4;
         current.state = MountResourceStateV1::Installed {
             detached: detached(66, 166),
@@ -2250,7 +2394,7 @@ mod tests {
     #[test]
     fn stale_faulted_replacement_history_rejects_cross_boot_edges() {
         let (predecessor, mut successor) = stale_faulted_replacement_pair();
-        successor.kernel_boot_id = [8; 16];
+        set_kernel_boot(&mut successor, [8; 16]);
         assert!(
             table_with([predecessor, successor])
                 .validate_table()

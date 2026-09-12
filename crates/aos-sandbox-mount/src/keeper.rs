@@ -100,16 +100,16 @@ impl KernelMountName {
     }
 }
 
-/// An opaque descriptor-store name for one source realization binding.
+/// An opaque descriptor-store name for one broker-minted source realization.
 ///
-/// Names use `aos-source-v1-` followed by the lowercase hexadecimal binding
-/// digest. The disjoint prefix prevents a retained source descriptor from ever
+/// Names use `aos-source-v1-` followed by the lowercase hexadecimal realization
+/// handle. The disjoint prefix prevents a retained source descriptor from ever
 /// being adopted as a detached resource mount.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SourcePinName(String);
 
 impl SourcePinName {
-    /// Constructs the sole canonical name for a source-binding digest.
+    /// Constructs the sole canonical name for a source-realization handle.
     #[must_use]
     pub fn from_digest(digest: [u8; 32]) -> Self {
         Self(hex_name(SOURCE_NAME_PREFIX, digest))
@@ -132,7 +132,7 @@ impl SourcePinName {
         &self.0
     }
 
-    /// Decodes the source-binding digest embedded in this name.
+    /// Decodes the source-realization handle embedded in this name.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         decode_name_digest(&self.0, SOURCE_NAME_PREFIX)
@@ -260,28 +260,51 @@ pub trait KernelMountStore {
     fn remove(&self, name: &KernelMountName) -> Result<()>;
 }
 
+pub(crate) mod sealed {
+    pub trait SourceDescriptorStore {}
+}
+
+/// Reports whether PID 1 custody was proved by an authoritative manager view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceCustodyEvidence {
+    /// The manager's complete state proves the requested postcondition.
+    ManagerConfirmed,
+    /// The mutation barrier completed, but no manager query proved the result.
+    Unconfirmed,
+}
+
 /// Provides restart-safe PID 1 custody for source O_PATH descriptors.
-pub trait SourceDescriptorStore {
-    /// Reports whether PID 1's acknowledged inventory contains `name`.
+///
+/// The trait is sealed so an external caller cannot manufacture manager proof.
+/// A mutation barrier alone is not manager-confirmed custody evidence.
+#[allow(private_bounds)]
+pub trait SourceDescriptorStore: sealed::SourceDescriptorStore {
+    /// Confirms that no prior keeper mutation has an ambiguous outcome.
     ///
     /// # Errors
     ///
-    /// Returns an error after an ambiguous mutation or inventory failure.
-    fn contains_source(&self, name: &SourcePinName) -> Result<bool>;
+    /// Returns an error until process restart after an unacknowledged barrier.
+    fn ensure_source_reconcilable(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// Stores a duplicate source descriptor and waits for PID 1's barrier.
     ///
     /// # Errors
     ///
     /// Returns an error when storage or barrier acknowledgement fails.
-    fn store_source(&self, name: &SourcePinName, descriptor: BorrowedFd<'_>) -> Result<()>;
+    fn store_source(
+        &self,
+        name: &SourcePinName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<SourceCustodyEvidence>;
 
     /// Removes every descriptor under `name` and waits for acknowledgement.
     ///
     /// # Errors
     ///
     /// Returns an error when removal or barrier acknowledgement fails.
-    fn remove_source(&self, name: &SourcePinName) -> Result<()>;
+    fn remove_source(&self, name: &SourcePinName) -> Result<SourceCustodyEvidence>;
 }
 
 /// Uses systemd's service-manager descriptor store as restart-safe custody.
@@ -522,6 +545,9 @@ impl SystemdFdStore {
                 let source = ResolvedPath::from_inherited(descriptor).map_err(|error| {
                     state_error(format!("retained source descriptor is invalid: {error}"))
                 })?;
+                if source.identity().file_type != aos_sandbox_linux::path::FileType::Directory {
+                    return Err(state_error("retained source descriptor is not a directory"));
+                }
                 if source_pins.insert(name, source).is_some() {
                     return Err(state_error("duplicate descriptor-store name"));
                 }
@@ -772,18 +798,18 @@ impl<T: KernelMountStore + ?Sized> KernelMountStore for Arc<T> {
     }
 }
 
+impl sealed::SourceDescriptorStore for SystemdFdStore {}
+
 impl SourceDescriptorStore for SystemdFdStore {
-    fn contains_source(&self, name: &SourcePinName) -> Result<bool> {
-        self.ensure_reconcilable()?;
-        let inventory = self
-            .source_inventory
-            .lock()
-            .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
-        self.ensure_reconcilable()?;
-        Ok(inventory.contains(name))
+    fn ensure_source_reconcilable(&self) -> Result<()> {
+        SystemdFdStore::ensure_reconcilable(self)
     }
 
-    fn store_source(&self, name: &SourcePinName, descriptor: BorrowedFd<'_>) -> Result<()> {
+    fn store_source(
+        &self,
+        name: &SourcePinName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<SourceCustodyEvidence> {
         self.ensure_reconcilable()?;
         let mount_inventory = self
             .inventory
@@ -795,7 +821,9 @@ impl SourceDescriptorStore for SystemdFdStore {
             .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
         self.ensure_reconcilable()?;
         if inventory.contains(name) {
-            return Ok(());
+            return Err(state_error(
+                "fresh source custody collides with startup manager inventory",
+            ));
         }
         if mount_inventory.len().saturating_add(inventory.len()) >= self.maximum_entries {
             return Err(state_error("source descriptor-store inventory is full"));
@@ -805,38 +833,46 @@ impl SourceDescriptorStore for SystemdFdStore {
         self.notify(payload.as_bytes(), Some(descriptor))?;
         self.barrier().map_err(|error| self.ambiguous(&error))?;
         inventory.insert(name.clone());
-        Ok(())
+        Ok(SourceCustodyEvidence::Unconfirmed)
     }
 
-    fn remove_source(&self, name: &SourcePinName) -> Result<()> {
+    fn remove_source(&self, name: &SourcePinName) -> Result<SourceCustodyEvidence> {
         self.ensure_reconcilable()?;
-        let mut inventory = self
+        let inventory = self
             .source_inventory
             .lock()
             .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
         self.ensure_reconcilable()?;
         if !inventory.contains(name) {
-            return Ok(());
+            return Ok(SourceCustodyEvidence::ManagerConfirmed);
         }
 
         let payload = format!("FDSTOREREMOVE=1\nFDNAME={}", name.as_str());
         self.notify(payload.as_bytes(), None)?;
         self.barrier().map_err(|error| self.ambiguous(&error))?;
-        inventory.remove(name);
-        Ok(())
+        // Without an exact manager query, the process cannot turn its own
+        // removal request into proof of absence. Keep the startup observation
+        // live so every same-process retry remains unconfirmed.
+        Ok(SourceCustodyEvidence::Unconfirmed)
     }
 }
 
+impl<T: SourceDescriptorStore + ?Sized> sealed::SourceDescriptorStore for Arc<T> {}
+
 impl<T: SourceDescriptorStore + ?Sized> SourceDescriptorStore for Arc<T> {
-    fn contains_source(&self, name: &SourcePinName) -> Result<bool> {
-        (**self).contains_source(name)
+    fn ensure_source_reconcilable(&self) -> Result<()> {
+        (**self).ensure_source_reconcilable()
     }
 
-    fn store_source(&self, name: &SourcePinName, descriptor: BorrowedFd<'_>) -> Result<()> {
+    fn store_source(
+        &self,
+        name: &SourcePinName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<SourceCustodyEvidence> {
         (**self).store_source(name, descriptor)
     }
 
-    fn remove_source(&self, name: &SourcePinName) -> Result<()> {
+    fn remove_source(&self, name: &SourcePinName) -> Result<SourceCustodyEvidence> {
         (**self).remove_source(name)
     }
 }
@@ -1003,6 +1039,7 @@ mod tests {
             "missing-first",
             "missing-middle",
             "missing-last",
+            "regular-source",
         ] {
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -1028,20 +1065,22 @@ mod tests {
             // SAFETY: this exact-test subprocess owns its descriptor table and
             // intentionally clears the bounded fixture range before rebuilding it.
             unsafe { libc::close(raw) };
-            let path = c"/proc/self";
+            let regular_source = scenario == "regular-source" && raw == ACTIVATION_FD_BASE + 2;
+            let path = if regular_source {
+                c"/proc/self/status"
+            } else {
+                c"/proc/self"
+            };
+            let flags =
+                libc::O_PATH | libc::O_CLOEXEC | if regular_source { 0 } else { libc::O_DIRECTORY };
             // SAFETY: `path` is a static NUL-terminated pathname and open
             // returns a fresh descriptor with no Rust owner.
-            let opened = unsafe {
-                libc::open(
-                    path.as_ptr(),
-                    libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
-                )
-            };
+            let opened = unsafe { libc::open(path.as_ptr(), flags) };
             assert_eq!(opened, raw);
         }
 
         let missing = match scenario.as_ref() {
-            "complete" | "over-configured-limit" => None,
+            "complete" | "over-configured-limit" | "regular-source" => None,
             "missing-first" => Some(ACTIVATION_FD_BASE),
             "missing-middle" => Some(ACTIVATION_FD_BASE + 1),
             "missing-last" => Some(ACTIVATION_FD_BASE + 2),
@@ -1081,7 +1120,12 @@ mod tests {
             assert!(!raw_descriptor_is_open(raw));
         }
 
-        if missing.is_some() || scenario == "over-configured-limit" {
+        if missing.is_some()
+            || matches!(
+                scenario.as_ref(),
+                "over-configured-limit" | "regular-source"
+            )
+        {
             assert!(activation.is_err());
             return;
         }
@@ -1196,6 +1240,44 @@ mod tests {
     }
 
     #[test]
+    fn source_barriers_do_not_claim_manager_confirmed_custody() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notify.sock");
+        let server = socket_with(
+            AddressFamily::UNIX,
+            SocketType::DGRAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        bind(&server, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        let keeper = SystemdFdStore::from_notify_socket(path.as_os_str()).unwrap();
+        let descriptor: OwnedFd = File::open(directory.path()).unwrap().into();
+        let name = SourcePinName::from_digest([17; 32]);
+
+        let manager = std::thread::spawn(move || {
+            for _ in 0..6 {
+                let (_, descriptors) = receive_notification(&server);
+                drop(descriptors);
+            }
+        });
+
+        assert_eq!(
+            keeper.store_source(&name, descriptor.as_fd()).unwrap(),
+            SourceCustodyEvidence::Unconfirmed
+        );
+        assert_eq!(
+            keeper.remove_source(&name).unwrap(),
+            SourceCustodyEvidence::Unconfirmed
+        );
+        assert_eq!(
+            keeper.remove_source(&name).unwrap(),
+            SourceCustodyEvidence::Unconfirmed
+        );
+        manager.join().unwrap();
+    }
+
+    #[test]
     fn ambiguous_barrier_failure_poisons_inventory_lookup() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("notify.sock");
@@ -1228,6 +1310,7 @@ mod tests {
 
         let error = keeper.contains(&name).unwrap_err();
         assert!(error.to_string().contains("service restart is required"));
+        assert!(keeper.ensure_source_reconcilable().is_err());
         let other = KernelMountName::from_digest([9; 32]);
         assert!(keeper.store(&other, descriptor.as_fd()).is_err());
     }

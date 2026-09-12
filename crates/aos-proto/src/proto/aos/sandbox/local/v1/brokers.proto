@@ -120,8 +120,8 @@ message BrokerDescriptorDispositionEntry {
   BrokerDescriptorDisposition disposition = 3;
 }
 
-// Exact portable signed artifacts carried by authority-bearing methods in exact
-// protocol 1.0.
+// Exact portable signed artifacts carried by authority-bearing methods under
+// each broker's exact registered protocol version.
 // These bytes are untrusted until the selected broker verifies them
 // against protected node-local trust, clock, revocation, and durable-fence
 // state. Trust policies, public keys, local deadlines, and journal records are
@@ -511,7 +511,7 @@ message ApplyMountRequest {
   bytes source_handle = 20;
 }
 
-// Mount 1.0 read-only preparation. The nested Mount request selects the exact
+// Mount 2.0 read-only preparation. The nested Mount request selects the exact
 // catalog behavior later committed by a signed Apply grant. host_request_packet
 // is a complete authorized Host 1.0 ObserveMountScope envelope; the controller
 // cannot receive or nominate any of the returned descriptors.
@@ -526,7 +526,7 @@ message PrepareMountCatalogResponse {
   uint64 valid_until_boottime_nanoseconds = 2;
 }
 
-// Mount 1.0 materialize, reap, and rematerialize effects
+// Mount 2.0 materialize, reap, and rematerialize effects
 // operate only on broker-derived paths. The exact canonical sandbox
 // specification proves the portable declaration; its descriptor prevents
 // substituted bytes.
@@ -665,8 +665,15 @@ message MountAssignmentBinding {
 // therefore do not appear in inventory.
 enum MountInventorySourceAuthority {
   MOUNT_INVENTORY_SOURCE_AUTHORITY_UNSPECIFIED = 0;
-  // Row containing the canonical source handle required by Mount 1.0.
+  // Row containing the canonical source handle required by Mount 2.0.
   MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT = 1;
+}
+
+enum MountSourceProofClass {
+  MOUNT_SOURCE_PROOF_CLASS_UNSPECIFIED = 0;
+  MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE = 1;
+  MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE = 2;
+  MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA = 4;
 }
 
 message MountRecipe {
@@ -683,6 +690,22 @@ message MountRecipe {
   bytes source_handle = 10;
   // Explicit marker for exact source authority.
   MountInventorySourceAuthority source_authority = 11;
+  bytes source_binding_digest = 12; // Exactly 32 bytes.
+  bytes source_realization_handle = 13; // Mount-minted, exactly 32 bytes.
+  bytes source_physical_proof_digest = 14; // Exactly 32 bytes.
+  uint64 source_unique_mount_id = 15;
+  bytes source_provider_authority_digest = 16; // Exactly 32 bytes.
+  bytes source_provider_resource_id = 17; // Exactly 32 bytes.
+  uint64 source_provider_resource_generation = 18;
+  bytes source_provider_resource_digest = 19; // Exactly 32 bytes.
+  uint64 source_provider_catalog_generation = 20;
+  bytes source_provider_catalog_digest = 21; // Exactly 32 bytes.
+  bytes source_provider_authority_id = 22; // Exactly 16 bytes.
+  uint64 source_provider_authority_generation = 23;
+  bytes source_kernel_boot_id = 24; // Exactly 16 bytes.
+  uint64 source_device = 25;
+  uint64 source_inode = 26;
+  MountSourceProofClass source_proof_class = 27;
 }
 
 // Kernel identity observed for an installed mount. Paths are raw, NUL-free

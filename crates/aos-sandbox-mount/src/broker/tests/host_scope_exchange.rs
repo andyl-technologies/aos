@@ -15,6 +15,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerDescriptorRole, ObserveMountScopeRequest, ObserveMountScopeResponse,
 };
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+use aos_sandbox_linux::path::ResolvedPath;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES;
 use aos_sandbox_protocol::semantics::host::runtime_handle_v1;
@@ -121,7 +122,7 @@ fn assert_prepared_catalog(
 
     let directory = tempfile::tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let source_path = directory.path().join("source");
+    let source_directory = directory.path().join("source");
     let slot_relative_path = crate::destination_slot::catalog_relative_path(
         mount.fence().sandbox_id(),
         mount.fence().incarnation_id(),
@@ -129,56 +130,15 @@ fn assert_prepared_catalog(
         mount.destination_slot_id(),
     );
     let slot_path = directory.path().join(&slot_relative_path);
-    std::fs::create_dir(&source_path).unwrap();
+    std::fs::create_dir(&source_directory).unwrap();
     std::fs::create_dir_all(&slot_path).unwrap();
-    let relative_slot = slot_path.strip_prefix("/").unwrap().to_str().unwrap();
-    let source = std::fs::metadata(&source_path).unwrap();
     let slot = std::fs::metadata(&slot_path).unwrap();
     let root = observed.root().identity();
     let mount_namespace = observed.mount_namespace().identity();
     let user_namespace = observed.user_namespace().identity();
-    let view = mount.view_revision().unwrap();
     let snapshot = serde_json::json!({
         "generation": 1,
-        "entries": [{
-            "assignment": {
-                "sandbox_id": mount.fence().sandbox_id(),
-                "incarnation_id": mount.fence().incarnation_id(),
-                "assignment_epoch": mount.fence().assignment_epoch(),
-                "desired_generation": mount.fence().desired_generation(),
-                "assignment_digest": mount.fence().assignment_digest(),
-            },
-            "attachment_id": mount.attachment_id(),
-            "destination_slot_id": mount.destination_slot_id(),
-            "view_revision": view,
-            "source_generation": mount.source_generation(),
-            "namespace_generation": mount.namespace_generation(),
-            "desired_attachment_generation": mount.desired_attachment_generation(),
-            "resource_attachment_generation": mount.resource_attachment_generation(),
-            "source_view_id": mount.source_view_id(),
-            "source_incarnation_id": null,
-            "source_consistency": "immutable_revision",
-            "attachment_lease_id": mount.attachment_lease_id(),
-            "attachment_lease_issued_seconds": mount.attachment_lease_issued_seconds(),
-            "attachment_lease_expires_seconds": mount.attachment_lease_expires_seconds(),
-            "source_path": "source",
-            "mount_namespace_path": "unused/mount",
-            "user_namespace_path": "unused/user",
-            "target_root_path": "unused/root",
-            "target_slot_path": slot_relative_path,
-            "target_relative_path": relative_slot,
-            "source_identity": { "device": source.dev(), "inode": source.ino() },
-            "mount_namespace_identity": {
-                "device": mount_namespace.device,
-                "inode": mount_namespace.inode,
-            },
-            "user_namespace_identity": {
-                "device": user_namespace.device,
-                "inode": user_namespace.inode,
-            },
-            "target_root_identity": { "device": root.device, "inode": root.inode },
-            "target_slot_identity": { "device": slot.dev(), "inode": slot.ino() },
-        }],
+        "entries": [],
     });
     std::fs::write(
         directory.path().join("catalog.json"),
@@ -186,10 +146,27 @@ fn assert_prepared_catalog(
     )
     .unwrap();
 
-    let mut catalog =
-        PreparedMountCatalog::new(FileMountCatalog::open_root_owned(directory.path()).unwrap());
-    let commitment = catalog.prepare(&mount, observed).unwrap();
-    let resources = catalog.resolve(&mount).unwrap();
+    let source = rustix::fs::open(
+        &source_directory,
+        rustix::fs::OFlags::PATH
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .unwrap();
+    let source = ResolvedPath::from_inherited(source).unwrap();
+    let source_binding = mount.source_binding().unwrap().clone();
+    let mut catalog = PreparedMountCatalog::with_fixture_source(
+        FileMountCatalog::open_root_owned(directory.path()).unwrap(),
+        source_binding,
+        source,
+        [42; 16],
+    )
+    .unwrap();
+    let commitment = catalog.prepare(&mount, observed, None).unwrap();
+    let resources = catalog.resolve(&mount, None).unwrap();
+    let source_realization = resources.source_realization;
     assert_eq!(resources.authorization_commitment.digest(), commitment);
     assert_eq!(resources.target_root.identity(), root);
     assert_eq!(resources.target_slot.identity().device, slot.dev());
@@ -198,15 +175,71 @@ fn assert_prepared_catalog(
     assert_eq!(resources.user_namespace.identity(), user_namespace);
 
     let refresh = observe_scope(host_request, artifacts, ResponseCase::Valid).unwrap();
-    assert_eq!(catalog.prepare(&mount, refresh).unwrap(), commitment);
+    assert_eq!(catalog.prepare(&mount, refresh, None).unwrap(), commitment);
 
     let mut replacement_request = host_request.clone();
     replacement_request.payload_scope_handle[0] ^= 1;
     let replacement = observe_scope(&replacement_request, artifacts, ResponseCase::Valid).unwrap();
     assert!(matches!(
-        catalog.prepare(&mount, replacement),
+        catalog.prepare(&mount, replacement, None),
         Err(MountError::Fence(_))
     ));
+
+    // Reopen the production catalog with no source provider, advance current
+    // operation authority, and reproduce the exact historical recipe. This is
+    // the path restart cleanup uses; only CREATE is allowed to consult a live
+    // source resolver.
+    let mut teardown_wire = mount_wire;
+    let teardown_header = teardown_wire.header.get_or_insert_default();
+    teardown_header.request_id = vec![92; 16];
+    let teardown_fence = teardown_wire.fence.get_or_insert_default();
+    teardown_fence.desired_generation += 1;
+    teardown_fence.assignment_digest = vec![7; 32];
+    teardown_wire.action = MountAction::MOUNT_ACTION_DETACH.into();
+    teardown_wire.detached_mount_handle = vec![93; 32];
+    teardown_wire.view_revision = None.into();
+    teardown_wire.attributes = None.into();
+    teardown_wire.desired_attachment_generation += 1;
+    teardown_wire.attachment_lease_id = vec![94; 16];
+    teardown_wire.attachment_lease_issued_seconds += 1;
+    teardown_wire.attachment_lease_expires_seconds += 1;
+    let teardown = decode_mount_request(
+        &teardown_wire.encode_to_vec(),
+        PeerCredentials {
+            uid: 0,
+            gid: 0,
+            pid: Some(std::process::id()),
+        },
+        PeerPolicy {
+            uid: 0,
+            gid: Some(0),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+        boottime(),
+    )
+    .unwrap();
+    let mut teardown_host_request = host_request.clone();
+    teardown_host_request.header = teardown_wire.header.clone();
+    let teardown_host_header = teardown_host_request.header.get_or_insert_default();
+    teardown_host_header.protocol_major = 1;
+    teardown_host_header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
+    teardown_host_request.fence = teardown_wire.fence.clone();
+    let teardown_scope =
+        observe_scope(&teardown_host_request, artifacts, ResponseCase::Valid).unwrap();
+    let mut outage_catalog =
+        PreparedMountCatalog::new(FileMountCatalog::open_root_owned(directory.path()).unwrap());
+    let teardown_commitment = outage_catalog
+        .prepare(&teardown, teardown_scope, Some(source_realization))
+        .unwrap();
+    let teardown_resources = outage_catalog
+        .resolve(&teardown, Some(source_realization))
+        .unwrap();
+    assert!(teardown_resources.source.is_none());
+    assert_eq!(teardown_resources.source_realization, source_realization);
+    assert_eq!(
+        teardown_resources.authorization_commitment.digest(),
+        teardown_commitment
+    );
 }
 
 fn observe_scope(

@@ -153,7 +153,7 @@ fn signed_plan(
     let plan = BrokerAuthorizationPlan::new(
         BrokerAudience::Mount,
         ProtocolId::MountBroker,
-        ProtocolVersion::new(1, 0),
+        ProtocolVersion::new(2, 0),
         assignment,
         manifest.manifest().node(),
         lease_signer,
@@ -1333,7 +1333,7 @@ fn authority_draft_is_golden_canonical_and_binds_checked_lease() {
     assert_eq!(draft.canonical_bytes().len(), 1_283);
     assert_eq!(
         draft.digest().to_string(),
-        "sha256:418353f4a4aca13d2d2bd8b03aaa76a18904aee57c0381d992289ad8e1f79ff1"
+        "sha256:017c70a0062fb357ea1a11fe6630d8280912c7cf1da35be10a9a2e5688fa57ae"
     );
     assert_eq!(draft.manifest().digest(), source.manifest.digest());
     assert_eq!(draft.required_audiences(), source.required_audiences);

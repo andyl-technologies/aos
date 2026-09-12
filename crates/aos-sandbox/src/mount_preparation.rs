@@ -9,7 +9,7 @@
 //! ```text
 //! CurrentNamespaceTarget + Mount intent
 //!     -> authorized Host 1.0 ObserveMountScope packet
-//!     -> unauthenticated Mount 1.0 PrepareMountCatalog packet
+//!     -> unauthenticated Mount 2.0 PrepareMountCatalog packet
 //!     -> opaque commitment + unchanged exclusive deadline
 //! ```
 //!
@@ -22,10 +22,12 @@
 use std::os::fd::OwnedFd;
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyMountRequest, AssignmentFence, Audience, BrokerClientHello, BrokerMethod, MountAction,
-    ObserveMountScopeRequest, PrepareMountCatalogRequest, RequestHeader,
+    ApplyMountRequest, AssignmentFence, Audience, BrokerClientHello, BrokerMethod, Feature,
+    MountAction, ObserveMountScopeRequest, PrepareMountCatalogRequest, RequestHeader,
 };
-use aos_sandbox_core::{ObjectDigest, ProtocolId, ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_core::{
+    FeatureRef, ObjectDigest, ProtocolId, ProtocolVersion, RawPairedClockSample,
+};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
@@ -42,6 +44,7 @@ use aos_sandbox_protocol::{
     AuthorizationArtifactBytes, PeerCredentials, PeerPolicy, ProtocolValidationError,
     decode_mount_request, decode_response_envelope, decode_server_hello,
     encode_authorized_request_envelope, encode_unauthed_request_envelope,
+    session::MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE,
 };
 use buffa::Message as _;
 use rand::{TryRngCore as _, rngs::OsRng};
@@ -56,19 +59,30 @@ use crate::{BrokerDispatchTemplateError, BrokerDispatchTemplateV1, SignedBrokerP
 
 pub(crate) mod transport;
 
-const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+pub(crate) const MOUNT_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 const HOST_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const MOUNT_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
 const HOST_METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE;
 const RESPONSE_BYTES: u32 = 16 * 1024;
 
-fn mount_catalog_client_hello() -> BrokerClientHello {
+fn mount_catalog_client_hello(action: MountAction) -> BrokerClientHello {
+    let required_features = if action == MountAction::MOUNT_ACTION_CREATE_DETACHED {
+        vec![Feature {
+            namespace: MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        }]
+    } else {
+        Vec::new()
+    };
     BrokerClientHello {
         protocol_major: MOUNT_VERSION.major().into(),
         protocol_minor: MOUNT_VERSION.minor().into(),
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
         maximum_response_bytes: RESPONSE_BYTES,
         required_methods: vec![MOUNT_METHOD.into()],
+        required_features,
         ..Default::default()
     }
 }
@@ -196,7 +210,16 @@ impl MountCatalogClient {
     > {
         let deadline =
             transport::exchange_deadline(request.header().deadline_boottime_nanoseconds())?;
-        let hello = mount_catalog_client_hello();
+        let action = request.mount_request().action();
+        let hello = mount_catalog_client_hello(action);
+        let required_features = if action == MountAction::MOUNT_ACTION_CREATE_DETACHED {
+            vec![
+                FeatureRef::new(MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE, 1, 0)
+                    .map_err(|_| MountCatalogPreparationError::InvalidIntent)?,
+            ]
+        } else {
+            Vec::new()
+        };
         let packet = encode_unauthed_request_envelope(ProtocolId::MountBroker, MOUNT_METHOD, body)?;
 
         transport::send(&mut self.socket, &hello.encode_to_vec(), deadline)?;
@@ -212,7 +235,7 @@ impl MountCatalogClient {
             ProtocolId::MountBroker,
             Audience::AUDIENCE_NODE_CONTROLLER,
             MOUNT_VERSION,
-            &[],
+            &required_features,
             &[MOUNT_METHOD],
             RESPONSE_BYTES,
         )?;
@@ -795,7 +818,7 @@ where
         .target
         .runtime_generation()
         .scope()
-        .verify_mount_plan(journal, &signed_plan, clock)?;
+        .verify_mount_plan_version(journal, &signed_plan, MOUNT_VERSION, clock)?;
     let template = BrokerDispatchTemplateV1::new(
         signed_plan,
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
@@ -823,7 +846,7 @@ where
         .target
         .runtime_generation()
         .scope()
-        .verify_mount_plan(journal, &signed_plan, clock)?;
+        .verify_mount_plan_version(journal, &signed_plan, MOUNT_VERSION, clock)?;
     let template = BrokerDispatchTemplateV1::new(
         signed_plan,
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
@@ -833,6 +856,111 @@ where
     )?;
 
     let prepared = PreparedCurrentMountReleaseDispatchV1 { release, template };
+    prepared.recheck(journal, clock)?;
+    Ok(prepared)
+}
+
+#[cfg(all(test, feature = "kernel-tests"))]
+pub(crate) fn prepared_catalog_for_test<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    intent: &MountCatalogIntentV1,
+    request_id: [u8; 16],
+    catalog_commitment: ObjectDigest,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let deadline = target
+        .runtime_generation()
+        .scope()
+        .deadline_boottime_nanoseconds();
+    let mut request = intent.request.clone();
+    request.header = Some(request_header(
+        MOUNT_VERSION,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        request_id,
+        deadline,
+    ))
+    .into();
+    request.fence = Some(current_fence(&target)).into();
+    request.namespace_generation = target.target_generation();
+    prepared_catalog_from_exact_request_for_test(
+        journal,
+        target,
+        request,
+        catalog_commitment,
+        clock,
+    )
+}
+
+#[cfg(all(test, feature = "kernel-tests"))]
+pub(crate) fn prepared_catalog_replay_for_test<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    body_without_deadline: &[u8],
+    deadline: u64,
+    catalog_commitment: ObjectDigest,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let (request, action) = replay_mount_request(&target, body_without_deadline, deadline)?;
+    if action == MountAction::MOUNT_ACTION_RELEASE {
+        return Err(MountCatalogPreparationError::ReplayMismatch);
+    }
+    prepared_catalog_from_exact_request_for_test(
+        journal,
+        target,
+        request,
+        catalog_commitment,
+        clock,
+    )
+}
+
+#[cfg(all(test, feature = "kernel-tests"))]
+fn prepared_catalog_from_exact_request_for_test<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    mut request: ApplyMountRequest,
+    catalog_commitment: ObjectDigest,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let credentials = local_credentials();
+    let validated = decode_mount_request(
+        &request.encode_to_vec(),
+        credentials,
+        PeerPolicy {
+            uid: credentials.uid,
+            gid: Some(credentials.gid),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+        transport::boottime()?,
+    )?;
+    let binding = MountCatalogBindingV1::from_verified_digest(catalog_commitment)?;
+    let canonical = canonical_mount_semantics_v1(&validated, Some(binding), &[])?;
+    let semantics = BrokerDispatchSemanticIdentityV1::new(
+        canonical.verb(),
+        canonical.target(),
+        canonical.commitment(),
+    );
+    request
+        .header
+        .get_or_insert_default()
+        .deadline_boottime_nanoseconds = 0;
+    let prepared = PreparedCurrentMountCatalogV1 {
+        target,
+        body_without_deadline: request.encode_to_vec(),
+        semantics,
+        catalog_commitment,
+        valid_until_boottime_nanoseconds: validated.header().deadline_boottime_nanoseconds(),
+    };
     prepared.recheck(journal, clock)?;
     Ok(prepared)
 }

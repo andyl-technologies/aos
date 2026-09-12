@@ -20,7 +20,7 @@ where
     /// # Errors
     ///
     /// Rejects stale reconciliation or assignment authority, missing canonical
-    /// state, a non-effect action, or an invalid Mount protocol 1.0 request.
+    /// state, a non-effect action, or an invalid Mount protocol 2.0 request.
     pub fn prepare_current_destination_slot<T>(
         &mut self,
         reconciliation: crate::CurrentDestinationSlotReconciliationV1,
@@ -61,7 +61,7 @@ where
         prepared.recheck(self.reconciler.journal_mut(), clock)
     }
 
-    /// Binds a separately signed Mount 1.0 plan to the derived slot request.
+    /// Binds a separately signed Mount 2.0 plan to the derived slot request.
     ///
     /// # Errors
     ///

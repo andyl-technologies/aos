@@ -8,7 +8,8 @@
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Audience, InventoryMountResourcesResponse, MountAssignmentBinding,
     MountInventoryRecord, MountInventorySourceAuthority, MountKernelObservation,
-    MountOperationCorrelation, MountPublicationCorrelation, MountRecipe, RequestHeader,
+    MountOperationCorrelation, MountPublicationCorrelation, MountRecipe, MountSourceProofClass,
+    RequestHeader,
 };
 use aos_sandbox_core::model::{
     AttachmentConsistency, AttachmentLease, CacheDomain, CacheDomainKind, MountAttributes, View,
@@ -20,7 +21,9 @@ use aos_sandbox_core::{
     Revision, SandboxId, ViewId, descriptor_for_bytes, encode_view, encode_view_source,
 };
 use aos_sandbox_protocol::{
-    PeerCredentials, PeerPolicy, decode_mount_inventory_response, decode_mount_request,
+    MountSourcePhysicalProofV1, MountSourceProofClassV1, PeerCredentials, PeerPolicy,
+    SourceRealizationBindingV1, decode_mount_inventory_response, decode_mount_request,
+    mount_source_physical_proof_digest_v1, mount_source_realization_handle_v1,
 };
 use buffa::Message as _;
 
@@ -110,20 +113,67 @@ fn wire_resource(
     source_incarnation: Option<[u8; 16]>,
     source_consistency: MountSourceConsistency,
 ) -> MountInventoryRecord {
-    let source_handle = match source_consistency {
+    let source = match source_consistency {
         MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => {
-            encode_view_source(immutable_view().source())
+            immutable_view().source().clone()
         }
         MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
         | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA => {
-            encode_view_source(&ViewSource::LiveExport {
+            ViewSource::LiveExport {
                 owner_sandbox: SandboxId::from_bytes([29; 16]),
                 export: aos_sandbox_core::ExportId::from_bytes([30; 16]),
                 source_generation: Revision::new(source_generation),
-            })
+            }
         }
-        _ => Vec::new(),
+        _ => immutable_view().source().clone(),
     };
+    let source_handle = encode_view_source(&source);
+    let (source_proof_class, wire_source_proof_class) = match source_consistency {
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => (
+            MountSourceProofClassV1::ImmutableTree,
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE,
+        ),
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE => (
+            MountSourceProofClassV1::LocalLive,
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE,
+        ),
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA => (
+            MountSourceProofClassV1::BestEffortReplica,
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA,
+        ),
+        _ => unreachable!(),
+    };
+    let source_binding_digest = SourceRealizationBindingV1::new(
+        source_view,
+        source_generation,
+        ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::View.as_str()).unwrap(),
+            ObjectDigest::from_bytes(descriptor_digest),
+            9,
+        ),
+        source,
+        source_consistency,
+        source_incarnation,
+    )
+    .map(|binding| *binding.digest().as_bytes())
+    .unwrap_or([31; 32]);
+    let source_physical_proof_digest =
+        mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
+            binding_digest: source_binding_digest,
+            proof_class: source_proof_class,
+            provider_authority_id: [41; 16],
+            provider_authority_generation: 42,
+            provider_authority_digest: [35; 32],
+            provider_resource_id: [36; 32],
+            provider_resource_generation: 37,
+            provider_resource_digest: [38; 32],
+            provider_catalog_generation: 39,
+            provider_catalog_digest: [40; 32],
+            kernel_boot_id: [14; 16],
+            device: 43,
+            inode: 44,
+            unique_mount_id: 34,
+        });
     MountInventoryRecord {
         mount_handle: handle.to_vec(),
         resource_revision: 1,
@@ -170,6 +220,26 @@ fn wire_resource(
             source_handle,
             source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
                 .into(),
+            source_binding_digest: source_binding_digest.to_vec(),
+            source_realization_handle: mount_source_realization_handle_v1(
+                source_binding_digest,
+                source_physical_proof_digest,
+            )
+            .to_vec(),
+            source_physical_proof_digest: source_physical_proof_digest.to_vec(),
+            source_unique_mount_id: 34,
+            source_provider_authority_id: vec![41; 16],
+            source_provider_authority_generation: 42,
+            source_provider_authority_digest: vec![35; 32],
+            source_provider_resource_id: vec![36; 32],
+            source_provider_resource_generation: 37,
+            source_provider_resource_digest: vec![38; 32],
+            source_provider_catalog_generation: 39,
+            source_provider_catalog_digest: vec![40; 32],
+            source_kernel_boot_id: vec![14; 16],
+            source_device: 43,
+            source_inode: 44,
+            source_proof_class: wire_source_proof_class.into(),
             ..Default::default()
         })
         .into(),
@@ -228,7 +298,7 @@ fn validated_resource(record: MountInventoryRecord) -> ValidatedMountInventoryRe
 
 fn validate_shape(mut request: ApplyMountRequest) {
     request.header = Some(RequestHeader {
-        protocol_major: 1,
+        protocol_major: 2,
         protocol_minor: 0,
         request_id: vec![22; 16],
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
