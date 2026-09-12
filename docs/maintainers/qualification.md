@@ -483,7 +483,7 @@ target cells add fresh-authority and exact-owner requirements.
 All matrix cells require a production VM observation. Their source regressions
 exercise contract closure but remain marked separately and never satisfy those
 cells. The x86 release executor maps `ability-native-adapter-matrix` to
-independent published-image cohorts that currently exercise 815 cells and 3,269
+independent published-image cohorts that currently exercise 1,011 cells and 4,053
 of the 6,050 postconditions. The primary cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -510,7 +510,19 @@ unchanged pending journal, and proves a real required-success dependent remains
 blocked. The 44 cancellation cells with a declared route
 remain explicit failures until each production provider's cancellation handler
 has an exact semantic oracle. A generic indeterminate cancellation callback is
-insufficient. The other 585 cells remain explicit failures, so the mandatory
+insufficient.
+
+The provider-effect cohorts interrupt each applicable method after acquisition,
+after durable intent, after an external return whose result is lost, and after
+durable outcome. They invoke the checked production graph through the candidate
+package runtime and retain provider-authored `RequiredSuccess` successors.
+Filesystem, credential, network, nginx, systemd manager, PostgreSQL,
+Kubernetes, rollout, and foreground-process state is observed from the live
+substrate independently of the execution journal. Foreground flights run system
+activation and dispatch inside the OCI container and bind receipts to the live
+PID, process group, ownership token, cgroup, and namespaces. The four effect
+cells already covered by the primary and PostgreSQL cohorts are not duplicated.
+The other 389 cells remain explicit failures, so the mandatory
 aggregate gate cannot pass. Expand the mapping only with exact cell-bound
 subjects and independent provider-specific observations.
 
