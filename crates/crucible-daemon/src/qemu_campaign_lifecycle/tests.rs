@@ -195,6 +195,7 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         id: SearchChoiceId::from_content_hash(crucible::ContentHash::from_bytes(b"choice")),
         candidates_digest: crucible::ContentHash::from_bytes(b"candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
@@ -2403,6 +2404,7 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         )),
         candidates_digest: crucible::ContentHash::from_bytes(b"finding-replay-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
@@ -2913,6 +2915,7 @@ fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
         )),
         candidates_digest: crucible::ContentHash::from_bytes(b"fresh-runner-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };

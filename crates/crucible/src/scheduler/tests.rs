@@ -1,7 +1,9 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
 use super::*;
-use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
+use crate::model::{
+    BindingSearchCandidateSemantics, BindingSearchChoice, SearchChoiceId, SearchOverride,
+};
 use crate::{
     BackendEffect, BackendNetworkFaultContinuation, IoEventKind, MockSimulationBackend,
     RngDecision, ScenarioDef,
@@ -1369,6 +1371,7 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
         id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"binding-choice")),
         candidates_digest: ContentHash::from_bytes(b"binding-candidates"),
         candidate_count: 2,
+        candidate_semantics: BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
