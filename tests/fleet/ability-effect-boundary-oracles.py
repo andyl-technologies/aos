@@ -122,6 +122,19 @@ def ownership_inventory(adapter: str, resource: dict[str, Any]) -> dict[str, Any
 
     if adapter not in PROVIDER_ORACLES:
         raise RuntimeError(f"no ownership oracle for adapter {adapter!r}")
+    ledger = native_resource_ledger()
+    owners = ledger["owners"]
+
+    identities = [owner for owner in owners if owner.get("resource") == resource]
+    identities.sort(key=canonical)
+    if len(identities) > 1:
+        raise RuntimeError(f"native ledger exposes duplicate owners for {resource!r}")
+    return {"count": len(identities), "identities": identities}
+
+
+def native_resource_ledger() -> dict[str, Any]:
+    """Returns the bounded authoritative owner and consumer ledger."""
+
     ledger_path = (
         "/var/lib/profiles/system/current/.ability-native-resources.json"
     )
@@ -135,14 +148,15 @@ def ownership_inventory(adapter: str, resource: dict[str, Any]) -> dict[str, Any
     if ledger.get("schema") != "aos.ability.native-resource-ledger/v1":
         raise RuntimeError("native ownership ledger has an unexpected schema")
     owners = ledger.get("owners")
-    if not isinstance(owners, list) or len(owners) > 4096:
-        raise RuntimeError("native ownership ledger owner inventory is malformed")
-
-    identities = [owner for owner in owners if owner.get("resource") == resource]
-    identities.sort(key=canonical)
-    if len(identities) > 1:
-        raise RuntimeError(f"native ledger exposes duplicate owners for {resource!r}")
-    return {"count": len(identities), "identities": identities}
+    consumers = ledger.get("consumers")
+    if (
+        not isinstance(owners, list)
+        or len(owners) > 4096
+        or not isinstance(consumers, list)
+        or len(consumers) > 4096
+    ):
+        raise RuntimeError("native ownership ledger inventory is malformed")
+    return ledger
 
 
 def resource_documents(

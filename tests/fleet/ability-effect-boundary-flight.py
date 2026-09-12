@@ -214,6 +214,18 @@ def transaction_state(held: dict[str, Any], flight: EffectFlight) -> dict[str, A
     }
 
 
+def acquisition_state(
+    held: dict[str, Any],
+    flight: EffectFlight,
+    observe: Callable[[dict[str, Any]], dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Returns the exact checked plan state and live acquisition snapshot."""
+
+    state = transaction_state(held, flight)
+    baseline = observe(state["operation-document"])
+    return state, baseline
+
+
 def project_operation(operation: dict[str, Any], ordinal: int) -> dict[str, Any]:
     """Projects the stable operation identity retained by qualification."""
 
@@ -370,18 +382,21 @@ def run_effect_flight(
     host: str,
     evidence_builder: Any,
     observe: Callable[[dict[str, Any]], dict[str, Any]],
+    on_acquisition: (
+        Callable[[dict[str, Any], dict[str, Any]], None] | None
+    ) = None,
 ) -> None:
     """Interrupts, restarts, reconciles, and retains one production operation."""
 
     unit = f"ability-effect-{flight.label}.service"
     scenario = flight.cell_id.rsplit("/", 1)[-1]
     selected_boundary = SCENARIO_BOUNDARIES[scenario]
+    source_generation = current_generation()
     if selected_boundary == "resources-acquired":
         arm(flight)
         start_switch(unit, host)
         held = wait_held(flight)
-        state = transaction_state(held, flight)
-        baseline = observe(state["operation-document"])
+        state, baseline = acquisition_state(held, flight, observe)
     else:
         baseline_sequence = arm_baseline(flight)
         start_switch(unit, host)
@@ -390,8 +405,9 @@ def run_effect_flight(
             sequence=baseline_sequence,
             boundary="resources-acquired",
         )
-        baseline_state = transaction_state(baseline_held, flight)
-        baseline = observe(baseline_state["operation-document"])
+        baseline_state, baseline = acquisition_state(
+            baseline_held, flight, observe
+        )
         advance_from_baseline(flight, baseline_sequence)
         held = wait_held(flight)
         state = transaction_state(held, flight)
@@ -403,6 +419,9 @@ def run_effect_flight(
             state,
             baseline_state,
         )
+    state["source-generation"] = source_generation
+    if on_acquisition is not None:
+        on_acquisition(state, baseline)
     unsettled = observe(state["operation-document"])
     kill_candidate_runtime()
     wait_switch_failed(unit)
