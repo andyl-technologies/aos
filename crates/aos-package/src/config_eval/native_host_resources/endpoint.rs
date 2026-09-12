@@ -20,8 +20,10 @@ use serde::{Deserialize, Serialize};
 
 pub(super) use self::state_authority::scan_endpoint_ledger as scan_endpoint_ledger_for_storage;
 use self::state_authority::{
-    authenticate_stored_binding, endpoint_details, endpoint_record, expected_listener_argument,
-    require_requested, scan_endpoint_ledger, validate_broker_set_shape, write_endpoint_state,
+    EndpointMode, authenticate_direct_endpoint, authenticate_stored_binding,
+    direct_endpoint_authority, endpoint_details, endpoint_mode, endpoint_record,
+    expected_listener_argument, require_requested, scan_endpoint_ledger, validate_broker_set_shape,
+    write_endpoint_state,
 };
 use super::super::native_resource_map::NativeResourceQualification;
 use super::platform::NativePlatformTools;
@@ -104,8 +106,8 @@ struct EndpointStateDetails {
     port_locked: bool,
     requested: EndpointInput,
     endpoint: Option<EndpointValue>,
-    storage: StorageBinding,
-    brokers: BrokerSet,
+    storage: Option<StorageBinding>,
+    brokers: Option<BrokerSet>,
     ipv4_identity: Option<BrokerIdentity>,
     ipv6_identity: Option<BrokerIdentity>,
 }
@@ -128,18 +130,90 @@ fn materialize(
     input: &EndpointInput,
     runtime: &dyn RuntimeControl,
 ) -> Result<NativeHostRecord, io::Error> {
+    let Some(binding) = request.durable.storage_binding.as_ref() else {
+        return materialize_direct(request, input);
+    };
+
+    materialize_broker(request, input, binding, runtime)
+}
+
+/// Reserves a fixed loopback listener in the ownership ledger for a service
+/// that binds the port itself.
+fn materialize_direct(
+    request: &NativeHostRequest,
+    input: &EndpointInput,
+) -> Result<NativeHostRecord, io::Error> {
+    require_direct_request(input)?;
     let reservations = scan_endpoint_ledger()?;
-    let binding = request
-        .durable
-        .storage_binding
-        .as_ref()
-        .ok_or_else(|| invalid("endpoint broker has no PostgreSQL slot association"))?;
+    if let Some(state) = read_state_optional(&request.resource.state_path)? {
+        require_matching_state(request, &state)?;
+        let mut details = endpoint_details(&state)?;
+        require_requested(input, &details.requested)?;
+        if !matches!(
+            details.phase,
+            EndpointPhase::Allocated | EndpointPhase::Releasing
+        ) {
+            return Err(invalid(
+                "direct endpoint marker has an invalid materialize phase",
+            ));
+        }
+        let endpoint = direct_endpoint_authority(&details)?;
+        if state.revision != request.durable.revision || details.phase != EndpointPhase::Allocated {
+            details.phase = EndpointPhase::Allocated;
+            write_endpoint_state(request, &details)?;
+        }
+
+        return endpoint_record(
+            request,
+            Some(endpoint),
+            true,
+            Some(request.durable.revision),
+        );
+    }
+
+    // Keep both wildcard sockets open until the atomic marker is durable. A
+    // concurrent claimant therefore sees either a kernel reservation or the
+    // completed ledger record.
+    let reservation = reserve_public_port(input.port, &reservations)?;
+    let endpoint = EndpointValue {
+        address: input.address.clone(),
+        port: reservation.port,
+        transport: input.transport.clone(),
+    };
+    let details = EndpointStateDetails {
+        phase: EndpointPhase::Allocated,
+        port_locked: true,
+        requested: input.clone(),
+        endpoint: Some(endpoint.clone()),
+        storage: None,
+        brokers: None,
+        ipv4_identity: None,
+        ipv6_identity: None,
+    };
+    write_endpoint_state(request, &details)?;
+    drop(reservation);
+
+    endpoint_record(
+        request,
+        Some(endpoint),
+        true,
+        Some(request.durable.revision),
+    )
+}
+
+fn materialize_broker(
+    request: &NativeHostRequest,
+    input: &EndpointInput,
+    binding: &StorageBinding,
+    runtime: &dyn RuntimeControl,
+) -> Result<NativeHostRecord, io::Error> {
+    let reservations = scan_endpoint_ledger()?;
     let mut state = match read_state_optional(&request.resource.state_path)? {
         Some(state) => {
             require_matching_state(request, &state)?;
             let details = endpoint_details(&state)?;
             require_requested(input, &details.requested)?;
-            if details.storage != *binding {
+            if details.storage.as_ref() != Some(binding) {
                 return Err(invalid("endpoint storage association changed"));
             }
             authenticate_stored_binding(&details)?;
@@ -148,7 +222,7 @@ fn materialize(
                 .as_ref()
                 .ok_or_else(|| invalid("endpoint intent has no reserved public value"))?;
             let brokers = broker_set(&request.durable.platform, endpoint.port, binding)?;
-            if details.brokers != brokers {
+            if details.brokers.as_ref() != Some(&brokers) {
                 return Err(invalid("endpoint broker specification changed"));
             }
             details
@@ -166,8 +240,8 @@ fn materialize(
                 port_locked: false,
                 requested: input.clone(),
                 endpoint: Some(endpoint),
-                storage: binding.clone(),
-                brokers: broker_set(&request.durable.platform, public_port, binding)?,
+                storage: Some(binding.clone()),
+                brokers: Some(broker_set(&request.durable.platform, public_port, binding)?),
                 ipv4_identity: None,
                 ipv6_identity: None,
             };
@@ -185,14 +259,18 @@ fn materialize(
 
     let mut launch_attempts = 0_u8;
     let (endpoint, ipv4_identity, ipv6_identity) = loop {
-        let ipv4_result = ensure_broker(&request.durable.platform, &state.brokers.ipv4, runtime);
+        let brokers = state
+            .brokers
+            .clone()
+            .ok_or_else(|| invalid("endpoint broker state has no broker specification"))?;
+        let ipv4_result = ensure_broker(&request.durable.platform, &brokers.ipv4, runtime);
         let result = match ipv4_result {
             Ok((endpoint, identity)) => {
                 if state.ipv4_identity.as_ref() != Some(&identity) {
                     state.ipv4_identity = Some(identity.clone());
                     write_endpoint_state(request, &state)?;
                 }
-                ensure_broker(&request.durable.platform, &state.brokers.ipv6, runtime)
+                ensure_broker(&request.durable.platform, &brokers.ipv6, runtime)
                     .map(|(ipv6_endpoint, ipv6)| (endpoint, identity, ipv6_endpoint, ipv6))
             }
             Err(error) => Err(error),
@@ -215,16 +293,8 @@ fn materialize(
                     && launch_attempts < 8 =>
             {
                 launch_attempts += 1;
-                terminate_broker_optional(
-                    &state.brokers.ipv4,
-                    state.ipv4_identity.as_ref(),
-                    runtime,
-                )?;
-                terminate_broker_optional(
-                    &state.brokers.ipv6,
-                    state.ipv6_identity.as_ref(),
-                    runtime,
-                )?;
+                terminate_broker_optional(&brokers.ipv4, state.ipv4_identity.as_ref(), runtime)?;
+                terminate_broker_optional(&brokers.ipv6, state.ipv6_identity.as_ref(), runtime)?;
                 let current = scan_endpoint_ledger()?
                     .into_iter()
                     .filter(|(resource, _)| resource != &request.durable.resource)
@@ -236,7 +306,7 @@ fn materialize(
                     port: public_port,
                     transport: "tcp".to_string(),
                 });
-                state.brokers = broker_set(&request.durable.platform, public_port, binding)?;
+                state.brokers = Some(broker_set(&request.durable.platform, public_port, binding)?);
                 state.ipv4_identity = None;
                 state.ipv6_identity = None;
                 write_endpoint_state(request, &state)?;
@@ -268,20 +338,27 @@ fn observe(
     let state = require_current_state(request)?;
     let details = endpoint_details(&state)?;
     require_requested(input, &details.requested)?;
-    let binding = request
-        .durable
-        .storage_binding
-        .as_ref()
-        .ok_or_else(|| invalid("endpoint observation has no PostgreSQL slot association"))?;
+    let Some(binding) = request.durable.storage_binding.as_ref() else {
+        require_direct_request(input)?;
+        let endpoint = authenticate_direct_endpoint(&details)?;
+
+        return endpoint_record(request, Some(endpoint), true, Some(state.revision));
+    };
     let endpoint = details
         .endpoint
         .as_ref()
         .ok_or_else(|| invalid("endpoint marker has no public value"))?;
-    if details.storage != *binding {
+    if details.storage.as_ref() != Some(binding) {
         return Err(invalid("endpoint observation storage association changed"));
     }
     authenticate_stored_binding(&details)?;
-    if details.brokers != broker_set(&request.durable.platform, endpoint.port, binding)? {
+    if details.brokers.as_ref()
+        != Some(&broker_set(
+            &request.durable.platform,
+            endpoint.port,
+            binding,
+        )?)
+    {
         return Err(invalid("endpoint broker specification changed"));
     }
     let (endpoint, _, _) = authenticate_settled_broker(&details)?;
@@ -295,11 +372,14 @@ fn release(
 ) -> Result<NativeHostRecord, io::Error> {
     scan_endpoint_ledger()?;
     let Some(state) = read_state_optional(&request.resource.state_path)? else {
-        let binding = request
-            .durable
-            .storage_binding
-            .as_ref()
-            .ok_or_else(|| invalid("endpoint release has no PostgreSQL slot association"))?;
+        let Some(binding) = request.durable.storage_binding.as_ref() else {
+            require_direct_request(input)?;
+            let reservations = scan_endpoint_ledger()?;
+            let _reservation = reserve_public_port(input.port, &reservations)?;
+            remove_atomic_temporary_root(&request.resource.state_path, 0o600)?;
+
+            return endpoint_record(request, None, false, None);
+        };
         if orphan_broker_residue(binding, input)? {
             return Err(invalid(
                 "endpoint broker exists without an ownership marker",
@@ -310,6 +390,14 @@ fn release(
     };
     require_matching_state(request, &state)?;
     let mut details = endpoint_details(&state)?;
+    match (
+        request.durable.storage_binding.as_ref(),
+        endpoint_mode(&details)?,
+    ) {
+        (None, EndpointMode::Direct) => return release_direct(request, input, details),
+        (Some(_), EndpointMode::Broker) => {}
+        _ => return Err(invalid("endpoint request changed its ownership mode")),
+    }
     if details.phase != EndpointPhase::Releasing {
         if !matches!(
             details.phase,
@@ -321,16 +409,12 @@ fn release(
         write_endpoint_state(request, &details)?;
     }
     authenticate_stored_binding(&details)?;
-    terminate_broker_optional(
-        &details.brokers.ipv4,
-        details.ipv4_identity.as_ref(),
-        runtime,
-    )?;
-    terminate_broker_optional(
-        &details.brokers.ipv6,
-        details.ipv6_identity.as_ref(),
-        runtime,
-    )?;
+    let brokers = details
+        .brokers
+        .as_ref()
+        .ok_or_else(|| invalid("endpoint broker state has no broker specification"))?;
+    terminate_broker_optional(&brokers.ipv4, details.ipv4_identity.as_ref(), runtime)?;
+    terminate_broker_optional(&brokers.ipv6, details.ipv6_identity.as_ref(), runtime)?;
     let endpoint = details
         .endpoint
         .as_ref()
@@ -340,8 +424,8 @@ fn release(
         .filter(|(resource, _)| resource != &request.durable.resource)
         .collect::<Vec<_>>();
     let _reservation = reserve_public_port(endpoint.port, &other_reservations)?;
-    if !find_exact_processes(&details.brokers.ipv4)?.is_empty()
-        || !find_exact_processes(&details.brokers.ipv6)?.is_empty()
+    if !find_exact_processes(&brokers.ipv4)?.is_empty()
+        || !find_exact_processes(&brokers.ipv6)?.is_empty()
     {
         return Err(invalid(
             "endpoint broker remained after authenticated termination",
@@ -349,6 +433,50 @@ fn release(
     }
     remove_regular_optional(&request.resource.state_path, 0)?;
     endpoint_record(request, None, false, None)
+}
+
+/// Releases direct endpoint ownership only after both address families can be
+/// reserved, proving that no service still owns the declared listener.
+fn release_direct(
+    request: &NativeHostRequest,
+    input: &EndpointInput,
+    mut details: EndpointStateDetails,
+) -> Result<NativeHostRecord, io::Error> {
+    require_direct_request(input)?;
+    require_requested(input, &details.requested)?;
+    if !matches!(
+        details.phase,
+        EndpointPhase::Allocated | EndpointPhase::Releasing
+    ) {
+        return Err(invalid(
+            "direct endpoint marker has an invalid release phase",
+        ));
+    }
+    if details.phase != EndpointPhase::Releasing {
+        details.phase = EndpointPhase::Releasing;
+        write_endpoint_state(request, &details)?;
+    }
+
+    let endpoint = details
+        .endpoint
+        .as_ref()
+        .ok_or_else(|| invalid("direct endpoint release marker has no public value"))?;
+    let other_reservations = scan_endpoint_ledger()?
+        .into_iter()
+        .filter(|(resource, _)| resource != &request.durable.resource)
+        .collect::<Vec<_>>();
+    let _reservation = reserve_public_port(endpoint.port, &other_reservations)?;
+    remove_regular_optional(&request.resource.state_path, 0)?;
+    endpoint_record(request, None, false, None)
+}
+
+fn require_direct_request(input: &EndpointInput) -> Result<(), io::Error> {
+    if input.address != "127.0.0.1" || input.transport != "tcp" || input.port < 1024 {
+        return Err(invalid(
+            "direct endpoint requires a fixed unprivileged loopback TCP port",
+        ));
+    }
+    Ok(())
 }
 
 fn orphan_broker_residue(
@@ -424,11 +552,21 @@ fn orphan_broker_residue(
 }
 
 pub(super) fn endpoint_health(state: &HostState) -> Result<bool, io::Error> {
-    authenticate_settled_broker(&endpoint_details(state)?).map(|_| true)
+    let details = endpoint_details(state)?;
+    match endpoint_mode(&details)? {
+        EndpointMode::Direct => authenticate_direct_endpoint(&details).map(|_| true),
+        EndpointMode::Broker => authenticate_settled_broker(&details).map(|_| true),
+    }
 }
 
 pub(super) fn endpoint_from_state(state: &HostState) -> Result<EndpointValue, io::Error> {
-    authenticate_settled_broker(&endpoint_details(state)?).map(|(endpoint, _, _)| endpoint)
+    let details = endpoint_details(state)?;
+    match endpoint_mode(&details)? {
+        EndpointMode::Direct => authenticate_direct_endpoint(&details),
+        EndpointMode::Broker => {
+            authenticate_settled_broker(&details).map(|(endpoint, _, _)| endpoint)
+        }
+    }
 }
 
 pub(super) fn authenticate_endpoint(
@@ -477,8 +615,12 @@ pub(super) fn authenticate_endpoint_storage_binding(
         ));
     }
     let details = endpoint_details(&state)?;
-    validate_broker_set_shape(&details.brokers)?;
-    if details.storage != *binding {
+    let brokers = details
+        .brokers
+        .as_ref()
+        .ok_or_else(|| invalid("endpoint association marker has no broker specification"))?;
+    validate_broker_set_shape(brokers)?;
+    if details.storage.as_ref() != Some(binding) {
         return Err(invalid(
             "endpoint ownership ledger disagrees with its storage binding",
         ));
@@ -702,7 +844,8 @@ fn wait_for_broker(
 fn authenticate_settled_broker(
     details: &EndpointStateDetails,
 ) -> Result<(EndpointValue, BrokerIdentity, BrokerIdentity), io::Error> {
-    if details.phase != EndpointPhase::Allocated {
+    if endpoint_mode(details)? != EndpointMode::Broker || details.phase != EndpointPhase::Allocated
+    {
         return Err(invalid("endpoint broker is not settled"));
     }
     let expected = details
@@ -717,9 +860,12 @@ fn authenticate_settled_broker(
         .ipv6_identity
         .as_ref()
         .ok_or_else(|| invalid("settled endpoint has no IPv6 broker identity"))?;
-    let (endpoint, actual_ipv4) = authenticate_one_broker(&details.brokers.ipv4, recorded_ipv4)?;
-    let (ipv6_endpoint, actual_ipv6) =
-        authenticate_one_broker(&details.brokers.ipv6, recorded_ipv6)?;
+    let brokers = details
+        .brokers
+        .as_ref()
+        .ok_or_else(|| invalid("settled endpoint has no broker specification"))?;
+    let (endpoint, actual_ipv4) = authenticate_one_broker(&brokers.ipv4, recorded_ipv4)?;
+    let (ipv6_endpoint, actual_ipv6) = authenticate_one_broker(&brokers.ipv6, recorded_ipv6)?;
     if endpoint != *expected || ipv6_endpoint != *expected {
         return Err(invalid("endpoint broker identity changed"));
     }
@@ -1301,6 +1447,77 @@ fn broker_port_is_available(spec: &BrokerSpec) -> Result<bool, io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn direct_details(port: u16) -> EndpointStateDetails {
+        EndpointStateDetails {
+            phase: EndpointPhase::Allocated,
+            port_locked: true,
+            requested: EndpointInput {
+                address: "127.0.0.1".to_string(),
+                port,
+                transport: "tcp".to_string(),
+            },
+            endpoint: Some(EndpointValue {
+                address: "127.0.0.1".to_string(),
+                port,
+                transport: "tcp".to_string(),
+            }),
+            storage: None,
+            brokers: None,
+            ipv4_identity: None,
+            ipv6_identity: None,
+        }
+    }
+
+    #[test]
+    fn direct_endpoint_authenticates_exact_fixed_ledger_state() {
+        let details = direct_details(18443);
+
+        assert_eq!(
+            endpoint_mode(&details).expect("classify direct endpoint"),
+            EndpointMode::Direct
+        );
+        assert_eq!(
+            authenticate_direct_endpoint(&details).expect("authenticate direct endpoint"),
+            EndpointValue {
+                address: "127.0.0.1".to_string(),
+                port: 18443,
+                transport: "tcp".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn direct_endpoint_rejects_mixed_and_dynamic_authority() {
+        let mut mixed = direct_details(18443);
+        mixed.ipv4_identity = Some(BrokerIdentity {
+            pid: 1,
+            process_group: 1,
+            start_time: 1,
+            socket_inode: 1,
+        });
+        assert!(endpoint_mode(&mixed).is_err());
+
+        let dynamic = direct_details(0);
+        assert!(authenticate_direct_endpoint(&dynamic).is_err());
+    }
+
+    #[test]
+    fn direct_release_proof_requires_the_listener_to_be_unbound() {
+        let listener =
+            std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind service listener");
+        let port = listener.local_addr().expect("read listener address").port();
+
+        let error = match reserve_public_port(port, &[]) {
+            Ok(_) => panic!("bound direct listener unexpectedly passed release proof"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+
+        drop(listener);
+        let reservation = reserve_public_port(port, &[]).expect("prove listener is released");
+        assert_eq!(reservation.port, port);
+    }
 
     #[test]
     fn dual_family_reservation_excludes_competing_wildcard_binds() {

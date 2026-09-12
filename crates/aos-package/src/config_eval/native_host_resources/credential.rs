@@ -32,23 +32,35 @@ enum CredentialPhase {
     Released,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialStateDetails {
     phase: CredentialPhase,
-    version: String,
     view: String,
-    view_path: String,
-    content_digest: Sha256Digest,
+    active_version: String,
+    versions: Vec<CredentialVersionState>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CredentialEvidence {
-    pub(super) resource: ResourceId,
-    pub(super) version: String,
-    pub(super) view_path: String,
-    pub(super) content_digest: Sha256Digest,
+struct CredentialVersionState {
+    version: String,
+    view_path: String,
+    content_digest: Sha256Digest,
+}
+
+/// Commits to one authenticated secret-free credential view.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CredentialEvidence {
+    /// Names the logical credential resource that owns the view.
+    pub(crate) resource: ResourceId,
+    /// Identifies the opaque source version selected by the producer.
+    pub(crate) version: String,
+    /// Names the protected provider-controlled workload path.
+    pub(crate) view_path: String,
+    /// Commits to the bytes read from the protected view.
+    pub(crate) content_digest: Sha256Digest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -67,43 +79,46 @@ struct CredentialSourceKey<'a> {
     version: &'a str,
 }
 
+#[derive(Serialize)]
+struct CredentialViewKey<'a> {
+    resource: &'a ResourceId,
+    version: &'a str,
+}
+
 pub(super) fn execute_credential(
     request: &NativeHostRequest,
 ) -> Result<NativeHostRecord, io::Error> {
     let input: CredentialInput = decode_input(&request.durable.inputs, "credential")?;
-    let view_path = credential_view_path(&request.durable.resource)?;
+    let view_path = credential_view_path(&request.durable.resource, &input.version)?;
     let marker_path = request.resource.state_path.clone();
 
     match request.durable.method.as_str() {
         "deliver" => {
-            let existing = authenticate_existing_view(request, &input, &view_path)?;
+            let existing = authenticate_existing_view(request, &input)?;
             let secret = read_credential_source(&request.durable.resource, &input.version)?;
             let content_digest = Sha256Digest::of_bytes(secret.as_slice());
-            if existing.as_ref().is_some_and(|details| {
-                details.version == input.version && details.content_digest != content_digest
-            }) {
-                return Err(invalid(
-                    "credential version resolves to different protected content",
-                ));
-            }
             let view_path_text = path_text(&view_path)?;
-            let details = |phase| CredentialStateDetails {
-                phase,
-                version: input.version.clone(),
-                view: input.view.clone(),
-                view_path: view_path_text.clone(),
+            let (details, added_version) = next_credential_details(
+                existing,
+                &input.view,
+                &input.version,
+                view_path_text,
                 content_digest,
-            };
+            )?;
+            if added_version {
+                authenticate_unrecorded_view(&view_path, content_digest)?;
+            }
+            reject_unrecorded_versioned_views(&request.durable.resource, &details.versions)?;
 
-            write_typed_state(request, details(CredentialPhase::Delivering))?;
             atomic_write_root(&view_path, secret.as_slice(), 0o400)?;
-            write_typed_state(request, details(CredentialPhase::Delivered))?;
+            write_typed_state(request, details)?;
 
             credential_record(&input, true, Some(&input.version), Some(&view_path))
         }
         "acquire" => {
             let state = require_current_state(request)?;
             let details = credential_details(&state)?;
+            let version = credential_version(&details, &input.version)?;
             let secret = Zeroizing::new(read_protected_file(
                 &view_path,
                 MAX_CREDENTIAL_BYTES,
@@ -111,10 +126,10 @@ pub(super) fn execute_credential(
                 0o400,
             )?);
             if details.phase != CredentialPhase::Delivered
-                || details.version != input.version
                 || details.view != input.view
-                || details.view_path != path_text(&view_path)?
-                || details.content_digest != Sha256Digest::of_bytes(secret.as_slice())
+                || details.active_version != input.version
+                || version.view_path != path_text(&view_path)?
+                || version.content_digest != Sha256Digest::of_bytes(secret.as_slice())
             {
                 return Err(invalid(
                     "credential view is stale or differs from protected state",
@@ -128,27 +143,27 @@ pub(super) fn execute_credential(
                 Some(state) => {
                     require_matching_state(request, &state)?;
                     let mut details = credential_details(&state)?;
+                    reject_unrecorded_versioned_views(&state.resource, &details.versions)?;
                     details.phase = CredentialPhase::Releasing;
                     write_typed_state(request, details.clone())?;
-                    remove_regular_optional(&view_path, 0)?;
-                    remove_atomic_temporary_root(&view_path, 0o400)?;
-                    if fs::symlink_metadata(&view_path).is_ok() {
-                        return Err(io::Error::other("credential view remained after release"));
+                    for version in &details.versions {
+                        let owned_path = credential_view_path(&state.resource, &version.version)?;
+                        if version.view_path != path_text(&owned_path)? {
+                            return Err(invalid(
+                                "credential release found a foreign versioned view",
+                            ));
+                        }
+                        remove_regular_optional(&owned_path, 0)?;
+                        remove_atomic_temporary_root(&owned_path, 0o400)?;
+                        if fs::symlink_metadata(&owned_path).is_ok() {
+                            return Err(io::Error::other("credential view remained after release"));
+                        }
                     }
                     remove_regular_optional(&marker_path, 0)?;
                 }
                 None => {
-                    remove_atomic_temporary_root(&view_path, 0o400)?;
-                    match fs::symlink_metadata(&view_path) {
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                        Ok(_) => {
-                            return Err(invalid(
-                                "credential view exists without an ownership marker",
-                            ));
-                        }
-                        Err(error) => return Err(error),
-                    }
                     remove_atomic_temporary_root(&marker_path, 0o600)?;
+                    reject_unowned_versioned_views(&request.durable.resource)?;
                 }
             }
             credential_record(&input, false, None, None)
@@ -162,17 +177,14 @@ pub(super) fn credential_healthy(state: &HostState) -> Result<bool, io::Error> {
     if details.phase != CredentialPhase::Delivered {
         return Ok(false);
     }
-    let bytes = match read_protected_file(
-        Path::new(&details.view_path),
-        MAX_CREDENTIAL_BYTES,
-        0,
-        0o400,
-    ) {
-        Ok(bytes) => Zeroizing::new(bytes),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    Ok(details.content_digest == Sha256Digest::of_bytes(bytes.as_slice()))
+    let active = credential_version(&details, &details.active_version)?;
+    let bytes =
+        match read_protected_file(Path::new(&active.view_path), MAX_CREDENTIAL_BYTES, 0, 0o400) {
+            Ok(bytes) => Zeroizing::new(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+    Ok(active.content_digest == Sha256Digest::of_bytes(bytes.as_slice()))
 }
 
 pub(super) fn authenticate_credential_view(
@@ -210,20 +222,77 @@ pub(super) fn authenticate_credential_dependency(
     Ok(evidence)
 }
 
+/// Authenticates one typed credential view against its checked producer.
+///
+/// The returned evidence contains only the logical resource, opaque version,
+/// protected path, and content digest. Secret bytes are zeroized before this
+/// function returns.
+///
+/// # Errors
+///
+/// Returns an error when the view or its ownership marker is unsafe, stale,
+/// inconsistent with the producer binding, or differs from its recorded digest.
+pub(crate) fn authenticate_credential_dependency_view(
+    binding: &NativeDependencyBinding,
+    view_path: &Path,
+    version: &str,
+) -> Result<CredentialEvidence, io::Error> {
+    let producer_evidence = authenticate_credential_dependency(binding, view_path, version)?;
+    let (content_evidence, secret) = authenticate_credential_view(view_path, version)?;
+    drop(secret);
+
+    if content_evidence != producer_evidence {
+        return Err(invalid(
+            "credential content evidence differs from its producer authority",
+        ));
+    }
+
+    Ok(content_evidence)
+}
+
+/// Authenticates one typed credential view and returns secret-free evidence.
+///
+/// Secret bytes are read only to verify their recorded digest and are zeroized
+/// before this function returns.
+///
+/// # Errors
+///
+/// Returns an error when the view or its ownership marker is unsafe, stale, or
+/// differs from the protected credential bytes.
+pub(crate) fn authenticate_credential_view_evidence(
+    view_path: &Path,
+    version: &str,
+) -> Result<CredentialEvidence, io::Error> {
+    let (evidence, secret) = authenticate_credential_view(view_path, version)?;
+    drop(secret);
+
+    Ok(evidence)
+}
+
 pub(super) fn validate_delivery_before_intent(
     resource: &QualifiedHostResource,
     input: &CredentialInput,
 ) -> Result<(), io::Error> {
     let secret = read_credential_source(&resource.spec.resource, &input.version)?;
     let content_digest = Sha256Digest::of_bytes(secret.as_slice());
-    let view_path = credential_view_path(&resource.spec.resource)?;
-    let existing = authenticate_existing_state(resource, input, &view_path)?;
-    if existing.as_ref().is_some_and(|details| {
-        details.version == input.version && details.content_digest != content_digest
+    let view_path = credential_view_path(&resource.spec.resource, &input.version)?;
+    let view_path_text = path_text(&view_path)?;
+    let existing = authenticate_existing_state(resource, input)?;
+    let recorded = existing.as_ref().and_then(|details| {
+        details
+            .versions
+            .iter()
+            .find(|recorded| recorded.version == input.version)
+    });
+    if recorded.is_some_and(|recorded| {
+        recorded.content_digest != content_digest || recorded.view_path != view_path_text
     }) {
         return Err(invalid(
             "credential version resolves to different protected content",
         ));
+    }
+    if recorded.is_none() {
+        authenticate_unrecorded_view(&view_path, content_digest)?;
     }
     Ok(())
 }
@@ -242,19 +311,17 @@ pub(super) fn authenticate_credential_marker(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| invalid("credential view name is not UTF-8"))?;
-    let digest = file_name
-        .strip_suffix(".view")
-        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| invalid("credential view name is not canonical"))?;
-    let marker_path = Path::new(CREDENTIAL_ROOT).join(format!(".{digest}.json"));
+    let (resource_digest, _) = parse_credential_view_name(file_name)?;
+    let marker_path = Path::new(CREDENTIAL_ROOT).join(format!(".{resource_digest}.json"));
     let state = read_state_optional(&marker_path)?
         .ok_or_else(|| invalid("credential view has no ownership marker"))?;
     let details = credential_details(&state)?;
-    if resource_key(&state.resource)? != digest
+    let recorded = credential_version(&details, version)?;
+    if resource_key(&state.resource)? != resource_digest
         || expected_resource.is_some_and(|resource| resource != &state.resource)
         || details.phase != CredentialPhase::Delivered
-        || details.version != version
-        || details.view_path != path_text(view_path)?
+        || credential_view_path(&state.resource, version)? != view_path
+        || recorded.view_path != path_text(view_path)?
     {
         return Err(invalid("credential view differs from its ownership marker"));
     }
@@ -266,34 +333,43 @@ pub(super) fn authenticate_credential_marker(
     }
     Ok(CredentialEvidence {
         resource: state.resource,
-        version: details.version,
-        view_path: details.view_path,
-        content_digest: details.content_digest,
+        version: recorded.version.clone(),
+        view_path: recorded.view_path.clone(),
+        content_digest: recorded.content_digest,
     })
 }
 
-pub(super) fn credential_view_path(resource: &ResourceId) -> Result<PathBuf, io::Error> {
-    Ok(Path::new(CREDENTIAL_ROOT).join(format!("{}.view", resource_key(resource)?)))
+pub(super) fn credential_view_path(
+    resource: &ResourceId,
+    version: &str,
+) -> Result<PathBuf, io::Error> {
+    // The resource prefix keeps ownership and locking stable while the version
+    // suffix lets a failed renewal leave the previously served bytes intact.
+    let resource_digest = resource_key(resource)?;
+    let version_digest = Sha256Digest::of_canonical(
+        "aos.ability.credential-view-key/v1",
+        &CredentialViewKey { resource, version },
+    )
+    .map_err(store_error)?
+    .hex();
+
+    Ok(Path::new(CREDENTIAL_ROOT).join(format!("{resource_digest}-{version_digest}.view")))
 }
 
 fn authenticate_existing_view(
     request: &NativeHostRequest,
     input: &CredentialInput,
-    view_path: &Path,
 ) -> Result<Option<CredentialStateDetails>, io::Error> {
     let state = read_state_optional(&request.resource.state_path)?;
     match state {
         Some(state) => {
             require_matching_state(request, &state)?;
             let details = credential_details(&state)?;
-            if details.view != input.view || details.view_path != path_text(view_path)? {
+            if details.view != input.view {
                 return Err(invalid("credential marker binds another workload view"));
             }
             Ok(Some(details))
         }
-        None if fs::symlink_metadata(view_path).is_ok() => Err(invalid(
-            "credential view exists without an ownership marker",
-        )),
         None => Ok(None),
     }
 }
@@ -301,7 +377,6 @@ fn authenticate_existing_view(
 fn authenticate_existing_state(
     resource: &QualifiedHostResource,
     input: &CredentialInput,
-    view_path: &Path,
 ) -> Result<Option<CredentialStateDetails>, io::Error> {
     let state = read_state_optional(&resource.state_path)?;
     match state {
@@ -312,21 +387,165 @@ fn authenticate_existing_state(
                 return Err(invalid("credential marker is foreign"));
             }
             let details = credential_details(&state)?;
-            if details.view != input.view || details.view_path != path_text(view_path)? {
+            if details.view != input.view {
                 return Err(invalid("credential marker binds another workload view"));
             }
             Ok(Some(details))
         }
-        None if fs::symlink_metadata(view_path).is_ok() => Err(invalid(
-            "credential view exists without an ownership marker",
-        )),
-        None => Ok(None),
+        None => {
+            reject_unowned_versioned_views(&resource.spec.resource)?;
+            Ok(None)
+        }
     }
 }
 
 fn credential_details(state: &HostState) -> Result<CredentialStateDetails, io::Error> {
-    serde_json::from_value(state.details.clone())
-        .map_err(|error| invalid(format!("invalid credential state details: {error}")))
+    let details: CredentialStateDetails = serde_json::from_value(state.details.clone())
+        .map_err(|error| invalid(format!("invalid credential state details: {error}")))?;
+    if details.versions.is_empty()
+        || !details
+            .versions
+            .windows(2)
+            .all(|pair| pair[0].version < pair[1].version)
+        || !details
+            .versions
+            .iter()
+            .any(|version| version.version == details.active_version)
+    {
+        return Err(invalid("credential state has invalid version membership"));
+    }
+    for version in &details.versions {
+        if credential_view_path(&state.resource, &version.version)? != Path::new(&version.view_path)
+        {
+            return Err(invalid(
+                "credential state contains a foreign versioned view",
+            ));
+        }
+    }
+
+    Ok(details)
+}
+
+fn credential_version<'a>(
+    details: &'a CredentialStateDetails,
+    version: &str,
+) -> Result<&'a CredentialVersionState, io::Error> {
+    details
+        .versions
+        .iter()
+        .find(|recorded| recorded.version == version)
+        .ok_or_else(|| invalid("credential version is absent from its ownership marker"))
+}
+
+fn next_credential_details(
+    existing: Option<CredentialStateDetails>,
+    view: &str,
+    version: &str,
+    view_path: String,
+    content_digest: Sha256Digest,
+) -> Result<(CredentialStateDetails, bool), io::Error> {
+    let mut versions = match existing {
+        Some(details) if details.view == view => details.versions,
+        Some(_) => return Err(invalid("credential marker binds another workload view")),
+        None => Vec::new(),
+    };
+    let desired = CredentialVersionState {
+        version: version.to_string(),
+        view_path,
+        content_digest,
+    };
+    let added = match versions.iter().find(|recorded| recorded.version == version) {
+        Some(recorded) if recorded == &desired => false,
+        Some(_) => {
+            return Err(invalid(
+                "credential version resolves to different protected content",
+            ));
+        }
+        None => {
+            versions.push(desired);
+            versions.sort_by(|left, right| left.version.cmp(&right.version));
+            true
+        }
+    };
+
+    Ok((
+        CredentialStateDetails {
+            phase: CredentialPhase::Delivered,
+            view: view.to_string(),
+            active_version: version.to_string(),
+            versions,
+        },
+        added,
+    ))
+}
+
+fn authenticate_unrecorded_view(
+    view_path: &Path,
+    expected_digest: Sha256Digest,
+) -> Result<(), io::Error> {
+    let bytes = match read_protected_file(view_path, MAX_CREDENTIAL_BYTES, 0, 0o400) {
+        Ok(bytes) => Zeroizing::new(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if Sha256Digest::of_bytes(bytes.as_slice()) != expected_digest {
+        return Err(invalid(
+            "unrecorded credential view differs from the protected source",
+        ));
+    }
+
+    Ok(())
+}
+
+fn reject_unowned_versioned_views(resource: &ResourceId) -> Result<(), io::Error> {
+    reject_unrecorded_versioned_views(resource, &[])
+}
+
+fn reject_unrecorded_versioned_views(
+    resource: &ResourceId,
+    recorded: &[CredentialVersionState],
+) -> Result<(), io::Error> {
+    let expected_resource = resource_key(resource)?;
+    for entry in fs::read_dir(CREDENTIAL_ROOT)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let owned_by_resource = parse_credential_view_name(&name)
+            .is_ok_and(|(resource_digest, _)| resource_digest == expected_resource);
+        let path = entry.path();
+        let is_recorded = recorded
+            .iter()
+            .any(|version| Path::new(&version.view_path) == path);
+        if owned_by_resource && !is_recorded {
+            return Err(invalid(
+                "credential view exists without matching ownership state",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_credential_view_name(name: &str) -> Result<(&str, &str), io::Error> {
+    let stem = name
+        .strip_suffix(".view")
+        .ok_or_else(|| invalid("credential view name is not canonical"))?;
+    let (resource_digest, version_digest) = stem
+        .split_once('-')
+        .ok_or_else(|| invalid("credential view name is not versioned"))?;
+    if !is_lower_hex_digest(resource_digest) || !is_lower_hex_digest(version_digest) {
+        return Err(invalid("credential view name is not canonical"));
+    }
+
+    Ok((resource_digest, version_digest))
+}
+
+fn is_lower_hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn write_typed_state(
@@ -361,7 +580,7 @@ fn read_credential_source(
         0,
         0o600,
     )?);
-    validate_secret_line(secret.as_slice())?;
+    validate_secret_bytes(secret.as_slice())?;
     if Sha256Digest::of_bytes(secret.as_slice()) != record.content_digest {
         return Err(invalid(
             "credential source bytes differ from their protected record",
@@ -370,18 +589,11 @@ fn read_credential_source(
     Ok(secret)
 }
 
-fn validate_secret_line(secret: &[u8]) -> Result<(), io::Error> {
-    let Some(content) = secret.strip_suffix(b"\n") else {
-        return Err(invalid("credential source is not LF-terminated"));
-    };
-    if content.is_empty()
-        || content.contains(&b'\n')
-        || content.contains(&b'\r')
-        || content.contains(&0)
-        || std::str::from_utf8(content).is_err()
-    {
-        return Err(invalid("credential source must be one nonempty UTF-8 line"));
+fn validate_secret_bytes(secret: &[u8]) -> Result<(), io::Error> {
+    if secret.is_empty() {
+        return Err(invalid("credential source is empty"));
     }
+
     Ok(())
 }
 
@@ -428,4 +640,119 @@ fn credential_record(
         .transpose()?
         .unwrap_or_default();
     record(result, outputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        credential_view_path, next_credential_details, parse_credential_view_name, resource_key,
+        validate_secret_bytes,
+    };
+    use aos_ability_model::{EnvironmentId, ExecutionStage, InstanceId, LocalKey, ResourceId};
+    use aos_contract::Sha256Digest;
+
+    #[test]
+    fn accepts_multiline_and_binary_credentials() {
+        assert!(
+            validate_secret_bytes(
+                b"-----BEGIN CERTIFICATE-----\nbody\n-----END CERTIFICATE-----\n"
+            )
+            .is_ok()
+        );
+        assert!(validate_secret_bytes(&[0, 1, 2, 255]).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_credentials() {
+        assert!(validate_secret_bytes(&[]).is_err());
+    }
+
+    #[test]
+    fn versioned_view_paths_bind_resource_and_version_digests() {
+        let resource = credential_resource();
+        let first = credential_view_path(&resource, "certificate-v1")
+            .expect("first credential path is derived");
+        let second = credential_view_path(&resource, "certificate-v2")
+            .expect("second credential path is derived");
+        assert_ne!(first, second);
+
+        let name = first
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("credential view name is UTF-8");
+        let (resource_digest, version_digest) =
+            parse_credential_view_name(name).expect("versioned name parses");
+        assert_eq!(
+            resource_digest,
+            resource_key(&resource).expect("resource digest is derived")
+        );
+        assert_eq!(version_digest.len(), 64);
+        assert!(parse_credential_view_name(&format!("{resource_digest}.view")).is_err());
+        assert!(
+            parse_credential_view_name(&format!(
+                "{}-{version_digest}.view",
+                resource_digest.to_ascii_uppercase()
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rotation_retains_the_prior_version_and_rejects_same_version_drift() {
+        let resource = credential_resource();
+        let first_path = credential_view_path(&resource, "certificate-v1")
+            .expect("first credential path is derived");
+        let second_path = credential_view_path(&resource, "certificate-v2")
+            .expect("second credential path is derived");
+        let first_digest = Sha256Digest::of_bytes(b"first-certificate");
+        let second_digest = Sha256Digest::of_bytes(b"second-certificate");
+        let (first, first_added) = next_credential_details(
+            None,
+            "edge-tls",
+            "certificate-v1",
+            first_path.to_string_lossy().into_owned(),
+            first_digest,
+        )
+        .expect("first version is accepted");
+        let (rotated, second_added) = next_credential_details(
+            Some(first),
+            "edge-tls",
+            "certificate-v2",
+            second_path.to_string_lossy().into_owned(),
+            second_digest,
+        )
+        .expect("rotation is accepted");
+
+        assert!(first_added);
+        assert!(second_added);
+        assert_eq!(rotated.active_version, "certificate-v2");
+        assert_eq!(rotated.versions.len(), 2);
+        assert_eq!(rotated.versions[0].content_digest, first_digest);
+        assert_eq!(rotated.versions[1].content_digest, second_digest);
+
+        assert!(
+            next_credential_details(
+                Some(rotated),
+                "edge-tls",
+                "certificate-v2",
+                second_path.to_string_lossy().into_owned(),
+                Sha256Digest::of_bytes(b"changed-certificate"),
+            )
+            .is_err()
+        );
+    }
+
+    fn credential_resource() -> ResourceId {
+        ResourceId {
+            provider: InstanceId {
+                environment: EnvironmentId {
+                    authority: LocalKey::new("test").expect("authority is valid"),
+                    key: LocalKey::new("host").expect("environment is valid"),
+                    stage: ExecutionStage::Host,
+                },
+                key: LocalKey::new("credentials").expect("provider is valid"),
+            },
+            key: LocalKey::new("edge-tls").expect("resource is valid"),
+        }
+    }
 }

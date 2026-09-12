@@ -276,6 +276,22 @@ in
   ];
   assert abilityRequirements.ability-native-activation.regressions
   == ["checks.fleet.ability-native-activation"];
+  assert abilityRequirements.ability-native-activation.checks
+  == [
+    "authenticated-package-policy-and-operator-authority"
+    "exact-interface-binding-effect-plan-and-artifact-identities"
+    "consumer-scoped-access-and-independent-service-observation"
+    "aggregate-publication-reload-and-unchanged-input-no-op"
+    "post-publication-reload-failure-retains-new-configuration-and-old-or-unknown-consumer-state"
+    "rollback-revalidates-and-retains-transaction-evidence"
+    "typed-opaque-tls-credential-version-delivery-and-validation-binding"
+    "independent-served-certificate-observation-matches-declared-version"
+    "missing-credential-and-invalid-certificate-reject-with-live-target-preserved"
+    "tls-private-key-sentinel-absent-from-durable-and-rendered-records"
+    "credential-renewal-reloads-and-serves-new-version"
+    "selected-tls-generation-and-credential-view-survive-gc-and-reboot"
+    "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
+  ];
   assert abilityRequirements.ability-native-image-rollout.regressions
   == ["checks.fleet.ability-native-image-rollout"];
   assert abilityRequirements.ability-native-image-rollout.checks

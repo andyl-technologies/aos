@@ -1,9 +1,18 @@
 //! Durable endpoint state validation and allocation-ledger discovery.
 //!
-//! State is accepted only when its broker identities, storage binding, and
-//! loopback allocation still match the authenticated physical resource.
+//! State is accepted only when its ownership mode and loopback allocation
+//! match the authenticated physical resource. Brokered PostgreSQL endpoints
+//! additionally authenticate their process identities and storage binding.
 
 use super::*;
+
+/// Distinguishes service-owned fixed listeners from PostgreSQL broker
+/// listeners without accepting partially populated authority records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EndpointMode {
+    Direct,
+    Broker,
+}
 
 pub(crate) fn scan_endpoint_ledger() -> Result<Vec<(ResourceId, EndpointValue)>, io::Error> {
     let mut resources = BTreeSet::new();
@@ -55,21 +64,46 @@ pub(crate) fn scan_endpoint_ledger() -> Result<Vec<(ResourceId, EndpointValue)>,
             || endpoint.transport != "tcp"
             || endpoint.port == 0
             || (*port != 0 && endpoint.port != *port)
-            || details.brokers.ipv4.public_port != endpoint.port
-            || details.brokers.ipv6.public_port != endpoint.port
         {
             return Err(invalid("endpoint ledger has an invalid public reservation"));
         }
-        validate_broker_set_shape(&details.brokers)?;
-        authenticate_stored_binding(&details)?;
-        match details.phase {
-            EndpointPhase::Preparing => {}
-            EndpointPhase::Allocated
-                if details.port_locked
-                    && details.ipv4_identity.is_some()
-                    && details.ipv6_identity.is_some() => {}
-            EndpointPhase::Releasing => {}
-            _ => return Err(invalid("endpoint ledger has an invalid phase shape")),
+        match endpoint_mode(&details)? {
+            EndpointMode::Direct => {
+                if *port == 0
+                    || endpoint.port != *port
+                    || !details.port_locked
+                    || !matches!(
+                        details.phase,
+                        EndpointPhase::Allocated | EndpointPhase::Releasing
+                    )
+                {
+                    return Err(invalid("direct endpoint ledger has an invalid phase shape"));
+                }
+            }
+            EndpointMode::Broker => {
+                let brokers = details
+                    .brokers
+                    .as_ref()
+                    .ok_or_else(|| invalid("endpoint broker ledger has no specification"))?;
+                if brokers.ipv4.public_port != endpoint.port
+                    || brokers.ipv6.public_port != endpoint.port
+                {
+                    return Err(invalid(
+                        "endpoint broker ledger has an invalid public reservation",
+                    ));
+                }
+                validate_broker_set_shape(brokers)?;
+                authenticate_stored_binding(&details)?;
+                match details.phase {
+                    EndpointPhase::Preparing => {}
+                    EndpointPhase::Allocated
+                        if details.port_locked
+                            && details.ipv4_identity.is_some()
+                            && details.ipv6_identity.is_some() => {}
+                    EndpointPhase::Releasing => {}
+                    _ => return Err(invalid("endpoint ledger has an invalid phase shape")),
+                }
+            }
         }
         if !ports.insert(endpoint.port) {
             return Err(invalid("endpoint ledger contains a duplicate port"));
@@ -77,6 +111,73 @@ pub(crate) fn scan_endpoint_ledger() -> Result<Vec<(ResourceId, EndpointValue)>,
         allocated.push((state.resource, endpoint));
     }
     Ok(allocated)
+}
+
+/// Validates the closed authority shape and returns the endpoint ownership
+/// mode. Direct records must contain no PostgreSQL or broker authority.
+///
+/// # Errors
+///
+/// Returns an error when the record mixes fields from the two ownership modes.
+pub(super) fn endpoint_mode(details: &EndpointStateDetails) -> Result<EndpointMode, io::Error> {
+    match (
+        details.storage.as_ref(),
+        details.brokers.as_ref(),
+        details.ipv4_identity.as_ref(),
+        details.ipv6_identity.as_ref(),
+    ) {
+        (None, None, None, None) => Ok(EndpointMode::Direct),
+        (Some(_), Some(_), _, _) => Ok(EndpointMode::Broker),
+        _ => Err(invalid("endpoint ledger contains mixed ownership state")),
+    }
+}
+
+/// Authenticates a settled direct allocation exclusively from its exact
+/// ledger record. The consuming service owns the live listener separately.
+///
+/// # Errors
+///
+/// Returns an error when the allocation is unsettled or its fixed authority is
+/// inconsistent.
+pub(super) fn authenticate_direct_endpoint(
+    details: &EndpointStateDetails,
+) -> Result<EndpointValue, io::Error> {
+    if endpoint_mode(details)? != EndpointMode::Direct
+        || details.phase != EndpointPhase::Allocated
+        || !details.port_locked
+    {
+        return Err(invalid("direct endpoint is not settled"));
+    }
+    direct_endpoint_authority(details)
+}
+
+/// Validates the immutable fixed-listener authority independently of its
+/// transition phase so interrupted release can return to allocated state.
+///
+/// # Errors
+///
+/// Returns an error when the record is not a complete direct allocation or its
+/// public endpoint differs from the original request.
+pub(super) fn direct_endpoint_authority(
+    details: &EndpointStateDetails,
+) -> Result<EndpointValue, io::Error> {
+    if endpoint_mode(details)? != EndpointMode::Direct || !details.port_locked {
+        return Err(invalid("direct endpoint has invalid ownership authority"));
+    }
+    let endpoint = details
+        .endpoint
+        .as_ref()
+        .ok_or_else(|| invalid("settled direct endpoint has no public value"))?;
+    if details.requested.address != "127.0.0.1"
+        || details.requested.transport != "tcp"
+        || details.requested.port < 1024
+        || endpoint.address != details.requested.address
+        || endpoint.transport != details.requested.transport
+        || endpoint.port != details.requested.port
+    {
+        return Err(invalid("direct endpoint has inconsistent fixed authority"));
+    }
+    Ok(endpoint.clone())
 }
 
 pub(super) fn validate_broker_set_shape(brokers: &BrokerSet) -> Result<(), io::Error> {
@@ -143,7 +244,14 @@ pub(super) fn expected_listener_argument(family: BrokerFamily, public_port: u16)
 }
 
 pub(super) fn authenticate_stored_binding(details: &EndpointStateDetails) -> Result<(), io::Error> {
-    super::super::storage::authenticate_exact_binding(&details.storage)
+    if endpoint_mode(details)? != EndpointMode::Broker {
+        return Err(invalid("direct endpoint has no PostgreSQL storage binding"));
+    }
+    let binding = details
+        .storage
+        .as_ref()
+        .ok_or_else(|| invalid("endpoint broker has no PostgreSQL storage binding"))?;
+    super::super::storage::authenticate_exact_binding(binding)
 }
 
 pub(super) fn endpoint_details(state: &HostState) -> Result<EndpointStateDetails, io::Error> {

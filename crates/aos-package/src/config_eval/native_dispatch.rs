@@ -877,7 +877,100 @@ impl<'a> NativeAdapterRegistry<'a> {
             current_candidate_digest,
             desired_generation: (route.generation == NativeResourceGeneration::Desired)
                 .then_some(route.mapping.revision),
+            credential_dependencies: self.nginx_credential_dependencies(route.mapping)?,
         })
+    }
+
+    fn nginx_credential_dependencies(
+        &self,
+        mapping: &NativeResourceMapping,
+    ) -> Result<Vec<NativeDependencyBinding>> {
+        let mut validations = self.plan.operations().iter().filter(|operation| {
+            operation.target.resource == mapping.resource
+                && operation.family == aos_ability_model::OperationFamily::ValidateCandidate
+        });
+        let Some(operation) = validations.next() else {
+            return Ok(Vec::new());
+        };
+        ensure!(
+            validations.next().is_none(),
+            "nginx resource has ambiguous validation operations"
+        );
+        let ValueExpression::Object { fields } = &operation.inputs else {
+            return Err(anyhow!("nginx validation input is not a typed record"));
+        };
+        let Some(ValueExpression::List { items }) = fields.get("credential_views") else {
+            return Err(anyhow!(
+                "nginx validation input has no typed credential-view list"
+            ));
+        };
+
+        let mut dependencies = Vec::with_capacity(items.len());
+        for item in items {
+            let ValueExpression::OperationResult { reference } = item else {
+                return Err(anyhow!(
+                    "nginx credential view is not a runtime operation result"
+                ));
+            };
+            let ResultProducerKey::Operation { key } = &reference.producer else {
+                return Err(anyhow!(
+                    "nginx credential view has no exact operation producer"
+                ));
+            };
+            let producer = self
+                .plan
+                .operation(key)
+                .context("nginx credential producer is absent from the checked plan")?;
+            ensure!(
+                matches!(producer.method.as_str(), "deliver" | "acquire")
+                    && reference.output.as_str()
+                        == aos_ability_model::builtin::CREDENTIAL_VIEW_OUTPUT,
+                "nginx credential view has a foreign producer contract"
+            );
+            let from = PlanNodeKey::Operation { key: key.clone() };
+            let to = PlanNodeKey::Operation {
+                key: operation.key.clone(),
+            };
+            ensure!(
+                self.plan.edges().iter().any(|edge| {
+                    edge.from == from && edge.to == to && edge.kind == DependencyKind::Data
+                }),
+                "nginx credential view has no checked data dependency"
+            );
+            let producer_mapping = self
+                .desired
+                .entries
+                .iter()
+                .find(|candidate| candidate.resource == producer.target.resource)
+                .context("nginx credential producer has no native resource mapping")?;
+            let producer_route =
+                self.preflight_mapping(producer_mapping, NativeResourceGeneration::Desired)?;
+            ensure!(
+                producer_route.kind
+                    == NativeAdapterKind::HostResource(NativeHostResourceKind::Credential)
+                    && producer_route.assignment_interface == producer.interface,
+                "nginx credential producer is not the authenticated credential adapter"
+            );
+            dependencies.push(NativeDependencyBinding {
+                input: "credential_views".to_string(),
+                producer: key.clone(),
+                resource: producer.target.resource.clone(),
+                revision: producer_mapping.revision,
+                qualification: producer_mapping.qualification.clone(),
+                interface: producer.interface.clone(),
+                method: producer.method.clone(),
+                output: reference.output.clone(),
+            });
+        }
+        dependencies.sort_by(|left, right| left.resource.cmp(&right.resource));
+        ensure!(
+            dependencies
+                .windows(2)
+                .all(|pair| pair[0].resource != pair[1].resource),
+            "nginx validation consumes one credential resource more than once"
+        );
+
+        Ok(dependencies)
     }
 
     /// Builds the trusted systemd catalog input for one route.

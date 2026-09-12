@@ -55,7 +55,10 @@ let
       builtins.map
       (contribution: {
         resource = resourceFor contribution;
-        revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON contribution.value)}";
+        # The caller selects an opaque credential version. Delivery authenticates
+        # the protected source bytes separately and rejects version reuse with
+        # different content.
+        revision = contribution.value.version;
       })
       contributions;
     outputs = [

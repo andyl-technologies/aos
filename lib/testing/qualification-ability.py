@@ -1427,7 +1427,7 @@ class Scenario:
 
 
 CHECK_DETAILS = {
-    "native-adapter-matrix-v1-sha256-e14d9a93689128fe502a5099abb8159c3984b9190ce815e817be22725812f03e": (
+    "native-adapter-matrix-v1-sha256-9064a8557457de9eafae4cad104a837a0d2905487fe4b6954a57bd0cc015615d": (
         "The closed native-adapter matrix bound every durability and authority "
         "cell to the exact adapter interface name, ABI, and descriptor."
     ),
@@ -1481,6 +1481,33 @@ CHECK_DETAILS = {
     "post-expiry-rollout-root-retirement": (
         "A separately admitted transition removed rollout-specific roots only "
         "after the retention deadline and physical finalization."
+    "typed-opaque-tls-credential-version-delivery-and-validation-binding": (
+        "An opaque TLS content version selected a protected credential view, and native "
+        "nginx validation authenticated its exact resource, path, version, and content digest."
+    ),
+    "independent-served-certificate-observation-matches-declared-version": (
+        "Independent TLS clients observed the certificate fingerprint from the credential "
+        "bundle whose declared opaque version was delivered to each nginx instance."
+    ),
+    "missing-credential-and-invalid-certificate-reject-with-live-target-preserved": (
+        "A missing credential source and malformed replacement certificate both rejected "
+        "activation while the previously selected service remained independently reachable."
+    ),
+    "tls-private-key-sentinel-absent-from-durable-and-rendered-records": (
+        "A private-key body sentinel was absent from retained plans, journals, terminal "
+        "records, native nginx records, and rendered nginx configuration."
+    ),
+    "credential-renewal-reloads-and-serves-new-version": (
+        "TLS credential renewal delivered a distinct opaque version and the reloaded nginx "
+        "service presented the renewed certificate to an independent client."
+    ),
+    "selected-tls-generation-and-credential-view-survive-gc-and-reboot": (
+        "Garbage collection followed by a metadata-free reboot retained the selected TLS "
+        "generation, its protected credential view, and its independently observed certificate."
+    ),
+    "tls-disable-and-cleartext-transition-release-credential-views-after-service-change": (
+        "Disabling one TLS owner stopped its service and removed its view, while removing TLS "
+        "from a retained owner closed its TLS listener, served cleartext, and released its view."
     ),
     "authenticated-k3s-bootstrap-and-provider-authority": (
         "The published guest bootstrapped K3s only from authenticated packages "

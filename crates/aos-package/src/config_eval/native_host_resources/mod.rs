@@ -50,6 +50,10 @@ mod storage;
 mod validation;
 
 pub(crate) use contract::{NativeHostResourceKind, preflight_native_host_resource};
+pub(crate) use credential::{
+    CredentialEvidence, authenticate_credential_dependency_view,
+    authenticate_credential_view_evidence,
+};
 use credential::{
     authenticate_credential_dependency, credential_healthy, execute_credential,
     validate_delivery_before_intent,
@@ -448,9 +452,6 @@ impl TrustedAdapter for NativeHostResourceAdapter {
             .unwrap_or_default();
         let storage_binding = resource.native().resource.spec.storage_binding.clone();
         if matches!(self.kind, NativeHostResourceKind::Storage) && storage_binding.is_none()
-            || self.kind == NativeHostResourceKind::Endpoint
-                && operation.method.as_str() == "materialize"
-                && storage_binding.is_none()
             || self.kind == NativeHostResourceKind::Postgresql
                 && operation.method.as_str() == "materialize"
                 && storage_binding.is_none()

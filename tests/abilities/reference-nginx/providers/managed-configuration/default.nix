@@ -30,7 +30,11 @@ let
             listen ${contribution.value.consumer_probe.address}:${builtins.toString contribution.value.consumer_probe.port};
             ${
             if virtualHost.tls or false
-            then "listen 18443 ssl;"
+            then ''
+              listen ${contribution.value.consumer_probe.address}:${builtins.toString contribution.value.consumer_probe.tls_port} ssl;
+              ssl_certificate ${contribution.value.consumer_probe.tls_credential_path};
+              ssl_certificate_key ${contribution.value.consumer_probe.tls_credential_path};
+            ''
             else ""
           }
             server_name ${virtualHost.host};
