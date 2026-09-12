@@ -1,0 +1,128 @@
+schema = "aos.crucible.campaign-operator-flight-contract.v1"
+acceptance_state = "manual-evidence-required"
+gates = ["gate:campaign-operator-acceptance", "gate:campaign-dogfood"]
+rfc_section = "RFC-0020 sections 14.4, 14.5, 14.7, 14.9, 14.10, and 14.14"
+recorder = "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-manual-flight-recorder.sh"
+manifest_schema = "crucible.campaign-manual-flight-manifest.v1"
+command_record_schema = "crucible.campaign-command-record.v1"
+attestation_statement_schema = "crucible.campaign-manual-flight-attestation-statement.v1"
+bundle_identity = "sha256-of-canonical-checksum-manifest"
+cryptographic_attestation = "ed25519-over-canonical-attestation-statement"
+
+[operator_acceptance]
+minimum_duration_hours = 4
+maximum_duration_hours = 8
+required_participants = ["driver", "independent-reviewer"]
+required_lifecycle = [
+  "author-and-validate",
+  "create-and-run",
+  "inspect-and-explain",
+  "pause-restart-resume",
+  "steer",
+  "stop-and-seal",
+  "report",
+  "retention-gc-and-repack",
+]
+
+[dogfood]
+minimum_duration_hours = 24
+release_candidate_duration_hours = 72
+minimum_hot_children = 10000
+minimum_promoted_template_generations = 3
+minimum_admitted_attempts = 1000000
+required_participants = ["driver", "independent-reviewer", "handoff-operator", "release-owner"]
+required_pressure_classes = ["cpu", "memory-dirty-pages", "descriptors", "store-throughput"]
+required_events = ["planned-daemon-restart", "operator-handoff", "hibernate-resume"]
+
+[evidence]
+provenance = [
+  "build-id",
+  "source-revision",
+  "source-tree",
+  "qemu-identity",
+  "plugin-identity",
+  "product-artifact-identities",
+  "host-profile",
+  "store-profile",
+]
+command_journal = ["argv", "exit-status", "stdout", "stderr", "timestamps", "digests"]
+authenticated_exports = [
+  "campaign-status",
+  "campaign-snapshot",
+  "campaign-report",
+  "campaign-explanations",
+  "store-status",
+  "store-verify",
+  "store-gc-plan-and-result",
+  "store-repack-plan-and-result",
+]
+resource_audit = [
+  "processes",
+  "threads",
+  "descriptors",
+  "shared-memory",
+  "disk-overlays",
+  "cgroups",
+  "staging-uploads",
+  "object-pins",
+  "writable-store-resources",
+]
+required_artifacts = [
+  "runbook",
+  "campaign-snapshots",
+  "exact-reproduction",
+  "thin-reproduction",
+  "operational-telemetry",
+  "resource-audit",
+  "automated-gate-results",
+  "final-result",
+]
+required_result_fields = [
+  "observed-result",
+  "operator-task-checklist",
+  "claim-checklist",
+  "automated-gate-results",
+  "defects",
+  "documentation-changes",
+  "resource-audit",
+]
+allowed_outcomes = ["pass", "fail", "blocked", "observation"]
+allowed_defect_dispositions = ["resolved", "release-blocking", "deferred-nonblocking"]
+
+[sign_offs]
+required_roles = [
+  "driver",
+  "independent-reviewer",
+  "campaign-model-owner",
+  "qemu-boundary-owner",
+  "storage-owner",
+  "guest-api-owner",
+  "operations-owner",
+]
+distinct_authorized_keys = true
+unsigned_result = "blocked"
+automated_result = "prerequisite-only"
+
+[automation]
+service_start = "crucible serve --campaign-socket ... --campaign-state ... --campaign-policy ..."
+service_restart = "restart the same recorded crucible serve argv after a clean or injected exit"
+coordinator_restart = "restart the recorded coordinator process argv and authenticate campaign status"
+executor_restart = "restart the recorded executor process argv and authenticate attempt status"
+credential_refresh = "record the deployment-owned refresh command, then run public store ensure and store verify"
+store_repair = "crucible --format jsonl store repair CONTENT --in STORE --source NODE --target NODE --state STATE --policy POLICY"
+store_gc = "crucible --format jsonl store gc --state STATE --policy POLICY --store STORE --journal JOURNAL plan|cancel|apply"
+store_repack = "crucible --format jsonl store repack --store STORE --node NODE --plan PLAN plan|apply"
+evidence_export = "campaign status, snapshot, report, explain, archive, store status, and store verify JSONL recorded by the flight recorder"
+
+[manual_remaining]
+claims = [
+  "actual supported product workload behavior",
+  "independent operator usability and reconstruction",
+  "four-to-eight-hour operator flight observations",
+  "twenty-four-hour dogfood observations",
+  "seventy-two-hour release-candidate observations",
+  "target-host and target-backend pressure behavior",
+  "owner review and detached signatures",
+]
+automated_result = "prerequisite-only"
+unsigned_result = "blocked"

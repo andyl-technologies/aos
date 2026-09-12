@@ -368,6 +368,25 @@ fn typed_choice_product_checkpoint_uses_the_real_network_flight() -> Result<(), 
 }
 
 #[test]
+fn operator_and_dogfood_manual_contracts_are_canonically_traceable() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
+    let mut failures = Vec::new();
+
+    for name in ["gate:campaign-operator-acceptance", "gate:campaign-dogfood"] {
+        let gate = find_campaign_gate(name).ok_or_else(|| format!("missing gate {name}"))?;
+        failures.extend(contract_failures(&root, &default_nix, gate));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "operator manual gate traceability failed:\n{}",
+        failures.join("\n")
+    );
+    Ok(())
+}
+
+#[test]
 fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;

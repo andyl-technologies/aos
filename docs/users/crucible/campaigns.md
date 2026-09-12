@@ -10,6 +10,12 @@ The current implementation is deliberately single-host. It does not provide
 multi-host executor fanout. A campaign repository has one authoritative local
 reference owner, while immutable objects may use a composed local store.
 
+Release qualification uses the checked
+[operator and dogfood flight runbook](campaign-manual-flights.md). Its manual
+sessions require a separately supplied product workload and independent human
+roles; the executable fixtures and VM checks below are prerequisites rather
+than substitutes.
+
 ## What is implemented
 
 The checked local API currently provides:
