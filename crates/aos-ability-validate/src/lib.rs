@@ -1,8 +1,10 @@
-//! Pure semantic validation for AOS ability contracts.
+//! Semantic validation for AOS ability contracts.
 //!
-//! Validation turns unchecked portable documents into checked values without
-//! acquiring runtime resources or performing effects. The checked wrappers
-//! retain the exact canonical documents that were validated.
+//! Byte-level validation turns unchecked portable documents into checked
+//! values without acquiring runtime resources or performing effects. Static
+//! artifact builders additionally use an explicit filesystem-backed gate that
+//! binds projected records to their exact package companions. The checked
+//! wrappers retain the exact canonical documents that were validated.
 
 #![forbid(unsafe_code)]
 
@@ -37,6 +39,7 @@ pub use schema::{SchemaPath, validate_value};
 pub use static_contract::{
     CheckedStaticAbilityContract, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
     StaticAbilityContractValidationError, StaticAbilityExecutionStage, StaticAbilityPlatform,
+    validate_static_ability_artifacts,
 };
 pub use transition_authority::{
     CheckedTransitionAuthority, TransitionAuthorityError, TransitionAuthorityInputs,
@@ -83,9 +86,9 @@ pub enum AbilityContractValidationError {
 
 /// Validates package-source and static-artifact data through one semantic gate.
 ///
-/// Build and publication callers use this dispatch point so adding schema-only
-/// preprocessing cannot bypass Rust semantic validation for either contract
-/// family.
+/// Package publication and byte-only static callers use this dispatch point.
+/// Artifact builders use [`validate_static_ability_artifacts`], which applies
+/// the same static gate before checking the referenced package companions.
 ///
 /// # Errors
 ///

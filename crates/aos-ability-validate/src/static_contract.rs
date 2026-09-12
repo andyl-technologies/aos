@@ -6,10 +6,16 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::Read as _;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::Path;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    ArtifactReference, InterfaceKey, LocalKey, RequirementDeclaration, RequirementStrength,
+    ABILITY_LIMITS_V1, ArtifactReference, InterfaceKey, LocalKey, PackageDocument,
+    RequirementDeclaration, RequirementStrength,
 };
 use aos_contract::Sha256Digest;
 use serde::Deserialize;
@@ -94,14 +100,41 @@ pub(crate) fn validate_static_ability_contract(
     bytes: &[u8],
     expectation: &StaticAbilityContractExpectation,
 ) -> Result<CheckedStaticAbilityContract, StaticAbilityContractValidationError> {
-    validate_static_ability_contract_inner(bytes, expectation)
+    validate_static_ability_contract_document(bytes, expectation)
+        .map(checked_static_ability_contract)
         .map_err(|source| StaticAbilityContractValidationError { source })
 }
 
-fn validate_static_ability_contract_inner(
+/// Validates a static contract and its exact package companions from the store.
+///
+/// # Errors
+///
+/// Returns every byte-level static-contract error, and also fails when a
+/// package manifest or retained interface is unavailable or invalid, the
+/// manifest has a different digest, or the companion disagrees with a package,
+/// exported ability, provider, or required-obligation record.
+pub fn validate_static_ability_artifacts(
     bytes: &[u8],
     expectation: &StaticAbilityContractExpectation,
+) -> Result<CheckedStaticAbilityContract, StaticAbilityContractValidationError> {
+    validate_static_ability_artifacts_with(bytes, expectation, read_package_artifacts)
+        .map_err(|source| StaticAbilityContractValidationError { source })
+}
+
+fn validate_static_ability_artifacts_with(
+    bytes: &[u8],
+    expectation: &StaticAbilityContractExpectation,
+    mut read_package: impl FnMut(&str) -> Result<StaticPackageArtifacts>,
 ) -> Result<CheckedStaticAbilityContract> {
+    let contract = validate_static_ability_contract_document(bytes, expectation)?;
+    validate_artifact_projections(&contract, &mut read_package)?;
+    Ok(checked_static_ability_contract(contract))
+}
+
+fn validate_static_ability_contract_document(
+    bytes: &[u8],
+    expectation: &StaticAbilityContractExpectation,
+) -> Result<StaticAbilityContract> {
     ensure!(
         !bytes.is_empty() && bytes.len() <= MAX_STATIC_ABILITY_CONTRACT_BYTES,
         "static ability contract size is outside 1..={MAX_STATIC_ABILITY_CONTRACT_BYTES}"
@@ -159,8 +192,243 @@ fn validate_static_ability_contract_inner(
         );
     }
 
-    Ok(CheckedStaticAbilityContract {
+    Ok(contract)
+}
+
+fn checked_static_ability_contract(
+    contract: StaticAbilityContract,
+) -> CheckedStaticAbilityContract {
+    CheckedStaticAbilityContract {
         platform_count: contract.platforms.len(),
+    }
+}
+
+#[derive(Clone)]
+struct StaticPackageArtifacts {
+    manifest: Vec<u8>,
+    retained_interfaces: Vec<Vec<u8>>,
+}
+
+fn read_package_artifacts(store_path: &str) -> Result<StaticPackageArtifacts> {
+    let manifest_path = Path::new(store_path).join("package.json");
+    let manifest = read_bounded_regular_file(&manifest_path, "static package manifest")?;
+    let interface_directory = Path::new(store_path).join("interfaces");
+    let mut interface_paths = interface_directory
+        .read_dir()
+        .with_context(|| {
+            format!(
+                "reading static package interface directory {}",
+                interface_directory.display()
+            )
+        })?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    interface_paths.sort();
+    interface_paths.retain(|path| path.extension() == Some(OsStr::new("json")));
+    ensure!(
+        u64::try_from(interface_paths.len())? <= ABILITY_LIMITS_V1.max_collection_items,
+        "static package interface catalog contains excessive records"
+    );
+    let retained_interfaces = interface_paths
+        .iter()
+        .map(|path| read_bounded_regular_file(path, "static package interface"))
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(StaticPackageArtifacts {
+        manifest,
+        retained_interfaces,
+    })
+}
+
+fn read_bounded_regular_file(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let path_metadata = path
+        .symlink_metadata()
+        .with_context(|| format!("inspecting {label} {}", path.display()))?;
+    ensure!(
+        path_metadata.file_type().is_file()
+            && path_metadata.len() <= ABILITY_LIMITS_V1.max_document_bytes,
+        "{label} must be a bounded regular file: {}",
+        path.display()
+    );
+    let file = File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    let opened_metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting {label} {}", path.display()))?;
+    ensure!(
+        opened_metadata.dev() == path_metadata.dev()
+            && opened_metadata.ino() == path_metadata.ino()
+            && opened_metadata.len() == path_metadata.len(),
+        "{label} changed while being opened: {}",
+        path.display()
+    );
+
+    let mut bytes = Vec::new();
+    file.take(ABILITY_LIMITS_V1.max_document_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {label} {}", path.display()))?;
+    let current_metadata = path
+        .symlink_metadata()
+        .with_context(|| format!("reinspecting {label} {}", path.display()))?;
+    ensure!(
+        u64::try_from(bytes.len())? == opened_metadata.len()
+            && current_metadata.dev() == opened_metadata.dev()
+            && current_metadata.ino() == opened_metadata.ino()
+            && current_metadata.len() == opened_metadata.len(),
+        "{label} changed while being read: {}",
+        path.display()
+    );
+    Ok(bytes)
+}
+
+fn validate_artifact_projections(
+    contract: &StaticAbilityContract,
+    read_package: &mut impl FnMut(&str) -> Result<StaticPackageArtifacts>,
+) -> Result<()> {
+    for platform in &contract.platforms {
+        for static_package in &platform.packages {
+            let artifacts = read_package(&static_package.manifest.store_path)?;
+            ensure!(
+                Sha256Digest::of_bytes(&artifacts.manifest) == static_package.manifest.digest,
+                "static package manifest byte digest differs from its contract record"
+            );
+            let checked_package = crate::package_contract::validate_package_contract(
+                &artifacts.manifest,
+                &artifacts.retained_interfaces,
+            )
+            .context("validating artifact-backed static package companion")?;
+
+            validate_package_projection(platform, static_package, checked_package.package())?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_package_projection(
+    platform: &StaticAbilityPlatformRecord,
+    static_package: &StaticAbilityPackage,
+    package: &PackageDocument,
+) -> Result<()> {
+    ensure!(
+        static_package.name == package.package.name
+            && static_package.version == package.package.version
+            && static_package.payload == package.package.payload,
+        "static package identity differs from its exact artifact-backed manifest"
+    );
+
+    let abilities = platform
+        .abilities
+        .iter()
+        .filter(|ability| ability.package == static_package.manifest)
+        .collect::<Vec<_>>();
+    ensure!(
+        abilities.len() == package.exports.len(),
+        "static ability exports differ from their exact artifact-backed manifest"
+    );
+
+    let mut export_provider_descriptors = BTreeSet::new();
+    let mut export_providers = Vec::new();
+    for export in &package.exports {
+        let ability = abilities
+            .iter()
+            .find(|ability| ability.export == export.name)
+            .with_context(|| {
+                format!(
+                    "static ability export '{}' is absent from its artifact-backed manifest projection",
+                    export.name.as_str()
+                )
+            })?;
+        let provider = exact_export_provider(package, export)?;
+        ensure!(
+            ability.interface == export.interface
+                && ability.implementation == export.implementation
+                && ability.implementation_artifact == provider.artifact,
+            "static exported ability identity differs from its exact artifact-backed provider"
+        );
+        if export_provider_descriptors.insert(export.implementation) {
+            export_providers.push(provider);
+        }
+    }
+
+    validate_requirement_projections(platform, static_package, package, &export_providers)?;
+    Ok(())
+}
+
+fn validate_requirement_projections(
+    platform: &StaticAbilityPlatformRecord,
+    static_package: &StaticAbilityPackage,
+    package: &PackageDocument,
+    export_providers: &[&aos_ability_model::ProviderImplementation],
+) -> Result<()> {
+    let actual_requirements = platform
+        .unresolved_launch_obligations
+        .iter()
+        .filter_map(|obligation| match obligation {
+            StaticLaunchObligation::AbilityRequirement {
+                consumer,
+                requirement,
+                ..
+            } if consumer.package == static_package.manifest => {
+                Some((consumer.ability.as_ref(), requirement))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let package_requirements = package
+        .requirements
+        .iter()
+        .filter(|requirement| requirement.strength == RequirementStrength::Required)
+        .map(|requirement| (None, requirement));
+    let provider_requirements = export_providers.iter().flat_map(|provider| {
+        provider
+            .requirements
+            .iter()
+            .filter(|requirement| requirement.strength == RequirementStrength::Required)
+            .map(|requirement| (Some(&provider.interface), requirement))
+    });
+    let expected_requirements = package_requirements
+        .chain(provider_requirements)
+        .collect::<Vec<_>>();
+
+    ensure!(
+        actual_requirements.len() == expected_requirements.len(),
+        "static required launch obligations differ from their artifact-backed manifest"
+    );
+    for (expected_consumer, expected_requirement) in expected_requirements {
+        let matching = actual_requirements
+            .iter()
+            .filter(|(consumer, requirement)| {
+                *consumer == expected_consumer && requirement.alias == expected_requirement.alias
+            });
+        let matches = matching.collect::<Vec<_>>();
+        ensure!(
+            matches.len() == 1 && matches[0].1 == expected_requirement,
+            "static required launch obligation differs from its exact artifact-backed requirement"
+        );
+    }
+    Ok(())
+}
+
+fn exact_export_provider<'a>(
+    package: &'a PackageDocument,
+    export: &aos_ability_model::ExportDeclaration,
+) -> Result<&'a aos_ability_model::ProviderImplementation> {
+    let mut matching_provider = None;
+    for provider in &package.implementation.providers {
+        if provider.interface == export.interface
+            && provider.descriptor_digest()? == export.implementation
+        {
+            ensure!(
+                matching_provider.replace(provider).is_none(),
+                "artifact-backed export has duplicate exact providers"
+            );
+        }
+    }
+
+    matching_provider.with_context(|| {
+        format!(
+            "artifact-backed export '{}' has no exact provider implementation",
+            export.name.as_str()
+        )
     })
 }
 
@@ -548,6 +816,7 @@ enum StaticLaunchDisposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_ability_model::encode_canonical;
     use serde_json::{Value, json};
 
     const EMPTY_CONTAINER: &[u8] = br#"{"platforms":[{"abilities":[],"packages":[],"platform":{"architecture":"amd64","os":"linux"},"unresolved_launch_obligations":[]}],"runtime_grants":[],"schema":"aos.container.static-abilities/v1"}"#;
@@ -679,6 +948,168 @@ mod tests {
         })
     }
 
+    fn artifact_backed_container_contract() -> (Value, StaticPackageArtifacts) {
+        let fixture = crate::test_support::stateful_owner_plan_fixture();
+        let mut package = fixture.binding_inputs.packages[0].clone();
+        let accepted_interface = fixture.interfaces[0]
+            .interface_key()
+            .expect("fixture interface must have an exact key");
+        package.requirements = vec![RequirementDeclaration {
+            alias: LocalKey::new("package-required").expect("fixture alias must be valid"),
+            accepted_interfaces: vec![accepted_interface.clone()],
+            methods: Vec::new(),
+            guarantees: Vec::new(),
+            strength: RequirementStrength::Required,
+            fallback: None,
+        }];
+
+        let provider = &mut package.implementation.providers[0];
+        provider.requirements = vec![RequirementDeclaration {
+            alias: LocalKey::new("provider-required").expect("fixture alias must be valid"),
+            accepted_interfaces: vec![accepted_interface],
+            methods: Vec::new(),
+            guarantees: Vec::new(),
+            strength: RequirementStrength::Required,
+            fallback: None,
+        }];
+        let provider_interface = provider.interface.clone();
+        let provider_descriptor = provider
+            .descriptor_digest()
+            .expect("fixture provider must have a descriptor");
+        package
+            .exports
+            .iter_mut()
+            .find(|export| export.interface == provider_interface)
+            .expect("fixture provider must be exported")
+            .implementation = provider_descriptor;
+
+        let manifest_bytes = encode_canonical(&package)
+            .expect("artifact-backed package fixture must encode canonically");
+        let manifest_path = "/nix/store/44444444444444444444444444444444-package-manifest";
+        let manifest_reference = json!({
+            "store_path": manifest_path,
+            "digest": Sha256Digest::of_bytes(&manifest_bytes),
+        });
+        let mut abilities = package
+            .exports
+            .iter()
+            .map(|export| {
+                let provider = package
+                    .implementation
+                    .providers
+                    .iter()
+                    .find(|provider| {
+                        provider.interface == export.interface
+                            && provider.descriptor_digest().ok() == Some(export.implementation)
+                    })
+                    .expect("fixture export must have an exact provider");
+                (
+                    (export.interface.clone(), export.name.clone()),
+                    json!({
+                        "package": manifest_reference,
+                        "export": export.name,
+                        "interface": export.interface,
+                        "implementation": export.implementation,
+                        "implementation_artifact": provider.artifact,
+                        "availability": "baked",
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        abilities.sort_by(|left, right| left.0.cmp(&right.0));
+        let abilities = abilities
+            .into_iter()
+            .map(|(_, ability)| ability)
+            .collect::<Vec<_>>();
+        let exact_provider = package
+            .implementation
+            .providers
+            .iter()
+            .find(|provider| provider.interface == provider_interface)
+            .expect("fixture provider must remain present");
+        let obligations = vec![
+            json!({
+                "kind": "ability-requirement",
+                "consumer": {"package": manifest_reference},
+                "requirement": package.requirements[0],
+                "disposition": "external-launch-obligation",
+            }),
+            json!({
+                "kind": "ability-requirement",
+                "consumer": {
+                    "package": manifest_reference,
+                    "ability": exact_provider.interface,
+                },
+                "requirement": exact_provider.requirements[0],
+                "disposition": "external-launch-obligation",
+            }),
+        ];
+        let contract = json!({
+            "schema": "aos.container.static-abilities/v1",
+            "platforms": [{
+                "platform": {"os": "linux", "architecture": "amd64"},
+                "packages": [{
+                    "name": package.package.name,
+                    "version": package.package.version,
+                    "payload": package.package.payload,
+                    "manifest": manifest_reference,
+                }],
+                "abilities": abilities,
+                "unresolved_launch_obligations": obligations,
+            }],
+            "runtime_grants": [],
+        });
+        let retained_interfaces = fixture
+            .interfaces
+            .iter()
+            .map(|interface| {
+                encode_canonical(interface).expect("fixture interface must encode canonically")
+            })
+            .collect();
+
+        (
+            contract,
+            StaticPackageArtifacts {
+                manifest: manifest_bytes,
+                retained_interfaces,
+            },
+        )
+    }
+
+    fn assert_artifact_contract_rejected(contract: &Value, artifacts: &StaticPackageArtifacts) {
+        let bytes = aos_contract::canonical::to_vec(contract)
+            .expect("static contract fixture must encode canonically");
+        validate_static_ability_contract(&bytes, &aggregate_expectation())
+            .expect("artifact mutation must remain a valid byte-level contract");
+
+        validate_static_ability_artifacts_with(&bytes, &aggregate_expectation(), |store_path| {
+            ensure!(
+                store_path == "/nix/store/44444444444444444444444444444444-package-manifest",
+                "unexpected fixture manifest path"
+            );
+            Ok(artifacts.clone())
+        })
+        .expect_err("artifact-backed identity mutation must fail closed");
+    }
+
+    fn set_manifest_digest(contract: &mut Value, digest: Value) {
+        contract["platforms"][0]["packages"][0]["manifest"]["digest"] = digest.clone();
+        contract["platforms"][0]["abilities"]
+            .as_array_mut()
+            .expect("fixture abilities must be an array")
+            .iter_mut()
+            .for_each(|ability| {
+                ability["package"]["digest"] = digest.clone();
+            });
+        contract["platforms"][0]["unresolved_launch_obligations"]
+            .as_array_mut()
+            .expect("fixture obligations must be an array")
+            .iter_mut()
+            .for_each(|obligation| {
+                obligation["consumer"]["package"]["digest"] = digest.clone();
+            });
+    }
+
     fn assert_contract_rejected(contract: &Value, expected_error: &str) {
         let bytes = aos_contract::canonical::to_vec(contract)
             .expect("static contract fixture must encode canonically");
@@ -788,5 +1219,107 @@ mod tests {
             members.insert(1, members[0].clone());
             assert_contract_rejected(&duplicated, expected_error);
         }
+    }
+
+    #[test]
+    fn accepts_exact_artifact_backed_package_and_ability_projections() {
+        let (contract, artifacts) = artifact_backed_container_contract();
+        let bytes = aos_contract::canonical::to_vec(&contract)
+            .expect("static contract fixture must encode canonically");
+
+        validate_static_ability_artifacts_with(&bytes, &aggregate_expectation(), |_| {
+            Ok(artifacts.clone())
+        })
+        .expect("exact artifact-backed projection must validate");
+    }
+
+    #[test]
+    fn rejects_forged_artifact_backed_package_identities() {
+        let (contract, artifacts) = artifact_backed_container_contract();
+
+        let mut changed_name = contract.clone();
+        changed_name["platforms"][0]["packages"][0]["name"] = json!("forged-package");
+        assert_artifact_contract_rejected(&changed_name, &artifacts);
+
+        let mut changed_version = contract.clone();
+        changed_version["platforms"][0]["packages"][0]["version"] = json!("9.9.9");
+        assert_artifact_contract_rejected(&changed_version, &artifacts);
+
+        let mut changed_payload = contract.clone();
+        changed_payload["platforms"][0]["packages"][0]["payload"]["content"] = json!(digest('0'));
+        assert_artifact_contract_rejected(&changed_payload, &artifacts);
+
+        let mut changed_manifest_digest = contract;
+        set_manifest_digest(&mut changed_manifest_digest, json!(digest('0')));
+        assert_artifact_contract_rejected(&changed_manifest_digest, &artifacts);
+    }
+
+    #[test]
+    fn rejects_semantically_invalid_artifact_backed_package_companions() {
+        let (mut contract, mut artifacts) = artifact_backed_container_contract();
+        let mut package: Value = aos_contract::canonical::from_slice(
+            &artifacts.manifest,
+            "artifact-backed package fixture",
+        )
+        .expect("artifact-backed package fixture must decode");
+        package["exports"][0]["implementation"] = json!(digest('0'));
+        artifacts.manifest = aos_contract::canonical::to_vec(&package)
+            .expect("mutated package fixture must encode canonically");
+        set_manifest_digest(
+            &mut contract,
+            json!(Sha256Digest::of_bytes(&artifacts.manifest)),
+        );
+
+        assert_artifact_contract_rejected(&contract, &artifacts);
+    }
+
+    #[test]
+    fn rejects_forged_artifact_backed_export_and_provider_identities() {
+        let (contract, artifacts) = artifact_backed_container_contract();
+
+        let mut changed_export = contract.clone();
+        changed_export["platforms"][0]["abilities"][0]["export"] = json!("forged-export");
+        assert_artifact_contract_rejected(&changed_export, &artifacts);
+
+        let mut changed_interface = contract.clone();
+        changed_interface["platforms"][0]["abilities"][0]["interface"]["descriptor"] =
+            json!(digest('0'));
+        let original_interface = contract["platforms"][0]["abilities"][0]["interface"].clone();
+        changed_interface["platforms"][0]["unresolved_launch_obligations"]
+            .as_array_mut()
+            .expect("fixture obligations must be an array")
+            .iter_mut()
+            .filter(|obligation| obligation["consumer"].get("ability") == Some(&original_interface))
+            .for_each(|obligation| {
+                obligation["consumer"]["ability"]["descriptor"] = json!(digest('0'));
+            });
+        assert_artifact_contract_rejected(&changed_interface, &artifacts);
+
+        let mut changed_implementation = contract.clone();
+        changed_implementation["platforms"][0]["abilities"][0]["implementation"] =
+            json!(digest('0'));
+        assert_artifact_contract_rejected(&changed_implementation, &artifacts);
+
+        let mut changed_provider_artifact = contract;
+        changed_provider_artifact["platforms"][0]["abilities"][0]["implementation_artifact"]["content"] =
+            json!(digest('0'));
+        assert_artifact_contract_rejected(&changed_provider_artifact, &artifacts);
+    }
+
+    #[test]
+    fn rejects_mutated_or_incomplete_artifact_backed_required_obligations() {
+        let (contract, artifacts) = artifact_backed_container_contract();
+
+        let mut changed_requirement = contract.clone();
+        changed_requirement["platforms"][0]["unresolved_launch_obligations"][0]["requirement"]["methods"] =
+            json!(["forged-method"]);
+        assert_artifact_contract_rejected(&changed_requirement, &artifacts);
+
+        let mut missing_requirement = contract;
+        missing_requirement["platforms"][0]["unresolved_launch_obligations"]
+            .as_array_mut()
+            .expect("fixture obligations must be an array")
+            .remove(0);
+        assert_artifact_contract_rejected(&missing_requirement, &artifacts);
     }
 }

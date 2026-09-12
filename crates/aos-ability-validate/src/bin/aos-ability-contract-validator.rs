@@ -8,6 +8,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_ability_validate::{
     AbilityContractData, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
     StaticAbilityExecutionStage, StaticAbilityPlatform, validate_ability_contract,
+    validate_static_ability_artifacts,
 };
 
 fn main() {
@@ -105,11 +106,8 @@ fn validate_static_contract(arguments: &[std::ffi::OsString]) -> Result<()> {
         )
     })?;
 
-    validate_ability_contract(AbilityContractData::Static {
-        contract: &bytes,
-        expectation: &expectation,
-    })
-    .context("static contract failed shared Rust semantic validation")?;
+    validate_static_ability_artifacts(&bytes, &expectation)
+        .context("static contract failed shared Rust semantic validation")?;
     Ok(())
 }
 

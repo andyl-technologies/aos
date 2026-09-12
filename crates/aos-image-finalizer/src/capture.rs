@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 use aos_ability_validate::{
-    AbilityContractData, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
-    StaticAbilityExecutionStage, StaticAbilityPlatform, validate_ability_contract,
+    StaticAbilityArtifactClass, StaticAbilityContractExpectation, StaticAbilityExecutionStage,
+    StaticAbilityPlatform, validate_static_ability_artifacts,
 };
 use aos_release::artifact::BundlePath;
 use aos_release::canonical;
@@ -331,10 +331,7 @@ fn capture_static_ability_contract(
             variant: None,
         }),
     };
-    validate_ability_contract(AbilityContractData::Static {
-        contract: &bytes,
-        expectation: &expectation,
-    })?;
+    validate_static_ability_artifacts(&bytes, &expectation)?;
 
     Ok(AssemblyFileV1 {
         id: id.to_owned(),

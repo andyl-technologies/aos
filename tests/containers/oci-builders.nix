@@ -245,6 +245,40 @@
               descriptor: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
             }
           ]'');
+  changedPackageIdentityAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-changed-package-identity-static-abilities"
+    amd64AbilityContract
+    ".platforms[0].packages[0].name = \"forged-package\"";
+  changedProviderIdentityAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-changed-provider-identity-static-abilities"
+    amd64AbilityContract
+    ".platforms[0].abilities[0].implementation = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"";
+  changedRequiredRequirementAbilityContract =
+    rewriteStaticAbilityContract
+    "oci-fixture-changed-required-requirement-static-abilities"
+    amd64AbilityContract
+    ''
+      .platforms[0].packages[0].manifest as $manifest
+      | .platforms[0].unresolved_launch_obligations = ([{
+          kind: "ability-requirement",
+          consumer: {package: $manifest},
+          requirement: {
+            alias: "canonical-edge",
+            accepted_interfaces: [{
+              name: "aos.test.canonical-edge",
+              abi: 4294967295,
+              descriptor: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            }],
+            methods: [],
+            guarantees: [],
+            strength: "required",
+            fallback: null
+          },
+          disposition: "external-launch-obligation"
+        }] + .platforms[0].unresolved_launch_obligations)
+    '';
 
   # The probe makes the integration call observable while the production
   # validator assertions below establish that the same forged bytes fail.
@@ -594,6 +628,9 @@ in
       reorderedPlatformAbilityContract
       reorderedRequirementAbilityContract
       duplicateRequirementAbilityContract
+      changedPackageIdentityAbilityContract
+      changedProviderIdentityAbilityContract
+      changedRequiredRequirementAbilityContract
       forgedAmd64Image
       forgedMarkerImageProbe
       forgedMarkerIndexProbe
@@ -642,6 +679,21 @@ in
             static-contract ${duplicateRequirementAbilityContract}/contract.json \
             container - linux amd64 - 2>/dev/null; then
             fail "rehashed contract with duplicate requirement members passed semantic validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${changedPackageIdentityAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with changed package identity passed artifact validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${changedProviderIdentityAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with changed provider identity passed artifact validation"
+          fi
+          if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+            static-contract ${changedRequiredRequirementAbilityContract}/contract.json \
+            container - linux amd64 - 2>/dev/null; then
+            fail "rehashed contract with changed required requirement passed artifact validation"
           fi
 
           ${oci.common.realizedStorePolicyScript}
