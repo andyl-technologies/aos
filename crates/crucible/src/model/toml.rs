@@ -32,7 +32,6 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
 pub(super) const SCENARIO_FORM_BINARY_MAGIC_V7: &[u8] = b"crucible.scenario-def-form.v7\0";
 pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7: &[u8] =
     b"crucible.reproduction-artifact.v7\0";
-pub(super) const SCHEDULE_BINARY_MAGIC_V1: &[u8] = b"crucible.schedule.v1\0";
 pub(super) const SCHEDULE_BINARY_MAGIC_V2: &[u8] = b"crucible.schedule.v2\0";
 pub(super) const WORLD_BINARY_MAGIC_V4: &[u8] = b"crucible.world.v4\0";
 pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v5\0";

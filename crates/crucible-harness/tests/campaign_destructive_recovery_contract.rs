@@ -597,6 +597,9 @@ fn is_public_recovery_command(command: &str) -> bool {
         || command.starts_with("crucible --format jsonl store verify {destination_store}")
         || command.starts_with("crucible --format jsonl store ensure {content_id} --in ")
         || command.starts_with(
+            "crucible --format jsonl store repair placement {content_id} --in {store_deployment} ",
+        )
+        || command.starts_with(
             "crucible --format jsonl store repack --store {store_deployment} --node {packed_node} --plan {repack_plan} ",
         )
 }

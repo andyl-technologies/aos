@@ -286,16 +286,22 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     .expect("bind v2 observation result");
     let v2_bytes = observation_result
         .canonical_bytes()
-        .expect("encode v2 observation result");
-    assert_eq!(
-        PreparedSemanticResultVersion::from_payload(&v2_bytes),
-        Some(PreparedSemanticResultVersion::V2)
-    );
+        .expect("encode current observation result");
+    assert!(is_current_prepared_result_payload(&v2_bytes));
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(&v2_bytes)
-            .expect("decode v2 observation result"),
+            .expect("decode current observation result"),
         observation_result
     );
+    let legacy_v2 =
+        encode_version_for_test(&observation_result, 2, MAX_PREPARED_SEMANTIC_RESULT_BYTES)
+            .expect("encode migration-only v2 result");
+    assert!(PreparedSemanticAttemptResult::from_canonical_bytes(&legacy_v2).is_err());
+    let decoded_legacy_v2 =
+        decode_migration_prepared_result(&legacy_v2, MAX_PREPARED_SEMANTIC_RESULT_BYTES)
+            .expect("decode migration-only v2 result");
+    assert!(!decoded_legacy_v2.current);
+    assert_eq!(decoded_legacy_v2.result, observation_result);
 
     let mut terminal_fingerprints = scenario
         .world()
@@ -321,14 +327,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .expect("verify exact terminal world nodes");
     let terminal_bytes = terminal_result
         .canonical_bytes()
-        .expect("encode v3 terminal observation result");
-    assert_eq!(
-        PreparedSemanticResultVersion::from_payload(&terminal_bytes),
-        Some(PreparedSemanticResultVersion::V3)
-    );
+        .expect("encode current terminal observation result");
+    assert!(is_current_prepared_result_payload(&terminal_bytes));
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(&terminal_bytes)
-            .expect("decode v3 terminal observation result"),
+            .expect("decode current terminal observation result"),
         terminal_result
     );
     let mut truncated_terminal_bytes = terminal_bytes.clone();
@@ -438,10 +441,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let v4_bytes = v4_result
         .canonical_bytes()
         .expect("encode typed incompatibility result");
-    assert_eq!(
-        PreparedSemanticResultVersion::from_payload(&v4_bytes),
-        Some(PreparedSemanticResultVersion::V4)
-    );
+    assert!(is_current_prepared_result_payload(&v4_bytes));
     let decoded_v4 = PreparedSemanticAttemptResult::from_canonical_bytes(&v4_bytes)
         .expect("decode typed incompatibility result");
     assert_eq!(decoded_v4, v4_result);
@@ -714,14 +714,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
 
     let v3_bytes = v3_result
         .canonical_bytes()
-        .expect("encode v3 prepared result");
-    assert_eq!(
-        PreparedSemanticResultVersion::from_payload(&v3_bytes),
-        Some(PreparedSemanticResultVersion::V3)
-    );
+        .expect("encode current prepared result");
+    assert!(is_current_prepared_result_payload(&v3_bytes));
     assert_eq!(
         PreparedSemanticAttemptResult::from_canonical_bytes(&v3_bytes)
-            .expect("decode v3 prepared result"),
+            .expect("decode current prepared result"),
         v3_result
     );
 
@@ -824,18 +821,6 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             })
         ));
     }
-
-    let smuggled_v1 = prepared_result::encode_v1_without_measurement_evidence_for_test(
-        &observation_candidate_v2,
-        None,
-    )
-    .expect("encode invalid legacy v1 payload");
-    assert!(matches!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&smuggled_v1),
-        Err(PreparedSemanticResultCodecError::Inconsistent {
-            component: "missing measurement replay evidence"
-        })
-    ));
 
     let mut durable_result =
         PreparedSemanticAttemptResult::new(observation_candidate.clone(), Some(prepared.clone()))

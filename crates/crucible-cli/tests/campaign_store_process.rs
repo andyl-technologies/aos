@@ -2,8 +2,9 @@
 //!
 //! The flight uses only the shipped `crucible` process for fixture generation,
 //! import validation, daemon ownership, campaign creation, inspection, and GC.
-//! Test setup injects one authenticated orphan placement to model crash debris;
-//! the public plan/apply commands must reclaim it without breaking restart.
+//! Test setup establishes empty administrative generations and injects one
+//! authenticated orphan placement to model crash debris; the public
+//! plan/apply commands must reclaim it without breaking restart.
 
 #![cfg(target_os = "linux")]
 // crucible-lint: allow clippy-disallowed-method -- this process boundary test intentionally exercises host process methods.
@@ -26,7 +27,7 @@ use crucible_campaign::{
     CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignLineage, CampaignObjectProfiler, CampaignPolicy,
 };
 use crucible_cas::content_store::{
-    BlobHandle, CompressedDirectoryBlobBackend, ContentId, DirectoryBlobBackend,
+    BlobHandle, BlobStoreAdmin, CompressedDirectoryBlobBackend, ContentId, DirectoryBlobBackend,
     ImmutableBlobBackend, ObjectKind, PackedBlobBackend, StoreGraph, StoreGraphKeyring,
     StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
     StoreGraphS3Clients, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
@@ -897,6 +898,16 @@ impl ComposedFlightFixture {
         let write_back_journal = secure_directory(root, "write-back-journal")?;
         let after_maintenance_gc_journal = root.join("gc-journal-after-maintenance");
         let refs = root.join("refs");
+
+        // Stopped-owner verification is observational and refuses to create
+        // administrative state. Establish the empty destination generation as
+        // fixture setup before the public process flight begins.
+        let destination = DirectoryBlobBackend::new("write-destination", &write_destination_root);
+        let mut destination_inventory = destination.acquire_inventory_fence()?;
+        let initial = destination_inventory.visit_inventory(&mut |_| Ok(()))?;
+        if initial.objects() != 0 || initial.logical_bytes() != 0 {
+            return Err("write destination did not initialize empty".into());
+        }
 
         fs::write(
             &base.store,
