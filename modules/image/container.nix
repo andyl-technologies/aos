@@ -16,6 +16,7 @@
   oci = import ../../lib/build/oci {
     inherit lib;
     inherit (pkgs.buildPackages) mkDerivation coreutils findutils gzip jq tar;
+    abilityContractValidator = pkgs.buildPackages.aos-ability-contract-validator;
   };
   retainedSource = name: source:
     pkgs.writeTextFile {

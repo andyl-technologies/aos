@@ -15,6 +15,7 @@
   oci = import ../../lib/build/oci {
     inherit lib;
     inherit (pkgs) mkDerivation coreutils findutils gzip jq tar;
+    abilityContractValidator = pkgs.aos-ability-contract-validator;
   };
   firstPackage = pkgs.runCommand "container-runtime-first-package" {} ''
     mkdir -p "$out/bin" "$out/sbin"

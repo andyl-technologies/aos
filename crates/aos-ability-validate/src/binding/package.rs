@@ -54,6 +54,7 @@ pub(super) fn validate_package_document(
     context: &ValidationContext,
     package: &PackageDocument,
     index: usize,
+    allow_external_requirements: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> PackageProviderIndex {
     let mut package_index = PackageProviderIndex::default();
@@ -162,6 +163,7 @@ pub(super) fn validate_package_document(
             validate_requirement(
                 context,
                 requirement,
+                allow_external_requirements,
                 &provider_root
                     .child("requirements")
                     .child(requirement_index.to_string()),
@@ -254,6 +256,7 @@ pub(super) fn validate_package_document(
         validate_requirement(
             context,
             requirement,
+            allow_external_requirements,
             &root
                 .child("requirements")
                 .child(requirement_index.to_string()),
@@ -290,6 +293,7 @@ pub(super) fn validate_package_document(
 fn validate_requirement(
     context: &ValidationContext,
     requirement: &RequirementDeclaration,
+    allow_external_interfaces: bool,
     path: &SchemaPath,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -317,7 +321,7 @@ fn validate_requirement(
         diagnostics,
     );
     for interface in &requirement.accepted_interfaces {
-        if context.interface(interface).is_none() {
+        if !allow_external_interfaces && context.interface(interface).is_none() {
             push_diagnostic(
                 diagnostics,
                 diagnostic(

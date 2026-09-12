@@ -53,9 +53,10 @@ when the new execution path replaces the old one.
 The [qualification workload fixture](../../../tests/fleet/qualification-workload.nix)
 currently writes nginx configuration and controls a dedicated service directly.
 It remains useful workload coverage, but does not thereby exercise recursive
-ability composition. Add an ability-driven scenario that reaches the same
-HTTP/TLS behavior through the real package export and activation workflow.
-Do not relabel a fixture as evidence for a path it did not execute.
+ability composition. The separate `ability-native-activation` scenario reaches
+HTTP/TLS behavior through the real package export, checked plan, native
+executor, and activation workflow. Keep the two evidence subjects distinct;
+do not relabel the direct fixture as evidence for a path it did not execute.
 
 ## Contract coverage follows interfaces and implementations
 

@@ -27,9 +27,11 @@ evidence can establish that the new service revision was observed ready.
 
 ## CLI inspection and diagnostics
 
-Enhance existing package inspection and the AOS graph/dependency tools with
-typed consumption and instance-aware views. Any new flags require CLI design;
-the examples here specify information, not currently available command syntax.
+The `aos ability` command now provides typed consumption and instance-aware
+views through `inspect`, `artifact-consumption`, `diagnostic`, `operator`,
+`compare`, and `removal-preview`. The examples below state the information each
+surface must preserve; the exact supported syntax is documented in the
+[ability inspection guide](../../users/aos/ability-inspection.md).
 
 Useful questions include:
 

@@ -293,6 +293,7 @@ dependencies = [
 name = "aos-ability-validate"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "aos-ability-model",
  "aos-contract",
  "serde",
@@ -579,6 +580,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-validate",
  "aos-release",
  "async-trait",
  "base64 0.22.1",

@@ -1,16 +1,17 @@
 //! No-follow capture of a Nix-produced unsigned assembly.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
-use aos_ability_model::{
-    ArtifactReference, InterfaceKey, LocalKey, RequirementDeclaration, RequirementStrength,
+use aos_ability_validate::{
+    AbilityContractData, StaticAbilityArtifactClass, StaticAbilityContractExpectation,
+    StaticAbilityExecutionStage, StaticAbilityPlatform, validate_ability_contract,
 };
-use aos_release::artifact::{BundlePath, require_store_path};
+use aos_release::artifact::BundlePath;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::platform::Platform;
@@ -30,7 +31,6 @@ const RECIPE_SCHEMA_V3: &str = "aos.image.assembly-recipe/v3";
 const RECIPE_SCHEMA_V4: &str = "aos.image.assembly-recipe/v4";
 const MAX_RECIPE_BYTES: u64 = 1024 * 1024;
 const MAX_STATIC_ABILITY_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_STATIC_ABILITY_ITEMS: usize = 100_000;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,106 +72,6 @@ struct SignerRoles {
     secure_boot: String,
     module: String,
     pcr: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StaticAbilityContractV1 {
-    schema: String,
-    platforms: Vec<StaticAbilityPlatformV1>,
-    runtime_grants: Vec<StaticRuntimeGrantV1>,
-}
-
-#[derive(Deserialize)]
-enum StaticRuntimeGrantV1 {}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StaticAbilityPlatformV1 {
-    platform: OciPlatformV1,
-    execution_stage: ArtifactExecutionStage,
-    packages: Vec<StaticAbilityPackageV1>,
-    abilities: Vec<StaticAbilityV1>,
-    unresolved_launch_obligations: Vec<StaticLaunchObligationV1>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OciPlatformV1 {
-    os: String,
-    architecture: String,
-    #[serde(default)]
-    variant: Option<String>,
-}
-
-#[derive(Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct StaticAbilityPackageV1 {
-    name: LocalKey,
-    version: String,
-    payload: ArtifactReference,
-    manifest: StaticManifestReferenceV1,
-}
-
-#[derive(Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct StaticManifestReferenceV1 {
-    store_path: String,
-    digest: Sha256Digest,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StaticAbilityV1 {
-    package: StaticManifestReferenceV1,
-    export: LocalKey,
-    interface: InterfaceKey,
-    implementation: Sha256Digest,
-    implementation_artifact: ArtifactReference,
-    availability: StaticAbilityAvailabilityV1,
-}
-
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum StaticAbilityAvailabilityV1 {
-    Baked,
-    UnresolvedAtLaunch,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-enum StaticLaunchObligationV1 {
-    AbilityRequirement {
-        consumer: StaticRequirementConsumerV1,
-        requirement: RequirementDeclaration,
-        disposition: StaticLaunchDispositionV1,
-    },
-    ImplementationArtifact {
-        consumer: StaticAbilityConsumerV1,
-        artifact: ArtifactReference,
-        disposition: StaticLaunchDispositionV1,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StaticRequirementConsumerV1 {
-    package: StaticManifestReferenceV1,
-    #[serde(default)]
-    ability: Option<InterfaceKey>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StaticAbilityConsumerV1 {
-    package: StaticManifestReferenceV1,
-    ability: InterfaceKey,
-}
-
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum StaticLaunchDispositionV1 {
-    ExternalLaunchObligation,
 }
 
 /// Captures one immutable assembly directory into its public contract.
@@ -408,10 +308,33 @@ fn capture_static_ability_contract(
         "static ability contract",
         MAX_STATIC_ABILITY_CONTRACT_BYTES,
     )?;
-    canonical::require_canonical(&bytes, "static ability contract")?;
-    let contract: StaticAbilityContractV1 =
-        canonical::from_slice(&bytes, "static ability contract")?;
-    validate_static_ability_contract(&contract, platform, expected_stage)?;
+    let (os, architecture) = match platform {
+        Platform::X86_64Linux => ("linux", "amd64"),
+        Platform::Aarch64Linux => ("linux", "arm64"),
+        Platform::X86_64Darwin | Platform::Aarch64Darwin => {
+            bail!("boot static ability contract requires a Linux platform")
+        }
+    };
+    let execution_stage = match expected_stage {
+        ArtifactExecutionStage::Initrd => StaticAbilityExecutionStage::Initrd,
+        ArtifactExecutionStage::Host => StaticAbilityExecutionStage::Host,
+        ArtifactExecutionStage::Build => {
+            bail!("boot static ability contract cannot describe the build stage")
+        }
+    };
+    let expectation = StaticAbilityContractExpectation {
+        artifact_class: StaticAbilityArtifactClass::Bootable,
+        execution_stage: Some(execution_stage),
+        platform: Some(StaticAbilityPlatform {
+            os: os.to_string(),
+            architecture: architecture.to_string(),
+            variant: None,
+        }),
+    };
+    validate_ability_contract(AbilityContractData::Static {
+        contract: &bytes,
+        expectation: &expectation,
+    })?;
 
     Ok(AssemblyFileV1 {
         id: id.to_owned(),
@@ -420,153 +343,6 @@ fn capture_static_ability_contract(
         size_bytes: u64::try_from(bytes.len())?,
         sha256: Sha256Digest::of_bytes(&bytes),
     })
-}
-
-fn validate_static_ability_contract(
-    contract: &StaticAbilityContractV1,
-    platform: Platform,
-    expected_stage: ArtifactExecutionStage,
-) -> Result<()> {
-    if contract.schema != "aos.boot.static-abilities/v1"
-        || !contract.runtime_grants.is_empty()
-        || contract.platforms.len() != 1
-    {
-        bail!("boot static ability contract requires one platform and no runtime grants");
-    }
-    let stage = &contract.platforms[0];
-    let expected_platform = match platform {
-        Platform::X86_64Linux => ("linux", "amd64"),
-        Platform::Aarch64Linux => ("linux", "arm64"),
-        Platform::X86_64Darwin | Platform::Aarch64Darwin => {
-            bail!("boot static ability contract requires a Linux platform")
-        }
-    };
-    if stage.execution_stage != expected_stage
-        || stage.platform.os != expected_platform.0
-        || stage.platform.architecture != expected_platform.1
-        || stage.platform.variant.is_some()
-    {
-        bail!("boot static ability contract has the wrong platform or execution stage");
-    }
-
-    if stage.packages.len() > MAX_STATIC_ABILITY_ITEMS
-        || stage.abilities.len() > MAX_STATIC_ABILITY_ITEMS
-        || stage.unresolved_launch_obligations.len() > MAX_STATIC_ABILITY_ITEMS
-    {
-        bail!("boot static ability contract contains excessive records");
-    }
-
-    let mut manifests = BTreeSet::new();
-    for package in &stage.packages {
-        if package.name.as_str().is_empty() || package.version.is_empty() {
-            bail!("boot static ability contract contains an empty package version");
-        }
-        validate_artifact_reference(&package.payload)?;
-        require_store_path(&package.manifest.store_path, false)?;
-        if !manifests.insert(manifest_key(&package.manifest)) {
-            bail!("boot static ability contract contains a duplicate package manifest");
-        }
-    }
-
-    let mut ability_exports = BTreeSet::new();
-    let mut ability_records = BTreeSet::new();
-    let mut ability_interfaces = BTreeSet::new();
-    let mut ability_implementations = BTreeMap::new();
-    for ability in &stage.abilities {
-        let package = manifest_key(&ability.package);
-        if !manifests.contains(&package) {
-            bail!("static ability record references an unknown package manifest");
-        }
-        validate_artifact_reference(&ability.implementation_artifact)?;
-        let artifact = artifact_identity(&ability.implementation_artifact)?;
-        if !ability_exports.insert((package.clone(), ability.export.clone()))
-            || !ability_records.insert((
-                package.clone(),
-                ability.export.clone(),
-                ability.interface.clone(),
-                ability.implementation,
-                artifact,
-            ))
-        {
-            bail!("boot static ability contract contains a duplicate ability record");
-        }
-        ability_interfaces.insert((package.clone(), ability.interface.clone()));
-        let implementation_key = (package, ability.interface.clone(), artifact);
-        if ability_implementations
-            .insert(implementation_key, ability.availability)
-            .is_some_and(|previous| previous != ability.availability)
-        {
-            bail!("shared ability implementation has inconsistent availability");
-        }
-    }
-
-    let mut implementation_obligations = BTreeSet::new();
-    for obligation in &stage.unresolved_launch_obligations {
-        match obligation {
-            StaticLaunchObligationV1::AbilityRequirement {
-                consumer,
-                requirement,
-                disposition: StaticLaunchDispositionV1::ExternalLaunchObligation,
-            } => {
-                let package = manifest_key(&consumer.package);
-                if !manifests.contains(&package)
-                    || consumer.ability.as_ref().is_some_and(|interface| {
-                        !ability_interfaces.contains(&(package.clone(), interface.clone()))
-                    })
-                {
-                    bail!("ability requirement references an unknown consumer");
-                }
-                validate_requirement(requirement)?;
-            }
-            StaticLaunchObligationV1::ImplementationArtifact {
-                consumer,
-                artifact,
-                disposition: StaticLaunchDispositionV1::ExternalLaunchObligation,
-            } => {
-                validate_artifact_reference(artifact)?;
-                let key = (
-                    manifest_key(&consumer.package),
-                    consumer.ability.clone(),
-                    artifact_identity(artifact)?,
-                );
-                if ability_implementations.get(&key)
-                    != Some(&StaticAbilityAvailabilityV1::UnresolvedAtLaunch)
-                    || !implementation_obligations.insert(key)
-                {
-                    bail!("implementation obligation differs from its unresolved ability");
-                }
-            }
-        }
-    }
-
-    for (implementation, availability) in ability_implementations {
-        if implementation_obligations.contains(&implementation)
-            != (availability == StaticAbilityAvailabilityV1::UnresolvedAtLaunch)
-        {
-            bail!("ability availability differs from its implementation obligation");
-        }
-    }
-    Ok(())
-}
-
-fn validate_artifact_reference(artifact: &ArtifactReference) -> Result<()> {
-    require_store_path(&artifact.store_path, false)?;
-    Ok(())
-}
-
-fn artifact_identity(artifact: &ArtifactReference) -> Result<Sha256Digest> {
-    Ok(Sha256Digest::of_bytes(&canonical::to_vec(artifact)?))
-}
-
-fn manifest_key(manifest: &StaticManifestReferenceV1) -> (String, Sha256Digest) {
-    (manifest.store_path.clone(), manifest.digest)
-}
-
-fn validate_requirement(requirement: &RequirementDeclaration) -> Result<()> {
-    match (requirement.strength, &requirement.fallback) {
-        (RequirementStrength::Required, None) | (RequirementStrength::Advisory, Some(_)) => Ok(()),
-        _ => bail!("ability requirement strength and fallback disagree"),
-    }
 }
 
 fn capture_control_file(path: &Path, label: &str) -> Result<Vec<u8>> {

@@ -444,7 +444,11 @@
           pname = "${packageName}-abilities";
           version = args.version or "0";
           src = null;
-          buildDeps = [resolvedBuildPackages.jq resolvedBuildPackages.nix];
+          buildDeps = [
+            resolvedBuildPackages.aos-ability-contract-validator
+            resolvedBuildPackages.jq
+            resolvedBuildPackages.nix
+          ];
           exportReferencesGraph = preparedAbilityPackage.referenceGraph;
           abilityTemplateJson = preparedAbilityPackage.templateJson;
           abilityGraphSpecsJson = preparedAbilityPackage.graphSpecsJson;
@@ -452,6 +456,7 @@
           passthru = {
             abilityPackage = true;
             abilityPackagePayload = drv;
+            abilitySemanticValidator = resolvedBuildPackages.aos-ability-contract-validator;
           };
           dontNukeRefs = true;
           phases = [
@@ -466,6 +471,9 @@
                   TMPDIR=/build \
                   out="$out" \
                   ${stdenv.bash}/bin/bash --noprofile --norc ${./build-support/_ability-package-builder.sh}
+
+                ${resolvedBuildPackages.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+                  package-source "$out/package.json" "$out/interfaces"
               '';
             }
           ];
@@ -1344,6 +1352,7 @@
     );
   localMaintenanceRoots = [
     "ability-package-smoke"
+    "aos-ability-contract-validator"
     "aos-ability-crucible"
     "aos"
     "aos-agent-rpc"

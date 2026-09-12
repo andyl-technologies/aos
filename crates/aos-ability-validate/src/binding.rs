@@ -27,6 +27,21 @@ use crate::graph::{
 use crate::schema::{SchemaPath, validate_value};
 use package::{validate_declared_root_requests, validate_package_document};
 
+pub(crate) fn validate_package_contract(
+    context: &ValidationContext,
+    package: PackageDocument,
+) -> Result<PackageDocument, ValidationErrors> {
+    let mut diagnostics = Vec::new();
+    validate_input_document(context, &package, "packages", &mut diagnostics);
+    validate_package_document(context, &package, 0, true, &mut diagnostics);
+
+    if diagnostics.is_empty() {
+        Ok(package)
+    } else {
+        Err(ValidationErrors::new(diagnostics))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct BindingInputIndex {
     packages: BTreeMap<Sha256Digest, usize>,
@@ -935,7 +950,7 @@ fn validate_binding_inputs(
             );
         }
         input_index.package_catalogs[index] =
-            validate_package_document(context, package, index, diagnostics);
+            validate_package_document(context, package, index, false, diagnostics);
     }
     check_strict_order(
         &package_digests,

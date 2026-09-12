@@ -106,6 +106,11 @@ impl VerifiedAbilityPackageSet {
         .context("constructing the built-in planning features")?;
         let context = ValidationContext::new(supported_features, interfaces.into_values())
             .context("validating authenticated registry ability interfaces")?;
+        for sealed in &self.packages {
+            context
+                .validate_package_contract(sealed.package.clone())
+                .context("validating authenticated registry ability package semantics")?;
+        }
         let mut packages = self
             .packages
             .iter()
@@ -117,7 +122,7 @@ impl VerifiedAbilityPackageSet {
     }
 }
 
-fn read_bounded_regular_file(path: &Path, owner: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_bounded_regular_file(path: &Path, owner: &str) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
