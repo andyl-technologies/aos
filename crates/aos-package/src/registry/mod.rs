@@ -846,6 +846,134 @@ pub(crate) mod tests {
         fs::write(path, content).unwrap();
     }
 
+    fn write_production_adoption_package(
+        tmp: &TempDir,
+        registry: &str,
+        package: &str,
+        units: &[&str],
+    ) {
+        write_ability_package(tmp, registry, package, "structured-effects");
+
+        let path = tmp
+            .path()
+            .join(registry)
+            .join("packages")
+            .join(&package[..1])
+            .join(format!("{package}.toml"));
+        let mut document: toml::Value =
+            toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let platform = document["versions"][0]["platforms"]["x86_64-linux"]
+            .as_table_mut()
+            .unwrap();
+        let legacy_features = [
+            crate::types::FEATURE_CONFIG_MODULE_V1,
+            crate::types::FEATURE_CONFIG_V1,
+            crate::types::FEATURE_EXPOSE_ARTIFACT_V1,
+            crate::types::FEATURE_EXPOSE_V1,
+            crate::types::FEATURE_NETWORK_POLICY_V1,
+            crate::types::FEATURE_PERMISSIONS_V1,
+            crate::types::FEATURE_RELOAD_V1,
+        ];
+        let append_legacy_features = |gate: &mut Vec<toml::Value>| {
+            gate.extend(
+                legacy_features
+                    .iter()
+                    .map(|feature| toml::Value::String((*feature).to_string())),
+            );
+        };
+        append_legacy_features(
+            platform
+                .get_mut("requires-features")
+                .and_then(toml::Value::as_array_mut)
+                .unwrap(),
+        );
+        append_legacy_features(
+            platform
+                .get_mut("references")
+                .and_then(toml::Value::as_table_mut)
+                .and_then(|references| references.get_mut("requires-features"))
+                .and_then(toml::Value::as_array_mut)
+                .unwrap(),
+        );
+
+        let units = units
+            .iter()
+            .map(|unit| (*unit).to_string())
+            .collect::<Vec<_>>();
+        let expose: crate::types::ExposeMeta = serde_json::from_value(serde_json::json!({
+            "target": format!("aos-pkg-{package}.target"),
+            "units": units.clone(),
+            "config": {
+                "artifacts": [{
+                    "name": "runtime",
+                    "path": format!("/etc/aos/packages/{package}/runtime.json"),
+                    "format": "json",
+                    "required": ["enabled"],
+                    "units": units,
+                    "reload": "reload"
+                }]
+            }
+        }))
+        .unwrap();
+        let permissions: crate::types::PermissionsMeta =
+            serde_json::from_value(serde_json::json!({
+                "network": "host",
+                "capabilities": if package == "nginx" {
+                    serde_json::json!(["CAP_NET_BIND_SERVICE"])
+                } else {
+                    serde_json::json!([])
+                },
+                "host-paths": [{
+                    "path": format!("/etc/{package}"),
+                    "mode": "read-only"
+                }],
+                "syscalls": "system-service"
+            }))
+            .unwrap();
+        let config_module: crate::types::ConfigModuleMeta =
+            serde_json::from_value(serde_json::json!({
+                "config_output": {
+                    "store_path": format!(
+                        "/nix/store/0000000000000000000000000000000c-{package}-config"
+                    ),
+                    "nar_hash": format!("sha256:{}", "4".repeat(64)),
+                    "nar_size": 1
+                },
+                "module_abi_compat": {"min": 1, "max": 2},
+                "declares": [
+                    format!("{package}._aosExposeConfigProjection"),
+                    format!("{package}.enable")
+                ],
+                "owns_roots": [{
+                    "root": package,
+                    "interface_abi": 1
+                }],
+                "artifacts": {"etc": [format!("{package}/{package}.conf")]}
+            }))
+            .unwrap();
+        let expose_artifact = crate::types::ExposeArtifactMeta {
+            store_path: format!("/nix/store/0000000000000000000000000000000d-{package}-expose"),
+            nar_hash: format!("sha256:{}", "5".repeat(64)),
+            nar_size: 1,
+        };
+
+        platform.insert("expose".into(), toml::Value::try_from(expose).unwrap());
+        platform.insert(
+            "expose_artifact".into(),
+            toml::Value::try_from(expose_artifact).unwrap(),
+        );
+        platform.insert(
+            "permissions".into(),
+            toml::Value::try_from(permissions).unwrap(),
+        );
+        platform.insert(
+            "config_module".into(),
+            toml::Value::try_from(config_module).unwrap(),
+        );
+
+        fs::write(path, toml::to_string_pretty(&document).unwrap()).unwrap();
+    }
+
     #[test]
     fn config_evaluation_loads_ability_metadata_without_broadening_package_readers() {
         let tmp = TempDir::new().unwrap();
@@ -872,6 +1000,40 @@ pub(crate) mod tests {
             package.ability.as_ref().unwrap().activation_mode,
             "structured-effects"
         );
+    }
+
+    #[test]
+    fn production_adoptions_round_trip_legacy_metadata_for_ability_aware_runtime() {
+        let tmp = TempDir::new().unwrap();
+        let config = registry_config("aos-core", 500);
+        write_production_adoption_package(&tmp, &config.name, "nginx", &["nginx.service"]);
+        write_production_adoption_package(
+            &tmp,
+            &config.name,
+            "postgresql",
+            &["postgresql-init.service", "postgresql.service"],
+        );
+
+        let ordinary_error =
+            RegistrySet::load_for_package_operations(tmp.path(), &[&config], "x86_64-linux")
+                .expect_err("ordinary package readers must reject structured effects");
+        assert!(format!("{ordinary_error:#}").contains(crate::types::FEATURE_ABILITY_EFFECTS_V1));
+
+        let registries =
+            RegistrySet::load_for_config_evaluation(tmp.path(), &[&config], "x86_64-linux")
+                .expect("the structured runtime accepts production adoption metadata");
+        for package_name in ["nginx", "postgresql"] {
+            let (_, package) = registries.resolve(package_name).unwrap();
+
+            assert_eq!(
+                package.ability.as_ref().unwrap().activation_mode,
+                "structured-effects"
+            );
+            assert!(!package.expose.as_ref().unwrap().config.is_empty());
+            assert!(package.expose_artifact.is_some());
+            assert!(package.config_module.is_some());
+            assert!(!package.permissions.is_empty());
+        }
     }
 
     #[test]

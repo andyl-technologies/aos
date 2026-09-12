@@ -669,7 +669,10 @@ impl ConfigManifest {
         let expected = self
             .package_outputs
             .iter()
-            .filter_map(|(package, pin)| pin.config_projection.as_ref().map(|_| package.as_str()))
+            .filter_map(|(package, pin)| {
+                (!pin.uses_structured_effects() && pin.config_projection.is_some())
+                    .then_some(package.as_str())
+            })
             .collect::<BTreeSet<_>>();
         let actual = self
             .config_projections
