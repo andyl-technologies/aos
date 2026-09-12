@@ -21,6 +21,7 @@ from typing import Any
 
 
 SOCKET_PATH = Path("/run/aos-instrumentation/controller.sock")
+FORWARD_SOCKET_ENV = "AOS_ABILITY_FORWARD_SOCKET"
 STATE_ROOT = Path("/var/lib/aos/ability-boundary-test")
 EVENT_LOG = STATE_ROOT / "events.jsonl"
 HELD_EVENT = STATE_ROOT / "held-event.json"
@@ -192,11 +193,40 @@ def acknowledge(connection: socket.socket, payload: bytes) -> None:
     write_frame(connection, canonical_bytes(acknowledgement))
 
 
+def forward_to_adapter(payload: bytes) -> dict[str, Any] | None:
+    """Deliver one event through an optional digest-bound observer hop."""
+    socket_path = os.environ.get(FORWARD_SOCKET_ENV)
+    if socket_path is None:
+        return None
+    if not socket_path.startswith("/") or ".." in Path(socket_path).parts:
+        raise ValueError("execution-boundary forward socket is not canonical")
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(socket_path)
+        write_frame(connection, payload)
+        acknowledgement_payload = read_frame(connection)
+
+    acknowledgement = json.loads(acknowledgement_payload)
+    if canonical_bytes(acknowledgement) != acknowledgement_payload:
+        raise ValueError("forwarded execution-boundary acknowledgement is not canonical")
+    if set(acknowledgement) != {"action", "event_digest", "schema"}:
+        raise ValueError("forwarded execution-boundary acknowledgement has unexpected fields")
+    if acknowledgement != {
+        "action": "continue",
+        "event_digest": event_digest(payload),
+        "schema": ACK_SCHEMA,
+    }:
+        raise ValueError("forwarded execution-boundary acknowledgement does not match event")
+
+    return acknowledgement
+
+
 def hold_until_peer_loss(
     connection: socket.socket,
     event: dict[str, Any],
     payload: bytes,
     sequence: str,
+    forwarded_acknowledgement: dict[str, Any] | None,
 ) -> None:
     """Publish the held boundary durably, then wait for process or power loss."""
     replace_canonical(
@@ -204,6 +234,7 @@ def hold_until_peer_loss(
         {
             "event": event,
             "event_digest": event_digest(payload),
+            "forwarded_acknowledgement": forwarded_acknowledgement,
             "sequence": sequence,
         },
     )
@@ -222,6 +253,7 @@ def pause_until_continued(
     event: dict[str, Any],
     payload: bytes,
     sequence: str,
+    forwarded_acknowledgement: dict[str, Any] | None,
 ) -> None:
     """Publish one held boundary and resume only after the driver releases it."""
     replace_canonical(
@@ -229,6 +261,7 @@ def pause_until_continued(
         {
             "event": event,
             "event_digest": event_digest(payload),
+            "forwarded_acknowledgement": forwarded_acknowledgement,
             "sequence": sequence,
         },
     )
@@ -263,6 +296,7 @@ def hold_until_continued(
     event: dict[str, Any],
     payload: bytes,
     sequence: str,
+    forwarded_acknowledgement: dict[str, Any] | None,
 ) -> None:
     """Expose returned reconciliation, then wait for the driver's release."""
     replace_canonical(
@@ -270,6 +304,7 @@ def hold_until_continued(
         {
             "event": event,
             "event_digest": event_digest(payload),
+            "forwarded_acknowledgement": forwarded_acknowledgement,
             "sequence": sequence,
         },
     )
@@ -297,18 +332,36 @@ def serve_connection(connection: socket.socket) -> None:
         if event.get("schema") != EVENT_SCHEMA:
             raise ValueError("execution-bound event uses an unknown schema")
         append_event(payload)
+        forwarded_acknowledgement = forward_to_adapter(payload)
 
         target = load_target()
         if target is not None and matches_initial_boundary(event, target):
             if target["action"] == "pause":
                 pause_until_continued(
-                    connection, event, payload, target["sequence"]
+                    connection,
+                    event,
+                    payload,
+                    target["sequence"],
+                    forwarded_acknowledgement,
                 )
+                continue
             else:
-                hold_until_peer_loss(connection, event, payload, target["sequence"])
+                hold_until_peer_loss(
+                    connection,
+                    event,
+                    payload,
+                    target["sequence"],
+                    forwarded_acknowledgement,
+                )
                 return
         if target is not None and matches_recovery_boundary(event, target):
-            hold_until_continued(connection, event, payload, target["sequence"])
+            hold_until_continued(
+                connection,
+                event,
+                payload,
+                target["sequence"],
+                forwarded_acknowledgement,
+            )
             continue
         acknowledge(connection, payload)
 

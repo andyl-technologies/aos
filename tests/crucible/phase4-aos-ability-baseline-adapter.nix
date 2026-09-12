@@ -151,7 +151,7 @@ in
             host_verdict_and_reproduction=true
             live_qemu_plugin_transport=checks.crucible.phase2.qemuLiveWhiteboxDoorbell
             composed_native_activation=separate-required-gate
-            exact_marker_interruption=blocked-pr194-pending-choice
+            exact_marker_interruption=production-native-baseline-flight
             typed_fault_selection_replay=blocked-pr194-selectable-protocol
             adapter_restart_monitor=fail-closed-no-reconstruction
             partial_marker_delivery=incomplete-no-ack

@@ -38,7 +38,7 @@
     name = "${name}-setup";
     destination = "/module.nix";
     text = ''
-      { pkgs, ... }: {
+      { lib, pkgs, ... }: {
         ${setupBody}
       }
     '';
@@ -284,6 +284,7 @@ in
   assert platform == "x86_64-linux";
   assert identity != "";
   assert builtins.elem scenarioId [
+    "ability-crucible-baseline"
     "ability-native-activation"
     "ability-native-adapter-matrix"
     "ability-native-kubernetes"

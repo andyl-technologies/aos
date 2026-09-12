@@ -170,6 +170,7 @@
         builtins.filter (requirement: requirement.id == id) contract.requirements
       );
     }) [
+      "ability-crucible-baseline"
       "ability-native-activation"
       "ability-native-adapter-matrix"
       "ability-native-image-rollout"
@@ -273,6 +274,16 @@ in
     "checks.fleet.system-image-rollback"
     "checks.fleet.boot-identity-fail-closed"
     "checks.fleet.measured-boot"
+  ];
+  assert abilityRequirements.ability-crucible-baseline.regressions
+  == ["checks.fleet.ability-crucible-baseline"];
+  assert abilityRequirements.ability-crucible-baseline.checks
+  == [
+    "connected-generic-markers-before-selected-interruption"
+    "retained-boundary-selection-and-digest-bound-adapter-acknowledgement"
+    "reproduced-reconciliation-through-production-executor"
+    "inspector-explains-retained-crucible-recovery-finding"
+    "disabled-production-executor-has-no-crucible-closure"
   ];
   assert abilityRequirements.ability-native-activation.regressions
   == ["checks.fleet.ability-native-activation"];
@@ -481,6 +492,7 @@ in
   };
   assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
   == [
+    "ability-crucible-baseline"
     "ability-native-activation"
     "ability-native-adapter-matrix"
     "ability-native-kubernetes"

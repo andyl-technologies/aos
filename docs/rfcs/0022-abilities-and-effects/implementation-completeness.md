@@ -167,6 +167,12 @@ resource/view/lease interfaces are available. Do not duplicate those brokers
 to claim this RFC complete, or infer their guarantees from a draft. The same
 rule applies to advanced Crucible campaigns from PR #194. Baseline guest
 instrumentation and ordinary VM/fleet testing have separate acceptance gates.
+The baseline gate connects the production guest adapter to the native executor
+boundary stream, interrupts both the activation process and the VM at a retained
+effect-returned selection, reproduces reconciliation, and records the exact
+selection, reached event, digest-bound adapter acknowledgements, and inspector
+timeline in a durable finding. Typed adaptive campaigns remain a separate PR
+#194 integration.
 
 During migration, preserve one activation owner per resource and the current
 high-level install/desired-state intent. A package switches to structured

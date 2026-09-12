@@ -136,6 +136,30 @@
   "requirements": [
     {
       "checks": [
+        "connected-generic-markers-before-selected-interruption",
+        "retained-boundary-selection-and-digest-bound-adapter-acknowledgement",
+        "reproduced-reconciliation-through-production-executor",
+        "inspector-explains-retained-crucible-recovery-finding",
+        "disabled-production-executor-has-no-crucible-closure"
+      ],
+      "id": "ability-crucible-baseline",
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "measurements": {},
+      "method": "automated",
+      "phase": "staging",
+      "production_only": false,
+      "regressions": [
+        "checks.fleet.ability-crucible-baseline"
+      ],
+      "scope": "release"
+    },
+    {
+      "checks": [
         "authenticated-package-policy-and-operator-authority",
         "exact-interface-binding-effect-plan-and-artifact-identities",
         "consumer-scoped-access-and-independent-service-observation",

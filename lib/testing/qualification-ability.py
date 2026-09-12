@@ -1438,6 +1438,26 @@ class Scenario:
 
 
 CHECK_DETAILS = {
+    "connected-generic-markers-before-selected-interruption": (
+        "The production ability adapter emitted the existing generic assertion, event, "
+        "coverage, and lifecycle markers before the selected interruption was released."
+    ),
+    "retained-boundary-selection-and-digest-bound-adapter-acknowledgement": (
+        "The protected controller retained the exact operation boundary, fault selection, "
+        "canonical event digest, and matching production-adapter acknowledgement."
+    ),
+    "reproduced-reconciliation-through-production-executor": (
+        "A second selected effect-return boundary survived hard power loss and reopened as "
+        "the same production reconciliation opportunity before completing."
+    ),
+    "inspector-explains-retained-crucible-recovery-finding": (
+        "The AOS inspector joined the retained plan and operation to its interrupted effect "
+        "and successful reconciliation timeline."
+    ),
+    "disabled-production-executor-has-no-crucible-closure": (
+        "The same production executor configuration without the opt-in profile retained no "
+        "ability adapter or Crucible guest emitter in its realized closure."
+    ),
     "native-adapter-matrix-v1-sha256-b2573d76abe2a164ae312a159c8a5ac250d624b02e4931708feb13451fff43f6": (
         "The closed native-adapter matrix bound every durability and authority "
         "cell to the exact adapter interface name, ABI, and descriptor."
