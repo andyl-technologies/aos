@@ -185,6 +185,67 @@ EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA = (
 EFFECT_BOUNDARY_EVIDENCE_SCHEMA = (
     "aos.qualification.native-adapter-effect-flight/v1"
 )
+CANCELLATION_COHORT_SUBJECT_SCHEMA = (
+    "aos.qualification.native-adapter-cancellation-subject/v1"
+)
+CANCELLATION_EVIDENCE_SCHEMA = (
+    "aos.qualification.native-adapter-cancellation-flight/v1"
+)
+CANCELLATION_RESULTS = {
+    "cancellation-rejected-before-effect",
+    "cancellation-observed-completion",
+    "cancellation-indeterminate",
+}
+CANCELLATION_BOUNDARIES = [
+    ("effect", "resources-acquired"),
+    ("effect", "effect-intent-durable"),
+    ("cancel", "cancellation-intent-durable"),
+    ("cancel", "final-dispatch"),
+    ("cancel", "cancellation-returned"),
+    ("cancel", "cancellation-outcome-durable"),
+]
+CANCELLATION_HANDLER_ENTRY_POINTS = {
+    "aos.credential-delivery-effects": (
+        "native-credential-delivery-v1",
+        "libexec/aos-credential-delivery-handler-v1",
+    ),
+    "aos.foreground-process": (
+        "native-foreground-process-v1",
+        "libexec/aos-foreground-process-handler-v1",
+    ),
+    "aos.host-network-policy-effects": (
+        "native-host-network-policy-v1",
+        "libexec/aos-host-network-policy-handler-v1",
+    ),
+    "aos.host-storage-effects": (
+        "native-host-storage-v1",
+        "libexec/aos-host-storage-handler-v1",
+    ),
+    "aos.managed-configuration-effects": (
+        "managed-configuration-terminal",
+        "bin/.aos-package-runtime-unwrapped",
+    ),
+    "aos.network-endpoint-effects": (
+        "native-network-endpoint-v1",
+        "libexec/aos-network-endpoint-handler-v1",
+    ),
+    "aos.nginx-validation": ("nginx-terminal", "bin/nginx"),
+}
+CANCELLATION_ORACLE_KINDS = {
+    "credential-delivery": "filesystem",
+    "foreground-process": "foreground-process",
+    "host-network-policy": "network",
+    "host-storage": "filesystem",
+    "managed-configuration": "filesystem",
+    "network-endpoint": "network",
+    "nginx-validation": "filesystem",
+    "postgresql": "postgresql",
+    "kubernetes-object": "kubernetes",
+    "systemd-bootstrap": "systemd",
+    "systemd-manager": "systemd",
+    "systemd-service-legacy": "systemd",
+    "image-rollout": "image-rollout",
+}
 POSTGRESQL_REJECTION_EVIDENCE_SCHEMA = (
     "aos.qualification.postgresql-provider-rejection-evidence/v1"
 )
@@ -396,6 +457,12 @@ def build_cells(
         for cell in spec["cells"]
         if cell["adapter"] in adapters and _effect_boundary_cell(cell)
     ]
+    supported_cancellation_cells = [
+        cell["id"]
+        for cell in spec["cells"]
+        if _cell_scenario(cell) == "cancel-unsettled-attempt"
+        and cell.get("recovery", {}).get("cancel") is not None
+    ]
     if has_runtime_audit:
         runtime_failure_cells = [
             cell["id"]
@@ -414,9 +481,14 @@ def build_cells(
             *runtime_failure_cells,
             *POSTGRESQL_CELL_IDS,
             *effect_boundary_cells,
+            *supported_cancellation_cells,
         ]
     else:
-        allowed_cells = [*allowed_cells, *effect_boundary_cells]
+        allowed_cells = [
+            *allowed_cells,
+            *effect_boundary_cells,
+            *supported_cancellation_cells,
+        ]
 
     if has_interruption_audit:
         before_acquisition_cells = [
@@ -446,6 +518,7 @@ def build_cells(
             specification_cells[cell_id],
             cohort_subjects[cell_id],
             cohort_evidence[cell_id],
+            spec,
         )
     if has_runtime_audit:
         _validate_runtime_audit(runtime_audit, spec, specification_cells)
@@ -1221,6 +1294,11 @@ def _validate_probe_facts(
 ) -> None:
     """Checks semantic facts for one exact matrix postcondition."""
 
+    if cohort_subject.get("schema") == CANCELLATION_COHORT_SUBJECT_SCHEMA:
+        _validate_cancellation_probe_facts(
+            postcondition, observations, cohort_subject, cell
+        )
+        return
     if cohort_subject.get("schema") == POSTGRESQL_COHORT_SUBJECT_SCHEMA:
         _validate_postgresql_probe_facts(
             postcondition, observations, cohort_subject, cell
@@ -2051,8 +2129,15 @@ def _strictly_increasing_nonnegative(before: Any, after: Any) -> bool:
 
 
 def _validate_cohort_subject(
-    cell: dict[str, Any], subject: Any, evidence_bytes: Any
+    cell: dict[str, Any],
+    subject: Any,
+    evidence_bytes: Any,
+    matrix_spec: dict[str, Any] | None = None,
 ) -> None:
+    if isinstance(subject, dict) and subject.get("schema") == CANCELLATION_COHORT_SUBJECT_SCHEMA:
+        _validate_cancellation_subject(cell, subject, evidence_bytes, matrix_spec)
+        return
+
     if cell.get("adapter") == "postgresql":
         _validate_postgresql_cohort_subject(cell, subject, evidence_bytes)
         return
@@ -2062,6 +2147,121 @@ def _validate_cohort_subject(
         return
 
     _validate_managed_configuration_subject(cell, subject, evidence_bytes)
+
+
+def _validate_cancellation_subject(
+    cell: dict[str, Any],
+    subject: Any,
+    evidence_bytes: Any,
+    matrix_spec: dict[str, Any] | None,
+) -> None:
+    """Rebuilds a cancellation subject from its exact production plan and route."""
+
+    evidence = _canonical_evidence(evidence_bytes, "cancellation flight")
+    try:
+        if not isinstance(evidence, dict) or set(evidence) != {
+            "schema",
+            "matrix-spec-digest",
+            "cell-digest",
+            "plan-bundle",
+            "source-authority",
+            "candidate-authority",
+        }:
+            raise RuntimeError("cancellation evidence is malformed")
+        if evidence.get("schema") != CANCELLATION_EVIDENCE_SCHEMA:
+            raise RuntimeError("cancellation evidence has another schema")
+        bundle = evidence["plan-bundle"]
+        if bundle.get("schema") != "aos.ability.plan-bundle/v1":
+            raise RuntimeError("cancellation evidence has another plan schema")
+        expected_subject_fields = {
+            "schema",
+            "matrix-spec-digest",
+            "cell-digest",
+            "plan",
+            "plan-bundle-digest",
+            "evidence-digest",
+            "adapter",
+            "operation",
+            "cancel-route",
+            "dependent-operation",
+            "provider-implementation",
+            "handler-entry-point",
+            "native-route",
+        }
+        if not isinstance(subject, dict) or set(subject) != expected_subject_fields:
+            raise RuntimeError("cancellation subject is malformed")
+
+        effect = bundle["transition"]["effect_document"]
+        operation = subject["operation"]
+        operation_matches = [
+            (candidate, _project_operation(candidate, ordinal))
+            for ordinal, candidate in enumerate(effect["operations"])
+            if _project_operation(candidate, ordinal) == operation
+        ]
+        if len(operation_matches) != 1:
+            raise RuntimeError("cancellation operation is absent or ambiguous")
+        operation_document, _ = operation_matches[0]
+        dependents = _required_success_dependents(effect, operation)
+        dependent = subject["dependent-operation"]
+        if dependent not in dependents:
+            raise RuntimeError("cancellation successor is not RequiredSuccess")
+
+        implementations = {}
+        for state in (bundle.get("desired"), bundle.get("current")):
+            if state is None:
+                continue
+            for binding in state["snapshot"]["resolution"]["binding_document"][
+                "bindings"
+            ]:
+                if binding["id"] == operation_document["binding"]:
+                    implementation = binding["implementation"]
+                    implementations[canonical(implementation)] = implementation
+        if len(implementations) != 1:
+            raise RuntimeError("cancellation terminal implementation is ambiguous")
+        implementation = next(iter(implementations.values()))
+        native_route = _effect_boundary_native_route(
+            bundle,
+            operation_document,
+            implementation,
+            evidence["source-authority"],
+            evidence["candidate-authority"],
+        )
+        handler, entry_point = CANCELLATION_HANDLER_ENTRY_POINTS[
+            cell["interface"]["name"]
+        ]
+    except RuntimeError:
+        raise
+    except (AttributeError, KeyError, TypeError) as error:
+        raise RuntimeError("cancellation plan evidence is malformed") from error
+
+    cell_digest = sha256(cell)
+    matrix_digest = subject["matrix-spec-digest"]
+    if matrix_spec is not None and matrix_digest != sha256(matrix_spec):
+        raise RuntimeError("cancellation subject names another matrix specification")
+    if (
+        _cell_scenario(cell) != "cancel-unsettled-attempt"
+        or cell.get("recovery", {}).get("cancel") is None
+        or subject["schema"] != CANCELLATION_COHORT_SUBJECT_SCHEMA
+        or matrix_digest != evidence["matrix-spec-digest"]
+        or subject["cell-digest"] != cell_digest
+        or evidence["cell-digest"] != cell_digest
+        or subject["plan"] != bundle["plan"]
+        or subject["plan-bundle-digest"] != sha256(bundle)
+        or subject["evidence-digest"]
+        != "sha256:" + hashlib.sha256(evidence_bytes).hexdigest()
+        or subject["adapter"] != cell["adapter"]
+        or operation["interface"] != cell["interface"]
+        or operation["method"] != cell["method"]
+        or operation["target"]["interface"] != cell["interface"]
+        or operation_document.get("recovery", {}).get("cancel")
+        != {"interface": cell["interface"], "method": cell["recovery"]["cancel"]}
+        or subject["cancel-route"] != operation_document["recovery"]["cancel"]
+        or subject["provider-implementation"] != implementation
+        or implementation.get("handler") != handler
+        or subject["handler-entry-point"] != entry_point
+        or subject["native-route"] != native_route
+    ):
+        raise RuntimeError("cancellation subject differs from its production plan")
 
 
 def _validate_effect_boundary_subject(
@@ -2408,6 +2608,156 @@ def _validate_effect_boundary_probe_facts(
             raise RuntimeError("effect-boundary dependency facts are invalid")
     else:
         raise RuntimeError("effect-boundary cohort carries another postcondition")
+
+
+def _cancellation_oracle_snapshot(adapter: str, value: Any) -> bool:
+    """Checks that a live snapshot names the adapter's independent oracle kind."""
+
+    expected = CANCELLATION_ORACLE_KINDS.get(adapter)
+    return isinstance(value, dict) and value.get("kind") == expected
+
+
+def _cancellation_foreign_snapshot(value: Any) -> bool:
+    """Checks one separately addressed provider sentinel observation."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "adapter",
+        "resource",
+        "observation",
+    }:
+        return False
+    adapter = value.get("adapter")
+    return (
+        isinstance(adapter, str)
+        and isinstance(value.get("resource"), dict)
+        and _cancellation_oracle_snapshot(adapter, value.get("observation"))
+    )
+
+
+def _validate_cancellation_probe_facts(
+    postcondition: str,
+    observations: dict[str, Any],
+    subject: dict[str, Any],
+    cell: dict[str, Any],
+) -> None:
+    """Validates a supported cancellation against independent provider state."""
+
+    operation = subject["operation"]
+    resource = operation["target"]["resource"]
+    common = {
+        "cell": cell["id"],
+        "postcondition": postcondition,
+    }
+    if any(observations.get(field) != value for field, value in common.items()):
+        raise RuntimeError("cancellation probe is not bound to its exact matrix cell")
+
+    if postcondition == "durable-attempt-state-classified":
+        expected_fields = {
+            "cell",
+            "postcondition",
+            "transaction",
+            "operation",
+            "switch-process",
+            "journal-before-signal",
+            "timeline",
+            "boundary-timeline",
+            "cancellation-result",
+            "live-before",
+            "live-unsettled",
+            "live-after",
+        }
+        timeline = observations.get("timeline")
+        boundaries = observations.get("boundary-timeline")
+        kinds = [event.get("kind") for event in timeline or []]
+        results = [kind for kind in kinds if kind in CANCELLATION_RESULTS]
+        if (
+            set(observations) != expected_fields
+            or not _matches(LOCAL_KEY, observations.get("transaction"))
+            or observations.get("operation") != operation
+            or not _is_nonnegative_int(observations.get("switch-process"))
+            or observations["switch-process"] == 0
+            or not _matches(RAW_DIGEST, observations.get("journal-before-signal"))
+            or not _is_ordered_operation_timeline(timeline, operation["ordinal"])
+            or kinds[:3]
+            != ["operation-admitted", "effect-started", "cancellation-started"]
+            or len(results) != 1
+            or kinds[-1] != results[0]
+            or observations.get("cancellation-result") != results[0]
+            or not _is_ordered_boundary_timeline(boundaries)
+            or [(event["purpose"], event["boundary"]) for event in boundaries]
+            != CANCELLATION_BOUNDARIES
+            or not all(
+                _cancellation_oracle_snapshot(cell["adapter"], observations.get(field))
+                for field in ("live-before", "live-unsettled", "live-after")
+            )
+        ):
+            raise RuntimeError("cancellation journal or provider facts are invalid")
+    elif postcondition == "at-most-one-resource-owner":
+        expected_fields = {
+            "cell",
+            "postcondition",
+            "resource",
+            "owner-before",
+            "owner-unsettled",
+            "owner-after",
+        }
+        inventories = [
+            observations.get("owner-before"),
+            observations.get("owner-unsettled"),
+            observations.get("owner-after"),
+        ]
+        if (
+            set(observations) != expected_fields
+            or observations.get("resource") != resource
+            or not all(_single_owner_inventory(value) for value in inventories)
+            or any(
+                owner.get("resource") != resource
+                for inventory in inventories
+                for owner in inventory["identities"]
+            )
+        ):
+            raise RuntimeError("cancellation ownership facts are invalid")
+    elif postcondition == "foreign-resources-unchanged":
+        expected_fields = {
+            "cell",
+            "postcondition",
+            "foreign-before",
+            "foreign-unsettled",
+            "foreign-after",
+        }
+        before = observations.get("foreign-before")
+        if (
+            set(observations) != expected_fields
+            or not _cancellation_foreign_snapshot(before)
+            or before.get("resource") == resource
+            or observations.get("foreign-unsettled") != before
+            or observations.get("foreign-after") != before
+        ):
+            raise RuntimeError("cancellation foreign-resource facts are invalid")
+    elif postcondition == "dependent-effects-not-executed":
+        expected_fields = {
+            "cell",
+            "postcondition",
+            "predecessor-operation",
+            "dependent-operation",
+            "dependent-timeline-before",
+            "dependent-timeline-after",
+            "dependent-boundaries",
+            "dependent-effect-count",
+        }
+        if (
+            set(observations) != expected_fields
+            or observations.get("predecessor-operation") != operation
+            or observations.get("dependent-operation")
+            != subject["dependent-operation"]
+            or observations.get("dependent-timeline-before") != []
+            or observations.get("dependent-timeline-after") != []
+            or observations.get("dependent-boundaries") != []
+            or observations.get("dependent-effect-count") != 0
+        ):
+            raise RuntimeError("cancellation dependency facts are invalid")
+    else:
+        raise RuntimeError("cancellation cohort carries another postcondition")
 
 
 def _is_ordered_operation_timeline(value: Any, ordinal: int) -> bool:

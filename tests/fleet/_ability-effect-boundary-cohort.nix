@@ -120,6 +120,16 @@ in {
           ),
           EFFECT_EVIDENCE.__dict__,
       )
+      CANCELLATION_EVIDENCE = types.ModuleType("ability_cancellation_evidence")
+      CANCELLATION_EVIDENCE.__dict__["EFFECT_EVIDENCE"] = EFFECT_EVIDENCE
+      exec(
+          compile(
+              ${builtins.toJSON (builtins.readFile ./ability-cancellation-evidence.py)},
+              "ability-cancellation-evidence.py",
+              "exec",
+          ),
+          CANCELLATION_EVIDENCE.__dict__,
+      )
       EFFECT_ORACLES = types.ModuleType("ability_effect_boundary_oracles")
       EFFECT_ORACLES.__dict__.update(globals())
       exec(
@@ -133,6 +143,7 @@ in {
       EFFECT_FLIGHT = types.ModuleType("ability_effect_boundary_flight")
       EFFECT_FLIGHT.__dict__.update(globals())
       EFFECT_FLIGHT.__dict__["EFFECT_EVIDENCE"] = EFFECT_EVIDENCE
+      EFFECT_FLIGHT.__dict__["CANCELLATION_EVIDENCE"] = CANCELLATION_EVIDENCE
       exec(
           compile(
               ${builtins.toJSON (builtins.readFile ./ability-effect-boundary-flight.py)},
