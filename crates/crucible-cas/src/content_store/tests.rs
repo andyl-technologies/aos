@@ -1909,19 +1909,19 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
             },
         ),
         (
-            directory,
+            directory.clone(),
             StoreNodeSpec::Directory {
                 root: temp.path().join("objects"),
             },
         ),
         (
-            metadata_cache,
+            metadata_cache.clone(),
             StoreNodeSpec::Memory {
                 max_logical_bytes: 1_024,
             },
         ),
         (
-            ram_cache,
+            ram_cache.clone(),
             StoreNodeSpec::Memory {
                 max_logical_bytes: 1_024,
             },
@@ -1949,6 +1949,35 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
             .map(|physical| physical.node().as_str())
             .collect::<Vec<_>>(),
         vec!["directory", "metadata-cache", "ram-cache"]
+    );
+    let physical = admin
+        .physical()
+        .into_iter()
+        .map(|physical| {
+            (
+                physical.node().clone(),
+                (
+                    physical.retention(ObjectKind::CampaignFact),
+                    physical.retention(ObjectKind::RamExtent),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        physical[&directory].0,
+        Some(StoreGraphPhysicalRetention::Required)
+    );
+    assert_eq!(
+        physical[&directory].1,
+        Some(StoreGraphPhysicalRetention::Required)
+    );
+    assert_eq!(
+        physical[&metadata_cache].0,
+        Some(StoreGraphPhysicalRetention::Required)
+    );
+    assert_eq!(
+        physical[&ram_cache].1,
+        Some(StoreGraphPhysicalRetention::Cache)
     );
 
     let fact_bytes = b"graph fact";
@@ -2235,7 +2264,23 @@ fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
             ..
         })
     ));
-    let deferred = StoreGraph::build(deferred_config(true)).expect("admitted deferred policy");
+    let (deferred, admin) =
+        StoreGraph::build_with_admin(deferred_config(true)).expect("admitted deferred policy");
+    let physical = admin
+        .physical()
+        .into_iter()
+        .map(|physical| {
+            (
+                physical.node().clone(),
+                physical.retention(ObjectKind::Finding),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(physical[&staging], Some(StoreGraphPhysicalRetention::Cache));
+    assert_eq!(
+        physical[&destination],
+        Some(StoreGraphPhysicalRetention::Required)
+    );
     let finding_bytes = b"journaled durable staging";
     let finding = ContentId::for_bytes(ObjectKind::Finding, 1, finding_bytes);
     assert_eq!(
