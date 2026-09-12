@@ -130,9 +130,12 @@ in
           return value
 
 
-      def reference_pair(label, adapter, method):
+      def reference_pair(label, adapter, method, scenario):
+          unsupported = scenario == "reject-unsupported-transfer"
           if adapter == "systemd-manager":
-              predecessor_method = "stop" if method == "start" else "start"
+              predecessor_method = method if unsupported else (
+                  "stop" if method == "start" else "start"
+              )
               retained = reference_activation(
                   f"{label}-retained", "full", "retained", True, method
               )
@@ -148,7 +151,10 @@ in
               return (
                   reference_activation(f"{label}-retained", "full", "retained", True),
                   reference_activation(
-                      f"{label}-predecessor", "full", "predecessor", False
+                      f"{label}-predecessor",
+                      "full",
+                      "predecessor",
+                      True if unsupported else False,
                   ),
               )
           if adapter == "credential-delivery" and method == "release":
@@ -162,7 +168,10 @@ in
               return (
                   reference_activation(f"{label}-retained", "full", "retained", True),
                   reference_activation(
-                      f"{label}-predecessor", "disable-main", "predecessor", True
+                      f"{label}-predecessor",
+                      "full" if unsupported else "disable-main",
+                      "predecessor",
+                      True,
                   ),
               )
           if method in {"release", "remove", "stop"}:
@@ -185,7 +194,9 @@ in
       for index, state_cell_id in enumerate(COHORT_CELLS):
           adapter, interface, _, method, scenario = state_cell_id.split("/")
           label = f"provider-state-reference-{index:03d}"
-          retained_host, predecessor_host = reference_pair(label, adapter, method)
+          retained_host, predecessor_host = reference_pair(
+              label, adapter, method, scenario
+          )
           retained_generation = settle_reference(retained_host, label + "-retained")
           predecessor_generation = settle_reference(
               predecessor_host, label + "-predecessor"

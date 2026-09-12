@@ -134,6 +134,7 @@ def run_unsupported_transfer_flight(
 
     source_generation = EFFECT_FLIGHT.current_generation()
     source_authority = generation_runtime_authority(source_generation)
+    ledger_before = EFFECT_ORACLES.native_resource_ledger()
     baseline_sequence = EFFECT_FLIGHT.arm_baseline(flight)
     EFFECT_FLIGHT.start_switch(f"provider-transfer-{flight.label}.service", host)
     held = EFFECT_FLIGHT.wait_held(
@@ -143,7 +144,6 @@ def run_unsupported_transfer_flight(
     )
     state, baseline = EFFECT_FLIGHT.acquisition_state(held, flight, observe)
     state["source-generation"] = source_generation
-    ledger_before = EFFECT_ORACLES.native_resource_ledger()
 
     operation_path = f"{EFFECT_FLIGHT.BOUNDARY_ROOT}/{flight.label}-operation.json"
     contract_path = state["root"] + "/provider-state-transfer-contract.json"

@@ -185,11 +185,18 @@ class ProviderStateEvidence:
         )
         if current_revision is None and desired_revision is None:
             raise RuntimeError("retained transition has no exact resource revision")
-        owner_before = _route_owner(binding_before, assignment_before)
-        owner_after = _route_owner(binding_after, assignment_after)
-        _at_most_one_ledger_owner(observation.ledger_before, resource)
-        _at_most_one_ledger_owner(observation.ledger_unsettled, resource)
-        _at_most_one_ledger_owner(observation.ledger_after, resource)
+        route_owner_before = _route_owner(binding_before, assignment_before)
+        route_owner_after = _route_owner(binding_after, assignment_after)
+        owner_before = _exact_ledger_claim(observation.ledger_before, resource)
+        owner_unsettled = _exact_ledger_claim(
+            observation.ledger_unsettled, resource
+        )
+        owner_after = _exact_ledger_claim(observation.ledger_after, resource)
+        _ledger_claim_matches_route(owner_before, binding_before, assignment_before)
+        _ledger_claim_matches_route(owner_unsettled, binding_before, assignment_before)
+        _ledger_claim_matches_route(owner_after, binding_after, assignment_after)
+        if _ledger_claim_core(owner_before) != _ledger_claim_core(owner_after):
+            raise RuntimeError("retained activation changed the resource owner identity")
         if observation.live_before is None or observation.live_after is None:
             raise RuntimeError("retained-target provider observation is absent")
 
@@ -304,9 +311,11 @@ class ProviderStateEvidence:
                     {
                         "resource": resource,
                         "owner-before": owner_before,
+                        "owner-unsettled": owner_unsettled,
                         "owner-after": owner_after,
                         "same-owner-core": (
-                            _owner_core(owner_before) == _owner_core(owner_after)
+                            _owner_core(route_owner_before)
+                            == _owner_core(route_owner_after)
                         ),
                         "authorized-route-count": 1,
                     },
@@ -386,20 +395,29 @@ class ProviderStateEvidence:
         _fresh_receiving_authority(source_authority, candidate_authority)
         if source_assignment["incarnation"] == candidate_assignment["incarnation"]:
             raise RuntimeError("candidate reused the predecessor provider incarnation")
-        _exact_resource_observation(source_authority, operation, usable=False)
+        source_resource = _exact_resource_observation(
+            source_authority, operation, usable=True
+        )
+        if source_resource["state"].get("state") != "present":
+            raise RuntimeError("transfer predecessor resource is not present and healthy")
         _exact_resource_observation(candidate_authority, operation, usable=False)
         dependency_edge = _exact_dependent(
             bundle, operation_identity, observation.dependent_operation
         )
 
         resource = operation["target"]["resource"]
-        _at_most_one_ledger_owner(observation.ledger_before, resource)
-        _at_most_one_ledger_owner(observation.ledger_after, resource)
-        ledger_owners_before = _ledger_owners(observation.ledger_before, resource)
-        ledger_owners_after = _ledger_owners(observation.ledger_after, resource)
-        if ledger_owners_after != ledger_owners_before:
+        predecessor_owner = _exact_ledger_claim(observation.ledger_before, resource)
+        successor_owner = _exact_ledger_claim(observation.ledger_after, resource)
+        _ledger_claim_matches_route(
+            predecessor_owner, source_binding, source_assignment
+        )
+        _ledger_claim_matches_route(
+            successor_owner, source_binding, source_assignment
+        )
+        if successor_owner != predecessor_owner:
             raise RuntimeError("transfer rejection changed durable ownership")
-        predecessor_owner = _route_owner(source_binding, source_assignment)
+        ledger_owners_before = [predecessor_owner]
+        ledger_owners_after = [successor_owner]
         subject = _subject(
             cell,
             bundle,
@@ -859,6 +877,55 @@ def _owner_core(owner: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in owner.items() if key != "incarnation"}
 
 
+def _ledger_claim_core(owner: dict[str, Any]) -> dict[str, Any]:
+    """Returns stable physical, logical, provider, and handler ownership."""
+
+    if owner["kind"] == "provider-owner":
+        record = owner["record"]
+        return {
+            "kind": owner["kind"],
+            **{
+                key: record.get(key)
+                for key in ("resource", "physical", "identity", "handler")
+            },
+        }
+    return {
+        "kind": owner["kind"],
+        **owner["identity"],
+    }
+
+
+def _ledger_claim_matches_route(
+    owner: dict[str, Any],
+    binding: dict[str, Any],
+    assignment: dict[str, Any],
+) -> None:
+    """Requires the durable owner row to name the authenticated terminal route."""
+
+    if owner["kind"] == "terminal-consumer":
+        matches = [
+            consumer
+            for consumer in owner["records"]
+            if consumer.get("binding") == binding["id"]
+            and consumer.get("provider") == assignment["provider"]
+        ]
+        if not matches:
+            raise RuntimeError(
+                "durable consumer claim names another authenticated handler route"
+            )
+        return
+
+    record = owner["record"]
+    expected_handler = {
+        "package": binding["provider_package"],
+        "provider": assignment["provider"],
+        "interface": assignment["interface"],
+        "implementation": assignment["implementation"],
+    }
+    if record.get("handler") != expected_handler:
+        raise RuntimeError("durable owner names another authenticated handler route")
+
+
 def _at_most_one_ledger_owner(
     ledger: dict[str, Any], resource: dict[str, Any]
 ) -> None:
@@ -874,6 +941,48 @@ def _at_most_one_ledger_owner(
     owners = _ledger_owners(ledger, resource)
     if len(owners) > 1:
         raise RuntimeError("native provider ledger admits multiple resource owners")
+
+
+def _exact_ledger_claim(
+    ledger: dict[str, Any], resource: dict[str, Any]
+) -> dict[str, Any]:
+    """Returns the sole durable provider or terminal claim for a resource."""
+
+    _at_most_one_ledger_owner(ledger, resource)
+    owners = _ledger_owners(ledger, resource)
+    consumers = [
+        consumer
+        for consumer in ledger["consumers"]
+        if consumer.get("logical") == resource
+    ]
+    if owners:
+        if consumers and any(
+            consumer.get("physical") != owners[0].get("physical")
+            for consumer in consumers
+        ):
+            raise RuntimeError("provider owner and terminal consumer claims disagree")
+        return {"kind": "provider-owner", "record": owners[0]}
+    if not consumers:
+        raise RuntimeError("native provider ledger lacks one exact resource claim")
+
+    identities = {
+        canonical(
+            {
+                "logical": consumer.get("logical"),
+                "physical": consumer.get("physical"),
+                "owner": consumer.get("owner"),
+                "provider": consumer.get("provider"),
+            }
+        )
+        for consumer in consumers
+    }
+    if len(identities) != 1:
+        raise RuntimeError("native resource has conflicting terminal consumer claims")
+    return {
+        "kind": "terminal-consumer",
+        "identity": json.loads(next(iter(identities))),
+        "records": consumers,
+    }
 
 
 def _ledger_owners(
