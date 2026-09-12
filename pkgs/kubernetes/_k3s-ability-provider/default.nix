@@ -1,5 +1,5 @@
 ##! Pure K3s aggregate provider for the Kubernetes activation fixture.
-let
+{bootstrapMatrix ? false}: let
   systemdBootstrap = {
     name = "aos.systemd-provider-bootstrap";
     abi = 1;
@@ -90,13 +90,31 @@ let
     objects = builtins.map (objectFor context) contributions;
     serviceValue = {unit = "k3s.service";};
     serviceResource = resourceFor context "server-service";
-    resources = builtins.sort (left: right: left.resource.key < right.resource.key) (
+    serviceValues =
       [
         {
+          name = "primary";
           resource = serviceResource;
-          revision = revisionFor serviceValue;
+          value = serviceValue;
         }
       ]
+      ++ builtins.filter (entry: entry != null) [
+        (
+          if bootstrapMatrix
+          then {
+            name = "secondary";
+            resource = resourceFor context "matrix-secondary-service";
+            value = {unit = "aos-kubernetes-matrix-foreign.service";};
+          }
+          else null
+        )
+      ];
+    resources = builtins.sort (left: right: left.resource.key < right.resource.key) (
+      (map (service: {
+          inherit (service) resource;
+          revision = revisionFor service.value;
+        })
+        serviceValues)
       ++ builtins.map (object: {
         inherit (object) resource revision;
       })
@@ -170,6 +188,30 @@ let
           };
         };
       }
+      {
+        aggregate = {
+          provider = context.provider;
+          group = "k3s";
+        };
+        interface = context.interface;
+        port = "services";
+        value = {
+          source = "object";
+          fields = builtins.listToAttrs (map (service: {
+              name = service.name;
+              value = {
+                source = "resource-reference";
+                reference = {
+                  interface = context.interface;
+                  resource = service.resource;
+                  operations = ["observe-manager" "start" "stop"];
+                  lifetime = "instance";
+                };
+              };
+            })
+            serviceValues);
+        };
+      }
     ];
     controllers =
       builtins.map (revision: {
@@ -187,10 +229,11 @@ in rec {
   transition = context: let
     changed = builtins.filter (change: change.kind == "create" || change.kind == "update") context.changes;
     removed = builtins.filter (change: change.kind == "remove") context.changes;
-    serviceChanged = builtins.filter (change: change.resource.key == "server-service") changed;
-    objectChanged = builtins.filter (change: change.resource.key != "server-service") changed;
-    serviceRemoved = builtins.filter (change: change.resource.key == "server-service") removed;
-    objectRemoved = builtins.filter (change: change.resource.key != "server-service") removed;
+    isService = change: builtins.match ".*-service" change.resource.key != null;
+    serviceChanged = builtins.filter isService changed;
+    objectChanged = builtins.filter (change: !isService change) changed;
+    serviceRemoved = builtins.filter isService removed;
+    objectRemoved = builtins.filter (change: !isService change) removed;
     binding = key: methods: let
       selected = builtins.filter (entry:
         entry.binding.request.consumer
@@ -248,16 +291,24 @@ in rec {
       preconditions = [];
       accesses = [{inherit resource mode;}];
     };
-    serviceResource = resourceFor context "server-service";
-    starts = builtins.map (_:
+    starts = builtins.map (change:
       operation systemd "start" {
         kind = "service-lifecycle";
         action = "start";
       }
-      serviceResource "exclusive-write")
+      change.resource "exclusive-write")
     serviceChanged;
     needsKubernetes = objectChanged != [] || objectRemoved != [];
-    ready = operation systemd "observe-manager" {kind = "observe-readiness";} serviceResource "read";
+    readinessResources =
+      if bootstrapMatrix
+      then [
+        (resourceFor context "matrix-secondary-service")
+        (resourceFor context "server-service")
+      ]
+      else [resourceFor context "server-service"];
+    ready = map (resource:
+      operation systemd "observe-manager" {kind = "observe-readiness";} resource "read")
+    readinessResources;
     applies = builtins.map (change:
       operation kubernetes "apply" {
         kind = "kubernetes-object";
@@ -272,22 +323,24 @@ in rec {
       }
       change.resource "exclusive-write")
     objectRemoved;
-    stops = builtins.map (_:
+    stops = builtins.map (change:
       operation systemd "stop" {
         kind = "service-lifecycle";
         action = "stop";
       }
-      serviceResource "exclusive-write")
+      change.resource "exclusive-write")
     serviceRemoved;
-    readinessEdges = builtins.map (objectOperation: {
-      from = operationNode ready;
-      to = operationNode objectOperation;
-      kind = "readiness";
-    }) (applies ++ deletes);
+    readinessEdges = builtins.concatMap (readiness:
+      builtins.map (objectOperation: {
+        from = operationNode readiness;
+        to = operationNode objectOperation;
+        kind = "readiness";
+      }) (applies ++ deletes))
+    ready;
     startEdges =
       builtins.map (start: {
         from = operationNode start;
-        to = operationNode ready;
+        to = operationNode (builtins.head ready);
         kind = "required-success";
       })
       starts;
@@ -305,7 +358,9 @@ in rec {
       starts
       ++ (
         if needsKubernetes
-        then [ready]
+        then ready
+        else if bootstrapMatrix
+        then ready
         else []
       )
       ++ applies
@@ -323,7 +378,7 @@ in rec {
       then [
         {
           binding = kubernetes.id;
-          producer = ready.key;
+          producer = (builtins.head ready).key;
           output = "cluster-assignment";
         }
       ]

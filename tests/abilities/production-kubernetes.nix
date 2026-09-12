@@ -18,7 +18,7 @@
 
   k3sInterface = {
     abi = 1;
-    descriptor = "sha256:20917b76cabc6d68475c0bf1d0cb7e95bd0a6cb92fd3afeca5bcaf292d4943e1";
+    descriptor = "sha256:64fe45877c89cb26fa3d46e31af58b9ecdd69b276f15535242156f095ea30524";
     name = "aos.k3s-cluster";
   };
   kubernetesInterface = {
