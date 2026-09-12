@@ -60,6 +60,13 @@ pub const FOREGROUND_PROCESS_SUPERVISION_GUARANTEE_NAME: &str =
 pub const FOREGROUND_PROCESS_OBSERVATION_SCHEMA: &str =
     "aos.ability.foreground-process-observation/v1";
 
+/// Names the terminal handler catalog entry for foreground process effects.
+pub const FOREGROUND_PROCESS_HANDLER_KEY: &str = "native-foreground-process-v1";
+
+/// Names the inert handler marker retained in application-container metadata.
+pub const FOREGROUND_PROCESS_HANDLER_ENTRY_POINT: &str =
+    "libexec/aos-foreground-process-handler-v1";
+
 /// Names the native Kubernetes object-effects interface.
 pub const KUBERNETES_OBJECT_INTERFACE_NAME: &str = "aos.kubernetes-object-effects";
 
@@ -577,6 +584,53 @@ pub fn foreground_process_interface() -> Result<InterfaceDocument> {
 /// Returns an error if built-in construction or canonical encoding fails.
 pub fn foreground_process_interface_key() -> Result<InterfaceKey> {
     Ok(foreground_process_interface()?.interface_key()?)
+}
+
+/// Returns the exact terminal handler key used by the foreground supervisor.
+///
+/// # Errors
+///
+/// Returns an error only if the built-in key violates the identity grammar.
+pub fn foreground_process_handler_key() -> Result<LocalKey> {
+    Ok(LocalKey::new(FOREGROUND_PROCESS_HANDLER_KEY)?)
+}
+
+/// Builds the terminal foreground-process handler contract for an artifact.
+///
+/// The handler entry point is an authenticated metadata marker. The
+/// application-container executor invokes the workload entry point carried by
+/// the resource request after independently checking that artifact.
+///
+/// # Errors
+///
+/// Returns an error only if a built-in identifier violates its grammar.
+pub fn foreground_process_handler(artifact: ArtifactReference) -> Result<HandlerDescriptor> {
+    Ok(HandlerDescriptor {
+        artifact,
+        entry_point: FOREGROUND_PROCESS_HANDLER_ENTRY_POINT.to_string(),
+        arguments: foreground_process_request_schema()?,
+        result: foreground_process_observation_schema()?,
+    })
+}
+
+/// Builds the native foreground-process provider implementation.
+///
+/// # Errors
+///
+/// Returns an error if built-in construction or canonical encoding fails.
+pub fn foreground_process_provider(artifact: ArtifactReference) -> Result<ProviderImplementation> {
+    let interface = foreground_process_interface_key()?;
+
+    Ok(ProviderImplementation {
+        interface: interface.clone(),
+        artifact,
+        requirements: Vec::new(),
+        implementation: ImplementationKind::TerminalHandler {
+            handler: foreground_process_handler_key()?,
+        },
+        owns_resource_kinds: vec![interface.name],
+        state_format: None,
+    })
 }
 
 /// Builds the public lifecycle and readiness contract for a planned systemd provider.
