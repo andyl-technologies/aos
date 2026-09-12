@@ -1,14 +1,14 @@
 {
   "cells": [
     {
-      "blockers": ["foreground-supervisor-runtime-and-observation-evidence"],
-      "evidence": [],
+      "blockers": [],
+      "evidence": ["checks.fleet.ability-native-foreground-container"],
       "id": "foreground-process/application-container",
       "interface_descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
       "interface_name": "aos.foreground-process",
       "required_guarantees": ["aos.foreground-process-supervision"],
       "stage": "application-container",
-      "status": "missing",
+      "status": "qualified",
       "strategy": "foreground-process"
     },
     {

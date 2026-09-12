@@ -720,7 +720,11 @@ in {
     credentialChanges = optionalChangesThrough credential;
     credentialChanged = createdOrUpdated credentialChanges;
     credentialRemoved = builtins.filter (change: change.kind == "remove") credentialChanges;
-    serviceChanged = createdOrUpdated (changesThrough service);
+    serviceChanged = createdOrUpdated (changesThrough (
+      if usesForeground
+      then serviceTerminal
+      else service
+    ));
     endpointChanges = changesForRequest "endpoint" endpointEffects ["materialize" "observe" "release"];
     networkPolicyChanges = changesForRequest "network-policy" networkPolicyEffects ["apply" "observe" "remove"];
     storageChanges = changesForRequest "storage" storageEffects ["ensure" "observe" "release"];
@@ -741,7 +745,9 @@ in {
     retained = builtins.filter (change: change.kind != "remove") virtualHostChanges;
     removed = builtins.filter (change: change.kind == "remove") virtualHostChanges;
     serviceAction =
-      if
+      if usesForeground
+      then "start"
+      else if
         builtins.any
         (change: builtins.elem change.kind ["create" "reconcile-stopped"])
         serviceChanged
@@ -1652,9 +1658,7 @@ in {
       obligations = [];
     };
   in
-    if usesForeground
-    then throw "nginx foreground activation remains an unresolved deployment obligation"
-    else if
+    if
       associationChanges
       == []
       && removed == []

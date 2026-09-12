@@ -188,8 +188,8 @@ in {
         message = "Every native adapter method and failure boundary must retain a mandatory production-VM qualification cell.";
       }
       {
-        assertion = containerExecutionMatrix.missing_container_cells == 2;
-        message = "System-container manager and application-container foreground execution must remain explicitly unqualified until their production paths pass.";
+        assertion = containerExecutionMatrix.missing_container_cells == 1;
+        message = "System-container manager execution must remain explicitly unqualified until its production path passes.";
       }
     ];
   };

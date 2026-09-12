@@ -3,7 +3,7 @@
   lib,
   surface ? builtins.fromJSON (builtins.readFile ../container-execution-surface.json),
 }: let
-  expectedDigest = "68d34d325fb4dfacfba8d327be657304dbc518273cd9147d1446858765980543";
+  expectedDigest = "756c1d1737ed27196a77a3997c357bb6a2eb34cf1d6ba29d0108912bdc7e7c5a";
   digest = builtins.hashString "sha256" (builtins.toJSON surface);
   expectedKeys = [
     "blockers"
@@ -56,13 +56,14 @@
       "pr232-durable-lifecycle-observation-evidence"
     ]
     && foreground != null
-    && foreground.status == "missing"
-    && foreground.blockers == ["foreground-supervisor-runtime-and-observation-evidence"];
+    && foreground.status == "qualified"
+    && foreground.blockers == []
+    && foreground.evidence == ["checks.fleet.ability-native-foreground-container"];
 in
   if !valid
   then throw "Container execution qualification surface is invalid."
   else {
     inherit (surface) cells;
     check = "stage-specific-manager-and-foreground-contracts-with-unqualified-container-cells";
-    missing_container_cells = 2;
+    missing_container_cells = 1;
   }

@@ -44,6 +44,7 @@ pub mod activation;
 pub mod classify;
 pub mod diagnostics;
 pub mod dry_run;
+pub mod foreground_process_ability;
 pub mod kubernetes_ability;
 mod kubernetes_transport;
 pub mod managed_configuration_ability;

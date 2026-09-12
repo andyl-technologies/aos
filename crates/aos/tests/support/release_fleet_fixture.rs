@@ -5,6 +5,7 @@
 
 mod ability_activation_fixture;
 mod artifact_consumption_fixture;
+mod foreground_process_fixture;
 mod initrd_contract_fixture;
 mod kubernetes_activation_fixture;
 mod postgresql_activation_fixture;
@@ -91,6 +92,7 @@ async fn main() -> Result<()> {
         Some("artifact-consumption-bundle") => {
             artifact_consumption_fixture::generate(&arguments[1..])
         }
+        Some("foreground-process") => foreground_process_fixture::run(&arguments[1..]),
         Some("kubernetes-activation") => kubernetes_activation_fixture::generate(&arguments[1..]),
         Some("postgresql-activation") => postgresql_activation_fixture::generate(&arguments[1..]),
         Some("postgresql-terminal-activation") => {

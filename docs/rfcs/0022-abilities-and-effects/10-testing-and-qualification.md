@@ -31,6 +31,12 @@ tests must use the real providers for the behavior they claim to exercise.
 | [Qualification regressions](../../../tests/qualification/default.nix) | Aggregate regression coverage referenced by shared policy | Cached derivation success is not fresh release admission |
 | [Native qualification adapter](../../../lib/testing/qualification.nix) | Execute frozen release cases and collect exact-subject observations | Only the stated functions and recorded configurations |
 
+The application-container foreground flight runs the production supervisor and
+reference nginx inside the AOS OCI runtime. Separate controller exec sessions
+prove recovery adoption, idempotent start, exact-command rejection, live HTTP
+service, bounded stop, and durable absence. Qualification does not infer the
+system-container manager result from this application-container evidence.
+
 The current single-VM and fleet harnesses have distinct backend/transport
 implementations. Reuse them without assuming that a pass on one backend proves
 all others. Preserve required builder features and use AOS-built tools and

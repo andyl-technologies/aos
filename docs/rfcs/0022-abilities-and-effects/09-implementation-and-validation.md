@@ -115,6 +115,15 @@ operations. Keep the current runtime rejection until that admission path and
 its enforcement are complete. A foreground deployment is a separate supported
 interface, not a fallback that strips unsupported unit semantics.
 
+The application-container foreground interface is qualified by
+`checks.fleet.ability-native-foreground-container`. Its trusted adapter records
+intent before launch, binds recovery to the exact artifact, argv, logical
+resource, revision, user, PID/mount/network/user namespaces, and cgroup, and
+retains the ownership receipt until bounded stop proves absence. This closes
+only the foreground-process/application-container cell. The system-container
+manager cell remains blocked on its separately tracked admission, broker, and
+namespace evidence.
+
 Exit criteria: planned versus available providers, stale inventory, missing
 delegation, provider removal, conditional TLS, incompatible ABI, and bootstrap
 cycles have explicit tested outcomes. Existing system desired-package and

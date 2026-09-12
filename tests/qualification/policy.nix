@@ -380,7 +380,7 @@ in
     nativeAdapterMatrix.check
     containerExecutionMatrix.check
   ];
-  assert containerExecutionMatrix.missing_container_cells == 2;
+  assert containerExecutionMatrix.missing_container_cells == 1;
   assert rejectsNativeMatrix {cells = remainingNativeCells;};
   assert rejectsNativeMatrix {cells = [firstNativeCell] ++ nativeCells;};
   assert rejectsNativeMatrix {cells = [(builtins.elemAt nativeCells 1) firstNativeCell] ++ lib.drop 2 nativeCells;};
