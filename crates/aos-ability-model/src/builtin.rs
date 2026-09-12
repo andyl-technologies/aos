@@ -8,13 +8,14 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use anyhow::Result;
+use aos_contract::Sha256Digest;
 
 use crate::{
-    ArtifactReference, HandlerDescriptor, ImplementationKind, IndeterminateSemantics,
-    InterfaceDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, KubernetesObjectAction,
-    LifecycleSemantics, LocalKey, MethodDescriptor, OperationFamily, OutcomeSemantics,
-    OutputDescriptor, ProviderImplementation, ResourceLifetime, ServiceAction, StringSyntax,
-    ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
+    ArtifactReference, ExecutionStage, GuaranteeKey, HandlerDescriptor, ImplementationKind,
+    IndeterminateSemantics, InterfaceDescriptor, InterfaceDocument, InterfaceKey, InterfaceName,
+    KubernetesObjectAction, LifecycleSemantics, LocalKey, MethodDescriptor, OperationFamily,
+    OutcomeSemantics, OutputDescriptor, ProviderImplementation, ResourceLifetime, ServiceAction,
+    StringSyntax, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
 };
 
 mod resource;
@@ -41,6 +42,24 @@ pub const SYSTEMD_MANAGER_HANDLER_ENTRY_POINT: &str = "libexec/aos-systemd-manag
 /// Carries the exact durable evidence schema emitted by the systemd adapter.
 pub const SYSTEMD_OBSERVATION_SCHEMA: &str = "aos.ability.systemd-observation/v1";
 
+/// Names the guarantee that binds lifecycle effects to the target environment's local manager.
+pub const LOCAL_SYSTEMD_MANAGER_GUARANTEE_NAME: &str = "aos.local-systemd-manager";
+
+/// Names the guarantee that authenticates delegated system-container manager control.
+pub const SYSTEM_CONTAINER_MANAGER_DELEGATION_GUARANTEE_NAME: &str =
+    "aos.system-container-manager-delegation";
+
+/// Names the explicit application-container foreground supervision interface.
+pub const FOREGROUND_PROCESS_INTERFACE_NAME: &str = "aos.foreground-process";
+
+/// Names the guarantee that retains and supervises the exact foreground process.
+pub const FOREGROUND_PROCESS_SUPERVISION_GUARANTEE_NAME: &str =
+    "aos.foreground-process-supervision";
+
+/// Carries the exact observation schema emitted by a foreground-process provider.
+pub const FOREGROUND_PROCESS_OBSERVATION_SCHEMA: &str =
+    "aos.ability.foreground-process-observation/v1";
+
 /// Names the native Kubernetes object-effects interface.
 pub const KUBERNETES_OBJECT_INTERFACE_NAME: &str = "aos.kubernetes-object-effects";
 
@@ -59,6 +78,160 @@ const SYSTEMD_IDENTITY_MAX_BYTES: u64 = 1_024;
 const SYSTEMD_STATE_MAX_BYTES: u64 = 128;
 const SYSTEMD_JOB_PATH_MAX_BYTES: u64 = 4_096;
 const KUBERNETES_FIELD_MAX_BYTES: u64 = 4_096;
+const FOREGROUND_ENTRY_POINT_MAX_BYTES: u64 = 4_096;
+const FOREGROUND_ARGUMENT_MAX_BYTES: u64 = 4_096;
+const FOREGROUND_ARGUMENT_MAX_ITEMS: u64 = 128;
+
+/// Selects a lifecycle strategy without treating one manager form as another.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionStrategy {
+    /// Uses the systemd manager local to the selected execution environment.
+    SystemdManager,
+    /// Supervises an application container's declared foreground process.
+    ForegroundProcess,
+}
+
+/// Describes the stages and exact guarantees accepted by one built-in strategy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionStrategyCompatibility {
+    /// Identifies the exact interface carrying the lifecycle strategy.
+    pub interface: InterfaceKey,
+    /// Names the strategy independently from its implementation.
+    pub strategy: ExecutionStrategy,
+    /// Maps each supported stage to its required exact guarantees.
+    pub stages: BTreeMap<ExecutionStage, Vec<GuaranteeKey>>,
+}
+
+impl ExecutionStrategyCompatibility {
+    /// Returns the guarantees required at `stage`, or `None` when the stage is unsupported.
+    #[must_use]
+    pub fn required_guarantees(&self, stage: ExecutionStage) -> Option<&[GuaranteeKey]> {
+        self.stages.get(&stage).map(Vec::as_slice)
+    }
+}
+
+/// Builds the guarantee binding systemd calls to the selected environment's local manager.
+///
+/// # Errors
+///
+/// Returns an error only if a built-in guarantee name or version is invalid.
+pub fn local_systemd_manager_guarantee() -> Result<GuaranteeKey> {
+    execution_guarantee(
+        LOCAL_SYSTEMD_MANAGER_GUARANTEE_NAME,
+        "lifecycle calls use only the authenticated systemd manager transport for the provider environment",
+    )
+}
+
+/// Builds the guarantee proving system-container manager delegation and containment.
+///
+/// # Errors
+///
+/// Returns an error only if a built-in guarantee name or version is invalid.
+pub fn system_container_manager_delegation_guarantee() -> Result<GuaranteeKey> {
+    execution_guarantee(
+        SYSTEM_CONTAINER_MANAGER_DELEGATION_GUARANTEE_NAME,
+        "the system-container manager endpoint is broker-authenticated, delegated, and unable to control the host manager",
+    )
+}
+
+/// Builds the guarantee retaining one exact supervised foreground process.
+///
+/// # Errors
+///
+/// Returns an error only if a built-in guarantee name or version is invalid.
+pub fn foreground_process_supervision_guarantee() -> Result<GuaranteeKey> {
+    execution_guarantee(
+        FOREGROUND_PROCESS_SUPERVISION_GUARANTEE_NAME,
+        "the application-container executor retains and observes the exact declared foreground process",
+    )
+}
+
+/// Returns stage compatibility metadata for a recognized execution strategy interface.
+///
+/// The exact interface descriptor must match. A foreign interface cannot acquire
+/// built-in stage semantics by reusing a well-known name.
+///
+/// # Errors
+///
+/// Returns an error if a built-in interface or guarantee cannot be constructed.
+pub fn execution_strategy_compatibility(
+    interface: &InterfaceKey,
+) -> Result<Option<ExecutionStrategyCompatibility>> {
+    if interface == &systemd_manager_interface_key()? {
+        return systemd_execution_compatibility(interface.clone()).map(Some);
+    }
+    if interface == &foreground_process_interface_key()? {
+        return foreground_execution_compatibility(interface.clone()).map(Some);
+    }
+    Ok(None)
+}
+
+/// Returns strategy metadata declared by exact interface guarantees.
+///
+/// This allows separately versioned provider interfaces to opt into the same
+/// execution-stage policy without sharing the built-in interface name. The
+/// guarantee descriptor, not its textual name alone, selects the semantics.
+///
+/// # Errors
+///
+/// Returns an error if the document declares conflicting strategies or its
+/// canonical identity cannot be computed.
+pub fn declared_execution_strategy_compatibility(
+    interface: &InterfaceDocument,
+) -> Result<Option<ExecutionStrategyCompatibility>> {
+    let local_systemd = local_systemd_manager_guarantee()?;
+    let foreground = foreground_process_supervision_guarantee()?;
+    let declares_systemd = interface.interface.guarantees.contains(&local_systemd);
+    let declares_foreground = interface.interface.guarantees.contains(&foreground);
+
+    anyhow::ensure!(
+        !(declares_systemd && declares_foreground),
+        "interface declares conflicting execution strategies"
+    );
+    let key = interface.interface_key()?;
+    if declares_systemd {
+        return systemd_execution_compatibility(key).map(Some);
+    }
+    if declares_foreground {
+        return foreground_execution_compatibility(key).map(Some);
+    }
+    Ok(None)
+}
+
+fn systemd_execution_compatibility(
+    interface: InterfaceKey,
+) -> Result<ExecutionStrategyCompatibility> {
+    Ok(ExecutionStrategyCompatibility {
+        interface,
+        strategy: ExecutionStrategy::SystemdManager,
+        stages: BTreeMap::from([
+            (
+                ExecutionStage::Host,
+                vec![local_systemd_manager_guarantee()?],
+            ),
+            (
+                ExecutionStage::SystemContainer,
+                vec![
+                    local_systemd_manager_guarantee()?,
+                    system_container_manager_delegation_guarantee()?,
+                ],
+            ),
+        ]),
+    })
+}
+
+fn foreground_execution_compatibility(
+    interface: InterfaceKey,
+) -> Result<ExecutionStrategyCompatibility> {
+    Ok(ExecutionStrategyCompatibility {
+        interface,
+        strategy: ExecutionStrategy::ForegroundProcess,
+        stages: BTreeMap::from([(
+            ExecutionStage::ApplicationContainer,
+            vec![foreground_process_supervision_guarantee()?],
+        )]),
+    })
+}
 
 /// Builds the exact public interface implemented by the Kubernetes object adapter.
 ///
@@ -310,7 +483,10 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
                 retains_persistent_by_default: true,
                 persistent_delete_method: None,
             },
-            guarantees: Vec::new(),
+            guarantees: vec![
+                local_systemd_manager_guarantee()?,
+                system_container_manager_delegation_guarantee()?,
+            ],
         },
     })
 }
@@ -322,6 +498,85 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
 /// Returns an error if built-in construction or canonical encoding fails.
 pub fn systemd_manager_interface_key() -> Result<InterfaceKey> {
     Ok(systemd_manager_interface()?.interface_key()?)
+}
+
+/// Builds the explicit application-container foreground-process interface.
+///
+/// This contract does not emulate systemd unit behavior. It exposes only
+/// foreground start, stop, and observation semantics, and requires an exact
+/// supervisor guarantee supplied by the application-container executor.
+///
+/// # Errors
+///
+/// Returns an error only if a built-in identifier violates the identity grammar.
+pub fn foreground_process_interface() -> Result<InterfaceDocument> {
+    let interface_name = InterfaceName::new(FOREGROUND_PROCESS_INTERFACE_NAME)?;
+    let methods = [
+        ("observe", OperationFamily::ObserveReadiness),
+        (
+            "start",
+            OperationFamily::ServiceLifecycle {
+                action: ServiceAction::Start,
+            },
+        ),
+        (
+            "stop",
+            OperationFamily::ServiceLifecycle {
+                action: ServiceAction::Stop,
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(name, family)| {
+        let method = LocalKey::new(name)?;
+        Ok((
+            method.clone(),
+            MethodDescriptor {
+                operation_family: family,
+                parameters: ValueSchema::Boolean,
+                target_resource: interface_name.clone(),
+                outputs: BTreeMap::new(),
+                permitted_operations: vec![method],
+                guarantees: Vec::new(),
+                outcome: OutcomeSemantics {
+                    completion_evidence: foreground_process_observation_schema()?,
+                    observation_evidence: foreground_process_observation_schema()?,
+                    supports_rejected_before_effect: true,
+                    indeterminate: IndeterminateSemantics::Reconcile,
+                },
+            },
+        ))
+    })
+    .collect::<Result<BTreeMap<_, _>>>()?;
+
+    Ok(InterfaceDocument {
+        schema: InterfaceDocument::SCHEMA.to_string(),
+        required_features: Vec::new(),
+        interface: InterfaceDescriptor {
+            name: interface_name,
+            abi: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in ABI"))?,
+            request: foreground_process_request_schema()?,
+            configuration: None,
+            outputs: BTreeMap::new(),
+            methods,
+            lifecycle: LifecycleSemantics {
+                stable_resource_identity: true,
+                releases_ephemeral_on_disable: true,
+                retains_persistent_by_default: false,
+                persistent_delete_method: None,
+            },
+            guarantees: vec![foreground_process_supervision_guarantee()?],
+        },
+    })
+}
+
+/// Computes the canonical identity of the foreground-process interface.
+///
+/// # Errors
+///
+/// Returns an error if built-in construction or canonical encoding fails.
+pub fn foreground_process_interface_key() -> Result<InterfaceKey> {
+    Ok(foreground_process_interface()?.interface_key()?)
 }
 
 /// Builds the public lifecycle and readiness contract for a planned systemd provider.
@@ -463,6 +718,55 @@ pub fn systemd_manager_provider(artifact: ArtifactReference) -> Result<ProviderI
     })
 }
 
+fn execution_guarantee(name: &str, semantics: &str) -> Result<GuaranteeKey> {
+    Ok(GuaranteeKey {
+        name: InterfaceName::new(name)?,
+        version: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in version"))?,
+        descriptor: Sha256Digest::separated("aos.ability.execution-guarantee/v1", semantics),
+    })
+}
+
+fn foreground_process_request_schema() -> Result<ValueSchema> {
+    Ok(ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                LocalKey::new("arguments")?,
+                ValueSchema::List {
+                    element: Box::new(bounded_string(FOREGROUND_ARGUMENT_MAX_BYTES)),
+                    max_items: FOREGROUND_ARGUMENT_MAX_ITEMS,
+                },
+            ),
+            (LocalKey::new("artifact")?, ValueSchema::ArtifactReference),
+            (
+                LocalKey::new("entry_point")?,
+                bounded_string(FOREGROUND_ENTRY_POINT_MAX_BYTES),
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    })
+}
+
+fn foreground_process_observation_schema() -> Result<ValueSchema> {
+    Ok(ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                LocalKey::new("process_identity")?,
+                ValueSchema::Optional {
+                    value: Box::new(bounded_string(SYSTEMD_IDENTITY_MAX_BYTES)),
+                },
+            ),
+            (LocalKey::new("running")?, ValueSchema::Boolean),
+            (
+                LocalKey::new("schema")?,
+                ValueSchema::StringEnum {
+                    values: vec![FOREGROUND_PROCESS_OBSERVATION_SCHEMA.to_string()],
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    })
+}
+
 fn systemd_unit_schema() -> Result<ValueSchema> {
     Ok(ValueSchema::Record {
         fields: BTreeMap::from([(
@@ -559,7 +863,7 @@ mod tests {
         assert_eq!(
             key.descriptor,
             Sha256Digest::parse(
-                "sha256:5ecc38d0399d12d1ca727b93b9025a409d7379b80de200d740a340ecc9e34598"
+                "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3"
             )
             .unwrap()
         );
@@ -570,6 +874,88 @@ mod tests {
                 &BTreeSet::new(),
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn execution_strategies_are_stage_specific_and_require_exact_guarantees() {
+        let systemd = execution_strategy_compatibility(&systemd_manager_interface_key().unwrap())
+            .unwrap()
+            .expect("systemd must declare execution compatibility");
+        let foreground =
+            execution_strategy_compatibility(&foreground_process_interface_key().unwrap())
+                .unwrap()
+                .expect("foreground process must declare execution compatibility");
+
+        assert_eq!(systemd.strategy, ExecutionStrategy::SystemdManager);
+        assert_eq!(
+            systemd.required_guarantees(ExecutionStage::Host),
+            Some([local_systemd_manager_guarantee().unwrap()].as_slice())
+        );
+        assert_eq!(
+            systemd
+                .required_guarantees(ExecutionStage::SystemContainer)
+                .expect("system containers are supported")
+                .len(),
+            2
+        );
+        assert!(
+            systemd
+                .required_guarantees(ExecutionStage::ApplicationContainer)
+                .is_none()
+        );
+        assert_eq!(foreground.strategy, ExecutionStrategy::ForegroundProcess);
+        assert!(
+            foreground
+                .required_guarantees(ExecutionStage::ApplicationContainer)
+                .is_some()
+        );
+        assert!(
+            foreground
+                .required_guarantees(ExecutionStage::Host)
+                .is_none()
+        );
+        assert_eq!(
+            local_systemd_manager_guarantee().unwrap().descriptor,
+            Sha256Digest::parse(
+                "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            system_container_manager_delegation_guarantee()
+                .unwrap()
+                .descriptor,
+            Sha256Digest::parse(
+                "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            foreground_process_supervision_guarantee()
+                .unwrap()
+                .descriptor,
+            Sha256Digest::parse(
+                "sha256:b213e3c6ef28e4930a1091296e28fbfddde9f539d2daeb0287edfe955047311a"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn foreground_contract_does_not_claim_systemd_reload_semantics() {
+        let document = foreground_process_interface().unwrap();
+        let methods = document
+            .interface
+            .methods
+            .keys()
+            .map(LocalKey::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(methods, ["observe", "start", "stop"]);
+        assert_eq!(
+            document.interface.guarantees,
+            [foreground_process_supervision_guarantee().unwrap()]
         );
     }
 

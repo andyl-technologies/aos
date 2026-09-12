@@ -6,6 +6,7 @@
 }: let
   cfg = config.qualification;
   nativeAdapterMatrix = import ./_native-adapter-matrix.nix {inherit lib;};
+  containerExecutionMatrix = import ./_container-execution-matrix.nix {inherit lib;};
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   requiredChecks = {
     ability-native-activation = [
@@ -49,7 +50,10 @@
       "retained-plan-journal-and-independent-service-observation"
       "gc-after-crashed-unlocked-partial-activation-retains-recovery-set"
     ];
-    ability-native-adapter-matrix = [nativeAdapterMatrix.check];
+    ability-native-adapter-matrix = [
+      nativeAdapterMatrix.check
+      containerExecutionMatrix.check
+    ];
   };
   requiredRegressions = {
     ability-native-activation = ["checks.fleet.ability-native-activation"];
@@ -129,7 +133,9 @@ in {
         regressions = requiredRegressions.ability-native-recovery;
         invalidated_by = requiredInvalidation;
       };
-      ability-native-adapter-matrix = nativeAdapterMatrix.requirement;
+      ability-native-adapter-matrix =
+        nativeAdapterMatrix.requirement
+        // {checks = requiredChecks.ability-native-adapter-matrix;};
     };
     assertions = [
       {
@@ -142,6 +148,10 @@ in {
           == 1316
           && nativeAdapterMatrix.required_production_vm_cells == nativeAdapterMatrix.cell_count;
         message = "Every native adapter method and failure boundary must retain a mandatory production-VM qualification cell.";
+      }
+      {
+        assertion = containerExecutionMatrix.missing_container_cells == 2;
+        message = "System-container manager and application-container foreground execution must remain explicitly unqualified until their production paths pass.";
       }
     ];
   };

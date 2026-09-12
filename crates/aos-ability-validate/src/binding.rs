@@ -1178,6 +1178,8 @@ fn validate_binding(
         return BindingProviderState::Unavailable;
     };
 
+    validate_execution_strategy(interface, binding, request, index, diagnostics);
+
     let planned_provider =
         validate_provider_evidence(binding, inputs, input_index, index, diagnostics);
     let aggregation = binding_aggregation(inputs, input_index, binding);
@@ -1342,6 +1344,65 @@ fn validate_binding(
         diagnostics,
     );
     planned_provider
+}
+
+fn validate_execution_strategy(
+    interface: &aos_ability_model::InterfaceDocument,
+    binding: &Binding,
+    request: &aos_ability_model::BindingRequest,
+    index: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let compatibility =
+        match aos_ability_model::builtin::declared_execution_strategy_compatibility(interface) {
+            Ok(Some(compatibility)) => compatibility,
+            Ok(None) => return,
+            Err(error) => {
+                push_diagnostic(
+                    diagnostics,
+                    binding_diagnostic(
+                        DiagnosticCode::ExecutionStageMismatch,
+                        DiagnosticClass::InvalidContract,
+                        index,
+                        error.to_string(),
+                        binding,
+                    ),
+                );
+                return;
+            }
+        };
+    let stage = binding.provider.environment.stage;
+    let Some(required_guarantees) = compatibility.required_guarantees(stage) else {
+        push_diagnostic(
+            diagnostics,
+            binding_diagnostic(
+                DiagnosticCode::ExecutionStageMismatch,
+                DiagnosticClass::IncompatibleInterface,
+                index,
+                format!(
+                    "{:?} execution strategy is unavailable at the provider's {:?} stage",
+                    compatibility.strategy, stage
+                ),
+                binding,
+            ),
+        );
+        return;
+    };
+
+    for guarantee in required_guarantees {
+        if !request.guarantees.contains(guarantee) || !binding.guarantees.contains(guarantee) {
+            push_diagnostic(
+                diagnostics,
+                binding_diagnostic(
+                    DiagnosticCode::MissingGuarantee,
+                    DiagnosticClass::IncompatibleInterface,
+                    index,
+                    "execution strategy lacks an exact stage guarantee".to_string(),
+                    binding,
+                ),
+            );
+        }
+    }
 }
 
 fn validate_provider_evidence(

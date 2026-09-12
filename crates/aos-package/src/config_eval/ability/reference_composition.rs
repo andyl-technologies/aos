@@ -107,6 +107,15 @@ impl ReferenceFixture {
         let registry = ReferencePackageCatalog::from_environment()?;
         let packages = registry.source_packages().to_vec();
         let interface_documents = interface_documents();
+        let interface_guarantees = interface_documents
+            .iter()
+            .map(|document| {
+                (
+                    document.interface.name.as_str().to_string(),
+                    document.interface.guarantees.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let interfaces = interface_documents
             .iter()
             .map(|document| {
@@ -180,7 +189,7 @@ impl ReferenceFixture {
                     implementation: implementation.clone(),
                     state: ProviderState::Available,
                     incarnation: Some(IncarnationId::new("reference-terminal")?),
-                    guarantees: Vec::new(),
+                    guarantees: interface_guarantees[terminal_name].clone(),
                 });
             }
         }
@@ -1426,6 +1435,50 @@ fn checked_reference_source_rejects_app_selected_consumer_probe() {
 }
 
 #[test]
+fn checked_reference_source_rejects_a_strategy_incompatible_with_its_stage() {
+    let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
+        return;
+    };
+    let environment = fixture.environment.environment.clone();
+    let nginx = instance(&environment, "nginx-main");
+    let mut deployment = Deployment {
+        fixture: &mut fixture,
+        nginx_instances: vec![nginx],
+        app_routes: vec![app_route(
+            "app-a",
+            "nginx-main",
+            "safe.example",
+            false,
+            "safe-response",
+        )],
+    };
+    let mut seed = deployment.seed(true);
+    let configuration = seed.instances[0]
+        .configuration
+        .as_ref()
+        .unwrap()
+        .as_json()
+        .as_object()
+        .unwrap();
+    let mut incompatible = configuration.clone();
+    incompatible.insert(
+        "execution_strategy".to_string(),
+        serde_json::json!("foreground-process"),
+    );
+    seed.instances[0].configuration = Some(value(serde_json::Value::Object(incompatible)));
+
+    let error = match deployment.try_compose(seed) {
+        Ok(_) => panic!("an incompatible execution strategy reached a planning snapshot"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        CompositionError::Evaluation { ref source, .. }
+            if source.to_string().contains("execution strategy is incompatible")
+    ));
+}
+
+#[test]
 fn checked_reference_source_rejects_duplicate_server_names_per_nginx_instance() {
     let Some(mut fixture) = ReferenceFixture::from_environment().unwrap() else {
         return;
@@ -2096,6 +2149,15 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                 },
             ),
             (
+                key("execution_strategy"),
+                ValueSchema::StringEnum {
+                    values: vec![
+                        "foreground-process".to_string(),
+                        "systemd-manager".to_string(),
+                    ],
+                },
+            ),
+            (
                 key("port"),
                 ValueSchema::Integer {
                     minimum: 1024,
@@ -2264,6 +2326,16 @@ fn interface_documents() -> Vec<InterfaceDocument> {
             ValueSchema::Boolean,
             Vec::new(),
         ),
+        aos_ability_model::builtin::foreground_process_interface().unwrap(),
+    ];
+    documents
+        .iter_mut()
+        .find(|document| document.interface.name.as_str() == "aos.systemd-service-effects")
+        .unwrap()
+        .interface
+        .guarantees = vec![
+        aos_ability_model::builtin::local_systemd_manager_guarantee().unwrap(),
+        aos_ability_model::builtin::system_container_manager_delegation_guarantee().unwrap(),
     ];
     documents
         .iter_mut()
@@ -2468,11 +2540,11 @@ fn reference_source_interface_descriptors_are_stable() {
 fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     assert_eq!(
         interfaces["aos.nginx"].descriptor,
-        digest_from_hex("ad32f30236fd6ca7169a6a728f82c33f1167e695ede478df50c8ad57c9f019d6")
+        digest_from_hex("5d368e34482c6e2bea67626aa86cbc8b0ab882644009835d77de312c77333c88")
     );
     assert_eq!(
         interfaces["aos.managed-configuration"].descriptor,
-        digest_from_hex("6ab0550d2de40d9d49b211aa5944d3f7d86d53142c1a2dba8d59bf3974cc581c")
+        digest_from_hex("771c63c0fe1730c0592b49c14600a115b2c842d5b363d66158b918ccd051ee3d")
     );
     assert_eq!(
         interfaces["aos.credential-delivery"].descriptor,
@@ -2496,7 +2568,11 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.systemd-service-effects"].descriptor,
-        digest_from_hex("e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98")
+        digest_from_hex("383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50")
+    );
+    assert_eq!(
+        interfaces["aos.foreground-process"].descriptor,
+        digest_from_hex("6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb")
     );
 }
 
@@ -2691,6 +2767,7 @@ fn nginx_consumer_probe(nginx: &InstanceId) -> AbilityValue {
     };
     value(serde_json::json!({
         "address": "127.0.0.1",
+        "execution_strategy": "systemd-manager",
         "port": port,
     }))
 }

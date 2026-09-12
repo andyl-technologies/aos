@@ -90,6 +90,8 @@ pub enum DiagnosticCode {
     MediationNotGranted,
     /// A binding supplies fewer guarantees than its request requires.
     MissingGuarantee,
+    /// A lifecycle strategy is unavailable at the provider's execution stage.
+    ExecutionStageMismatch,
     /// An invocation's method or family disagrees with its exact descriptor.
     MethodContractMismatch,
     /// A binding points at an interface the request did not accept.

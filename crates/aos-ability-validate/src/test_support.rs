@@ -157,6 +157,18 @@ pub fn checked_effect_plan() -> CheckedEffectPlan {
 /// satisfying the production validator.
 #[must_use]
 pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
+    systemd_manager_plan_fixture()
+        .validate()
+        .expect("built-in systemd fixture must pass production validation")
+}
+
+/// Builds mutable inputs for an exact host-local systemd manager plan.
+///
+/// # Panics
+///
+/// Panics only when a built-in identity or static fixture value cannot be constructed.
+#[must_use]
+pub fn systemd_manager_plan_fixture() -> PlanFixture {
     let mut fixture = plan_fixture();
     let artifact = fixture.binding_plan.bindings[0]
         .implementation
@@ -181,6 +193,15 @@ pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
     };
     fixture.binding_inputs.environment.providers[0].implementation = implementation.clone();
     fixture.binding_plan.bindings[0].implementation = implementation;
+
+    let guarantees = vec![
+        builtin::local_systemd_manager_guarantee()
+            .expect("built-in local-manager guarantee must construct"),
+    ];
+    fixture.binding_inputs.environment.providers[0].guarantees = guarantees.clone();
+    fixture.binding_inputs.desired_state.child_requests[0].guarantees = guarantees.clone();
+    fixture.binding_plan.requests[0].guarantees = guarantees.clone();
+    fixture.binding_plan.bindings[0].guarantees = guarantees;
 
     let methods = vec![key("observe"), key("start")];
     fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
@@ -223,8 +244,6 @@ pub fn checked_systemd_manager_effect_plan() -> CheckedEffectPlan {
     fixture.refresh_commitments();
 
     fixture
-        .validate()
-        .expect("built-in systemd fixture must pass production validation")
 }
 
 /// Builds a checked persistent write owned by a stateful pure provider.

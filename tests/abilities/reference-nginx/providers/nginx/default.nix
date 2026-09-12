@@ -8,7 +8,7 @@ let
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:6ab0550d2de40d9d49b211aa5944d3f7d86d53142c1a2dba8d59bf3974cc581c";
+    "sha256:771c63c0fe1730c0592b49c14600a115b2c842d5b363d66158b918ccd051ee3d";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -24,7 +24,27 @@ let
   systemdEffects =
     interface
     "aos.systemd-service-effects"
-    "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98";
+    "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
+  foregroundProcess =
+    interface
+    "aos.foreground-process"
+    "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb";
+
+  localSystemdManagerGuarantee = {
+    name = "aos.local-systemd-manager";
+    version = 1;
+    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
+  };
+  systemContainerManagerDelegationGuarantee = {
+    name = "aos.system-container-manager-delegation";
+    version = 1;
+    descriptor = "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda";
+  };
+  foregroundProcessSupervisionGuarantee = {
+    name = "aos.foreground-process-supervision";
+    version = 1;
+    descriptor = "sha256:b213e3c6ef28e4930a1091296e28fbfddde9f539d2daeb0287edfe955047311a";
+  };
 
   # Recovery conservatively charges a full interrupted call. Four call-sized
   # slices retain room for that attempt, reconciliation, a retry, and a final
@@ -34,14 +54,14 @@ let
     total_recovery_millis = 1200000;
   };
 
-  childRequest = context: scope: key: acceptedInterface: {
+  childRequest = context: scope: key: acceptedInterface: guarantees: {
     id = {
       consumer = context.provider;
       inherit scope key;
     };
     accepted_interfaces = [acceptedInterface];
     methods = [];
-    guarantees = [];
+    inherit guarantees;
     lifetime = "instance";
   };
 
@@ -86,25 +106,28 @@ let
         && output.port == port)
       context.outputs;
 
-  projectMapEntry = context: binding: sourceInterface: group: sourcePort: outputInterface: port: let
-    selected = outputFrom context binding sourceInterface group sourcePort;
-  in
-    if
-      selected
-      == []
-      || !builtins.hasAttr context.provider.key (builtins.head selected).value.fields
+  projectMapEntry = context: binding: sourceInterface: group: sourcePort: outputInterface: port:
+    if binding == null
     then []
-    else [
-      {
-        aggregate = {
-          provider = context.provider;
-          group = "nginx";
-        };
-        interface = outputInterface;
-        inherit port;
-        value = (builtins.head selected).value.fields.${context.provider.key};
-      }
-    ];
+    else let
+      selected = outputFrom context binding sourceInterface group sourcePort;
+    in
+      if
+        selected
+        == []
+        || !builtins.hasAttr context.provider.key (builtins.head selected).value.fields
+      then []
+      else [
+        {
+          aggregate = {
+            provider = context.provider;
+            group = "nginx";
+          };
+          interface = outputInterface;
+          inherit port;
+          value = (builtins.head selected).value.fields.${context.provider.key};
+        }
+      ];
 
   validServerName = host:
     builtins.isString host
@@ -131,6 +154,16 @@ let
     else if probe.port < 1024 || probe.port > 65535
     then throw "nginx consumer probe port is outside the unprivileged TCP range"
     else probe;
+
+  validateExecutionStrategy = stage: strategy:
+    if
+      strategy
+      == "systemd-manager"
+      && builtins.elem stage ["host" "system-container"]
+    then strategy
+    else if strategy == "foreground-process" && stage == "application-container"
+    then strategy
+    else throw "nginx execution strategy is incompatible with its execution stage";
 
   validateVirtualHost = contribution: let
     virtualHost = contribution.value;
@@ -171,11 +204,29 @@ let
       (virtualHost: virtualHost.tls or false)
       virtualHosts;
 
-    configurationRequest = childRequest context scope "configuration" managedConfiguration;
-    credentialRequest = childRequest context scope "credential" credentialDelivery;
-    serviceRequest = childRequest context scope "service" systemdService;
-    validationRequest = childRequest context scope "validation-terminal" nginxValidation;
-    serviceTerminalRequest = childRequest context scope "service-terminal" systemdEffects;
+    executionStage = context.provider.environment.stage;
+    executionStrategy = validateExecutionStrategy executionStage consumerProbe.execution_strategy;
+    usesSystemd = executionStrategy == "systemd-manager";
+    configurationRequest = childRequest context scope "configuration" managedConfiguration [];
+    credentialRequest = childRequest context scope "credential" credentialDelivery [];
+    serviceRequest =
+      if usesSystemd
+      then childRequest context scope "service" systemdService []
+      else null;
+    validationRequest = childRequest context scope "validation-terminal" nginxValidation [];
+    serviceTerminalRequest =
+      if executionStage == "host"
+      then childRequest context scope "service-terminal" systemdEffects [localSystemdManagerGuarantee]
+      else if executionStage == "system-container"
+      then
+        childRequest context scope "service-terminal-system-container" systemdEffects [
+          localSystemdManagerGuarantee
+          systemContainerManagerDelegationGuarantee
+        ]
+      else
+        childRequest context scope "service-terminal-foreground" foregroundProcess [
+          foregroundProcessSupervisionGuarantee
+        ];
     usesTls = tlsHosts != [];
     requests =
       [configurationRequest]
@@ -184,13 +235,28 @@ let
         then [credentialRequest]
         else []
       )
-      ++ [serviceRequest serviceTerminalRequest validationRequest];
+      ++ (
+        if serviceRequest == null
+        then []
+        else [serviceRequest]
+      )
+      ++ [serviceTerminalRequest validationRequest];
     validationRequestWithMethod = validationRequest // {methods = ["record" "release" "validate"];};
-    serviceTerminalRequestWithMethods = serviceTerminalRequest // {methods = ["observe" "reload" "start" "stop"];};
+    serviceTerminalRequestWithMethods =
+      serviceTerminalRequest
+      // {
+        methods =
+          if usesSystemd
+          then ["observe" "reload" "start" "stop"]
+          else ["observe" "start" "stop"];
+      };
 
     configurationBinding = bindingFor context configurationRequest;
     credentialBinding = bindingFor context credentialRequest;
-    serviceBinding = bindingFor context serviceRequest;
+    serviceBinding =
+      if serviceRequest == null
+      then null
+      else bindingFor context serviceRequest;
     configurationRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON virtualHosts)}";
     serviceValue = {
       configuration_revision = configurationRevision;
@@ -215,7 +281,11 @@ let
           }
         else []
       )
-      ++ lowerContribution context serviceRequest "services" serviceValue;
+      ++ (
+        if serviceRequest == null
+        then []
+        else lowerContribution context serviceRequest "services" serviceValue
+      );
   in {
     schema = "aos.ability.composition-fragment/v1";
     requests =
@@ -223,7 +293,12 @@ let
       (request:
         if request.id.key == "validation-terminal"
         then validationRequestWithMethod
-        else if request.id.key == "service-terminal"
+        else if
+          builtins.elem request.id.key [
+            "service-terminal"
+            "service-terminal-foreground"
+            "service-terminal-system-container"
+          ]
         then serviceTerminalRequestWithMethods
         else request)
       requests;
@@ -310,8 +385,18 @@ in {
     validation = desiredBinding "validation-terminal" nginxValidation ["record" "release" "validate"];
     configuration = desiredBinding "configuration" managedConfiguration [];
     credential = optionalBinding "credential" credentialDelivery [];
-    service = desiredBinding "service" systemdService [];
-    serviceTerminal = desiredBinding "service-terminal" systemdEffects ["observe" "reload" "start" "stop"];
+    executionStage = context.provider.environment.stage;
+    usesForeground = executionStage == "application-container";
+    service =
+      if usesForeground
+      then null
+      else desiredBinding "service" systemdService [];
+    serviceTerminal =
+      if executionStage == "host"
+      then desiredBinding "service-terminal" systemdEffects ["observe" "reload" "start" "stop"]
+      else if executionStage == "system-container"
+      then desiredBinding "service-terminal-system-container" systemdEffects ["observe" "reload" "start" "stop"]
+      else desiredBinding "service-terminal-foreground" foregroundProcess ["observe" "start" "stop"];
     resourcesGrantedBy = binding:
       builtins.map (permission: permission.resource) binding.caller_grant.resources;
     changesThrough = binding:
@@ -852,7 +937,9 @@ in {
       obligations = [];
     };
   in
-    if associationChanges == [] && removed == [] && credentialRemoved == []
+    if usesForeground
+    then throw "nginx foreground activation remains an unresolved deployment obligation"
+    else if associationChanges == [] && removed == [] && credentialRemoved == []
     then
       fragment
       // {

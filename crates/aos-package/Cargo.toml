@@ -66,4 +66,4 @@ sha2 = { workspace = true }
 aos-ability-plan = { workspace = true, features = ["test-support"] }
 aos-ability-validate = { workspace = true, features = ["test-support"] }
 crc32fast = { workspace = true }
-zbus.workspace = true
+zbus = { version = "5", default-features = false, features = ["tokio", "p2p", "bus-impl"] }

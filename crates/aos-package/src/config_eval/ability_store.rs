@@ -2031,6 +2031,15 @@ mod tests {
         fixture.binding_inputs.environment.providers[0].implementation = implementation.clone();
         fixture.binding_plan.bindings[0].implementation = implementation;
 
+        let guarantees = vec![
+            builtin::local_systemd_manager_guarantee()
+                .expect("built-in local-manager guarantee must construct"),
+        ];
+        fixture.binding_inputs.environment.providers[0].guarantees = guarantees.clone();
+        fixture.binding_inputs.desired_state.child_requests[0].guarantees = guarantees.clone();
+        fixture.binding_plan.requests[0].guarantees = guarantees.clone();
+        fixture.binding_plan.bindings[0].guarantees = guarantees;
+
         let methods = vec![
             LocalKey::new("observe").unwrap(),
             LocalKey::new("start").unwrap(),

@@ -21,8 +21,38 @@ use super::kubernetes_ability::{DeferredKubernetesApiCapability, KubernetesApiCa
 
 /// Retains caller-supplied systemd transports under exact environment identities.
 pub(crate) struct SystemdManagerCapabilities {
-    control_managers: BTreeMap<EnvironmentId, Arc<SystemdManagerConnection>>,
+    control_managers: BTreeMap<EnvironmentId, ScopedSystemdManagerCapability>,
     planned_managers: BTreeMap<SystemdManagerHandoffKey, Arc<SystemdManagerConnection>>,
+}
+
+struct ScopedSystemdManagerCapability {
+    environment: EnvironmentId,
+    connection: Arc<SystemdManagerConnection>,
+}
+
+impl ScopedSystemdManagerCapability {
+    fn host(environment: EnvironmentId, connection: Arc<SystemdManagerConnection>) -> Result<Self> {
+        require_host_environment(&environment)?;
+        Ok(Self {
+            environment,
+            connection,
+        })
+    }
+
+    #[cfg(test)]
+    fn delegated_system_container_for_test(
+        environment: EnvironmentId,
+        connection: Arc<SystemdManagerConnection>,
+    ) -> Result<Self> {
+        ensure!(
+            environment.stage == ExecutionStage::SystemContainer,
+            "delegated systemd capability was registered for another execution stage"
+        );
+        Ok(Self {
+            environment,
+            connection,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -186,8 +216,13 @@ impl SystemdManagerCapabilities {
         environment: EnvironmentId,
         connection: Arc<SystemdManagerConnection>,
     ) -> Result<Self> {
-        require_host_environment(&environment)?;
-        Self::from_scoped([(environment, connection)], [])
+        Self::from_scoped(
+            [ScopedSystemdManagerCapability::host(
+                environment,
+                connection,
+            )?],
+            [],
+        )
     }
 
     /// Constructs an inventory from caller-authenticated scoped transports.
@@ -202,16 +237,18 @@ impl SystemdManagerCapabilities {
     ///
     /// Returns an error when the caller supplies duplicate control environments
     /// or duplicate planned handoff identities.
-    pub(crate) fn from_scoped(
-        control_managers: impl IntoIterator<Item = (EnvironmentId, Arc<SystemdManagerConnection>)>,
+    fn from_scoped(
+        control_managers: impl IntoIterator<Item = ScopedSystemdManagerCapability>,
         planned_managers: impl IntoIterator<
             Item = (ResourceId, InstanceId, Arc<SystemdManagerConnection>),
         >,
     ) -> Result<Self> {
         let mut controls = BTreeMap::new();
-        for (environment, connection) in control_managers {
+        for capability in control_managers {
             ensure!(
-                controls.insert(environment, connection).is_none(),
+                controls
+                    .insert(capability.environment.clone(), capability)
+                    .is_none(),
                 "duplicate systemd manager capability environment"
             );
         }
@@ -352,7 +389,7 @@ impl SystemdManagerCapabilities {
     ) -> Result<Arc<SystemdManagerConnection>> {
         self.control_managers
             .get(environment)
-            .cloned()
+            .map(|capability| Arc::clone(&capability.connection))
             .context("no trusted control manager exists for the provider environment")
     }
 }
@@ -414,7 +451,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn durable_assignment_requires_the_observed_manager_incarnation() {
+    fn stale_manager_incarnation_never_falls_back_to_the_environment_transport() {
         let assignment = assignment("manager-a");
 
         require_same_incarnation(&assignment, &IncarnationId::new("manager-a").unwrap()).unwrap();
@@ -435,6 +472,46 @@ mod tests {
         let error = require_host_environment(&environment).unwrap_err();
 
         assert!(error.to_string().contains("another execution stage"));
+    }
+
+    #[tokio::test]
+    async fn scoped_container_lookup_never_falls_back_to_the_host_transport() {
+        let (host_connection, _host_peer) = connection_pair().await;
+        let (container_connection, _container_peer) = connection_pair().await;
+        let host_environment = assignment("host-manager").provider.environment;
+        let mut container_environment = host_environment.clone();
+        container_environment.key = LocalKey::new("container").unwrap();
+        container_environment.stage = ExecutionStage::SystemContainer;
+        let capabilities = SystemdManagerCapabilities::from_scoped(
+            [
+                ScopedSystemdManagerCapability::host(
+                    host_environment.clone(),
+                    Arc::clone(&host_connection),
+                )
+                .unwrap(),
+                ScopedSystemdManagerCapability::delegated_system_container_for_test(
+                    container_environment.clone(),
+                    Arc::clone(&container_connection),
+                )
+                .unwrap(),
+            ],
+            [],
+        )
+        .unwrap();
+
+        let selected = capabilities
+            .control_connection(&container_environment)
+            .unwrap();
+        assert!(Arc::ptr_eq(&selected, &container_connection));
+        assert!(!Arc::ptr_eq(&selected, &host_connection));
+
+        let mut foreign_environment = container_environment;
+        foreign_environment.key = LocalKey::new("foreign-container").unwrap();
+        let error = capabilities
+            .control_connection(&foreign_environment)
+            .err()
+            .expect("an absent container scope must not use the host connection");
+        assert!(error.to_string().contains("no trusted control manager"));
     }
 
     #[test]
@@ -491,6 +568,25 @@ mod tests {
         let error = require_distinct_manager_incarnations(&incarnation, &incarnation).unwrap_err();
 
         assert!(error.to_string().contains("bootstrap control manager"));
+    }
+
+    async fn connection_pair() -> (Arc<SystemdManagerConnection>, zbus::Connection) {
+        let guid = zbus::Guid::generate();
+        let (server_socket, client_socket) = tokio::net::UnixStream::pair().unwrap();
+        let server = zbus::connection::Builder::unix_stream(server_socket)
+            .server(guid)
+            .unwrap()
+            .p2p()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(client_socket)
+            .p2p()
+            .build();
+        let (server, client) = tokio::join!(server, client);
+
+        (
+            Arc::new(SystemdManagerConnection::from_connection(client.unwrap())),
+            server.unwrap(),
+        )
     }
 
     fn assignment(incarnation: &str) -> ProviderAssignment {
