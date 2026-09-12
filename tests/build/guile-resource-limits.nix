@@ -21,7 +21,7 @@
       test "$(uname -m)" = aarch64
       guile -c '(exit (if (defined? (quote setrlimit)) 0 1))'
 
-      for test in test-out-of-memory test-stack-overflow; do
+      for test in test-out-of-memory test-stack-overflow test-sigaction-fork; do
         if ! timeout --signal=KILL 300 bash "/tests/$test"; then
           echo "AOS_GUILE_RESOURCE_LIMIT_FAIL:$test"
           exec sleep infinity
@@ -32,15 +32,19 @@
       cd /tmp
       export TEST_SUITE_DIR=/source/test-suite
       export GUILE_LOAD_PATH=/source/test-suite
-      if ! timeout --signal=KILL 300 guile --debug --no-auto-compile -L /source/test-suite \
-        -e main -s /source/test-suite/guile-test \
-        --test-suite /source/test-suite/tests --log-file /tmp/guile-posix.log posix.test; then
-        cat /tmp/guile-posix.log
-        echo AOS_GUILE_RESOURCE_LIMIT_FAIL:posix.test
-        exec sleep infinity
-      fi
-      cat /tmp/guile-posix.log
-      echo AOS_GUILE_RESOURCE_LIMIT_PASS:posix.test
+      for test in posix.test 00-repl-server.test; do
+        log="/tmp/guile-$test.log"
+        if ! timeout --signal=KILL 300 guile --debug --no-auto-compile -L /source/test-suite \
+          -e main -s /source/test-suite/guile-test \
+          --test-suite /source/test-suite/tests --log-file "$log" "$test"; then
+          cat "$log"
+          echo "AOS_GUILE_RESOURCE_LIMIT_FAIL:$test"
+          exec sleep infinity
+        fi
+        cat "$log"
+        echo "AOS_GUILE_RESOURCE_LIMIT_PASS:$test"
+      done
+
       echo AOS_GUILE_RESOURCE_LIMITS_COMPLETE
       exec sleep infinity
     '';
@@ -82,6 +86,7 @@ in
             tar xf ${guile.src}
             cp guile-${guile.version}/test-suite/standalone/test-out-of-memory root/tests/
             cp guile-${guile.version}/test-suite/standalone/test-stack-overflow root/tests/
+            cp guile-${guile.version}/test-suite/standalone/test-sigaction-fork root/tests/
             cp -R guile-${guile.version}/test-suite root/source/
             ln -s ${pkgs.bash}/bin/bash root/bin/sh
             cp ${init}/init root/init
