@@ -78,6 +78,30 @@
       esac
     }
   '';
+  validateRootedExecutableShell = ''
+    validate_rooted_executable() {
+      root=$1
+      command_path=$2
+      target=$(readlink "$root$command_path") || return 1
+
+      case "$target" in
+        /nix/store/*/*) ;;
+        *) return 1 ;;
+      esac
+      store_relative=''${target#/nix/store/}
+      store_entry=''${store_relative%%/*}
+      executable_relative=''${store_relative#*/}
+      validate_nix_store_root "/nix/store/$store_entry" || return 1
+      case "/$executable_relative/" in
+        *"//"*|*"/./"*|*"/../"*) return 1 ;;
+      esac
+
+      rooted_target="$root/nix/store/$store_entry/$executable_relative"
+      [ ! -L "$rooted_target" ] \
+        && [ -f "$rooted_target" ] \
+        && [ -x "$rooted_target" ]
+    }
+  '';
   nativeExecutorPathCheck = pkgs.runCommand "aos-native-executor-path-check" {} ''
     ${validateNixStoreRootShell}
     valid=/nix/store/44444444444444444444444444444444-aos-package-runtime
@@ -93,6 +117,45 @@
         exit 1
       fi
     done
+    touch $out
+  '';
+  rootedExecutablePathCheck = pkgs.runCommand "aos-rooted-executable-path-check" {} ''
+    ${validateNixStoreRootShell}
+    ${validateRootedExecutableShell}
+
+    sysroot=$TMPDIR/sysroot
+    store_name=44444444444444444444444444444444-rollout-tools
+    rooted_store="$sysroot/nix/store/$store_name"
+    mkdir -p "$sysroot/usr/bin" "$rooted_store/bin"
+    printf '%s\n' '#!${pkgs.bash}/bin/bash' 'exit 0' > "$rooted_store/bin/bootctl"
+    chmod 0555 "$rooted_store/bin/bootctl"
+    ln -s "/nix/store/$store_name/bin/bootctl" "$sysroot/usr/bin/bootctl"
+
+    # An initrd lookup follows the absolute link in its own namespace. The
+    # validator must instead inspect the executable below the mounted root.
+    test ! -x "$sysroot/usr/bin/bootctl"
+    validate_rooted_executable "$sysroot" /usr/bin/bootctl
+
+    chmod 0444 "$rooted_store/bin/bootctl"
+    if validate_rooted_executable "$sysroot" /usr/bin/bootctl; then
+      echo "unexpectedly accepted a non-executable command" >&2
+      exit 1
+    fi
+
+    printf '%s\n' '#!${pkgs.bash}/bin/bash' 'exit 0' > "$TMPDIR/escape"
+    chmod 0555 "$TMPDIR/escape"
+    ln -sfn "$TMPDIR/escape" "$rooted_store/bin/bootctl"
+    if validate_rooted_executable "$sysroot" /usr/bin/bootctl; then
+      echo "unexpectedly accepted a store-local symlink escape" >&2
+      exit 1
+    fi
+
+    ln -sfn "$TMPDIR/escape" "$sysroot/usr/bin/bootctl"
+    if validate_rooted_executable "$sysroot" /usr/bin/bootctl; then
+      echo "unexpectedly accepted a command outside the store" >&2
+      exit 1
+    fi
+
     touch $out
   '';
 
@@ -502,6 +565,7 @@
         }
 
         ${validateNixStoreRootShell}
+        ${validateRootedExecutableShell}
 
         read_pcr11() {
           # cryptsetup may leave the swtpm resource manager busy briefly after
@@ -543,7 +607,7 @@
         [ -d /sysroot/usr/bin ] && [ -d /sysroot/usr/sbin ] \
           || fail_image_identity "immutable rootfs has no system command directories"
         for command in mount bootctl systemctl aos-rollout-drain aos-rollout-health; do
-          [ -x "/sysroot/usr/bin/$command" ] \
+          validate_rooted_executable /sysroot "/usr/bin/$command" \
             || fail_image_identity "immutable rootfs omits rollout command $command"
         done
 
@@ -1126,6 +1190,7 @@ in {
   config = {
     system.build.bootSubstrateContract = bootSubstrateContract;
     system.build.checks.native-executor-path = nativeExecutorPathCheck;
+    system.build.checks.rooted-executable-path = rootedExecutablePathCheck;
 
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.
