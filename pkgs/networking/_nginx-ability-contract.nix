@@ -530,7 +530,7 @@ in {
             handler = "native-host-network-policy-v1";
             requestSchema = networkPolicyRequest false;
             selectedLifecycle = ephemeralLifecycle;
-            guarantees = [loopbackIngressGuarantee];
+            guarantees = [loopbackEgressGuarantee loopbackIngressGuarantee];
             methods = {
               apply =
                 networkPolicyEffectMethod {
@@ -538,14 +538,14 @@ in {
                   action = "apply";
                 } "apply" (networkPolicyRequest true) {
                   active = runtimeMethodOutput schemas.boolean;
-                } [loopbackIngressGuarantee];
+                } [loopbackEgressGuarantee loopbackIngressGuarantee];
               observe =
                 networkPolicyEffectMethod {
                   kind = "host-network-policy";
                   action = "observe";
                 } "observe" (networkPolicyRequest true) {
                   active = runtimeMethodOutput schemas.boolean;
-                } [loopbackIngressGuarantee];
+                } [loopbackEgressGuarantee loopbackIngressGuarantee];
               remove = networkPolicyEffectMethod {
                 kind = "host-network-policy";
                 action = "remove";
