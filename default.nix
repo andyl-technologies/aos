@@ -563,24 +563,40 @@
       builtins.elemAt (lib.splitString "/" cell.id) 4 == "interrupt-before-acquisition")
     nativeAdapterMatrix.cells
   );
-  nativeAdapterQualifiedCells =
-    nativeAdapterPrimaryCells
-    ++ nativeAdapterInterruptionCells
-    ++ nativeAdapterRoleCells
-    ++ nativeAdapterFailureControlCells
-    ++ nativePostgresqlReplacementCells
-    ++ nativeEffectBoundaryCells.groups.reference
-    ++ nativeEffectBoundaryCells.groups.systemdManager
-    ++ nativeEffectBoundaryCells.groups.postgresql
-    ++ nativeEffectBoundaryCells.groups.kubernetes
-    ++ nativeEffectBoundaryCells.groups.rollout
-    ++ nativeEffectBoundaryCells.groups.foreground
-    ++ nativeCancellationKubernetesCells
-    ++ nativeCancellationCells.groups.postgresql
-    ++ nativeCancellationSystemdCells
-    ++ nativeCancellationCells.groups.reference
-    ++ nativeCancellationCells.groups.foreground
-    ++ nativeCancellationCells.groups.rollout;
+  nativeAdapterQualifiedCells = let
+    selected =
+      nativeAdapterPrimaryCells
+      ++ nativeAdapterInterruptionCells
+      ++ nativeAdapterRoleCells
+      ++ nativeAdapterFailureControlCells
+      ++ nativePostgresqlReplacementCells
+      ++ nativeEffectBoundaryCells.groups.reference
+      ++ nativeEffectBoundaryCells.groups.systemdManager
+      ++ nativeEffectBoundaryCells.groups.postgresql
+      ++ nativeEffectBoundaryCells.groups.kubernetes
+      ++ nativeEffectBoundaryCells.groups.rollout
+      ++ nativeEffectBoundaryCells.groups.foreground
+      ++ nativeCancellationKubernetesCells
+      ++ nativeCancellationCells.groups.postgresql
+      ++ nativeCancellationSystemdCells
+      ++ nativeCancellationCells.groups.reference
+      ++ nativeCancellationCells.groups.foreground
+      ++ nativeCancellationCells.groups.rollout;
+    cellsById = builtins.listToAttrs (map (cell: {
+        name = cell.id;
+        value = cell;
+      })
+      nativeAdapterMatrix.cells);
+    postconditions =
+      builtins.foldl' (
+        count: cellId: count + builtins.length cellsById.${cellId}.postconditions
+      )
+      0
+      selected;
+  in
+    assert builtins.length selected == 1055;
+    assert builtins.length (lib.unique selected) == 1055;
+    assert postconditions == 4229; selected;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
       mkNativeAbilityScenario
