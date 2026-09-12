@@ -1619,14 +1619,13 @@ pub(crate) mod tests {
         snapshot.validate()?;
         snapshot.require_current_qualification()?;
         assert!(snapshot.require_publishable_qualification().is_err());
-        let staging_cases = crate::qualification_evidence::cases(
+        let case_error = crate::qualification_evidence::cases(
             &snapshot,
             &manifest,
             crate::qualification::QualificationPhase::Staging,
-        )?;
-        assert!(staging_cases.iter().all(|case| {
-            case.requirement_id != "image-update-recovery" && case.predecessor.is_none()
-        }));
+        )
+        .expect_err("matrix qualification cannot run without a frozen predecessor");
+        assert!(case_error.to_string().contains("frozen predecessor"));
 
         let mut ordinary_name = snapshot.clone();
         ordinary_name.release_id = "ordinary-release".into();
