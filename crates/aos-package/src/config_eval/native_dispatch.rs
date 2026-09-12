@@ -1849,6 +1849,7 @@ pub(crate) struct NativeDispatcher<'a> {
     registry: NativeAdapterRegistry<'a>,
     assignments: Vec<ProviderAssignment>,
     systemd: SystemdManagerCapabilities,
+    foreground_process_state_root: std::path::PathBuf,
 }
 
 /// Carries one complete, read-only classification of the retained native map.
@@ -1886,6 +1887,25 @@ impl NativeDriftClassification {
 }
 
 impl<'a> NativeDispatcher<'a> {
+    fn open_foreground_route(
+        packages: &VerifiedAbilityPackageSet,
+        assignment: ProviderAssignment,
+        inventory: NativeResourceInventory,
+        state_root: &Path,
+        spec: ForegroundProcessResourceSpec,
+    ) -> Result<(
+        ForegroundProcessResourceCatalog,
+        NativeForegroundProcessAdapter,
+    )> {
+        let catalog =
+            ForegroundProcessResourceCatalog::new(packages, assignment.clone(), state_root, [spec])
+                .context("constructing foreground-process resource catalog")?
+                .with_inventory(inventory);
+        let adapter = NativeForegroundProcessAdapter::new(assignment, state_root)
+            .context("opening foreground-process adapter")?;
+        Ok((catalog, adapter))
+    }
+
     /// Validates the complete native route set without opening live handles.
     ///
     /// # Errors
@@ -1970,6 +1990,7 @@ impl<'a> NativeDispatcher<'a> {
             registry,
             assignments: Vec::new(),
             systemd,
+            foreground_process_state_root: FOREGROUND_PROCESS_STATE_ROOT.into(),
         })
     }
 
@@ -2089,7 +2110,7 @@ impl<'a> NativeDispatcher<'a> {
                 let catalog = ForegroundProcessResourceCatalog::new(
                     self.registry.packages,
                     assignment,
-                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
+                    &self.foreground_process_state_root,
                     [spec],
                 )
                 .context("constructing foreground-process drift catalog")?;
@@ -2792,7 +2813,7 @@ impl<'a> NativeDispatcher<'a> {
                 let catalog = ForegroundProcessResourceCatalog::new(
                     self.registry.packages,
                     assignment,
-                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
+                    &self.foreground_process_state_root,
                     [spec],
                 )
                 .context("constructing foreground-process observation catalog")?;
@@ -2951,7 +2972,7 @@ impl<'a> NativeDispatcher<'a> {
         route: NativeAdapterRoute<'a>,
         assignment: ProviderAssignment,
         planned_bootstrap: Option<&ResourceId>,
-        policy: &mut OperatorAuthorizedPolicy<'_, Policy>,
+        policy: &mut Policy,
         clock: &SystemMonotonicClock,
         cancellation: &CancellationToken,
         observer: &mut Observer,
@@ -2963,18 +2984,14 @@ impl<'a> NativeDispatcher<'a> {
         match route.kind {
             NativeAdapterKind::ForegroundProcess => {
                 let spec = self.registry.foreground_process_spec(&route)?;
-                let mut catalog = ForegroundProcessResourceCatalog::new(
+                let inventory = session.resource_inventory();
+                let (mut catalog, mut adapter) = Self::open_foreground_route(
                     self.registry.packages,
-                    assignment.clone(),
-                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
-                    [spec],
-                )
-                .context("constructing foreground-process resource catalog")?;
-                let mut adapter = NativeForegroundProcessAdapter::new(
                     assignment,
-                    Path::new(FOREGROUND_PROCESS_STATE_ROOT),
-                )
-                .context("constructing foreground-process adapter")?;
+                    inventory,
+                    &self.foreground_process_state_root,
+                    spec,
+                )?;
                 drive_with_adapter(
                     session,
                     operation,
@@ -3327,7 +3344,7 @@ fn drive_with_adapter<'plan, Adapter, Catalog, Policy, Observer>(
     operation: &aos_ability_model::ScopedOperationKey,
     adapter: &mut Adapter,
     catalog: &mut Catalog,
-    policy: &mut OperatorAuthorizedPolicy<'_, Policy>,
+    policy: &mut Policy,
     clock: &SystemMonotonicClock,
     cancellation: &CancellationToken,
     observer: &mut Observer,
@@ -3369,7 +3386,7 @@ fn drive_admitted_to_release<'plan, Adapter, Catalog, Policy, Observer>(
     admitted: AdmittedOperation<'plan, Adapter::Request, Adapter::Handle>,
     adapter: &mut Adapter,
     catalog: &mut Catalog,
-    policy: &mut OperatorAuthorizedPolicy<'_, Policy>,
+    policy: &mut Policy,
     clock: &SystemMonotonicClock,
     cancellation: &CancellationToken,
     observer: &mut Observer,
@@ -3882,10 +3899,422 @@ where
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::LocalKey;
+    use std::collections::BTreeMap;
+    use std::num::NonZeroU32;
+    use std::path::PathBuf;
+
+    use aos_ability_model::builtin::{
+        foreground_process_handler, foreground_process_handler_key, foreground_process_interface,
+        foreground_process_provider,
+    };
+    use aos_ability_model::{
+        AbilityActivationMode, ArtifactReference, ExecutionStage, ExportDeclaration, LocalKey,
+        OperationId, PackageImplementation, ProviderImplementationReference, ScopePath,
+    };
+    use aos_ability_runtime::adapter::{ReservationContext, RuntimeControl};
+    use aos_ability_runtime::execution::{
+        ExecutionBoundaryControl, ExecutionBoundaryObservation, TrustedAuthoritySnapshot,
+    };
 
     use super::*;
     use crate::config_eval::native_adapter_surface::{NATIVE_METHODS, NativeAdapterId};
+
+    struct ForegroundTestControl;
+
+    impl RuntimeControl for ForegroundTestControl {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+
+        fn elapsed_millis(&self) -> u64 {
+            0
+        }
+
+        fn attempt_remaining_millis(&self) -> u64 {
+            5_000
+        }
+
+        fn recovery_remaining_millis(&self) -> u64 {
+            5_000
+        }
+    }
+
+    struct ForegroundProcessCleanup {
+        state_root: PathBuf,
+        spec: ForegroundProcessResourceSpec,
+    }
+
+    impl Drop for ForegroundProcessCleanup {
+        fn drop(&mut self) {
+            if let Ok(mut supervisor) =
+                super::super::foreground_process_ability::ForegroundProcessSupervisor::new(
+                    &self.state_root,
+                )
+            {
+                let _ = supervisor.stop(&self.spec, &ForegroundTestControl);
+            }
+        }
+    }
+
+    struct AllowForegroundDispatch;
+
+    impl TrustedAuthoritySnapshot for AllowForegroundDispatch {
+        type Error = std::io::Error;
+
+        fn authorize_role(
+            &mut self,
+            _plan: &CheckedEffectPlan,
+            _binding: &Binding,
+            _operation: &Operation,
+            _method: &MethodReference,
+            _purpose: InvocationPurpose,
+            _role: RuntimeAuthorityRole,
+        ) -> std::result::Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn authorize_resources(
+            &mut self,
+            _plan: &CheckedEffectPlan,
+            _binding: &Binding,
+            _operation: &Operation,
+            _expected_provider: Option<&ProviderAssignment>,
+            _resources: &[ResourceAdmissionEvidence],
+        ) -> std::result::Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    impl TrustedAdmissionPolicy for AllowForegroundDispatch {
+        type DispatchFence = Self;
+
+        fn acquire_dispatch_fence(
+            &mut self,
+            _plan: &CheckedEffectPlan,
+            _binding: &Binding,
+            _operation: &Operation,
+            _method: &MethodReference,
+            _purpose: InvocationPurpose,
+        ) -> std::result::Result<Self::DispatchFence, AuthorityRejection<Self::Error>> {
+            Ok(Self)
+        }
+    }
+
+    struct ContinueForegroundDispatch;
+
+    impl ExecutionBoundaryObserver for ContinueForegroundDispatch {
+        fn observe(
+            &mut self,
+            _observation: ExecutionBoundaryObservation<'_>,
+            _control: &dyn RuntimeControl,
+        ) -> Result<ExecutionBoundaryControl> {
+            Ok(ExecutionBoundaryControl::Continue)
+        }
+    }
+
+    fn rewrite_execution_stage<T>(document: &mut T, stage: ExecutionStage)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        fn replace_stage_values(value: &mut serde_json::Value, stage: &serde_json::Value) {
+            match value {
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        replace_stage_values(value, stage);
+                    }
+                }
+                serde_json::Value::Object(fields) => {
+                    for (name, value) in fields {
+                        if name == "stage" {
+                            *value = stage.clone();
+                        } else {
+                            replace_stage_values(value, stage);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut value = serde_json::to_value(&*document).expect("test document serializes");
+        replace_stage_values(
+            &mut value,
+            &serde_json::to_value(stage).expect("execution stage serializes"),
+        );
+        *document = serde_json::from_value(value).expect("rewritten test document deserializes");
+    }
+
+    #[test]
+    fn native_dispatcher_executes_the_authenticated_foreground_route() {
+        let temporary = tempfile::tempdir().expect("temporary dispatcher state is available");
+        let state_root = temporary.path().join("foreground-state");
+        let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|directory| directory.join("bash"))
+            .find(|candidate| candidate.is_file())
+            .and_then(|candidate| candidate.canonicalize().ok())
+            .expect("bash is available in the test environment");
+        let artifact_root = executable
+            .ancestors()
+            .find(|ancestor| ancestor.parent() == Some(Path::new("/nix/store")))
+            .expect("bash belongs to one Nix store artifact")
+            .to_path_buf();
+        let artifact_identity =
+            Sha256Digest::of_bytes(artifact_root.as_os_str().as_encoded_bytes());
+        let artifact = ArtifactReference {
+            content: artifact_identity,
+            store_path: artifact_root.to_string_lossy().into_owned(),
+            nar_hash: artifact_identity,
+            closure: artifact_identity,
+        };
+        let entry_point = executable
+            .strip_prefix(&artifact_root)
+            .expect("bash is beneath its artifact")
+            .to_string_lossy()
+            .trim_start_matches('/')
+            .to_string();
+
+        let mut plan_fixture = aos_ability_validate::test_support::systemd_manager_plan_fixture();
+        let provider_artifact = plan_fixture.binding_plan.bindings[0]
+            .implementation
+            .artifact
+            .clone();
+        let interface = foreground_process_interface().expect("foreground interface is valid");
+        let interface_key = interface
+            .interface_key()
+            .expect("foreground interface has an identity");
+        let guarantees = interface.interface.guarantees.clone();
+        plan_fixture.interfaces = vec![interface];
+        plan_fixture.refresh_interface();
+        rewrite_execution_stage(
+            &mut plan_fixture.binding_inputs.environment,
+            ExecutionStage::ApplicationContainer,
+        );
+        rewrite_execution_stage(
+            &mut plan_fixture.binding_inputs.desired_state,
+            ExecutionStage::ApplicationContainer,
+        );
+        rewrite_execution_stage(
+            &mut plan_fixture.binding_plan,
+            ExecutionStage::ApplicationContainer,
+        );
+        rewrite_execution_stage(
+            &mut plan_fixture.effect_plan,
+            ExecutionStage::ApplicationContainer,
+        );
+
+        let provider = foreground_process_provider(provider_artifact.clone())
+            .expect("foreground provider is valid");
+        let handler = foreground_process_handler_key().expect("foreground handler key is valid");
+        let implementation = ProviderImplementationReference {
+            descriptor: provider
+                .descriptor_digest()
+                .expect("foreground provider has a descriptor"),
+            artifact: provider_artifact.clone(),
+            handler: Some(handler.clone()),
+        };
+        plan_fixture.binding_inputs.environment.providers[0].implementation =
+            implementation.clone();
+        plan_fixture.binding_plan.bindings[0].implementation = implementation.clone();
+        plan_fixture.binding_inputs.environment.providers[0].guarantees = guarantees.clone();
+        plan_fixture.binding_inputs.desired_state.child_requests[0].guarantees = guarantees.clone();
+        plan_fixture.binding_plan.requests[0].guarantees = guarantees.clone();
+        plan_fixture.binding_plan.bindings[0].guarantees = guarantees;
+        plan_fixture.effect_plan.operations[0].inputs = ValueExpression::Literal {
+            value: AbilityValue::new(serde_json::Value::Bool(true))
+                .expect("foreground start input is bounded"),
+        };
+        plan_fixture.effect_plan.artifacts = vec![provider_artifact.clone()];
+        plan_fixture.refresh_commitments();
+        let plan = plan_fixture
+            .validate()
+            .unwrap_or_else(|error| panic!("foreground dispatch plan must validate: {error:#?}"));
+
+        let (_, packaged_effect) = aos_ability_plan::test_support::verified_planning_effect_plan();
+        let mut package = packaged_effect.binding_plan().packages()[0].clone();
+        package.activation_mode = AbilityActivationMode::StructuredEffects;
+        package.package.name = LocalKey::new("foreground-dispatch").expect("package name is valid");
+        package.package.payload = provider_artifact.clone();
+        package.package.source = provider_artifact.clone();
+        package.artifacts = vec![provider_artifact.clone(), artifact.clone()];
+        package.exports = vec![ExportDeclaration {
+            name: LocalKey::new("foreground").expect("export name is valid"),
+            interface: interface_key.clone(),
+            aggregation: None,
+            implementation: implementation.descriptor,
+        }];
+        package.requirements.clear();
+        package.module_entry_points.clear();
+        package.implementation = PackageImplementation {
+            providers: vec![provider],
+            handlers: BTreeMap::from([(
+                handler,
+                foreground_process_handler(provider_artifact.clone())
+                    .expect("foreground handler is valid"),
+            )]),
+        };
+        package.ownership = vec![ScopePath::root()];
+        let verified = crate::ability_package::seal_test_package(package)
+            .expect("foreground package must seal");
+        let owner_package = verified.package_digest();
+        let packages = VerifiedAbilityPackageSet::from_verified(vec![verified])
+            .expect("foreground package set must construct");
+        let session_packages = packages.clone();
+
+        let operation = &plan.operations()[0];
+        assert_eq!(operation.interface, interface_key);
+        assert_eq!(
+            operation.interface.descriptor,
+            advertised_descriptor(NativeAdapterId::ForegroundProcess),
+        );
+        assert_eq!(operation.method.as_str(), "start");
+        assert!(native_method_is_supported(
+            NativeAdapterKind::ForegroundProcess,
+            operation.interface.name.as_str(),
+            operation.interface.abi.get(),
+            operation.interface.descriptor,
+            operation.method.as_str(),
+            operation.method.as_str(),
+            InvocationPurpose::Effect,
+        ));
+        let resource = operation.target.resource.clone();
+        let revision = plan
+            .document()
+            .desired_revisions
+            .iter()
+            .find(|candidate| candidate.resource == resource)
+            .expect("foreground resource has a desired revision")
+            .revision;
+        let spec = ForegroundProcessResourceSpec {
+            resource: resource.clone(),
+            revision,
+            artifact: artifact.clone(),
+            entry_point,
+            arguments: vec!["-c".to_string(), "while :; do :; done".to_string()],
+        };
+        let _cleanup = ForegroundProcessCleanup {
+            state_root: state_root.clone(),
+            spec: spec.clone(),
+        };
+        let resource_map = NativeResourceMap::new(
+            plan.binding_plan().document().desired_state,
+            vec![NativeResourceMapping {
+                resource: resource.clone(),
+                revision,
+                owner_package,
+                binding: operation.binding.clone(),
+                implementation: implementation.clone(),
+                qualification: NativeResourceQualification::ForegroundProcess {
+                    artifact,
+                    entry_point: spec.entry_point.clone(),
+                    arguments: spec.arguments.clone(),
+                },
+            }],
+        )
+        .expect("foreground resource map is valid");
+        let registry = NativeAdapterRegistry {
+            plan: &plan,
+            desired: &resource_map,
+            current: None,
+            desired_state: plan.binding_plan().desired_state(),
+            current_desired_state: None,
+            current_binding_plan: None,
+            current_planning: None,
+            reconciliation: None,
+            packages: &packages,
+            host_allocations: HostResourceAllocations::default(),
+        };
+        let dispatcher = NativeDispatcher {
+            registry,
+            assignments: Vec::new(),
+            systemd: SystemdManagerCapabilities::empty(),
+            foreground_process_state_root: state_root.clone(),
+        };
+        let transaction = TransactionId(
+            LocalKey::new("foreground-dispatch-test").expect("transaction key is valid"),
+        );
+        let mut session = NativeAbilitySession::open_for_dispatch_test(
+            &plan,
+            transaction.clone(),
+            temporary.path().join("gen-1"),
+            session_packages,
+        )
+        .expect("native dispatch test session opens");
+        let route = dispatcher
+            .registry
+            .route(operation)
+            .expect("foreground operation selects its exact route");
+        let assignment = NativeDispatcher::native_assignment(&dispatcher.systemd, &session, &route)
+            .expect("foreground assignment is derived from the authenticated route");
+        let mut unbound_catalog = ForegroundProcessResourceCatalog::new(
+            &packages,
+            assignment.clone(),
+            &state_root,
+            [spec.clone()],
+        )
+        .expect("unbound foreground catalog validates");
+        let operation_id = OperationId {
+            plan: plan.id(),
+            operation: operation.key.clone(),
+        };
+        let missing_inventory = unbound_catalog
+            .acquire(
+                ReservationContext {
+                    transaction: &transaction,
+                    operation: &operation_id,
+                    attempt: NonZeroU32::MIN,
+                    expected_provider: Some(&assignment),
+                    recovery_remaining_millis: 5_000,
+                },
+                operation,
+                &operation.accesses[0],
+            )
+            .expect_err("foreground dispatch must reject a missing native inventory");
+        assert!(
+            missing_inventory
+                .to_string()
+                .contains("no durable native inventory")
+        );
+        let ready = session
+            .schedule_ready(NonZeroUsize::MIN)
+            .expect("foreground operation is schedulable");
+        let scheduled_operation = ready
+            .first()
+            .expect("foreground operation is ready")
+            .operation()
+            .clone();
+        assert_eq!(scheduled_operation, operation.key);
+        let mut policy = AllowForegroundDispatch;
+        let clock = SystemMonotonicClock::new();
+        let cancellation = CancellationToken::default();
+        let mut observer = ContinueForegroundDispatch;
+
+        dispatcher
+            .dispatch_route(
+                &mut session,
+                &scheduled_operation,
+                route,
+                assignment,
+                None,
+                &mut policy,
+                &clock,
+                &cancellation,
+                &mut observer,
+            )
+            .expect("production dispatcher route starts foreground process");
+
+        let mut supervisor =
+            super::super::foreground_process_ability::ForegroundProcessSupervisor::new(state_root)
+                .expect("foreground supervisor reopens dispatcher state");
+        assert!(
+            supervisor
+                .observe(&spec)
+                .expect("dispatcher effect is observable")
+                .running
+        );
+        supervisor
+            .stop(&spec, &ForegroundTestControl)
+            .expect("dispatcher test process stops");
+    }
 
     fn rollout_request(candidate_suffix: &str) -> AbRolloutRequest {
         let image = |name: &str| aos_ability_plan::RolloutImageIdentity {

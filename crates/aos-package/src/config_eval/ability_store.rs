@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::num::NonZeroUsize;
 use std::os::unix::fs::OpenOptionsExt;
@@ -244,7 +244,7 @@ impl NativeObservationSession {
         supported_features: BTreeSet<RequiredFeature>,
         switch_lock: Arc<SwitchLockGuard>,
     ) -> Result<Self, GenerationAbilityStoreError> {
-        require_host_effect_plan(plan)?;
+        require_native_effect_plan(plan)?;
         let inventory = NativeInventoryState::for_generation(
             generation,
             &transaction,
@@ -731,7 +731,7 @@ impl<'plan> NativeAbilitySession<'plan> {
             .join(TRANSACTION_ROOT)
             .join(transaction.0.as_str())
             .join(EXECUTION_JOURNAL_FILE);
-        require_host_effect_plan(plan)?;
+        require_native_effect_plan(plan)?;
         packages
             .verify_plan_inputs(
                 &plan.binding_plan().environment().platform,
@@ -798,7 +798,7 @@ impl<'plan> NativeAbilitySession<'plan> {
             journal,
             switch_lock,
         } = paths;
-        require_host_effect_plan(plan)?;
+        require_native_effect_plan(plan)?;
         packages
             .verify_plan_inputs(
                 &plan.binding_plan().environment().platform,
@@ -849,6 +849,120 @@ impl<'plan> NativeAbilitySession<'plan> {
             .inventory
             .finalize_existing_terminal_marker(&session.transaction.summary())?;
         Ok(session)
+    }
+
+    /// Opens a real journal and native inventory around a checked test plan.
+    #[cfg(test)]
+    pub(crate) fn open_for_dispatch_test(
+        plan: &'plan CheckedEffectPlan,
+        transaction: TransactionId,
+        generation: impl Into<PathBuf>,
+        packages: VerifiedAbilityPackageSet,
+    ) -> Result<Self, GenerationAbilityStoreError> {
+        struct TestRetentionStore;
+
+        impl TrustedPlanStore for TestRetentionStore {
+            type Error = io::Error;
+
+            fn retain_plan(
+                &mut self,
+                transaction: &TransactionId,
+                plan: &CheckedEffectPlan,
+            ) -> Result<PlanRetentionReceipt, Self::Error> {
+                Ok(PlanRetentionReceipt::new(
+                    transaction.clone(),
+                    plan.id(),
+                    Sha256Digest::of_bytes(b"native dispatcher test bundle"),
+                    AbilityValue::new(serde_json::Value::Bool(true)).map_err(io::Error::other)?,
+                ))
+            }
+        }
+
+        impl TrustedRootStore for TestRetentionStore {
+            type Error = io::Error;
+
+            fn retain(
+                &mut self,
+                transaction: &TransactionId,
+                artifacts: &[ArtifactReference],
+            ) -> Result<RootRetentionReceipt, Self::Error> {
+                Ok(RootRetentionReceipt::new(
+                    transaction.clone(),
+                    artifacts.iter().map(|artifact| artifact.closure).collect(),
+                    AbilityValue::new(serde_json::Value::Bool(true)).map_err(io::Error::other)?,
+                ))
+            }
+        }
+
+        require_native_effect_plan(plan)?;
+        let generation = generation.into();
+        fs::create_dir_all(&generation).map_err(|source| {
+            io_error(
+                "creating native dispatcher test generation",
+                &generation,
+                source,
+            )
+        })?;
+        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).map_err(|source| {
+            io_error(
+                "protecting native dispatcher test generation",
+                &generation,
+                source,
+            )
+        })?;
+        let switch_lock = generation
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("native-dispatch-test.lock");
+        let (planning, transition) =
+            aos_ability_plan::test_support::verified_planning_transition_plan();
+        let bundle = ReloadablePlanBundle::from_verified(&planning, None, None, &transition)
+            .map_err(GenerationAbilityStoreError::Bundle)?;
+        let verifier = NativeAbilityArtifactVerifier {
+            authenticated: packages,
+            platform: plan.binding_plan().environment().platform.clone(),
+        };
+        let store = GenerationAbilityStore::with_bundle_at(
+            &generation,
+            bundle,
+            BTreeSet::new(),
+            verifier,
+            &switch_lock,
+        )?;
+        let inventory = NativeInventoryState::for_generation(
+            &generation,
+            &transaction,
+            plan,
+            None,
+            BTreeSet::new(),
+            Arc::clone(&store.switch_lock),
+        )?;
+        let journal = generation
+            .join(TRANSACTION_ROOT)
+            .join(transaction.0.as_str())
+            .join(EXECUTION_JOURNAL_FILE);
+        let transaction_directory = journal.parent().ok_or_else(|| {
+            GenerationAbilityStoreError::Conflict(
+                "native dispatcher test journal has no parent directory".to_string(),
+            )
+        })?;
+        create_private_directory(transaction_directory)?;
+        let mut retention = TestRetentionStore;
+        let transaction = ExecutionTransaction::open(
+            plan,
+            transaction,
+            &journal,
+            JournalLimits::default(),
+            &mut retention,
+        )
+        .map_err(GenerationAbilityStoreError::Transaction)?;
+
+        Ok(Self {
+            transaction,
+            inventory,
+            inventory_admission: Arc::new(()),
+            store,
+        })
     }
 
     /// Returns the lock-bound execution transaction.
@@ -1347,21 +1461,25 @@ fn publish_terminal_marker_and_finalize(
     finalize()
 }
 
-fn require_host_effect_plan(plan: &CheckedEffectPlan) -> Result<(), GenerationAbilityStoreError> {
+fn require_native_effect_plan(plan: &CheckedEffectPlan) -> Result<(), GenerationAbilityStoreError> {
     let binding_plan = plan.binding_plan();
-    let host = |stage| stage == ExecutionStage::Host;
-    if !host(binding_plan.environment().environment.stage)
+    let stage = binding_plan.environment().environment.stage;
+    let supported = matches!(
+        stage,
+        ExecutionStage::Host | ExecutionStage::ApplicationContainer
+    );
+    if !supported
         || binding_plan.bindings().iter().any(|binding| {
-            !host(binding.provider.environment.stage)
-                || !host(binding.request.consumer.environment.stage)
+            binding.provider.environment.stage != stage
+                || binding.request.consumer.environment.stage != stage
         })
         || plan
             .operations()
             .iter()
-            .any(|operation| !host(operation.target.resource.provider.environment.stage))
+            .any(|operation| operation.target.resource.provider.environment.stage != stage)
     {
         return Err(GenerationAbilityStoreError::Conflict(
-            "native host execution plan crosses a non-host environment boundary".to_string(),
+            "native execution plan crosses its host or application-container boundary".to_string(),
         ));
     }
     Ok(())

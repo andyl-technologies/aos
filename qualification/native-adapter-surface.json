@@ -30,7 +30,7 @@
     {
       "adapter": "foreground-process",
       "interface_abi": 1,
-      "interface_descriptor": "sha256:6f692d35d41280a0b0f88a370e9d02584f5d4a870555953255e8cc9ceacba882",
+      "interface_descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
       "interface_name": "aos.foreground-process",
       "methods": [
         {

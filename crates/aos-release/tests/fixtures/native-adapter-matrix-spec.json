@@ -2800,6 +2800,2805 @@
       "scope": "host-resource"
     },
     {
+      "adapter": "foreground-process",
+      "boundary": "retained-target-activation",
+      "candidate": "current-authority",
+      "effect_class": "observation",
+      "failure": "none",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/activate-retained-target",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "current-grants-reauthorized",
+        "retained-target-identity-preserved",
+        "exactly-one-resource-owner"
+      ],
+      "predecessor": "retained",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "compatible-replacement",
+      "effect_class": "observation",
+      "failure": "none",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/adopt-compatible-state",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "fresh-receiving-authority",
+        "compatible-state-adopted",
+        "exactly-one-resource-owner"
+      ],
+      "predecessor": "in-flight-compatible",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "prerequisite",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "prerequisite-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/block-dependent-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "prerequisite-failure-recorded"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "cancellation",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "cancelled-after-reconciliation",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/cancel-unsettled-attempt",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "deadline",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "deadline-expired",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/expire-attempt-deadline",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "cleanup",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "cleanup-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/fail-cleanup",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "release",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "release-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/fail-release",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/interrupt-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-durable-intent",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/interrupt-after-durable-intent",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-durable-outcome",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/interrupt-after-durable-outcome",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/interrupt-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "none",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-external-return",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "lost-result",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/lose-external-result",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "foreign-resource",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "foreign-authority-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/reject-foreign-resource-mutation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "foreign-attempt-rejected-before-mutation"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "unsupported-replacement",
+      "effect_class": "observation",
+      "failure": "transfer-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/reject-unsupported-transfer",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "fresh-receiving-authority",
+        "transfer-rejected-before-candidate-effect",
+        "predecessor-remains-sole-owner"
+      ],
+      "predecessor": "in-flight-incompatible",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "new-executor-incarnation",
+      "effect_class": "observation",
+      "failure": "stale-executor-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/replace-executor-incarnation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "in-flight",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "new-provider-incarnation",
+      "effect_class": "observation",
+      "failure": "stale-provider-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/replace-provider-incarnation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "in-flight",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-assignment-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-assignment-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-assignment-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-caller-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-caller-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-caller-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-enforcement-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-enforcement-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-enforcement-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-provider-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-provider-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "observation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/observe/revoke-provider-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "observe",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "retained-target-activation",
+      "candidate": "current-authority",
+      "effect_class": "mutation",
+      "failure": "none",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/activate-retained-target",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "current-grants-reauthorized",
+        "retained-target-identity-preserved",
+        "exactly-one-resource-owner"
+      ],
+      "predecessor": "retained",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "compatible-replacement",
+      "effect_class": "mutation",
+      "failure": "none",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/adopt-compatible-state",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "fresh-receiving-authority",
+        "compatible-state-adopted",
+        "exactly-one-resource-owner"
+      ],
+      "predecessor": "in-flight-compatible",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "prerequisite",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "prerequisite-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/block-dependent-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "prerequisite-failure-recorded"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "cancellation",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "cancelled-after-reconciliation",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/cancel-unsettled-attempt",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "deadline",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "deadline-expired",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/expire-attempt-deadline",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "cleanup",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "cleanup-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/fail-cleanup",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "release",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "release-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/fail-release",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/interrupt-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-durable-intent",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/interrupt-after-durable-intent",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-durable-outcome",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/interrupt-after-durable-outcome",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/interrupt-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "none",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-external-return",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "lost-result",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/lose-external-result",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "foreign-resource",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "foreign-authority-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/reject-foreign-resource-mutation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "foreign-attempt-rejected-before-mutation"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "unsupported-replacement",
+      "effect_class": "mutation",
+      "failure": "transfer-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/reject-unsupported-transfer",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "fresh-receiving-authority",
+        "transfer-rejected-before-candidate-effect",
+        "predecessor-remains-sole-owner"
+      ],
+      "predecessor": "in-flight-incompatible",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "new-executor-incarnation",
+      "effect_class": "mutation",
+      "failure": "stale-executor-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/replace-executor-incarnation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "in-flight",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "new-provider-incarnation",
+      "effect_class": "mutation",
+      "failure": "stale-provider-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/replace-provider-incarnation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "in-flight",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-assignment-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-assignment-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-assignment-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-caller-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-caller-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-caller-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-enforcement-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-enforcement-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-enforcement-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-provider-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-provider-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/start/revoke-provider-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "start",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "retained-target-activation",
+      "candidate": "current-authority",
+      "effect_class": "mutation",
+      "failure": "none",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/activate-retained-target",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "current-grants-reauthorized",
+        "retained-target-identity-preserved",
+        "exactly-one-resource-owner"
+      ],
+      "predecessor": "retained",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "compatible-replacement",
+      "effect_class": "mutation",
+      "failure": "none",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/adopt-compatible-state",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "fresh-receiving-authority",
+        "compatible-state-adopted",
+        "exactly-one-resource-owner"
+      ],
+      "predecessor": "in-flight-compatible",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "prerequisite",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "prerequisite-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/block-dependent-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "prerequisite-failure-recorded"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "cancellation",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "cancelled-after-reconciliation",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/cancel-unsettled-attempt",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "deadline",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "deadline-expired",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/expire-attempt-deadline",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "cleanup",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "cleanup-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/fail-cleanup",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "release",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "release-failed",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/fail-release",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/interrupt-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-durable-intent",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/interrupt-after-durable-intent",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-durable-outcome",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/interrupt-after-durable-outcome",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "injected-interruption",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/interrupt-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "none",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-external-return",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "lost-result",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/lose-external-result",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "foreign-resource",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "foreign-authority-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/reject-foreign-resource-mutation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "foreign-attempt-rejected-before-mutation"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "unsupported-replacement",
+      "effect_class": "mutation",
+      "failure": "transfer-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/reject-unsupported-transfer",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed",
+        "fresh-receiving-authority",
+        "transfer-rejected-before-candidate-effect",
+        "predecessor-remains-sole-owner"
+      ],
+      "predecessor": "in-flight-incompatible",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "new-executor-incarnation",
+      "effect_class": "mutation",
+      "failure": "stale-executor-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/replace-executor-incarnation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "in-flight",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "recovery",
+      "candidate": "new-provider-incarnation",
+      "effect_class": "mutation",
+      "failure": "stale-provider-rejected",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/replace-provider-incarnation",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "in-flight",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-assignment-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-assignment-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "assignment-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-assignment-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-caller-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-caller-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "caller-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-caller-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-enforcement-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-enforcement-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "enforcement-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-enforcement-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "after-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-provider-after-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-acquisition",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-provider-before-acquisition",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
+      "adapter": "foreground-process",
+      "boundary": "before-external-effect",
+      "candidate": "same",
+      "effect_class": "mutation",
+      "failure": "provider-authority-revoked",
+      "id": "foreground-process/aos.foreground-process/abi-1/stop/revoke-provider-before-external-effect",
+      "interface": {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
+      },
+      "invalidated_by": [
+        "subject",
+        "policy",
+        "executor",
+        "environment"
+      ],
+      "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
+      "method": "stop",
+      "postconditions": [
+        "durable-attempt-state-classified",
+        "at-most-one-resource-owner",
+        "foreign-resources-unchanged",
+        "dependent-effects-not-executed"
+      ],
+      "predecessor": "same",
+      "recovery": {
+        "cancel": "observe",
+        "reconcile": "observe"
+      },
+      "scope": "application-container-process"
+    },
+    {
       "adapter": "host-network-policy",
       "boundary": "retained-target-activation",
       "candidate": "current-authority",
@@ -43854,7 +46653,7 @@
   ],
   "schema": "aos.qualification.native-adapter-matrix-spec/v1",
   "subject": {
-    "adapter_count": 12,
+    "adapter_count": 13,
     "interfaces": [
       {
         "abi": 1,
@@ -43865,6 +46664,11 @@
         "abi": 1,
         "descriptor": "sha256:bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb",
         "name": "aos.credential-delivery-effects"
+      },
+      {
+        "abi": 1,
+        "descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "name": "aos.foreground-process"
       },
       {
         "abi": 1,
@@ -43918,10 +46722,10 @@
       }
     ],
     "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
-    "method_count": 47,
+    "method_count": 50,
     "scenario_count": 28,
     "schema": "aos.qualification.native-adapter-subject/v1",
-    "surface_digest": "sha256:e6a2431b0f00a40b9e10376271c8bd0d9d0a9845b8a929140aeca1fefc20d4a2"
+    "surface_digest": "sha256:9e508420352823db510e6d4a24c221dd04046f82a1ebd5b49328241097e25d2a"
   },
   "surface": {
     "adapters": [
@@ -43951,6 +46755,33 @@
           }
         ],
         "scope": "host-resource"
+      },
+      {
+        "adapter": "foreground-process",
+        "interface_abi": 1,
+        "interface_descriptor": "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb",
+        "interface_name": "aos.foreground-process",
+        "methods": [
+          {
+            "cancel": "observe",
+            "effect_class": "observation",
+            "method": "observe",
+            "reconcile": "observe"
+          },
+          {
+            "cancel": "observe",
+            "effect_class": "mutation",
+            "method": "start",
+            "reconcile": "observe"
+          },
+          {
+            "cancel": "observe",
+            "effect_class": "mutation",
+            "method": "stop",
+            "reconcile": "observe"
+          }
+        ],
+        "scope": "application-container-process"
       },
       {
         "adapter": "host-network-policy",
@@ -44317,8 +47148,8 @@
       }
     ],
     "limits": {
-      "max_adapters": 12,
-      "max_methods": 47,
+      "max_adapters": 13,
+      "max_methods": 50,
       "max_scenarios": 28
     },
     "matrix_schema": "aos.qualification.native-adapter-matrix/v1",

@@ -40,7 +40,10 @@ use rustix::fs::FlockOperation;
 use serde::{Deserialize, Serialize};
 
 use crate::ability_package::VerifiedAbilityPackageSet;
-use crate::config_eval::ability_store::inventory::NativeQualifiedResource;
+use crate::config_eval::ability_store::NativeResourceInventory;
+use crate::config_eval::ability_store::inventory::{
+    NativeQualifiedResource, NativeResourceReservation,
+};
 
 const REQUEST_SCHEMA: &str = "aos.ability.foreground-process-request/v1";
 const STATE_SCHEMA: &str = "aos.ability.foreground-process-state/v1";
@@ -255,9 +258,16 @@ impl ForegroundProcessSupervisor {
 
         let pid = rustix::process::Pid::from_raw(identity.pid as i32)
             .ok_or_else(|| invalid("foreground process PID is zero"))?;
+        if identity.pid != identity.process_group {
+            return Err(invalid(
+                "foreground process identity is not its live process-group leader",
+            ));
+        }
         let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())?;
-        // The pidfd pins the task against PID reuse. Re-reading every identity
-        // field after opening it also prevents signalling a changed group.
+        // Linux uses the live group leader's PID as its PGID and cannot reuse
+        // that PID for another group while the leader exists. The pidfd pins
+        // the exact leader identity; the post-open read proves it is still the
+        // authenticated live leader immediately before the group signal.
         if ProcessIdentity::read(identity.pid, &command, &confinement, &token)? != identity {
             return Err(invalid(
                 "foreground process identity changed before termination",
@@ -324,14 +334,17 @@ impl ForegroundProcessSupervisor {
 }
 
 /// Holds one process-scoped resource reservation for trusted runtime dispatch.
+#[derive(Debug)]
 pub struct ForegroundProcessHandle {
     spec: ForegroundProcessResourceSpec,
     _lock: File,
+    reservation: NativeResourceReservation,
 }
 
 /// Resolves foreground logical resources and serializes supervisors per resource.
 pub struct ForegroundProcessResourceCatalog {
     assignment: ProviderAssignment,
+    inventory: Option<NativeResourceInventory>,
     state_root: PathBuf,
     resources: BTreeMap<ResourceId, ForegroundProcessResourceSpec>,
     qualified: BTreeMap<ResourceId, NativeQualifiedResource>,
@@ -382,10 +395,18 @@ impl ForegroundProcessResourceCatalog {
         }
         Ok(Self {
             assignment,
+            inventory: None,
             state_root,
             resources: by_resource,
             qualified,
         })
+    }
+
+    /// Binds this validated catalog to the session's durable native inventory.
+    #[must_use]
+    pub(crate) fn with_inventory(mut self, inventory: NativeResourceInventory) -> Self {
+        self.inventory = Some(inventory);
+        self
     }
 
     /// Classifies one exact foreground process from live ownership evidence.
@@ -446,6 +467,21 @@ impl TrustedResourceCatalog for ForegroundProcessResourceCatalog {
             .ok_or_else(|| invalid("foreground resource is not catalogued"))?
             .clone();
         validate_operation(operation)?;
+        let qualified = self
+            .qualified
+            .get(&access.resource)
+            .ok_or_else(|| invalid("foreground resource lost its qualification"))?;
+        let inventory = self
+            .inventory
+            .as_ref()
+            .ok_or_else(|| invalid("foreground catalog has no durable native inventory"))?;
+        let context = ReservationContext {
+            expected_provider: Some(&self.assignment),
+            ..context
+        };
+        let reservation = inventory
+            .reserve(qualified, context, operation, access)
+            .map_err(|error| invalid(error.to_string()))?;
 
         let lock_path = self
             .state_root
@@ -474,7 +510,11 @@ impl TrustedResourceCatalog for ForegroundProcessResourceCatalog {
             observation_value(&observed)?,
         );
         Ok(CatalogReservation::new(
-            ForegroundProcessHandle { spec, _lock: lock },
+            ForegroundProcessHandle {
+                spec,
+                _lock: lock,
+                reservation,
+            },
             evidence,
         ))
     }
@@ -487,7 +527,15 @@ impl TrustedResourceCatalog for ForegroundProcessResourceCatalog {
         if resource != &handle.spec.resource {
             return Err(invalid("foreground release differs from its reservation"));
         }
-        Ok(())
+        if handle.reservation.logical() != resource {
+            return Err(invalid(
+                "foreground native reservation differs from its logical resource",
+            ));
+        }
+        handle
+            .reservation
+            .release()
+            .map_err(|error| invalid(error.to_string()))
     }
 }
 
@@ -989,7 +1037,9 @@ fn locate_owned_process(
     {
         let observed = ProcessIdentity::read(identity.pid, command, confinement, token)?;
         claimed_groups.insert(observed.process_group);
-        groups.insert(observed.process_group, observed);
+        if observed.pid == observed.process_group {
+            groups.insert(observed.process_group, observed);
+        }
         Some(identity.pid)
     } else {
         None
@@ -1022,15 +1072,10 @@ fn locate_owned_process(
             Err(error) => return Err(error),
         }
         match ProcessIdentity::read(pid, command, confinement, token) {
-            Ok(identity) => {
-                let process_group = identity.process_group;
-                match groups.get(&process_group) {
-                    Some(selected) if selected.pid == process_group => {}
-                    _ => {
-                        groups.insert(process_group, identity);
-                    }
-                }
+            Ok(identity) if identity.pid == identity.process_group => {
+                groups.insert(identity.process_group, identity);
             }
+            Ok(_) => {}
             Err(error)
                 if matches!(
                     error.kind(),
@@ -1046,7 +1091,7 @@ fn locate_owned_process(
     }
     if groups.is_empty() && !claimed_groups.is_empty() {
         return Err(invalid(
-            "foreground ownership token is claimed by a process with a different command",
+            "foreground ownership token has no live exact process-group leader",
         ));
     }
     Ok(groups
@@ -1654,6 +1699,10 @@ mod tests {
         else {
             panic!("exactly one owned group must exist")
         };
+        assert_eq!(
+            identity.pid, identity.process_group,
+            "the retained identity must pin the live group leader"
+        );
         let mut member = Command::new(&command.executable)
             .args(&command.arguments)
             .env_clear()
