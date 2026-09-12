@@ -69,20 +69,14 @@ in
   assert securityDisabledInitrdServices ? aos-seed-profiles;
   assert securityDisabledInitrdServices ? aos-credential-recovery;
   assert securityDisabledInitrdServices.aos-ability-initrd-controller.requiredBy
-  == [
-    "initrd-fs.target"
-    "initrd-switch-root.target"
-  ];
+  == ["initrd-fs.target"];
   assert securityDisabledInitrdServices.aos-ability-initrd-controller.serviceConfig.RemainAfterExit;
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requires
   == ["aos-ability-initrd-controller.service"];
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.after
   == ["aos-ability-initrd-controller.service"];
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requiredBy
-  == [
-    "initrd-fs.target"
-    "initrd-switch-root.target"
-  ];
+  == ["initrd-fs.target"];
   assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.serviceConfig.RemainAfterExit;
   assert securityDisabledHostServices ? aos-ability-host-receiver;
   assert securityDisabledHostServices ? aos-nix-db;

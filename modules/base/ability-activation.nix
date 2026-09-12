@@ -291,10 +291,7 @@ in {
 
     boot.initrd.systemd.services.aos-ability-initrd-controller = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable {
       description = "Execute and release initrd-stage ability ownership";
-      requiredBy = [
-        "initrd-fs.target"
-        "initrd-switch-root.target"
-      ];
+      requiredBy = ["initrd-fs.target"];
       requires = [
         "mount-var.service"
         "nix-overlay-setup.service"
@@ -314,8 +311,8 @@ in {
       unitConfig.DefaultDependencies = "no";
       serviceConfig = {
         Type = "oneshot";
-        # Keep the successful producer active so the later switch-root target
-        # cannot start a second producer after the checkpoint was published.
+        # Keep the successful producer active through initrd-fs completion so
+        # no dependency can start a second producer for the same checkpoint.
         RemainAfterExit = true;
       };
       script = ''
@@ -328,15 +325,13 @@ in {
       '';
     };
 
-    # A separate read-only validator keeps switch-root ordered after evidence
-    # authentication. Requires+After makes controller failure, an absent
-    # checkpoint, or a mismatched durable journal fail the target transaction.
+    # A separate read-only validator makes initrd-fs fail before cleanup when
+    # evidence authentication fails. Keeping only the Before edge to
+    # initrd-switch-root lets isolation stop the validated dependency chain
+    # before udev cleanup instead of retaining both sides of that transaction.
     boot.initrd.systemd.services.aos-ability-initrd-handoff-barrier = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable {
       description = "Authenticate released initrd ability ownership";
-      requiredBy = [
-        "initrd-fs.target"
-        "initrd-switch-root.target"
-      ];
+      requiredBy = ["initrd-fs.target"];
       requires = ["aos-ability-initrd-controller.service"];
       after = ["aos-ability-initrd-controller.service"];
       before = [
