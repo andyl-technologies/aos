@@ -33,12 +33,14 @@ mod registry;
 
 use registry::ReferencePackageCatalog;
 
-const REFERENCE_ENVIRONMENT: [&str; 12] = [
+const REFERENCE_ENVIRONMENT: [&str; 14] = [
     "AOS_NIX_INSTANTIATE",
     "AOS_PRLIMIT",
     "AOS_TEST_ABILITY_CACHE",
     "AOS_TEST_ABILITY_REFERENCE_NGINX",
     "AOS_TEST_ABILITY_REFERENCE_NGINX_NAR_HASH",
+    "AOS_TEST_ABILITY_REFERENCE_HTTP_BACKEND",
+    "AOS_TEST_ABILITY_REFERENCE_HTTP_BACKEND_NAR_HASH",
     "AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION",
     "AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION_NAR_HASH",
     "AOS_TEST_ABILITY_REFERENCE_CREDENTIAL",
@@ -55,6 +57,7 @@ struct ReferenceFixture {
     environment: EnvironmentDocument,
     packages: Vec<PackageDocument>,
     consumer_package: Sha256Digest,
+    backend_consumer_package: Sha256Digest,
     nginx_package: Sha256Digest,
     lower_packages: BTreeMap<String, Sha256Digest>,
     terminal_packages: BTreeMap<String, Sha256Digest>,
@@ -79,6 +82,7 @@ struct AppRoute {
     host: &'static str,
     tls: bool,
     response: &'static str,
+    proxy_backend: bool,
 }
 
 struct ComposedDeployment {
@@ -136,6 +140,7 @@ impl ReferenceFixture {
 
         let mut nginx_package = None;
         let mut consumer_package = None;
+        let mut backend_consumer_package = None;
         let mut lower_packages = BTreeMap::new();
         let mut terminal_packages = BTreeMap::new();
         let mut implementations = BTreeMap::new();
@@ -144,6 +149,9 @@ impl ReferenceFixture {
             let package_digest = package.content_digest()?;
             if package.package.name.as_str() == "ability-reference-nginx-consumer" {
                 consumer_package = Some(package_digest);
+            }
+            if package.package.name.as_str() == "ability-reference-nginx-backend-consumer" {
+                backend_consumer_package = Some(package_digest);
             }
             for provider in &package.implementation.providers {
                 let name = provider.interface.name.as_str();
@@ -167,6 +175,8 @@ impl ReferenceFixture {
         }
         let consumer_package =
             consumer_package.context("reference companion omits nginx consumer")?;
+        let backend_consumer_package =
+            backend_consumer_package.context("reference companion omits nginx backend consumer")?;
         let nginx_package = nginx_package.context("reference companion omits aos.nginx")?;
 
         let environment_id = EnvironmentId {
@@ -261,6 +271,7 @@ impl ReferenceFixture {
             environment,
             packages,
             consumer_package,
+            backend_consumer_package,
             nginx_package,
             lower_packages,
             terminal_packages,
@@ -309,28 +320,37 @@ impl Deployment<'_> {
         let mut instances = Vec::new();
         let mut requests = Vec::new();
         let mut contributions = Vec::new();
+        let backend_registry = instance(&self.fixture.environment.environment, "backend-registry");
+
+        if self.app_routes.iter().any(|route| route.proxy_backend) {
+            instances.push(DesiredInstance {
+                instance: backend_registry.clone(),
+                package: self.fixture.lower_packages["aos.http-backend"],
+                enabled: true,
+                configuration: None,
+            });
+        }
 
         for route in &self.app_routes {
             let app_instance = instance(&self.fixture.environment.environment, route.application);
             let nginx_instance = instance(&self.fixture.environment.environment, route.nginx);
-            let request = RequestId {
+            let nginx_request = RequestId {
                 consumer: app_instance.clone(),
                 scope: ScopePath::root(),
                 key: key("nginx"),
             };
-            let candidate = binding_key(&request);
             instances.push(DesiredInstance {
                 instance: app_instance.clone(),
-                package: self.fixture.consumer_package,
+                package: if route.proxy_backend {
+                    self.fixture.backend_consumer_package
+                } else {
+                    self.fixture.consumer_package
+                },
                 enabled: true,
-                configuration: Some(value(serde_json::json!({
-                    "address": "127.0.0.1",
-                    "port": backend_port(route.application),
-                    "transport": "tcp",
-                }))),
+                configuration: None,
             });
             requests.push(BindingRequest {
-                id: request.clone(),
+                id: nginx_request.clone(),
                 accepted_interfaces: vec![self.fixture.interfaces["aos.nginx"].clone()],
                 methods: Vec::new(),
                 guarantees: Vec::new(),
@@ -340,22 +360,53 @@ impl Deployment<'_> {
                 "host": route.host,
                 "response_content": route.response,
                 "response_identity": route.application,
-                "proxy_backend": true,
                 "tls": route.tls,
             });
+            if route.proxy_backend {
+                contribution["proxy_backend"] = serde_json::json!(true);
+            }
             if route.tls {
                 contribution["credential_version"] = serde_json::json!(reference_tls_version());
             }
             contributions.push(Contribution {
-                request,
+                request: nginx_request.clone(),
                 aggregate: AggregateId {
                     provider: nginx_instance,
                     group: key("nginx"),
                 },
                 slot: app_instance.key.clone(),
-                grant: BindingId(candidate),
+                grant: BindingId(binding_key(&nginx_request)),
                 value: value(contribution),
             });
+
+            if route.proxy_backend {
+                let backend_request = RequestId {
+                    consumer: app_instance.clone(),
+                    scope: ScopePath::root(),
+                    key: key("backend"),
+                };
+                requests.push(BindingRequest {
+                    id: backend_request.clone(),
+                    accepted_interfaces: vec![self.fixture.interfaces["aos.http-backend"].clone()],
+                    methods: Vec::new(),
+                    guarantees: Vec::new(),
+                    lifetime: ResourceLifetime::Instance,
+                });
+                contributions.push(Contribution {
+                    request: backend_request.clone(),
+                    aggregate: AggregateId {
+                        provider: backend_registry.clone(),
+                        group: key("backend"),
+                    },
+                    slot: app_instance.key.clone(),
+                    grant: BindingId(binding_key(&backend_request)),
+                    value: value(serde_json::json!({
+                        "address": "127.0.0.1",
+                        "port": backend_port(route.application),
+                        "transport": "tcp",
+                    })),
+                });
+            }
         }
         for nginx in &self.nginx_instances {
             instances.push(DesiredInstance {
@@ -386,22 +437,25 @@ impl Deployment<'_> {
             .unwrap_or_else(|error| panic!("reference composition failed: {error:#?}"))
     }
 
-    fn compose_without_backends(&mut self, seed: DesiredStateDocument) -> ComposedDeployment {
-        self.try_compose_with_backends(seed, false)
+    fn compose_without_backends(&mut self, mut seed: DesiredStateDocument) -> ComposedDeployment {
+        seed.child_requests.retain(|request| {
+            request.accepted_interfaces != [self.fixture.interfaces["aos.http-backend"].clone()]
+        });
+        seed.contributions
+            .retain(|contribution| contribution.aggregate.group.as_str() != "backend");
+        for instance in &mut seed.instances {
+            if instance.package == self.fixture.backend_consumer_package {
+                instance.package = self.fixture.consumer_package;
+            }
+        }
+
+        self.try_compose(seed)
             .unwrap_or_else(|error| panic!("reference composition failed: {error:#?}"))
     }
 
     fn try_compose(
         &mut self,
         seed: DesiredStateDocument,
-    ) -> Result<ComposedDeployment, CompositionError> {
-        self.try_compose_with_backends(seed, true)
-    }
-
-    fn try_compose_with_backends(
-        &mut self,
-        seed: DesiredStateDocument,
-        backends_available: bool,
     ) -> Result<ComposedDeployment, CompositionError> {
         let mut authorization_states = Vec::new();
         let mut policies = Vec::new();
@@ -423,27 +477,7 @@ impl Deployment<'_> {
                     });
                 }
                 Err(CompositionError::PolicyRequired { desired_state, .. }) => {
-                    let mut policy = self.policy_for(&desired_state);
-                    if !backends_available {
-                        let backend_requests = desired_state
-                            .child_requests
-                            .iter()
-                            .filter(|request| {
-                                request.accepted_interfaces
-                                    == [self.fixture.interfaces["aos.http-backend"].clone()]
-                            })
-                            .map(|request| request.id.clone())
-                            .collect::<BTreeSet<_>>();
-                        policy
-                            .candidates
-                            .retain(|candidate| !backend_requests.contains(&candidate.request));
-                        policy
-                            .explicit_bindings
-                            .retain(|binding| !backend_requests.contains(&binding.request));
-                        policy.enabled_providers.retain(|provider| {
-                            provider.interface != self.fixture.interfaces["aos.http-backend"]
-                        });
-                    }
+                    let policy = self.policy_for(&desired_state);
                     policies.push(policy);
                     authorization_states.push(*desired_state);
                 }
@@ -485,11 +519,7 @@ impl Deployment<'_> {
                     principal: nginx.clone(),
                     methods: Vec::new(),
                     contributions: Vec::new(),
-                    resources: vec![ResourcePermission {
-                        resource: nginx_resource(nginx),
-                        access: AccessMode::ExclusiveWrite,
-                        operations: Vec::new(),
-                    }],
+                    resources: self.nginx_resource_permissions(nginx),
                 },
                 policy_revision: self.fixture.policy_revision,
                 lifetime: ResourceLifetime::Instance,
@@ -500,7 +530,8 @@ impl Deployment<'_> {
                 .instances
                 .iter()
                 .filter(|instance| {
-                    instance.enabled && instance.package == self.fixture.consumer_package
+                    instance.enabled
+                        && instance.package == self.fixture.lower_packages["aos.http-backend"]
                 })
                 .map(|instance| EnabledProviderSelection {
                     instance: instance.instance.clone(),
@@ -560,10 +591,18 @@ impl Deployment<'_> {
                 .resources
                 .iter()
                 .filter(|revision| {
+                    let resource_key = revision.resource.key.as_str();
                     revision.resource.provider == provider
                         && exact_service_key
                             .as_ref()
                             .is_none_or(|expected| revision.resource.key.as_str() == expected)
+                        && match request.id.key.as_str() {
+                            "endpoint" => resource_key.contains("-endpoint-"),
+                            "network-policy" => resource_key.contains("-network-policy-"),
+                            "storage" => resource_key.ends_with("-storage"),
+                            "validation-terminal" => resource_key == "virtual-hosts",
+                            _ => true,
+                        }
                 })
                 .map(|revision| ResourcePermission {
                     resource: revision.resource.clone(),
@@ -601,15 +640,26 @@ impl Deployment<'_> {
                 contributions,
             )
         } else if interface == self.fixture.interfaces["aos.http-backend"] {
-            let application = request.id.scope.as_slice().last().unwrap();
-            let provider = instance(&self.fixture.environment.environment, application.as_str());
+            let provider = instance(&self.fixture.environment.environment, "backend-registry");
+            let contributions = (request.id.consumer != provider
+                && !self.nginx_instances.contains(&request.id.consumer))
+            .then(|| {
+                vec![ContributionPermission {
+                    aggregate: AggregateId {
+                        provider: provider.clone(),
+                        group: key("backend"),
+                    },
+                    slot: request.id.consumer.key.clone(),
+                }]
+            })
+            .unwrap_or_default();
 
             (
                 provider,
-                self.fixture.consumer_package,
+                self.fixture.lower_packages["aos.http-backend"],
                 self.fixture.implementations["aos.http-backend"].clone(),
                 Vec::new(),
-                Vec::new(),
+                contributions,
             )
         } else {
             let suffix = request.id.key.as_str();
@@ -684,6 +734,8 @@ impl Deployment<'_> {
                 host_network_policy_loopback_tcp_egress_guarantee().unwrap(),
                 host_network_policy_loopback_tcp_ingress_guarantee().unwrap(),
             ]
+        } else if request.id.key.as_str() == "service-terminal" {
+            vec![aos_ability_model::builtin::local_systemd_manager_guarantee().unwrap()]
         } else {
             Vec::new()
         };
@@ -703,6 +755,58 @@ impl Deployment<'_> {
             mediation_allowed: true,
             exclusive_resources: Vec::new(),
         }
+    }
+
+    fn nginx_resource_permissions(&self, nginx: &InstanceId) -> Vec<ResourcePermission> {
+        let http_port = if nginx.key.as_str() == "nginx-two" {
+            18082
+        } else {
+            18081
+        };
+        let tls_port = if nginx.key.as_str() == "nginx-two" {
+            18444
+        } else {
+            18443
+        };
+        let mut keys = vec![
+            "virtual-hosts".to_string(),
+            format!("http-endpoint-{http_port}"),
+            format!("http-network-policy-{http_port}"),
+            "logs-storage".to_string(),
+            "runtime-storage".to_string(),
+            "state-storage".to_string(),
+        ];
+        if self
+            .app_routes
+            .iter()
+            .any(|route| route.nginx == nginx.key.as_str() && route.tls)
+        {
+            keys.push(format!("tls-endpoint-{tls_port}"));
+            keys.push(format!("tls-network-policy-{tls_port}"));
+        }
+        for route in self
+            .app_routes
+            .iter()
+            .filter(|route| route.nginx == nginx.key.as_str() && route.proxy_backend)
+        {
+            let port = backend_port(route.application);
+            keys.push(format!("backend-{}-endpoint-{port}", route.application));
+            keys.push(format!(
+                "backend-{}-network-policy-{port}",
+                route.application
+            ));
+        }
+        keys.sort();
+        keys.into_iter()
+            .map(|resource_key| ResourcePermission {
+                resource: ResourceId {
+                    provider: nginx.clone(),
+                    key: key(&resource_key),
+                },
+                access: AccessMode::ExclusiveWrite,
+                operations: Vec::new(),
+            })
+            .collect()
     }
 }
 
@@ -767,10 +871,13 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         )
         .is_some()
     );
-    assert!(policy_has_new_lower_authority(
-        &composed.policies[3],
-        &composed.authorization_states[3]
-    ));
+    assert!(
+        composed
+            .policies
+            .iter()
+            .zip(&composed.authorization_states)
+            .any(|(policy, state)| policy_has_new_lower_authority(policy, state))
+    );
 
     let rendered = rendered_configuration(&composed.outcome.desired_state, &nginx_main);
     assert!(rendered.contains("server_name alpha.example;"));
@@ -1033,13 +1140,13 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
         credential_release.target.resource.key.as_str(),
         "nginx-two-credential-view"
     );
-    let credential_delivery = tls_removed_effect
+    let credential_acquire = tls_removed_effect
         .operations
         .iter()
         .find(|operation| {
             operation.family
                 == OperationFamily::Credential {
-                    action: CredentialAction::Deliver,
+                    action: CredentialAction::Acquire,
                 }
                 && operation.target.resource.key.as_str() == "nginx-one-credential-view"
         })
@@ -1080,7 +1187,7 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
             .collect::<Vec<_>>(),
         ["nginx-two-credential-view"]
     );
-    assert_eq!(credential_delivery.binding, desired_effects.id);
+    assert_eq!(credential_acquire.binding, desired_effects.id);
     assert_eq!(credential_release.binding, teardown_effects.binding.id);
     let nginx_two_observation = tls_removed_effect
         .operations
@@ -1189,7 +1296,7 @@ fn checked_reference_source_composes_authority_isolation_and_lifecycle() {
             .document()
             .operations
             .len(),
-        12
+        26
     );
 
     let transitioning_state = transitioning_composed.outcome.desired_state;
@@ -1756,7 +1863,7 @@ fn assert_initial_effect_pipeline(
         )
         .unwrap();
     let effect = transition.checked_effect().document();
-    assert_eq!(effect.operations.len(), 8);
+    assert_eq!(effect.operations.len(), 15);
 
     let operation = |method: &str| {
         effect
@@ -1838,7 +1945,7 @@ fn assert_update_pipeline(
         .iter()
         .map(|operation| operation.method.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(methods.len(), 8);
+    assert_eq!(methods.len(), 15);
     assert!(methods.contains(&"prepare"));
     assert!(methods.contains(&"validate"));
     assert!(methods.contains(&"publish"));
@@ -1849,7 +1956,7 @@ fn assert_update_pipeline(
             .iter()
             .filter(|method| **method == "observe")
             .count(),
-        3
+        10
     );
     assert_eq!(
         methods.iter().filter(|method| **method == "reload").count(),
@@ -1908,14 +2015,14 @@ fn assert_stopped_service_repair(
         .iter()
         .map(|operation| operation.method.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(methods.len(), 5);
+    assert_eq!(methods.len(), 12);
     assert!(methods.contains(&"start"));
     assert_eq!(
         methods
             .iter()
             .filter(|method| **method == "observe")
             .count(),
-        3
+        10
     );
     assert!(methods.contains(&"record"));
     assert!(!methods.contains(&"prepare"));
@@ -1942,7 +2049,7 @@ fn assert_disable_pipeline(
         )
         .unwrap();
     let operations = &transition.checked_effect().document().operations;
-    assert_eq!(operations.len(), 5);
+    assert_eq!(operations.len(), 8);
     let stop = operations
         .iter()
         .filter(|operation| {
@@ -2453,6 +2560,32 @@ fn interface_documents() -> Vec<InterfaceDocument> {
             .collect(),
         optional_fields: Vec::new(),
     };
+    let runtime_storage_paths = ValueSchema::Record {
+        fields: BTreeMap::from([
+            (
+                key("logs"),
+                ValueSchema::String {
+                    max_length: 4096,
+                    syntax: None,
+                },
+            ),
+            (
+                key("runtime"),
+                ValueSchema::String {
+                    max_length: 4096,
+                    syntax: None,
+                },
+            ),
+            (
+                key("state"),
+                ValueSchema::String {
+                    max_length: 4096,
+                    syntax: None,
+                },
+            ),
+        ]),
+        optional_fields: Vec::new(),
+    };
     let nginx_validation_request = ValueSchema::Record {
         fields: BTreeMap::from([
             (key("candidate"), ValueSchema::Boolean),
@@ -2466,7 +2599,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
             (
                 key("storage_paths"),
                 ValueSchema::Optional {
-                    value: Box::new(storage_paths.clone()),
+                    value: Box::new(runtime_storage_paths),
                 },
             ),
         ]),
@@ -2478,11 +2611,17 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         host_storage_interface().unwrap(),
         interface_document(
             "aos.http-backend",
-            ValueSchema::Boolean,
+            endpoint.clone(),
             vec![(
-                "endpoint",
+                "endpoints",
                 ValueSchema::Optional {
-                    value: Box::new(endpoint.clone()),
+                    value: Box::new(ValueSchema::Map {
+                        key: map_key_constraint(),
+                        value: Box::new(ValueSchema::Optional {
+                            value: Box::new(endpoint.clone()),
+                        }),
+                        max_entries: 1024,
+                    }),
                 },
                 ValueVisibility::Protected,
             )],
@@ -2531,7 +2670,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                     (key("consumer_controller_revision"), string_schema()),
                     (key("consumer_instance"), string_schema()),
                     (key("consumer_probe"), consumer_probe.clone()),
-                    (key("consumer_storage_paths"), storage_paths),
+                    (key("consumer_storage_paths"), storage_paths.clone()),
                     (
                         key("virtualHosts"),
                         ValueSchema::List {
@@ -2594,6 +2733,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                     (key("configuration_revision"), string_schema()),
                     (key("consumer_endpoint"), string_schema()),
                     (key("unit"), string_schema()),
+                    (key("storage_paths"), storage_paths.clone()),
                     (
                         key("virtual_host_count"),
                         ValueSchema::Integer {
@@ -2638,12 +2778,6 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         .unwrap()
         .interface
         .configuration = Some(consumer_probe);
-    documents
-        .iter_mut()
-        .find(|document| document.interface.name.as_str() == "aos.http-backend")
-        .unwrap()
-        .interface
-        .configuration = Some(endpoint);
     let nginx_validation = documents
         .iter_mut()
         .find(|document| document.interface.name.as_str() == "aos.nginx-validation")
@@ -2940,18 +3074,13 @@ fn static_route_composes_without_a_backend_request() {
             "static-response",
         )],
     };
-    let mut seed = deployment.seed(true);
-    seed.contributions[0].value = value(serde_json::json!({
-        "host": "static.example",
-        "response_content": "static-response",
-        "response_identity": "app-static",
-        "tls": false,
-    }));
+    deployment.app_routes[0].proxy_backend = false;
+    let seed = deployment.seed(true);
     let composed = deployment.compose(seed);
     let desired = &composed.outcome.desired_state;
     let rendered = rendered_configuration(desired, &nginx);
 
-    assert!(rendered.contains("return 200 'static-response';"));
+    assert!(rendered.contains("app-static:static-response"));
     assert!(!rendered.contains("proxy_pass"));
     assert!(
         !desired.child_requests.iter().any(|request| {
@@ -2967,7 +3096,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.http-backend"].descriptor,
-        digest_from_hex("d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf")
+        digest_from_hex("289893585ef1b59314c8adfb77c26e698d6db1333178e3b3d1e1e0c0b54754c0")
     );
     assert_eq!(
         interfaces["aos.managed-configuration"].descriptor,
@@ -2983,11 +3112,11 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.systemd-service"].descriptor,
-        digest_from_hex("b712c9e3697e87d62bb62549d8692b4d8f825bae9733ae523f76a40bd3882666")
+        digest_from_hex("c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d")
     );
     assert_eq!(
         interfaces["aos.nginx-validation"].descriptor,
-        digest_from_hex("6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6")
+        digest_from_hex("3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1")
     );
     assert_eq!(
         interfaces["aos.network-endpoint-effects"].descriptor,
@@ -3044,7 +3173,12 @@ fn policy_has_new_lower_authority(
     policy
         .candidates
         .iter()
-        .filter(|candidate| candidate.interface.name.as_str() != "aos.nginx")
+        .filter(|candidate| {
+            !matches!(
+                candidate.interface.name.as_str(),
+                "aos.nginx" | "aos.http-backend"
+            )
+        })
         .all(|candidate| {
             !candidate.caller_grant.resources.is_empty()
                 && candidate.caller_grant.resources.iter().all(|permission| {
@@ -3200,6 +3334,7 @@ fn app_route(
         host,
         tls,
         response,
+        proxy_backend: true,
     }
 }
 

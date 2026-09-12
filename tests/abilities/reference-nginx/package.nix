@@ -13,6 +13,7 @@
   nginxArtifact = ../../../pkgs/networking/_nginx-ability-provider;
   nginxProvider = import nginxArtifact;
   managedConfigurationArtifact = ./providers/managed-configuration;
+  httpBackendRegistryArtifact = ./providers/http-backend-registry;
   credentialArtifact = ./providers/credential;
   systemdArtifact = ./providers/systemd;
 
@@ -36,15 +37,15 @@
   systemdService =
     interface
     "aos.systemd-service"
-    "sha256:b712c9e3697e87d62bb62549d8692b4d8f825bae9733ae523f76a40bd3882666";
+    "sha256:c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d";
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6";
+    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
   httpBackend =
     interface
     "aos.http-backend"
-    "sha256:d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf";
+    "sha256:289893585ef1b59314c8adfb77c26e698d6db1333178e3b3d1e1e0c0b54754c0";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -169,6 +170,13 @@
     optional = [];
   };
 
+  backendEndpoints = schemas.optional (schemas.map {
+    keyMaxLength = 128;
+    keySyntax = "local-key-v1";
+    maxEntries = 1024;
+    value = schemas.optional endpoint;
+  });
+
   endpointRequest = schemas.record {
     fields = {
       address = schemas.enum ["127.0.0.1"];
@@ -273,6 +281,20 @@
     optional = [];
   };
 
+  runtimeStoragePath = schemas.string {
+    maxLength = 4096;
+    syntax = null;
+  };
+
+  runtimeStoragePaths = schemas.record {
+    fields = {
+      logs = runtimeStoragePath;
+      runtime = runtimeStoragePath;
+      state = runtimeStoragePath;
+    };
+    optional = [];
+  };
+
   nginxValidationRequest = schemas.record {
     fields = {
       candidate = schemas.boolean;
@@ -280,7 +302,7 @@
         element = credentialView;
         maxItems = 1024;
       };
-      storage_paths = schemas.optional storagePaths;
+      storage_paths = schemas.optional runtimeStoragePaths;
     };
     optional = [];
   };
@@ -461,6 +483,7 @@
   managedConfigurationProvider = import ./providers/managed-configuration/default.nix;
   credentialProvider = import ./providers/credential/default.nix;
   systemdProvider = import ./providers/systemd/default.nix;
+  httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
   nginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
     inherit lib hostResourceRuntime;
     providerArtifact = nginxArtifact;
@@ -497,24 +520,38 @@ in {
     activationMode = "contracts-only";
     requirements.nginx = required nginxInterface;
     ownership = [];
+  };
+
+  backend-consumer = mkPackage "ability-reference-nginx-backend-consumer" nginxArtifact {
+    activationMode = "contracts-only";
+    requirements = {
+      nginx = required nginxInterface;
+      backend = required httpBackend;
+    };
+    ownership = [];
+  };
+
+  backend-registry = mkPackage "ability-reference-http-backend-registry" httpBackendRegistryArtifact {
+    activationMode = "contracts-only";
+    ownership = [];
     exports.http-backend = {
-      artifact = nginxArtifact;
+      artifact = httpBackendRegistryArtifact;
       export = lib.abilities.define {
         interface = httpBackend.name;
         abi = httpBackend.abi;
-        requestSchema = schemas.boolean;
-        configurationSchema = endpoint;
-        outputs.endpoint = output (schemas.optional endpoint);
+        requestSchema = endpoint;
+        configurationSchema = null;
+        outputs.endpoints = output backendEndpoints;
         methods = {};
         inherit lifecycle;
         guarantees = [];
         aggregation = aggregation "backend";
         requires = {};
-        composeEntry = "backendCompose";
-        transitionEntry = "backendTransition";
+        composeEntry = "compose";
+        transitionEntry = "transition";
         ownsResourceKinds = [];
-        compose = nginxProvider.backendCompose;
-        transition = nginxProvider.backendTransition;
+        compose = httpBackendRegistryProvider.compose;
+        transition = httpBackendRegistryProvider.transition;
       };
     };
   };
@@ -668,6 +705,7 @@ in {
                   minimum = 0;
                   maximum = 1024;
                 };
+                storage_paths = storagePaths;
               };
               optional = [];
             };

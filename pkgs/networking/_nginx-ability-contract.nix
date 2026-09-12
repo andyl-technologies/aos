@@ -23,15 +23,15 @@
   systemdService =
     interface
     "aos.systemd-service"
-    "sha256:b712c9e3697e87d62bb62549d8692b4d8f825bae9733ae523f76a40bd3882666";
+    "sha256:c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d";
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6";
+    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
   httpBackend =
     interface
     "aos.http-backend"
-    "sha256:d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf";
+    "sha256:289893585ef1b59314c8adfb77c26e698d6db1333178e3b3d1e1e0c0b54754c0";
   systemdServiceEffects =
     interface
     "aos.systemd-service-effects"
@@ -257,6 +257,20 @@
     optional = [];
   };
 
+  runtimeStoragePath = schemas.string {
+    maxLength = 4096;
+    syntax = null;
+  };
+
+  runtimeStoragePaths = schemas.record {
+    fields = {
+      logs = runtimeStoragePath;
+      runtime = runtimeStoragePath;
+      state = runtimeStoragePath;
+    };
+    optional = [];
+  };
+
   nginxValidationRequest = schemas.record {
     fields = {
       candidate = schemas.boolean;
@@ -264,7 +278,7 @@
         element = credentialView;
         maxItems = 1024;
       };
-      storage_paths = schemas.optional storagePaths;
+      storage_paths = schemas.optional runtimeStoragePaths;
     };
     optional = [];
   };
@@ -435,33 +449,44 @@ in {
           inherit lifecycle;
           guarantees = [];
           aggregation = aggregation "nginx";
-          requires = {
-            configuration = required managedConfiguration;
-            backend = requirement httpBackend [] "advisory" {
-              outputs.endpoint = null;
-            };
-            credential = requirement credentialDelivery [] "advisory" {
-              outputs.credential-views = {};
-            };
-            endpoint = methodRequirement endpointEffects ["materialize" "observe" "release"];
-            network-policy =
-              methodRequirementWithGuarantees
-              networkPolicyEffects
-              ["apply" "observe" "remove"]
-              [loopbackEgressGuarantee loopbackIngressGuarantee];
-            storage = methodRequirement storageEffects ["ensure" "observe" "release"];
-            service = required systemdService;
-            service-terminal =
-              requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
-              // {guarantees = [localSystemdManagerGuarantee];};
-            service-terminal-foreground =
-              requirement foregroundProcess ["observe" "start" "stop"] "required" null
-              // {guarantees = [foregroundProcessSupervisionGuarantee];};
-            service-terminal-system-container =
-              requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
-              // {guarantees = [localSystemdManagerGuarantee systemContainerManagerDelegationGuarantee];};
-            validation-terminal = methodRequirement nginxValidation ["record" "release" "validate"];
-          };
+          requires =
+            {
+              configuration = required managedConfiguration;
+              backend = requirement httpBackend [] "advisory" {
+                outputs.endpoints = null;
+              };
+              credential = requirement credentialDelivery [] "advisory" {
+                outputs.credential-views = {};
+              };
+              endpoint = methodRequirement endpointEffects ["materialize" "observe" "release"];
+              network-policy =
+                methodRequirementWithGuarantees
+                networkPolicyEffects
+                ["apply" "observe" "remove"]
+                [loopbackEgressGuarantee loopbackIngressGuarantee];
+              storage = methodRequirement storageEffects ["ensure" "observe" "release"];
+              service = required systemdService;
+              validation-terminal = methodRequirement nginxValidation ["record" "release" "validate"];
+            }
+            // (
+              if hostResourceRuntime != null
+              then {
+                service-terminal =
+                  requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
+                  // {guarantees = [localSystemdManagerGuarantee];};
+              }
+              else {
+                service-terminal =
+                  requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
+                  // {guarantees = [localSystemdManagerGuarantee];};
+                service-terminal-foreground =
+                  requirement foregroundProcess ["observe" "start" "stop"] "required" null
+                  // {guarantees = [foregroundProcessSupervisionGuarantee];};
+                service-terminal-system-container =
+                  requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
+                  // {guarantees = [localSystemdManagerGuarantee systemContainerManagerDelegationGuarantee];};
+              }
+            );
           composeEntry = "compose";
           transitionEntry = "transition";
           ownsResourceKinds = ["aos.nginx"];
