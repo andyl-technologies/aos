@@ -435,11 +435,24 @@
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
-  nativeAdapterQualifiedCells = [
+  nativeAdapterPrimaryCells = [
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
     "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/block-dependent-effect"
   ];
+  nativePostgresqlReplacementCohort = import ./tests/fleet/ability-native-postgresql.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativePostgresqlReplacementCells = [
+    "postgresql/aos.postgresql-effects/abi-1/materialize/adopt-compatible-state"
+    "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer"
+    "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result"
+    "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target"
+  ];
+  nativeAdapterQualifiedCells =
+    nativeAdapterPrimaryCells
+    ++ nativePostgresqlReplacementCells;
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
       mkNativeAbilityScenario
@@ -452,6 +465,14 @@
       checks = qualificationRequirementChecks "ability-native-adapter-matrix";
       matrixSpec = nativeAdapterMatrix.spec;
       matrixQualifiedCells = nativeAdapterQualifiedCells;
+      matrixAdditionalCohorts = [
+        {
+          id = "postgresql-provider-replacement";
+          qualifiedCells = nativePostgresqlReplacementCells;
+          inherit (nativePostgresqlReplacementCohort) testScript;
+          inherit (nativePostgresqlReplacementCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        }
+      ];
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };

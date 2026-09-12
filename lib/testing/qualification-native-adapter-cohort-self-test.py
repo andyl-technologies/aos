@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import pathlib
 import sys
@@ -302,6 +303,401 @@ def assert_negative_semantic_validators(module, subject, base_cell):
         pass
     else:
         raise AssertionError("dependency validator accepted an executed dependent")
+
+
+def assert_postgresql_cohort(module):
+    """Exercises exact compatible and incompatible PostgreSQL evidence."""
+
+    digest = lambda byte: "sha256:" + byte * 64
+    interface = {
+        "name": "aos.postgresql-effects",
+        "abi": 1,
+        "descriptor": (
+            "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6"
+        ),
+    }
+    resource_interface = {
+        "name": "aos.postgresql",
+        "abi": 1,
+        "descriptor": digest("2"),
+    }
+    resource = {
+        "provider": {
+            "environment": {"authority": "test", "key": "host", "stage": "host"},
+            "key": "postgresql",
+        },
+        "key": "database-postgresql",
+    }
+    state_format = {
+        "schema": "postgresql-17",
+        "descriptor": digest("3"),
+        "artifact": {"store_path": "/nix/store/" + "a" * 32 + "-state"},
+    }
+
+    def endpoint(label, format_value):
+        return {
+            "provider": {"scope": [label], "key": "postgresql"},
+            "package": digest("4" if label == "source" else "5"),
+            "interface": resource_interface,
+            "implementation": {"descriptor": digest("6" if label == "source" else "7")},
+            "state_format": format_value,
+            "handler_binding": {"scope": [label], "key": "postgresql-handler"},
+            "handler_method": "materialize",
+            "handler_provider": {"scope": [label], "key": "terminal"},
+            "handler_incarnation": f"{label}-incarnation",
+            "handler_interface": interface,
+            "handler_implementation": {"descriptor": digest("8" if label == "source" else "9")},
+            "handler_package": digest("a" if label == "source" else "b"),
+        }
+
+    adoption = {
+        "resource": resource,
+        "resource_interface": resource_interface,
+        "source": endpoint("source", state_format),
+        "candidate": endpoint("candidate", state_format),
+    }
+    authority = {
+        "current_planning": digest("c"),
+        "desired_planning": digest("d"),
+        "authorization_policy_revision": digest("e"),
+        "provider_adoptions": [adoption],
+    }
+    operation = {
+        "key": {"scope": ["candidate"], "key": "materialize-postgresql"},
+        "interface": interface,
+        "method": "materialize",
+        "target": {
+            "interface": interface,
+            "resource": resource,
+            "operations": ["materialize"],
+            "lifetime": "persistent",
+        },
+    }
+    restart_operation = {
+        **operation,
+        "key": {"scope": ["candidate"], "key": "restart-postgresql"},
+        "method": "restart",
+        "target": {**operation["target"], "operations": ["restart"]},
+    }
+    bundle = {
+        "schema": "aos.ability.plan-bundle/v1",
+        "plan": digest("f"),
+        "transition_authority": authority,
+        "transition": {
+            "effect_document": {
+                "operations": [operation, restart_operation],
+                "edges": [
+                    {
+                        "from": {"kind": "operation", "key": operation["key"]},
+                        "to": {
+                            "kind": "operation",
+                            "key": restart_operation["key"],
+                        },
+                        "kind": "required-success",
+                    }
+                ],
+            }
+        },
+    }
+    bundle_bytes = module.canonical(bundle)
+    subject = module._postgresql_plan_subject(bundle_bytes, "materialize")
+    cell = {
+        "id": module.POSTGRESQL_CELL_IDS[0],
+        "adapter": "postgresql",
+        "interface": {
+            **interface,
+        },
+        "method": "materialize",
+        "boundary": "recovery",
+        "failure": "none",
+        "candidate": "compatible-replacement",
+        "predecessor": "in-flight-compatible",
+    }
+    module._validate_cohort_subject(cell, subject, bundle_bytes)
+
+    row_digest = digest("0")
+    facts = {
+        "durable-attempt-state-classified": {
+            "transaction": "transaction-postgresql",
+            "plan": subject["plan"],
+            "operation": subject["operation"],
+            "timeline": [
+                {"sequence": index, "kind": kind, "node-ordinal": 0}
+                for index, kind in enumerate(
+                    ["operation-admitted", "effect-started", "effect-completed"]
+                )
+            ],
+            "record-digest": digest("1"),
+            "terminal": "complete",
+            "classified": True,
+        },
+        "at-most-one-resource-owner": {
+            "resource": resource,
+            "owners-before": [{"identity": module.endpoint_identity(adoption["source"])}],
+            "owners-unsettled": [],
+            "owners-after": [{"identity": module.endpoint_identity(adoption["candidate"])}],
+        },
+        "foreign-resources-unchanged": {
+            "resource": {"provider": "test", "key": "storage"},
+            "snapshot-before": digest("2"),
+            "snapshot-after": digest("2"),
+            "unchanged": True,
+        },
+        "fresh-receiving-authority": {
+            "source-handler-incarnation": "source-incarnation",
+            "candidate-handler-incarnation": "candidate-incarnation",
+            "authorization-policy-revision": authority["authorization_policy_revision"],
+            "current-planning": authority["current_planning"],
+            "desired-planning": authority["desired_planning"],
+            "fresh": True,
+        },
+        "compatible-state-adopted": {
+            "resource": resource,
+            "source-state-format": state_format,
+            "candidate-state-format": state_format,
+            "system-identifier-before": "cluster-1",
+            "system-identifier-after": "cluster-1",
+            "row-digest-before": row_digest,
+            "row-digest-after": row_digest,
+            "adopted": True,
+        },
+        "exactly-one-resource-owner": {
+            "resource": resource,
+            "expected-owner": {"identity": module.endpoint_identity(adoption["candidate"])},
+            "owners": [{"identity": module.endpoint_identity(adoption["candidate"])}],
+        },
+    }
+    for name, observation in facts.items():
+        module._validate_postgresql_probe_facts(name, observation, subject, cell)
+
+        invalid = copy.deepcopy(observation)
+        if name == "durable-attempt-state-classified":
+            invalid["classified"] = False
+        elif name == "at-most-one-resource-owner":
+            invalid["owners-after"].append({"identity": "foreign"})
+        elif name == "foreign-resources-unchanged":
+            invalid["snapshot-after"] = digest("3")
+        elif name == "fresh-receiving-authority":
+            invalid["fresh"] = False
+        elif name == "compatible-state-adopted":
+            invalid["adopted"] = False
+        else:
+            invalid["owners"] = []
+        try:
+            module._validate_postgresql_probe_facts(name, invalid, subject, cell)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"PostgreSQL {name} validator accepted false facts")
+
+    incompatible = copy.deepcopy(adoption)
+    incompatible["candidate"]["state_format"] = {
+        **state_format,
+        "descriptor": digest("9"),
+    }
+    rejection_policy = {
+        "transition_authority": {**authority, "provider_adoptions": [incompatible]}
+    }
+    policy_bytes = module.canonical(rejection_policy)
+    activation = {
+        "authenticated_policy_set": {
+            "document_sha256": "sha256:" + hashlib.sha256(policy_bytes).hexdigest(),
+            "document_size": len(policy_bytes),
+        }
+    }
+    rejection = {
+        "schema": module.POSTGRESQL_REJECTION_EVIDENCE_SCHEMA,
+        "activation": activation,
+        "policy": rejection_policy,
+        "observation": {
+            "error": "state-format descriptors are incompatible",
+            "generation-before": 7,
+            "generation-after": 7,
+            "owner-ledger-before": digest("1"),
+            "owner-ledger-after": digest("1"),
+            "persistent-state-before": digest("2"),
+            "persistent-state-after": digest("2"),
+            "candidate-effect-count": 0,
+        },
+    }
+    rejection_bytes = module.canonical(rejection)
+    rejection_subject = module._postgresql_rejection_subject(rejection_bytes)
+    rejection_cell = {
+        **cell,
+        "id": module.POSTGRESQL_CELL_IDS[1],
+        "failure": "transfer-rejected",
+        "candidate": "unsupported-replacement",
+        "predecessor": "in-flight-incompatible",
+    }
+    module._validate_cohort_subject(
+        rejection_cell, rejection_subject, rejection_bytes
+    )
+
+    incompatible_facts = {
+        "durable-attempt-state-classified": {
+            "transaction": "planning-rejection",
+            "plan": rejection_subject["plan"],
+            "operation": rejection_subject["operation"],
+            "timeline": [],
+            "record-digest": digest("1"),
+            "terminal": "rejected-before-effect",
+            "classified": True,
+        },
+        "dependent-effects-not-executed": {
+            "predecessor-operation": rejection_subject["operation"],
+            "dependent-operations": [],
+            "dependent-timelines-before-settlement": [],
+            "dependent-effect-count-before-settlement": 0,
+            "blocked": True,
+        },
+        "transfer-rejected-before-candidate-effect": {
+            "candidate-operation": rejection_subject["operation"],
+            "source-state-format": rejection_subject["source"]["state_format"],
+            "candidate-state-format": rejection_subject["candidate"]["state_format"],
+            "rejection": "transfer-rejected",
+            "candidate-effect-count": 0,
+            "generation-before": 7,
+            "generation-after": 7,
+            "rejected-before-effect": True,
+        },
+        "predecessor-remains-sole-owner": {
+            "resource": resource,
+            "predecessor-owner-before": {"identity": "source"},
+            "predecessor-owner-after": {"identity": "source"},
+            "system-identifier-before": "cluster-1",
+            "system-identifier-after": "cluster-1",
+            "row-digest-before": row_digest,
+            "row-digest-after": row_digest,
+        },
+    }
+    for name, observation in incompatible_facts.items():
+        module._validate_postgresql_probe_facts(
+            name, observation, rejection_subject, rejection_cell
+        )
+        invalid = copy.deepcopy(observation)
+        if name == "durable-attempt-state-classified":
+            invalid["classified"] = False
+        elif name == "dependent-effects-not-executed":
+            invalid["blocked"] = False
+        elif name == "transfer-rejected-before-candidate-effect":
+            invalid["candidate-effect-count"] = 1
+        else:
+            invalid["row-digest-after"] = digest("3")
+        try:
+            module._validate_postgresql_probe_facts(
+                name, invalid, rejection_subject, rejection_cell
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"PostgreSQL {name} validator accepted false facts")
+
+    restart_subject = module._postgresql_plan_subject(bundle_bytes, "restart")
+    lost_cell = {
+        **cell,
+        "id": module.POSTGRESQL_CELL_IDS[2],
+        "method": "restart",
+        "failure": "external-result-lost",
+    }
+    retained_cell = {
+        **lost_cell,
+        "id": module.POSTGRESQL_CELL_IDS[3],
+        "failure": "none",
+        "candidate": "retained-target",
+        "predecessor": "current-authority",
+    }
+    module._validate_cohort_subject(lost_cell, restart_subject, bundle_bytes)
+    module._validate_cohort_subject(retained_cell, restart_subject, bundle_bytes)
+
+    restart_timeline = {
+        "transaction": "transaction-postgresql",
+        "plan": restart_subject["plan"],
+        "operation": restart_subject["operation"],
+        "timeline": [
+            {"sequence": index, "kind": kind, "node-ordinal": 1}
+            for index, kind in enumerate(
+                [
+                    "operation-admitted",
+                    "effect-started",
+                    "operation-admitted",
+                    "reconciliation-started",
+                    "reconciled-completed",
+                ]
+            )
+        ],
+        "record-digest": digest("1"),
+        "terminal": "complete",
+        "classified": True,
+    }
+    module._validate_postgresql_probe_facts(
+        "durable-attempt-state-classified",
+        restart_timeline,
+        restart_subject,
+        lost_cell,
+    )
+    module._validate_postgresql_probe_facts(
+        "dependent-effects-not-executed",
+        {
+            "predecessor-operation": restart_subject["operation"],
+            "dependent-operations": [],
+            "dependent-timelines-before-settlement": [],
+            "dependent-effect-count-before-settlement": 0,
+            "blocked": True,
+        },
+        restart_subject,
+        lost_cell,
+    )
+
+    retained_facts = {
+        "current-grants-reauthorized": {
+            "authorization-policy-revision": authority["authorization_policy_revision"],
+            "source-handler-incarnation": "source-incarnation",
+            "candidate-handler-incarnation": "candidate-incarnation",
+            "current-planning": authority["current_planning"],
+            "desired-planning": authority["desired_planning"],
+            "reauthorized": True,
+        },
+        "retained-target-identity-preserved": {
+            "resource": resource,
+            "data-path-before": "/var/lib/postgresql/data",
+            "data-path-after": "/var/lib/postgresql/data",
+            "system-identifier-before": "cluster-1",
+            "system-identifier-after": "cluster-1",
+            "row-digest-before": row_digest,
+            "row-digest-after": row_digest,
+        },
+    }
+    for name, observation in retained_facts.items():
+        module._validate_postgresql_probe_facts(
+            name, observation, restart_subject, retained_cell
+        )
+        invalid = copy.deepcopy(observation)
+        if name == "current-grants-reauthorized":
+            invalid["reauthorized"] = False
+        else:
+            invalid["data-path-after"] = "/var/lib/postgresql/replaced"
+        try:
+            module._validate_postgresql_probe_facts(
+                name, invalid, restart_subject, retained_cell
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"PostgreSQL {name} validator accepted false facts")
+
+    invalid_rejection = copy.deepcopy(rejection)
+    invalid_rejection["observation"]["candidate-effect-count"] = 1
+    invalid_rejection_bytes = module.canonical(invalid_rejection)
+    try:
+        module._validate_cohort_subject(
+            rejection_cell,
+            rejection_subject,
+            invalid_rejection_bytes,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("PostgreSQL rejection accepted a candidate effect")
 
 
 def main() -> None:
@@ -604,6 +1000,7 @@ def main() -> None:
     } == {module.sha256(spec["cells"][0])}
     assert_semantic_validators(module, subject, spec["cells"][0], observations)
     assert_negative_semantic_validators(module, subject, spec["cells"][0])
+    assert_postgresql_cohort(module)
 
     first_cell = spec["cells"][0]
     replay_cell = copy.deepcopy(first_cell)

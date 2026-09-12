@@ -43,6 +43,9 @@ MATRIX_SPEC_PATH = pathlib.Path(MATRIX_SPEC_NAME) if MATRIX_SPEC_NAME else None
 MATRIX_QUALIFIED_CELLS = json.loads(
     os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS"]
 )
+MATRIX_COHORTS = json.loads(
+    os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_COHORTS"]
+)
 MATRIX_COHORT_SUPPORT_NAME = os.environ[
     "AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT"
 ]
@@ -276,9 +279,11 @@ class PublishedImageMachine(IMAGE.VirtualMachine):
     ) -> list[dict[str, str]]:
         """Substitutes candidate-bound signed ability companions."""
 
+        package_abilities = {entry["abilities"] for entry in packages}
         expected = {
             (entry["name"], entry["primary"], entry["abilities"])
             for entry in RUNTIME_COMPANIONS
+            if entry["abilities"] in package_abilities
         }
         observed = {
             (entry["name"], entry["package"], entry["abilities"])
@@ -287,6 +292,9 @@ class PublishedImageMachine(IMAGE.VirtualMachine):
         }
         if observed != expected:
             raise RuntimeError("fleet package list differs from candidate runtime bindings")
+        self.scenario.used_candidate_companions.update(
+            package_abilities & set(self.scenario.candidate_companions)
+        )
 
         bound = []
         for entry in packages:
@@ -369,8 +377,10 @@ class Scenario:
         self.handoff_boot_ids: set[str] = set()
         self.candidate_closure: Any | None = None
         self.candidate_companions: dict[str, str] = {}
+        self.used_candidate_companions: set[str] = set()
         self.guest_initially_absent: list[str] = []
         self.fixture_namespace: dict[str, Any] = {}
+        self.fixture_namespaces: dict[str, dict[str, Any]] = {}
         self.matrix_spec = (
             read_json(MATRIX_SPEC_PATH) if MATRIX_SPEC_PATH is not None else None
         )
@@ -1179,7 +1189,9 @@ class Scenario:
         )
         self.assert_running_published_boot(machine)
 
-    def import_fixture(self, machine: PublishedImageMachine) -> None:
+    def import_fixture(
+        self, machine: PublishedImageMachine, setup_module: pathlib.Path = SETUP_MODULE
+    ) -> None:
         destination = "/var/lib/aos/qualification-ability-fixture.export"
         machine.ssh("install -d -m 0700 /var/lib/aos")
         machine.copy_to(FIXTURE_ARCHIVE, destination)
@@ -1191,38 +1203,70 @@ class Scenario:
         )
         machine.succeed(
             f"{machine.guest_tool('apm')} switch "
-            f"--from {SETUP_MODULE} "
+            f"--from {setup_module} "
             f"--eval-root /run/qualification-ability-setup-{SCENARIO_ID}",
             timeout=1800,
         )
         machine.succeed("systemd-tmpfiles --create", timeout=600)
 
-    def execute_fixture(self, machine: PublishedImageMachine) -> None:
-        source = FIXTURE_SCRIPT.read_text(encoding="utf-8")
+    def execute_fixture(
+        self, machine: PublishedImageMachine, fixture_script: pathlib.Path = FIXTURE_SCRIPT
+    ) -> dict[str, Any]:
+        source = fixture_script.read_text(encoding="utf-8")
         namespace = {"__name__": "__main__", "runtime": machine}
-        exec(compile(source, str(FIXTURE_SCRIPT), "exec"), namespace)
+        exec(compile(source, str(fixture_script), "exec"), namespace)
         self.fixture_namespace = namespace
+        return namespace
 
     def build_matrix_report(self, guest_kernel_release: str) -> bytes:
         """Builds partial matrix evidence from the executed cohort probes."""
 
         if self.matrix_spec is None or MATRIX_COHORT is None:
             raise RuntimeError("matrix report lacks its immutable specification")
-        submissions = self.fixture_namespace.get("NATIVE_ADAPTER_MATRIX_PROBES")
-        if not isinstance(submissions, dict):
-            raise RuntimeError("matrix cohort did not retain its production probes")
-        cohort_subjects = self.fixture_namespace.get(
-            "NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS"
-        )
-        if not isinstance(cohort_subjects, dict):
-            raise RuntimeError("matrix cohort did not retain its exact operation subjects")
-        cohort_plan_bundles = self.fixture_namespace.get(
-            "NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES"
-        )
-        if not isinstance(cohort_plan_bundles, dict) or any(
-            not isinstance(bundle, bytes) for bundle in cohort_plan_bundles.values()
-        ):
-            raise RuntimeError("matrix cohort did not retain its exact plan bundles")
+        submissions: dict[str, Any] = {}
+        cohort_subjects: dict[str, Any] = {}
+        cohort_evidence: dict[str, bytes] = {}
+        for cohort_id, namespace in self.fixture_namespaces.items():
+            cohort_input = one(
+                [entry for entry in MATRIX_COHORTS if entry["id"] == cohort_id],
+                f"matrix cohort {cohort_id}",
+            )
+            cohort_probes = namespace.get("NATIVE_ADAPTER_MATRIX_PROBES")
+            subject_map = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS")
+            evidence_map = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE")
+            if evidence_map is None:
+                evidence_map = namespace.get(
+                    "NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES"
+                )
+            if subject_map is None and isinstance(cohort_probes, dict):
+                legacy_subject = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT")
+                legacy_bundle = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE")
+                if len(cohort_probes) == 1:
+                    cell_id = next(iter(cohort_probes))
+                    subject_map = {cell_id: legacy_subject}
+                    evidence_map = {cell_id: legacy_bundle}
+            if (
+                not isinstance(cohort_probes, dict)
+                or not isinstance(subject_map, dict)
+                or not isinstance(evidence_map, dict)
+                or any(not isinstance(value, bytes) for value in evidence_map.values())
+            ):
+                raise RuntimeError(
+                    f"matrix cohort {cohort_id!r} did not retain exact production evidence"
+                )
+            if set(cohort_probes) != set(cohort_input["qualifiedCells"]):
+                raise RuntimeError(
+                    f"matrix cohort {cohort_id!r} differs from its declared cells"
+                )
+            if (
+                set(submissions) & set(cohort_probes)
+                or set(cohort_subjects) & set(subject_map)
+                or set(cohort_evidence) & set(evidence_map)
+            ):
+                raise RuntimeError("matrix production cohorts repeat a cell identity")
+            submissions.update(cohort_probes)
+            cohort_subjects.update(subject_map)
+            cohort_evidence.update(evidence_map)
 
         qemu_output = IMAGE.run([IMAGE.QEMU, "--version"]).stdout.splitlines()[0]
         qemu_match = re.search(r"version ([0-9][A-Za-z0-9.+_-]*)", qemu_output)
@@ -1240,7 +1284,7 @@ class Scenario:
             "predecessor_manifest_digest": self.case["predecessor"][
                 "manifest_digest"
             ],
-            "cohort": "host-resource-managed-configuration-negative-v2",
+            "cohort": "host-resource-provider-replacement-v3",
             "qemu": {
                 "name": "qemu",
                 "version": "qemu-" + qemu_match.group(1),
@@ -1264,14 +1308,14 @@ class Scenario:
                 "digest": self.uki_artifact["sha256"],
             },
             "fault_injection_tool": {
-                "name": "ability-boundary-observer",
-                "version": "observer-v1",
+                "name": "native-adapter-cohort-faults",
+                "version": "cohort-v2",
                 "digest": sha256_file(FIXTURE_ARCHIVE),
             },
             "harness": {
                 "name": "native-adapter-host-resource-cohort",
                 "version": "cohort-v2",
-                "digest": sha256_file(FIXTURE_SCRIPT),
+                "digest": sha256_file(FIXTURE_ARCHIVE),
             },
         }
         environment_digest = raw_digest(environment)
@@ -1280,7 +1324,7 @@ class Scenario:
             submissions,
             MATRIX_QUALIFIED_CELLS,
             cohort_subjects,
-            cohort_plan_bundles,
+            cohort_evidence,
             self.case["subjects_digest"],
             environment_digest,
         )
@@ -1322,6 +1366,9 @@ class Scenario:
         if self.machine is None or self.candidate_closure is None:
             raise RuntimeError("ability scenario has no executed published guest")
         machine = self.machine
+        if self.matrix_spec is not None:
+            return self.build_matrix_report(guest_kernel_release)
+
         expected_boots = (
             1 + machine.counts.reboot_cycles + machine.hard_power_cycles
         )
@@ -1332,9 +1379,6 @@ class Scenario:
             or len(self.boot_ids) != expected_boots
         ):
             raise RuntimeError("unique boot and initrd handoff coverage is incomplete")
-
-        if self.matrix_spec is not None:
-            return self.build_matrix_report(guest_kernel_release)
 
         details = {
             check: {"passed": True, "detail": CHECK_DETAILS[check]}
@@ -1411,24 +1455,74 @@ class Scenario:
         guest_kernel_release: str | None = None
         try:
             self.validate_inputs()
-            machine = PublishedImageMachine(
-                "ability-candidate",
-                self.qcow2_path,
-                self.host_config,
-                self.key,
-                IMAGE.Counts(),
-                scenario=self,
-            )
-            self.machine = machine
-            self.enroll(machine)
-            self.import_candidate_tools(machine)
-            self.bind_native_guest_tools(machine)
-            self.import_fixture(machine)
-            self.execute_fixture(machine)
-            self.assert_running_published_boot(machine)
-            guest_kernel_release = machine.ssh("uname -r").strip()
+            cohorts = MATRIX_COHORTS if self.matrix_spec is not None else [
+                {
+                    "id": "ability",
+                    "script": str(FIXTURE_SCRIPT),
+                    "setup": str(SETUP_MODULE),
+                    "qualifiedCells": [],
+                }
+            ]
+            if not isinstance(cohorts, list) or not cohorts:
+                raise RuntimeError("matrix qualification lacks a production cohort")
+            qualified_cells = [
+                cell_id
+                for cohort in cohorts
+                if isinstance(cohort, dict)
+                for cell_id in cohort.get("qualifiedCells", [])
+            ]
+            if (
+                qualified_cells != MATRIX_QUALIFIED_CELLS
+                or len(set(qualified_cells)) != len(qualified_cells)
+            ):
+                raise RuntimeError(
+                    "matrix cohort inputs differ from the exact qualification scope"
+                )
+
+            for index, cohort in enumerate(cohorts):
+                if (
+                    not isinstance(cohort, dict)
+                    or set(cohort) != {"id", "script", "setup", "qualifiedCells"}
+                    or not isinstance(cohort["id"], str)
+                    or not cohort["id"]
+                    or not isinstance(cohort["qualifiedCells"], list)
+                ):
+                    raise RuntimeError("matrix production cohort input is malformed")
+
+                machine = PublishedImageMachine(
+                    f"ability-candidate-{index}",
+                    self.qcow2_path,
+                    self.host_config,
+                    self.key,
+                    IMAGE.Counts(),
+                    scenario=self,
+                )
+                self.machine = machine
+                try:
+                    self.enroll(machine)
+                    self.import_candidate_tools(machine)
+                    self.bind_native_guest_tools(machine)
+                    self.import_fixture(machine, pathlib.Path(cohort["setup"]))
+                    namespace = self.execute_fixture(
+                        machine, pathlib.Path(cohort["script"])
+                    )
+                    self.fixture_namespaces[cohort["id"]] = namespace
+                    self.assert_running_published_boot(machine)
+                    observed_kernel = machine.ssh("uname -r").strip()
+                    if guest_kernel_release is None:
+                        guest_kernel_release = observed_kernel
+                    elif guest_kernel_release != observed_kernel:
+                        raise RuntimeError(
+                            "matrix cohorts observed different guest kernels"
+                        )
+                finally:
+                    machine.stop_processes()
+            if self.used_candidate_companions != set(self.candidate_companions):
+                raise RuntimeError(
+                    "production cohorts did not exercise every candidate runtime companion"
+                )
         finally:
-            if self.machine is not None:
+            if self.machine is not None and self.machine.qemu is not None:
                 # Cleanup exceptions propagate, so an unclosed VM cannot leave
                 # a successful report behind.
                 self.machine.stop_processes()

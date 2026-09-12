@@ -31,11 +31,12 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}").fullmatch
 RAW_DIGEST = re.compile(r"[0-9a-f]{64}").fullmatch
 MAX_PROBE_FACTS = 32
 MAX_PROBE_BYTES = 64 * 1024
-QUALIFIED_CELL_IDS = [
-    (
-        "managed-configuration/aos.managed-configuration-effects/abi-1/"
-        "publish/lose-external-result"
-    ),
+MANAGED_CONFIGURATION_CELL_ID = (
+    "managed-configuration/aos.managed-configuration-effects/abi-1/"
+    "publish/lose-external-result"
+)
+PRIMARY_COHORT_CELL_IDS = [
+    MANAGED_CONFIGURATION_CELL_ID,
     (
         "managed-configuration/aos.managed-configuration-effects/abi-1/"
         "publish/reject-foreign-resource-mutation"
@@ -45,7 +46,20 @@ QUALIFIED_CELL_IDS = [
         "reload/block-dependent-effect"
     ),
 ]
+POSTGRESQL_CELL_IDS = [
+    "postgresql/aos.postgresql-effects/abi-1/materialize/adopt-compatible-state",
+    "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer",
+    "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result",
+    "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
+]
+QUALIFIED_CELL_IDS = [*PRIMARY_COHORT_CELL_IDS, *POSTGRESQL_CELL_IDS]
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
+POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
+    "aos.qualification.postgresql-provider-replacement-cohort-subject/v1"
+)
+POSTGRESQL_REJECTION_EVIDENCE_SCHEMA = (
+    "aos.qualification.postgresql-provider-rejection-evidence/v1"
+)
 PUBLISH_ORDINAL = 5
 DEPENDENT_ORDINAL = 2
 FIXTURE_ENVIRONMENT = {
@@ -171,7 +185,7 @@ def build_cells(
     submissions: dict[str, Any],
     expected_qualified_cells: list[str],
     cohort_subjects: dict[str, dict[str, Any]],
-    cohort_plan_bundles: dict[str, bytes],
+    cohort_evidence: dict[str, bytes],
     subject_digest: str,
     environment_digest: str,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -187,23 +201,22 @@ def build_cells(
         raise RuntimeError("matrix specification repeats a cell identity")
     if any(cell_id not in specification_cells for cell_id in submissions):
         raise RuntimeError("cohort submitted a probe outside the exact matrix surface")
-    allowed_cells = set(QUALIFIED_CELL_IDS)
     if (
         not expected_qualified_cells
-        or any(cell_id not in allowed_cells for cell_id in expected_qualified_cells)
+        or any(cell_id not in QUALIFIED_CELL_IDS for cell_id in expected_qualified_cells)
         or expected_qualified_cells
         != [cell_id for cell_id in QUALIFIED_CELL_IDS if cell_id in expected_qualified_cells]
     ):
         raise RuntimeError("cohort qualification scope differs from its fixed fixture")
     if set(cohort_subjects) != set(expected_qualified_cells):
         raise RuntimeError("cohort subjects differ from its explicit qualification scope")
-    if set(cohort_plan_bundles) != set(expected_qualified_cells):
-        raise RuntimeError("cohort plan bundles differ from its explicit qualification scope")
+    if set(cohort_evidence) != set(expected_qualified_cells):
+        raise RuntimeError("cohort evidence differs from its explicit qualification scope")
     for cell_id in expected_qualified_cells:
         _validate_cohort_subject(
             specification_cells[cell_id],
             cohort_subjects[cell_id],
-            cohort_plan_bundles[cell_id],
+            cohort_evidence[cell_id],
         )
 
     observed_cells = []
@@ -316,6 +329,12 @@ def _validate_probe_facts(
     cell: dict[str, Any],
 ) -> None:
     """Checks semantic facts for one exact matrix postcondition."""
+
+    if cohort_subject.get("schema") == POSTGRESQL_COHORT_SUBJECT_SCHEMA:
+        _validate_postgresql_probe_facts(
+            postcondition, observations, cohort_subject, cell
+        )
+        return
 
     scenario = cell["id"].rsplit("/", 1)[-1]
     if postcondition == "durable-attempt-state-classified":
@@ -772,6 +791,286 @@ def _validate_probe_facts(
         raise RuntimeError("matrix postcondition has no semantic validator")
 
 
+def _validate_postgresql_probe_facts(
+    postcondition: str,
+    observations: dict[str, Any],
+    subject: dict[str, Any],
+    cell: dict[str, Any],
+) -> None:
+    """Checks one PostgreSQL replacement observation against its exact subject."""
+
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    operation = subject["operation"]
+    resource = subject["resource"]
+    if postcondition == "durable-attempt-state-classified":
+        expected_timelines = {
+            "adopt-compatible-state": [
+                "operation-admitted",
+                "effect-started",
+                "effect-completed",
+            ],
+            "reject-unsupported-transfer": [],
+            "lose-external-result": [
+                "operation-admitted",
+                "effect-started",
+                "operation-admitted",
+                "reconciliation-started",
+                "reconciled-completed",
+            ],
+            "activate-retained-target": [
+                "operation-admitted",
+                "effect-started",
+                "effect-completed",
+            ],
+        }
+        timeline = observations.get("timeline")
+        expected = expected_timelines.get(scenario)
+        if (
+            set(observations)
+            != {
+                "transaction",
+                "plan",
+                "operation",
+                "timeline",
+                "record-digest",
+                "terminal",
+                "classified",
+            }
+            or not _matches(LOCAL_KEY, observations.get("transaction"))
+            or observations.get("plan") != subject["plan"]
+            or observations.get("operation") != operation
+            or not _matches(DIGEST, observations.get("record-digest"))
+            or observations.get("classified") is not True
+            or expected is None
+            or [event.get("kind") for event in timeline or []] != expected
+            or any(
+                not isinstance(event, dict)
+                or set(event) != {"sequence", "kind", "node-ordinal"}
+                or not _is_nonnegative_int(event.get("sequence"))
+                or event.get("node-ordinal") != operation["ordinal"]
+                for event in timeline or []
+            )
+            or observations.get("terminal")
+            != (
+                "rejected-before-effect"
+                if scenario == "reject-unsupported-transfer"
+                else "complete"
+            )
+        ):
+            raise RuntimeError("PostgreSQL journal does not classify the exact transition")
+    elif postcondition == "at-most-one-resource-owner":
+        inventories = [
+            observations.get("owners-before"),
+            observations.get("owners-unsettled"),
+            observations.get("owners-after"),
+        ]
+        if (
+            set(observations)
+            != {"resource", "owners-before", "owners-unsettled", "owners-after"}
+            or observations.get("resource") != resource
+            or any(not isinstance(owners, list) or len(owners) > 1 for owners in inventories)
+            or not inventories[0]
+            or not inventories[2]
+        ):
+            raise RuntimeError("PostgreSQL ownership evidence permits multiple owners")
+    elif postcondition == "foreign-resources-unchanged":
+        if (
+            set(observations)
+            != {"resource", "snapshot-before", "snapshot-after", "unchanged"}
+            or not isinstance(observations.get("resource"), dict)
+            or observations.get("resource") == resource
+            or not _matches(DIGEST, observations.get("snapshot-before"))
+            or observations.get("snapshot-after") != observations.get("snapshot-before")
+            or observations.get("unchanged") is not True
+        ):
+            raise RuntimeError("PostgreSQL transition changed its independent resource")
+    elif postcondition == "dependent-effects-not-executed":
+        if (
+            set(observations)
+            != {
+                "predecessor-operation",
+                "dependent-operations",
+                "dependent-timelines-before-settlement",
+                "dependent-effect-count-before-settlement",
+                "blocked",
+            }
+            or observations.get("predecessor-operation") != operation
+            or observations.get("dependent-operations")
+            != subject["dependent-operations"]
+            or observations.get("dependent-timelines-before-settlement") != []
+            or observations.get("dependent-effect-count-before-settlement") != 0
+            or observations.get("blocked") is not True
+        ):
+            raise RuntimeError("PostgreSQL rejection or recovery ran a dependent effect")
+    elif postcondition == "fresh-receiving-authority":
+        if (
+            set(observations)
+            != {
+                "source-handler-incarnation",
+                "candidate-handler-incarnation",
+                "authorization-policy-revision",
+                "current-planning",
+                "desired-planning",
+                "fresh",
+            }
+            or observations.get("source-handler-incarnation")
+            != subject["source"]["handler_incarnation"]
+            or observations.get("candidate-handler-incarnation")
+            != subject["candidate"]["handler_incarnation"]
+            or observations.get("source-handler-incarnation")
+            == observations.get("candidate-handler-incarnation")
+            or observations.get("authorization-policy-revision")
+            != subject["authorization-policy-revision"]
+            or observations.get("current-planning") != subject["current-planning"]
+            or observations.get("desired-planning") != subject["desired-planning"]
+            or observations.get("fresh") is not True
+        ):
+            raise RuntimeError("PostgreSQL transition lacks fresh receiving authority")
+    elif postcondition == "compatible-state-adopted":
+        if (
+            set(observations)
+            != {
+                "resource",
+                "source-state-format",
+                "candidate-state-format",
+                "system-identifier-before",
+                "system-identifier-after",
+                "row-digest-before",
+                "row-digest-after",
+                "adopted",
+            }
+            or observations.get("resource") != resource
+            or observations.get("source-state-format")
+            != subject["source"]["state_format"]
+            or observations.get("candidate-state-format")
+            != subject["candidate"]["state_format"]
+            or observations.get("source-state-format", {}).get("descriptor")
+            != observations.get("candidate-state-format", {}).get("descriptor")
+            or observations.get("system-identifier-before")
+            != observations.get("system-identifier-after")
+            or not _matches(DIGEST, observations.get("row-digest-before"))
+            or observations.get("row-digest-after")
+            != observations.get("row-digest-before")
+            or observations.get("adopted") is not True
+        ):
+            raise RuntimeError("PostgreSQL evidence does not prove compatible adoption")
+    elif postcondition == "exactly-one-resource-owner":
+        if (
+            set(observations) != {"resource", "expected-owner", "owners"}
+            or observations.get("resource") != resource
+            or observations.get("owners") != [observations.get("expected-owner")]
+            or observations.get("expected-owner", {}).get("identity")
+            != endpoint_identity(subject["candidate"])
+        ):
+            raise RuntimeError("PostgreSQL transition lacks its one exact candidate owner")
+    elif postcondition == "transfer-rejected-before-candidate-effect":
+        if (
+            set(observations)
+            != {
+                "candidate-operation",
+                "source-state-format",
+                "candidate-state-format",
+                "rejection",
+                "candidate-effect-count",
+                "generation-before",
+                "generation-after",
+                "rejected-before-effect",
+            }
+            or observations.get("candidate-operation") != operation
+            or observations.get("source-state-format")
+            != subject["source"]["state_format"]
+            or observations.get("candidate-state-format")
+            != subject["candidate"]["state_format"]
+            or observations.get("source-state-format", {}).get("descriptor")
+            == observations.get("candidate-state-format", {}).get("descriptor")
+            or observations.get("rejection") != cell["failure"]
+            or observations.get("candidate-effect-count") != 0
+            or observations.get("generation-before")
+            != observations.get("generation-after")
+            or observations.get("rejected-before-effect") is not True
+        ):
+            raise RuntimeError("PostgreSQL transfer was not rejected before effect")
+    elif postcondition == "predecessor-remains-sole-owner":
+        if (
+            set(observations)
+            != {
+                "resource",
+                "predecessor-owner-before",
+                "predecessor-owner-after",
+                "system-identifier-before",
+                "system-identifier-after",
+                "row-digest-before",
+                "row-digest-after",
+            }
+            or observations.get("resource") != resource
+            or observations.get("predecessor-owner-after")
+            != observations.get("predecessor-owner-before")
+            or observations.get("system-identifier-after")
+            != observations.get("system-identifier-before")
+            or observations.get("row-digest-after")
+            != observations.get("row-digest-before")
+        ):
+            raise RuntimeError("PostgreSQL rejection did not preserve its predecessor")
+    elif postcondition == "current-grants-reauthorized":
+        if (
+            set(observations)
+            != {
+                "authorization-policy-revision",
+                "source-handler-incarnation",
+                "candidate-handler-incarnation",
+                "current-planning",
+                "desired-planning",
+                "reauthorized",
+            }
+            or observations.get("authorization-policy-revision")
+            != subject["authorization-policy-revision"]
+            or observations.get("source-handler-incarnation")
+            != subject["source"]["handler_incarnation"]
+            or observations.get("candidate-handler-incarnation")
+            != subject["candidate"]["handler_incarnation"]
+            or observations.get("current-planning") != subject["current-planning"]
+            or observations.get("desired-planning") != subject["desired-planning"]
+            or observations.get("current-planning")
+            == observations.get("desired-planning")
+            or observations.get("reauthorized") is not True
+        ):
+            raise RuntimeError("PostgreSQL retained target lacks current grants")
+    elif postcondition == "retained-target-identity-preserved":
+        if (
+            set(observations)
+            != {
+                "resource",
+                "data-path-before",
+                "data-path-after",
+                "system-identifier-before",
+                "system-identifier-after",
+                "row-digest-before",
+                "row-digest-after",
+            }
+            or observations.get("resource") != resource
+            or observations.get("data-path-after") != observations.get("data-path-before")
+            or observations.get("system-identifier-after")
+            != observations.get("system-identifier-before")
+            or observations.get("row-digest-after")
+            != observations.get("row-digest-before")
+        ):
+            raise RuntimeError("PostgreSQL retained target identity changed")
+    else:
+        raise RuntimeError("PostgreSQL matrix postcondition has no semantic validator")
+
+
+def endpoint_identity(endpoint: dict[str, Any]) -> dict[str, Any]:
+    """Projects the durable provider identity carried by an adoption endpoint."""
+
+    return {
+        "provider": endpoint["provider"],
+        "package": endpoint["package"],
+        "interface": endpoint["interface"],
+        "implementation": endpoint["implementation"],
+        "state_format": endpoint["state_format"],
+    }
+
+
 def _bound_cohort_subject(
     cell: dict[str, Any], cohort_subject: dict[str, Any]
 ) -> dict[str, Any]:
@@ -824,6 +1123,16 @@ def _strictly_increasing_nonnegative(before: Any, after: Any) -> bool:
 
 
 def _validate_cohort_subject(
+    cell: dict[str, Any], subject: Any, evidence_bytes: Any
+) -> None:
+    if cell.get("adapter") == "postgresql":
+        _validate_postgresql_cohort_subject(cell, subject, evidence_bytes)
+        return
+
+    _validate_managed_configuration_subject(cell, subject, evidence_bytes)
+
+
+def _validate_managed_configuration_subject(
     cell: dict[str, Any], subject: Any, plan_bundle_bytes: Any
 ) -> None:
     scenario = cell["id"].rsplit("/", 1)[-1]
@@ -875,6 +1184,225 @@ def _validate_cohort_subject(
         )
     ):
         raise RuntimeError("cohort operation subject differs from the fixed fixture")
+
+
+def _validate_postgresql_cohort_subject(
+    cell: dict[str, Any], subject: Any, evidence_bytes: Any
+) -> None:
+    if (
+        cell.get("interface", {}).get("name") != "aos.postgresql-effects"
+        or cell.get("interface", {}).get("abi") != 1
+        or cell.get("interface", {}).get("descriptor")
+        != "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6"
+        or cell.get("method") not in {"materialize", "restart"}
+    ):
+        raise RuntimeError("PostgreSQL cohort is bound to another adapter method")
+
+    scenario = cell["id"].rsplit("/", 1)[-1]
+    if scenario == "reject-unsupported-transfer":
+        expected = _postgresql_rejection_subject(evidence_bytes)
+    else:
+        expected = _postgresql_plan_subject(evidence_bytes, cell["method"])
+    if subject != expected or subject.get("schema") != POSTGRESQL_COHORT_SUBJECT_SCHEMA:
+        raise RuntimeError("PostgreSQL cohort subject differs from its exact evidence")
+    if (
+        subject.get("operation", {}).get("interface") != cell["interface"]
+        or subject.get("operation", {}).get("method") != cell["method"]
+        or subject.get("operation", {}).get("target", {}).get("interface")
+        != cell["interface"]
+        or subject.get("operation", {}).get("target", {}).get("resource")
+        != subject.get("resource")
+    ):
+        raise RuntimeError("PostgreSQL evidence operation differs from its matrix cell")
+
+    source_format = subject.get("source", {}).get("state_format")
+    candidate_format = subject.get("candidate", {}).get("state_format")
+    compatible = (
+        isinstance(source_format, dict)
+        and isinstance(candidate_format, dict)
+        and source_format.get("descriptor") == candidate_format.get("descriptor")
+    )
+    if compatible != (scenario != "reject-unsupported-transfer"):
+        raise RuntimeError("PostgreSQL cohort state-format disposition is inconsistent")
+
+
+def _postgresql_plan_subject(evidence_bytes: Any, method: str) -> dict[str, Any]:
+    bundle = _canonical_evidence(evidence_bytes, "PostgreSQL plan bundle")
+    try:
+        if bundle.get("schema") != "aos.ability.plan-bundle/v1":
+            raise RuntimeError("PostgreSQL evidence has another plan-bundle schema")
+        authority = bundle["transition_authority"]
+        adoptions = authority["provider_adoptions"]
+        if len(adoptions) != 1:
+            raise RuntimeError("PostgreSQL plan does not carry one adoption contract")
+        adoption = adoptions[0]
+        effect_document = bundle["transition"]["effect_document"]
+        operations = effect_document["operations"]
+        matches = [
+            _project_operation(operation, ordinal)
+            for ordinal, operation in enumerate(operations)
+            if operation.get("method") == method
+            and operation.get("target", {}).get("resource") == adoption["resource"]
+        ]
+        if len(matches) != 1:
+            raise RuntimeError("PostgreSQL plan lacks one exact cohort operation")
+        dependent_operations = _required_success_dependents(
+            effect_document, matches[0]
+        )
+    except RuntimeError:
+        raise
+    except (AttributeError, KeyError, TypeError) as error:
+        raise RuntimeError("PostgreSQL plan evidence is malformed") from error
+
+    return _postgresql_subject(
+        plan=bundle["plan"],
+        evidence_bytes=evidence_bytes,
+        operation=matches[0],
+        dependent_operations=dependent_operations,
+        authority=authority,
+        adoption=adoption,
+    )
+
+
+def _postgresql_rejection_subject(evidence_bytes: Any) -> dict[str, Any]:
+    evidence = _canonical_evidence(evidence_bytes, "PostgreSQL rejection")
+    try:
+        if (
+            evidence.get("schema") != POSTGRESQL_REJECTION_EVIDENCE_SCHEMA
+            or set(evidence) != {"schema", "activation", "policy", "observation"}
+        ):
+            raise RuntimeError("PostgreSQL rejection evidence has another schema")
+        activation = evidence["activation"]
+        policy = evidence["policy"]
+        policy_bytes = canonical(policy)
+        pinned = activation["authenticated_policy_set"]
+        if (
+            pinned["document_sha256"]
+            != "sha256:" + hashlib.sha256(policy_bytes).hexdigest()
+            or pinned["document_size"] != len(policy_bytes)
+        ):
+            raise RuntimeError("PostgreSQL rejection policy is not the pinned input")
+        observation = evidence["observation"]
+        if (
+            not isinstance(observation, dict)
+            or set(observation)
+            != {
+                "error",
+                "generation-before",
+                "generation-after",
+                "owner-ledger-before",
+                "owner-ledger-after",
+                "persistent-state-before",
+                "persistent-state-after",
+                "candidate-effect-count",
+            }
+            or "state-format descriptors are incompatible"
+            not in observation.get("error", "")
+            or observation.get("generation-before")
+            != observation.get("generation-after")
+            or observation.get("owner-ledger-before")
+            != observation.get("owner-ledger-after")
+            or observation.get("persistent-state-before")
+            != observation.get("persistent-state-after")
+            or observation.get("candidate-effect-count") != 0
+        ):
+            raise RuntimeError("PostgreSQL rejection evidence lacks the exact outcome")
+        authority = policy["transition_authority"]
+        adoptions = authority["provider_adoptions"]
+        if len(adoptions) != 1:
+            raise RuntimeError("PostgreSQL rejection lacks one adoption contract")
+        adoption = adoptions[0]
+        candidate = adoption["candidate"]
+        operation = {
+            "key": candidate["handler_binding"],
+            "ordinal": 0,
+            "interface": candidate["handler_interface"],
+            "method": candidate["handler_method"],
+            "target": {
+                "interface": candidate["handler_interface"],
+                "resource": adoption["resource"],
+                "operations": [candidate["handler_method"]],
+                "lifetime": "persistent",
+            },
+        }
+    except RuntimeError:
+        raise
+    except (AttributeError, KeyError, TypeError) as error:
+        raise RuntimeError("PostgreSQL rejection evidence is malformed") from error
+
+    return _postgresql_subject(
+        plan=authority["desired_planning"],
+        evidence_bytes=evidence_bytes,
+        operation=operation,
+        dependent_operations=[],
+        authority=authority,
+        adoption=adoption,
+    )
+
+
+def _postgresql_subject(
+    *,
+    plan: str,
+    evidence_bytes: bytes,
+    operation: dict[str, Any],
+    dependent_operations: list[dict[str, Any]],
+    authority: dict[str, Any],
+    adoption: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema": POSTGRESQL_COHORT_SUBJECT_SCHEMA,
+        "plan": plan,
+        "evidence-digest": "sha256:" + hashlib.sha256(evidence_bytes).hexdigest(),
+        "operation": operation,
+        "dependent-operations": dependent_operations,
+        "resource": adoption["resource"],
+        "resource-interface": adoption["resource_interface"],
+        "source": adoption["source"],
+        "candidate": adoption["candidate"],
+        "current-planning": authority["current_planning"],
+        "desired-planning": authority["desired_planning"],
+        "authorization-policy-revision": authority[
+            "authorization_policy_revision"
+        ],
+    }
+
+
+def _required_success_dependents(
+    effect_document: dict[str, Any], operation: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Projects exact required-success successors for one planned operation."""
+
+    operations = effect_document["operations"]
+    by_key = {
+        canonical(candidate["key"]): _project_operation(candidate, ordinal)
+        for ordinal, candidate in enumerate(operations)
+    }
+    if len(by_key) != len(operations):
+        raise RuntimeError("PostgreSQL plan repeats an operation key")
+
+    dependent_keys = [
+        edge["to"]["key"]
+        for edge in effect_document["edges"]
+        if edge.get("kind") == "required-success"
+        and edge.get("from") == {"kind": "operation", "key": operation["key"]}
+        and edge.get("to", {}).get("kind") == "operation"
+    ]
+    try:
+        return [by_key[canonical(key)] for key in dependent_keys]
+    except KeyError as error:
+        raise RuntimeError("PostgreSQL plan dependency names an unknown operation") from error
+
+
+def _canonical_evidence(evidence_bytes: Any, label: str) -> dict[str, Any]:
+    if not isinstance(evidence_bytes, bytes):
+        raise RuntimeError(f"{label} evidence is not an exact byte string")
+    try:
+        value = json.loads(evidence_bytes)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"{label} evidence is not JSON") from error
+    if not isinstance(value, dict) or canonical(value) != evidence_bytes:
+        raise RuntimeError(f"{label} evidence is not canonical JSON")
+    return value
 
 
 def _subject_from_plan_bundle(plan_bundle_bytes: Any) -> dict[str, Any]:
