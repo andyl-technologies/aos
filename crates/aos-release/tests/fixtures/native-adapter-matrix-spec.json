@@ -2808,7 +2808,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -2843,7 +2843,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -2878,7 +2878,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -2912,7 +2912,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -2945,7 +2945,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -2978,7 +2978,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3011,7 +3011,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3044,7 +3044,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3077,7 +3077,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3110,7 +3110,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3143,7 +3143,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3176,7 +3176,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3209,7 +3209,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3243,7 +3243,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3279,7 +3279,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3312,7 +3312,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3345,7 +3345,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3378,7 +3378,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3411,7 +3411,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3444,7 +3444,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3477,7 +3477,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3510,7 +3510,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3543,7 +3543,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3576,7 +3576,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3609,7 +3609,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3642,7 +3642,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3675,7 +3675,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3708,7 +3708,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/apply/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3741,7 +3741,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3776,7 +3776,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3811,7 +3811,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3845,7 +3845,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3878,7 +3878,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3911,7 +3911,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3944,7 +3944,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -3977,7 +3977,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4010,7 +4010,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4043,7 +4043,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4076,7 +4076,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4109,7 +4109,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4142,7 +4142,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4176,7 +4176,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4212,7 +4212,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4245,7 +4245,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4278,7 +4278,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4311,7 +4311,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4344,7 +4344,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4377,7 +4377,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4410,7 +4410,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4443,7 +4443,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4476,7 +4476,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4509,7 +4509,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4542,7 +4542,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4575,7 +4575,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4608,7 +4608,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4641,7 +4641,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/observe/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4674,7 +4674,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/activate-retained-target",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4709,7 +4709,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/adopt-compatible-state",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4744,7 +4744,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/block-dependent-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4778,7 +4778,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/cancel-unsettled-attempt",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4811,7 +4811,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/expire-attempt-deadline",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4844,7 +4844,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/fail-cleanup",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4877,7 +4877,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/fail-release",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4910,7 +4910,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/interrupt-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4943,7 +4943,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/interrupt-after-durable-intent",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -4976,7 +4976,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/interrupt-after-durable-outcome",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5009,7 +5009,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/interrupt-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5042,7 +5042,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/lose-external-result",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5075,7 +5075,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/reject-foreign-resource-mutation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5109,7 +5109,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/reject-unsupported-transfer",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5145,7 +5145,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/replace-executor-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5178,7 +5178,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/replace-provider-incarnation",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5211,7 +5211,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-assignment-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5244,7 +5244,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-assignment-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5277,7 +5277,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-assignment-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5310,7 +5310,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-caller-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5343,7 +5343,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-caller-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5376,7 +5376,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-caller-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5409,7 +5409,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-enforcement-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5442,7 +5442,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-enforcement-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5475,7 +5475,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-enforcement-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5508,7 +5508,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-provider-after-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5541,7 +5541,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-provider-before-acquisition",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -5574,7 +5574,7 @@
       "id": "host-network-policy/aos.host-network-policy-effects/abi-1/remove/revoke-provider-before-external-effect",
       "interface": {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       "invalidated_by": [
@@ -43868,7 +43868,7 @@
       },
       {
         "abi": 1,
-        "descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "name": "aos.host-network-policy-effects"
       },
       {
@@ -43921,7 +43921,7 @@
     "method_count": 47,
     "scenario_count": 28,
     "schema": "aos.qualification.native-adapter-subject/v1",
-    "surface_digest": "sha256:5b1b4ca7befa0d377517209fd113e18c8bee3adcb1e663114af683f20669e959"
+    "surface_digest": "sha256:4fab681e6945452e47097306b87a7520557d11741cb43ad9b91ae9dc9f8a8148"
   },
   "surface": {
     "adapters": [
@@ -43955,7 +43955,7 @@
       {
         "adapter": "host-network-policy",
         "interface_abi": 1,
-        "interface_descriptor": "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199",
+        "interface_descriptor": "sha256:e912beeec7f8d007704910c27cc8c7d3e75267e49679f6ff933577752556df0e",
         "interface_name": "aos.host-network-policy-effects",
         "methods": [
           {
