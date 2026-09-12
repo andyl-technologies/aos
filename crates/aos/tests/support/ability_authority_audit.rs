@@ -18,8 +18,8 @@ use std::rc::Rc;
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, ArtifactReference, ControllerAssignment, DependencyEdge,
-    DependencyKind, IndeterminateSemantics, InterfaceDocument, InterfaceKey, LocalKey,
-    MethodDescriptor, MethodReference, Operation, PlanNodeKey, ProviderAssignment,
+    DependencyKind, ExecutionStage, IndeterminateSemantics, InterfaceDocument, InterfaceKey,
+    LocalKey, MethodDescriptor, MethodReference, Operation, PlanNodeKey, ProviderAssignment,
     ProviderImplementationReference, ResourceAccess, ResourceId, RetryPolicy, StringSyntax,
     TransactionId, ValueExpression, ValueSchema, compare_edges, compare_operation_keys,
 };
@@ -1301,6 +1301,9 @@ fn checked_plan(
     let mut fixture: PlanFixture = plan_fixture();
     fixture.interfaces = vec![interface.clone()];
     fixture.refresh_interface_with_features(interface.required_features.iter().cloned().collect());
+    if interface.interface.name.as_str() == "aos.foreground-process" {
+        retarget_fixture_stage(&mut fixture, ExecutionStage::ApplicationContainer);
+    }
     let methods = vec![LocalKey::new(&matrix_method.method)?];
 
     fixture.binding_inputs.desired_state.child_requests[0].methods = methods.clone();
@@ -1314,11 +1317,14 @@ fn checked_plan(
         AccessMode::ExclusiveWrite
     };
     fixture.binding_plan.bindings[0].caller_grant.resources[0].access = access;
-    if matches!(
-        interface.interface.name.as_str(),
-        "aos.systemd-manager" | "aos.systemd-service-effects"
-    ) {
-        let guarantees = vec![aos_ability_model::builtin::local_systemd_manager_guarantee()?];
+    let guarantees = match interface.interface.name.as_str() {
+        "aos.foreground-process" => Some(interface.interface.guarantees.clone()),
+        "aos.systemd-manager" | "aos.systemd-service-effects" => Some(vec![
+            aos_ability_model::builtin::local_systemd_manager_guarantee()?,
+        ]),
+        _ => None,
+    };
+    if let Some(guarantees) = guarantees {
         fixture.binding_inputs.environment.providers[0].guarantees = guarantees.clone();
         fixture.binding_inputs.desired_state.child_requests[0].guarantees = guarantees.clone();
         fixture.binding_plan.requests[0].guarantees = guarantees.clone();
@@ -1416,6 +1422,69 @@ fn checked_plan(
     }))?;
 
     Ok((plan, plan_bundle, operation_key, dependent_key, observation))
+}
+
+fn retarget_fixture_stage(fixture: &mut PlanFixture, stage: ExecutionStage) {
+    // Environment stage participates in every provider and resource identity,
+    // so the cross-document fixture must move as one unit.
+    fixture.binding_inputs.environment.environment.stage = stage;
+    for provider in &mut fixture.binding_inputs.environment.providers {
+        provider.provider.environment.stage = stage;
+    }
+    for resource in &mut fixture.binding_inputs.environment.resources {
+        resource.resource.provider.environment.stage = stage;
+    }
+    for controller in &mut fixture.binding_inputs.environment.controllers {
+        controller.resource.provider.environment.stage = stage;
+        controller.controller.provider.environment.stage = stage;
+    }
+
+    for request in &mut fixture.binding_inputs.desired_state.child_requests {
+        request.id.consumer.environment.stage = stage;
+    }
+    for resource in &mut fixture.binding_inputs.desired_state.resources {
+        resource.resource.provider.environment.stage = stage;
+    }
+    for controller in &mut fixture.binding_inputs.desired_state.controllers {
+        controller.resource.provider.environment.stage = stage;
+        controller.controller.provider.environment.stage = stage;
+    }
+
+    for request in &mut fixture.binding_plan.requests {
+        request.id.consumer.environment.stage = stage;
+    }
+    for binding in &mut fixture.binding_plan.bindings {
+        binding.request.consumer.environment.stage = stage;
+        binding.provider.environment.stage = stage;
+        binding.caller_grant.principal.environment.stage = stage;
+        binding.provider_grant.principal.environment.stage = stage;
+        for permission in &mut binding.caller_grant.resources {
+            permission.resource.provider.environment.stage = stage;
+        }
+        for permission in &mut binding.provider_grant.resources {
+            permission.resource.provider.environment.stage = stage;
+        }
+    }
+    for resource in &mut fixture.binding_plan.resources {
+        resource.resource.provider.environment.stage = stage;
+    }
+
+    for resource in &mut fixture.effect_plan.current_revisions {
+        resource.resource.provider.environment.stage = stage;
+    }
+    for resource in &mut fixture.effect_plan.desired_revisions {
+        resource.resource.provider.environment.stage = stage;
+    }
+    for operation in &mut fixture.effect_plan.operations {
+        operation.target.resource.provider.environment.stage = stage;
+        for access in &mut operation.accesses {
+            access.resource.provider.environment.stage = stage;
+        }
+    }
+    for controller in &mut fixture.effect_plan.controllers {
+        controller.resource.provider.environment.stage = stage;
+        controller.controller.provider.environment.stage = stage;
+    }
 }
 
 fn minimal_value(schema: &ValueSchema, fixture: &PlanFixture) -> Result<Value> {
