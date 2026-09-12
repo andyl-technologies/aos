@@ -8,7 +8,8 @@
     "reject-unsupported-transfer"
   ];
   selected = builtins.filter (cell:
-    cell.adapter != "postgresql"
+    cell.adapter
+    != "postgresql"
     && builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios)
   matrix.cells;
   byAdapters = adapters:
@@ -42,9 +43,11 @@ in
   assert builtins.length unsupported == 45;
   assert builtins.all (cell:
     builtins.length cell.postconditions
-    == (if lib.hasSuffix "/activate-retained-target" cell.id
+    == (
+      if lib.hasSuffix "/activate-retained-target" cell.id
       then 6
-      else 7))
+      else 7
+    ))
   selected; {
     inherit all groups retained scenarios unsupported;
   }
