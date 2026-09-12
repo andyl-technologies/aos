@@ -61,16 +61,20 @@ Hub loader. A prose-only regression preserves the checked graph and emits no
 reload or restart decision.
 
 The provider-replacement portion of the complete resource-lifecycle row uses
-the production native PostgreSQL path. Authenticated package manifests bind a
-pure provider implementation to its persistent-state format and to the exact
-PostgreSQL resource kind it owns. Transition authority pins the stable owner,
-the source and candidate packages and implementations, and each side's live
-terminal handler assignment. The VM flight rejects an incompatible format
-before effects, runs a compatible replacement against a real PostgreSQL data
-directory, and verifies the changed executable while preserving the database
-system identifier and queryable rows. A second replacement is interrupted
-after PostgreSQL starts but before the outcome is recorded. Its atomic ledger
-receipt survives executor and handler loss, generation cleanup, and Nix-store
+the production native PostgreSQL path. The `pkgs.postgresql` derivation emits
+its authenticated ability companion from the same shared contract as the
+replacement fixtures. Its pure provider implementation is bound to its
+persistent-state format and to the exact PostgreSQL resource kind it owns.
+Structured activation omits that package's legacy exposed-unit enablement so
+the effect graph remains the sole lifecycle owner. Transition authority pins
+the stable owner, the source and candidate packages and implementations, and
+each side's live terminal handler assignment. The VM flight rejects an
+incompatible format before effects, runs a compatible replacement against a
+real PostgreSQL data directory, and verifies the changed executable while
+preserving the database system identifier and queryable rows. A second
+replacement is interrupted after PostgreSQL starts but before the outcome is
+recorded. Its atomic ledger receipt survives executor and handler loss,
+generation cleanup, and Nix-store
 garbage collection; replay reconciles the operation once, a terminal marker
 retires the receipt, and later cleanup collects the unique source artifact.
 Adoption back to the earlier implementation preserves the same durable target.

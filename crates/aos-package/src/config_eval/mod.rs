@@ -2255,6 +2255,18 @@ fn enrich_exposed_units(
                     .with_context(|| format!("validating runtime expose metadata for {package}"))?;
                 crate::types::validate_expose_artifact_meta(artifact)
                     .with_context(|| format!("validating runtime expose artifact for {package}"))?;
+
+                if pin
+                    .ability
+                    .as_ref()
+                    .is_some_and(|ability| ability.activation_mode == "structured-effects")
+                {
+                    // The structured graph is the sole lifecycle owner. Retain
+                    // legacy metadata for old-client publication without also
+                    // enabling its units in a native activation generation.
+                    continue;
+                }
+
                 let unit_owner = existing_store_owners
                     .get(&artifact.store_path)
                     .and_then(serde_json::Value::as_str)

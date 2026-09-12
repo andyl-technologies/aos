@@ -1,6 +1,6 @@
 ##! Focused PostgreSQL transition checks for observation-driven repair kinds.
 let
-  providerModule = import ./providers/postgresql/default.nix;
+  providerModule = import ../../../lib/abilities/providers/postgresql/default.nix;
 
   environment = {
     authority = "deployment";
@@ -158,10 +158,11 @@ let
   methodsFor = fragment: builtins.map (operation: operation.method) (operationsFor fragment);
   bindingFor = fragment: method:
     (builtins.head (builtins.filter
-        (operation:
-          operation.target.resource == resources.postgresql
-          && operation.method == method)
-        fragment.operations)).binding;
+      (operation:
+        operation.target.resource
+        == resources.postgresql
+        && operation.method == method)
+      fragment.operations)).binding;
   requiredEdge = from: to: {
     from = {
       kind = "operation";
@@ -187,8 +188,7 @@ in
   assert methodsFor divergent == ["materialize" "observe" "restart" "stop"];
   assert bindingFor divergent "stop" == "teardown-postgresql-terminal";
   assert bindingFor divergent "materialize" == "desired-postgresql-terminal";
-  assert builtins.elem (requiredEdge "materialize" "restart") divergent.edges;
-  {
+  assert builtins.elem (requiredEdge "materialize" "restart") divergent.edges; {
     reconcile_stopped = methodsFor stopped;
     reconcile_divergent = methodsFor divergent;
   }

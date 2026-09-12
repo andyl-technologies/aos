@@ -654,6 +654,100 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
 }
 
 #[test]
+fn structured_runtime_does_not_project_legacy_exposed_units() {
+    use super::runtime::{
+        RuntimeClosurePin, RuntimePackageOrigin, RuntimePackagePin, RuntimeRealisationPin,
+        RuntimeResolution,
+    };
+    use crate::types::{AbilityPackageMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
+
+    let output = "/nix/store/0000000000000000000000000000000a-postgresql-18.6";
+    let expose_artifact = "/nix/store/0000000000000000000000000000000b-expose-postgresql";
+    let nar_hash = format!("sha256:{}", "0".repeat(52));
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "postgresql".to_string(),
+            RuntimePackagePin {
+                version: "18.6".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                origin: RuntimePackageOrigin::Registry,
+                store_path: output.to_string(),
+                nar_hash: nar_hash.clone(),
+                nar_size: 1,
+                config_dependency_outputs: BTreeMap::new(),
+                closure: vec![
+                    RuntimeClosurePin {
+                        store_path_hash: "0000000000000000000000000000000a".to_string(),
+                        store_path: Some(output.to_string()),
+                        realisations: vec![RuntimeRealisationPin {
+                            nar_hash: nar_hash.clone(),
+                            nar_size: 1,
+                        }],
+                    },
+                    RuntimeClosurePin {
+                        store_path_hash: "0000000000000000000000000000000b".to_string(),
+                        store_path: Some(expose_artifact.to_string()),
+                        realisations: vec![RuntimeRealisationPin {
+                            nar_hash: nar_hash.clone(),
+                            nar_size: 1,
+                        }],
+                    },
+                ],
+                expose: Some(ExposeMeta {
+                    target: "aos-pkg-postgresql.target".to_string(),
+                    units: vec![
+                        "aos-pkg-postgresql.target".to_string(),
+                        "postgresql.service".to_string(),
+                    ],
+                    images: Vec::new(),
+                    requires: Vec::new(),
+                    config: ExposeConfigMeta::default(),
+                    provides: Vec::new(),
+                    uses: Vec::new(),
+                }),
+                expose_artifact: Some(ExposeArtifactMeta {
+                    store_path: expose_artifact.to_string(),
+                    nar_hash,
+                    nar_size: 1,
+                }),
+                config_projection: None,
+                ability: Some(AbilityPackageMeta {
+                    store_path: "/nix/store/0000000000000000000000000000000c-postgresql-abilities"
+                        .to_string(),
+                    nar_hash: format!("sha256:{}", "5".repeat(64)),
+                    nar_size: 1,
+                    references: Vec::new(),
+                    manifest_sha256: format!("sha256:{}", "6".repeat(64)),
+                    manifest_size: 1,
+                    package_digest: format!("sha256:{}", "7".repeat(64)),
+                    activation_mode: "structured-effects".to_string(),
+                    artifacts: Vec::new(),
+                    provenance: "provenance/postgresql.ability.intoto.jsonl".to_string(),
+                }),
+                legacy_config: Some(ExposeConfigMeta::default()),
+            },
+        )]),
+        edges: BTreeMap::from([("postgresql".to_string(), Vec::new())]),
+    };
+    let mut manifest = serde_json::json!({
+        "etc": {},
+        "presets": [],
+        "storePaths": [],
+        "ownership": {
+            "etc": {},
+            "presets": {},
+            "storePaths": {}
+        }
+    });
+
+    enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime).unwrap();
+
+    assert_eq!(manifest["etc"], serde_json::json!({}));
+    assert_eq!(manifest["presets"], serde_json::json!([]));
+}
+
+#[test]
 fn ability_activation_input_survives_removal_of_the_last_structured_package() {
     let input = serde_json::json!({
         "schema": "aos.ability.activation-input/v1",

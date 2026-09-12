@@ -46,6 +46,7 @@
   version = "18.6";
   isDarwin = stdenv.hostPlatform.isDarwin;
   isCross = stdenv.isCross;
+  abilityContract = import ../../lib/abilities/postgresql.nix {inherit lib;};
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
 
@@ -271,6 +272,19 @@ in
         ]
         ++ [bash coreutils control];
     propagatedDeps = [];
+
+    # Structured activation owns the database lifecycle when this provider is
+    # selected. The legacy exposed units remain available to older package
+    # installations, but the v3 runtime does not project them for this package.
+    abilityPackage = {
+      activationMode = "structured-effects";
+      requiredFeatures = ["abilities-v1" "provider-state-format-v1"];
+      ownership = [[]];
+      exports.postgresql = {
+        artifact = abilityContract.providerSource;
+        export = abilityContract.postgresqlExport abilityContract.compatibleStateFormat;
+      };
+    };
 
     phases = [
       {
@@ -804,6 +818,94 @@ in
         inherit lib pkgs;
         module = ./_postgresql-config/module.nix;
       };
+
+      ability-contract =
+        pkgs.runCommand "storage-postgresql-ability-contract" {
+          buildDeps = [pkgs.jq];
+        } ''
+          jq -e '
+            .schema == "aos.ability.package/v1"
+            and .activation_mode == "structured-effects"
+            and .required_features == ["abilities-v1", "provider-state-format-v1"]
+            and .ownership == [[]]
+            and (.exports | map(.name)) == ["postgresql"]
+            and (.implementation.handlers | length) == 0
+            and (.implementation.providers | length) == 1
+            and .implementation.providers[0].interface.name == "aos.postgresql"
+            and .implementation.providers[0].owns_resource_kinds
+              == ["aos.postgresql", "aos.postgresql-effects"]
+            and .implementation.providers[0].state_format.descriptor
+              == "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596"
+            and .implementation.providers[0].state_format.artifact
+              == .implementation.providers[0].artifact
+          ' ${self.abilities}/package.json >/dev/null
+
+          mkdir -p "$out"
+          echo PASS > "$out/result"
+        '';
+
+      artifact-consumption = let
+        architecture = stdenv.hostPlatform.constraints.cpu;
+        loaderName =
+          if architecture == "x86_64"
+          then "ld-linux-x86-64.so.2"
+          else "ld-linux-aarch64.so.1";
+      in
+        import ../../lib/build/artifact-consumption-audit.nix {
+          inherit pkgs lib;
+          name = "postgresql-openssl-linkage";
+          consumer = self;
+          consumerPath = "/bin/postgres";
+          provider = openssl;
+          providerPath = "/lib/libssl.so.4";
+          targetPlatform = {
+            system = stdenv.hostPlatform.constraints.os;
+            inherit architecture;
+          };
+          soname = "libssl.so.4";
+          needed = [
+            "libc.so.6"
+            "libcrypto.so.4"
+            "libgssapi_krb5.so.2"
+            "libicui18n.so.78"
+            "libicuuc.so.78"
+            "libldap.so.2"
+            "liblz4.so.1"
+            "libm.so.6"
+            "libnuma.so.1"
+            "libpam.so.0"
+            "libssl.so.4"
+            "libsystemd.so.0"
+            "liburing.so.2"
+            "libxml2.so.16"
+            "libz.so.1"
+            "libzstd.so.1"
+          ];
+          searchPath = map (dependency: "${dependency}/lib") [
+            glibc
+            icu
+            krb5
+            liburing
+            libxml2
+            linux-pam
+            lz4
+            numactl
+            openldap
+            openssl
+            systemd
+            zlib
+            zstd
+          ];
+          searchPathKind = "runpath";
+          symbols = [
+            {
+              name = "SSL_CTX_new";
+              version = "OPENSSL_4.0.0";
+            }
+          ];
+          loader = "${glibc}/lib/${loaderName}";
+          inspector = pkgs.buildPackages.aos;
+        };
 
       expose-contract = import ./_postgresql-tests/expose.nix {
         inherit pkgs self;
