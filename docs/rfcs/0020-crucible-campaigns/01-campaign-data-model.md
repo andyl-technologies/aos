@@ -178,14 +178,12 @@ pub struct CampaignSnapshot {
 }
 ```
 
-Version-3 snapshots append a required budget ledger child after the transition
-field. The version-1 ledger body is `u32 version`, two `u128` cumulative
-grants (proposals, attempts), and two `u64` cumulative spending counts in the
-same order, all big-endian. Genesis requires zero totals. Successor validation
-reconstructs exact deltas from the causal fact and unique admission sequence;
-the ledger's bytes alone never confer authority. Version-2 snapshots retain
-their original encoding and identities. New successors upgrade them with exact
-historical debt; a version-3 lineage cannot downgrade to version 2.
+Version-3 snapshots carry a required budget-ledger child after the transition
+field. Genesis requires zero totals. Successor validation reconstructs exact
+deltas from the causal fact and unique admission sequence; the ledger's bytes
+alone never confer authority. Normal repository admission accepts version 3
+only. The bounded authenticated one-way repository migration translates a
+complete version-2 lineage or rejects it before publishing the new head.
 
 New ledgers use schema version 2, appending a `ContentId` for the authenticated
 request-spending Merkle map. This is the ledger's sole child. Its outer map
@@ -195,10 +193,9 @@ discovery admissions do not spend a request-local attempt. The nested root's
 authenticated entry count gives exact local spending without scanning campaign
 history. Genesis requires the canonical empty map. Successors derive updates
 from newly added dense global admissions; validation recomputes the root without
-publishing objects. The first new successor of a version-1 ledger reconstructs
-the index from its complete admission sequence, preserving all spending.
-Historical version-1 identities remain readable, but an indexed lineage cannot
-downgrade to a version-1 ledger.
+publishing objects. Normal admission accepts version 2 only. The repository
+migration reconstructs a version-1 ledger's complete authenticated spending
+index before publishing any current snapshot, and fails closed when it cannot.
 
 Snapshot ancestry for one campaign ref is linear in this RFC because exactly
 one coordinator owns that ref. `derive` creates another named ref whose first
@@ -940,11 +937,10 @@ whose retention rules govern the admitted execution and every additional
 cause. The policy is an authenticated envelope child. This direct binding
 prevents a later policy activation from changing whether an admitted attempt
 must retain its completion, exact checkpoints, findings, or replay evidence.
-Schema v1 and v2 remain readable with their original identities: v2 is valid
-only for an `ExecutionBasis` whose cause is `ScenarioDefault`, while v1 rejects
-that newer cause. Historical exhaustive and scenario-default bases derive their
-policy from the cause; proposal-backed v1 records resolve it through their
-authenticated proposal. A v3 body without its explicit policy is invalid.
+Normal admission accepts schema v3 only, and a v3 body without its explicit
+policy is invalid. The bounded repository migration derives policy for sound
+schema-v1/v2 records from their authenticated cause or proposal and otherwise
+rejects the complete head before publication.
 
 `AttemptStart::Discover` is the bootstrap form. It realizes a configuration
 until the next pending choice or terminal outcome without pretending a choice
@@ -1066,10 +1062,9 @@ budget and source state. Generated requests start and remain `Open` at this
 checkpoint because deterministic generated-source enumeration and feedback
 ownership remain an implementation-plan gate.
 
-Legacy schema-v2 snapshots without the frontier-index anchor remain readable,
-but proof-bearing frontier queries fail closed. Ordinary mutations preserve
-that unindexed shape and MUST NOT synthesize a partial index; a future migration
-must rebuild and authenticate the complete index atomically.
+Normal repository reads and mutations reject schema-v2 snapshots without the
+frontier-index anchor. The bounded authenticated repository migration rebuilds
+the complete index atomically with the translated DAG or rejects before CAS.
 
 `FeedbackWait` is constructed only when `completed_visits < required_visits`;
 its fields are private and strict decoding enforces the same invariant. Reaching

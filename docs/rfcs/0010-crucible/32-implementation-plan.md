@@ -579,7 +579,7 @@ long-held locks.
   embedded seed remains the scenario-form seed plus fork-seed provenance output
   and separate model artifact/replay-state evidence, and terminal savepoint
   replay-oracle validation, plus explicitly selected local-QEMU forks through
-  the same child-session materialization with resolved QEMU/plugin identity
+  the authenticated campaign continuation with resolved QEMU/plugin identity
   provenance in stdout and the canonical log, and process-level
   `fork --backend qemu` JSONL output plus child artifact creation through
   marker-resolved QEMU/plugin identity and requires an independent live
@@ -772,9 +772,7 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   in a never-model-reproducible debug-edit script;
   `T-DBG-7` is green through `checks.crucible.phase6.debugTargetResolver`, which
   resolves `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, and
-  divergence-bisection targets into replay-checked debug `goto` requests and
-  centralizes the copy-pasteable
-  `crucible debug <artifact> --at-failure` failure footer command;
+  divergence-bisection targets into replay-checked debug `goto` requests;
   `T-DBG-8`/`T-CLI-18` are completed through `checks.crucible.phase6.debugCliSurface`, which implements the
   `crucible debug` parser and planner as a stateless session/debugger wrapper over
   target-aware coordinate defaults, target resolution, session query/snapshot/fork

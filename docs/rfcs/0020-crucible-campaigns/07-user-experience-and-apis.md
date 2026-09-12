@@ -186,7 +186,7 @@ an `action` of `vcpu-switch` or `interrupt-at`. One manifest contains at most
 authored string contains 1 through 4,096 bytes without NUL or line breaks. The
 compiler re-decodes and byte-compares its output before success and reports the
 exact Schedule content hash, count, and byte length. It intentionally cannot
-author legacy `AppRandom` decisions or structurally embedded `Selection`
+author direct guest `AppRandom` decisions or structurally embedded `Selection`
 decisions: new app-random schedules use the typed model, while selections
 require repository-backed opportunity, domain, and origin validation. Runtime
 replay remains authoritative for whether an authored scheduling point exists

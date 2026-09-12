@@ -274,10 +274,6 @@
         needle = "struct ResumeRecordingLifecycleLoop";
       }
       {
-        label = "bare checkpoint closure loader";
-        needle = "fn savepoint_store_evidence";
-      }
-      {
         label = "resume planning test";
         needle = "cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs";
       }
@@ -320,14 +316,6 @@
       {
         label = "resume long virtual-time test";
         needle = "cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound";
-      }
-      {
-        label = "resume bare hash store loader test";
-        needle = "cli_resume_workflow_executes_local_double_bare_hash_from_store";
-      }
-      {
-        label = "resume bare hash missing index artifact test";
-        needle = "cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/validation.rs" sessionValidation [

@@ -205,14 +205,14 @@ version-two launch identity and raw-v2 fallback.
 The application-random path now implements the pure normalization and
 application contract, executor-side verification of uniform model samples, live
 producer routing, and lazy typed branch generation. The scheduler treats the
-plugin's legacy `AppRandom` result as untrusted transport, reproduces the served
+plugin's direct guest `AppRandom` result as untrusted transport, reproduces the served
 value from its named seeded stream, records canonical `RngDraw` plus
 `Selection`, and hands the self-contained discovery records to the quantum
 result. One exact-parent branch operation consumes those validated records
 and emits only `CampaignBranch` selections; the parallel raw-width generator is
 removed. Model samples and typed replacements consume the existing scenario
 draw cap, and checkpoint relaunch recovers per-node positions from the
-authoritative named-stream cursor. Retained legacy `AppRandom` schedule entries
+authoritative named-stream cursor. Retained direct guest `AppRandom` schedule entries
 remain readable and replayable but are not branchable; re-execution through the
 live producer is the fail-closed conversion path. The broader legacy-decision
 migration policy and Phase 2 real-guest flight remain under T-CAM-2.3 and

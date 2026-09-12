@@ -1,6 +1,6 @@
 //! CLI projection for campaign-owned local QEMU runs and continuations.
 //!
-//! This module validates command compatibility, translates the deployment and
+//! This module validates command semantics, translates the deployment and
 //! backend configuration into one shared daemon request, and renders the
 //! daemon-owned campaign result through the shared run output contract.
 

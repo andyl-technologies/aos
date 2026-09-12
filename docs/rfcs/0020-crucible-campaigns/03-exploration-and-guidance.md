@@ -778,10 +778,10 @@ total wins. Equal totals choose the lower `BranchEdgeId`, then the lower
 `PlanningScanPosition`; this is the closed frontier engine's complete tie rule.
 The engine receives no repository or Merkle authority. Local acceptance,
 restart, and imported-snapshot validation recompute every guidance record and
-rerun the complete pure transition. Version 1 remains replay-compatible and
-keeps its original least-position ordering. Guidance schema v1 remains
-identity-preserving for retained history; all newly projected guidance is
-schema v2. Engine version 2 consumes the owner-normalized explicit,
+rerun the complete pure transition. Normal admission accepts guidance schema v2
+only. The bounded repository migration recognizes schema v1 as historical and
+rejects the head because its missing objective reward cannot be reconstructed
+soundly. Engine version 2 consumes the owner-normalized explicit,
 modeled-finite, modeled-uniform-generated, or uniform prospective/completed
 priors, exact owner-published objective reward, global coverage novelty,
 configured closed finding rewards,

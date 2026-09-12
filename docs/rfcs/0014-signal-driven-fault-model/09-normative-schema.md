@@ -18,17 +18,12 @@ fault_model = "signal_bindings_v2"
 seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
-Version 6 adds the scenario-owned measurement-definition component specified
-by RFC-0020 §08.2-§08.3. Version 7 adds the scenario-owned selectable catalog
-and its declaration/request ceilings specified by RFC-0020 §02. Readers accept
-version 5 only as the exact legacy form with empty measurement and selectable
-components, and version 6 only with an empty selectable component. New writes
-use version 7. A version-5 document that attempts to carry `[[measurement]]`,
-or a version-5/version-6 document that attempts to carry `[[selectable]]`, is
-rejected. The compact scenario envelope follows the same
-`scenario-def-form.v5`/v6 legacy-read and v7-write rule; reproduction artifacts
-containing v7 scenarios write outer version 7 while outer versions 5 and 6
-remain readable for prior artifacts.
+Version 6 introduced the scenario-owned measurement-definition component
+specified by RFC-0020 §08.2-§08.3. Version 7 adds the scenario-owned selectable
+catalog and its declaration/request ceilings specified by RFC-0020 §02. Normal
+TOML and compact-binary admission accepts version 7 only; versions 5 and 6 fail
+closed. Reproduction artifacts likewise require outer version 7 carrying a
+version-7 scenario form.
 
 The canonical v7 `[scenario]` table additionally carries the nonzero bounded
 `selectable_declarations_per_node`, `selectable_declarations_per_world`,
