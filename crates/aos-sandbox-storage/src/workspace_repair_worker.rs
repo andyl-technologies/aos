@@ -25,6 +25,7 @@ use crate::pin_worker::{
 use crate::workspace_pin::{
     WorkspacePinActionV1, WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1,
 };
+use crate::workspace_repair::WorkspacePinRepairIntentPredecessorV1;
 use crate::{
     CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageAdmissionError, StorageStateKey,
     ZfsHelperContract, ZfsWorkerError,
@@ -69,9 +70,14 @@ impl WorkspacePinRepairWorkerRequestV1 {
             publication_intent_record,
         })
     }
+
+    #[cfg(test)]
+    pub(crate) fn replace_catalog_for_test(&mut self, catalog: ResolvedCatalogCommitmentV1) {
+        self.pin_request.catalog = catalog;
+    }
 }
 
-/// Carries one independently authenticated, non-clone repair worker request.
+/// Carries one independently authenticated Create or Clone repair worker request.
 pub(crate) struct AuthenticatedWorkspacePinRepairWorkerRequestV1 {
     request: WorkspacePinRepairWorkerRequestV1,
     attempt: WorkspacePinAttemptV1,
@@ -145,10 +151,18 @@ pub(crate) fn authenticate_request(
         == Some(attempt.creation_result_catalog().generation())
         && request.pin_request.catalog.binding().digest()
             != attempt.creation_result_catalog().digest();
+    let publication_metadata = publication.portable_metadata();
     if worker_authority.parent_request_id() != intent.request_id()
         || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
         || attempt.action() != WorkspacePinActionV1::Ensure
-        || attempt.attempt_ordinal() < 2
+        || match intent.predecessor() {
+            WorkspacePinRepairIntentPredecessorV1::MissingInitial { .. } => {
+                attempt.attempt_ordinal() != 1
+            }
+            WorkspacePinRepairIntentPredecessorV1::ExistingAttempt { .. } => {
+                attempt.attempt_ordinal() < 2
+            }
+        }
         || attempt.effect_operation_id() == attempt.creation_operation_id()
         || attempt.expected_pin().is_some()
         || attempt.satisfied_pin().is_some()
@@ -166,6 +180,8 @@ pub(crate) fn authenticate_request(
         || publication.operation_id() != attempt.creation_operation_id()
         || publication.request_catalog() != request.pin_request.catalog.binding()
         || publication.assignment_digest() != attempt.workspace_assignment_digest()
+        || publication_metadata.root_policy() != attempt.root_policy()
+        || request.pin_request.catalog.root_policy() != Some(attempt.root_policy())
         || publication.identity_range_start() != attempt.identity_range_start()
         || publication.identity_range_size() != attempt.identity_range_size()
         || !creation_result_follows_request

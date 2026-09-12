@@ -35,13 +35,18 @@ use crate::broker::{
     AuthenticatedWorkspaceCatalogPhysicalPlanV1, AuthorizedWorkspacePinRepairAttemptV1,
     WorkspacePinExecutionOutcomeV1, WorkspaceRemovePinRequirementV1,
 };
-use crate::helper::{StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome};
+use crate::helper::{
+    StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
+};
 use crate::observation_protocol::{
     WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationRequestV1, encode_request,
 };
 use crate::pin_observer::WorkspacePinHostCustody;
 use crate::pin_worker::boottime_now_nanoseconds;
-use crate::pin_worker_runtime::{SystemdWorkspacePinExecutor, SystemdWorkspacePinObserver};
+use crate::pin_worker_runtime::{
+    SystemdWorkspacePinExecutor, SystemdWorkspacePinObserver, SystemdWorkspacePinRuntimeIo,
+    WorkspacePinRuntimeIo,
+};
 use crate::process::open_cgroup_root;
 use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
 use crate::root_policy::PortableRootAttributesV1;
@@ -195,15 +200,15 @@ pub struct StorageBrokerRuntime {
     workspaces: Option<ValidatedPendingStorageWorkspaceCatalogV1>,
     configuration_binding: ObjectDigest,
     broker_instance_id: [u8; 16],
-    pin_custody: WorkspacePinHostCustody,
     pin_contract: ZfsHelperContract,
-    pin_executor: SystemdWorkspacePinExecutor,
-    pin_observer: SystemdWorkspacePinObserver,
-    helper: StorageMutationHelper<SystemdZfsProcessBackend>,
+    pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
+    helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
     readiness: StorageRuntimeReadiness,
     apply_readiness: StorageApplyReadiness,
     resolver_policies: Option<ProtectedStorageResolverPolicyDirectoryV1>,
     prepare_readiness: StoragePrepareReadiness,
+    #[cfg(test)]
+    fail_repair_completion_commit_for_test: bool,
 }
 
 impl StorageBrokerRuntime {
@@ -312,18 +317,19 @@ impl StorageBrokerRuntime {
             &bootstrap.catalogs,
         )?;
         let contract = ZfsHelperContract::new(zfs_executable)?;
-        let mut pin_executor = SystemdWorkspacePinExecutor::new(
+        let pin_executor = SystemdWorkspacePinExecutor::new(
             PathBuf::from(WORKSPACE_PIN_WORKER_SOCKET),
             open_cgroup_root()?,
         )?;
-        // The transaction journal lock is already held. Prove the complete
-        // reserved pin-worker cgroup scope empty before opening or observing
-        // workspace state and before generic mutation recovery.
-        pin_executor.recover_quiescence()?;
         let pin_observer = SystemdWorkspacePinObserver::new(
             PathBuf::from(WORKSPACE_PIN_OBSERVER_SOCKET),
             open_cgroup_root()?,
         )?;
+        let mut pin_io = SystemdWorkspacePinRuntimeIo::new(pin_custody, pin_executor, pin_observer);
+        // The transaction journal lock is already held. Prove the complete
+        // reserved pin-worker cgroup scope empty before opening or observing
+        // workspace state and before generic mutation recovery.
+        pin_io.recover_quiescence()?;
 
         transactions.validate_runtime_restart(
             configuration_binding,
@@ -365,15 +371,18 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id,
-            pin_custody,
             pin_contract: contract.clone(),
-            pin_executor,
-            pin_observer,
-            helper: StorageMutationHelper::new(contract, backend),
+            pin_io: Box::new(pin_io),
+            helper: StorageMutationHelper::new(
+                contract,
+                Box::new(backend) as Box<dyn ZfsProcessBackend + Send>,
+            ),
             readiness: StorageRuntimeReadiness::RecoveryPending { operations: 1 },
             apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
             resolver_policies,
             prepare_readiness,
+            #[cfg(test)]
+            fail_repair_completion_commit_for_test: false,
         };
         runtime.readiness = runtime.reconcile_startup()?;
         Ok(runtime)
@@ -388,7 +397,7 @@ impl StorageBrokerRuntime {
         configuration_binding: ObjectDigest,
         pin_custody: WorkspacePinHostCustody,
         pin_contract: ZfsHelperContract,
-        mut pin_executor: SystemdWorkspacePinExecutor,
+        pin_executor: SystemdWorkspacePinExecutor,
         pin_observer: SystemdWorkspacePinObserver,
         helper: StorageMutationHelper<SystemdZfsProcessBackend>,
     ) -> Result<Self, StorageRuntimeError>
@@ -399,7 +408,8 @@ impl StorageBrokerRuntime {
         // Preserve the production construction order: prove the complete
         // mutator cgroup empty, authenticate the transaction journal, and only
         // then open the workspace journal under the already-held first lock.
-        pin_executor.recover_quiescence()?;
+        let mut pin_io = SystemdWorkspacePinRuntimeIo::new(pin_custody, pin_executor, pin_observer);
+        pin_io.recover_quiescence()?;
         let workspaces = open_validated_workspace_catalog_after_startup(
             &mut coordinator,
             trusted_clock,
@@ -411,18 +421,56 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id: random_challenge()?,
-            pin_custody,
             pin_contract,
-            pin_executor,
-            pin_observer,
+            pin_io: Box::new(pin_io),
+            helper: helper.into_boxed(),
+            readiness: StorageRuntimeReadiness::RecoveryPending { operations: 1 },
+            apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
+            resolver_policies: None,
+            prepare_readiness: StoragePrepareReadiness::Unconfigured,
+            fail_repair_completion_commit_for_test: false,
+        };
+        runtime.readiness = runtime.reconcile_startup()?;
+
+        Ok(runtime)
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_runtime_interfaces_for_test<F, C>(
+        mut coordinator: StorageAdmissionCoordinator,
+        open_workspaces: F,
+        trusted_clock: &mut C,
+        configuration_binding: ObjectDigest,
+        pin_contract: ZfsHelperContract,
+        mut pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
+        helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
+    ) -> Result<Self, StorageRuntimeError>
+    where
+        F: FnOnce() -> Result<PendingStorageWorkspaceCatalogV1, StorageRuntimeError>,
+        C: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        pin_io.recover_quiescence()?;
+        let workspaces = open_validated_workspace_catalog_after_startup(
+            &mut coordinator,
+            trusted_clock,
+            open_workspaces,
+        )?;
+        let mut runtime = Self {
+            coordinator,
+            workspaces: Some(workspaces),
+            configuration_binding,
+            broker_instance_id: random_challenge()?,
+            pin_contract,
+            pin_io,
             helper,
             readiness: StorageRuntimeReadiness::RecoveryPending { operations: 1 },
             apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
             resolver_policies: None,
             prepare_readiness: StoragePrepareReadiness::Unconfigured,
+            fail_repair_completion_commit_for_test: false,
         };
         runtime.readiness = runtime.reconcile_startup()?;
-
         Ok(runtime)
     }
 
@@ -434,6 +482,11 @@ impl StorageBrokerRuntime {
     #[cfg(test)]
     pub(crate) fn fail_after_next_transaction_journal_commit_for_test(&mut self) {
         self.coordinator.fail_after_next_journal_commit_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_after_next_repair_completion_commit_for_test(&mut self) {
+        self.fail_repair_completion_commit_for_test = true;
     }
 
     #[cfg(test)]
@@ -457,6 +510,16 @@ impl StorageBrokerRuntime {
             self.workspaces
                 .unwrap_or_else(|| unreachable!("workspace catalog custody escaped runtime")),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_reopen_components_for_test(
+        self,
+    ) -> (
+        StorageAdmissionCoordinator,
+        Option<ValidatedPendingStorageWorkspaceCatalogV1>,
+    ) {
+        (self.coordinator, self.workspaces)
     }
 
     /// Returns the fail-closed startup readiness classification.
@@ -607,13 +670,8 @@ impl StorageBrokerRuntime {
             physical_plan,
             request,
             |request_bytes, request| {
-                self.pin_observer
-                    .observe_catalog(
-                        request_bytes,
-                        request,
-                        &self.pin_custody,
-                        worker_cutoff_boottime_nanoseconds,
-                    )
+                self.pin_io
+                    .observe_catalog(request_bytes, request, worker_cutoff_boottime_nanoseconds)
                     .map_err(Into::into)
             },
         ) {
@@ -636,7 +694,7 @@ impl StorageBrokerRuntime {
                 StorageRuntimeError::Recovery,
             ));
         };
-        let custody = match self.pin_custody.catalog_binding() {
+        let custody = match self.pin_io.catalog_binding() {
             Ok(custody) => custody,
             Err(_) => {
                 return Err((
@@ -704,7 +762,7 @@ impl StorageBrokerRuntime {
             identity_pool.range_size(),
         )?;
         let custody = self
-            .pin_custody
+            .pin_io
             .catalog_binding()
             .map_err(|_| StorageRuntimeError::WorkspacePinScope)?;
         WorkspaceCatalogObservationRequestV1::new(
@@ -812,7 +870,7 @@ impl StorageBrokerRuntime {
         }
 
         let current_host_scope = self
-            .pin_custody
+            .pin_io
             .host_scope()
             .map_err(|_| StorageRuntimeError::Recovery)?;
         let observation_dispatch = self
@@ -832,12 +890,8 @@ impl StorageBrokerRuntime {
             .request_bytes()
             .map_err(|_| StorageRuntimeError::Recovery)?;
         let fresh_observation = self
-            .pin_observer
-            .observe_repair_admission(
-                &observation_request,
-                observation_dispatch.probe(),
-                &self.pin_custody,
-            )
+            .pin_io
+            .observe_repair_admission(&observation_request, observation_dispatch.probe())
             .map_err(|_| StorageRuntimeError::Recovery)?;
         let result = self.coordinator.begin_workspace_pin_repair(
             observation_dispatch,
@@ -859,21 +913,21 @@ impl StorageBrokerRuntime {
         let worker_request = dispatch
             .worker_request_bytes()
             .map_err(|_| StorageRuntimeError::Recovery)?;
-        let result =
-            match self
-                .pin_executor
-                .execute(&worker_request, dispatch.attempt(), &self.pin_custody)
-            {
-                Ok(result) => result,
-                Err(_) => {
-                    self.latch_recovery_required();
-                    return Err(StorageRuntimeError::Recovery);
-                }
-            };
+        let result = match self.pin_io.execute(&worker_request, dispatch.attempt()) {
+            Ok(result) => result,
+            Err(_) => {
+                self.latch_recovery_required();
+                return Err(StorageRuntimeError::Recovery);
+            }
+        };
         // The worker may have changed the pin. From this point until every
         // durable completion and catalog projection succeeds, no other RPC may
         // use the old Ready classification.
         self.latch_reopen_required();
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_repair_completion_commit_for_test) {
+            self.coordinator.fail_after_next_journal_commit_for_test();
+        }
         let disposition = match self
             .coordinator
             .complete_workspace_pin_repair_execution(dispatch.attempt(), &result)
@@ -1142,14 +1196,15 @@ impl StorageBrokerRuntime {
         self.latch_recovery_required();
         let committed = match removal {
             WorkspaceRemovePinRequirementV1::Required(expected_pin) => {
-                let result = self.coordinator.execute_workspace_remove_and_destroy(
-                    &mut self.pin_executor,
-                    &self.pin_contract,
-                    &self.pin_custody,
-                    prepared,
-                    expected_pin,
-                    trusted_clock,
-                );
+                let result = self
+                    .coordinator
+                    .execute_workspace_remove_and_destroy_with_io(
+                        self.pin_io.as_mut(),
+                        &self.pin_contract,
+                        prepared,
+                        expected_pin,
+                        trusted_clock,
+                    );
                 let (pin_outcome, committed) = self
                     .finish_live_transaction_mutation(result, |_| StorageRuntimeError::Recovery)?;
                 match pin_outcome {
@@ -1193,10 +1248,9 @@ impl StorageBrokerRuntime {
         };
 
         if creates_workspace {
-            let result = self.coordinator.execute_workspace_pin_ensure(
-                &mut self.pin_executor,
+            let result = self.coordinator.execute_workspace_pin_ensure_with_io(
+                self.pin_io.as_mut(),
                 &self.pin_contract,
-                &self.pin_custody,
                 committed,
                 trusted_clock,
             );
@@ -1238,8 +1292,8 @@ impl StorageBrokerRuntime {
                 .request_bytes(&self.pin_contract)
                 .map_err(|_| StorageRuntimeError::Recovery)?;
             let result = self
-                .pin_observer
-                .observe(&request, dispatch.attempt(), &self.pin_custody)
+                .pin_io
+                .observe(&request, dispatch.attempt())
                 .map_err(|_| StorageRuntimeError::Recovery)?;
             match self
                 .coordinator
@@ -1252,7 +1306,7 @@ impl StorageBrokerRuntime {
             }
         }
         let current_host_scope = self
-            .pin_custody
+            .pin_io
             .host_scope()
             .map_err(|_| StorageRuntimeError::Recovery)?;
         for dispatch in self
@@ -1264,12 +1318,11 @@ impl StorageBrokerRuntime {
                 .request_bytes()
                 .map_err(|_| StorageRuntimeError::Recovery)?;
             let result = self
-                .pin_observer
+                .pin_io
                 .observe_repair(
                     &request,
                     dispatch.attempt().attempt_id(),
                     dispatch.probe().digest(),
-                    &self.pin_custody,
                 )
                 .map_err(|_| StorageRuntimeError::Recovery)?;
             match self
@@ -2037,6 +2090,13 @@ mod tests {
     }
 
     #[test]
+    fn runtime_keeps_send_across_private_effect_adapters() {
+        fn require_send<T: Send>() {}
+
+        require_send::<StorageBrokerRuntime>();
+    }
+
+    #[test]
     fn only_explicit_transaction_poison_latches_reopen_required() {
         let mut readiness = StorageRuntimeReadiness::Ready;
         let ordinary = finish_live_transaction_mutation(
@@ -2067,6 +2127,21 @@ mod tests {
         assert!(readiness.requires_reopen());
         assert!(!readiness.permits_catalog_methods());
         assert!(!readiness.permits_repair());
+    }
+
+    #[test]
+    fn startup_readiness_requires_both_pin_and_catalog_reconciliation() {
+        let catalog_current_but_pin_pending = pending_startup_readiness(1, true);
+        assert_eq!(
+            catalog_current_but_pin_pending,
+            Some(StorageRuntimeReadiness::RecoveryPending { operations: 1 })
+        );
+        let repaired_pin_but_catalog_pending = pending_startup_readiness(0, false);
+        assert_eq!(
+            repaired_pin_but_catalog_pending,
+            Some(StorageRuntimeReadiness::RecoveryPending { operations: 1 })
+        );
+        assert_eq!(pending_startup_readiness(0, true), None);
     }
 
     #[test]

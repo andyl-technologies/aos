@@ -9,18 +9,23 @@
 //! status during replay.
 //!
 //! ```text
-//! AOSRPI01 | version:u16 | key-id:16
+//! AOSRPI01 | version:u16=2 | key-id:16
 //! repair-operation:16 | request-id:16 | transport-request-digest:32
 //! semantic-commitment:32 | repair-assignment-digest:32
 //! admitted-effect-record-digest:32 | admitted-effect-record:(len:u32,bytes)
 //! operation-fence-digest:32
 //! creation-operation:16 | creation-result-catalog:(generation:u64,digest:32)
 //! creation-result-digest:32 | publication-intent-record-digest:32
-//! workspace-handle:32 | latest-ensure-attempt-id:16
+//! workspace-handle:32 | predecessor-kind:u8
+//! predecessor-creation-record-digest:32 | latest-ensure-attempt-id:16
 //! latest-ensure-phase:u8 | latest-ensure-record-digest:32
 //! repair-attempt-id:16
 //! repair-attempt-ordinal:u8 | intent-phase:u8 | hmac-sha256:32
 //! ```
+//!
+//! Signed version 1 records remain decodable for reopen compatibility. Because
+//! that layout predates an explicit predecessor discriminator, every valid v1
+//! record decodes as [`WorkspacePinRepairIntentPredecessorV1::ExistingAttempt`].
 
 use std::collections::BTreeMap;
 
@@ -40,11 +45,12 @@ use crate::{CatalogBindingV1, StorageStateError};
 type HmacSha256 = Hmac<sha2::Sha256>;
 
 const MAGIC: &[u8; 8] = b"AOSRPI01";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
+const LEGACY_VERSION: u16 = 1;
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-pin-repair-intent.v1\0";
 const PROBE_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-pin-repair-probe.v1\0";
 const MAC_BYTES: usize = 32;
-const FIXED_ENCODED_BYTES: usize = 8
+const FIXED_ENCODED_BYTES_V1: usize = 8
     + 2
     + 16
     + 16
@@ -68,6 +74,7 @@ const FIXED_ENCODED_BYTES: usize = 8
     + 1
     + 1
     + MAC_BYTES;
+const FIXED_ENCODED_BYTES: usize = FIXED_ENCODED_BYTES_V1 + 1 + 32;
 const MAXIMUM_ADMITTED_EFFECT_RECORD_BYTES: usize = 64 * 1024;
 
 /// Identifies the irreversible crash boundary of repair admission.
@@ -75,6 +82,34 @@ const MAXIMUM_ADMITTED_EFFECT_RECORD_BYTES: usize = 64 * 1024;
 pub(crate) enum WorkspacePinRepairIntentPhaseV1 {
     /// Dispatch eligibility was consumed; recovery is observation-only.
     Ambiguous,
+}
+
+/// Identifies the authenticated history immediately before repair admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspacePinRepairIntentPredecessorV1 {
+    /// The committed creation has no workspace-pin attempt row.
+    MissingInitial {
+        /// Digest of the exact authenticated committed creation record.
+        creation_record_digest: ObjectDigest,
+    },
+    /// A prior Ensure attempt is the exact latest workspace attempt.
+    ExistingAttempt {
+        /// Exact predecessor attempt identity.
+        attempt_id: [u8; 16],
+        /// Exact predecessor attempt phase.
+        phase: WorkspacePinAttemptPhaseV1,
+        /// Digest of the exact authenticated predecessor attempt record.
+        record_digest: ObjectDigest,
+    },
+}
+
+impl WorkspacePinRepairIntentPredecessorV1 {
+    const fn wire(self) -> u8 {
+        match self {
+            Self::MissingInitial { .. } => 1,
+            Self::ExistingAttempt { .. } => 2,
+        }
+    }
 }
 
 impl WorkspacePinRepairIntentPhaseV1 {
@@ -108,9 +143,7 @@ pub(crate) struct StorageWorkspacePinRepairIntentV1 {
     creation_result_digest: ObjectDigest,
     publication_intent_record_digest: ObjectDigest,
     workspace_handle: [u8; 32],
-    latest_ensure_attempt_id: [u8; 16],
-    latest_ensure_phase: crate::workspace_pin::WorkspacePinAttemptPhaseV1,
-    latest_ensure_attempt_record_digest: ObjectDigest,
+    predecessor: WorkspacePinRepairIntentPredecessorV1,
     repair_attempt_id: [u8; 16],
     repair_attempt_ordinal: u8,
     phase: WorkspacePinRepairIntentPhaseV1,
@@ -159,11 +192,63 @@ impl StorageWorkspacePinRepairIntentV1 {
             creation_result_digest,
             publication_intent_record_digest,
             workspace_handle,
-            latest_ensure_attempt_id,
-            latest_ensure_phase,
-            latest_ensure_attempt_record_digest,
+            predecessor: WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+                attempt_id: latest_ensure_attempt_id,
+                phase: latest_ensure_phase,
+                record_digest: latest_ensure_attempt_record_digest,
+            },
             repair_attempt_id,
             repair_attempt_ordinal,
+            phase: WorkspacePinRepairIntentPhaseV1::Ambiguous,
+        };
+        intent.validate()?;
+        Ok(intent)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_missing_initial_ambiguous(
+        repair_operation_id: [u8; 16],
+        admitted_effect: &BrokerEffectIntentV1,
+        admitted_effect_record: Vec<u8>,
+        repair_assignment_digest: ObjectDigest,
+        operation_fence_digest: ObjectDigest,
+        creation_operation_id: [u8; 16],
+        creation_result_catalog: CatalogBindingV1,
+        creation_result_digest: ObjectDigest,
+        creation_record_digest: ObjectDigest,
+        publication_intent_record_digest: ObjectDigest,
+        workspace_handle: [u8; 32],
+        repair_attempt_id: [u8; 16],
+    ) -> Result<Self, StorageStateError> {
+        if admitted_effect.status() != BrokerEffectStatusV1::Pending
+            || admitted_effect.verb() != BrokerVerb::StorageRepairWorkspacePin
+            || admitted_effect.target()
+                != BrokerGrantTarget::Resource(
+                    aos_sandbox_core::BrokerResourceHandle::from_bytes(workspace_handle)
+                        .map_err(|_| StorageStateError::InvalidValue)?,
+                )
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        let intent = Self {
+            repair_operation_id,
+            request_id: *admitted_effect.request_id(),
+            request_digest: admitted_effect.transport_request_digest(),
+            semantic_commitment: admitted_effect.request_digest(),
+            repair_assignment_digest,
+            admitted_effect_record_digest: digest_bytes(&admitted_effect_record),
+            admitted_effect_record,
+            operation_fence_digest,
+            creation_operation_id,
+            creation_result_catalog,
+            creation_result_digest,
+            publication_intent_record_digest,
+            workspace_handle,
+            predecessor: WorkspacePinRepairIntentPredecessorV1::MissingInitial {
+                creation_record_digest,
+            },
+            repair_attempt_id,
+            repair_attempt_ordinal: 1,
             phase: WorkspacePinRepairIntentPhaseV1::Ambiguous,
         };
         intent.validate()?;
@@ -205,15 +290,32 @@ impl StorageWorkspacePinRepairIntentV1 {
             creation_result_digest,
             publication_intent_record_digest,
             workspace_handle,
-            latest_ensure_attempt_id,
-            latest_ensure_phase,
-            latest_ensure_attempt_record_digest,
+            predecessor: WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+                attempt_id: latest_ensure_attempt_id,
+                phase: latest_ensure_phase,
+                record_digest: latest_ensure_attempt_record_digest,
+            },
             repair_attempt_id,
             repair_attempt_ordinal,
             phase: WorkspacePinRepairIntentPhaseV1::Ambiguous,
         };
         intent.validate()?;
         Ok(intent)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_missing_initial_for_test(
+        mut self,
+        creation_record_digest: ObjectDigest,
+        repair_attempt_id: [u8; 16],
+    ) -> Result<Self, StorageStateError> {
+        self.predecessor = WorkspacePinRepairIntentPredecessorV1::MissingInitial {
+            creation_record_digest,
+        };
+        self.repair_attempt_id = repair_attempt_id;
+        self.repair_attempt_ordinal = 1;
+        self.validate()?;
+        Ok(self)
     }
 
     fn validate(&self) -> Result<(), StorageStateError> {
@@ -234,14 +336,33 @@ impl StorageWorkspacePinRepairIntentV1 {
             || self.creation_result_digest.as_bytes() == &[0; 32]
             || self.publication_intent_record_digest.as_bytes() == &[0; 32]
             || self.workspace_handle == [0; 32]
-            || self.latest_ensure_attempt_id == [0; 16]
-            || self.latest_ensure_attempt_record_digest.as_bytes() == &[0; 32]
             || self.repair_attempt_id == [0; 16]
-            || self.latest_ensure_attempt_id == self.repair_attempt_id
-            || !(2..=crate::workspace_pin::MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE)
-                .contains(&self.repair_attempt_ordinal)
         {
             return Err(StorageStateError::InvalidValue);
+        }
+        match self.predecessor {
+            WorkspacePinRepairIntentPredecessorV1::MissingInitial {
+                creation_record_digest,
+            } => {
+                if creation_record_digest.as_bytes() == &[0; 32] || self.repair_attempt_ordinal != 1
+                {
+                    return Err(StorageStateError::InvalidValue);
+                }
+            }
+            WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+                attempt_id,
+                record_digest,
+                ..
+            } => {
+                if attempt_id == [0; 16]
+                    || record_digest.as_bytes() == &[0; 32]
+                    || attempt_id == self.repair_attempt_id
+                    || !(2..=crate::workspace_pin::MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE)
+                        .contains(&self.repair_attempt_ordinal)
+                {
+                    return Err(StorageStateError::InvalidValue);
+                }
+            }
         }
         Ok(())
     }
@@ -298,18 +419,40 @@ impl StorageWorkspacePinRepairIntentV1 {
         self.workspace_handle
     }
 
-    pub(crate) const fn latest_ensure_attempt_id(&self) -> [u8; 16] {
-        self.latest_ensure_attempt_id
+    pub(crate) const fn predecessor(&self) -> WorkspacePinRepairIntentPredecessorV1 {
+        self.predecessor
     }
 
-    pub(crate) const fn latest_ensure_phase(
-        &self,
-    ) -> crate::workspace_pin::WorkspacePinAttemptPhaseV1 {
-        self.latest_ensure_phase
+    #[cfg(test)]
+    pub(crate) fn latest_ensure_attempt_id(&self) -> [u8; 16] {
+        match self.predecessor {
+            WorkspacePinRepairIntentPredecessorV1::ExistingAttempt { attempt_id, .. } => attempt_id,
+            WorkspacePinRepairIntentPredecessorV1::MissingInitial { .. } => {
+                panic!("missing-initial repair has no predecessor attempt")
+            }
+        }
     }
 
-    pub(crate) const fn latest_ensure_attempt_record_digest(&self) -> ObjectDigest {
-        self.latest_ensure_attempt_record_digest
+    #[cfg(test)]
+    pub(crate) fn latest_ensure_phase(&self) -> WorkspacePinAttemptPhaseV1 {
+        match self.predecessor {
+            WorkspacePinRepairIntentPredecessorV1::ExistingAttempt { phase, .. } => phase,
+            WorkspacePinRepairIntentPredecessorV1::MissingInitial { .. } => {
+                panic!("missing-initial repair has no predecessor attempt")
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn latest_ensure_attempt_record_digest(&self) -> ObjectDigest {
+        match self.predecessor {
+            WorkspacePinRepairIntentPredecessorV1::ExistingAttempt { record_digest, .. } => {
+                record_digest
+            }
+            WorkspacePinRepairIntentPredecessorV1::MissingInitial { .. } => {
+                panic!("missing-initial repair has no predecessor attempt")
+            }
+        }
     }
 
     pub(crate) const fn repair_attempt_id(&self) -> [u8; 16] {
@@ -631,12 +774,30 @@ fn encode_intent(
     bytes.extend_from_slice(intent.creation_result_digest.as_bytes());
     bytes.extend_from_slice(intent.publication_intent_record_digest.as_bytes());
     bytes.extend_from_slice(&intent.workspace_handle);
-    bytes.extend_from_slice(&intent.latest_ensure_attempt_id);
-    bytes.push(match intent.latest_ensure_phase {
-        crate::workspace_pin::WorkspacePinAttemptPhaseV1::Ambiguous => 1,
-        crate::workspace_pin::WorkspacePinAttemptPhaseV1::Satisfied => 2,
-    });
-    bytes.extend_from_slice(intent.latest_ensure_attempt_record_digest.as_bytes());
+    bytes.push(intent.predecessor.wire());
+    match intent.predecessor {
+        WorkspacePinRepairIntentPredecessorV1::MissingInitial {
+            creation_record_digest,
+        } => {
+            bytes.extend_from_slice(creation_record_digest.as_bytes());
+            bytes.extend_from_slice(&[0; 16]);
+            bytes.push(0);
+            bytes.extend_from_slice(&[0; 32]);
+        }
+        WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+            attempt_id,
+            phase,
+            record_digest,
+        } => {
+            bytes.extend_from_slice(&[0; 32]);
+            bytes.extend_from_slice(&attempt_id);
+            bytes.push(match phase {
+                WorkspacePinAttemptPhaseV1::Ambiguous => 1,
+                WorkspacePinAttemptPhaseV1::Satisfied => 2,
+            });
+            bytes.extend_from_slice(record_digest.as_bytes());
+        }
+    }
     bytes.extend_from_slice(&intent.repair_attempt_id);
     bytes.push(intent.repair_attempt_ordinal);
     bytes.push(intent.phase.wire());
@@ -649,22 +810,74 @@ fn encode_intent(
     Ok(bytes)
 }
 
+/// Encodes the original v1 ExistingAttempt shape for compatibility tests.
+#[cfg(test)]
+pub(crate) fn encode_legacy_intent_for_test(
+    intent: &StorageWorkspacePinRepairIntentV1,
+    key_id: [u8; 16],
+    secret: &[u8; 32],
+) -> Result<Vec<u8>, StorageStateError> {
+    intent.validate()?;
+    let WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+        attempt_id,
+        phase,
+        record_digest,
+    } = intent.predecessor
+    else {
+        return Err(StorageStateError::InvalidValue);
+    };
+
+    let mut bytes =
+        Vec::with_capacity(FIXED_ENCODED_BYTES_V1 + intent.admitted_effect_record.len());
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&key_id);
+    bytes.extend_from_slice(&intent.repair_operation_id);
+    bytes.extend_from_slice(&intent.request_id);
+    bytes.extend_from_slice(intent.request_digest.as_bytes());
+    bytes.extend_from_slice(intent.semantic_commitment.as_bytes());
+    bytes.extend_from_slice(intent.repair_assignment_digest.as_bytes());
+    bytes.extend_from_slice(intent.admitted_effect_record_digest.as_bytes());
+    let effect_record_length = u32::try_from(intent.admitted_effect_record.len())
+        .map_err(|_| StorageStateError::InvalidValue)?;
+    bytes.extend_from_slice(&effect_record_length.to_be_bytes());
+    bytes.extend_from_slice(&intent.admitted_effect_record);
+    bytes.extend_from_slice(intent.operation_fence_digest.as_bytes());
+    bytes.extend_from_slice(&intent.creation_operation_id);
+    bytes.extend_from_slice(&intent.creation_result_catalog.generation().to_be_bytes());
+    bytes.extend_from_slice(intent.creation_result_catalog.digest().as_bytes());
+    bytes.extend_from_slice(intent.creation_result_digest.as_bytes());
+    bytes.extend_from_slice(intent.publication_intent_record_digest.as_bytes());
+    bytes.extend_from_slice(&intent.workspace_handle);
+    bytes.extend_from_slice(&attempt_id);
+    bytes.push(attempt_phase_wire(phase));
+    bytes.extend_from_slice(record_digest.as_bytes());
+    bytes.extend_from_slice(&intent.repair_attempt_id);
+    bytes.push(intent.repair_attempt_ordinal);
+    bytes.push(intent.phase.wire());
+    let tag = record_tag(secret, &intent.repair_operation_id, &bytes)?;
+    bytes.extend_from_slice(&tag);
+
+    Ok(bytes)
+}
+
 pub(crate) fn decode_intent(
     bytes: &[u8],
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<StorageWorkspacePinRepairIntentV1, StorageStateError> {
-    if bytes.len() < FIXED_ENCODED_BYTES + 1
+    if bytes.len() < FIXED_ENCODED_BYTES_V1 + 1
         || bytes.len() > FIXED_ENCODED_BYTES + MAXIMUM_ADMITTED_EFFECT_RECORD_BYTES
     {
         return Err(StorageStateError::CorruptRecord);
     }
     let (body, supplied_tag) = bytes.split_at(bytes.len() - MAC_BYTES);
     let mut decoder = Decoder::new(body);
-    if decoder.array::<8>()? != *MAGIC
-        || decoder.u16()? != VERSION
-        || decoder.array::<16>()? != key_id
-    {
+    if decoder.array::<8>()? != *MAGIC {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let version = decoder.u16()?;
+    if !matches!(version, LEGACY_VERSION | VERSION) || decoder.array::<16>()? != key_id {
         return Err(StorageStateError::CorruptRecord);
     }
     let repair_operation_id = decoder.array::<16>()?;
@@ -683,6 +896,47 @@ pub(crate) fn decode_intent(
         return Err(StorageStateError::CorruptRecord);
     }
     let admitted_effect_record = decoder.take(effect_record_length)?.to_vec();
+    let operation_fence_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let creation_operation_id = decoder.array()?;
+    let creation_result_catalog = CatalogBindingV1::from_publisher(
+        decoder.u64()?,
+        ObjectDigest::from_bytes(decoder.array()?),
+    )
+    .map_err(|_| StorageStateError::CorruptRecord)?;
+    let creation_result_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let publication_intent_record_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let workspace_handle = decoder.array()?;
+    let predecessor = if version == LEGACY_VERSION {
+        WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+            attempt_id: decoder.array()?,
+            phase: decode_attempt_phase(decoder.u8()?)?,
+            record_digest: ObjectDigest::from_bytes(decoder.array()?),
+        }
+    } else {
+        let kind = decoder.u8()?;
+        let creation_record_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let attempt_id = decoder.array()?;
+        let phase_wire = decoder.u8()?;
+        let record_digest = ObjectDigest::from_bytes(decoder.array()?);
+        match kind {
+            1 if attempt_id == [0; 16]
+                && phase_wire == 0
+                && record_digest.as_bytes() == &[0; 32] =>
+            {
+                WorkspacePinRepairIntentPredecessorV1::MissingInitial {
+                    creation_record_digest,
+                }
+            }
+            2 if creation_record_digest.as_bytes() == &[0; 32] => {
+                WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+                    attempt_id,
+                    phase: decode_attempt_phase(phase_wire)?,
+                    record_digest,
+                }
+            }
+            _ => return Err(StorageStateError::CorruptRecord),
+        }
+    };
     let intent = StorageWorkspacePinRepairIntentV1 {
         repair_operation_id,
         request_id,
@@ -691,23 +945,13 @@ pub(crate) fn decode_intent(
         repair_assignment_digest,
         admitted_effect_record_digest,
         admitted_effect_record,
-        operation_fence_digest: ObjectDigest::from_bytes(decoder.array()?),
-        creation_operation_id: decoder.array()?,
-        creation_result_catalog: CatalogBindingV1::from_publisher(
-            decoder.u64()?,
-            ObjectDigest::from_bytes(decoder.array()?),
-        )
-        .map_err(|_| StorageStateError::CorruptRecord)?,
-        creation_result_digest: ObjectDigest::from_bytes(decoder.array()?),
-        publication_intent_record_digest: ObjectDigest::from_bytes(decoder.array()?),
-        workspace_handle: decoder.array()?,
-        latest_ensure_attempt_id: decoder.array()?,
-        latest_ensure_phase: match decoder.u8()? {
-            1 => crate::workspace_pin::WorkspacePinAttemptPhaseV1::Ambiguous,
-            2 => crate::workspace_pin::WorkspacePinAttemptPhaseV1::Satisfied,
-            _ => return Err(StorageStateError::CorruptRecord),
-        },
-        latest_ensure_attempt_record_digest: ObjectDigest::from_bytes(decoder.array()?),
+        operation_fence_digest,
+        creation_operation_id,
+        creation_result_catalog,
+        creation_result_digest,
+        publication_intent_record_digest,
+        workspace_handle,
+        predecessor,
         repair_attempt_id: decoder.array()?,
         repair_attempt_ordinal: decoder.u8()?,
         phase: WorkspacePinRepairIntentPhaseV1::from_wire(decoder.u8()?)?,
@@ -719,6 +963,14 @@ pub(crate) fn decode_intent(
         .validate()
         .map_err(|_| StorageStateError::CorruptRecord)?;
     Ok(intent)
+}
+
+fn decode_attempt_phase(value: u8) -> Result<WorkspacePinAttemptPhaseV1, StorageStateError> {
+    match value {
+        1 => Ok(WorkspacePinAttemptPhaseV1::Ambiguous),
+        2 => Ok(WorkspacePinAttemptPhaseV1::Satisfied),
+        _ => Err(StorageStateError::CorruptRecord),
+    }
 }
 
 fn record_tag(
@@ -832,9 +1084,11 @@ mod tests {
             creation_result_digest: ObjectDigest::from_bytes([13; 32]),
             publication_intent_record_digest: ObjectDigest::from_bytes([14; 32]),
             workspace_handle: [15; 32],
-            latest_ensure_attempt_id: [16; 16],
-            latest_ensure_phase: WorkspacePinAttemptPhaseV1::Ambiguous,
-            latest_ensure_attempt_record_digest: ObjectDigest::from_bytes([18; 32]),
+            predecessor: WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+                attempt_id: [16; 16],
+                phase: WorkspacePinAttemptPhaseV1::Ambiguous,
+                record_digest: ObjectDigest::from_bytes([18; 32]),
+            },
             repair_attempt_id: [17; 16],
             repair_attempt_ordinal: 2,
             phase: WorkspacePinRepairIntentPhaseV1::Ambiguous,
@@ -909,12 +1163,26 @@ mod tests {
         assert_eq!(decode_intent(&encoded, KEY_ID, &SECRET).unwrap(), original);
 
         let mut satisfied_history = intent();
-        satisfied_history.latest_ensure_phase = WorkspacePinAttemptPhaseV1::Satisfied;
+        satisfied_history.predecessor = WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+            attempt_id: [16; 16],
+            phase: WorkspacePinAttemptPhaseV1::Satisfied,
+            record_digest: ObjectDigest::from_bytes([18; 32]),
+        };
         let encoded = encode_intent(&satisfied_history, KEY_ID, &SECRET).unwrap();
         assert_eq!(
             decode_intent(&encoded, KEY_ID, &SECRET).unwrap(),
             satisfied_history
         );
+    }
+
+    #[test]
+    fn legacy_v1_existing_attempt_decodes_as_explicit_predecessor() {
+        let original = intent();
+        let encoded = encode_legacy_intent_for_test(&original, KEY_ID, &SECRET).unwrap();
+
+        assert_eq!(encoded.len(), FIXED_ENCODED_BYTES_V1 + 17);
+        assert_eq!(decode_intent(&encoded, KEY_ID, &SECRET).unwrap(), original);
+        assert_ne!(encoded, encode_intent(&original, KEY_ID, &SECRET).unwrap());
     }
 
     #[test]
@@ -925,6 +1193,14 @@ mod tests {
             corrupted[offset] ^= 1;
             assert!(decode_intent(&corrupted, KEY_ID, &SECRET).is_err());
         }
+    }
+
+    #[test]
+    fn repair_intent_rejects_tampered_record_signature() {
+        let mut encoded = encode_intent(&intent(), KEY_ID, &SECRET).unwrap();
+        *encoded.last_mut().unwrap() ^= 1;
+
+        assert!(decode_intent(&encoded, KEY_ID, &SECRET).is_err());
     }
 
     #[test]
@@ -940,7 +1216,11 @@ mod tests {
             Err(StorageStateError::InvalidValue)
         ));
         invalid = intent();
-        invalid.latest_ensure_attempt_id = invalid.repair_attempt_id;
+        invalid.predecessor = WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+            attempt_id: invalid.repair_attempt_id,
+            phase: WorkspacePinAttemptPhaseV1::Ambiguous,
+            record_digest: ObjectDigest::from_bytes([18; 32]),
+        };
         assert!(matches!(
             invalid.validate(),
             Err(StorageStateError::InvalidValue)

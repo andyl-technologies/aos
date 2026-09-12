@@ -40,7 +40,8 @@ use crate::workspace_pin::{
     WorkspaceRootPinProofV1, attempt_record, derive_attempt_id, load_attempts,
 };
 use crate::workspace_repair::{
-    StorageWorkspacePinRepairIntentV1, load_repair_intents, repair_intent_record,
+    StorageWorkspacePinRepairIntentV1, WorkspacePinRepairIntentPredecessorV1, load_repair_intents,
+    repair_intent_record,
 };
 use crate::{CatalogBindingV1, CatalogPlanV1, PostconditionPolicyV1, ResolvedCatalogCommitmentV1};
 
@@ -417,6 +418,19 @@ pub(crate) enum StorageWorkspaceProjection {
         creation: CommittedStorageResultV1,
         retirement: CommittedStorageResultV1,
     },
+}
+
+/// Selects the exact authenticated state preceding a workspace-pin repair.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspacePinRepairPredecessorV1 {
+    /// A committed active creation has never published a pin attempt.
+    MissingInitial {
+        creation: Box<CommittedStorageResultV1>,
+        creation_record_digest: ObjectDigest,
+        physical_catalog_head: CatalogBindingV1,
+    },
+    /// The exact globally latest workspace attempt precedes this repair.
+    ExistingAttempt(Box<WorkspacePinAttemptV1>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1066,6 +1080,86 @@ impl StorageTransactionStore {
             .cloned())
     }
 
+    pub(crate) fn workspace_creation_for_pin_repair(
+        &self,
+        workspace_handle: [u8; 32],
+    ) -> Result<CommittedStorageResultV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let mut matching_creations = Vec::new();
+        for result in self.records.values().filter_map(|record| {
+            (record.phase == DurableStoragePhase::Committed)
+                .then_some(record.result)
+                .flatten()
+                .filter(|result| result.storage_handle() == Some(workspace_handle))
+        }) {
+            let entry = self.committed_recovery_entry(result)?;
+            let catalog = self.recover_catalog(entry)?;
+            if matches!(
+                catalog.plan(),
+                CatalogPlanV1::CreateWorkspace { .. } | CatalogPlanV1::Clone { .. }
+            ) {
+                matching_creations.push(result);
+            }
+        }
+
+        let mut matching_creations = matching_creations.into_iter();
+        let result = matching_creations
+            .next()
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if matching_creations.next().is_some() {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        if !self.workspace_creation_is_active(result.operation_id(), workspace_handle)? {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn workspace_creation_record(
+        &self,
+        creation: CommittedStorageResultV1,
+    ) -> Result<Vec<u8>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        self.committed_recovery_entry(creation)?;
+        let bytes = self
+            .journal
+            .get(RecordNamespace::Operation, &creation.operation_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let opened = decode_record(bytes, &self.key)?;
+        if opened.result != Some(creation)
+            || self.records.get(&creation.operation_id()) != Some(&opened)
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(bytes.to_vec())
+    }
+
+    pub(crate) fn missing_initial_repair_attempt_id(
+        &self,
+        creation: CommittedStorageResultV1,
+        repair_operation_id: [u8; 16],
+    ) -> Result<[u8; 16], StorageStateError> {
+        self.ensure_authority_readable()?;
+        let workspace_handle = creation
+            .storage_handle()
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if self.committed_recovery_entry(creation)?.operation_id() == repair_operation_id
+            || self.pin_attempts.values().any(|attempt| {
+                attempt.workspace_handle() == workspace_handle
+                    || attempt.creation_operation_id() == creation.operation_id()
+            })
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        derive_attempt_id(
+            &self.key.secret,
+            repair_operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            1,
+        )
+    }
+
     pub(crate) fn workspace_pin_repair_intent_record(
         &self,
         intent: &StorageWorkspacePinRepairIntentV1,
@@ -1180,7 +1274,7 @@ impl StorageTransactionStore {
     pub(crate) fn begin_workspace_pin_repair(
         &mut self,
         sandbox_id: [u8; 16],
-        expected_latest: &WorkspacePinAttemptV1,
+        predecessor: &WorkspacePinRepairPredecessorV1,
         intent: StorageWorkspacePinRepairIntentV1,
         attempt: WorkspacePinAttemptV1,
         sealed_current_fence: Vec<u8>,
@@ -1190,38 +1284,74 @@ impl StorageTransactionStore {
         authority: FreshWorkspacePinAuthority,
     ) -> Result<BeginWorkspacePinAttemptV1, StorageStateError> {
         self.ensure_authority_readable()?;
-        let current_latest = self
-            .pin_attempts
-            .values()
-            .filter(|candidate| candidate.workspace_handle() == attempt.workspace_handle())
-            .max_by_key(|candidate| candidate.attempt_ordinal())
-            .ok_or(StorageStateError::MissingAuthorityLink)?;
-        if current_latest != expected_latest
+        let predecessor_matches = match predecessor {
+            WorkspacePinRepairPredecessorV1::MissingInitial {
+                creation,
+                creation_record_digest,
+                physical_catalog_head,
+            } => {
+                let creation_record = self.workspace_creation_record(**creation)?;
+                self.catalog_head_binding()? == *physical_catalog_head
+                    && digest_bytes(&creation_record) == *creation_record_digest
+                    && creation.storage_handle() == Some(attempt.workspace_handle())
+                    && creation.operation_id() == attempt.creation_operation_id()
+                    && creation.catalog() == attempt.creation_result_catalog()
+                    && creation.result_digest() == attempt.creation_result_digest()
+                    && attempt.attempt_ordinal() == 1
+                    && self.pin_attempts.values().all(|candidate| {
+                        candidate.workspace_handle() != attempt.workspace_handle()
+                            && candidate.creation_operation_id() != attempt.creation_operation_id()
+                    })
+                    && intent.predecessor()
+                        == WorkspacePinRepairIntentPredecessorV1::MissingInitial {
+                            creation_record_digest: *creation_record_digest,
+                        }
+            }
+            WorkspacePinRepairPredecessorV1::ExistingAttempt(expected_latest) => {
+                let current_latest = self
+                    .pin_attempts
+                    .values()
+                    .filter(|candidate| candidate.workspace_handle() == attempt.workspace_handle())
+                    .max_by_key(|candidate| candidate.attempt_ordinal());
+                let expected_record_digest = ObjectDigest::from_bytes(
+                    Sha256::digest(self.workspace_pin_attempt_record(expected_latest)?).into(),
+                );
+                current_latest == Some(expected_latest)
+                    && expected_latest.action() == WorkspacePinActionV1::Ensure
+                    && expected_latest.expected_pin().is_none()
+                    && expected_latest.attempt_ordinal() < MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE
+                    && attempt.attempt_ordinal()
+                        == expected_latest
+                            .attempt_ordinal()
+                            .checked_add(1)
+                            .ok_or(StorageStateError::InvalidTransition)?
+                    && attempt.creation_operation_id() == expected_latest.creation_operation_id()
+                    && attempt.creation_result_catalog()
+                        == expected_latest.creation_result_catalog()
+                    && attempt.creation_result_digest() == expected_latest.creation_result_digest()
+                    && attempt.workspace_handle() == expected_latest.workspace_handle()
+                    && attempt.workspace_assignment_digest()
+                        == expected_latest.workspace_assignment_digest()
+                    && attempt.dataset_name() == expected_latest.dataset_name()
+                    && attempt.dataset_guid() == expected_latest.dataset_guid()
+                    && attempt.identity_range_start() == expected_latest.identity_range_start()
+                    && attempt.identity_range_size() == expected_latest.identity_range_size()
+                    && intent.predecessor()
+                        == WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+                            attempt_id: expected_latest.attempt_id(),
+                            phase: expected_latest.phase(),
+                            record_digest: expected_record_digest,
+                        }
+            }
+        };
+        if !predecessor_matches
             || !self.workspace_creation_is_active(
-                expected_latest.creation_operation_id(),
-                expected_latest.workspace_handle(),
+                attempt.creation_operation_id(),
+                attempt.workspace_handle(),
             )?
-            || expected_latest.action() != WorkspacePinActionV1::Ensure
-            || expected_latest.expected_pin().is_some()
-            || expected_latest.attempt_ordinal() >= MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE
-            || attempt.attempt_ordinal()
-                != expected_latest
-                    .attempt_ordinal()
-                    .checked_add(1)
-                    .ok_or(StorageStateError::InvalidTransition)?
             || attempt.action() != WorkspacePinActionV1::Ensure
             || attempt.phase() != WorkspacePinAttemptPhaseV1::Ambiguous
             || attempt.effect_operation_id() != intent.repair_operation_id()
-            || attempt.creation_operation_id() != expected_latest.creation_operation_id()
-            || attempt.creation_result_catalog() != expected_latest.creation_result_catalog()
-            || attempt.creation_result_digest() != expected_latest.creation_result_digest()
-            || attempt.workspace_handle() != expected_latest.workspace_handle()
-            || attempt.workspace_assignment_digest()
-                != expected_latest.workspace_assignment_digest()
-            || attempt.dataset_name() != expected_latest.dataset_name()
-            || attempt.dataset_guid() != expected_latest.dataset_guid()
-            || attempt.identity_range_start() != expected_latest.identity_range_start()
-            || attempt.identity_range_size() != expected_latest.identity_range_size()
             || attempt.expected_pin().is_some()
             || intent.repair_attempt_id() != attempt.attempt_id()
             || intent.repair_attempt_ordinal() != attempt.attempt_ordinal()
@@ -1231,12 +1361,6 @@ impl StorageTransactionStore {
             || intent.workspace_handle() != attempt.workspace_handle()
             || intent.repair_assignment_digest() != attempt.effect_assignment_digest()
             || intent.operation_fence_digest() != attempt.operation_fence_digest()
-            || intent.latest_ensure_attempt_id() != expected_latest.attempt_id()
-            || intent.latest_ensure_phase() != expected_latest.phase()
-            || intent.latest_ensure_attempt_record_digest()
-                != ObjectDigest::from_bytes(
-                    Sha256::digest(self.workspace_pin_attempt_record(expected_latest)?).into(),
-                )
             || intent.admitted_effect_record() != sealed_pending_effect
             || intent.operation_fence_digest()
                 != ObjectDigest::from_bytes(Sha256::digest(&sealed_operation_fence).into())
@@ -1671,6 +1795,78 @@ impl StorageTransactionStore {
             latest.identity_range_start(),
             latest.identity_range_size(),
             latest.root_policy(),
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_missing_initial_workspace_pin_repair(
+        &self,
+        creation: CommittedStorageResultV1,
+        repair_operation_id: [u8; 16],
+        operation_fence_digest: ObjectDigest,
+        repair_assignment_digest: ObjectDigest,
+        host_scope: WorkspacePinHostScopeV1,
+        clock_provenance: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+    ) -> Result<WorkspacePinAttemptV1, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let entry = self.committed_recovery_entry(creation)?;
+        let catalog = self.recover_catalog(entry)?;
+        let dataset_name = match catalog.plan() {
+            CatalogPlanV1::CreateWorkspace { destination, .. }
+            | CatalogPlanV1::Clone { destination, .. } => destination.name(),
+            _ => return Err(StorageStateError::InvalidTransition),
+        };
+        let workspace_handle = creation
+            .storage_handle()
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let dataset_guid = creation
+            .object_guid()
+            .filter(|guid| *guid != 0)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let publication = self
+            .publication_intents
+            .get(&creation.operation_id())
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if repair_operation_id == creation.operation_id()
+            || !self.workspace_creation_is_active(creation.operation_id(), workspace_handle)?
+            || self.pin_attempts.values().any(|attempt| {
+                attempt.workspace_handle() == workspace_handle
+                    || attempt.creation_operation_id() == creation.operation_id()
+            })
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let attempt_id = derive_attempt_id(
+            &self.key.secret,
+            repair_operation_id,
+            workspace_handle,
+            WorkspacePinActionV1::Ensure,
+            1,
+        )?;
+        WorkspacePinAttemptV1::new_ambiguous(
+            attempt_id,
+            1,
+            WorkspacePinActionV1::Ensure,
+            repair_operation_id,
+            creation.operation_id(),
+            operation_fence_digest,
+            repair_assignment_digest,
+            publication.assignment_digest(),
+            creation.catalog(),
+            creation.result_digest(),
+            workspace_handle,
+            host_scope.kernel_boot_id(),
+            host_scope.mount_namespace_device(),
+            host_scope.mount_namespace_inode(),
+            clock_provenance,
+            effect_deadline_boottime_nanoseconds,
+            dataset_name.to_owned(),
+            dataset_guid,
+            publication.identity_range_start(),
+            publication.identity_range_size(),
+            publication.portable_metadata().root_policy(),
             None,
         )
     }
@@ -3334,28 +3530,48 @@ fn validate_repair_intent_set(
             return Err(StorageStateError::AuthorityLinkMismatch);
         }
 
-        let latest_ensure = pin_attempts
-            .get(&intent.latest_ensure_attempt_id())
-            .ok_or(StorageStateError::MissingAuthorityLink)?;
-        let latest_ensure_record = journal
-            .get(
-                RecordNamespace::StorageWorkspacePinAttempt,
-                &intent.latest_ensure_attempt_id(),
-            )
-            .ok_or(StorageStateError::MissingAuthorityLink)?;
         let repair_attempt = pin_attempts
             .get(&intent.repair_attempt_id())
             .ok_or(StorageStateError::MissingAuthorityLink)?;
-        if latest_ensure.action() != WorkspacePinActionV1::Ensure
-            || latest_ensure.phase() != intent.latest_ensure_phase()
-            || latest_ensure.creation_operation_id() != intent.creation_operation_id()
-            || latest_ensure.workspace_handle() != intent.workspace_handle()
-            || digest_bytes(latest_ensure_record) != intent.latest_ensure_attempt_record_digest()
-            || latest_ensure
-                .attempt_ordinal()
-                .checked_add(1)
-                .filter(|ordinal| *ordinal == intent.repair_attempt_ordinal())
-                .is_none()
+        let predecessor_is_valid = match intent.predecessor() {
+            WorkspacePinRepairIntentPredecessorV1::MissingInitial {
+                creation_record_digest,
+            } => {
+                let creation_record = journal
+                    .get(RecordNamespace::Operation, &intent.creation_operation_id())
+                    .ok_or(StorageStateError::MissingAuthorityLink)?;
+                digest_bytes(creation_record) == creation_record_digest
+                    && intent.repair_attempt_ordinal() == 1
+                    && pin_attempts.values().all(|attempt| {
+                        (attempt.workspace_handle() != intent.workspace_handle()
+                            && attempt.creation_operation_id() != intent.creation_operation_id())
+                            || attempt.attempt_ordinal() != 1
+                            || attempt.attempt_id() == intent.repair_attempt_id()
+                    })
+            }
+            WorkspacePinRepairIntentPredecessorV1::ExistingAttempt {
+                attempt_id,
+                phase,
+                record_digest,
+            } => {
+                let latest_ensure = pin_attempts
+                    .get(&attempt_id)
+                    .ok_or(StorageStateError::MissingAuthorityLink)?;
+                let latest_ensure_record = journal
+                    .get(RecordNamespace::StorageWorkspacePinAttempt, &attempt_id)
+                    .ok_or(StorageStateError::MissingAuthorityLink)?;
+                latest_ensure.action() == WorkspacePinActionV1::Ensure
+                    && latest_ensure.phase() == phase
+                    && latest_ensure.creation_operation_id() == intent.creation_operation_id()
+                    && latest_ensure.workspace_handle() == intent.workspace_handle()
+                    && digest_bytes(latest_ensure_record) == record_digest
+                    && latest_ensure
+                        .attempt_ordinal()
+                        .checked_add(1)
+                        .is_some_and(|ordinal| ordinal == intent.repair_attempt_ordinal())
+            }
+        };
+        if !predecessor_is_valid
             || repair_attempt.action() != WorkspacePinActionV1::Ensure
             || repair_attempt.effect_operation_id() != intent.repair_operation_id()
             || repair_attempt.creation_operation_id() != intent.creation_operation_id()

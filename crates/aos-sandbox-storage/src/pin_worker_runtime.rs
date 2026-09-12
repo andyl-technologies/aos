@@ -445,8 +445,240 @@ impl FreshWorkspacePinRepairObservationV1 {
         Self { validated }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        validated: ValidatedWorkspacePinRepairAdmissionObservationV1,
+    ) -> Self {
+        Self::new(validated)
+    }
+
     pub(crate) fn matches_probe(&self, probe: &WorkspacePinRepairAdmissionProbeV1) -> bool {
         self.validated.matches_probe(probe)
+    }
+}
+
+/// Defines the descriptor-backed workspace-pin effect and observation boundary.
+pub(crate) trait WorkspacePinRuntimeIo {
+    fn recover_quiescence(&mut self) -> Result<(), ZfsWorkerError>;
+
+    fn host_scope(&self) -> Result<crate::workspace_pin::WorkspacePinHostScopeV1, ZfsWorkerError>;
+
+    fn catalog_binding(
+        &self,
+    ) -> Result<crate::observation_protocol::WorkspaceCatalogCustodyBindingV1, ZfsWorkerError>;
+
+    fn execute(
+        &mut self,
+        request: &[u8],
+        attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError>;
+
+    fn observe(
+        &mut self,
+        request: &[u8],
+        attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError>;
+
+    fn observe_repair(
+        &mut self,
+        request: &[u8],
+        attempt_id: [u8; 16],
+        probe_digest: ObjectDigest,
+    ) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError>;
+
+    fn observe_repair_admission(
+        &mut self,
+        request: &[u8],
+        probe: &WorkspacePinRepairAdmissionProbeV1,
+    ) -> Result<FreshWorkspacePinRepairObservationV1, ZfsWorkerError>;
+
+    fn observe_catalog(
+        &mut self,
+        request_bytes: &[u8],
+        request: &WorkspaceCatalogObservationRequestV1,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<FreshWorkspaceCatalogObservationV1, ZfsWorkerError>;
+}
+
+/// Adapts borrowed systemd effect collaborators to the shared broker path in tests.
+///
+/// The legacy broker tests retain separate ownership of the executor and
+/// custody. Their effect-only entry points never invoke observation methods,
+/// so those methods fail closed rather than inventing an alternate observer.
+#[cfg(test)]
+pub(crate) struct BorrowedSystemdWorkspacePinEffectIo<'a> {
+    executor: &'a mut SystemdWorkspacePinExecutor,
+    custody: &'a WorkspacePinHostCustody,
+}
+
+#[cfg(test)]
+impl<'a> BorrowedSystemdWorkspacePinEffectIo<'a> {
+    pub(crate) fn new(
+        executor: &'a mut SystemdWorkspacePinExecutor,
+        custody: &'a WorkspacePinHostCustody,
+    ) -> Self {
+        Self { executor, custody }
+    }
+}
+
+#[cfg(test)]
+impl WorkspacePinRuntimeIo for BorrowedSystemdWorkspacePinEffectIo<'_> {
+    fn recover_quiescence(&mut self) -> Result<(), ZfsWorkerError> {
+        self.executor.recover_quiescence()
+    }
+
+    fn host_scope(&self) -> Result<crate::workspace_pin::WorkspacePinHostScopeV1, ZfsWorkerError> {
+        self.custody
+            .host_scope()
+            .map_err(|_| ZfsWorkerError::Authority)
+    }
+
+    fn catalog_binding(
+        &self,
+    ) -> Result<crate::observation_protocol::WorkspaceCatalogCustodyBindingV1, ZfsWorkerError> {
+        self.custody
+            .catalog_binding()
+            .map_err(|_| ZfsWorkerError::Authority)
+    }
+
+    fn execute(
+        &mut self,
+        request: &[u8],
+        attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError> {
+        self.executor.execute(request, attempt, self.custody)
+    }
+
+    fn observe(
+        &mut self,
+        _request: &[u8],
+        _attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError> {
+        Err(ZfsWorkerError::Protocol(
+            "effect-only workspace-pin adapter cannot observe",
+        ))
+    }
+
+    fn observe_repair(
+        &mut self,
+        _request: &[u8],
+        _attempt_id: [u8; 16],
+        _probe_digest: ObjectDigest,
+    ) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
+        Err(ZfsWorkerError::Protocol(
+            "effect-only workspace-pin adapter cannot observe repair",
+        ))
+    }
+
+    fn observe_repair_admission(
+        &mut self,
+        _request: &[u8],
+        _probe: &WorkspacePinRepairAdmissionProbeV1,
+    ) -> Result<FreshWorkspacePinRepairObservationV1, ZfsWorkerError> {
+        Err(ZfsWorkerError::Protocol(
+            "effect-only workspace-pin adapter cannot observe repair admission",
+        ))
+    }
+
+    fn observe_catalog(
+        &mut self,
+        _request_bytes: &[u8],
+        _request: &WorkspaceCatalogObservationRequestV1,
+        _worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<FreshWorkspaceCatalogObservationV1, ZfsWorkerError> {
+        Err(ZfsWorkerError::Protocol(
+            "effect-only workspace-pin adapter cannot observe catalog",
+        ))
+    }
+}
+
+/// Forwards runtime pin I/O to the retained production descriptors and systemd clients.
+pub(crate) struct SystemdWorkspacePinRuntimeIo {
+    custody: WorkspacePinHostCustody,
+    executor: SystemdWorkspacePinExecutor,
+    observer: SystemdWorkspacePinObserver,
+}
+
+impl SystemdWorkspacePinRuntimeIo {
+    pub(crate) fn new(
+        custody: WorkspacePinHostCustody,
+        executor: SystemdWorkspacePinExecutor,
+        observer: SystemdWorkspacePinObserver,
+    ) -> Self {
+        Self {
+            custody,
+            executor,
+            observer,
+        }
+    }
+}
+
+impl WorkspacePinRuntimeIo for SystemdWorkspacePinRuntimeIo {
+    fn recover_quiescence(&mut self) -> Result<(), ZfsWorkerError> {
+        self.executor.recover_quiescence()
+    }
+
+    fn host_scope(&self) -> Result<crate::workspace_pin::WorkspacePinHostScopeV1, ZfsWorkerError> {
+        self.custody
+            .host_scope()
+            .map_err(|_| ZfsWorkerError::Authority)
+    }
+
+    fn catalog_binding(
+        &self,
+    ) -> Result<crate::observation_protocol::WorkspaceCatalogCustodyBindingV1, ZfsWorkerError> {
+        self.custody
+            .catalog_binding()
+            .map_err(|_| ZfsWorkerError::Authority)
+    }
+
+    fn execute(
+        &mut self,
+        request: &[u8],
+        attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError> {
+        self.executor.execute(request, attempt, &self.custody)
+    }
+
+    fn observe(
+        &mut self,
+        request: &[u8],
+        attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError> {
+        self.observer.observe(request, attempt, &self.custody)
+    }
+
+    fn observe_repair(
+        &mut self,
+        request: &[u8],
+        attempt_id: [u8; 16],
+        probe_digest: ObjectDigest,
+    ) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
+        self.observer
+            .observe_repair(request, attempt_id, probe_digest, &self.custody)
+    }
+
+    fn observe_repair_admission(
+        &mut self,
+        request: &[u8],
+        probe: &WorkspacePinRepairAdmissionProbeV1,
+    ) -> Result<FreshWorkspacePinRepairObservationV1, ZfsWorkerError> {
+        self.observer
+            .observe_repair_admission(request, probe, &self.custody)
+    }
+
+    fn observe_catalog(
+        &mut self,
+        request_bytes: &[u8],
+        request: &WorkspaceCatalogObservationRequestV1,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<FreshWorkspaceCatalogObservationV1, ZfsWorkerError> {
+        self.observer.observe_catalog(
+            request_bytes,
+            request,
+            &self.custody,
+            worker_cutoff_boottime_nanoseconds,
+        )
     }
 }
 
@@ -1086,7 +1318,7 @@ pub fn run_inherited_workspace_pin_observer(
         .map_err(map_observer_error)?;
         executable_pin.validate_current(&contract)?;
         let observation = WorkspacePinWorkerResultV1::new(
-            authenticated.latest_attempt().attempt_id(),
+            authenticated.observation_attempt_id(),
             dataset,
             pin,
             required_observation_digest(observation_digest)?,

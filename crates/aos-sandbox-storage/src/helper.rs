@@ -100,6 +100,32 @@ pub(crate) trait ZfsProcessBackend {
     ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError>;
 }
 
+impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
+    fn observe_preconditions(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &[ZfsPrecondition],
+    ) -> Result<Vec<ZfsPrecondition>, ZfsHelperError> {
+        (**self).observe_preconditions(program, expected)
+    }
+
+    fn execute_once(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+    ) -> Result<ZfsProcessOutput, ZfsHelperError> {
+        (**self).execute_once(program)
+    }
+
+    fn observe_postcondition(
+        &mut self,
+        program: &SealedZfsProgram<'_>,
+        expected: &PostconditionPolicyV1,
+        expected_ancestor: Option<&ProjectAncestorPolicyV1>,
+    ) -> Result<Option<ZfsPostconditionObservation>, ZfsHelperError> {
+        (**self).observe_postcondition(program, expected, expected_ancestor)
+    }
+}
+
 pub(crate) struct SystemdZfsProcessBackend {
     executor: SystemdZfsExecutor,
 }
@@ -219,6 +245,16 @@ impl PreobservedZfsMutation {
 impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
     pub(crate) fn new(contract: ZfsHelperContract, backend: B) -> Self {
         Self { contract, backend }
+    }
+
+    pub(crate) fn into_boxed(self) -> StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>
+    where
+        B: Send + 'static,
+    {
+        StorageMutationHelper {
+            contract: self.contract,
+            backend: Box::new(self.backend),
+        }
     }
 
     /// Observes exact preconditions for the current persisted Prepared entry.

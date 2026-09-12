@@ -667,6 +667,21 @@ impl StorageTransactionStore {
             match (index, attempt.action()) {
                 (0, WorkspacePinActionV1::Ensure)
                     if attempt.effect_operation_id() == creation_operation_id => {}
+                (0, WorkspacePinActionV1::Ensure)
+                    if self
+                        .repair_intents
+                        .get(&attempt.effect_operation_id())
+                        .is_some_and(|intent| {
+                            matches!(
+                                intent.predecessor(),
+                                super::WorkspacePinRepairIntentPredecessorV1::MissingInitial { .. }
+                            ) && intent.repair_attempt_id() == attempt.attempt_id()
+                                && intent.repair_attempt_ordinal() == 1
+                                && intent.repair_attempt_ordinal() == attempt.attempt_ordinal()
+                                && intent.repair_operation_id() == attempt.effect_operation_id()
+                                && intent.creation_operation_id() == creation_operation_id
+                                && intent.workspace_handle() == workspace_handle
+                        }) => {}
                 (0, _) => return Err(StorageStateError::AuthorityLinkMismatch),
                 (_, WorkspacePinActionV1::Ensure)
                     if attempt.effect_operation_id() != creation_operation_id

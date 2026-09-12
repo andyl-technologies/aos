@@ -39,13 +39,14 @@ use crate::observation_protocol::{
     WorkspaceCatalogObservationObjectV1, WorkspaceCatalogObservationRootV1,
     WorkspaceCatalogObservationTargetV1,
 };
+#[cfg(test)]
 use crate::pin_observer::WorkspacePinHostCustody;
 use crate::pin_worker::{
     WorkspacePinWorkerAuthorityV1, encode_request as encode_pin_worker_request,
 };
-use crate::pin_worker_runtime::{
-    FreshWorkspacePinRepairObservationV1, SystemdWorkspacePinExecutor,
-};
+#[cfg(test)]
+use crate::pin_worker_runtime::{BorrowedSystemdWorkspacePinEffectIo, SystemdWorkspacePinExecutor};
+use crate::pin_worker_runtime::{FreshWorkspacePinRepairObservationV1, WorkspacePinRuntimeIo};
 use crate::resolver::StorageCatalogResolverV1;
 use crate::resolver::inventory::ProtectedStorageInventoryV1;
 #[cfg(test)]
@@ -55,7 +56,7 @@ use crate::resolver::protected_catalog::{
 };
 use crate::state::{
     CatalogPreparationConsumption, StorageResolverPolicyAdmissionOutcomeV1,
-    StorageWorkspaceProjection,
+    StorageWorkspaceProjection, WorkspacePinRepairPredecessorV1,
 };
 use crate::workspace_catalog::{
     StorageWorkspaceCatalogActionV1, StorageWorkspaceCatalogActivePrefixV1,
@@ -292,7 +293,7 @@ pub(crate) struct WorkspacePinRepairObservationDispatchV1 {
 
 /// Carries one fresh, non-authorizing observation challenge before admission.
 pub(crate) struct WorkspacePinRepairAdmissionDispatchV1 {
-    latest_attempt: WorkspacePinAttemptV1,
+    predecessor: WorkspacePinRepairPredecessorV1,
     request: WorkspacePinRepairAdmissionRequestV1,
     probe: WorkspacePinRepairAdmissionProbeV1,
 }
@@ -975,42 +976,89 @@ impl StorageAdmissionCoordinator {
             .workspace_pin_attempts()?
             .into_iter()
             .filter(|attempt| attempt.workspace_handle() == workspace_handle)
-            .max_by_key(WorkspacePinAttemptV1::attempt_ordinal)
-            .ok_or(ZfsHelperError::Authority)?;
-        let creation_is_active = self.transactions.workspace_creation_is_active(
-            latest_attempt.creation_operation_id(),
-            workspace_handle,
-        )?;
-        let predecessor_repair = self
+            .max_by_key(WorkspacePinAttemptV1::attempt_ordinal);
+        let creation = self
             .transactions
-            .workspace_pin_repair_intent(latest_attempt.effect_operation_id())?;
-        let predecessor_kind = classify_repair_predecessor(
-            &latest_attempt,
-            predecessor_repair.as_ref(),
-            creation_is_active,
-        )?;
-
-        let creation_intent = self
-            .transactions
-            .workspace_publication_intent(latest_attempt.creation_operation_id())?
-            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
-        if latest_attempt.workspace_assignment_digest() != creation_intent.assignment_digest() {
+            .workspace_creation_for_pin_repair(workspace_handle)?;
+        if latest_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.creation_operation_id() != creation.operation_id())
+        {
             return Err(ZfsHelperError::Authority);
         }
-        let catalog = self
+        let creation_entry = self.transactions.committed_recovery_entry(creation)?;
+        let (creation_fence, _) = self.persisted_effect_context(creation_entry)?;
+        if !workspace_repair_follows_creation(&creation_fence, &admission.fence) {
+            return Err(ZfsHelperError::Authority);
+        }
+        let creation_intent = self
             .transactions
-            .workspace_creation_catalog_for_attempt(&latest_attempt)?;
-        let latest_attempt_record = self
-            .transactions
-            .workspace_pin_attempt_record(&latest_attempt)?;
+            .workspace_publication_intent(creation.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if creation_intent.assignment_digest() != creation_fence.assignment().digest() {
+            return Err(ZfsHelperError::Authority);
+        }
+        let catalog = self.transactions.recover_catalog(creation_entry)?;
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let verified_creation = verified_journal
+            .operation(&creation.operation_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let physical_catalog_head = verified_journal.physical().binding();
+        if verified_creation.result() != creation || verified_creation.catalog() != &catalog {
+            return Err(ZfsHelperError::Authority);
+        }
         let publication_intent_record = self
             .transactions
-            .workspace_publication_intent_record(latest_attempt.creation_operation_id())?;
-        let predecessor_repair_intent_record = match predecessor_repair.as_ref() {
-            Some(intent) => self
-                .transactions
-                .workspace_pin_repair_intent_record(intent)?,
-            None => Vec::new(),
+            .workspace_publication_intent_record(creation.operation_id())?;
+        let (
+            predecessor,
+            predecessor_kind,
+            observation_attempt_id,
+            latest_attempt_record,
+            predecessor_repair_intent_record,
+        ) = match latest_attempt {
+            Some(latest_attempt) => {
+                let predecessor_repair = self.transactions.workspace_pin_repair_intent(
+                    latest_attempt.effect_operation_id(),
+                )?;
+                let predecessor_kind = classify_repair_predecessor(
+                    &latest_attempt,
+                    predecessor_repair.as_ref(),
+                    true,
+                )?;
+                let attempt_record = self
+                    .transactions
+                    .workspace_pin_attempt_record(&latest_attempt)?;
+                let repair_record = match predecessor_repair.as_ref() {
+                    Some(intent) => self.transactions.workspace_pin_repair_intent_record(intent)?,
+                    None => Vec::new(),
+                };
+                (
+                    WorkspacePinRepairPredecessorV1::ExistingAttempt(Box::new(
+                        latest_attempt.clone(),
+                    )),
+                    predecessor_kind,
+                    latest_attempt.attempt_id(),
+                    attempt_record,
+                    repair_record,
+                )
+            }
+            None => (
+                WorkspacePinRepairPredecessorV1::MissingInitial {
+                    creation: Box::new(creation),
+                    creation_record_digest: ObjectDigest::from_bytes(
+                        Sha256::digest(self.transactions.workspace_creation_record(creation)?).into(),
+                    ),
+                    physical_catalog_head,
+                },
+                crate::workspace_repair_admission::WorkspacePinRepairPredecessorKindV1::MissingInitial,
+                self.transactions.missing_initial_repair_attempt_id(
+                    creation,
+                    semantics.operation_id(),
+                )?,
+                Vec::new(),
+                Vec::new(),
+            ),
         };
         let request = WorkspacePinRepairAdmissionRequestV1::new(
             contract.executable().to_path_buf(),
@@ -1021,6 +1069,16 @@ impl StorageAdmissionCoordinator {
             admission.effect.request_digest(),
             admission.fence.assignment().digest(),
             workspace_handle,
+            creation.operation_id(),
+            creation.catalog(),
+            creation.result_digest(),
+            observation_attempt_id,
+            creation_intent.assignment_digest(),
+            creation
+                .object_guid()
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+            creation_intent.portable_metadata().root_policy(),
+            physical_catalog_head,
             predecessor_kind,
             catalog,
             latest_attempt_record,
@@ -1029,13 +1087,22 @@ impl StorageAdmissionCoordinator {
         )?;
         let probe = bind_repair_admission_probe(
             &request,
-            &latest_attempt,
-            predecessor_repair.as_ref(),
+            match &predecessor {
+                WorkspacePinRepairPredecessorV1::ExistingAttempt(attempt) => Some(attempt),
+                WorkspacePinRepairPredecessorV1::MissingInitial { .. } => None,
+            },
+            match &predecessor {
+                WorkspacePinRepairPredecessorV1::ExistingAttempt(attempt) => self
+                    .transactions
+                    .workspace_pin_repair_intent(attempt.effect_operation_id())?,
+                WorkspacePinRepairPredecessorV1::MissingInitial { .. } => None,
+            }
+            .as_ref(),
             current_host_scope,
         )?;
 
         Ok(WorkspacePinRepairAdmissionDispatchV1 {
-            latest_attempt,
+            predecessor,
             request,
             probe,
         })
@@ -1119,39 +1186,92 @@ impl StorageAdmissionCoordinator {
         if !fresh_observation.matches_probe(&dispatch.probe) {
             return Err(ZfsHelperError::Authority);
         }
-        let current_latest = self
+        let workspace_handle = dispatch.probe.workspace_handle();
+        let current_creation = self
             .transactions
-            .workspace_pin_attempts()?
-            .into_iter()
-            .filter(|attempt| {
-                attempt.workspace_handle() == dispatch.latest_attempt.workspace_handle()
-            })
-            .max_by_key(WorkspacePinAttemptV1::attempt_ordinal)
-            .ok_or(ZfsHelperError::Authority)?;
-        if current_latest != dispatch.latest_attempt
-            || !self.transactions.workspace_creation_is_active(
-                current_latest.creation_operation_id(),
-                current_latest.workspace_handle(),
-            )?
+            .workspace_creation_for_pin_repair(workspace_handle)?;
+        let current_publication = self
+            .transactions
+            .workspace_publication_intent(current_creation.operation_id())?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let verified_journal = self.transactions.verified_resolver_journal()?;
+        let verified_creation = verified_journal
+            .operation(&current_creation.operation_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        let physical_catalog_head = verified_journal.physical().binding();
+        if !dispatch.request.matches_creation(
+            current_creation,
+            current_publication.assignment_digest(),
+            current_creation
+                .object_guid()
+                .ok_or(crate::StorageStateError::MissingAuthorityLink)?,
+            current_publication.portable_metadata().root_policy(),
+            physical_catalog_head,
+        ) || dispatch.probe.physical_catalog_head() != physical_catalog_head
+            || verified_creation.result() != current_creation
         {
             return Err(ZfsHelperError::Authority);
         }
-        let predecessor_repair = self
-            .transactions
-            .workspace_pin_repair_intent(current_latest.effect_operation_id())?;
-        classify_repair_predecessor(&current_latest, predecessor_repair.as_ref(), true)?;
-        let current_attempt_record = self
-            .transactions
-            .workspace_pin_attempt_record(&current_latest)?;
+        let (current_predecessor, current_attempt_record, current_repair_record) = match &dispatch
+            .predecessor
+        {
+            WorkspacePinRepairPredecessorV1::MissingInitial {
+                creation,
+                creation_record_digest,
+                physical_catalog_head: expected_head,
+            } => {
+                let creation_record = self.transactions.workspace_creation_record(**creation)?;
+                if current_creation != **creation
+                    || ObjectDigest::from_bytes(Sha256::digest(creation_record).into())
+                        != *creation_record_digest
+                    || physical_catalog_head != *expected_head
+                    || self
+                        .transactions
+                        .workspace_pin_attempts()?
+                        .iter()
+                        .any(|attempt| {
+                            attempt.workspace_handle() == workspace_handle
+                                || attempt.creation_operation_id() == creation.operation_id()
+                        })
+                {
+                    return Err(ZfsHelperError::Authority);
+                }
+                (dispatch.predecessor.clone(), Vec::new(), Vec::new())
+            }
+            WorkspacePinRepairPredecessorV1::ExistingAttempt(expected_latest) => {
+                let current_latest = self
+                    .transactions
+                    .workspace_pin_attempts()?
+                    .into_iter()
+                    .filter(|attempt| attempt.workspace_handle() == workspace_handle)
+                    .max_by_key(WorkspacePinAttemptV1::attempt_ordinal)
+                    .ok_or(ZfsHelperError::Authority)?;
+                if &current_latest != expected_latest.as_ref() {
+                    return Err(ZfsHelperError::Authority);
+                }
+                let predecessor_repair = self
+                    .transactions
+                    .workspace_pin_repair_intent(current_latest.effect_operation_id())?;
+                classify_repair_predecessor(&current_latest, predecessor_repair.as_ref(), true)?;
+                let attempt_record = self
+                    .transactions
+                    .workspace_pin_attempt_record(&current_latest)?;
+                let repair_record = match predecessor_repair.as_ref() {
+                    Some(intent) => self
+                        .transactions
+                        .workspace_pin_repair_intent_record(intent)?,
+                    None => Vec::new(),
+                };
+                (
+                    WorkspacePinRepairPredecessorV1::ExistingAttempt(Box::new(current_latest)),
+                    attempt_record,
+                    repair_record,
+                )
+            }
+        };
         let current_publication_record = self
             .transactions
-            .workspace_publication_intent_record(current_latest.creation_operation_id())?;
-        let current_repair_record = match predecessor_repair.as_ref() {
-            Some(intent) => self
-                .transactions
-                .workspace_pin_repair_intent_record(intent)?,
-            None => Vec::new(),
-        };
+            .workspace_publication_intent_record(current_creation.operation_id())?;
         if !dispatch.request.matches_current_records(
             &current_attempt_record,
             &current_publication_record,
@@ -1194,6 +1314,13 @@ impl StorageAdmissionCoordinator {
         ) {
             return Err(ZfsHelperError::Authority);
         }
+        let creation_entry = self
+            .transactions
+            .committed_recovery_entry(current_creation)?;
+        let (creation_fence, _) = self.persisted_effect_context(creation_entry)?;
+        if !workspace_repair_follows_creation(&creation_fence, &admission.fence) {
+            return Err(ZfsHelperError::Authority);
+        }
         self.authority
             .check_before_effect(&admission.effect, trusted_clock)
             .map_err(|_| ZfsHelperError::Authority)?;
@@ -1209,15 +1336,33 @@ impl StorageAdmissionCoordinator {
             .map_err(|_| ZfsHelperError::Authority)?;
         let operation_fence_digest =
             ObjectDigest::from_bytes(Sha256::digest(&sealed.operation_fence).into());
-        let attempt = self.transactions.plan_workspace_pin_repair(
-            &current_latest,
-            semantics.operation_id(),
-            operation_fence_digest,
-            admission.fence.assignment().digest(),
-            dispatch.probe.current_host_scope(),
-            *admission.effect.clock_provenance(),
-            admission.effect.effect_deadline_boottime_nanoseconds(),
-        )?;
+        let attempt = match &current_predecessor {
+            WorkspacePinRepairPredecessorV1::MissingInitial { creation, .. } => {
+                let creation = **creation;
+
+                self.transactions
+                    .plan_missing_initial_workspace_pin_repair(
+                        creation,
+                        semantics.operation_id(),
+                        operation_fence_digest,
+                        admission.fence.assignment().digest(),
+                        dispatch.probe.current_host_scope(),
+                        *admission.effect.clock_provenance(),
+                        admission.effect.effect_deadline_boottime_nanoseconds(),
+                    )?
+            }
+            WorkspacePinRepairPredecessorV1::ExistingAttempt(latest) => {
+                self.transactions.plan_workspace_pin_repair(
+                    latest,
+                    semantics.operation_id(),
+                    operation_fence_digest,
+                    admission.fence.assignment().digest(),
+                    dispatch.probe.current_host_scope(),
+                    *admission.effect.clock_provenance(),
+                    admission.effect.effect_deadline_boottime_nanoseconds(),
+                )?
+            }
+        };
         let sealed_receipt = self
             .authority
             .seal_pin_attempt_receipt(
@@ -1233,31 +1378,54 @@ impl StorageAdmissionCoordinator {
             attempt_digest: attempt.authority_digest()?,
             sealed_receipt,
         };
-        let repair_intent =
-            crate::workspace_repair::StorageWorkspacePinRepairIntentV1::new_ambiguous(
+        let publication_digest =
+            ObjectDigest::from_bytes(Sha256::digest(&current_publication_record).into());
+        let repair_intent = match &current_predecessor {
+            WorkspacePinRepairPredecessorV1::MissingInitial {
+                creation,
+                creation_record_digest,
+                ..
+            } => crate::workspace_repair::StorageWorkspacePinRepairIntentV1::new_missing_initial_ambiguous(
                 semantics.operation_id(),
                 &admission.effect,
                 sealed.effect.clone(),
                 admission.fence.assignment().digest(),
                 operation_fence_digest,
-                current_latest.creation_operation_id(),
-                current_latest.creation_result_catalog(),
-                current_latest.creation_result_digest(),
-                ObjectDigest::from_bytes(Sha256::digest(&current_publication_record).into()),
-                current_latest.workspace_handle(),
-                current_latest.attempt_id(),
-                current_latest.phase(),
-                ObjectDigest::from_bytes(Sha256::digest(&current_attempt_record).into()),
+                creation.operation_id(),
+                creation.catalog(),
+                creation.result_digest(),
+                *creation_record_digest,
+                publication_digest,
+                workspace_handle,
                 attempt.attempt_id(),
-                attempt.attempt_ordinal(),
-            )?;
+            )?,
+            WorkspacePinRepairPredecessorV1::ExistingAttempt(latest) => {
+                crate::workspace_repair::StorageWorkspacePinRepairIntentV1::new_ambiguous(
+                    semantics.operation_id(),
+                    &admission.effect,
+                    sealed.effect.clone(),
+                    admission.fence.assignment().digest(),
+                    operation_fence_digest,
+                    latest.creation_operation_id(),
+                    latest.creation_result_catalog(),
+                    latest.creation_result_digest(),
+                    publication_digest,
+                    latest.workspace_handle(),
+                    latest.attempt_id(),
+                    latest.phase(),
+                    ObjectDigest::from_bytes(Sha256::digest(&current_attempt_record).into()),
+                    attempt.attempt_id(),
+                    attempt.attempt_ordinal(),
+                )?
+            }
+        };
         let sealed_completed_effect = self
             .authority
             .seal_workspace_pin_repair_completion(&admission.effect, &attempt)
             .map_err(|_| ZfsHelperError::Authority)?;
         let outcome = self.transactions.begin_workspace_pin_repair(
             sandbox_id,
-            &current_latest,
+            &current_predecessor,
             repair_intent,
             attempt,
             sealed.current_fence,
@@ -1779,22 +1947,21 @@ impl StorageAdmissionCoordinator {
         }
     }
 
-    pub(crate) fn execute_workspace_pin_ensure<F>(
+    pub(crate) fn execute_workspace_pin_ensure_with_io<F>(
         &mut self,
-        executor: &mut SystemdWorkspacePinExecutor,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
         contract: &ZfsHelperContract,
-        custody: &WorkspacePinHostCustody,
         result: CommittedStorageResultV1,
         trusted_clock: &mut F,
     ) -> Result<WorkspacePinExecutionOutcomeV1, ZfsHelperError>
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
-        let host_scope = custody.host_scope()?;
+        let host_scope = pin_io.host_scope()?;
         match self.begin_workspace_pin_ensure(result, host_scope, trusted_clock)? {
             AuthorizedWorkspacePinAttemptV1::Dispatch(dispatch) => {
                 let request = dispatch.worker_request_bytes(contract)?;
-                let result = executor.execute(&request, dispatch.attempt(), custody)?;
+                let result = pin_io.execute(&request, dispatch.attempt())?;
                 let disposition = self.transactions.complete_workspace_pin_attempt(
                     result.attempt_id(),
                     result.dataset(),
@@ -1812,6 +1979,22 @@ impl StorageAdmissionCoordinator {
                 Ok(WorkspacePinExecutionOutcomeV1::ObservationRequired)
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execute_workspace_pin_ensure<F>(
+        &mut self,
+        executor: &mut SystemdWorkspacePinExecutor,
+        contract: &ZfsHelperContract,
+        custody: &WorkspacePinHostCustody,
+        result: CommittedStorageResultV1,
+        trusted_clock: &mut F,
+    ) -> Result<WorkspacePinExecutionOutcomeV1, ZfsHelperError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let mut pin_io = BorrowedSystemdWorkspacePinEffectIo::new(executor, custody);
+        self.execute_workspace_pin_ensure_with_io(&mut pin_io, contract, result, trusted_clock)
     }
 
     pub(crate) fn workspace_remove_pin_requirement(
@@ -1850,11 +2033,10 @@ impl StorageAdmissionCoordinator {
         )
     }
 
-    pub(crate) fn execute_workspace_remove_and_destroy<F>(
+    pub(crate) fn execute_workspace_remove_and_destroy_with_io<F>(
         &mut self,
-        executor: &mut SystemdWorkspacePinExecutor,
+        pin_io: &mut dyn WorkspacePinRuntimeIo,
         contract: &ZfsHelperContract,
-        custody: &WorkspacePinHostCustody,
         prepared: PreobservedZfsMutation,
         expected_pin: WorkspaceRootPinProofV1,
         trusted_clock: &mut F,
@@ -1868,7 +2050,7 @@ impl StorageAdmissionCoordinator {
     where
         F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
-        let host_scope = custody.host_scope()?;
+        let host_scope = pin_io.host_scope()?;
         match self.begin_workspace_pin_remove_and_destroy(
             prepared,
             host_scope,
@@ -1877,7 +2059,7 @@ impl StorageAdmissionCoordinator {
         )? {
             AuthorizedWorkspaceRemoveAttemptV1::Dispatch(dispatch) => {
                 let request = dispatch.worker_request_bytes(contract)?;
-                let result = executor.execute(&request, dispatch.attempt(), custody)?;
+                let result = pin_io.execute(&request, dispatch.attempt())?;
                 if dispatch.attempt().classify(result.dataset(), result.pin())
                     != WorkspacePinRecoveryDispositionV1::CompleteRetirement
                 {
@@ -1917,6 +2099,35 @@ impl StorageAdmissionCoordinator {
                 None,
             )),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execute_workspace_remove_and_destroy<F>(
+        &mut self,
+        executor: &mut SystemdWorkspacePinExecutor,
+        contract: &ZfsHelperContract,
+        custody: &WorkspacePinHostCustody,
+        prepared: PreobservedZfsMutation,
+        expected_pin: WorkspaceRootPinProofV1,
+        trusted_clock: &mut F,
+    ) -> Result<
+        (
+            WorkspacePinExecutionOutcomeV1,
+            Option<CommittedStorageResultV1>,
+        ),
+        ZfsHelperError,
+    >
+    where
+        F: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
+    {
+        let mut pin_io = BorrowedSystemdWorkspacePinEffectIo::new(executor, custody);
+        self.execute_workspace_remove_and_destroy_with_io(
+            &mut pin_io,
+            contract,
+            prepared,
+            expected_pin,
+            trusted_clock,
+        )
     }
 
     /// Verifies and durably records an unadvertised Apply admission intent.
@@ -3073,6 +3284,20 @@ fn fence_is_same_or_successor(
             && current.plan_digest() == historical.plan_digest())
 }
 
+fn workspace_repair_follows_creation(
+    creation: &BrokerAuthorizationFenceV1,
+    repair: &BrokerAuthorizationFenceV1,
+) -> bool {
+    let creation_assignment = creation.assignment();
+    let repair_assignment = repair.assignment();
+    creation.node() == repair.node()
+        && creation.ownership_authority() == repair.ownership_authority()
+        && creation_assignment.sandbox() == repair_assignment.sandbox()
+        && creation_assignment.incarnation() == repair_assignment.incarnation()
+        && creation_assignment.epoch() == repair_assignment.epoch()
+        && creation_assignment.desired_generation() <= repair_assignment.desired_generation()
+}
+
 fn prepared_fence_is_strictly_superseded(
     historical: &BrokerAuthorizationFenceV1,
     current: &BrokerAuthorizationFenceV1,
@@ -3644,6 +3869,46 @@ mod tests {
 
         fn repair_artifacts(&self, request: &[u8]) -> ValidatedUntrustedAuthorizationArtifacts {
             self.repair_artifacts_between(request, 100, 300, 300)
+        }
+
+        fn repair_artifacts_without_plan_grant(
+            &self,
+            request: &[u8],
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let semantics = CanonicalStorageRepairSemanticsV1::decode(
+                request,
+                peer(),
+                peer_policy(),
+                clock().boottime_nanoseconds(),
+            )
+            .unwrap();
+            let fence = semantics.fence();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*fence.sandbox_id()),
+                IncarnationId::from_bytes(*fence.incarnation_id()),
+                AssignmentEpoch::new(fence.assignment_epoch()),
+                DesiredGeneration::new(fence.desired_generation()),
+                ObjectDigest::from_bytes(*fence.assignment_digest()),
+            )
+            .unwrap();
+            let unrelated_grant = BrokerGrant::new(
+                BrokerVerb::StorageInventory,
+                BrokerGrantTarget::Assignment,
+                semantics.argument_commitment(),
+                request.len() as u32,
+                0,
+            )
+            .unwrap();
+            self.signed_artifacts(
+                assignment,
+                vec![unrelated_grant],
+                100,
+                300,
+                300,
+                BrokerAudience::Storage,
+                ProtocolId::StorageBroker,
+                ProtocolVersion::new(1, 0),
+            )
         }
 
         fn repair_artifacts_for_kernel_clock(
@@ -4413,6 +4678,37 @@ mod tests {
         value.encode_to_vec()
     }
 
+    fn with_repair_sandbox(request: &[u8], sandbox_id: [u8; 16]) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().sandbox_id = sandbox_id.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn with_repair_incarnation(request: &[u8], incarnation_id: [u8; 16]) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().incarnation_id = incarnation_id.to_vec();
+        value.encode_to_vec()
+    }
+
+    fn with_repair_epoch(request: &[u8], assignment_epoch: u64) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().assignment_epoch = assignment_epoch;
+        value.encode_to_vec()
+    }
+
+    fn with_repair_generation(request: &[u8], desired_generation: u64) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().desired_generation = desired_generation;
+        value.encode_to_vec()
+    }
+
+    fn with_repair_assignment(request: &[u8], assignment_digest: ObjectDigest) -> Vec<u8> {
+        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
+        value.fence.get_or_insert_default().assignment_digest =
+            assignment_digest.as_bytes().to_vec();
+        value.encode_to_vec()
+    }
+
     fn vm_repair_request(
         request_id: u8,
         operation_id: u8,
@@ -4611,6 +4907,13 @@ mod tests {
     }
 
     fn clone_catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
+        clone_catalog_with_source_version(generation, [32; 32])
+    }
+
+    fn clone_catalog_with_source_version(
+        generation: u64,
+        source_version_handle: [u8; 32],
+    ) -> ResolvedCatalogCommitmentV1 {
         let domains = StorageDomainsV1::new(
             ObjectDigest::from_bytes([21; 32]),
             ObjectDigest::from_bytes([22; 32]),
@@ -4630,7 +4933,9 @@ mod tests {
             domains,
         )
         .unwrap();
-        let snapshot = ResolvedSnapshot::from_catalog(source, "revision-1", 12, [32; 32]).unwrap();
+        let snapshot =
+            ResolvedSnapshot::from_catalog(source, "revision-1", 12, source_version_handle)
+                .unwrap();
         let destination =
             PlannedDataset::from_catalog(root, "tank/aos/project/clone", domains).unwrap();
         ResolvedCatalogCommitmentV1::new_for_test(
@@ -5313,6 +5618,112 @@ mod tests {
         };
 
         (coordinator, *dispatch, result)
+    }
+
+    fn committed_workspace_without_pin(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (StorageAdmissionCoordinator, CommittedStorageResultV1) {
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = create_request(7, manifest.digest());
+        let catalog = create_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut coordinator = initialized_coordinator(directory, fixture, &catalog);
+        prepare_for_apply(&mut coordinator, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("workspace fixture was not prepared")
+        };
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let result = coordinator
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(11),
+                ObjectDigest::from_bytes([62; 32]),
+            )
+            .unwrap();
+
+        (coordinator, result)
+    }
+
+    fn committed_clone_without_pin(
+        directory: &TempDir,
+        fixture: &Fixture,
+    ) -> (StorageAdmissionCoordinator, CommittedStorageResultV1) {
+        let spec = sandbox_spec(72);
+        let manifest = assignment_manifest(&spec);
+        let request = workspace_request(StorageAction::STORAGE_ACTION_CLONE, 7);
+        let catalog = clone_catalog(9);
+        let artifacts = fixture.artifacts(
+            &request,
+            &catalog,
+            300,
+            BrokerAudience::Storage,
+            ProtocolId::StorageBroker,
+        );
+        let mut coordinator = initialized_coordinator(directory, fixture, &catalog);
+        prepare_for_apply(&mut coordinator, &request, &artifacts, &catalog, &clock());
+        let StorageAdmissionOutcome::Prepared { mutation_digest } = coordinator
+            .admit_workspace_apply_intent(
+                &request,
+                &artifacts,
+                &catalog,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                65_536,
+                &manifest,
+                &spec,
+            )
+            .unwrap()
+        else {
+            panic!("clone fixture was not prepared")
+        };
+        coordinator
+            .transactions
+            .mark_mutation_ambiguous([7; 16], mutation_digest)
+            .unwrap();
+        let result = coordinator
+            .transactions
+            .commit_observed(
+                [7; 16],
+                mutation_digest,
+                &catalog,
+                &catalog.plan().postcondition(),
+                Some(13),
+                ObjectDigest::from_bytes([63; 32]),
+            )
+            .unwrap();
+
+        (coordinator, result)
     }
 
     fn portable_workspace_pin_ensure_dispatch(
@@ -11506,7 +11917,42 @@ mod tests {
             panic!("retired workspace did not produce a retirement row")
         };
         assert_eq!(planned, &expected_retirement);
+
+        let repair_manifest = assignment_manifest_at(&sandbox_spec(72), 7);
+        let repair = repair_request(
+            80,
+            81,
+            creation.storage_handle().unwrap(),
+            7,
+            repair_manifest.digest(),
+        );
+        let artifacts = fixture.repair_artifacts(&repair);
+        let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        assert!(
+            broker
+                .plan_workspace_pin_repair_admission_observation(
+                    &repair,
+                    &artifacts,
+                    ProtocolVersion::new(1, 0),
+                    peer(),
+                    peer_policy(),
+                    &clock(),
+                    &contract,
+                    WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap(),
+                )
+                .is_err()
+        );
+        assert!(
+            broker
+                .transactions
+                .workspace_pin_repair_intent([81; 16])
+                .unwrap()
+                .is_none()
+        );
     }
+
+    mod missing_initial_runtime_tests;
+    mod missing_initial_tests;
 
     #[test]
     fn repair_history_reopen_authenticates_pending_effect_and_rejects_resealed_drift() {

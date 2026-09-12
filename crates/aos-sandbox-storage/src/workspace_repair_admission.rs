@@ -2,24 +2,31 @@
 //!
 //! This protocol is deliberately distinct from post-commit repair recovery.
 //! It carries no effect grant and cannot itself authorize mutation. The
-//! observer independently authenticates the latest workspace-pin attempt,
-//! creation publication, and optional predecessor repair intent before it
-//! derives the current descriptor-backed host scope and observes exact
-//! dataset presence and pin absence.
+//! observer independently authenticates the optional latest workspace-pin
+//! attempt, creation publication, and optional predecessor repair before it
+//! derives the current descriptor-backed host scope and observes exact dataset
+//! presence and pin absence. The broker subsequently reopens and authenticates
+//! the exact committed creation and current physical catalog head before it
+//! admits repair.
 //!
 //! ```text
-//! AOSZRPA1 | version:u16 | reserved:u16 | challenge:16
+//! AOSZRPA1 | version:u16=2 | reserved:u16 | challenge:16
 //! executable:(length:u16,bytes)
 //! repair-request-id:16 | repair-operation-id:16
 //! transport-request-digest:32 | semantic-commitment:32
 //! repair-assignment-digest:32 | workspace-handle:32
+//! creation-operation-id:16 | creation-result-catalog:(generation:u64,digest:32)
+//! creation-result-digest:32 | observation-attempt-id:16
+//! workspace-assignment-digest:32 | dataset-guid:u64
+//! root-policy:64
+//! physical-catalog-head:(generation:u64,digest:32)
 //! predecessor-kind:u8 | reserved:[3]
 //! creation-catalog:(length:u32,canonical-bytes)
-//! latest-attempt:(length:u32,authenticated-bytes)
+//! latest-attempt:(length:u32,authenticated-bytes-or-empty-for-MissingInitial)
 //! publication-intent:(length:u32,authenticated-bytes)
 //! predecessor-repair-intent:(length:u32,authenticated-bytes-or-empty)
 //!
-//! AOSZRPS1 | version:u16 | reserved:u16 | probe-digest:32
+//! AOSZRPS1 | version:u16=2 | reserved:u16 | probe-digest:32
 //! observation:(length:u32,AOSZPRES-bytes)
 //! ```
 
@@ -40,26 +47,35 @@ use crate::workspace_pin::{
     WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1, WorkspacePinHostScopeV1,
     WorkspacePinObservationV1,
 };
-use crate::workspace_repair::StorageWorkspacePinRepairIntentV1;
+use crate::workspace_repair::{
+    StorageWorkspacePinRepairIntentV1, WorkspacePinRepairIntentPredecessorV1,
+};
 use crate::{
     CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageStateKey, ZfsHelperContract, ZfsWorkerError,
 };
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSZRPA1";
 const RESULT_MAGIC: &[u8; 8] = b"AOSZRPS1";
-const VERSION: u16 = 1;
-const PROBE_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-pin-repair-admission-probe.v1\0";
+// This helper request is transient rather than journaled. Version 2 is a
+// deliberate hard cut for the creation and physical-head bindings; no v1
+// request can survive a broker/helper restart for replay.
+const VERSION: u16 = 2;
+const PROBE_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-pin-repair-admission-probe.v2\0";
 const MAXIMUM_CATALOG_BYTES: usize = 16 * 1024;
 const MAXIMUM_STATE_RECORD_BYTES: usize = 128 * 1024;
 const MAXIMUM_REPAIR_INTENT_BYTES: usize = 256 * 1024;
 
-/// Distinguishes an initial creation attempt from a previously admitted repair.
+/// Distinguishes creation Initial, repair Ensure, and MissingInitial history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkspacePinRepairPredecessorKindV1 {
     /// The latest attempt is the creation effect's ordinal-one Ensure.
     Initial,
-    /// The latest attempt is an ordinal-two-or-later repair Ensure.
+    /// The latest attempt is any previously admitted repair Ensure.
+    ///
+    /// This includes an ordinal-one Ensure admitted from MissingInitial history.
     Repair,
+    /// The active committed creation has no prior pin attempt.
+    MissingInitial,
 }
 
 impl WorkspacePinRepairPredecessorKindV1 {
@@ -67,6 +83,7 @@ impl WorkspacePinRepairPredecessorKindV1 {
         match self {
             Self::Initial => 1,
             Self::Repair => 2,
+            Self::MissingInitial => 3,
         }
     }
 
@@ -74,6 +91,7 @@ impl WorkspacePinRepairPredecessorKindV1 {
         match value {
             1 => Ok(Self::Initial),
             2 => Ok(Self::Repair),
+            3 => Ok(Self::MissingInitial),
             _ => Err(ZfsWorkerError::Protocol(
                 "repair admission predecessor kind is invalid",
             )),
@@ -91,6 +109,14 @@ pub(crate) struct WorkspacePinRepairAdmissionRequestV1 {
     semantic_commitment: ObjectDigest,
     repair_assignment_digest: ObjectDigest,
     workspace_handle: [u8; 32],
+    creation_operation_id: [u8; 16],
+    creation_result_catalog: crate::CatalogBindingV1,
+    creation_result_digest: ObjectDigest,
+    observation_attempt_id: [u8; 16],
+    workspace_assignment_digest: ObjectDigest,
+    dataset_guid: u64,
+    root_policy: WorkspaceRootPolicyV1,
+    physical_catalog_head: crate::CatalogBindingV1,
     predecessor_kind: WorkspacePinRepairPredecessorKindV1,
     catalog: ResolvedCatalogCommitmentV1,
     latest_attempt_record: Vec<u8>,
@@ -109,6 +135,14 @@ impl WorkspacePinRepairAdmissionRequestV1 {
         semantic_commitment: ObjectDigest,
         repair_assignment_digest: ObjectDigest,
         workspace_handle: [u8; 32],
+        creation_operation_id: [u8; 16],
+        creation_result_catalog: crate::CatalogBindingV1,
+        creation_result_digest: ObjectDigest,
+        observation_attempt_id: [u8; 16],
+        workspace_assignment_digest: ObjectDigest,
+        dataset_guid: u64,
+        root_policy: WorkspaceRootPolicyV1,
+        physical_catalog_head: crate::CatalogBindingV1,
         predecessor_kind: WorkspacePinRepairPredecessorKindV1,
         catalog: ResolvedCatalogCommitmentV1,
         latest_attempt_record: Vec<u8>,
@@ -124,6 +158,14 @@ impl WorkspacePinRepairAdmissionRequestV1 {
             semantic_commitment,
             repair_assignment_digest,
             workspace_handle,
+            creation_operation_id,
+            creation_result_catalog,
+            creation_result_digest,
+            observation_attempt_id,
+            workspace_assignment_digest,
+            dataset_guid,
+            root_policy,
+            physical_catalog_head,
             predecessor_kind,
             catalog,
             latest_attempt_record,
@@ -145,6 +187,10 @@ impl WorkspacePinRepairAdmissionRequestV1 {
                 &self.predecessor_repair_intent_record,
                 MAXIMUM_REPAIR_INTENT_BYTES,
             ),
+            WorkspacePinRepairPredecessorKindV1::MissingInitial => {
+                self.latest_attempt_record.is_empty()
+                    && self.predecessor_repair_intent_record.is_empty()
+            }
         };
         if self.generated_challenge == [0; 16]
             || self.repair_request_id == [0; 16]
@@ -153,8 +199,17 @@ impl WorkspacePinRepairAdmissionRequestV1 {
             || self.semantic_commitment.as_bytes() == &[0; 32]
             || self.repair_assignment_digest.as_bytes() == &[0; 32]
             || self.workspace_handle == [0; 32]
+            || self.creation_operation_id == [0; 16]
+            || self.creation_result_catalog.generation() == 0
+            || self.creation_result_digest.as_bytes() == &[0; 32]
+            || self.observation_attempt_id == [0; 16]
+            || self.workspace_assignment_digest.as_bytes() == &[0; 32]
+            || self.dataset_guid == 0
+            || self.root_policy.validate().is_err()
+            || self.physical_catalog_head.generation() == 0
             || !bounded(self.catalog.canonical_bytes(), MAXIMUM_CATALOG_BYTES)
-            || !bounded(&self.latest_attempt_record, MAXIMUM_STATE_RECORD_BYTES)
+            || (self.predecessor_kind != WorkspacePinRepairPredecessorKindV1::MissingInitial
+                && !bounded(&self.latest_attempt_record, MAXIMUM_STATE_RECORD_BYTES))
             || !bounded(&self.publication_intent_record, MAXIMUM_STATE_RECORD_BYTES)
             || !predecessor_shape_is_valid
         {
@@ -192,18 +247,59 @@ impl WorkspacePinRepairAdmissionRequestV1 {
             && self.repair_assignment_digest == repair_assignment_digest
             && self.workspace_handle == workspace_handle
     }
+
+    pub(crate) fn matches_creation(
+        &self,
+        creation: crate::CommittedStorageResultV1,
+        workspace_assignment_digest: ObjectDigest,
+        dataset_guid: u64,
+        root_policy: WorkspaceRootPolicyV1,
+        physical_catalog_head: crate::CatalogBindingV1,
+    ) -> bool {
+        self.creation_operation_id == creation.operation_id()
+            && self.creation_result_catalog == creation.catalog()
+            && self.creation_result_digest == creation.result_digest()
+            && self.workspace_assignment_digest == workspace_assignment_digest
+            && self.dataset_guid == dataset_guid
+            && self.root_policy == root_policy
+            && self.physical_catalog_head == physical_catalog_head
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_physical_catalog_head_for_test(
+        &mut self,
+        physical_catalog_head: crate::CatalogBindingV1,
+    ) {
+        self.physical_catalog_head = physical_catalog_head;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_catalog_for_test(&mut self, catalog: ResolvedCatalogCommitmentV1) {
+        self.catalog = catalog;
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn catalog_for_test(&self) -> &ResolvedCatalogCommitmentV1 {
+        &self.catalog
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_publication_record_for_test(&mut self) {
+        if let Some(byte) = self.publication_intent_record.last_mut() {
+            *byte ^= 1;
+        }
+    }
 }
 
 /// Carries authenticated predecessor state and a descriptor-bound probe.
 pub(crate) struct AuthenticatedWorkspacePinRepairAdmissionRequestV1 {
     request: WorkspacePinRepairAdmissionRequestV1,
-    latest_attempt: WorkspacePinAttemptV1,
     probe: WorkspacePinRepairAdmissionProbeV1,
 }
 
 impl AuthenticatedWorkspacePinRepairAdmissionRequestV1 {
-    pub(crate) const fn latest_attempt(&self) -> &WorkspacePinAttemptV1 {
-        &self.latest_attempt
+    pub(crate) const fn observation_attempt_id(&self) -> [u8; 16] {
+        self.request.observation_attempt_id
     }
 
     pub(crate) const fn probe(&self) -> &WorkspacePinRepairAdmissionProbeV1 {
@@ -290,6 +386,7 @@ pub(crate) struct WorkspacePinRepairAdmissionProbeV1 {
     workspace_handle: [u8; 32],
     predecessor_kind: WorkspacePinRepairPredecessorKindV1,
     predecessor_repair_intent_record_digest: ObjectDigest,
+    physical_catalog_head: crate::CatalogBindingV1,
     latest_attempt_id: [u8; 16],
     latest_attempt_ordinal: u8,
     latest_attempt_phase: WorkspacePinAttemptPhaseV1,
@@ -304,8 +401,12 @@ pub(crate) struct WorkspacePinRepairAdmissionProbeV1 {
 
 impl WorkspacePinRepairAdmissionProbeV1 {
     pub(crate) fn digest(&self) -> ObjectDigest {
+        self.digest_with_domain(PROBE_DOMAIN)
+    }
+
+    fn digest_with_domain(&self, domain: &[u8]) -> ObjectDigest {
         let mut hasher = Sha256::new();
-        hasher.update(PROBE_DOMAIN);
+        hasher.update(domain);
         hasher.update(self.generated_challenge);
         hasher.update(self.repair_request_id);
         hasher.update(self.repair_operation_id);
@@ -315,6 +416,8 @@ impl WorkspacePinRepairAdmissionProbeV1 {
         hasher.update(self.workspace_handle);
         hasher.update([self.predecessor_kind.wire()]);
         hasher.update(self.predecessor_repair_intent_record_digest.as_bytes());
+        hasher.update(self.physical_catalog_head.generation().to_be_bytes());
+        hasher.update(self.physical_catalog_head.digest().as_bytes());
         hasher.update(self.latest_attempt_id);
         hasher.update([self.latest_attempt_ordinal]);
         hasher.update([attempt_phase_wire(self.latest_attempt_phase)]);
@@ -349,6 +452,10 @@ impl WorkspacePinRepairAdmissionProbeV1 {
         self.current_host_scope
     }
 
+    pub(crate) const fn physical_catalog_head(&self) -> crate::CatalogBindingV1 {
+        self.physical_catalog_head
+    }
+
     pub(crate) fn dataset_name(&self) -> &str {
         &self.dataset_name
     }
@@ -375,12 +482,17 @@ pub(crate) fn authenticate_request(
     if request.executable != configured_contract.executable() {
         return Err(ZfsWorkerError::Authority);
     }
-    let latest_attempt = state_key
-        .open_workspace_pin_attempt(&request.latest_attempt_record)
-        .map_err(|_| ZfsWorkerError::Authority)?;
+    let latest_attempt = match request.predecessor_kind {
+        WorkspacePinRepairPredecessorKindV1::MissingInitial => None,
+        _ => Some(
+            state_key
+                .open_workspace_pin_attempt(&request.latest_attempt_record)
+                .map_err(|_| ZfsWorkerError::Authority)?,
+        ),
+    };
     let publication = state_key
         .open_workspace_publication_intent(
-            latest_attempt.creation_operation_id(),
+            request.creation_operation_id,
             &request.publication_intent_record,
         )
         .map_err(|_| ZfsWorkerError::Authority)?;
@@ -399,58 +511,97 @@ pub(crate) fn authenticate_request(
         _ => return Err(ZfsWorkerError::Authority),
     };
     let creation_result_follows_request = request.catalog.generation().checked_add(1)
-        == Some(latest_attempt.creation_result_catalog().generation())
-        && request.catalog.binding().digest() != latest_attempt.creation_result_catalog().digest();
+        == Some(request.creation_result_catalog.generation())
+        && request.catalog.binding().digest() != request.creation_result_catalog.digest();
     if !creation_result_follows_request
-        || destination_name != latest_attempt.dataset_name()
-        || publication.operation_id() != latest_attempt.creation_operation_id()
+        || publication.operation_id() != request.creation_operation_id
         || publication.request_catalog() != request.catalog.binding()
-        || publication.assignment_digest() != latest_attempt.workspace_assignment_digest()
-        || publication.identity_range_start() != latest_attempt.identity_range_start()
-        || publication.identity_range_size() != latest_attempt.identity_range_size()
+        || publication.assignment_digest() != request.workspace_assignment_digest
+        || publication.portable_metadata().root_policy() != request.root_policy
+    {
+        return Err(ZfsWorkerError::Authority);
+    }
+    if let Some(attempt) = latest_attempt.as_ref()
+        && (destination_name != attempt.dataset_name()
+            || attempt.creation_operation_id() != request.creation_operation_id
+            || attempt.creation_result_catalog() != request.creation_result_catalog
+            || attempt.creation_result_digest() != request.creation_result_digest
+            || attempt.attempt_id() != request.observation_attempt_id
+            || attempt.workspace_assignment_digest() != request.workspace_assignment_digest
+            || attempt.dataset_guid() != request.dataset_guid
+            || publication.identity_range_start() != attempt.identity_range_start()
+            || publication.identity_range_size() != attempt.identity_range_size())
     {
         return Err(ZfsWorkerError::Authority);
     }
 
     let publication_intent_record_digest = digest_bytes(&request.publication_intent_record);
-    if let Some(intent) = predecessor_repair.as_ref() {
-        if intent.publication_intent_record_digest() != publication_intent_record_digest {
-            return Err(ZfsWorkerError::Authority);
-        }
+    if let Some(intent) = predecessor_repair.as_ref()
+        && intent.publication_intent_record_digest() != publication_intent_record_digest
+    {
+        return Err(ZfsWorkerError::Authority);
     }
     let probe = bind_probe(
         &request,
-        &latest_attempt,
+        latest_attempt.as_ref(),
         predecessor_repair.as_ref(),
         current_host_scope,
     )?;
-    Ok(AuthenticatedWorkspacePinRepairAdmissionRequestV1 {
-        request,
-        latest_attempt,
-        probe,
-    })
+    Ok(AuthenticatedWorkspacePinRepairAdmissionRequestV1 { request, probe })
 }
 
 pub(crate) fn bind_probe(
     request: &WorkspacePinRepairAdmissionRequestV1,
-    latest_attempt: &WorkspacePinAttemptV1,
+    latest_attempt: Option<&WorkspacePinAttemptV1>,
     predecessor_repair: Option<&StorageWorkspacePinRepairIntentV1>,
     current_host_scope: WorkspacePinHostScopeV1,
 ) -> Result<WorkspacePinRepairAdmissionProbeV1, ZfsWorkerError> {
-    let predecessor_kind = classify_predecessor(latest_attempt, predecessor_repair, true)?;
-    if predecessor_kind != request.predecessor_kind
-        || request.repair_operation_id == latest_attempt.creation_operation_id()
-        || request.repair_operation_id == latest_attempt.effect_operation_id()
-        || request.workspace_handle != latest_attempt.workspace_handle()
-    {
-        return Err(ZfsWorkerError::Authority);
-    }
-    let historical_attempt_host_scope = WorkspacePinHostScopeV1::new(
-        latest_attempt.host_boot_id(),
-        latest_attempt.host_mount_namespace_device(),
-        latest_attempt.host_mount_namespace_inode(),
-    )
-    .map_err(|_| ZfsWorkerError::Authority)?;
+    let (
+        predecessor_kind,
+        historical_attempt_host_scope,
+        latest_attempt_ordinal,
+        latest_attempt_phase,
+        latest_attempt_record_digest,
+    ) = match latest_attempt {
+        Some(attempt) => {
+            let kind = classify_predecessor(attempt, predecessor_repair, true)?;
+            if kind != request.predecessor_kind
+                || request.repair_operation_id == attempt.creation_operation_id()
+                || request.repair_operation_id == attempt.effect_operation_id()
+                || request.workspace_handle != attempt.workspace_handle()
+            {
+                return Err(ZfsWorkerError::Authority);
+            }
+            let scope = WorkspacePinHostScopeV1::new(
+                attempt.host_boot_id(),
+                attempt.host_mount_namespace_device(),
+                attempt.host_mount_namespace_inode(),
+            )
+            .map_err(|_| ZfsWorkerError::Authority)?;
+            (
+                kind,
+                scope,
+                attempt.attempt_ordinal(),
+                attempt.phase(),
+                digest_bytes(&request.latest_attempt_record),
+            )
+        }
+        None => {
+            if request.predecessor_kind != WorkspacePinRepairPredecessorKindV1::MissingInitial
+                || predecessor_repair.is_some()
+                || request.repair_operation_id == request.creation_operation_id
+            {
+                return Err(ZfsWorkerError::Authority);
+            }
+            (
+                WorkspacePinRepairPredecessorKindV1::MissingInitial,
+                current_host_scope,
+                0,
+                WorkspacePinAttemptPhaseV1::Ambiguous,
+                ObjectDigest::from_bytes([0; 32]),
+            )
+        }
+    };
     let predecessor_repair_intent_record_digest = predecessor_repair
         .map(|_| digest_bytes(&request.predecessor_repair_intent_record))
         .unwrap_or_else(|| ObjectDigest::from_bytes([0; 32]));
@@ -465,16 +616,21 @@ pub(crate) fn bind_probe(
         workspace_handle: request.workspace_handle,
         predecessor_kind,
         predecessor_repair_intent_record_digest,
-        latest_attempt_id: latest_attempt.attempt_id(),
-        latest_attempt_ordinal: latest_attempt.attempt_ordinal(),
-        latest_attempt_phase: latest_attempt.phase(),
-        latest_attempt_record_digest: digest_bytes(&request.latest_attempt_record),
+        physical_catalog_head: request.physical_catalog_head,
+        latest_attempt_id: request.observation_attempt_id,
+        latest_attempt_ordinal,
+        latest_attempt_phase,
+        latest_attempt_record_digest,
         publication_intent_record_digest: digest_bytes(&request.publication_intent_record),
         historical_attempt_host_scope,
         current_host_scope,
-        dataset_name: latest_attempt.dataset_name().to_owned(),
-        dataset_guid: latest_attempt.dataset_guid(),
-        root_policy: latest_attempt.root_policy(),
+        dataset_name: match request.catalog.plan() {
+            CatalogPlanV1::CreateWorkspace { destination, .. }
+            | CatalogPlanV1::Clone { destination, .. } => destination.name().to_owned(),
+            _ => return Err(ZfsWorkerError::Authority),
+        },
+        dataset_guid: request.dataset_guid,
+        root_policy: request.root_policy,
     })
 }
 
@@ -495,18 +651,15 @@ pub(crate) fn classify_predecessor(
         return Err(ZfsWorkerError::Authority);
     }
 
-    if latest_attempt.attempt_ordinal() == 1 {
-        if predecessor_repair.is_some()
-            || latest_attempt.effect_operation_id() != latest_attempt.creation_operation_id()
-        {
+    if latest_attempt.effect_operation_id() == latest_attempt.creation_operation_id() {
+        if latest_attempt.attempt_ordinal() != 1 || predecessor_repair.is_some() {
             return Err(ZfsWorkerError::Authority);
         }
         return Ok(WorkspacePinRepairPredecessorKindV1::Initial);
     }
 
     let intent = predecessor_repair.ok_or(ZfsWorkerError::Authority)?;
-    if latest_attempt.effect_operation_id() == latest_attempt.creation_operation_id()
-        || intent.repair_attempt_id() != latest_attempt.attempt_id()
+    if intent.repair_attempt_id() != latest_attempt.attempt_id()
         || intent.repair_attempt_ordinal() != latest_attempt.attempt_ordinal()
         || intent.repair_operation_id() != latest_attempt.effect_operation_id()
         || intent.creation_operation_id() != latest_attempt.creation_operation_id()
@@ -516,6 +669,17 @@ pub(crate) fn classify_predecessor(
         || intent.repair_assignment_digest() != latest_attempt.effect_assignment_digest()
         || intent.operation_fence_digest() != latest_attempt.operation_fence_digest()
     {
+        return Err(ZfsWorkerError::Authority);
+    }
+    let predecessor_shape_is_valid = match intent.predecessor() {
+        WorkspacePinRepairIntentPredecessorV1::MissingInitial { .. } => {
+            latest_attempt.attempt_ordinal() == 1
+        }
+        WorkspacePinRepairIntentPredecessorV1::ExistingAttempt { .. } => {
+            latest_attempt.attempt_ordinal() >= 2
+        }
+    };
+    if !predecessor_shape_is_valid {
         return Err(ZfsWorkerError::Authority);
     }
     Ok(WorkspacePinRepairPredecessorKindV1::Repair)
@@ -548,6 +712,16 @@ pub(crate) fn encode_request(
     bytes.extend_from_slice(request.semantic_commitment.as_bytes());
     bytes.extend_from_slice(request.repair_assignment_digest.as_bytes());
     bytes.extend_from_slice(&request.workspace_handle);
+    bytes.extend_from_slice(&request.creation_operation_id);
+    bytes.extend_from_slice(&request.creation_result_catalog.generation().to_be_bytes());
+    bytes.extend_from_slice(request.creation_result_catalog.digest().as_bytes());
+    bytes.extend_from_slice(request.creation_result_digest.as_bytes());
+    bytes.extend_from_slice(&request.observation_attempt_id);
+    bytes.extend_from_slice(request.workspace_assignment_digest.as_bytes());
+    bytes.extend_from_slice(&request.dataset_guid.to_be_bytes());
+    bytes.extend_from_slice(&request.root_policy.canonical_bytes());
+    bytes.extend_from_slice(&request.physical_catalog_head.generation().to_be_bytes());
+    bytes.extend_from_slice(request.physical_catalog_head.digest().as_bytes());
     bytes.push(request.predecessor_kind.wire());
     bytes.extend_from_slice(&[0; 3]);
     append_record(&mut bytes, catalog)?;
@@ -590,6 +764,23 @@ pub(crate) fn decode_request(
     let semantic_commitment = ObjectDigest::from_bytes(decoder.array()?);
     let repair_assignment_digest = ObjectDigest::from_bytes(decoder.array()?);
     let workspace_handle = decoder.array()?;
+    let creation_operation_id = decoder.array()?;
+    let creation_result_catalog = crate::CatalogBindingV1::from_publisher(
+        decoder.u64()?,
+        ObjectDigest::from_bytes(decoder.array()?),
+    )
+    .map_err(|_| ZfsWorkerError::Protocol("repair admission result catalog is invalid"))?;
+    let creation_result_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let observation_attempt_id = decoder.array()?;
+    let workspace_assignment_digest = ObjectDigest::from_bytes(decoder.array()?);
+    let dataset_guid = decoder.u64()?;
+    let root_policy = WorkspaceRootPolicyV1::from_canonical_bytes(decoder.take(64)?)
+        .map_err(|_| ZfsWorkerError::Protocol("repair admission root policy is invalid"))?;
+    let physical_catalog_head = crate::CatalogBindingV1::from_publisher(
+        decoder.u64()?,
+        ObjectDigest::from_bytes(decoder.array()?),
+    )
+    .map_err(|_| ZfsWorkerError::Protocol("repair admission physical head is invalid"))?;
     let predecessor_kind = WorkspacePinRepairPredecessorKindV1::from_wire(decoder.u8()?)?;
     if decoder.take(3)? != [0; 3] {
         return Err(ZfsWorkerError::Protocol(
@@ -599,7 +790,9 @@ pub(crate) fn decode_request(
     let catalog =
         ResolvedCatalogCommitmentV1::from_canonical_bytes(decoder.record(MAXIMUM_CATALOG_BYTES)?)
             .map_err(|_| ZfsWorkerError::Protocol("repair admission catalog is invalid"))?;
-    let latest_attempt_record = decoder.record(MAXIMUM_STATE_RECORD_BYTES)?.to_vec();
+    let latest_attempt_record = decoder
+        .optional_record(MAXIMUM_STATE_RECORD_BYTES)?
+        .to_vec();
     let publication_intent_record = decoder.record(MAXIMUM_STATE_RECORD_BYTES)?.to_vec();
     let predecessor_repair_intent_record = decoder
         .optional_record(MAXIMUM_REPAIR_INTENT_BYTES)?
@@ -614,6 +807,14 @@ pub(crate) fn decode_request(
         semantic_commitment,
         repair_assignment_digest,
         workspace_handle,
+        creation_operation_id,
+        creation_result_catalog,
+        creation_result_digest,
+        observation_attempt_id,
+        workspace_assignment_digest,
+        dataset_guid,
+        root_policy,
+        physical_catalog_head,
         predecessor_kind,
         catalog,
         latest_attempt_record,
@@ -752,6 +953,10 @@ impl<'a> Decoder<'a> {
 
     fn u32(&mut self) -> Result<u32, ZfsWorkerError> {
         Ok(u32::from_be_bytes(self.array()?))
+    }
+
+    fn u64(&mut self) -> Result<u64, ZfsWorkerError> {
+        Ok(u64::from_be_bytes(self.array()?))
     }
 
     fn record(&mut self, maximum: usize) -> Result<&'a [u8], ZfsWorkerError> {
@@ -938,12 +1143,24 @@ mod tests {
             ObjectDigest::from_bytes([85; 32]),
             ObjectDigest::from_bytes([86; 32]),
             [51; 32],
+            [61; 16],
+            binding(),
+            ObjectDigest::from_bytes([65; 32]),
+            [2; 16],
+            ObjectDigest::from_bytes([64; 32]),
+            52,
+            WorkspaceRootPolicyV1::create_initialize(),
+            CatalogBindingV1::from_publisher(9, ObjectDigest::from_bytes([90; 32])).unwrap(),
             kind,
             catalog(),
-            vec![87; 128],
+            match kind {
+                WorkspacePinRepairPredecessorKindV1::MissingInitial => Vec::new(),
+                _ => vec![87; 128],
+            },
             vec![88; 129],
             match kind {
-                WorkspacePinRepairPredecessorKindV1::Initial => Vec::new(),
+                WorkspacePinRepairPredecessorKindV1::Initial
+                | WorkspacePinRepairPredecessorKindV1::MissingInitial => Vec::new(),
                 WorkspacePinRepairPredecessorKindV1::Repair => vec![89; 130],
             },
         )
@@ -955,6 +1172,7 @@ mod tests {
         for kind in [
             WorkspacePinRepairPredecessorKindV1::Initial,
             WorkspacePinRepairPredecessorKindV1::Repair,
+            WorkspacePinRepairPredecessorKindV1::MissingInitial,
         ] {
             let original = request(kind);
             let bytes = encode_request(&original).unwrap();
@@ -962,6 +1180,10 @@ mod tests {
 
             assert_eq!(decoded.predecessor_kind, kind);
             assert_eq!(encode_request(&decoded).unwrap(), bytes);
+
+            let mut legacy_version = bytes;
+            legacy_version[8..10].copy_from_slice(&1_u16.to_be_bytes());
+            assert!(decode_request(&legacy_version).is_err());
         }
     }
 
@@ -989,6 +1211,26 @@ mod tests {
             classify_predecessor(&attempt, Some(&intent), true).unwrap(),
             WorkspacePinRepairPredecessorKindV1::Repair
         );
+
+        let missing_initial_attempt = ensure_attempt(1, [91; 16]);
+        let missing_initial_intent = matching_repair_intent(&attempt)
+            .into_missing_initial_for_test(
+                ObjectDigest::from_bytes([78; 32]),
+                missing_initial_attempt.attempt_id(),
+            )
+            .unwrap();
+        assert_eq!(
+            classify_predecessor(
+                &missing_initial_attempt,
+                Some(&missing_initial_intent),
+                true
+            )
+            .unwrap(),
+            WorkspacePinRepairPredecessorKindV1::Repair
+        );
+
+        assert!(classify_predecessor(&missing_initial_attempt, None, true).is_err());
+        assert!(classify_predecessor(&attempt, Some(&missing_initial_intent), true).is_err());
     }
 
     #[test]
@@ -1008,7 +1250,7 @@ mod tests {
         let request = request(WorkspacePinRepairPredecessorKindV1::Initial);
         let probe = bind_probe(
             &request,
-            &initial,
+            Some(&initial),
             None,
             WorkspacePinHostScopeV1::new([93; 16], 94, 95).unwrap(),
         )
@@ -1029,6 +1271,22 @@ mod tests {
         .unwrap();
         assert!(validated.matches_probe(&probe));
 
+        let mut legacy_result = encode_result(&WorkspacePinRepairAdmissionResultV1::new(
+            probe.digest(),
+            WorkspacePinWorkerResultV1::new(
+                initial.attempt_id(),
+                WorkspaceDatasetObservationV1::Exact {
+                    name: initial.dataset_name().to_owned(),
+                    guid: initial.dataset_guid(),
+                },
+                WorkspacePinObservationV1::Absent,
+                ObjectDigest::from_bytes([99; 32]),
+            ),
+        ))
+        .unwrap();
+        legacy_result[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(decode_result(&legacy_result).is_err());
+
         let present = WorkspacePinWorkerResultV1::new(
             initial.attempt_id(),
             WorkspaceDatasetObservationV1::Exact {
@@ -1042,6 +1300,29 @@ mod tests {
             ValidatedWorkspacePinRepairAdmissionObservationV1::from_result(
                 &probe,
                 WorkspacePinRepairAdmissionResultV1::new(probe.digest(), present),
+            )
+            .is_err()
+        );
+
+        let legacy_domain_digest = probe
+            .digest_with_domain(b"aos.sandbox.storage.workspace-pin-repair-admission-probe.v1\0");
+        assert_ne!(legacy_domain_digest, probe.digest());
+        let legacy_domain_result = WorkspacePinWorkerResultV1::new(
+            initial.attempt_id(),
+            WorkspaceDatasetObservationV1::Exact {
+                name: initial.dataset_name().to_owned(),
+                guid: initial.dataset_guid(),
+            },
+            WorkspacePinObservationV1::Absent,
+            ObjectDigest::from_bytes([98; 32]),
+        );
+        assert!(
+            ValidatedWorkspacePinRepairAdmissionObservationV1::from_result(
+                &probe,
+                WorkspacePinRepairAdmissionResultV1::new(
+                    legacy_domain_digest,
+                    legacy_domain_result,
+                ),
             )
             .is_err()
         );
