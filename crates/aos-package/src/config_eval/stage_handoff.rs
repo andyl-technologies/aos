@@ -20,6 +20,18 @@ use sha2::{Digest as _, Sha256};
 
 use crate::types::ImageGeneration;
 
+mod activation;
+
+#[cfg(test)]
+use activation::{
+    ACTIVATION_SCHEMA, HostResourceEvidence, InitrdManagerIdentity, InitrdManagerKind,
+    InitrdOperation, InitrdOperationCompletion,
+};
+use activation::{
+    HostContinuationEvidence, HostStageManager, InitrdActivation, InitrdActivationCompletion,
+    InitrdStageManager,
+};
+
 const SELECTION_SCHEMA: &str = "aos.ability.initrd-activation-selection/v1";
 const CHECKPOINT_SCHEMA: &str = "aos.ability.stage-handoff-checkpoint/v1";
 const JOURNAL_EVENT_SCHEMA: &str = "aos.ability.stage-handoff-event/v1";
@@ -152,7 +164,7 @@ struct ActivationSelection {
     execution_stage: ExecutionStage,
     disposition: ActivationDisposition,
     static_ability_contract_sha256: Sha256Digest,
-    activation: Option<serde_json::Value>,
+    activation: Option<InitrdActivation>,
 }
 
 impl ActivationSelection {
@@ -170,11 +182,7 @@ impl ActivationSelection {
         ensure!(
             matches!(
                 (&selection.disposition, &selection.activation),
-                (ActivationDisposition::None, None)
-                    | (
-                        ActivationDisposition::Required,
-                        Some(serde_json::Value::Object(_))
-                    )
+                (ActivationDisposition::None, None) | (ActivationDisposition::Required, Some(_))
             ),
             "initrd activation disposition does not match its activation payload"
         );
@@ -274,6 +282,7 @@ struct StageCheckpoint {
     static_ability_contract_sha256: Sha256Digest,
     disposition: ActivationDisposition,
     activation_sha256: Option<Sha256Digest>,
+    completion_sha256: Option<Sha256Digest>,
     journal_head: Sha256Digest,
     status: CheckpointStatus,
 }
@@ -296,8 +305,13 @@ impl StageCheckpoint {
         );
         ensure!(
             matches!(
-                (self.disposition, self.activation_sha256),
-                (ActivationDisposition::None, None) | (ActivationDisposition::Required, Some(_))
+                (
+                    self.disposition,
+                    self.activation_sha256,
+                    self.completion_sha256
+                ),
+                (ActivationDisposition::None, None, None)
+                    | (ActivationDisposition::Required, Some(_), Some(_))
             ),
             "stage checkpoint disposition differs from its activation commitment"
         );
@@ -334,6 +348,7 @@ enum StageEvent {
         schema: String,
         transaction: TransactionId,
         outcome: SourceOutcome,
+        completion: Option<InitrdActivationCompletion>,
     },
     HostReceived {
         schema: String,
@@ -342,7 +357,17 @@ enum StageEvent {
         released_journal_head: Sha256Digest,
         image: ImageIdentity,
         static_ability_contract_sha256: Sha256Digest,
+        continuation: Option<HostContinuationEvidence>,
     },
+}
+
+impl StageEvent {
+    fn completion_digest(&self) -> Result<Option<Sha256Digest>> {
+        let Self::SourceCompleted { completion, .. } = self else {
+            bail!("stage event is not an initrd completion")
+        };
+        completion.as_ref().map(canonical_value_digest).transpose()
+    }
 }
 
 impl JournalPayload for StageEvent {
@@ -372,8 +397,31 @@ impl JournalPayload for StageEvent {
                             | (ActivationDisposition::Required, Some(_))
                     )
             }
-            Self::SourceCompleted { schema, .. } | Self::HostReceived { schema, .. } => {
+            Self::SourceCompleted {
+                schema,
+                outcome,
+                completion,
+                ..
+            } => {
                 schema == JOURNAL_EVENT_SCHEMA
+                    && matches!(
+                        (outcome, completion),
+                        (SourceOutcome::NoActivationRequired, None)
+                            | (SourceOutcome::ActivationSucceeded, Some(_))
+                    )
+                    && completion
+                        .as_ref()
+                        .is_none_or(|evidence| evidence.validate().is_ok())
+            }
+            Self::HostReceived {
+                schema,
+                continuation,
+                ..
+            } => {
+                schema == JOURNAL_EVENT_SCHEMA
+                    && continuation
+                        .as_ref()
+                        .is_none_or(|evidence| evidence.validate().is_ok())
             }
         };
         if valid {
@@ -406,6 +454,11 @@ struct ValidatedRelease {
     journal_path: PathBuf,
 }
 
+struct SourceExecution {
+    outcome: SourceOutcome,
+    completion: Option<InitrdActivationCompletion>,
+}
+
 fn run_initrd_stage_with(
     image_profile: &Path,
     checkpoint_path: &Path,
@@ -422,14 +475,8 @@ fn run_initrd_stage_with(
         selection.static_ability_contract_sha256 == contract_digest,
         "initrd activation selection names another static ability contract"
     );
-
-    // The selection schema currently leaves required activation as arbitrary
-    // JSON. Accepting that as executable input would bypass plan validation
-    // and the typed adapter boundary.
-    if selection.disposition == ActivationDisposition::Required {
-        bail!(
-            "required initrd activation has no typed execution contract; refusing to publish a handoff"
-        );
+    if let Some(activation) = &selection.activation {
+        activation.check()?;
     }
 
     let transaction = transaction_for_boot(boot_id)?;
@@ -450,32 +497,62 @@ fn run_initrd_stage_with(
         disposition: selection.disposition,
         activation_sha256,
     };
-    let completed = StageEvent::SourceCompleted {
-        schema: JOURNAL_EVENT_SCHEMA.to_string(),
-        transaction: transaction.clone(),
-        outcome: SourceOutcome::NoActivationRequired,
-    };
     let transaction_dir = prepare_transaction_directory(image_profile, &transaction)?;
     let journal_path = transaction_dir.join(JOURNAL_FILE);
     let opened = FileJournal::<StageEvent>::open(&journal_path, stage_journal_limits())
         .context("opening initrd stage handoff journal")?;
     let mut journal = opened.journal;
     let records = opened.recovery.records();
-    let released_head = match records {
+    let execute = || -> Result<StageEvent> {
+        let execution = match &selection.activation {
+            None => SourceExecution {
+                outcome: SourceOutcome::NoActivationRequired,
+                completion: None,
+            },
+            Some(activation) => SourceExecution {
+                outcome: SourceOutcome::ActivationSucceeded,
+                completion: Some(
+                    InitrdStageManager::new(&image, contract_digest)
+                        .execute(activation)
+                        .context("executing checked initrd activation")?,
+                ),
+            },
+        };
+        Ok(StageEvent::SourceCompleted {
+            schema: JOURNAL_EVENT_SCHEMA.to_string(),
+            transaction: transaction.clone(),
+            outcome: execution.outcome,
+            completion: execution.completion,
+        })
+    };
+    let (released_head, completed) = match records {
         [] => {
             journal.ensure_capacity(2)?;
             journal.append(&prepared)?;
-            journal.append(&completed)?.digest()
+            let completed = execute()?;
+            let head = journal.append(&completed)?.digest();
+            (head, completed)
         }
         [first] if first.body() == &prepared => {
             journal.ensure_capacity(1)?;
-            journal.append(&completed)?.digest()
+            let completed = execute()?;
+            let head = journal.append(&completed)?.digest();
+            (head, completed)
         }
-        [first, second] if first.body() == &prepared && second.body() == &completed => {
-            second.digest()
+        [first, second] if first.body() == &prepared => {
+            let completed = execute()?;
+            ensure!(
+                second.body() == &completed,
+                "initrd stage completion differs from the checked activation result"
+            );
+            (second.digest(), completed)
         }
-        [first, second, _] if first.body() == &prepared && second.body() == &completed => {
-            bail!("initrd stage journal ownership was already received by the host")
+        [first, second, _] if first.body() == &prepared => {
+            let completed = execute()?;
+            if second.body() == &completed {
+                bail!("initrd stage journal ownership was already received by the host")
+            }
+            bail!("initrd stage completion differs from the checked activation result")
         }
         _ => bail!("initrd stage journal differs from the authenticated boot selection"),
     };
@@ -492,6 +569,7 @@ fn run_initrd_stage_with(
         static_ability_contract_sha256: contract_digest,
         disposition: selection.disposition,
         activation_sha256,
+        completion_sha256: completed.completion_digest()?,
         journal_head: released_head,
         status: CheckpointStatus::OwnershipReleased,
     };
@@ -537,6 +615,13 @@ fn receive_initrd_stage_with(
     if ownership == JournalOwnership::Received {
         return Ok(());
     }
+    let continuation = source_completion(opened.recovery.records())?
+        .map(|completion| {
+            HostStageManager::new(&image, release.contract_digest)
+                .continue_from(completion)
+                .context("reauthorizing and reacquiring initrd continuation resources")
+        })
+        .transpose()?;
     let received = StageEvent::HostReceived {
         schema: JOURNAL_EVENT_SCHEMA.to_string(),
         transaction: release.checkpoint.transaction.clone(),
@@ -544,6 +629,7 @@ fn receive_initrd_stage_with(
         released_journal_head: release.checkpoint.journal_head,
         image,
         static_ability_contract_sha256: release.contract_digest,
+        continuation,
     };
     journal.ensure_capacity(1)?;
     journal.append(&received)?;
@@ -675,6 +761,18 @@ fn validate_journal_sequence(
     }
 }
 
+fn source_completion(
+    records: &[JournalRecord<StageEvent>],
+) -> Result<Option<&InitrdActivationCompletion>> {
+    let Some(record) = records.get(1) else {
+        bail!("released initrd stage journal has no source completion")
+    };
+    let StageEvent::SourceCompleted { completion, .. } = record.body() else {
+        bail!("initrd stage journal does not record source completion")
+    };
+    Ok(completion.as_ref())
+}
+
 fn validate_source_records(
     prepared: &StageEvent,
     source_completed: &StageEvent,
@@ -710,6 +808,7 @@ fn validate_source_records(
     let StageEvent::SourceCompleted {
         transaction,
         outcome,
+        completion,
         ..
     } = source_completed
     else {
@@ -718,17 +817,27 @@ fn validate_source_records(
     ensure!(
         transaction == &checkpoint.transaction
             && matches!(
-                (checkpoint.disposition, outcome),
+                (checkpoint.disposition, outcome, completion),
                 (
                     ActivationDisposition::None,
-                    SourceOutcome::NoActivationRequired
+                    SourceOutcome::NoActivationRequired,
+                    None
                 ) | (
                     ActivationDisposition::Required,
-                    SourceOutcome::ActivationSucceeded
+                    SourceOutcome::ActivationSucceeded,
+                    Some(_)
                 )
-            ),
+            )
+            && completion
+                .as_ref()
+                .map(canonical_value_digest)
+                .transpose()?
+                == checkpoint.completion_sha256,
         "initrd stage completion differs from the released checkpoint"
     );
+    if let Some(completion) = completion {
+        completion.validate()?;
+    }
     Ok(())
 }
 
@@ -748,6 +857,7 @@ fn validate_received_record(
         released_journal_head,
         image: received_image,
         static_ability_contract_sha256,
+        continuation,
         ..
     } = received
     else {
@@ -760,6 +870,17 @@ fn validate_received_record(
             && received_image == image
             && *static_ability_contract_sha256 == contract_digest,
         "retained host receipt differs from the current handoff evidence"
+    );
+    let completion = match source_completed {
+        StageEvent::SourceCompleted { completion, .. } => completion.as_ref(),
+        _ => None,
+    };
+    let expected_continuation = completion
+        .map(|completion| HostStageManager::new(image, contract_digest).continue_from(completion))
+        .transpose()?;
+    ensure!(
+        continuation == &expected_continuation,
+        "retained host receipt lacks fresh continuation authority evidence"
     );
     Ok(())
 }
@@ -924,7 +1045,7 @@ fn transaction_for_boot(boot_id: &str) -> Result<TransactionId> {
     Ok(TransactionId(LocalKey::new(key)?))
 }
 
-fn canonical_value_digest(value: &serde_json::Value) -> Result<Sha256Digest> {
+fn canonical_value_digest<T: Serialize>(value: &T) -> Result<Sha256Digest> {
     Ok(sha256_digest(&aos_contract::canonical::to_vec(value)?))
 }
 
@@ -992,6 +1113,30 @@ mod tests {
         })?)
     }
 
+    fn required_selection(contract: &[u8]) -> Result<Vec<u8>> {
+        Ok(aos_contract::canonical::to_vec(&ActivationSelection {
+            schema: SELECTION_SCHEMA.to_string(),
+            execution_stage: ExecutionStage::Initrd,
+            disposition: ActivationDisposition::Required,
+            static_ability_contract_sha256: sha256_digest(contract),
+            activation: Some(InitrdActivation {
+                schema: ACTIVATION_SCHEMA.to_string(),
+                manager: InitrdManagerIdentity {
+                    stage: ExecutionStage::Initrd,
+                    kind: InitrdManagerKind::BootSubstrate,
+                },
+                operations: vec![
+                    InitrdOperation::AuthenticateTargetImage {
+                        id: LocalKey::new("authenticate-image")?,
+                    },
+                    InitrdOperation::VerifyStaticAbilityContract {
+                        id: LocalKey::new("verify-static-contract")?,
+                    },
+                ],
+            }),
+        })?)
+    }
+
     #[test]
     fn transfers_none_disposition_through_durable_journal() -> Result<()> {
         let temporary = tempfile::tempdir()?;
@@ -1046,6 +1191,69 @@ mod tests {
     }
 
     #[test]
+    fn executes_typed_initrd_operations_and_reacquires_them_on_the_host() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let profile = temporary.path().join("image");
+        let checkpoint = temporary
+            .path()
+            .join("run/aos/ability-stage-handoff/initrd.json");
+        fs::create_dir(&profile)?;
+        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
+        let contract = contract()?;
+
+        run_initrd_stage_with(
+            &profile,
+            &checkpoint,
+            &required_selection(&contract)?,
+            &contract,
+            BOOT_ID,
+            image(),
+        )?;
+        validate_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())?;
+        receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())?;
+
+        let transaction = transaction_for_boot(BOOT_ID)?;
+        let journal = profile
+            .join(TRANSACTION_ROOT)
+            .join(INITRD_TRANSACTION_ROOT)
+            .join(transaction.0.as_str())
+            .join(JOURNAL_FILE);
+        let snapshot =
+            FileJournal::<StageEvent>::read_only_snapshot(journal, stage_journal_limits())?;
+        let StageEvent::SourceCompleted {
+            outcome,
+            completion: Some(completion),
+            ..
+        } = snapshot.records()[1].body()
+        else {
+            panic!("required selection did not retain typed completion evidence")
+        };
+        assert_eq!(*outcome, SourceOutcome::ActivationSucceeded);
+        assert!(matches!(
+            completion.operations.as_slice(),
+            [
+                InitrdOperationCompletion::TargetImageAuthenticated { .. },
+                InitrdOperationCompletion::StaticAbilityContractVerified { .. }
+            ]
+        ));
+        let StageEvent::HostReceived {
+            continuation: Some(continuation),
+            ..
+        } = snapshot.records()[2].body()
+        else {
+            panic!("host receiver did not retain continuation evidence")
+        };
+        assert!(matches!(
+            continuation.resources.as_slice(),
+            [
+                HostResourceEvidence::TargetImageReauthenticated { .. },
+                HostResourceEvidence::StaticAbilityContractReacquired { .. }
+            ]
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn initrd_barrier_rejects_a_missing_or_tampered_checkpoint() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let profile = temporary.path().join("image");
@@ -1082,20 +1290,20 @@ mod tests {
     }
 
     #[test]
-    fn required_activation_fails_before_durable_state_or_checkpoint() -> Result<()> {
+    fn untyped_required_activation_fails_before_durable_state_or_checkpoint() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let profile = temporary.path().join("image");
         let checkpoint = temporary.path().join("run/initrd.json");
         fs::create_dir(&profile)?;
         fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
         let contract = contract()?;
-        let selection = aos_contract::canonical::to_vec(&ActivationSelection {
-            schema: SELECTION_SCHEMA.to_string(),
-            execution_stage: ExecutionStage::Initrd,
-            disposition: ActivationDisposition::Required,
-            static_ability_contract_sha256: sha256_digest(&contract),
-            activation: Some(serde_json::json!({"untyped":"rejected"})),
-        })?;
+        let selection = aos_contract::canonical::to_vec(&serde_json::json!({
+            "activation": {"untyped":"rejected"},
+            "disposition": "required",
+            "execution_stage": "initrd",
+            "schema": SELECTION_SCHEMA,
+            "static_ability_contract_sha256": sha256_digest(&contract),
+        }))?;
 
         let error = run_initrd_stage_with(
             &profile,
@@ -1106,7 +1314,10 @@ mod tests {
             image(),
         )
         .expect_err("untyped execution must fail closed");
-        assert!(error.to_string().contains("no typed execution contract"));
+        assert!(
+            format!("{error:#}").contains("decoding initrd activation selection"),
+            "{error:#}"
+        );
         assert!(!profile.join(TRANSACTION_ROOT).exists());
         assert!(!checkpoint.exists());
         Ok(())

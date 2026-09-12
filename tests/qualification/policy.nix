@@ -329,7 +329,11 @@ in
     "exact-six-operation-five-edge-teardown-and-persistent-retention"
   ];
   assert abilityRequirements.ability-native-recovery.regressions
-  == ["checks.fleet.ability-native-power-loss"];
+  == [
+    "checks.fleet.ability-initrd-activation"
+    "checks.fleet.ability-initrd-handoff-fail-closed"
+    "checks.fleet.ability-native-power-loss"
+  ];
   assert abilityRequirements.ability-native-recovery.checks
   == [
     "exact-boot-initrd-artifact-and-static-stage-handoff-contract"
