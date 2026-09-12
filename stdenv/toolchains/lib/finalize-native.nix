@@ -181,14 +181,13 @@
       glibc = let
         package = finishConstruction (call libcBuildScope (directory + "/glibc.nix") libcBuildOverrides);
       in
-        if privateTools ? perl
-        then
-          import ./finalize-libc.nix {
-            inherit package buildTools;
-            runtimePerl = exports.perl;
-            constructionPerl = privateTools.perl;
-          }
-        else package;
+        import ./finalize-libc.nix {
+          inherit package buildTools;
+          runtimePerl = exports.perl or null;
+          constructionPerl = privateTools.perl or null;
+          runtimeShell = "${exports.bash}/bin/bash";
+          constructionShell = "${privateTools.bash}/bin/bash";
+        };
       binutils = finishConstruction (call compilerBuildScope (directory + "/binutils.nix") binutilsBuildOverrides);
       gcc = finishConstruction (call (compilerBuildScope
         // {
