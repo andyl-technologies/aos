@@ -26,8 +26,9 @@
 //! ```
 //!
 //! State is bounded at 16 KiB. The result has both the format ceiling and the
-//! smaller operational ceiling authenticated in state. Complete v1 file pairs
-//! remain readable for publication recovery and are never rewritten in place.
+//! smaller operational ceiling authenticated in state. Runtime opens accept
+//! only the current v2 file pair; legacy conversion is an explicit offline
+//! operation.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -36,12 +37,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use crucible_campaign::{AttemptExecutionScope, CampaignHash, ExecutionId};
+use crucible_campaign::{
+    AttemptExecutionScope, AttemptId, CampaignHash, CampaignLineageId, ExecutionId,
+};
 
 use crate::crucible_artifact::PreparedSemanticResultVersion;
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
 use crate::{
-    AttemptExecutionKey, MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
+    AssignmentLedger, AssignmentLedgerError, AttemptExecutionKey, DirectoryAssignmentLedger,
+    MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedSemanticAttemptResult,
     PreparedSemanticResultCodecError,
 };
 
@@ -50,11 +54,7 @@ const JOURNAL_STAGED_PREFIX: &str = ".staged-";
 const JOURNAL_RETIRED_PREFIX: &str = ".retired-";
 const JOURNAL_RESULT_FILE: &str = "result-v2";
 const JOURNAL_STATE_FILE: &str = "state-v2";
-const JOURNAL_RESULT_FILE_V1: &str = "result-v1";
-const JOURNAL_STATE_FILE_V1: &str = "state-v1";
-const JOURNAL_STATE_MAGIC_V1: &[u8] = b"crucible.executor.prepared-result-journal-state.v1\0";
 const JOURNAL_STATE_MAGIC_V2: &[u8] = b"crucible.executor.prepared-result-journal-state.v2\0";
-const JOURNAL_STATE_HASH_DOMAIN_V1: &str = "crucible.executor.prepared-result-journal-state.v1";
 const JOURNAL_STATE_HASH_DOMAIN_V2: &str = "crucible.executor.prepared-result-journal-state.v2";
 const JOURNAL_MEASUREMENT_EVIDENCE_HASH_DOMAIN: &str =
     "crucible.executor.prepared-result-journal-measurement-evidence.v1";
@@ -81,6 +81,15 @@ pub struct PreparedResultJournalCleanupDisposition {
     pub staged_removed: bool,
     /// Whether a post-retirement directory was removed.
     pub retired_removed: bool,
+}
+
+/// Bounded result of an explicit prepared-result journal migration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedResultJournalMigrationSummary {
+    /// Number of authenticated visible journals examined.
+    pub journals: usize,
+    /// Number of legacy journals converted or durably finalized.
+    pub migrated: usize,
 }
 
 /// Exclusive authenticated owner of one prepared semantic result journal.
@@ -182,14 +191,7 @@ impl DirectoryPreparedResultJournal {
         let payload = result.canonical_bytes_with_limit(maximum_payload_bytes)?;
         let prepared_result_digest =
             CampaignHash::derive(PREPARED_RESULT_LEDGER_BINDING_DOMAIN, &payload);
-        let state = encode_state(
-            key,
-            execution,
-            maximum_payload_bytes,
-            &result,
-            &payload,
-            JournalVersion::V2,
-        )?;
+        let state = encode_state(key, execution, maximum_payload_bytes, &result, &payload)?;
         let staging = create_staging_directory(namespace, key)?;
         initialize_new(&staging, &payload, &state)?;
         sync_parent(&staging, "sync-journal-parent-after-stage")?;
@@ -370,19 +372,13 @@ impl DirectoryPreparedResultJournal {
         sync_directory(&root, "sync-journal-directory-on-open")?;
         sync_parent(&root, "sync-journal-parent-on-open")?;
 
-        let (state_file, result_file, version) = journal_files(&root)?;
+        let (state_file, result_file) = journal_files(&root)?;
         let state = read_bounded_file(
             &root.join(state_file),
             MAX_JOURNAL_STATE_BYTES,
             "read-journal-state",
         )?;
-        let envelope = decode_state(
-            &state,
-            key,
-            expected_execution,
-            maximum_payload_bytes,
-            version,
-        )?;
+        let envelope = decode_state(&state, key, expected_execution, maximum_payload_bytes)?;
         let payload = read_bounded_file(
             &root.join(result_file),
             maximum_payload_bytes,
@@ -391,7 +387,7 @@ impl DirectoryPreparedResultJournal {
         envelope.validate_payload(&payload)?;
         let payload_version = PreparedSemanticResultVersion::from_payload(&payload)
             .ok_or(PreparedResultJournalError::InvalidState)?;
-        if !version.matches_payload(payload_version) {
+        if !current_payload_version(payload_version) {
             return Err(PreparedResultJournalError::InvalidState);
         }
         let result = PreparedSemanticAttemptResult::from_canonical_bytes_with_limit(
@@ -534,6 +530,33 @@ impl DirectoryPreparedResultJournal {
     }
 }
 
+/// Converts every legacy prepared-result journal in an offline namespace.
+///
+/// The caller must retain the assignment ledger's exclusive writer lock. This
+/// function acquires per-key namespace locks in sorted key order, authenticates
+/// the complete bounded inventory before staging anything, and publishes each
+/// conversion with an atomic directory exchange. A rerun completes either
+/// side of an interrupted exchange.
+///
+/// # Errors
+///
+/// Returns [`PreparedResultJournalError`] when the namespace is invalid, its
+/// inventory exceeds `maximum_journals`, a journal or ledger binding is
+/// invalid, a per-key lock is held, or durable conversion fails.
+pub(crate) fn migrate_prepared_result_journals(
+    namespace: impl AsRef<Path>,
+    ledger: &mut DirectoryAssignmentLedger,
+    maximum_journals: usize,
+    maximum_payload_bytes: usize,
+) -> Result<PreparedResultJournalMigrationSummary, PreparedResultJournalError> {
+    migration::migrate_prepared_result_journals(
+        namespace.as_ref(),
+        ledger,
+        maximum_journals,
+        maximum_payload_bytes,
+    )
+}
+
 /// Failure to persist, reopen, authenticate, or remove a prepared result.
 #[derive(Debug, Error)]
 pub enum PreparedResultJournalError {
@@ -578,6 +601,12 @@ pub enum PreparedResultJournalError {
     /// The operational payload ceiling is zero or exceeds the format ceiling.
     #[error("prepared-result journal payload limit is invalid")]
     InvalidPayloadLimit,
+    /// The bounded migration inventory contains too many journals.
+    #[error("prepared-result journal migration limit exceeded")]
+    MigrationLimitExceeded,
+    /// The assignment ledger could not authenticate a journal binding.
+    #[error(transparent)]
+    Ledger(#[from] AssignmentLedgerError),
 }
 
 fn journal_path(namespace: &Path, key: AttemptExecutionKey) -> PathBuf {
@@ -636,7 +665,6 @@ fn encode_state(
     maximum_payload_bytes: usize,
     result: &PreparedSemanticAttemptResult,
     payload: &[u8],
-    version: JournalVersion,
 ) -> Result<Vec<u8>, PreparedResultJournalError> {
     let observation = result
         .observation()
@@ -649,11 +677,8 @@ fn encode_state(
         .transpose()?;
     let (measurement_evidence_count, measurement_evidence_hash) =
         measurement_evidence_identity(result)?;
-    if matches!(version, JournalVersion::V1) && measurement_evidence_count != 0 {
-        return Err(PreparedResultJournalError::InvalidState);
-    }
     let mut state = Vec::new();
-    state.extend_from_slice(version.magic());
+    state.extend_from_slice(JOURNAL_STATE_MAGIC_V2);
     state.extend_from_slice(&key.storage_digest().as_bytes());
     push_text(&mut state, &key.lineage().content_id().encode())?;
     push_text(&mut state, &key.attempt().content_id().encode())?;
@@ -665,14 +690,12 @@ fn encode_state(
             .to_be_bytes(),
     );
     push_text(&mut state, &observation.content_id().encode())?;
-    if matches!(version, JournalVersion::V2) {
-        state.extend_from_slice(
-            &u64::try_from(measurement_evidence_count)
-                .map_err(|_| PreparedResultJournalError::InvalidState)?
-                .to_be_bytes(),
-        );
-        state.extend_from_slice(&measurement_evidence_hash);
-    }
+    state.extend_from_slice(
+        &u64::try_from(measurement_evidence_count)
+            .map_err(|_| PreparedResultJournalError::InvalidState)?
+            .to_be_bytes(),
+    );
+    state.extend_from_slice(&measurement_evidence_hash);
     match finding {
         Some(finding) => {
             state.push(1);
@@ -686,7 +709,7 @@ fn encode_state(
             .to_be_bytes(),
     );
     state.extend_from_slice(blake3::hash(payload).as_bytes());
-    let checksum_key = blake3::derive_key(version.hash_domain(), version.magic());
+    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V2, JOURNAL_STATE_MAGIC_V2);
     let checksum = blake3::keyed_hash(&checksum_key, &state);
     state.extend_from_slice(checksum.as_bytes());
     if state.len() > MAX_JOURNAL_STATE_BYTES {
@@ -759,20 +782,19 @@ fn decode_state<'a>(
     key: AttemptExecutionKey,
     expected_execution: Option<ExecutionId>,
     maximum_payload_bytes: usize,
-    version: JournalVersion,
 ) -> Result<JournalStateEnvelope<'a>, PreparedResultJournalError> {
     let checksum_offset = state
         .len()
         .checked_sub(32)
         .ok_or(PreparedResultJournalError::InvalidState)?;
     let (body, checksum) = state.split_at(checksum_offset);
-    let checksum_key = blake3::derive_key(version.hash_domain(), version.magic());
+    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V2, JOURNAL_STATE_MAGIC_V2);
     if blake3::keyed_hash(&checksum_key, body).as_bytes() != checksum {
         return Err(PreparedResultJournalError::InvalidState);
     }
 
     let mut decoder = JournalStateDecoder::new(body);
-    decoder.expect_exact(version.magic())?;
+    decoder.expect_exact(JOURNAL_STATE_MAGIC_V2)?;
     decoder.expect_exact(key.storage_digest().as_bytes().as_slice())?;
     decoder.expect_bytes(key.lineage().content_id().encode().as_bytes())?;
     decoder.expect_bytes(key.attempt().content_id().encode().as_bytes())?;
@@ -792,18 +814,13 @@ fn decode_state<'a>(
         return Err(PreparedResultJournalError::InvalidState);
     }
     let observation = decoder.bytes()?;
-    let measurement_evidence = match version {
-        JournalVersion::V1 => None,
-        JournalVersion::V2 => {
-            let count = usize::try_from(decoder.u64()?)
-                .map_err(|_| PreparedResultJournalError::InvalidState)?;
-            let hash = decoder
-                .take(32)?
-                .try_into()
-                .map_err(|_| PreparedResultJournalError::InvalidState)?;
-            Some((count, hash))
-        }
-    };
+    let count =
+        usize::try_from(decoder.u64()?).map_err(|_| PreparedResultJournalError::InvalidState)?;
+    let hash = decoder
+        .take(32)?
+        .try_into()
+        .map_err(|_| PreparedResultJournalError::InvalidState)?;
+    let measurement_evidence = Some((count, hash));
     let finding = match decoder.byte()? {
         0 => None,
         1 => Some(decoder.bytes()?),
@@ -830,62 +847,37 @@ fn decode_state<'a>(
     })
 }
 
-#[derive(Clone, Copy)]
-enum JournalVersion {
-    V1,
-    V2,
-}
-
-impl JournalVersion {
-    const fn magic(self) -> &'static [u8] {
-        match self {
-            Self::V1 => JOURNAL_STATE_MAGIC_V1,
-            Self::V2 => JOURNAL_STATE_MAGIC_V2,
+fn journal_files(root: &Path) -> Result<(&'static str, &'static str), PreparedResultJournalError> {
+    let mut state = false;
+    let mut result = false;
+    for entry in fs::read_dir(root)
+        .map_err(|source| io_error("read-current-journal-directory", root, source))?
+    {
+        let entry = entry
+            .map_err(|source| io_error("read-current-journal-directory-entry", root, source))?;
+        let name = entry.file_name();
+        match name.to_str() {
+            Some(JOURNAL_STATE_FILE) if !state => state = true,
+            Some(JOURNAL_RESULT_FILE) if !result => result = true,
+            _ => return Err(PreparedResultJournalError::Incomplete),
         }
     }
-
-    const fn hash_domain(self) -> &'static str {
-        match self {
-            Self::V1 => JOURNAL_STATE_HASH_DOMAIN_V1,
-            Self::V2 => JOURNAL_STATE_HASH_DOMAIN_V2,
-        }
-    }
-
-    const fn matches_payload(self, payload: PreparedSemanticResultVersion) -> bool {
-        matches!(
-            (self, payload),
-            (Self::V1, PreparedSemanticResultVersion::V1)
-                | (Self::V2, PreparedSemanticResultVersion::V2)
-                | (Self::V2, PreparedSemanticResultVersion::V3)
-                | (Self::V2, PreparedSemanticResultVersion::V4)
-                | (Self::V2, PreparedSemanticResultVersion::V5)
-                | (Self::V2, PreparedSemanticResultVersion::V6)
-        )
-    }
-}
-
-fn journal_files(
-    root: &Path,
-) -> Result<(&'static str, &'static str, JournalVersion), PreparedResultJournalError> {
-    let has_v2_state = root.join(JOURNAL_STATE_FILE).exists();
-    let has_v2_result = root.join(JOURNAL_RESULT_FILE).exists();
-    let has_v1_state = root.join(JOURNAL_STATE_FILE_V1).exists();
-    let has_v1_result = root.join(JOURNAL_RESULT_FILE_V1).exists();
-    if has_v2_state || has_v2_result {
-        if !has_v2_state || !has_v2_result || has_v1_state || has_v1_result {
-            return Err(PreparedResultJournalError::Incomplete);
-        }
-        return Ok((JOURNAL_STATE_FILE, JOURNAL_RESULT_FILE, JournalVersion::V2));
-    }
-    if has_v1_state && has_v1_result {
-        Ok((
-            JOURNAL_STATE_FILE_V1,
-            JOURNAL_RESULT_FILE_V1,
-            JournalVersion::V1,
-        ))
+    if state && result {
+        Ok((JOURNAL_STATE_FILE, JOURNAL_RESULT_FILE))
     } else {
         Err(PreparedResultJournalError::Incomplete)
     }
+}
+
+const fn current_payload_version(version: PreparedSemanticResultVersion) -> bool {
+    matches!(
+        version,
+        PreparedSemanticResultVersion::V2
+            | PreparedSemanticResultVersion::V3
+            | PreparedSemanticResultVersion::V4
+            | PreparedSemanticResultVersion::V5
+            | PreparedSemanticResultVersion::V6
+    )
 }
 
 fn measurement_evidence_identity(
@@ -1063,13 +1055,9 @@ fn remove_orphan_directory(root: &Path) -> Result<bool, PreparedResultJournalErr
 fn is_owned_orphan_file(name: &str) -> bool {
     name == JOURNAL_STATE_FILE
         || name == JOURNAL_RESULT_FILE
-        || name == JOURNAL_STATE_FILE_V1
-        || name == JOURNAL_RESULT_FILE_V1
         || name == "lock"
         || name.starts_with(&format!(".{JOURNAL_STATE_FILE}."))
         || name.starts_with(&format!(".{JOURNAL_RESULT_FILE}."))
-        || name.starts_with(&format!(".{JOURNAL_STATE_FILE_V1}."))
-        || name.starts_with(&format!(".{JOURNAL_RESULT_FILE_V1}."))
 }
 
 fn write_atomic(root: &Path, name: &str, bytes: &[u8]) -> Result<(), PreparedResultJournalError> {
@@ -1207,6 +1195,8 @@ fn hex(bytes: [u8; 32]) -> String {
     encoded
 }
 
+mod migration;
+
 #[cfg(test)]
 mod tests {
     // crucible-lint: allow panic-shortcut -- journal tests use panic shortcuts for precise fixture failures.
@@ -1216,24 +1206,191 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
 
-    use crucible::VirtualTime;
-    use crucible::model::{MeasurementDefinitions, MeasurementTerminalState};
     use crucible_campaign::{
         AttemptExecutionScope, AttemptId, BranchPathId, CampaignFactId, CampaignHash,
-        CampaignLineageId, ConfigurationArtifact, ConfigurationId, CoverageProjection, ExecutionId,
-        MeasurementSet, Observation, ObservationCandidate, PropertyVerdictSet, ScenarioArtifactId,
-        ScenarioDefId, StopOutcome,
+        CampaignLineageId, ConfigurationArtifact, ConfigurationId, CoverageProjection, DaemonEpoch,
+        ExecutionId, MeasurementSet, Observation, ObservationCandidate, PropertyVerdictSet,
+        ScenarioArtifactId, ScenarioDefId, StopOutcome,
     };
     use crucible_cas::content_store::{ContentId, ObjectKind};
     use tempfile::TempDir;
 
     use crate::{
-        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, evaluate_crucible_measurement_publication,
+        AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, DirectoryAssignmentLedger,
     };
 
     use super::*;
 
     const TEST_PAYLOAD_LIMIT: usize = 1024 * 1024;
+
+    struct LegacyJournalFixture {
+        _ledger_root: TempDir,
+        namespace: TempDir,
+        ledger: DirectoryAssignmentLedger,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+        result: PreparedSemanticAttemptResult,
+    }
+
+    fn legacy_journal_fixture(marker: u8) -> LegacyJournalFixture {
+        let ledger_root = TempDir::new().expect("ledger root");
+        let namespace = TempDir::new().expect("journal namespace");
+        let key = semantic_key(&[marker]);
+        let execution = ExecutionId::from_bytes([marker; 16]).expect("execution");
+        let result = observation_result(marker.wrapping_add(1), key.attempt());
+        let observation = result
+            .observation()
+            .observation()
+            .id()
+            .expect("observation ID");
+        let state = AttemptRuntimeState::Publishing {
+            execution_basis: CampaignHash::derive("test.execution-basis.v1", &[marker]),
+            origin: AttemptExecutionOrigin::Initial,
+            daemon_epoch: DaemonEpoch::from_bytes([marker.wrapping_add(2); 16])
+                .expect("daemon epoch"),
+            execution,
+            observation,
+            finding_candidate: None,
+            finding_replay_captures: None,
+            finding_exact_retention_roots: [None; 3],
+            prepared_result_digest: None,
+        };
+        let mut ledger = DirectoryAssignmentLedger::open(ledger_root.path()).expect("ledger");
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, None, Some(state))
+                .expect("publish ledger state"),
+            AttemptStateCas::Advanced
+        );
+        migration::write_legacy_journal_for_test(
+            namespace.path(),
+            key,
+            execution,
+            TEST_PAYLOAD_LIMIT,
+            &result,
+        )
+        .expect("legacy journal");
+        LegacyJournalFixture {
+            _ledger_root: ledger_root,
+            namespace,
+            ledger,
+            key,
+            execution,
+            result,
+        }
+    }
+
+    #[test]
+    fn legacy_journal_requires_explicit_migration_before_runtime_open() {
+        let mut fixture = legacy_journal_fixture(0x61);
+
+        assert!(matches!(
+            DirectoryPreparedResultJournal::open(
+                fixture.namespace.path(),
+                fixture.key,
+                fixture.execution,
+                TEST_PAYLOAD_LIMIT,
+            ),
+            Err(PreparedResultJournalError::Incomplete)
+        ));
+
+        let summary = migrate_prepared_result_journals(
+            fixture.namespace.path(),
+            &mut fixture.ledger,
+            1,
+            TEST_PAYLOAD_LIMIT,
+        )
+        .expect("migrate journal");
+        assert_eq!(
+            summary,
+            PreparedResultJournalMigrationSummary {
+                journals: 1,
+                migrated: 1,
+            }
+        );
+        let journal = DirectoryPreparedResultJournal::open(
+            fixture.namespace.path(),
+            fixture.key,
+            fixture.execution,
+            TEST_PAYLOAD_LIMIT,
+        )
+        .expect("open migrated journal");
+        assert_eq!(journal.result(), &fixture.result);
+    }
+
+    #[test]
+    fn migration_resumes_before_and_after_atomic_exchange() {
+        for (marker, after_exchange) in [(0x71, false), (0x75, true)] {
+            let mut fixture = legacy_journal_fixture(marker);
+            migration::interrupt_migration_for_test(
+                fixture.namespace.path(),
+                fixture.key,
+                TEST_PAYLOAD_LIMIT,
+                after_exchange,
+            )
+            .expect("interrupt migration");
+
+            let summary = migrate_prepared_result_journals(
+                fixture.namespace.path(),
+                &mut fixture.ledger,
+                1,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .expect("resume migration");
+            assert_eq!(summary.migrated, 1);
+            assert!(!migration::migration_path(fixture.namespace.path(), fixture.key).exists());
+            DirectoryPreparedResultJournal::open(
+                fixture.namespace.path(),
+                fixture.key,
+                fixture.execution,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .expect("open resumed journal");
+        }
+    }
+
+    #[test]
+    fn migration_rejects_corruption_before_staging_or_replacement() {
+        let mut fixture = legacy_journal_fixture(0x79);
+        let root = journal_path(fixture.namespace.path(), fixture.key);
+        let result_path = root.join(migration::JOURNAL_RESULT_FILE_V1);
+        let state_path = root.join(migration::JOURNAL_STATE_FILE_V1);
+        let original_state = fs::read(&state_path).expect("read legacy state");
+        fs::write(&result_path, b"corrupt legacy payload").expect("corrupt payload");
+
+        assert!(
+            migrate_prepared_result_journals(
+                fixture.namespace.path(),
+                &mut fixture.ledger,
+                1,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(state_path).expect("read unchanged state"),
+            original_state
+        );
+        assert!(!migration::migration_path(fixture.namespace.path(), fixture.key).exists());
+    }
+
+    #[test]
+    fn migration_rejects_a_held_journal_lock_before_staging() {
+        let mut fixture = legacy_journal_fixture(0x7d);
+        let lock = acquire_namespace_lock(fixture.namespace.path(), fixture.key)
+            .expect("hold journal lock");
+        assert!(
+            migrate_prepared_result_journals(
+                fixture.namespace.path(),
+                &mut fixture.ledger,
+                1,
+                TEST_PAYLOAD_LIMIT,
+            )
+            .is_err()
+        );
+        assert!(!migration::migration_path(fixture.namespace.path(), fixture.key).exists());
+        drop(lock);
+    }
 
     #[test]
     fn staged_journal_is_durable_hidden_and_promotes_exactly() {
@@ -1444,125 +1601,6 @@ mod tests {
     }
 
     #[test]
-    fn journal_v2_owns_raw_measurement_leaf_and_v1_remains_recoverable() {
-        let namespace = TempDir::new().expect("journal namespace");
-        let key = semantic_key(b"measurement-evidence");
-        let execution = ExecutionId::from_bytes([0x63; 16]).expect("execution");
-        let result = measurement_result(0x64, key.attempt());
-        let payload = result
-            .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-            .expect("v2 prepared result");
-
-        let (journal, disposition) = DirectoryPreparedResultJournal::create(
-            namespace.path(),
-            key,
-            execution,
-            TEST_PAYLOAD_LIMIT,
-            result.clone(),
-        )
-        .expect("create v2 journal");
-        assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
-        assert_eq!(journal.result(), &result);
-        assert_eq!(journal.result().measurement_replay_evidence().len(), 1);
-        assert_eq!(
-            fs::read(journal.root().join(JOURNAL_RESULT_FILE)).expect("v2 payload"),
-            payload
-        );
-        assert_eq!(
-            blake3::hash(&payload).to_hex().as_str(),
-            "31c8b31392bbc85ca11c2ffee98136fa7a9b4229d31849c55e291cf24636f551"
-        );
-        let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v2 state");
-        assert_eq!(
-            blake3::hash(&state).to_hex().as_str(),
-            "572578832ea7b855dd41d48fb3301d92e9ac4455520f428ea681d4ee3f316eb3"
-        );
-        journal.remove().expect("remove v2 journal");
-
-        let legacy_key = semantic_key(b"legacy-result");
-        let legacy_execution = ExecutionId::from_bytes([0x65; 16]).expect("legacy execution");
-        let legacy_result = observation_result(0x66, legacy_key.attempt());
-        let legacy_payload = legacy_result
-            .canonical_v1_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-            .expect("legacy payload");
-        let legacy_payload_limit = legacy_payload.len();
-        assert!(matches!(
-            legacy_result.canonical_bytes_with_limit(legacy_payload_limit),
-            Err(PreparedSemanticResultCodecError::LimitExceeded)
-        ));
-        let decoded = PreparedSemanticAttemptResult::from_canonical_bytes_with_limit(
-            &legacy_payload,
-            legacy_payload_limit,
-        )
-        .expect("decode legacy payload");
-        assert_eq!(decoded, legacy_result);
-        assert_ne!(
-            decoded.canonical_bytes().expect("upgraded v2 bytes"),
-            legacy_payload
-        );
-
-        let legacy_state = encode_state(
-            legacy_key,
-            legacy_execution,
-            legacy_payload_limit,
-            &legacy_result,
-            &legacy_payload,
-            JournalVersion::V1,
-        )
-        .expect("legacy state");
-        let legacy_root = journal_path(namespace.path(), legacy_key);
-        fs::create_dir(&legacy_root).expect("legacy journal directory");
-        write_atomic(&legacy_root, JOURNAL_RESULT_FILE_V1, &legacy_payload)
-            .expect("legacy result file");
-        write_atomic(&legacy_root, JOURNAL_STATE_FILE_V1, &legacy_state)
-            .expect("legacy state file");
-        sync_directory(namespace.path(), "sync-test-legacy-parent").expect("sync legacy parent");
-
-        let recovered = DirectoryPreparedResultJournal::open(
-            namespace.path(),
-            legacy_key,
-            legacy_execution,
-            legacy_payload_limit,
-        )
-        .expect("recover legacy journal");
-        assert_eq!(recovered.result(), &legacy_result);
-        drop(recovered);
-        let (recovered, disposition) = DirectoryPreparedResultJournal::create(
-            namespace.path(),
-            legacy_key,
-            legacy_execution,
-            legacy_payload_limit,
-            legacy_result.clone(),
-        )
-        .expect("reopen exact-bound legacy journal through create");
-        assert_eq!(
-            disposition,
-            PreparedResultJournalCreateDisposition::Existing
-        );
-        recovered.remove().expect("remove legacy journal");
-
-        let v2_payload = legacy_result
-            .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-            .expect("v2 legacy-content payload");
-        assert_cross_version_pair_fails(
-            b"v2-state-v1-result",
-            legacy_result.clone(),
-            &legacy_payload,
-            JournalVersion::V2,
-            JOURNAL_RESULT_FILE,
-            JOURNAL_STATE_FILE,
-        );
-        assert_cross_version_pair_fails(
-            b"v1-state-v2-result",
-            legacy_result,
-            &v2_payload,
-            JournalVersion::V1,
-            JOURNAL_RESULT_FILE_V1,
-            JOURNAL_STATE_FILE_V1,
-        );
-    }
-
-    #[test]
     fn journal_rejects_corrupt_incomplete_and_nonsemantic_state() {
         let namespace = TempDir::new().expect("journal namespace");
         let key = semantic_key(b"corrupt");
@@ -1664,7 +1702,7 @@ mod tests {
         let staged = staged_path(namespace.path(), key);
         fs::create_dir(&staged).expect("partial staging directory");
         fs::write(staged.join(JOURNAL_RESULT_FILE), b"partial").expect("partial result");
-        fs::write(staged.join(".state-v1.123.0"), b"partial")
+        fs::write(staged.join(".state-v2.123.0"), b"partial")
             .expect("partial atomic state temporary");
         assert!(matches!(
             DirectoryPreparedResultJournal::create(
@@ -1744,42 +1782,6 @@ mod tests {
         AttemptExecutionKey::new(lineage, attempt)
     }
 
-    fn assert_cross_version_pair_fails(
-        marker: &[u8],
-        result: PreparedSemanticAttemptResult,
-        payload: &[u8],
-        state_version: JournalVersion,
-        result_file: &str,
-        state_file: &str,
-    ) {
-        let namespace = TempDir::new().expect("cross-version namespace");
-        let key = semantic_key(marker);
-        let execution = ExecutionId::from_bytes([0x67; 16]).expect("cross-version execution");
-        let state = encode_state(
-            key,
-            execution,
-            TEST_PAYLOAD_LIMIT,
-            &result,
-            payload,
-            state_version,
-        )
-        .expect("cross-version state");
-        let root = journal_path(namespace.path(), key);
-        fs::create_dir(&root).expect("cross-version journal directory");
-        write_atomic(&root, result_file, payload).expect("cross-version result file");
-        write_atomic(&root, state_file, &state).expect("cross-version state file");
-
-        assert!(matches!(
-            DirectoryPreparedResultJournal::open(
-                namespace.path(),
-                key,
-                execution,
-                TEST_PAYLOAD_LIMIT,
-            ),
-            Err(PreparedResultJournalError::InvalidState)
-        ));
-    }
-
     fn observation_result(marker: u8, attempt: AttemptId) -> PreparedSemanticAttemptResult {
         let candidate = observation_candidate(
             marker,
@@ -1787,60 +1789,6 @@ mod tests {
             MeasurementSet::new(BTreeMap::new()).expect("measurements"),
         );
         PreparedSemanticAttemptResult::new(candidate, None).expect("prepared result")
-    }
-
-    fn measurement_result(marker: u8, attempt: AttemptId) -> PreparedSemanticAttemptResult {
-        let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", &[marker, 0]));
-        let configuration = ConfigurationId::from_hash(CampaignHash::derive("test", &[marker, 2]));
-        let publication = evaluate_crucible_measurement_publication(
-            scenario,
-            configuration,
-            &MeasurementDefinitions::empty(),
-            Vec::new(),
-            MeasurementTerminalState {
-                scenario_ready_at: None,
-                at: VirtualTime { ticks: 0 },
-                node_icounts: BTreeMap::new(),
-                scheduler_quiescent: true,
-            },
-            MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
-        )
-        .expect("measurement publication");
-        let (evidence, _, measurements) = publication.into_parts();
-        let candidate = observation_candidate(marker, attempt, measurements);
-
-        assert!(matches!(
-            PreparedSemanticAttemptResult::new(candidate.clone(), None),
-            Err(PreparedSemanticResultCodecError::Inconsistent {
-                component: "missing measurement replay evidence"
-            })
-        ));
-        assert!(matches!(
-            PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
-                candidate.clone(),
-                vec![evidence.clone(), evidence.clone()],
-                None,
-            ),
-            Err(PreparedSemanticResultCodecError::Inconsistent {
-                component: "duplicate measurement replay evidence"
-            })
-        ));
-
-        let result = PreparedSemanticAttemptResult::new_with_measurement_replay_evidence(
-            candidate,
-            vec![evidence],
-            None,
-        )
-        .expect("prepared measurement result");
-        let encoded = result
-            .canonical_bytes()
-            .expect("encoded measurement result");
-        assert_eq!(
-            PreparedSemanticAttemptResult::from_canonical_bytes(&encoded)
-                .expect("decoded measurement result"),
-            result
-        );
-        result
     }
 
     fn observation_candidate(

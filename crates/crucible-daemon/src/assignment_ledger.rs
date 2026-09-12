@@ -36,36 +36,8 @@ use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
 const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v15\0";
-const ATTEMPT_STATE_MAGIC_V14: &[u8] = b"crucible.executor.attempt-state-record.v14\0";
-const ATTEMPT_STATE_MAGIC_V13: &[u8] = b"crucible.executor.attempt-state-record.v13\0";
-const ATTEMPT_STATE_MAGIC_V12: &[u8] = b"crucible.executor.attempt-state-record.v12\0";
-const ATTEMPT_STATE_MAGIC_V11: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
-const ATTEMPT_STATE_MAGIC_V10: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
-const ATTEMPT_STATE_MAGIC_V9: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
-const ATTEMPT_STATE_MAGIC_V8: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
-const ATTEMPT_STATE_MAGIC_V7: &[u8] = b"crucible.executor.attempt-state-record.v7\0";
-const ATTEMPT_STATE_MAGIC_V6: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
-const ATTEMPT_STATE_MAGIC_V5: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
-const ATTEMPT_STATE_MAGIC_V4: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
-const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
-const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
-const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
 const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v15";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V14: &str = "crucible.executor.attempt-state-record.v14";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V13: &str = "crucible.executor.attempt-state-record.v13";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V12: &str = "crucible.executor.attempt-state-record.v12";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V11: &str = "crucible.executor.attempt-state-record.v11";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V10: &str = "crucible.executor.attempt-state-record.v10";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V9: &str = "crucible.executor.attempt-state-record.v9";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V8: &str = "crucible.executor.attempt-state-record.v8";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V7: &str = "crucible.executor.attempt-state-record.v7";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V6: &str = "crucible.executor.attempt-state-record.v6";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V5: &str = "crucible.executor.attempt-state-record.v5";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V4: &str = "crucible.executor.attempt-state-record.v4";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V3: &str = "crucible.executor.attempt-state-record.v3";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str = "crucible.executor.attempt-state-record.v2";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str = "crucible.executor.attempt-state-record.v1";
 const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
 const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
 const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
@@ -1538,6 +1510,15 @@ pub enum AssignmentLedgerError {
     GenerationExhausted,
 }
 
+/// Bounded result of an explicit assignment-record format migration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AssignmentMigrationSummary {
+    /// Number of authenticated attempt records examined.
+    pub records: usize,
+    /// Number of legacy records replaced with v15 records.
+    pub migrated: usize,
+}
+
 /// Crash-safe directory ledger with one nonblocking process writer lock.
 pub struct DirectoryAssignmentLedger {
     root: PathBuf,
@@ -1637,6 +1618,24 @@ impl DirectoryAssignmentLedger {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Authenticates and converts legacy attempt records to v15.
+    ///
+    /// The ledger's exclusive writer lock remains held for the whole operation.
+    /// Every record is authenticated and staged before the first replacement.
+    /// The operation is idempotent after interruption.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssignmentLedgerError`] when the inventory exceeds
+    /// `maximum_records`, any source record is invalid, or durable publication
+    /// fails.
+    pub(crate) fn migrate_attempt_records(
+        &self,
+        maximum_records: usize,
+    ) -> Result<AssignmentMigrationSummary, AssignmentLedgerError> {
+        migration::migrate_attempt_records(self, maximum_records)
     }
 
     fn assignment_path(&self, assignment: AssignmentId) -> PathBuf {
@@ -2092,6 +2091,10 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionReaderFence<'_> {
 }
 
 mod codec;
+mod migration;
+
+#[cfg(test)]
+use migration::*;
 
 use codec::*;
 

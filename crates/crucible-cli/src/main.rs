@@ -556,6 +556,20 @@ struct StoreEnsureArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct StoreRepairArgs {
+    #[command(subcommand)]
+    command: StoreRepairCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreRepairCommand {
+    /// Restore one physical placement from an authenticated peer.
+    Placement(StorePlacementRepairArgs),
+    /// Migrate stopped-daemon assignment and prepared-result state.
+    OperationalState(StoreOperationalStateRepairArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StorePlacementRepairArgs {
     /// Exact canonical content ID to repair.
     #[arg(value_name = "CONTENT_ID")]
     content: String,
@@ -577,6 +591,31 @@ struct StoreRepairArgs {
     /// Strict owner-only campaign peer policy used by this deployment.
     #[arg(long, value_name = "PATH")]
     policy: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreOperationalStateRepairArgs {
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "PATH")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "PATH")]
+    policy: PathBuf,
+    /// Existing assignment-ledger root to migrate through v15.
+    #[arg(long, value_name = "PATH")]
+    ledger: PathBuf,
+    /// Existing prepared-result namespace to migrate through v2.
+    #[arg(long, value_name = "PATH")]
+    prepared_results: PathBuf,
+    /// Maximum assignment attempt records admitted in one migration.
+    #[arg(long, value_name = "COUNT", default_value_t = 1_000_000)]
+    maximum_assignment_records: usize,
+    /// Maximum prepared-result journals admitted in one migration.
+    #[arg(long, value_name = "COUNT", default_value_t = 200_000)]
+    maximum_prepared_journals: usize,
+    /// Maximum bytes admitted for any prepared-result payload.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
+    maximum_prepared_result_bytes: usize,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

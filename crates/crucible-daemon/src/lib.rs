@@ -146,6 +146,7 @@ pub mod hot_checkpoint_retention;
 pub mod managed_hot_checkpoint_pool;
 #[cfg(target_os = "linux")]
 pub mod managed_qemu_hot_fork_source_world_pool;
+mod operational_state_migration;
 mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 #[cfg(target_os = "linux")]
@@ -518,6 +519,10 @@ pub use managed_qemu_hot_fork_source_world_pool::{
     SharedManagedQemuHotForkSourceWorldShutdownError, SharedQemuHotForkSourceWorldProvider,
     SharedQemuHotForkSourceWorldProviderConstructionError,
     SharedQemuHotForkSourceWorldProviderError,
+};
+pub use operational_state_migration::{
+    OperationalStateMigrationConfig, OperationalStateMigrationError,
+    OperationalStateMigrationSummary, migrate_operational_state,
 };
 pub use packaged_qemu_executor::{
     AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
