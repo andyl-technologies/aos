@@ -137,7 +137,7 @@ impl CampaignGcPreparedPlan {
         self.unreachable_candidates
     }
 
-    /// Returns reachable read-through cache placements authorized by v2 policy.
+    /// Returns reachable cache placements authorized by v2 policy.
     #[must_use]
     pub const fn reachable_cache_candidates(&self) -> u64 {
         self.reachable_cache_candidates
@@ -164,7 +164,7 @@ impl CampaignGcPreparedPlan {
 /// exact pin must resolve to a journal selection bound to its latest pin fact.
 /// The repository then authenticates the union of those logical closures.
 /// Finally each physical leaf is inventoried under its own fence. Unreachable
-/// placements enter every candidate manifest. A reachable read-through cache
+/// placements enter every candidate manifest. A reachable cache
 /// placement enters a v2 manifest only when a physically independent required
 /// copy is authenticated to EOF between matching inventory generations.
 /// `store_graph` supplies both the exact canonical graph identity and its
@@ -629,7 +629,7 @@ where
             .get(&(cache.identity, cache.record.id().kind()))
             .copied()
             .unwrap_or(StoreGraphPhysicalRetention::Required);
-        if cache_role != StoreGraphPhysicalRetention::ReadThroughCache
+        if cache_role != StoreGraphPhysicalRetention::Cache
             || aliases.get(&cache.identity).copied() != Some(1)
         {
             continue;
@@ -652,7 +652,7 @@ where
                 CampaignGcManifestError::EntryLimit,
             ));
         }
-        candidates.push(CampaignGcCandidate::new_reachable_read_through_cache(
+        candidates.push(CampaignGcCandidate::new_reachable_cache(
             physical[cache.target].backend,
             cache.record.id(),
             cache.record.logical_length(),

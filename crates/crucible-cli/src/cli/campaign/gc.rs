@@ -460,8 +460,7 @@ fn cache_required_copy_report(
     candidates
         .iter()
         .filter_map(|candidate| {
-            let CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } =
-                candidate.reason()
+            let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
             else {
                 return None;
             };

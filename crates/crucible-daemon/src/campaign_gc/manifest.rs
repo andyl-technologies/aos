@@ -29,7 +29,7 @@
 //! Version 2 appends an explicit reason to every entry:
 //!
 //! ```text
-//! reason:u8 # 0 unreachable, 1 reachable read-through cache
+//! reason:u8 # 0 unreachable, 1 reachable reconstructible cache
 //! if reason == 1:
 //!   required_backend_length:u16be || required_backend_utf8
 //! ```
@@ -175,8 +175,8 @@ pub struct CampaignGcCandidate {
 pub enum CampaignGcCandidateReason {
     /// The logical object is absent from the authenticated reachable closure.
     Unreachable,
-    /// A reachable copy is a read-through cache backed by a required copy.
-    ReachableReadThroughCache {
+    /// A reachable copy is a reconstructible cache backed by a required copy.
+    ReachableCache {
         /// Physical backend whose v2 plan basis authenticates the required copy.
         required_backend: String,
     },
@@ -213,14 +213,14 @@ impl CampaignGcCandidate {
         })
     }
 
-    /// Builds one reachable read-through cache candidate and required-copy basis.
+    /// Builds one reachable cache candidate and required-copy basis.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignGcManifestError::InvalidBackendId`] if either backend
     /// violates the operational identifier grammar, or
     /// [`CampaignGcManifestError::InvalidField`] if both names are equal.
-    pub fn new_reachable_read_through_cache(
+    pub fn new_reachable_cache(
         backend: impl Into<String>,
         id: ContentId,
         logical_length: u64,
@@ -238,7 +238,7 @@ impl CampaignGcCandidate {
             backend,
             id,
             logical_length,
-            reason: CampaignGcCandidateReason::ReachableReadThroughCache { required_backend },
+            reason: CampaignGcCandidateReason::ReachableCache { required_backend },
         })
     }
 
@@ -359,7 +359,7 @@ impl CampaignGcCandidateManifest {
                 }
                 CampaignGcCandidateManifestVersion::V2 => match read_u8(reader)? {
                     0 => CampaignGcCandidate::new(backend, id, logical_length)?,
-                    1 => CampaignGcCandidate::new_reachable_read_through_cache(
+                    1 => CampaignGcCandidate::new_reachable_cache(
                         backend,
                         id,
                         logical_length,
@@ -401,7 +401,7 @@ impl CampaignGcCandidateManifest {
             if self.version == CampaignGcCandidateManifestVersion::V2 {
                 match candidate.reason() {
                     CampaignGcCandidateReason::Unreachable => writer.write_all(&[0])?,
-                    CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } => {
+                    CampaignGcCandidateReason::ReachableCache { required_backend } => {
                         writer.write_all(&[1])?;
                         write_bounded_string(
                             writer,
@@ -430,7 +430,7 @@ impl CampaignGcCandidateManifest {
                     CampaignGcCandidateReason::Unreachable => {
                         hasher.update(&[0]);
                     }
-                    CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } => {
+                    CampaignGcCandidateReason::ReachableCache { required_backend } => {
                         hasher.update(&[1]);
                         hash_bounded_string(&mut hasher, required_backend);
                     }
@@ -472,7 +472,7 @@ impl CampaignGcCandidateManifest {
             .count() as u64
     }
 
-    /// Returns reachable read-through cache candidates authorized by v2 policy.
+    /// Returns reachable cache candidates authorized by v2 policy.
     #[must_use]
     pub fn reachable_cache_candidates(&self) -> u64 {
         self.candidates
@@ -480,7 +480,7 @@ impl CampaignGcCandidateManifest {
             .filter(|candidate| {
                 matches!(
                     candidate.reason(),
-                    CampaignGcCandidateReason::ReachableReadThroughCache { .. }
+                    CampaignGcCandidateReason::ReachableCache { .. }
                 )
             })
             .count() as u64

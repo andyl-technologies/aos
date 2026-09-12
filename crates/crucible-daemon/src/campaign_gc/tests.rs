@@ -1126,7 +1126,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
     assert_eq!(candidate.backend(), cache.as_str());
     assert!(matches!(
         candidate.reason(),
-        CampaignGcCandidateReason::ReachableReadThroughCache { required_backend }
+        CampaignGcCandidateReason::ReachableCache { required_backend }
             if required_backend == source.as_str()
     ));
 
@@ -1159,7 +1159,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
     ));
 
     let forged_candidates = CampaignGcCandidateManifest::new_policy_aware(vec![
-        CampaignGcCandidate::new_reachable_read_through_cache(
+        CampaignGcCandidate::new_reachable_cache(
             source.as_str(),
             live_id,
             live_bytes.len() as u64,
@@ -1250,6 +1250,132 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
 }
 
 #[test]
+fn policy_aware_gc_evicts_write_back_staging_only_after_transfer_completion() {
+    let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
+    let staging_root = temp.path().join("staging");
+    let destination_root = temp.path().join("destination");
+    let graph_root = StoreNodeId::new("write-back").expect("root node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let destination = StoreNodeId::new("destination").expect("destination node");
+    let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: graph_root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                graph_root,
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root: temp.path().join("write-back-journal"),
+                    maximum_pending_objects: 8,
+                    maximum_pending_bytes: 1024 * 1024,
+                },
+            ),
+            (
+                staging.clone(),
+                StoreNodeSpec::Directory {
+                    root: staging_root.clone(),
+                },
+            ),
+            (
+                destination.clone(),
+                StoreNodeSpec::Directory {
+                    root: destination_root.clone(),
+                },
+            ),
+        ]),
+    })
+    .expect("write-back graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live_bytes = b"reachable write-back staging object".to_vec();
+    let live_id = ContentId::for_bytes(ObjectKind::Trace, 1, &live_bytes);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("stage live object");
+    refs.compare_exchange(
+        &RefName::new("retained/write-back-live").expect("retained ref"),
+        None,
+        live_id,
+    )
+    .expect("publish retained root");
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let before_transfer = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("plan while destination is missing");
+    assert_eq!(before_transfer.reachable_cache_candidates(), 0);
+    assert!(before_transfer.candidates().is_empty());
+
+    let flush = graph
+        .flush_write_back(1)
+        .expect("complete destination transfer");
+    assert_eq!(flush.completed(), 1);
+    assert_eq!(flush.pending(), 0);
+
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("plan completed staging eviction");
+    assert_eq!(prepared.reachable_cache_candidates(), 1);
+    let candidate = prepared
+        .candidates()
+        .iter()
+        .next()
+        .expect("staging candidate");
+    assert_eq!(candidate.backend(), staging.as_str());
+    assert!(matches!(
+        candidate.reason(),
+        CampaignGcCandidateReason::ReachableCache { required_backend }
+            if required_backend == destination.as_str()
+    ));
+
+    let journal_root = temp.path().join("gc-journal");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(journal_root, &prepared).expect("create GC journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("apply staging eviction");
+    assert_eq!(report.reachable_cache_candidates(), 1);
+
+    let staging_store = DirectoryBlobBackend::new("staging-check", staging_root);
+    let destination_store = DirectoryBlobBackend::new("destination-check", destination_root);
+    assert!(!staging_store.contains(live_id).expect("staging absence"));
+    assert!(
+        destination_store
+            .contains(live_id)
+            .expect("destination presence")
+    );
+    assert_eq!(
+        graph
+            .read(live_id, None)
+            .expect("read retained destination")
+            .read_all(1024)
+            .expect("authenticate retained destination"),
+        live_bytes
+    );
+}
+
+#[test]
 fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
     let temp = tempfile::TempDir::new().expect("temporary alias GC root");
     let shared = temp.path().join("shared");
@@ -1332,7 +1458,7 @@ fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
 }
 
 #[test]
-fn required_graph_path_dominates_a_read_through_cache_role() {
+fn required_graph_path_dominates_a_cache_role() {
     let root = StoreNodeId::new("tiered-root").expect("root node");
     let read_through = StoreNodeId::new("read-through").expect("read-through node");
     let cache = StoreNodeId::new("shared-cache").expect("cache node");
@@ -1345,7 +1471,7 @@ fn required_graph_path_dominates_a_read_through_cache_role() {
                 root,
                 StoreNodeSpec::Tiered {
                     tiers: vec![read_through.clone(), cache.clone()],
-                    write_tier: 0,
+                    write_tier: 1,
                     promote_reads: false,
                 },
             ),
@@ -1382,7 +1508,7 @@ fn required_graph_path_dominates_a_read_through_cache_role() {
         .find(|physical| physical.node() == &source)
         .and_then(|physical| physical.retention(ObjectKind::Trace));
     assert_eq!(cache_role, Some(StoreGraphPhysicalRetention::Required));
-    assert_eq!(source_role, Some(StoreGraphPhysicalRetention::Required));
+    assert_eq!(source_role, Some(StoreGraphPhysicalRetention::Cache));
 }
 
 #[test]
