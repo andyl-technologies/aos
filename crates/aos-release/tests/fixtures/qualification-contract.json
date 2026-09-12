@@ -148,7 +148,8 @@
         "tls-private-key-sentinel-absent-from-durable-and-rendered-records",
         "credential-renewal-reloads-and-serves-new-version",
         "selected-tls-generation-and-credential-view-survive-gc-and-reboot",
-        "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
+        "tls-disable-and-cleartext-transition-release-credential-views-after-service-change",
+        "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order"
       ],
       "id": "ability-native-activation",
       "invalidated_by": [

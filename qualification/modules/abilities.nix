@@ -8,10 +8,9 @@
   nativeAdapterMatrix = import ./_native-adapter-matrix.nix {inherit lib;};
   containerExecutionMatrix = import ./_container-execution-matrix.nix {inherit lib;};
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
-  # This cohort exercises credential delivery and host systemd. It makes no
-  # ingress-policy ordering or authority-revocation claim until those paths
-  # are present in the VM scenario. Sandbox view isolation, lease fencing, and
-  # container-local management also require their production providers.
+  # This cohort exercises credential delivery, loopback ingress policy, and
+  # host systemd. Authority revocation, sandbox view isolation, lease fencing,
+  # and container-local management require their production providers.
   hostSystemdNginxTlsChecks = [
     "typed-opaque-tls-credential-version-delivery-and-validation-binding"
     "independent-served-certificate-observation-matches-declared-version"
@@ -20,6 +19,7 @@
     "credential-renewal-reloads-and-serves-new-version"
     "selected-tls-generation-and-credential-view-survive-gc-and-reboot"
     "tls-disable-and-cleartext-transition-release-credential-views-after-service-change"
+    "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order"
   ];
   requiredChecks = {
     ability-native-activation =

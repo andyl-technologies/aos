@@ -317,6 +317,67 @@ in {
           )
 
 
+      def assert_effect_edge(bundle, predecessor, successor, kind):
+          edges = bundle["transition"]["effect_document"]["edges"]
+          expected = {
+              "from": {"kind": "operation", "key": predecessor["key"]},
+              "to": {"kind": "operation", "key": successor["key"]},
+              "kind": kind,
+          }
+          assert expected in edges, (expected, edges)
+
+
+      def exact_operation(bundle, resource_key, methods):
+          operations = bundle["transition"]["effect_document"]["operations"]
+          matching = [
+              operation
+              for operation in operations
+              if operation["target"]["resource"]["key"] == resource_key
+              and operation["method"] in methods
+          ]
+          assert len(matching) == 1, (resource_key, methods, operations)
+          return matching[0]
+
+
+      def assert_network_activation_order(generation, transaction, instance, ports):
+          bundle, _ = native_transaction_documents(generation, transaction)
+          service = exact_operation(
+              bundle, f"{instance}-service", {"start", "reload"}
+          )
+          readiness = exact_operation(bundle, f"{instance}-service", {"observe"})
+          assert_effect_edge(bundle, service, readiness, "required-success")
+          for listener, port in ports:
+              endpoint = exact_operation(
+                  bundle,
+                  f"{listener}-endpoint-{port}",
+                  {"materialize", "observe"},
+              )
+              policy = exact_operation(
+                  bundle,
+                  f"{listener}-network-policy-{port}",
+                  {"apply", "observe"},
+              )
+              assert_effect_edge(bundle, endpoint, policy, "data")
+              assert_effect_edge(bundle, policy, service, "required-success")
+
+
+      def assert_network_removal_order(
+          generation, transaction, instance, listener, port, service_method
+      ):
+          bundle, _ = native_transaction_documents(generation, transaction)
+          service = exact_operation(
+              bundle, f"{instance}-service", {service_method}
+          )
+          policy = exact_operation(
+              bundle, f"{listener}-network-policy-{port}", {"remove"}
+          )
+          endpoint = exact_operation(
+              bundle, f"{listener}-endpoint-{port}", {"release"}
+          )
+          assert_effect_edge(bundle, service, policy, "required-success")
+          assert_effect_edge(bundle, policy, endpoint, "required-success")
+
+
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300
       )
@@ -800,6 +861,19 @@ in {
       generation_tls_v1 = switch_host(
           "/run/ability-host-tls-v1.nix", "tls-v1"
       )
+      tls_v1_transaction = next(iter(retained_transactions(generation_tls_v1)))
+      assert_network_activation_order(
+          generation_tls_v1,
+          tls_v1_transaction,
+          "nginx-main",
+          [("http", 18081), ("tls", 18443)],
+      )
+      assert_network_activation_order(
+          generation_tls_v1,
+          tls_v1_transaction,
+          "nginx-secondary",
+          [("http", 18082), ("tls", 18444)],
+      )
       runtime.wait_until_succeeds(
           "systemctl is-active --quiet nginx-nginx-main.service", timeout=120
       )
@@ -975,7 +1049,21 @@ in {
       write_activation_host(
           "/run/ability-host-tls-disable.nix", activation_tls_disable
       )
-      switch_host("/run/ability-host-tls-disable.nix", "tls-disable-main")
+      generation_tls_disable = switch_host(
+          "/run/ability-host-tls-disable.nix", "tls-disable-main"
+      )
+      tls_disable_transaction = next(
+          iter(retained_transactions(generation_tls_disable))
+      )
+      for listener, port in [("http", 18081), ("tls", 18443)]:
+          assert_network_removal_order(
+              generation_tls_disable,
+              tls_disable_transaction,
+              "nginx-main",
+              listener,
+              port,
+              "stop",
+          )
       runtime.fail("systemctl is-active --quiet nginx-nginx-main.service")
       runtime.fail(f"test -e {shlex.quote(main_tls_view)}")
       assert_tls_route_absent("alpha.example", 18443)
@@ -997,7 +1085,18 @@ in {
           activation_clear, "/run/ability-authority-clear-final"
       )
       write_activation_host("/run/ability-host-clear-final.nix", activation_clear)
-      switch_host("/run/ability-host-clear-final.nix", "clear-final")
+      generation_clear = switch_host(
+          "/run/ability-host-clear-final.nix", "clear-final"
+      )
+      clear_transaction = next(iter(retained_transactions(generation_clear)))
+      assert_network_removal_order(
+          generation_clear,
+          clear_transaction,
+          "nginx-secondary",
+          "tls",
+          18444,
+          "observe",
+      )
       runtime.fail(f"test -e {shlex.quote(secondary_tls_view)}")
       assert_tls_route_absent("gamma.example", 18444)
       assert_route("gamma.example", 18082, "app-c", "gamma-clear-final")

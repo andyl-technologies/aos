@@ -1509,6 +1509,10 @@ CHECK_DETAILS = {
         "Disabling one TLS owner stopped its service and removed its view, while removing TLS "
         "from a retained owner closed its TLS listener, served cleartext, and released its view."
     ),
+    "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order": (
+        "Authenticated transition edges placed each loopback endpoint before its ingress policy, "
+        "placed policy before service convergence and readiness, and reversed that order on removal."
+    ),
     "authenticated-k3s-bootstrap-and-provider-authority": (
         "The published guest bootstrapped K3s only from authenticated packages "
         "and provider authority."
