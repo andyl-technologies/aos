@@ -1106,6 +1106,48 @@ impl<'plan> NativeAbilitySession<'plan> {
         Ok(result)
     }
 
+    /// Persists a fail-closed terminal when checked cancellation is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an outer error when marker publication fails. Checked token or
+    /// journal failures remain in the inner result.
+    pub fn record_unsupported_cancellation<Request, Handle, Clock>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Request, Handle>,
+        clock: &Clock,
+    ) -> Result<Result<(), ExecutionError>, GenerationAbilityStoreError>
+    where
+        Clock: MonotonicClock,
+    {
+        let result = self
+            .transaction
+            .record_unsupported_cancellation(admitted, clock);
+        self.persist_terminal_marker()?;
+        Ok(result)
+    }
+
+    /// Persists a fail-closed terminal when checked reconciliation is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an outer error when marker publication fails. Checked token or
+    /// journal failures remain in the inner result.
+    pub fn record_unsupported_reconciliation<Request, Handle, Clock>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Request, Handle>,
+        clock: &Clock,
+    ) -> Result<Result<(), ExecutionError>, GenerationAbilityStoreError>
+    where
+        Clock: MonotonicClock,
+    {
+        let result = self
+            .transaction
+            .record_unsupported_reconciliation(admitted, clock);
+        self.persist_terminal_marker()?;
+        Ok(result)
+    }
+
     /// Records a terminal failure when no effect may remain unresolved.
     ///
     /// # Errors

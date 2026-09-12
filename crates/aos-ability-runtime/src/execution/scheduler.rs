@@ -10,7 +10,8 @@ use aos_ability_model::{
 
 use crate::execution::{
     CompensationInterventionReason, CompensationState, ExecutionEventKind, ExecutionTransaction,
-    InputResolutionError, OperationState, RecoveryAction, TransactionError,
+    InputResolutionError, OperationInterventionReason, OperationState, RecoveryAction,
+    TransactionError,
 };
 
 /// Supplies one operation and its durable next action in dispatch order.
@@ -71,6 +72,9 @@ impl ExecutionTransaction<'_> {
                     let action = self.next_action_with_blocked(key, &blocked_operations)?;
                     if action == RecoveryAction::CompensationInterventionRequired {
                         self.derive_compensation_intervention(key)?;
+                    }
+                    if action == RecoveryAction::InterventionRequired {
+                        self.derive_operation_intervention(key)?;
                     }
                     if !self.branch_is_active(&operation.branch_context)
                         && action != RecoveryAction::SettleFailureBeforeEffect
@@ -154,6 +158,41 @@ impl ExecutionTransaction<'_> {
         };
         let elapsed_millis = history.elapsed_millis();
         self.record_compensation_intervention(key, reason, elapsed_millis)
+    }
+
+    fn derive_operation_intervention(
+        &mut self,
+        key: &ScopedOperationKey,
+    ) -> Result<(), TransactionError> {
+        let operation = self
+            .plan()
+            .operation(key)
+            .ok_or(TransactionError::OperationMissing)?;
+        let history = self.history(key)?;
+        if matches!(
+            history.state(),
+            OperationState::InterventionRequired { .. }
+                | OperationState::RuntimeInterventionRequired { .. }
+        ) {
+            return Ok(());
+        }
+        if !matches!(
+            history.state(),
+            OperationState::IntentDurable { .. }
+                | OperationState::Indeterminate { .. }
+                | OperationState::ReconciliationIntentDurable { .. }
+                | OperationState::CancellationIntentDurable { .. }
+        ) {
+            return Ok(());
+        }
+
+        let reason = if history.elapsed_millis() >= operation.deadline.total_recovery_millis.get() {
+            OperationInterventionReason::RecoveryBudgetExhausted
+        } else {
+            OperationInterventionReason::ReconciliationUnsupported
+        };
+        let elapsed_millis = history.elapsed_millis();
+        self.record_operation_intervention(key, reason, elapsed_millis)
     }
 
     fn derive_decision(

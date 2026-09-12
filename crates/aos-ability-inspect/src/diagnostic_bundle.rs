@@ -223,6 +223,12 @@ pub enum TimelineEventKind {
     CancellationObservedCompletion,
     /// Cancellation left the effect indeterminate.
     CancellationIndeterminate,
+    /// Cancellation was requested but the checked contract has no route.
+    CancellationUnsupported,
+    /// An unresolved effect has no permitted checked reconciliation route.
+    ReconciliationUnsupported,
+    /// The finite recovery budget expired while an effect remained unresolved.
+    RecoveryBudgetExhausted,
     /// Compensation was requested for a completed operation.
     CompensationRequested,
     /// Fresh authority and resources admitted compensation.
@@ -293,7 +299,10 @@ impl TimelineEventKind {
             | Self::CancellationStarted
             | Self::CancellationRejectedBeforeEffect
             | Self::CancellationObservedCompletion
-            | Self::CancellationIndeterminate => AttemptRequirement::Required,
+            | Self::CancellationIndeterminate
+            | Self::CancellationUnsupported
+            | Self::ReconciliationUnsupported
+            | Self::RecoveryBudgetExhausted => AttemptRequirement::Required,
             Self::SettledFailure => AttemptRequirement::Optional,
             _ => AttemptRequirement::Forbidden,
         }
