@@ -13,6 +13,7 @@
   candidateRuntimeCompanions,
   matrixSpec ? null,
   matrixQualifiedCells ? [],
+  matrixAdditionalCohorts ? [],
 }: let
   platform = pkgs.stdenv.hostPlatform.system;
   fixtureScriptRoot = pkgs.writeTextFile {
@@ -44,11 +45,56 @@
     '';
   };
   setupModule = "${setupModuleRoot}/module.nix";
+  additionalCohorts = map (cohort: let
+    scriptRoot = pkgs.writeTextFile {
+      name = "${name}-${cohort.id}-fleet-script";
+      destination = "/script.py";
+      text = cohort.testScript;
+    };
+    setupRoot = pkgs.writeTextFile {
+      name = "${name}-${cohort.id}-setup";
+      destination = "/module.nix";
+      text = ''
+        { pkgs, ... }: {
+          ${cohort.setupBody}
+        }
+      '';
+    };
+  in
+    cohort
+    // {
+      inherit scriptRoot setupRoot;
+      script = "${scriptRoot}/script.py";
+      setup = "${setupRoot}/module.nix";
+    })
+  matrixAdditionalCohorts;
+  allCandidateRuntimeCompanions =
+    candidateRuntimeCompanions
+    ++ lib.concatMap (cohort: cohort.candidateRuntimeCompanions) additionalCohorts;
+  additionalQualifiedCells = lib.concatMap (cohort: cohort.qualifiedCells) additionalCohorts;
+  primaryQualifiedCells =
+    builtins.filter (
+      cellId: !builtins.elem cellId additionalQualifiedCells
+    )
+    matrixQualifiedCells;
+  matrixCohortInputs =
+    lib.optional (matrixSpec != null) {
+      id = "managed-configuration-negative";
+      script = fixtureScript;
+      setup = setupModule;
+      qualifiedCells = primaryQualifiedCells;
+    }
+    ++ map (cohort: {
+      inherit (cohort) id script setup qualifiedCells;
+    })
+    additionalCohorts;
   fixtureRoots = lib.unique (
     map builtins.toString (
       [fixtureScriptRoot setupModuleRoot]
+      ++ lib.concatMap (cohort: [cohort.scriptRoot cohort.setupRoot]) additionalCohorts
       ++ lib.optional (matrixSpecRoot != null) matrixSpecRoot
       ++ extraClosures
+      ++ lib.concatMap (cohort: cohort.extraClosures) additionalCohorts
     )
   );
   fixtureGraph =
@@ -97,11 +143,13 @@
   fixtureArchive = "${fixtureArchiveRoot}/fixture.export";
   fixtureContractDigest = "sha256:${builtins.hashString "sha256" (builtins.toJSON (
     {
-      inherit candidateRuntimeCompanions scenarioId checks setupBody;
+      inherit scenarioId checks setupBody;
+      candidateRuntimeCompanions = allCandidateRuntimeCompanions;
       roots = fixtureRoots;
       script = testScript;
     }
     // lib.optionalAttrs (matrixSpec != null) {
+      matrixCohorts = matrixCohortInputs;
       inherit matrixQualifiedCells matrixSpec;
     }
   ))}";
@@ -220,10 +268,11 @@
     export AOS_QUALIFICATION_CHECKS=${lib.escapeShellArg (builtins.toJSON checks)}
     export AOS_QUALIFICATION_FIXTURE_CONTRACT=${lib.escapeShellArg fixtureContractDigest}
     export AOS_QUALIFICATION_FIXTURE_ARCHIVE=${lib.escapeShellArg fixtureArchive}
-    export AOS_QUALIFICATION_CANDIDATE_RUNTIME_COMPANIONS=${lib.escapeShellArg (builtins.toJSON candidateRuntimeCompanions)}
+    export AOS_QUALIFICATION_CANDIDATE_RUNTIME_COMPANIONS=${lib.escapeShellArg (builtins.toJSON allCandidateRuntimeCompanions)}
     export AOS_QUALIFICATION_FIXTURE_SCRIPT=${lib.escapeShellArg fixtureScript}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC=${lib.escapeShellArg matrixSpecPath}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_QUALIFIED_CELLS=${lib.escapeShellArg (builtins.toJSON matrixQualifiedCells)}
+    export AOS_QUALIFICATION_NATIVE_ADAPTER_COHORTS=${lib.escapeShellArg (builtins.toJSON matrixCohortInputs)}
     export AOS_QUALIFICATION_NATIVE_ADAPTER_COHORT_SUPPORT=${lib.escapeShellArg matrixCohortSupportPath}
     export AOS_QUALIFICATION_SETUP_MODULE=${lib.escapeShellArg setupModule}
     export AOS_QUALIFICATION_IMAGE_SUPPORT=${lib.escapeShellArg "${support}/share/aos-release/qualification-image.py"}
@@ -293,6 +342,16 @@ in
   ];
   assert (matrixSpec != null) == (scenarioId == "ability-native-adapter-matrix");
   assert (matrixQualifiedCells != []) == (matrixSpec != null);
+  assert matrixQualifiedCells == lib.concatMap (cohort: cohort.qualifiedCells) matrixCohortInputs;
+  assert builtins.length matrixQualifiedCells == builtins.length (lib.unique matrixQualifiedCells);
+  assert builtins.length matrixCohortInputs == builtins.length (lib.unique (map (cohort: cohort.id) matrixCohortInputs));
+  assert builtins.all (cohort:
+    cohort.id
+    != ""
+    && cohort.qualifiedCells != []
+    && cohort.testScript != ""
+    && cohort.candidateRuntimeCompanions != [])
+  matrixAdditionalCohorts;
   assert checks != [];
     executable
     // {
