@@ -469,6 +469,10 @@
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
+  nativeEffectForegroundCohort = import ./tests/fleet/ability-native-effect-boundaries-foreground.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
   nativeEffectRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
       inherit lib mkSystem pkgs cellId;
@@ -557,6 +561,12 @@
             qualifiedCells = nativeEffectBoundaryCells.groups.kubernetes;
             inherit (nativeEffectKubernetesCohort) testScript;
             inherit (nativeEffectKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-effect-boundaries-foreground";
+            qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
+            inherit (nativeEffectForegroundCohort) testScript;
+            inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
         ]
         ++ lib.imap (index: cohort: {

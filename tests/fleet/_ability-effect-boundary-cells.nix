@@ -35,22 +35,25 @@
     systemdManager = byAdapters ["systemd-manager"];
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];
+    foreground = byAdapters ["foreground-process"];
   };
   all =
     groups.reference
     ++ groups.systemdManager
     ++ groups.postgresql
     ++ groups.kubernetes
-    ++ groups.rollout;
+    ++ groups.rollout
+    ++ groups.foreground;
 in
-  assert builtins.length matrix.cells == 1316;
-  assert builtins.length all == 184;
-  assert builtins.length (lib.unique all) == 184;
+  assert builtins.length matrix.cells == 1400;
+  assert builtins.length all == 196;
+  assert builtins.length (lib.unique all) == 196;
   assert builtins.length groups.reference == 85;
   assert builtins.length groups.postgresql == 19;
   assert builtins.length groups.systemdManager == 20;
   assert builtins.length groups.kubernetes == 24;
   assert builtins.length groups.rollout == 36;
+  assert builtins.length groups.foreground == 12;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) selected; {
     inherit all alreadyQualified groups scenarios;
   }
