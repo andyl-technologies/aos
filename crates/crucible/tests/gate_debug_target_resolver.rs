@@ -13,11 +13,11 @@ use crucible::test_support::{
 use crucible::{
     AssertionId, AssertionPhase, ChoiceTag, Configuration, DebugAttachRequest,
     DebugDivergenceCoordinate, DebugTargetResolverRequest, DebugTargetSelector, EngineError,
-    EventAttributeValue, EventDiagnosticPayload, EventLevel,
-    EventLogCausalDivergencePoint, EventLogIcountStamp, EventPayload, EventSource, Icount, NodeId,
-    NodeTemplate, ObservableEvent, OverrideDecision, ReadyPoint, SchedulerEventLogClass,
-    SchedulerEventLogPayload, SchedulingPoint, TemporalGraph, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogCausalDivergencePoint,
+    EventLogIcountStamp, EventPayload, EventSource, Icount, NodeId, NodeTemplate, ObservableEvent,
+    OverrideDecision, ReadyPoint, SchedulerEventLogClass, SchedulerEventLogPayload,
+    SchedulingPoint, TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    bake, try_step,
 };
 
 #[test]
