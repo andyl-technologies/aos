@@ -7,11 +7,11 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
-    EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLog, EventSource,
-    Icount, MaterializedState, NodeId, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
+    AppRandomDecision, Checkpoint, CheckpointKind, Configuration, Decision, EngineError,
+    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLog, EventSource, Icount,
+    MaterializedState, NodeId, RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind,
     SchedulerEventLogEntry, SchedulerEventLogPayload, TemporalGraph, VirtualTime, World, bake,
-    compare_event_log_determinism, event_log_causal_projection, step,
+    compare_event_log_determinism, event_log_causal_projection,
 };
 
 fn node(name: &str) -> NodeId {
@@ -242,13 +242,10 @@ fn observational_verbosity_changes_do_not_change_causal_projection() {
 
 #[test]
 fn replay_oracle_rejects_fat_checkpoint_with_inconsistent_event_log_offset() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-determinism",
-        "replay-oracle-offset",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let child = step(
+    let child = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("event-log-offset"),
@@ -299,4 +296,11 @@ fn replay_oracle_rejects_fat_checkpoint_with_inconsistent_event_log_offset() {
         }
         other => panic!("unexpected replay-oracle error: {other:?}"),
     }
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

@@ -30,10 +30,10 @@ use crucible_campaign::{
     CampaignPolicy, ConfigurationArtifact, ControlRequest, CoverageProjection, DaemonEpoch,
     DiscoveryRequest, ExecutionRetentionIntent, ExecutorClient, ExecutorCompatibilityProfile,
     ExplorerPolicy, FairnessPolicy, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
-    MeasurementSet, NonModeledAttemptDisposition, Observation, ObservationCandidate,
-    PropertyVerdictSet, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution, SavepointContinuationSelection, StopCondition, StopOutcome,
-    SubmitAttemptDisposition, WorkerSlotId,
+    NonModeledAttemptDisposition, Observation, ObservationCandidate, PropertyVerdictSet,
+    SavepointCaptureOutcome, SavepointCaptureRequest, SavepointCaptureResolution,
+    SavepointContinuationSelection, StopCondition, StopOutcome, SubmitAttemptDisposition,
+    WorkerSlotId,
 };
 use crucible_cas::content_store::{
     DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend,
@@ -45,9 +45,9 @@ use crate::{
     CheckpointCompletionOutcome, CheckpointPublicationOutcome, CrucibleAttemptExecution,
     CrucibleExecutionModel, CrucibleExecutionOutcome, CrucibleExecutionRunner,
     CrucibleMaterializationTier, DirectoryAssignmentLedger, ExactCheckpointStore,
-    LocalExecutorSupervisor, QemuAttemptExecutionRouter, QemuFreshAttemptDriver,
-    QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleOwner, QemuFreshDriveOutcome,
-    QemuFreshStartMaterialization, QemuProductionExactResumeExecutionRunner,
+    LocalExecutorSupervisor, PreparedSemanticAttemptResult, QemuAttemptExecutionRouter,
+    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshAttemptLifecycleOwner,
+    QemuFreshDriveOutcome, QemuFreshStartMaterialization, QemuProductionExactResumeExecutionRunner,
     QemuProductionExactResumeLifecycleFactory, QemuProductionExactResumeLifecycleOwner,
     QemuSavepointReplayProof, QemuSelectedOriginVerifier, RepositoryAttemptAdmission,
     RepositoryAttemptWorker, encode_crucible_configuration_artifact,
@@ -410,7 +410,10 @@ fn executable_archive_import_authenticates_checkpoint_and_routes_selected_origin
     let (_, result, _) = worker.execute(queued).into_parts();
     let product = result.expect("route imported checkpoint through test lifecycle");
 
-    assert!(matches!(product, AttemptExecutionProduct::Observation(_)));
+    assert!(matches!(
+        product,
+        AttemptExecutionProduct::PreparedSemantic(_)
+    ));
     assert_eq!(
         worker.model().last_materialization(),
         Some(CrucibleMaterializationTier::ExactRestore)
@@ -485,7 +488,10 @@ fn executable_archive_import_authenticates_checkpoint_and_routes_selected_origin
     let (_, result, _) = worker.execute(fallback_queued).into_parts();
     let product = result.expect("route imported continuation without source ledger");
 
-    assert!(matches!(product, AttemptExecutionProduct::Observation(_)));
+    assert!(matches!(
+        product,
+        AttemptExecutionProduct::PreparedSemantic(_)
+    ));
     assert_eq!(
         worker.model().last_materialization(),
         Some(CrucibleMaterializationTier::ThinReplay)
@@ -734,12 +740,12 @@ impl QemuFreshAttemptDriver for NonDrivingObservationDriver {
         _context: &crate::AttemptExecutionContext,
         _materialization: QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let AttemptExecutionProduct::Observation(candidate) = observation_product(input)? else {
+        let AttemptExecutionProduct::PreparedSemantic(result) = observation_product(input)? else {
             return Err(AttemptWorkerFailure::Terminal(
                 "archive resume fixture produced a non-observation",
             ));
         };
-        Ok(QemuFreshDriveOutcome::Observation(*candidate))
+        Ok(QemuFreshDriveOutcome::Observation(result.into_parts().0))
     }
 
     fn seal(
@@ -752,7 +758,9 @@ impl QemuFreshAttemptDriver for NonDrivingObservationDriver {
                 "archive resume fixture observed unexpected final events",
             ));
         }
-        Ok(AttemptExecutionProduct::Observation(Box::new(pending)))
+        let result = PreparedSemanticAttemptResult::new(pending, None)
+            .map_err(|_| AttemptWorkerFailure::Terminal("prepare observation result"))?;
+        Ok(AttemptExecutionProduct::prepared_semantic(result))
     }
 }
 
@@ -771,8 +779,7 @@ fn observation_product(
         configuration.schedule.to_compact_binary(),
     )
     .map_err(|_| AttemptWorkerFailure::Terminal("build resumed child artifact"))?;
-    let measurements = MeasurementSet::new(BTreeMap::new())
-        .map_err(|_| AttemptWorkerFailure::Terminal("build empty measurements"))?;
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new())
         .map_err(|_| AttemptWorkerFailure::Terminal("build empty properties"))?;
     let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
@@ -812,7 +819,9 @@ fn observation_product(
         observation,
     )
     .map_err(|_| AttemptWorkerFailure::Terminal("build resumed observation candidate"))?;
-    Ok(AttemptExecutionProduct::Observation(Box::new(candidate)))
+    let result = PreparedSemanticAttemptResult::new(candidate, None)
+        .map_err(|_| AttemptWorkerFailure::Terminal("prepare observation result"))?;
+    Ok(AttemptExecutionProduct::prepared_semantic(result))
 }
 
 fn running_campaign(

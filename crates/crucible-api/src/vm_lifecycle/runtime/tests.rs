@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crucible::{RngDecision, RngStreamId, step};
+use crucible::{RngDecision, RngStreamId};
 use crucible_protocol::selectable_catalog_plan::{
     SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
     SelectablePlanLimits, SelectablePlanPendingRequest, SelectablePlanPhase,
@@ -1331,20 +1331,22 @@ fn ordered_branch_sequence_rejects_regressing_or_divergent_boundaries() {
     let source = nonterminal_signal_replay_scenario();
     let scenario = source.scenario_def();
     let base = Configuration::genesis(scenario.clone());
-    let first = step(
+    let first = crucible::try_step(
         &base,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("branch-sequence"),
             value: 1,
         }),
-    );
-    let divergent = step(
+    )
+    .expect("first test decision should be valid");
+    let divergent = crucible::try_step(
         &base,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("branch-sequence"),
             value: 2,
         }),
-    );
+    )
+    .expect("divergent test decision should be valid");
     let branch = |base, ticks| ProductionVmBranchConfig {
         base,
         frontier: VirtualTime { ticks },
@@ -1560,6 +1562,7 @@ fn promoted_signal_branch(
             &String::from_utf8_lossy(label),
         ),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };

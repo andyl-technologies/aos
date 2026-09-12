@@ -102,14 +102,12 @@ impl CampaignRepository {
         let choice_index = self
             .merkle
             .get(prior_graph, choice_index_anchor_key())?
-            .map(|choice_index| {
-                self.merkle.insert(
-                    choice_index,
-                    choice_index_order_key(opportunity),
-                    opportunity.content_id(),
-                )
-            })
-            .transpose()?;
+            .ok_or_else(|| integrity("current-campaign-choice-index-is-missing"))?;
+        let choice_index = self.merkle.insert(
+            choice_index,
+            choice_index_order_key(opportunity),
+            opportunity.content_id(),
+        )?;
         let graph = self.merkle.insert(
             prior_graph,
             authoritative_choice_key(opportunity),
@@ -118,14 +116,11 @@ impl CampaignRepository {
         let graph = self
             .merkle
             .insert(graph.content_id(), choice_key, opportunity.content_id())?;
-        let graph = match choice_index {
-            Some(choice_index) => self.merkle.insert(
-                graph.content_id(),
-                choice_index_anchor_key(),
-                choice_index.content_id(),
-            )?,
-            None => graph,
-        };
+        let graph = self.merkle.insert(
+            graph.content_id(),
+            choice_index_anchor_key(),
+            choice_index.content_id(),
+        )?;
         let fact = CampaignFact::ChoiceOpportunityDiscovered {
             parent,
             branch_point,
@@ -235,17 +230,17 @@ impl CampaignRepository {
         let acceptance_summary =
             self.branch_acceptance_summary(current.snapshot.roots().graph, request)?;
 
-        let frontier_index = self.merkle.get(
-            current.snapshot.roots().exploration,
-            frontier_index_anchor_key(),
-        )?;
+        let frontier_index = self
+            .merkle
+            .get(
+                current.snapshot.roots().exploration,
+                frontier_index_anchor_key(),
+            )?
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
         let domain = self.read_choice_domain(request.domain().content_id())?;
         let feedback_indexed = self
             .candidate_source_profile(request, &domain)?
             .is_some_and(super::projection::CandidateSourceProfile::requires_feedback_index);
-        if feedback_indexed && frontier_index.is_none() {
-            return Err(integrity("progressive-generator-requires-frontier-index"));
-        }
         let indexed_requests = feedback_indexed
             .then_some((request_id, request.branch_point()))
             .into_iter()
@@ -261,21 +256,17 @@ impl CampaignRepository {
             &scan_requests,
             false,
         )?;
-        let initial_continuation = if let Some(index) = frontier_index {
-            if self
-                .merkle
-                .get(index, frontier_index_order_key(request_id))?
-                .is_some()
-            {
-                return Err(integrity("branch-request-frontier-slot-is-not-empty"));
-            }
-            Some(self.initial_continuation_state_at(
-                request,
-                super::projection::CandidateViewRoots::from_roots(current.snapshot.roots()),
-            )?)
-        } else {
-            None
-        };
+        if self
+            .merkle
+            .get(frontier_index, frontier_index_order_key(request_id))?
+            .is_some()
+        {
+            return Err(integrity("branch-request-frontier-slot-is-not-empty"));
+        }
+        let initial_continuation = self.initial_continuation_state_at(
+            request,
+            super::projection::CandidateViewRoots::from_roots(current.snapshot.roots()),
+        )?;
 
         let request_content = self.put_branch_request(request)?;
         if request_content != request_id.content_id() {
@@ -286,55 +277,43 @@ impl CampaignRepository {
             request_key,
             request_content,
         )?;
-        if let Some(projected) = projected_branch_request_index {
-            let published = self
-                .branch_request_index_after(
-                    current.snapshot.roots().exploration,
-                    &indexed_requests,
-                    true,
-                )?
-                .ok_or_else(|| integrity("branch-request-index-disappeared"))?;
-            if published != projected {
-                return Err(integrity("branch-request-index-publication-mismatch"));
-            }
-            exploration = self.merkle.insert(
-                exploration.content_id(),
-                branch_request_index_anchor_key(),
-                published,
-            )?;
+        let published = self.branch_request_index_after(
+            current.snapshot.roots().exploration,
+            &indexed_requests,
+            true,
+        )?;
+        if published != projected_branch_request_index {
+            return Err(integrity("branch-request-index-publication-mismatch"));
         }
-        if let Some(initial_continuation) = initial_continuation {
-            let next_frontier = self
-                .frontier_index_after(
-                    current.snapshot.roots().exploration,
-                    &[(request_id, request.branch_point(), initial_continuation)],
-                    true,
-                )?
-                .ok_or_else(|| integrity("branch-request-frontier-index-disappeared"))?;
-            exploration = self.merkle.insert(
-                exploration.content_id(),
-                frontier_index_anchor_key(),
-                next_frontier,
-            )?;
-        }
+        exploration = self.merkle.insert(
+            exploration.content_id(),
+            branch_request_index_anchor_key(),
+            published,
+        )?;
+        let next_frontier = self.frontier_index_after(
+            current.snapshot.roots().exploration,
+            &[(request_id, request.branch_point(), initial_continuation)],
+            true,
+        )?;
+        exploration = self.merkle.insert(
+            exploration.content_id(),
+            frontier_index_anchor_key(),
+            next_frontier,
+        )?;
 
-        if let Some(projected) = projected_scan_index {
-            let published = self
-                .planner_scan_index_after(
-                    current.snapshot.roots().exploration,
-                    &scan_requests,
-                    true,
-                )?
-                .ok_or_else(|| integrity("planner-scan-index-disappeared"))?;
-            if published != projected {
-                return Err(integrity("planner-scan-index-publication-mismatch"));
-            }
-            exploration = self.merkle.insert(
-                exploration.content_id(),
-                planner_scan_index_anchor_key(),
-                published,
-            )?;
+        let published = self.planner_scan_index_after(
+            current.snapshot.roots().exploration,
+            &scan_requests,
+            true,
+        )?;
+        if published != projected_scan_index {
+            return Err(integrity("planner-scan-index-publication-mismatch"));
         }
+        exploration = self.merkle.insert(
+            exploration.content_id(),
+            planner_scan_index_anchor_key(),
+            published,
+        )?;
 
         let fact = CampaignFact::BranchRequestAccepted {
             request: request_id,
@@ -378,7 +357,6 @@ impl CampaignRepository {
                     summary: acceptance_summary,
                     snapshot: next,
                     acceptance_fact: fact,
-                    summary_recorded: true,
                     replayed: false,
                 })
             }

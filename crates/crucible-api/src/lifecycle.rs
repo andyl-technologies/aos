@@ -380,10 +380,8 @@ pub enum CreateSessionSource {
     },
     /// Use a self-contained scenario definition.
     Inline {
-        /// Inline scenario definition.
-        scenario: ScenarioDef,
-        /// Optional full scenario source transferred with the request.
-        scenario_form: Option<ScenarioDefForm>,
+        /// Complete inline scenario source transferred with the request.
+        scenario: ScenarioDefForm,
     },
 }
 
@@ -409,28 +407,11 @@ impl CreateSessionRequest {
         }
     }
 
-    /// Builds a request from an inline scenario definition.
+    /// Builds a request from a complete inline scenario source form.
     #[must_use]
-    pub fn inline(scenario: ScenarioDef, seed: Seed) -> Self {
+    pub fn inline(scenario: ScenarioDefForm, seed: Seed) -> Self {
         Self {
-            source: CreateSessionSource::Inline {
-                scenario,
-                scenario_form: None,
-            },
-            seed,
-            start_paused: true,
-        }
-    }
-
-    /// Builds a request from an inline scenario source form.
-    #[must_use]
-    pub fn inline_form(scenario_form: ScenarioDefForm, seed: Seed) -> Self {
-        let scenario = scenario_form.scenario_def();
-        Self {
-            source: CreateSessionSource::Inline {
-                scenario,
-                scenario_form: Some(scenario_form),
-            },
+            source: CreateSessionSource::Inline { scenario },
             seed,
             start_paused: true,
         }
@@ -445,14 +426,10 @@ impl CreateSessionRequest {
 }
 
 fn inline_scenario_form(request: &CreateSessionRequest) -> Option<&ScenarioDefForm> {
-    let CreateSessionSource::Inline {
-        scenario_form: Some(scenario_form),
-        ..
-    } = &request.source
-    else {
-        return None;
-    };
-    Some(scenario_form)
+    match &request.source {
+        CreateSessionSource::ScenarioRef { .. } => None,
+        CreateSessionSource::Inline { scenario } => Some(scenario),
+    }
 }
 
 fn scenario_form_white_box_policies(
@@ -1065,14 +1042,6 @@ pub enum LifecycleApiError {
         scenario_seed: Seed,
         /// Seed supplied by the request.
         request_seed: Seed,
-    },
-    /// An inline scenario source did not match its advertised identity.
-    #[error("inline scenario payload identity mismatch: expected={expected:?} actual={actual:?}")]
-    InlineScenarioIdentityMismatch {
-        /// Advertised scenario definition handle.
-        expected: Box<ScenarioDef>,
-        /// Scenario definition handle reconstructed from the inline payload.
-        actual: Box<ScenarioDef>,
     },
     /// The genesis temporal graph could not be created.
     #[error("failed to create genesis temporal graph: {message}")]
@@ -1886,26 +1855,15 @@ where
                 .get(name)
                 .ok_or_else(|| LifecycleApiError::ScenarioNotFound { name: name.clone() })?
                 .scenario_for_seed(request.seed),
-            CreateSessionSource::Inline {
-                scenario,
-                scenario_form,
-            } => {
-                if let Some(scenario_form) = scenario_form {
-                    let source_scenario = scenario_form.scenario_def();
-                    if source_scenario != *scenario {
-                        return Err(LifecycleApiError::InlineScenarioIdentityMismatch {
-                            expected: Box::new(scenario.clone()),
-                            actual: Box::new(source_scenario),
-                        });
-                    }
-                }
+            CreateSessionSource::Inline { scenario } => {
+                let scenario = scenario.scenario_def();
                 if scenario.seed() != request.seed {
                     return Err(LifecycleApiError::ScenarioSeedMismatch {
                         scenario_seed: scenario.seed(),
                         request_seed: request.seed,
                     });
                 }
-                Ok(scenario.clone())
+                Ok(scenario)
             }
         }
     }

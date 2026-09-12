@@ -1743,13 +1743,11 @@ impl CampaignRepository {
             crate::ContinuationState,
         )],
         publish: bool,
-    ) -> Result<Option<ContentId>, CampaignRepositoryError> {
-        let Some(frontier_index) = self
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        let frontier_index = self
             .merkle
             .get(exploration_root, frontier_index_anchor_key())?
-        else {
-            return Ok(None);
-        };
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
         let mut upserts = BTreeMap::new();
         for (request, branch_point, state) in projections {
             let projection = ContinuationProjection::new(*request, *branch_point, *state);
@@ -1770,11 +1768,10 @@ impl CampaignRepository {
             for (key, value) in upserts {
                 root = self.merkle.insert(root, key, value)?.content_id();
             }
-            Ok(Some(root))
+            Ok(root)
         } else {
             self.merkle
                 .root_after_upserts(frontier_index, &upserts)
-                .map(Some)
                 .map_err(Into::into)
         }
     }
@@ -1784,15 +1781,11 @@ impl CampaignRepository {
         exploration_root: ContentId,
         requests: &[(BranchRequestId, crate::BranchPointId)],
         publish: bool,
-    ) -> Result<Option<ContentId>, CampaignRepositoryError> {
-        let index = match self
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        let index = self
             .merkle
             .get(exploration_root, branch_request_index_anchor_key())?
-        {
-            Some(index) => index,
-            None if requests.is_empty() => return Ok(None),
-            None => MerkleMap::empty_content_id()?,
-        };
+            .ok_or_else(|| integrity("current-campaign-branch-request-index-is-missing"))?;
         let mut projected_entry_count =
             usize::try_from(self.merkle.inspect_shallow(index)?.entry_count())
                 .map_err(|_| integrity("feedback-branch-request-index-limit"))?;
@@ -1852,11 +1845,10 @@ impl CampaignRepository {
             for (key, value) in index_upserts {
                 root = self.merkle.insert(root, key, value)?.content_id();
             }
-            Ok(Some(root))
+            Ok(root)
         } else {
             self.merkle
                 .root_after_upserts(index, &index_upserts)
-                .map(Some)
                 .map_err(Into::into)
         }
     }
@@ -1868,12 +1860,10 @@ impl CampaignRepository {
         branch_point: crate::BranchPointId,
         remaining: &mut usize,
     ) -> Result<Vec<BranchRequestId>, CampaignRepositoryError> {
-        let Some(index) = self
+        let index = self
             .merkle
             .get(exploration_root, branch_request_index_anchor_key())?
-        else {
-            return Ok(Vec::new());
-        };
+            .ok_or_else(|| integrity("current-campaign-branch-request-index-is-missing"))?;
         let index_entry_count = usize::try_from(self.merkle.inspect_shallow(index)?.entry_count())
             .map_err(|_| integrity("feedback-branch-request-index-limit"))?;
         if index_entry_count > MAX_FEEDBACK_FRONTIER_UPDATES {

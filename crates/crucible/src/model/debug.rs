@@ -766,42 +766,6 @@ pub(super) fn debug_event_log_entry_is_assertion_violation(entry: &SchedulerEven
         && entry.event_payload().string("new_state") == Some("Violated"))
 }
 
-pub(super) fn shell_quote_command_argument(value: &str) -> String {
-    if !value.is_empty() && value.bytes().all(is_shell_safe_unquoted_byte) {
-        return value.to_owned();
-    }
-
-    let mut quoted = String::from("'");
-    for ch in value.chars() {
-        if ch == '\'' {
-            quoted.push_str("'\\''");
-        } else {
-            quoted.push(ch);
-        }
-    }
-    quoted.push('\'');
-    quoted
-}
-
-pub(super) fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'a'..=b'z'
-            | b'A'..=b'Z'
-            | b'0'..=b'9'
-            | b'@'
-            | b'%'
-            | b'_'
-            | b'+'
-            | b'='
-            | b':'
-            | b','
-            | b'.'
-            | b'/'
-            | b'-'
-    )
-}
-
 pub(super) fn debug_labels_contain_all(labels: &[&'static str], required: &[&'static str]) -> bool {
     required
         .iter()
@@ -1683,43 +1647,6 @@ impl DebugTargetSelector {
     }
 }
 
-/// Copy-pasteable debug command printed in non-passing failure footers.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DebugFailureFooterCommand {
-    /// Reproduction artifact path displayed to the operator.
-    pub artifact: String,
-    /// Debug command that opens at the first failure.
-    pub debug_command: String,
-}
-
-impl DebugFailureFooterCommand {
-    /// Builds the `crucible debug <artifact> --at-failure` command.
-    #[must_use]
-    pub fn new(artifact: impl Into<String>) -> Self {
-        let artifact = artifact.into();
-        let debug_command = format!(
-            "crucible debug {} --at-failure",
-            shell_quote_command_argument(&artifact)
-        );
-        Self {
-            artifact,
-            debug_command,
-        }
-    }
-
-    /// Returns whether the command is the required at-failure debug footer.
-    #[must_use]
-    pub fn is_copy_pasteable_at_failure(&self) -> bool {
-        !self.artifact.is_empty()
-            && !self.artifact.chars().any(|ch| matches!(ch, '\n' | '\0'))
-            && self.debug_command
-                == format!(
-                    "crucible debug {} --at-failure",
-                    shell_quote_command_argument(&self.artifact)
-                )
-    }
-}
-
 /// Request to resolve an operator-facing debug target.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DebugTargetResolverRequest {
@@ -1729,8 +1656,6 @@ pub struct DebugTargetResolverRequest {
     pub selector: DebugTargetSelector,
     /// Mapping from event-log sequence to temporal-graph coordinate.
     pub event_coordinates: BTreeMap<u64, Configuration>,
-    /// Reproduction artifact shown in the optional failure footer command.
-    pub failure_footer_artifact: Option<String>,
 }
 
 impl DebugTargetResolverRequest {
@@ -1741,7 +1666,6 @@ impl DebugTargetResolverRequest {
             current,
             selector,
             event_coordinates: BTreeMap::new(),
-            failure_footer_artifact: None,
         }
     }
 
@@ -1749,13 +1673,6 @@ impl DebugTargetResolverRequest {
     #[must_use]
     pub fn with_event_coordinate(mut self, sequence: u64, configuration: Configuration) -> Self {
         self.event_coordinates.insert(sequence, configuration);
-        self
-    }
-
-    /// Adds the artifact path used to render an at-failure debug footer.
-    #[must_use]
-    pub fn with_failure_footer_artifact(mut self, artifact: impl Into<String>) -> Self {
-        self.failure_footer_artifact = Some(artifact.into());
         self
     }
 }
@@ -1775,8 +1692,6 @@ pub struct DebugTargetResolverReport {
     pub failure_event_sequence: Option<u64>,
     /// Divergence coordinate consumed directly by the resolver, when present.
     pub divergence: Option<DebugDivergenceCoordinate>,
-    /// Optional copy-pasteable failure footer command.
-    pub failure_footer: Option<DebugFailureFooterCommand>,
 }
 
 impl DebugTargetResolverReport {
@@ -1786,14 +1701,6 @@ impl DebugTargetResolverReport {
         self.goto_request.target == self.resolved_coordinate
             && self.goto_request.current.id() != ContentHash::default()
             && self.target_configuration != ContentHash::default()
-    }
-
-    /// Returns whether the report carries the required at-failure footer command.
-    #[must_use]
-    pub fn has_copy_pasteable_at_failure_footer(&self) -> bool {
-        self.failure_footer
-            .as_ref()
-            .is_some_and(DebugFailureFooterCommand::is_copy_pasteable_at_failure)
     }
 
     /// Returns whether this report satisfies the T-DBG-7 target resolver contract.

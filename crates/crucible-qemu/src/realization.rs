@@ -1051,7 +1051,8 @@ fn replay_decisions(
 ) -> Result<RuntimeState, QemuVmRealizationError> {
     let mut current = from;
     for decision in suffix {
-        let next = crucible::step(&current, decision.clone());
+        let next = crucible::try_step(&current, decision.clone())
+            .map_err(|source| QemuVmRealizationError::ConfigurationStep { source })?;
         runtime = executor.replay_one_quantum(
             runtime,
             QemuVmReplayRequest {
@@ -1342,6 +1343,12 @@ fn schedule_suffix(
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// A replay decision violated the scenario's configuration limits.
+    #[error("replay configuration step failed: {source}")]
+    ConfigurationStep {
+        /// Exact model validation failure.
+        source: EngineError,
+    },
     /// A checkpoint-store operation is temporarily unavailable.
     #[error("{operation} store operation is temporarily unavailable: {message}")]
     StoreUnavailable {
@@ -2839,8 +2846,8 @@ mod tests {
         assert_eq!(actual.branch, expected.branch);
     }
 
-    fn world(name: &str) -> World {
-        World::from_content_hash(hash("world", name))
+    fn world(_name: &str) -> World {
+        World::from_nodes(Vec::new()).expect("empty test world should build")
     }
 
     fn qemu_baked_node_blobs(world: &World) -> std::collections::BTreeMap<NodeId, NodeBlobRef> {

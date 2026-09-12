@@ -992,12 +992,6 @@ pub struct SchedulerEventLogEntry {
     pub(super) provenance: SchedulerEventLogEntryProvenance,
 }
 
-/// Compatibility name for entries in the unified event log.
-pub type LogEntry = SchedulerEventLogEntry;
-
-/// Compatibility name for the causal-vs-observational event class.
-pub type EventClass = SchedulerEventLogClass;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct SchedulerEventLogEntryProvenance;
 
@@ -1490,7 +1484,7 @@ pub struct EventLog {
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
     pub(super) events: u64,
-    pub(super) condition_entries: Vec<LogEntry>,
+    pub(super) condition_entries: Vec<SchedulerEventLogEntry>,
     pub(super) condition_base_events: u64,
     pub(super) condition_prefix: ConditionEventLogPrefix,
 }
@@ -1603,7 +1597,7 @@ impl EventLog {
     /// condition prefix overflow or become invalid.
     pub fn append_entries(
         &mut self,
-        entries: Vec<LogEntry>,
+        entries: Vec<SchedulerEventLogEntry>,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         if entries.is_empty() {
             return Ok(SchedulerEventLogAppend {

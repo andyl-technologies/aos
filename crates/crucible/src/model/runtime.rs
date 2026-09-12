@@ -26,7 +26,7 @@ impl TemporalGraphFork {
         finding_fingerprint: ContentHash,
     ) -> Result<FindingReproductionArtifact, EngineError> {
         FindingReproductionArtifact::capture(
-            FindingDiscoveryPath::InteractiveFork,
+            FindingDiscoveryPath::CampaignFork,
             finding_fingerprint,
             scenario,
             &self.branch,
@@ -189,30 +189,12 @@ pub fn try_step(config: &Configuration, decision: Decision) -> Result<Configurat
     Ok(next)
 }
 
-/// Appends one decision to a configuration without materializing runtime state.
-///
-/// Prefer [`try_step`] in fallible engine paths. This compatibility helper is
-/// intentionally loud when a caller tries to build an over-cap app-random
-/// configuration.
-///
-/// # Panics
-///
-/// Panics when appending `decision` would put the configuration above its
-/// per-scenario app-random draw cap.
-#[must_use]
-pub fn step(config: &Configuration, decision: Decision) -> Configuration {
-    match try_step(config, decision) {
-        Ok(next) => next,
-        Err(error) => panic!("configuration step rejected: {error}"),
-    }
-}
-
 /// Computes the abstract state denoted by `def` and `schedule`.
 ///
 /// # Errors
 ///
 /// Returns [`EngineError::AppRandomDrawCapExceeded`] when `schedule` contains
-/// more legacy [`Decision::AppRandom`] entries or standardized typed
+/// more direct guest [`Decision::AppRandom`] entries or standardized typed
 /// app-random selections than `def` admits.
 pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineError> {
     validate_app_random_draw_cap(def, schedule)?;

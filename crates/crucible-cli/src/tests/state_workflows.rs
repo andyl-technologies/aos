@@ -52,7 +52,7 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         !outcome
             .stdout
             .iter()
-            .any(|line| { line.starts_with("run-savepoint\t") || line.starts_with("run-store\t") })
+            .any(|line| line.starts_with("run-savepoint\t"))
     );
     assert!(outcome.stdout.iter().any(|line| {
         line.starts_with("save-oracle\tstatus=fat==thin-passed\tconfiguration=blake3:")
@@ -64,12 +64,6 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
             .any(|line| line.starts_with("save-handle\tcheckpoint=blake3:")
                 && line.contains("label=release candidate"))
     );
-    assert!(outcome.stdout.iter().any(|line| {
-        line.starts_with("save-store\tcheckpoint=blake3:")
-            && line.contains("artifact=blake3:")
-            && line.contains("index=blake3:")
-            && line.contains(&format!("store={}", temp.path().display()))
-    }));
     assert!(
         outcome
             .canonical_log
@@ -88,13 +82,6 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
             .iter()
             .any(|entry| entry.kind == "save_export")
     );
-    assert!(
-        outcome
-            .canonical_log
-            .iter()
-            .any(|entry| entry.kind == "save_store_index")
-    );
-
     let handles = fs::read_dir(&artifact_dir)?.collect::<Result<Vec<_>, _>>()?;
     assert_eq!(handles.len(), 1);
     let handle_path = handles[0].path();
@@ -105,7 +92,7 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
             .is_some_and(|name| name.starts_with("savepoint-release-candidate-")
                 && name.ends_with(".crucible-savepoint"))
     );
-    let handle = fs::read_to_string(handle_path)?;
+    let handle = fs::read_to_string(&handle_path)?;
     assert!(handle.contains(&format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}\n")));
     assert!(handle.contains("label\trelease candidate\n"));
     assert!(handle.contains("checkpoint\tblake3:"));
@@ -133,7 +120,7 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         String::from("--store"),
         temp.path().display().to_string(),
         String::from("resume"),
-        saved_checkpoint_ref.clone(),
+        handle_path.display().to_string(),
         String::from("--until"),
         String::from("virtual-time"),
         String::from("--max-virtual-time"),
@@ -168,13 +155,13 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         String::from("--store"),
         temp.path().display().to_string(),
         String::from("fork"),
-        saved_checkpoint_ref.clone(),
+        handle_path.display().to_string(),
         String::from("--until"),
         String::from("virtual-time"),
         String::from("--max-virtual-time"),
         String::from("2ticks"),
         String::from("--label"),
-        String::from("from-save-store"),
+        String::from("from-exported-save"),
     ]);
     let Commands::Fork(args) = &fork_saved_cli.command else {
         panic!("expected fork command");
@@ -193,7 +180,7 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     assert!(fork_saved_outcome.stdout.iter().any(|line| {
         line.starts_with("fork-session\t")
             && line.contains(&format!("checkpoint={saved_checkpoint_ref}"))
-            && line.contains("label=from-save-store")
+            && line.contains("label=from-exported-save")
             && line.contains("final=virtual-time")
     }));
 
@@ -309,39 +296,7 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
     let fork_handle_plan = plan_fork_invocation(args, None, &artifact_dir, temp.path())?;
     let fork_handle = fork_handle_evidence(&fork_handle_plan)?;
 
-    let virtual_time_checkpoint = virtual_time_outcome
-        .terminal_savepoint
-        .expect("virtual-time save should expose its logical checkpoint");
-    let checkpoint_ref = format_content_hash_ref(virtual_time_checkpoint);
-    let resume_store_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--store"),
-        temp.path().display().to_string(),
-        String::from("resume"),
-        checkpoint_ref.clone(),
-    ]);
-    let Commands::Resume(args) = &resume_store_cli.command else {
-        panic!("expected resume command");
-    };
-    let resume_store_plan = plan_resume_invocation(args, temp.path())?;
-    let resume_store = resume_handle_evidence(&resume_store_plan)?;
-
-    let fork_store_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--store"),
-        temp.path().display().to_string(),
-        String::from("fork"),
-        checkpoint_ref,
-    ]);
-    let Commands::Fork(args) = &fork_store_cli.command else {
-        panic!("expected fork command");
-    };
-    let fork_store_plan = plan_fork_invocation(args, None, &artifact_dir, temp.path())?;
-    let fork_store = fork_handle_evidence(&fork_store_plan)?;
-
     assert_eq!(resume_handle, fork_handle);
-    assert_eq!(resume_handle, resume_store);
-    assert_eq!(resume_handle, fork_store);
 
     let contradictory_virtual_time = virtual_time_handle.replace(
         "terminal-condition\tvirtual-time\n",
@@ -391,7 +346,7 @@ pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
         "terminal-condition\tvirtual-time\n",
     );
     let error = decode_savepoint_handle(contradictory_terminal.as_bytes())
-        .expect_err("v3 property handle must reject a contradictory terminal condition");
+        .expect_err("property handle must reject a contradictory terminal condition");
     assert!(error.to_string().contains("does not match --at property"));
 
     let declared_predicate = crucible::Predicate::assertion_state(
@@ -967,7 +922,7 @@ pub(super) fn save_selector_test_firing(
 }
 
 #[test]
-pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs()
+pub(super) fn cli_resume_workflow_plans_handles_and_rejects_nonportable_inputs()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let form = valid_run_scenario_form()?;
@@ -1005,7 +960,6 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
     };
     let plan = plan_resume_invocation(args, temp.path())?;
 
-    assert!(matches!(plan.savepoint, ResumeSavepointRef::Handle { .. }));
     assert_eq!(plan.savepoint.checkpoint(), checkpoint);
     assert_eq!(plan.terminal_condition, RunTerminalCondition::Quiescence);
     assert_eq!(plan.execution_mode, RunExecutionMode::Interactive);
@@ -1024,9 +978,7 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
         "live-world-network/link_endpoint_a_len=4\nlink_endpoint_a=db-1\nlink_endpoint_b_len=4\nlink_endpoint_b=db-2/a-to-b/42/7"
     );
     assert_eq!(encoded.value, "loss-fire");
-    let ResumeSavepointRef::Handle { handle, .. } = &plan.savepoint else {
-        panic!("expected decoded handle");
-    };
+    let handle = &plan.savepoint.handle;
     assert_eq!(handle.label, "resume-source");
     assert_eq!(handle.scenario_id_hex, scenario.id().to_hex());
     assert_eq!(handle.scenario_label, "resume-scenario.toml");
@@ -1051,23 +1003,18 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
     assert_eq!(handle.oracle_status, "fat==thin-passed");
     assert_eq!(handle.canonical_log_digest, canonical_log);
 
-    let v3_text = fs::read_to_string(&handle_path)?;
-    let mismatched_proof = v3_text.replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n");
+    let current_text = fs::read_to_string(&handle_path)?;
+    let mismatched_proof = current_text.replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n");
     let error = decode_savepoint_handle(mismatched_proof.as_bytes())
-        .expect_err("v3 boundary proof must match the top-level frontier");
+        .expect_err("boundary proof must match the top-level frontier");
     assert!(matches!(error, CliError::Artifact(_)));
     assert!(error.to_string().contains("did not match handle frontier"));
 
-    let retired_v2_text = v3_text
+    let retired_text = current_text
         .lines()
-        .filter(|line| {
-            !line.starts_with("selector\t")
-                && !line.starts_with("boundary-proof\t")
-                && !line.starts_with("boundary-predicate\t")
-        })
         .map(|line| {
             if line == format!("schema\t{SAVEPOINT_HANDLE_SCHEMA}") {
-                String::from("schema\tcrucible.savepoint-handle.v2")
+                String::from("schema\tcrucible.savepoint-handle.unsupported")
             } else {
                 line.to_string()
             }
@@ -1075,31 +1022,13 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    let error = decode_savepoint_handle(retired_v2_text.as_bytes())
-        .expect_err("retired v2 savepoint handles must fail closed");
-    let message = error.to_string();
-    assert!(message.contains("unsupported savepoint handle schema"));
-
-    let reference = format_content_hash_ref(checkpoint);
-    let hash_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("resume"),
-        reference.clone(),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("1ticks"),
-    ]);
-    let Commands::Resume(args) = &hash_cli.command else {
-        panic!("expected resume command");
-    };
-    let hash_plan = plan_resume_invocation(args, temp.path())?;
-    assert_eq!(hash_plan.savepoint.checkpoint(), checkpoint);
-    assert_eq!(
-        hash_plan.terminal_condition,
-        RunTerminalCondition::VirtualTime
+    let error = decode_savepoint_handle(retired_text.as_bytes())
+        .expect_err("retired savepoint handles must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported savepoint handle schema")
     );
-    assert_eq!(hash_plan.max_virtual_time_ticks, Some(1));
 
     let missing = ResumeArgs::default();
     let error = match plan_resume_invocation(&missing, temp.path()) {
@@ -1109,11 +1038,16 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
     assert!(matches!(error, CliError::Usage(_)));
     assert_eq!(error.exit_code(), 64);
 
-    let error =
-        match Cli::try_parse_from(["crucible", "resume", &reference, "--until", "virtual-time"]) {
-            Ok(_) => panic!("virtual-time resume requires a duration budget"),
-            Err(error) => error,
-        };
+    let error = match Cli::try_parse_from([
+        "crucible",
+        "resume",
+        handle_path.to_str().ok_or("non-UTF-8 test path")?,
+        "--until",
+        "virtual-time",
+    ]) {
+        Ok(_) => panic!("virtual-time resume requires a duration budget"),
+        Err(error) => error,
+    };
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
@@ -1142,76 +1076,7 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
 }
 
 #[test]
-pub(super) fn cli_resume_workflow_executes_local_double_bare_hash_from_store()
--> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let store_root = temp.path().join("store");
-    let fixture = crucible::happy_path_scenario()?;
-    let form = fixture.scenario;
-    let scenario = form.scenario_def();
-    let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
-        crucible::DeliveryOrderDecision {
-            at: VirtualTime { ticks: 1 },
-            order: Vec::new(),
-        },
-    ));
-    let configuration = crucible::Configuration {
-        def: scenario,
-        schedule: schedule.clone(),
-    };
-    let checkpoint = configuration.id();
-    write_checkpoint_closure_fixture(&store_root, &form, &schedule)?;
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--store"),
-        store_root.display().to_string(),
-        String::from("resume"),
-        format_content_hash_ref(checkpoint),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("2ticks"),
-    ]);
-    let Commands::Resume(args) = &cli.command else {
-        panic!("expected resume command");
-    };
-    let resume_plan = plan_resume_invocation(args, &store_root)?;
-    assert!(matches!(
-        resume_plan.savepoint,
-        ResumeSavepointRef::CheckpointHash(_)
-    ));
-    let backend_plan = plan_backend_selection(&cli)?.expect("resume should route to backend");
-    let outcome = run_local_double_resume_workflow(
-        &plan_cli_invocation(&cli),
-        &backend_plan,
-        None,
-        &resume_plan,
-    )?;
-
-    assert_eq!(outcome.status, BackendCommandStatus::Passed);
-    assert_eq!(outcome.exit_code, 0);
-    assert!(outcome.stdout.iter().any(|line| {
-        line.starts_with("resume-session\t")
-            && line.contains(&format!(
-                "checkpoint={}",
-                format_content_hash_ref(checkpoint)
-            ))
-            && line.contains("final=virtual-time")
-            && line.contains("frontier_ticks=2")
-    }));
-    assert!(outcome.stdout.iter().any(|line| {
-        line.starts_with("resume-oracle\t") && line.contains("status=fat==thin-passed")
-    }));
-
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact()
--> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_workflow_rejects_bare_hash_at_admission() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let checkpoint = crucible::ContentHash::from_bytes(b"missing-resume-store-index");
     let cli = Cli::parse_from([
@@ -1225,21 +1090,12 @@ pub(super) fn cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artif
         format_content_hash_ref(checkpoint),
     ]);
     let error = match dispatch(&cli) {
-        Ok(_) => panic!("resume from a missing store index must fail as artifact input"),
+        Ok(_) => panic!("offline resume from a bare checkpoint hash must fail"),
         Err(error) => error,
     };
     assert!(matches!(error, CliError::Artifact(_)));
     assert_eq!(error.exit_code(), 5);
-    assert!(
-        error
-            .to_string()
-            .contains(&format_content_hash_ref(checkpoint))
-    );
-    assert!(
-        error
-            .to_string()
-            .contains("could not be loaded from DAG store")
-    );
+    assert!(error.to_string().contains("not a portable savepoint"));
 
     Ok(())
 }
@@ -1968,7 +1824,7 @@ pub(super) fn cli_fork_help_surface_lists_wip_flags() {
 }
 
 #[test]
-pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs()
+pub(super) fn cli_fork_workflow_plans_handle_overrides_and_rejects_nonportable_inputs()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
@@ -2017,7 +1873,6 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     };
     let plan = plan_fork_invocation_for_test(args, None)?;
 
-    assert!(matches!(plan.source, ResumeSavepointRef::Handle { .. }));
     assert_eq!(plan.source.checkpoint(), checkpoint);
     assert_eq!(plan.label, "child-a");
     assert_eq!(
@@ -2049,27 +1904,8 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
             .contains(&SessionCommandKind::Continue)
     );
 
-    let reference = format_content_hash_ref(checkpoint);
-    let hash_cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("fork"),
-        reference.clone(),
-        String::from("--label"),
-        String::from("hash-child"),
-    ]);
-    let Commands::Fork(args) = &hash_cli.command else {
-        panic!("expected fork command");
-    };
-    let hash_plan = plan_fork_invocation_for_test(args, None)?;
-    assert_eq!(hash_plan.source.checkpoint(), checkpoint);
-    assert_eq!(hash_plan.label, "hash-child");
-    assert_eq!(hash_plan.fork_seed, None);
-    assert_eq!(
-        hash_plan.startup_commands,
-        vec![SessionCommandKind::Fork, SessionCommandKind::Continue]
-    );
-
-    let seed_cli = Cli::parse_from(["crucible", "--seed", "2", "fork", &reference]);
+    let handle_reference = handle_path.display().to_string();
+    let seed_cli = Cli::parse_from(["crucible", "--seed", "2", "fork", handle_reference.as_str()]);
     let Commands::Fork(args) = &seed_cli.command else {
         panic!("expected fork command");
     };
@@ -2085,11 +1921,16 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     assert_eq!(error.exit_code(), 64);
     assert!(error.to_string().contains("fork requires"));
 
-    let error =
-        match Cli::try_parse_from(["crucible", "fork", &reference, "--until", "virtual-time"]) {
-            Ok(_) => panic!("virtual-time fork requires a duration budget"),
-            Err(error) => error,
-        };
+    let error = match Cli::try_parse_from([
+        "crucible",
+        "fork",
+        &handle_reference,
+        "--until",
+        "virtual-time",
+    ]) {
+        Ok(_) => panic!("virtual-time fork requires a duration budget"),
+        Err(error) => error,
+    };
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
@@ -2105,7 +1946,7 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         "live-world-network/link%0Gbad/a-to-b/1/0=loss-fire",
     ] {
         let args = ForkArgs {
-            savepoint: Some(reference.clone()),
+            savepoint: Some(handle_reference.clone()),
             overrides: vec![String::from(malformed)],
             ..ForkArgs::default()
         };
@@ -2118,7 +1959,7 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     }
 
     let unresolvable = ForkArgs {
-        savepoint: Some(reference.clone()),
+        savepoint: Some(handle_reference.clone()),
         overrides: vec![String::from("definitely-not-recorded=bogus")],
         ..ForkArgs::default()
     };
@@ -2131,7 +1972,7 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     assert!(error.to_string().contains("unresolvable"));
 
     let unsupported_choice = ForkArgs {
-        savepoint: Some(reference.clone()),
+        savepoint: Some(handle_reference.clone()),
         overrides: vec![String::from(
             "live-world-network/link-a/a-to-b/frame-1/0=jitter-fire",
         )],
@@ -2145,7 +1986,7 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     assert_eq!(error.exit_code(), 5);
 
     let duplicate_point = ForkArgs {
-        savepoint: Some(reference.clone()),
+        savepoint: Some(handle_reference.clone()),
         overrides: vec![
             String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-fire"),
             String::from("live-world-network/link-a/a-to-b/frame-1/0=loss-pass"),
@@ -2165,7 +2006,7 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
         "--seed",
         "1",
         "fork",
-        &reference,
+        &handle_reference,
         "--override",
         "decision=value",
     ]);
@@ -2196,81 +2037,6 @@ pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_
     };
     assert!(matches!(error, CliError::Artifact(_)));
     assert_eq!(error.exit_code(), 5);
-
-    Ok(())
-}
-
-#[test]
-pub(super) fn cli_fork_workflow_executes_local_double_bare_hash_from_store()
--> Result<(), Box<dyn Error>> {
-    let temp = TempDir::new()?;
-    let artifact_dir = temp.path().join("fork-artifacts");
-    let store_root = temp.path().join("store");
-    let fixture = crucible::happy_path_scenario()?;
-    let form = fixture.scenario;
-    let inherited_seed = seed_to_u64(form.seed());
-    let scenario = form.scenario_def();
-    let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
-        crucible::DeliveryOrderDecision {
-            at: VirtualTime { ticks: 1 },
-            order: Vec::new(),
-        },
-    ));
-    let configuration = crucible::Configuration {
-        def: scenario,
-        schedule: schedule.clone(),
-    };
-    let checkpoint = configuration.id();
-    write_checkpoint_closure_fixture(&store_root, &form, &schedule)?;
-    let cli = Cli::parse_from([
-        String::from("crucible"),
-        String::from("--quiet"),
-        String::from("--artifact-dir"),
-        artifact_dir.display().to_string(),
-        String::from("--backend"),
-        String::from("double"),
-        String::from("--store"),
-        store_root.display().to_string(),
-        String::from("fork"),
-        format_content_hash_ref(checkpoint),
-        String::from("--until"),
-        String::from("virtual-time"),
-        String::from("--max-virtual-time"),
-        String::from("2ticks"),
-        String::from("--label"),
-        String::from("branch-a"),
-    ]);
-    let Commands::Fork(args) = &cli.command else {
-        panic!("expected fork command");
-    };
-    let fork_plan = plan_fork_invocation(args, None, &cli.artifact_dir, &store_root)?;
-    assert!(matches!(
-        fork_plan.source,
-        ResumeSavepointRef::CheckpointHash(_)
-    ));
-    let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
-    let outcome = run_local_double_fork_workflow(
-        &plan_cli_invocation(&cli),
-        &backend_plan,
-        None,
-        &fork_plan,
-    )?;
-
-    assert_eq!(outcome.status, BackendCommandStatus::Passed);
-    assert_eq!(outcome.exit_code, 0);
-    let expected_checkpoint = format_content_hash_ref(checkpoint);
-    assert!(outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-session\t")
-            && line.contains(&format!("checkpoint={expected_checkpoint}"))
-            && line.contains(&format!("branch={expected_checkpoint}"))
-            && line.contains("label=branch-a")
-            && line.contains("final=virtual-time")
-            && line.contains("frontier_ticks=2")
-    }));
-    assert!(outcome.stdout.iter().any(|line| {
-        line.starts_with("fork-oracle\t") && line.contains("status=fat==thin-passed")
-    }));
-    assert_fork_artifact_replays(&cli, &outcome, inherited_seed)?;
 
     Ok(())
 }

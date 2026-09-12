@@ -8,7 +8,7 @@
 
 use crucible::{
     Configuration, Decision, ScenarioDefForm, SelectionDecision, SignalFaultCampaignReplayPlan,
-    SignalFaultSelectable, step,
+    SignalFaultSelectable, try_step,
 };
 use crucible_campaign::{
     Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, BranchPath,
@@ -856,15 +856,17 @@ fn decode_base_crucible_start(
                 }
                 _ => None,
             };
-            let selected = signal_fault.as_ref().map_or_else(
-                || {
-                    step(
-                        &parent,
-                        Decision::Selection(SelectionDecision::new(recorded)),
-                    )
-                },
-                |branch| branch.selected().clone(),
-            );
+            let selected = match signal_fault.as_ref() {
+                Some(branch) => branch.selected().clone(),
+                None => try_step(
+                    &parent,
+                    Decision::Selection(SelectionDecision::new(recorded)),
+                )
+                .map_err(|source| CrucibleArtifactError::InvalidPayload {
+                    artifact: "selected configuration",
+                    source: Box::new(source),
+                })?,
+            };
             if let Some(budget) = origin_budget {
                 budget.charge_branch_start(&selected)?;
             }

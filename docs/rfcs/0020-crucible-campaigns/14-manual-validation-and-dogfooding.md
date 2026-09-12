@@ -476,11 +476,6 @@ legal domain is much larger than the active worker pool:
     while a later duplicate operator cause does not reclassify an earlier valid
     policy sample.
 
-The flight uses `branch`, `derive`, and supported debug-selection surfaces. It
-records any deprecated `fork` alias output only to verify that the UI translates
-it unambiguously to `branch`; no evidence may use “fork” without saying whether
-it means semantic branch, campaign derivation, or QEMU hot fork.
-
 - **[CMAN-21]** Operator acceptance MUST prove additive finite and generated
   sources, lazy admission, duplicate-edge/credit deduplication, huge-domain
   `--all` rejection, and statistical intervention labeling through supported

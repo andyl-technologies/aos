@@ -121,6 +121,11 @@ fn signal_fault_search_decisions_round_trip_with_parent_identity() {
         id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"choice")),
         candidates_digest: ContentHash::from_bytes(b"candidates"),
         candidate_count: 3,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Transition(vec![
+            ContentHash::from_bytes(b"transition-a"),
+            ContentHash::from_bytes(b"transition-b"),
+            ContentHash::from_bytes(b"transition-c"),
+        ]),
         selected_index: None,
         overridden: false,
     };
@@ -146,6 +151,21 @@ fn signal_fault_search_decisions_round_trip_with_parent_identity() {
     let mut noncanonical = decisions[0].clone();
     noncanonical.point.key.make_ascii_uppercase();
     assert!(SearchOverride::from_override_decision(&noncanonical).is_none());
+    let mut index_only = decisions[0].clone();
+    index_only.choice.name = String::from("candidate/0");
+    assert!(SearchOverride::from_override_decision(&index_only).is_none());
+    let mut unknown_semantics = decisions[0].clone();
+    unknown_semantics.choice.name = String::from("candidate/0/unknown/value");
+    assert!(SearchOverride::from_override_decision(&unknown_semantics).is_none());
+    for alias in ["00", "+0"] {
+        let mut noncanonical_index = decisions[0].clone();
+        noncanonical_index.choice.name = noncanonical_index.choice.name.replacen(
+            "candidate/0/",
+            &format!("candidate/{alias}/"),
+            1,
+        );
+        assert!(SearchOverride::from_override_decision(&noncanonical_index).is_none());
+    }
     assert!(
         decisions
             .into_iter()

@@ -231,11 +231,13 @@ fault-firing, RNG-draw, override, preemption, and application-random decision
 variants remain readable and are not silently reclassified as selections;
 producer-by-producer normalization remains implementation work. New campaign
 configuration payloads write Schedule V2 and reject nested Schedule V1 at the
-executor boundary. The general execution-model reader retains selection-free
-Schedule V1 for older reproduction artifacts and scheduler continuations, but
-rejects a selection tag under V1. Checkpoint V4 carries the expanded decision
-grammar while selection-free Checkpoint V3 remains readable. Domain-specific
-applied-effect evidence remains in the event log and adapter checkpoint state.
+executor boundary. The general execution-model reader also rejects Schedule V1.
+An explicit bounded offline migration accepts only V1 delivery-order and raw
+RNG evidence, emits the current V2 representation, and rejects every untyped
+override, preemption, application-random, or forged selection decision at its
+exact position. Checkpoint V4 carries the expanded decision grammar while
+selection-free Checkpoint V3 remains readable. Domain-specific applied-effect
+evidence remains in the event log and adapter checkpoint state.
 Campaign execution resolves no more than 4,096 selection decisions in one
 configuration and permits at most 256 MiB of conservative aggregate
 schedule-prefix byte work across campaign-branch provenance checks. The latter
@@ -636,7 +638,7 @@ an explicit distribution. A convenience guest `random` API may construct such a
 domain, but raw byte width is not the exploration model.
 
 For campaign-enabled execution this section supersedes RFC-0010's live-schedule
-use of `Decision::AppRandom`. That variant remains a readable legacy schedule
+use of `Decision::AppRandom`. That variant remains a current direct-guest schedule
 form and the plugin-to-host transport conjecture; it is not the canonical live
 campaign decision admitted by the scheduler.
 
@@ -680,7 +682,7 @@ The engine adapter constructs and applies this typed contract, and the executor
 resolves the declaration, domain, and opportunity and verifies the exact
 low-bit mapping before accepting a model-sampled configuration. Other
 probability models remain fail-closed. At a live scheduler boundary the
-doorbell's untrusted legacy `AppRandom` transport record is accepted only when
+doorbell's untrusted direct guest `AppRandom` transport record is accepted only when
 the scenario-seeded raw draw reproduces its served value. The canonical
 schedule then records `RngDraw` followed by the typed `Selection`, and the
 quantum outcome carries the exact declaration, domain, and opportunity as one
@@ -690,7 +692,7 @@ version 6 registers the causal `campaign_selection` kind with the single
 selection bytes.
 
 Standardized model-sample selections consume the same scenario-hashed
-app-random draw cap as retained legacy `AppRandom` decisions. A campaign branch
+app-random draw cap as retained direct guest `AppRandom` decisions. A campaign branch
 replaces the model sample at the exact parent after its `RngDraw`, emits a
 `SelectionOrigin::CampaignBranch`, and remains chargeable because the parent
 draw uses the reserved, strictly length-framed app-random stream namespace.

@@ -226,7 +226,7 @@
       }
       {
         label = "observational class assertion";
-        needle = "EventClass::Observational";
+        needle = "SchedulerEventLogClass::Observational";
       }
       {
         label = "exact icount assertion";

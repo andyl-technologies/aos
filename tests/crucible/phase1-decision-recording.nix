@@ -142,7 +142,7 @@
       }
       {
         label = "schedule append path";
-        needle = "self.configuration = step(&self.configuration, decision);";
+        needle = "self.configuration = try_step(&self.configuration, decision)?;";
       }
       {
         label = "branch coverage marker";

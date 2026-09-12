@@ -446,15 +446,6 @@ pub enum StreamingApiError {
         /// Number of skipped frames reported by the event-log stream.
         skipped: u64,
     },
-    /// A legacy peer reported state-update lag instead of coalescing it.
-    ///
-    /// Current in-process and RPC receivers retain this variant for wire and
-    /// source compatibility but recover to their newest available state.
-    #[error("streaming state-update subscriber lagged by {skipped} frames")]
-    StateUpdateStreamLagged {
-        /// Number of skipped frames reported by the state-transition stream.
-        skipped: u64,
-    },
 }
 
 /// In-process streaming API handle for one live session.

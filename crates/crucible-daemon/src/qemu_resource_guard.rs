@@ -1040,6 +1040,7 @@ fn attempt_operational_error(
         | QemuVmRealizationError::InvalidCheckpoint { .. }
         | QemuVmRealizationError::InvalidAncestor { .. }
         | QemuVmRealizationError::RuntimeContentMismatch { .. }
+        | QemuVmRealizationError::ConfigurationStep { .. }
         | QemuVmRealizationError::SavevmPolicy { .. }
         | QemuVmRealizationError::InvalidLoadvmAuthorization { .. }
         | QemuVmRealizationError::ReadyPointPolicy { .. } => {

@@ -1,7 +1,9 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
 use super::*;
-use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
+use crate::model::{
+    BindingSearchCandidateSemantics, BindingSearchChoice, SearchChoiceId, SearchOverride,
+};
 use crate::{
     BackendEffect, BackendNetworkFaultContinuation, IoEventKind, MockSimulationBackend,
     RngDecision, ScenarioDef,
@@ -13,6 +15,10 @@ mod network_checkpoint;
 mod ordering;
 #[path = "tests/production_backend.rs"]
 mod production_backend;
+
+fn valid_scheduler_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    try_step(configuration, decision).expect("test scheduler configuration step")
+}
 
 #[test]
 fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
@@ -735,7 +741,7 @@ fn quantum_outcome_carries_step_decisions() {
         stream: crate::RngStreamId::from_name("scheduler"),
         value: 7,
     });
-    let child = step(&config, decision.clone());
+    let child = valid_scheduler_step(&config, decision.clone());
     let outcome = QuantumOutcome {
         configuration: child,
         frontier: VirtualTime { ticks: 1 },
@@ -1369,6 +1375,7 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
         id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"binding-choice")),
         candidates_digest: ContentHash::from_bytes(b"binding-candidates"),
         candidate_count: 2,
+        candidate_semantics: BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };

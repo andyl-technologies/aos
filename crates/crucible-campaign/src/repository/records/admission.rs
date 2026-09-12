@@ -159,9 +159,7 @@ impl CampaignRepository {
         proposal_policy: Option<CampaignPolicyId>,
     ) -> Result<(), CampaignRepositoryError> {
         self.validate_attempt_admission_retention_policy_shallow(*admission, proposal_policy)?;
-        if let Some(policy) = admission.retention_policy().or(proposal_policy) {
-            self.read_policy(policy.content_id())?;
-        }
+        self.read_policy(admission.retention_policy().content_id())?;
         Ok(())
     }
 
@@ -170,9 +168,7 @@ impl CampaignRepository {
         admission: AttemptAdmission,
         proposal_policy: Option<CampaignPolicyId>,
     ) -> Result<(), CampaignRepositoryError> {
-        let Some(retention_policy) = admission.retention_policy() else {
-            return Ok(());
-        };
+        let retention_policy = admission.retention_policy();
         if admission.schema_version()
             == crate::exploration::ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION
             && proposal_policy.is_some_and(|policy| policy != retention_policy)
@@ -190,40 +186,6 @@ impl CampaignRepository {
             return Err(integrity("attempt-admission-retention-policy-mismatch"));
         }
         Ok(())
-    }
-
-    pub(in crate::repository) fn count_request_execution_bases(
-        &self,
-        accounting_root: ContentId,
-        request: BranchRequestId,
-    ) -> Result<u64, CampaignRepositoryError> {
-        let mut after = None;
-        let mut count = 0_u64;
-        loop {
-            let page = self.merkle.scan(accounting_root, after, 10_000)?;
-            for (key, value) in page.entries() {
-                if *key != map_key_content("accounting.attempt-admission", *value) {
-                    continue;
-                }
-                let admission = self.decode_attempt_admission(*value)?;
-                let AttemptAdmissionRole::ExecutionBasis {
-                    proposal: Some(proposal),
-                    ..
-                } = admission.role()
-                else {
-                    continue;
-                };
-                if self.decode_proposal(proposal.content_id())?.request() == request {
-                    count = count
-                        .checked_add(1)
-                        .ok_or_else(|| integrity("request-attempt-count-overflow"))?;
-                }
-            }
-            let Some(next) = page.next_after() else {
-                return Ok(count);
-            };
-            after = Some(next);
-        }
     }
 
     pub(in crate::repository) fn next_admission_ordinal(
@@ -260,7 +222,6 @@ impl CampaignRepository {
             roots.accounting,
             proposal,
             attempt,
-            true,
         )
     }
 
@@ -269,7 +230,6 @@ impl CampaignRepository {
         snapshot: &LoadedSnapshot,
         proposal: ProposalId,
         attempt: AttemptId,
-        stored: AttemptAdmission,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let roots = snapshot.snapshot.roots();
         self.expected_proposal_admission_at(
@@ -278,8 +238,6 @@ impl CampaignRepository {
             roots.accounting,
             proposal,
             attempt,
-            stored.schema_version()
-                == crate::exploration::ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION,
         )
     }
 
@@ -290,7 +248,6 @@ impl CampaignRepository {
         accounting_root: ContentId,
         proposal: ProposalId,
         attempt: AttemptId,
-        policy_bound: bool,
     ) -> Result<AttemptAdmission, CampaignRepositoryError> {
         let proposal_content = proposal.content_id();
         if self.merkle.get(
@@ -312,7 +269,7 @@ impl CampaignRepository {
         }
 
         let proposal_record = self.read_proposal(proposal_content)?;
-        if policy_bound && proposal_record.policy() != snapshot.snapshot.active_policy() {
+        if proposal_record.policy() != snapshot.snapshot.active_policy() {
             return Err(integrity("attempt-admission-active-policy-mismatch"));
         }
         let attempt_record = self.read_attempt(attempt.content_id())?;
@@ -341,11 +298,11 @@ impl CampaignRepository {
                     cause: request.cause(),
                     admission_ordinal: self.next_admission_ordinal(accounting_root)?,
                 };
-                Ok(if policy_bound {
-                    AttemptAdmission::new_policy_bound(attempt, role, proposal_record.policy())
-                } else {
-                    AttemptAdmission::new(attempt, role)
-                })
+                Ok(AttemptAdmission::new(
+                    attempt,
+                    role,
+                    proposal_record.policy(),
+                ))
             }
             (Some(indexed_attempt), Some(indexed_basis))
                 if indexed_attempt == attempt.content_id() =>
@@ -357,11 +314,11 @@ impl CampaignRepository {
                     return Err(integrity("attempt-execution-basis-index-mismatch"));
                 }
                 let role = AttemptAdmissionRole::AdditionalCause { proposal };
-                Ok(if policy_bound {
-                    AttemptAdmission::new_policy_bound(attempt, role, proposal_record.policy())
-                } else {
-                    AttemptAdmission::new(attempt, role)
-                })
+                Ok(AttemptAdmission::new(
+                    attempt,
+                    role,
+                    proposal_record.policy(),
+                ))
             }
             _ => Err(integrity("attempt-admission-index-shape")),
         }
@@ -375,12 +332,7 @@ impl CampaignRepository {
         path: &BranchPath,
         edge: crate::BranchEdgeId,
     ) -> Result<(), CampaignRepositoryError> {
-        let Some(segments) = path.segments() else {
-            if request.parent() == lineage.genesis_content() && path.edges() == [edge] {
-                return Ok(());
-            }
-            return Err(integrity("proposal-admission-requires-scoped-branch-path"));
-        };
+        let segments = path.segments();
         let Some((terminal, prefix)) = segments.split_last() else {
             return Err(integrity("proposal-admission-branch-path-is-empty"));
         };

@@ -1069,25 +1069,21 @@ fn encode_create_session_request(request: &CreateSessionRequest) -> Vec<u8> {
             push_line(&mut output, "source", "scenario-ref");
             push_line(&mut output, "name", name);
         }
-        CreateSessionSource::Inline {
-            scenario,
-            scenario_form,
-        } => {
+        CreateSessionSource::Inline { scenario } => {
+            let scenario_def = scenario.scenario_def();
             push_line(&mut output, "source", "inline");
-            push_line(&mut output, "scenario-id", &scenario.id().to_hex());
-            push_line(&mut output, "scenario-seed", &scenario.seed().to_hex());
+            push_line(&mut output, "scenario-id", &scenario_def.id().to_hex());
+            push_line(&mut output, "scenario-seed", &scenario_def.seed().to_hex());
             push_line(
                 &mut output,
                 "app-random-draw-cap",
-                &scenario.app_random_draw_cap().to_string(),
+                &scenario_def.app_random_draw_cap().to_string(),
             );
-            if let Some(scenario_form) = scenario_form {
-                push_line(
-                    &mut output,
-                    "scenario-payload",
-                    &hex_encode(&scenario_form.to_compact_binary()),
-                );
-            }
+            push_line(
+                &mut output,
+                "scenario-payload",
+                &hex_encode(&scenario.to_compact_binary()),
+            );
         }
     }
     push_line(&mut output, "seed", &request.seed.to_hex());

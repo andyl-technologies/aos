@@ -117,15 +117,7 @@ fn evaluate_input(
     repository: &CampaignRepository,
     input: &ObjectiveEvaluationInput,
 ) -> Result<crucible_campaign::ObjectiveEvaluation, ObjectiveEvaluationDriverError> {
-    let Some(retained) = input.measurements().evaluation() else {
-        return evaluate_objectives(
-            input.policy(),
-            input.observation(),
-            input.properties(),
-            BTreeMap::new(),
-        )
-        .map_err(ObjectiveEvaluationDriverError::Campaign);
-    };
+    let retained = input.measurements().evaluation();
     if input.policy().objectives().is_empty()
         || retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
     {

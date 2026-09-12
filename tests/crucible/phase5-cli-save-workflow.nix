@@ -88,7 +88,7 @@
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
         label = "save dispatches the live QEMU workflow";
-        needle = "fn run_local_qemu_save_workflow";
+        needle = "fn run_local_qemu_campaign_save_workflow";
       }
       {
         label = "save arguments";
@@ -244,7 +244,7 @@
       }
       {
         label = "qemu-selected save live checkpoint proof";
-        needle = "save-live-checkpoint";
+        needle = "save-campaign-default-path";
       }
       {
         label = "qemu-selected save test";
@@ -264,13 +264,13 @@
       }
       {
         label = "remote inline scenario source transfer";
-        needle = "CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)";
+        needle = "CreateSessionRequest::inline(run_plan.scenario.scenario_form().clone(), seed)";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifactConstants [
       {
         label = "save handle schema";
-        needle = "crucible.savepoint-handle.v3";
+        needle = "crucible.savepoint-handle.v6";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [
@@ -285,16 +285,16 @@
         needle = "with_white_box_policy_provider";
       }
       {
-        label = "form-bearing inline create session constructor";
-        needle = "pub fn inline_form";
+        label = "complete inline create session constructor";
+        needle = "pub fn inline";
       }
       {
-        label = "inline scenario source field";
-        needle = "scenario_form: Option<ScenarioDefForm>";
+        label = "required inline scenario source field";
+        needle = "scenario: ScenarioDefForm";
       }
       {
-        label = "inline scenario identity validation";
-        needle = "InlineScenarioIdentityMismatch";
+        label = "inline scenario seed validation";
+        needle = "ScenarioSeedMismatch";
       }
       {
         label = "inline scenario white-box policy derivation";
@@ -356,7 +356,7 @@
       }
       {
         label = "RPC inline scenario source compact encoder";
-        needle = "scenario_form.to_compact_binary()";
+        needle = "scenario.to_compact_binary()";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
@@ -402,7 +402,7 @@
       }
       {
         label = "RPC inline scenario source payload parser";
-        needle = "parse_scenario_form_line(Some(line), \"scenario-payload=\")";
+        needle = "parse_scenario_form_line(lines.next(), \"scenario-payload=\")";
       }
       {
         label = "RPC inline scenario source identity validation";
@@ -410,13 +410,13 @@
       }
       {
         label = "RPC inline scenario source constructor";
-        needle = "CreateSessionRequest::inline_form(scenario_form, seed)";
+        needle = "CreateSessionRequest::inline(scenario, seed)";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_control_client/contract_tests.rs" apiControlClientContracts [
       {
         label = "RPC inline form wire snapshot";
-        needle = "create-session-inline-form-request";
+        needle = "create-session-inline-request";
       }
       {
         label = "RPC inline form payload assertion";
@@ -424,7 +424,7 @@
       }
       {
         label = "RPC inline form typed request";
-        needle = "CreateSessionRequest::inline_form";
+        needle = "CreateSessionRequest::inline";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_control_client/conformance.rs" apiControlClientConformance [
@@ -434,21 +434,17 @@
       }
       {
         label = "RPC inline form typed request";
-        needle = "CreateSessionRequest::inline_form";
+        needle = "CreateSessionRequest::inline";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_lifecycle_unary.rs" apiLifecycleUnary [
       {
-        label = "inline form identity mismatch regression";
-        needle = "create_session_rejects_inline_form_identity_mismatch_without_side_effects";
+        label = "inline scenario seed mismatch regression";
+        needle = "create_session_rejects_inline_seed_mismatch_without_side_effects";
       }
       {
-        label = "inline source public request construction";
-        needle = "CreateSessionSource::Inline";
-      }
-      {
-        label = "inline source mismatch error assertion";
-        needle = "InlineScenarioIdentityMismatch";
+        label = "inline source seed mismatch error assertion";
+        needle = "ScenarioSeedMismatch";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
@@ -582,7 +578,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
               -p crucible-api \
-              create_session_rejects_inline_form_identity_mismatch_without_side_effects \
+              create_session_rejects_inline_seed_mismatch_without_side_effects \
               -- --test-threads=1
             cargo test \
               --frozen \

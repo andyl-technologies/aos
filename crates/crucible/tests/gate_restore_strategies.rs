@@ -10,7 +10,7 @@ use std::error::Error;
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError, Icount,
     NodeBlobRef, NodeId, NodeTemplate, ReadyPoint, RngDecision, RngStreamId, TemporalGraph,
-    VirtualTime, World, WorldNode, bake, instantiate, step,
+    VirtualTime, World, WorldNode, bake, instantiate,
 };
 use crucible_harness::divergence::{
     DecisionTraceEntry, DivergenceMemoryRegion, DivergenceRegister, DivergenceSide,
@@ -87,11 +87,11 @@ fn gate_restore_strategies_reject_corrupt_snapshot_restore_and_evict_cache()
     let world = restore_world();
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let parent = step(
-        &step(&genesis, rng_decision("restore/corrupt-a", 31)),
+    let parent = valid_step(
+        &valid_step(&genesis, rng_decision("restore/corrupt-a", 31)),
         rng_decision("restore/corrupt-b", 32),
     );
-    let target = step(&parent, rng_decision("restore/corrupt-c", 33));
+    let target = valid_step(&parent, rng_decision("restore/corrupt-c", 33));
     let baked = bake(&world)?;
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let corrupt = corrupt_loadable_checkpoint(&restore_node(), &parent, &target)?;
@@ -178,9 +178,9 @@ fn restore_node() -> NodeId {
 }
 
 fn restore_target(genesis: &Configuration) -> Configuration {
-    step(
-        &step(
-            &step(genesis, rng_decision("restore/seed-a", 11)),
+    valid_step(
+        &valid_step(
+            &valid_step(genesis, rng_decision("restore/seed-a", 11)),
             rng_decision("restore/seed-b", 12),
         ),
         rng_decision("restore/seed-c", 13),
@@ -387,4 +387,11 @@ fn corrupt_loadable_checkpoint(
             )),
         )]),
     )
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

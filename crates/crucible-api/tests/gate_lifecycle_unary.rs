@@ -10,8 +10,8 @@ use crucible::{
     ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, Seed, VirtualTime,
 };
 use crucible_api::{
-    ControlClient, CreateSessionRequest, CreateSessionSource, DebugAuthorizationPolicy,
-    DebugControllerAcquisition, DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
+    ControlClient, CreateSessionRequest, DebugAuthorizationPolicy, DebugControllerAcquisition,
+    DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
     LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, LifecycleServerMode, ListScenariosResponse, QuiescentLifecycleLoop,
     RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeObservationSource, ResumeReplayClosure,
@@ -434,39 +434,6 @@ async fn create_session_rejects_inline_seed_mismatch_without_side_effects() {
         LifecycleApiError::ScenarioSeedMismatch {
             scenario_seed: scenario.seed(),
             request_seed: Seed::from_u64(109),
-        },
-    );
-    assert_eq!(control_plane.session_count(), 0);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn create_session_rejects_inline_form_identity_mismatch_without_side_effects() {
-    let mut control_plane = lifecycle_control_plane();
-    let scenario_form = resume_request(120).scenario;
-    let actual = scenario_form.scenario_def();
-    let advertised = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
-        actual.id(),
-        Seed::from_u64(121),
-        actual.app_random_draw_cap(),
-    );
-
-    let error = control_plane
-        .create_session(CreateSessionRequest {
-            source: CreateSessionSource::Inline {
-                scenario: advertised.clone(),
-                scenario_form: Some(scenario_form),
-            },
-            seed: advertised.seed(),
-            start_paused: true,
-        })
-        .await
-        .expect_err("inline form identity mismatch should reject create");
-
-    assert_eq!(
-        error,
-        LifecycleApiError::InlineScenarioIdentityMismatch {
-            expected: Box::new(advertised),
-            actual: Box::new(actual),
         },
     );
     assert_eq!(control_plane.session_count(), 0);

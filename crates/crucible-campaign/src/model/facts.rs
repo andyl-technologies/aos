@@ -22,7 +22,7 @@ use crate::{
 
 use super::AdmissionOrdinal;
 
-const LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
+const BASE_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 2;
 const DERIVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 3;
 const CREDITED_OBSERVATION_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 4;
 const PIN_COMMAND_CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 5;
@@ -663,8 +663,6 @@ pub enum SavepointCaptureOutcome {
     Canceled,
     /// A non-retryable worker failure stopped the scoped capture.
     Failed,
-    /// The operator released a previously ready capture without selecting it.
-    Discarded,
 }
 
 impl Canonical for SavepointCaptureOutcome {
@@ -673,7 +671,6 @@ impl Canonical for SavepointCaptureOutcome {
             Self::Ready => 0,
             Self::Canceled => 1,
             Self::Failed => 2,
-            Self::Discarded => 3,
         });
     }
 
@@ -682,7 +679,6 @@ impl Canonical for SavepointCaptureOutcome {
             0 => Ok(Self::Ready),
             1 => Ok(Self::Canceled),
             2 => Ok(Self::Failed),
-            3 => Ok(Self::Discarded),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "savepoint-capture-outcome",
                 tag,
@@ -903,8 +899,6 @@ pub enum CampaignFact {
         /// Exact presentation-bearing opportunity.
         opportunity: ChoiceOpportunityId,
     },
-    /// A bounded finite or generated branch request was issued.
-    BranchRequestIssued(BranchRequestId),
     /// A branch request was accepted with snapshot-bound cardinality and budget counts.
     BranchRequestAccepted {
         /// Exact immutable branch request.
@@ -927,8 +921,6 @@ pub enum CampaignFact {
         /// Explicit non-modeled terminal reason.
         disposition: NonModeledAttemptDisposition,
     },
-    /// A canonical observation completed an attempt.
-    ObservationPublished(ObservationId),
     /// A canonical observation completed an attempt with scoped feedback ownership.
     ObservationCredited(ObservationId),
     /// A stable finding and reproduction closure was published.
@@ -981,7 +973,7 @@ impl CampaignFact {
             Self::SavepointContinuationSelected(_) => {
                 SAVEPOINT_CONTINUATION_SELECTION_CAMPAIGN_FACT_SCHEMA_VERSION
             }
-            _ => LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION,
+            _ => BASE_CAMPAIGN_FACT_SCHEMA_VERSION,
         }
     }
 
@@ -1016,7 +1008,7 @@ impl CampaignFact {
             fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
                 let version = u32::decode(decoder)?;
                 match version {
-                    LEGACY_CAMPAIGN_FACT_SCHEMA_VERSION => {
+                    BASE_CAMPAIGN_FACT_SCHEMA_VERSION => {
                         CampaignFact::decode_versioned(decoder, CampaignFactDecodeExtension::None)
                             .map(|fact| Self { version, fact })
                     }
@@ -1220,10 +1212,6 @@ impl Canonical for CampaignFact {
                 branch_point.encode(encoder);
                 opportunity.encode(encoder);
             }
-            Self::BranchRequestIssued(id) => {
-                encoder.u8(1);
-                id.encode(encoder);
-            }
             Self::BranchRequestAccepted { request, summary } => {
                 encoder.u8(16);
                 request.encode(encoder);
@@ -1240,10 +1228,6 @@ impl Canonical for CampaignFact {
             Self::AttemptAdmitted(admission) => {
                 encoder.u8(4);
                 admission.encode(encoder);
-            }
-            Self::ObservationPublished(id) => {
-                encoder.u8(5);
-                id.encode(encoder);
             }
             Self::ObservationCredited(id) => {
                 encoder.u8(13);
@@ -1322,11 +1306,15 @@ impl CampaignFact {
                 branch_point: BranchPointId::decode(decoder)?,
                 opportunity: ChoiceOpportunityId::decode(decoder)?,
             }),
-            1 => BranchRequestId::decode(decoder).map(Self::BranchRequestIssued),
+            1 => Err(CampaignCodecError::InvalidValue {
+                reason: "unrecorded branch acceptance facts are not a current schema",
+            }),
             2 => PlannerStepId::decode(decoder).map(Self::PlannerAdvanced),
             3 => ProposalId::decode(decoder).map(Self::ProposalIssued),
             4 => AttemptAdmissionId::decode(decoder).map(Self::AttemptAdmitted),
-            5 => ObservationId::decode(decoder).map(Self::ObservationPublished),
+            5 => Err(CampaignCodecError::InvalidValue {
+                reason: "unscoped observation facts are not a current schema",
+            }),
             6 => FindingId::decode(decoder).map(Self::FindingPublished),
             7 => PolicyActivation::decode(decoder).map(Self::PolicyActivated),
             8 => BudgetGrant::decode(decoder).map(Self::BudgetGranted),

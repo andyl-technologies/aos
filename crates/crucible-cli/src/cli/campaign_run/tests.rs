@@ -115,7 +115,7 @@ fn resume_evidence_for_scenario(
 
 fn default_resume_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ResumeInvocationPlan {
     ResumeInvocationPlan {
-        savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+        savepoint: resume_savepoint_ref(evidence),
         store_root: store.to_path_buf(),
         terminal_condition: RunTerminalCondition::Stopped,
         max_virtual_time: None,
@@ -130,7 +130,7 @@ fn default_resume_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ResumeI
 
 fn default_fork_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ForkInvocationPlan {
     ForkInvocationPlan {
-        source: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
+        source: resume_savepoint_ref(evidence),
         label: String::from("campaign-unchanged-fork"),
         artifact_dir: store.join("artifacts"),
         store_root: store.to_path_buf(),
@@ -147,12 +147,39 @@ fn default_fork_plan(evidence: &ResumeHandleEvidence, store: &Path) -> ForkInvoc
     }
 }
 
+fn resume_savepoint_ref(evidence: &ResumeHandleEvidence) -> ResumeSavepointRef {
+    ResumeSavepointRef {
+        path: PathBuf::from("campaign-test.crucible-savepoint"),
+        handle: SavepointHandle {
+            label: String::from("campaign-test"),
+            checkpoint: evidence.checkpoint.id,
+            scenario_id_hex: evidence.scenario.id().to_hex(),
+            scenario_label: String::from("campaign-test.scn"),
+            scenario_payload: evidence.scenario_form.to_compact_binary(),
+            schedule_payload: evidence.schedule.to_compact_binary(),
+            replay_closure_payload: evidence.replay_closure.to_canonical_bytes().ok(),
+            frontier_ticks: evidence.checkpoint.virtual_time.ticks,
+            at: SaveAtArg::VirtualTime,
+            selector: None,
+            boundary_proof: Some(SavepointBoundaryProof::Coordinate {
+                frontier_ticks: evidence.checkpoint.virtual_time.ticks,
+                quanta: evidence.schedule.len() as u64,
+            }),
+            boundary_predicate: None,
+            terminal_condition: RunTerminalCondition::VirtualTime,
+            materialization: String::from("campaign-test"),
+            oracle_status: String::from("campaign-test"),
+            canonical_log_digest: content_address_bytes(b"campaign-test"),
+        },
+    }
+}
+
 fn typed_selection_schedule(scenario: &crucible::ScenarioDef) -> Schedule {
     let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("Boolean domain"));
     let declaration = SelectableDeclaration::new(
-        "product.test.legacy-resume-route",
+        "product.test.campaign-resume-route",
         ChoiceSource::Scheduler {
-            producer: String::from("legacy-resume-route-test"),
+            producer: String::from("campaign-resume-route-test"),
         },
         domain.clone(),
         ChoiceValue::Boolean(false),
@@ -166,10 +193,10 @@ fn typed_selection_schedule(scenario: &crucible::ScenarioDef) -> Schedule {
         &declaration,
         &domain,
         ChoiceCoordinate {
-            scheduler: CampaignHash::derive("test", b"legacy-resume-scheduler"),
-            producer: CampaignHash::derive("test", b"legacy-resume-producer"),
+            scheduler: CampaignHash::derive("test", b"campaign-resume-scheduler"),
+            producer: CampaignHash::derive("test", b"campaign-resume-producer"),
         },
-        "legacy-resume-route",
+        "campaign-resume-route",
         None,
     )
     .expect("choice opportunity");
@@ -217,7 +244,7 @@ fn try_resume_campaign_fixture(
         .expect("transient exact directory");
     let checkpoint_root = checkpoint_directory.path().to_path_buf();
     let exact_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "legacy-campaign-resume-projection-test",
+        "campaign-resume-projection-test",
         checkpoint_root.clone(),
     ));
     let checkpoints = Arc::new(
@@ -450,67 +477,55 @@ fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
             order: Vec::new(),
         }),
         crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("legacy-resume-route"),
+            stream: crucible::RngStreamId::from_name("campaign-resume-route"),
             value: 7,
         }),
     ]);
     let evidence = resume_evidence(supported, VirtualTime { ticks: 5 });
     let default = default_resume_plan(&evidence, temporary.path());
-    assert!(guarded_campaign_resume_eligible(&default, &evidence));
+    assert!(validate_campaign_resume_contract(&default, &evidence).is_ok());
 
     let mut virtual_time = default.clone();
     virtual_time.terminal_condition = RunTerminalCondition::VirtualTime;
     virtual_time.max_virtual_time = Some(String::from("10ticks"));
     virtual_time.max_virtual_time_ticks = Some(10);
-    assert!(guarded_campaign_resume_eligible(&virtual_time, &evidence));
+    assert!(validate_campaign_resume_contract(&virtual_time, &evidence).is_ok());
 
     let mut unsupported_evidence = evidence.clone();
     unsupported_evidence.schedule =
         Schedule::from_decisions([crucible::Decision::Override(crucible::OverrideDecision {
             point: crucible::SchedulingPoint {
-                key: String::from("legacy-resume/override"),
+                key: String::from("campaign-resume/override"),
             },
             choice: crucible::ChoiceTag {
                 name: String::from("alternate"),
             },
         })]);
-    assert!(!guarded_campaign_resume_eligible(
-        &default,
-        &unsupported_evidence
-    ));
+    assert!(validate_campaign_resume_contract(&default, &unsupported_evidence).is_err());
     unsupported_evidence.schedule =
         Schedule::from_decisions([crucible::Decision::AppRandom(AppRandomDecision {
             node: crucible::NodeId {
-                name: String::from("legacy-resume-node"),
+                name: String::from("campaign-resume-node"),
             },
-            stream: crucible::RngStreamId::from_name("legacy-resume-app-random"),
+            stream: crucible::RngStreamId::from_name("campaign-resume-app-random"),
             request_id: 1,
             width: 8,
             value: 3,
         })]);
-    assert!(!guarded_campaign_resume_eligible(
-        &default,
-        &unsupported_evidence
-    ));
+    assert!(validate_campaign_resume_contract(&default, &unsupported_evidence).is_err());
     unsupported_evidence.schedule = typed_selection_schedule(&evidence.scenario);
-    assert!(!guarded_campaign_resume_eligible(
-        &default,
-        &unsupported_evidence
-    ));
+    assert!(validate_campaign_resume_contract(&default, &unsupported_evidence).is_err());
 
     let mut property = default.clone();
     property.terminal_condition = RunTerminalCondition::Property;
     assert_eq!(
-        guarded_campaign_resume_eligible(&property, &evidence),
+        validate_campaign_resume_contract(&property, &evidence).is_ok(),
         !evidence.scenario_form.properties().assertions().is_empty()
     );
     let property_evidence = resume_evidence_with_assertion(VirtualTime { ticks: 5 });
     let mut property = default_resume_plan(&property_evidence, temporary.path());
     property.terminal_condition = RunTerminalCondition::Property;
-    assert!(guarded_campaign_resume_eligible(
-        &property,
-        &property_evidence
-    ));
+    assert!(validate_campaign_resume_contract(&property, &property_evidence).is_ok());
     assert_eq!(
         guarded_resume_stop(&property, &property_evidence).expect("property stop"),
         StopCondition::Observation(ObservationCondition::AnyAssertionViolationTransition)
@@ -519,13 +534,10 @@ fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
     interactive.execution_mode = RunExecutionMode::Interactive;
     interactive.startup_commands = vec![SessionCommandKind::Start];
     interactive.accepted_interactive_commands = run_interactive_session_command_set();
-    assert!(!guarded_campaign_resume_eligible(&interactive, &evidence));
+    assert!(validate_campaign_resume_contract(&interactive, &evidence).is_err());
     let mut changed_controls = default;
     changed_controls.initial_control_commands.clear();
-    assert!(!guarded_campaign_resume_eligible(
-        &changed_controls,
-        &evidence
-    ));
+    assert!(validate_campaign_resume_contract(&changed_controls, &evidence).is_err());
 }
 
 #[test]
@@ -533,17 +545,17 @@ fn campaign_fork_route_accepts_standard_controlled_workflows() {
     let temporary = TempDir::new().expect("fork route workspace");
     let evidence = resume_evidence(Schedule::empty(), VirtualTime { ticks: 5 });
     let default = default_fork_plan(&evidence, temporary.path());
-    assert!(guarded_campaign_fork_eligible(&default, &evidence));
+    assert!(validate_campaign_fork_contract(&default, &evidence).is_ok());
 
     let mut virtual_time = default.clone();
     virtual_time.terminal_condition = RunTerminalCondition::VirtualTime;
     virtual_time.max_virtual_time = Some(String::from("10ticks"));
     virtual_time.max_virtual_time_ticks = Some(10);
-    assert!(guarded_campaign_fork_eligible(&virtual_time, &evidence));
+    assert!(validate_campaign_fork_contract(&virtual_time, &evidence).is_ok());
 
     let mut reseeded = default.clone();
     reseeded.fork_seed = Some(7);
-    assert!(guarded_campaign_fork_eligible(&reseeded, &evidence));
+    assert!(validate_campaign_fork_contract(&reseeded, &evidence).is_ok());
     assert!(
         guarded_campaign_fork_control(&reseeded, &evidence)
             .expect("model reseed control")
@@ -555,7 +567,7 @@ fn campaign_fork_route_accepts_standard_controlled_workflows() {
         decision: String::from("network:delivery"),
         value: String::from("alternate"),
     }];
-    assert!(guarded_campaign_fork_eligible(&overridden, &evidence));
+    assert!(validate_campaign_fork_contract(&overridden, &evidence).is_ok());
     assert!(
         guarded_campaign_fork_control(&overridden, &evidence)
             .expect("model override control")
@@ -565,33 +577,27 @@ fn campaign_fork_route_accepts_standard_controlled_workflows() {
     let mut property = default.clone();
     property.terminal_condition = RunTerminalCondition::Property;
     assert_eq!(
-        guarded_campaign_fork_eligible(&property, &evidence),
+        validate_campaign_fork_contract(&property, &evidence).is_ok(),
         !evidence.scenario_form.properties().assertions().is_empty()
     );
     let property_evidence = resume_evidence_with_assertion(VirtualTime { ticks: 5 });
     let mut property = default_fork_plan(&property_evidence, temporary.path());
     property.terminal_condition = RunTerminalCondition::Property;
-    assert!(guarded_campaign_fork_eligible(
-        &property,
-        &property_evidence
-    ));
+    assert!(validate_campaign_fork_contract(&property, &property_evidence).is_ok());
 
     let mut quiescence = default.clone();
     quiescence.terminal_condition = RunTerminalCondition::Quiescence;
-    assert!(guarded_campaign_fork_eligible(&quiescence, &evidence));
+    assert!(validate_campaign_fork_contract(&quiescence, &evidence).is_ok());
 
     let mut interactive = default.clone();
     interactive.execution_mode = RunExecutionMode::Interactive;
     interactive.startup_commands = vec![SessionCommandKind::Fork];
     interactive.accepted_interactive_commands = run_interactive_session_command_set();
-    assert!(!guarded_campaign_fork_eligible(&interactive, &evidence));
+    assert!(validate_campaign_fork_contract(&interactive, &evidence).is_err());
 
     let mut changed_controls = default;
     changed_controls.initial_control_commands.clear();
-    assert!(!guarded_campaign_fork_eligible(
-        &changed_controls,
-        &evidence
-    ));
+    assert!(validate_campaign_fork_contract(&changed_controls, &evidence).is_err());
 }
 
 #[test]
@@ -718,7 +724,7 @@ fn campaign_resume_projection_preserves_source_oracle_watch_and_cleanup() {
         &checkpoint_root,
         result,
     )
-    .expect("project campaign resume into legacy contract");
+    .expect("project campaign resume into current contract");
 
     assert_eq!(report.run.execution_owner, RunExecutionOwner::Campaign);
     assert_eq!(report.source_checkpoint, evidence.checkpoint.id);
@@ -882,7 +888,7 @@ fn campaign_resume_projection_does_not_rewind_for_an_earlier_deadline() {
         &checkpoint_root,
         result,
     )
-    .expect("project no-rewind campaign resume into legacy contract");
+    .expect("project no-rewind campaign resume into current contract");
 
     assert_eq!(report.run.status, BackendCommandStatus::Passed);
     assert_eq!(report.run.outcome, Some(OutcomeKind::Passed));
@@ -986,7 +992,7 @@ fn transient_checkpoint_cleanup_preserves_the_execution_error() {
         .expect("transient exact directory");
     let checkpoint_root = checkpoint_directory.path().to_path_buf();
     let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "legacy-campaign-resume-cleanup-test",
+        "campaign-resume-cleanup-test",
         &checkpoint_root,
     ));
     let checkpoints =
@@ -1009,15 +1015,15 @@ fn transient_checkpoint_cleanup_preserves_the_execution_error() {
 #[test]
 fn campaign_route_accepts_exact_semantic_stops_and_rejects_session_only_modes() {
     let mut default = default_run_plan();
-    assert!(guarded_campaign_run_eligible(&default));
+    assert!(validate_campaign_run_contract(&default).is_ok());
     default.campaign_deployment = Some(PathBuf::from("guarded.toml"));
-    assert!(guarded_campaign_run_eligible(&default));
+    assert!(validate_campaign_run_contract(&default).is_ok());
 
     let mut plan = default.clone();
     plan.terminal_condition = RunTerminalCondition::VirtualTime;
     plan.max_virtual_time = Some(String::from("1tick"));
     plan.max_virtual_time_ticks = Some(1);
-    assert!(guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_ok());
     assert_eq!(
         guarded_discovery_stop(&plan).expect("virtual-time stop"),
         StopCondition::VirtualTimeNanoseconds(1)
@@ -1052,15 +1058,15 @@ fn campaign_route_accepts_exact_semantic_stops_and_rejects_session_only_modes() 
 
     let mut plan = default.clone();
     plan.max_virtual_time = Some(String::from("1tick"));
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.max_virtual_time_ticks = Some(1);
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.terminal_condition = RunTerminalCondition::Stopped;
-    assert!(guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_ok());
     assert_eq!(
         guarded_discovery_stop(&plan).expect("terminal stop"),
         StopCondition::Terminal
@@ -1068,11 +1074,11 @@ fn campaign_route_accepts_exact_semantic_stops_and_rejects_session_only_modes() 
 
     let mut plan = default.clone();
     plan.terminal_condition = RunTerminalCondition::Property;
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.max_quanta = Some(1);
-    assert!(guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_ok());
     assert_eq!(
         guarded_discovery_stop(&plan).expect("execution-quanta stop"),
         StopCondition::ExecutionQuanta(1)
@@ -1109,36 +1115,36 @@ fn campaign_route_accepts_exact_semantic_stops_and_rejects_session_only_modes() 
 
     let mut plan = default.clone();
     plan.execution_mode = RunExecutionMode::Interactive;
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.save_policy = RunSavePolicy::OnFail;
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.watch_streams_live_status = true;
-    assert!(guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_ok());
 
     let mut plan = default.clone();
     plan.startup_commands.pop();
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.initial_control_commands.clear();
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.accepted_interactive_commands
         .push(SessionCommandKind::Continue);
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default.clone();
     plan.observer_profile = VERIFY_OBSERVER_PROFILES[0];
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 
     let mut plan = default;
     plan.collect_execution_fingerprints = true;
-    assert!(!guarded_campaign_run_eligible(&plan));
+    assert!(validate_campaign_run_contract(&plan).is_err());
 }
 
 #[test]
@@ -1159,10 +1165,10 @@ fn campaign_save_route_accepts_standard_virtual_time_and_marker_saves() {
         .expect("virtual-time save plan");
 
     assert!(plan.run_plan.campaign_deployment.is_none());
-    assert!(guarded_campaign_save_eligible(&plan));
+    assert!(validate_campaign_save_contract(&plan).is_ok());
 
     plan.run_plan.campaign_deployment = Some(PathBuf::from("guarded.toml"));
-    assert!(guarded_campaign_save_eligible(&plan));
+    assert!(validate_campaign_save_contract(&plan).is_ok());
 
     let marker_cli = Cli::parse_from([
         "crucible",
@@ -1178,7 +1184,7 @@ fn campaign_save_route_accepts_standard_virtual_time_and_marker_saves() {
     };
     let marker = plan_save_invocation(args, Path::new("."), Path::new("./artifacts"))
         .expect("marker save plan");
-    assert!(guarded_campaign_save_eligible(&marker));
+    assert!(validate_campaign_save_contract(&marker).is_ok());
     assert_eq!(
         guarded_campaign_save_stop(&marker).expect("marker campaign stop"),
         StopCondition::NamedBoundary(String::from("checkpoint"))
@@ -1189,7 +1195,7 @@ fn campaign_save_route_accepts_standard_virtual_time_and_marker_saves() {
     quiescence.run_plan.terminal_condition = RunTerminalCondition::Quiescence;
     quiescence.run_plan.max_virtual_time = None;
     quiescence.run_plan.max_virtual_time_ticks = None;
-    assert!(guarded_campaign_save_eligible(&quiescence));
+    assert!(validate_campaign_save_contract(&quiescence).is_ok());
     assert_eq!(
         guarded_campaign_save_stop(&quiescence).expect("quiescence campaign stop"),
         StopCondition::Observation(ObservationCondition::SchedulerQuiescent)
@@ -1199,11 +1205,11 @@ fn campaign_save_route_accepts_standard_virtual_time_and_marker_saves() {
     unsupported.selector = Some(SaveAtSelector::Marker {
         name: String::from("checkpoint"),
     });
-    assert!(!guarded_campaign_save_eligible(&unsupported));
+    assert!(validate_campaign_save_contract(&unsupported).is_err());
 
     let mut unsupported = plan;
     unsupported.run_plan.execution_mode = RunExecutionMode::Interactive;
-    assert!(!guarded_campaign_save_eligible(&unsupported));
+    assert!(validate_campaign_save_contract(&unsupported).is_err());
 }
 
 #[test]
@@ -1227,7 +1233,7 @@ fn campaign_virtual_time_save_exports_closure_for_unchanged_resume_and_fork_read
 }
 
 #[test]
-fn campaign_marker_save_exports_v4_event_proof_for_resume_and_fork_readers() {
+fn campaign_marker_save_exports_current_event_proof_for_resume_and_fork_readers() {
     let marker = "guarded-campaign-save-fixture-marker";
     assert_campaign_save_exports_closure(
         &["--at", "marker", "--marker", marker],
@@ -1359,7 +1365,7 @@ fn capture_campaign_save(
         .expect("campaign fixture resources");
     let exact_root = temporary.path().join("transient-exact");
     let exact_backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "legacy-campaign-save-reader-test",
+        "campaign-save-reader-test",
         exact_root.clone(),
     ));
     let checkpoints = Arc::new(
@@ -1577,7 +1583,7 @@ fn assert_campaign_save_exports_closure(
         campaign,
     } = capture_campaign_save(boundary_arguments, stop.clone(), with_selection);
     let report = campaign_save_workflow_report(&save_plan, &campaign, &stop)
-        .expect("project campaign capture into legacy save contract");
+        .expect("project campaign capture into save contract");
     let thin_plan = plan_cli_invocation(&cli);
     let backend_plan = plan_backend_selection(&cli)
         .expect("backend plan")
@@ -1632,8 +1638,8 @@ fn assert_campaign_save_exports_closure(
                 marker_entry.event_payload().string("marker"),
                 Some(proved_marker.name.as_str())
             );
-            let handle = std::fs::read_to_string(&output).expect("marker v5 handle");
-            assert!(handle.contains("schema\tcrucible.savepoint-handle.v5\n"));
+            let handle = std::fs::read_to_string(&output).expect("marker v6 handle");
+            assert!(handle.contains("schema\tcrucible.savepoint-handle.v6\n"));
             assert!(handle.contains("campaign-replay-closure\tcrucible-hash:"));
             assert!(handle.contains("boundary-proof\tcampaign-marker-event\t"));
             assert!(handle.contains("boundary-predicate\t"));
@@ -1659,38 +1665,12 @@ fn assert_campaign_save_exports_closure(
                 decoded.boundary_predicate,
                 Some(crucible::Predicate::guest_marker(proved_marker.clone()))
             );
-            if !with_selection {
-                let legacy_v4 = handle
-                    .lines()
-                    .filter(|line| !line.starts_with("campaign-replay-closure\t"))
-                    .map(|line| {
-                        if line == "schema\tcrucible.savepoint-handle.v5" {
-                            String::from("schema\tcrucible.savepoint-handle.v4")
-                        } else {
-                            line.to_owned()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    + "\n";
-                let legacy_v4 = decode_savepoint_handle(legacy_v4.as_bytes())
-                    .expect("historical selection-free v4 marker handle remains readable");
-                savepoint_handle_evidence("resume", &legacy_v4)
-                    .expect("historical v4 marker evidence synthesizes an empty closure");
-            }
-
-            let mislabeled_v3 = handle.replace(
-                "schema\tcrucible.savepoint-handle.v5",
-                "schema\tcrucible.savepoint-handle.v4",
-            );
-            assert!(decode_savepoint_handle(mislabeled_v3.as_bytes()).is_err());
-
             let wrong_hash = handle.replace(
                 &format_content_hash_ref(*content_hash),
                 &format_content_hash_ref(crucible::ContentHash::default()),
             );
             let error = decode_savepoint_handle(wrong_hash.as_bytes())
-                .expect_err("v5 campaign marker hash must bind its canonical event");
+                .expect_err("v6 campaign marker hash must bind its canonical event");
             assert!(error.to_string().contains("canonical event"));
 
             let wrong_predicate = handle
@@ -1771,30 +1751,11 @@ fn assert_campaign_save_exports_closure(
                     .proof,
                 SaveBoundaryProof::Coordinate
             );
-            let handle = std::fs::read_to_string(&output).expect("virtual-time v5 handle");
-            assert!(handle.contains("schema\tcrucible.savepoint-handle.v5\n"));
+            let handle = std::fs::read_to_string(&output).expect("virtual-time v6 handle");
+            assert!(handle.contains("schema\tcrucible.savepoint-handle.v6\n"));
             assert!(handle.contains("campaign-replay-closure\tcrucible-hash:"));
             decode_savepoint_handle(handle.as_bytes())
-                .expect("v5 decoder accepts campaign coordinate proof");
-            if !with_selection {
-                let legacy_v3 = handle
-                    .lines()
-                    .filter(|line| !line.starts_with("campaign-replay-closure\t"))
-                    .map(|line| {
-                        if line == "schema\tcrucible.savepoint-handle.v5" {
-                            String::from("schema\tcrucible.savepoint-handle.v3")
-                        } else {
-                            line.to_owned()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    + "\n";
-                let legacy_v3 = decode_savepoint_handle(legacy_v3.as_bytes())
-                    .expect("historical selection-free v3 coordinate handle remains readable");
-                savepoint_handle_evidence("resume", &legacy_v3)
-                    .expect("historical v3 coordinate evidence synthesizes an empty closure");
-            }
+                .expect("v6 decoder accepts campaign coordinate proof");
         }
         StopCondition::Observation(condition) => {
             let boundary = outcome
@@ -1842,12 +1803,6 @@ fn assert_campaign_save_exports_closure(
                 Some(&retained_evidence)
             );
 
-            let mislabeled = handle.replace(
-                "schema\tcrucible.savepoint-handle.v6",
-                "schema\tcrucible.savepoint-handle.v5",
-            );
-            assert!(decode_savepoint_handle(mislabeled.as_bytes()).is_err());
-
             let wrong_checkpoint = handle
                 .lines()
                 .map(|line| {
@@ -1894,38 +1849,10 @@ fn assert_campaign_save_exports_closure(
         temporary.path(),
         &artifact_directory,
     );
-    let checkpoint_reference = format_content_hash_ref(checkpoint);
-    let (store_resume_plan, store_evidence) =
-        resume_plan_and_evidence_from_cli(Path::new(&checkpoint_reference), temporary.path());
-    let (mut store_fork_plan, store_fork_evidence) = fork_plan_and_evidence_from_cli(
-        &checkpoint_reference,
-        temporary.path(),
-        &artifact_directory,
-    );
-
     assert_eq!(handle_evidence, handle_fork_evidence);
-    assert_eq!(store_evidence, store_fork_evidence);
-    let mut handle_without_source_claim = handle_evidence.clone();
-    handle_without_source_claim.source_observation_proof = None;
-    handle_without_source_claim.source_observation_evidence = None;
-    assert_eq!(handle_without_source_claim, store_evidence);
     assert_eq!(handle_evidence.checkpoint.id, checkpoint);
-    assert!(guarded_campaign_resume_eligible(
-        &handle_resume_plan,
-        &handle_evidence
-    ));
-    assert!(guarded_campaign_resume_eligible(
-        &store_resume_plan,
-        &store_evidence
-    ));
-    assert!(guarded_campaign_fork_eligible(
-        &handle_fork_plan,
-        &handle_fork_evidence
-    ));
-    assert!(guarded_campaign_fork_eligible(
-        &store_fork_plan,
-        &store_fork_evidence
-    ));
+    assert!(validate_campaign_resume_contract(&handle_resume_plan, &handle_evidence).is_ok());
+    assert!(validate_campaign_fork_contract(&handle_fork_plan, &handle_fork_evidence).is_ok());
 
     if let Some(source_proof) = handle_evidence.source_observation_proof.as_deref() {
         assert!(
@@ -2120,7 +2047,7 @@ fn assert_campaign_save_exports_closure(
         assert!(
             error
                 .to_string()
-                .contains("legacy resume source observation differs"),
+                .contains("campaign resume source observation differs"),
             "{error}"
         );
         let remote_error = runtime
@@ -2137,7 +2064,7 @@ fn assert_campaign_save_exports_closure(
         assert!(
             remote_error
                 .to_string()
-                .contains("legacy resume source observation differs"),
+                .contains("campaign resume source observation differs"),
             "{remote_error}"
         );
         assert_eq!(runtime.block_on(client.session_count()), 0);
@@ -2150,25 +2077,16 @@ fn assert_campaign_save_exports_closure(
         .virtual_time
         .ticks
         .saturating_mul(2);
-    for plan in [&mut handle_fork_plan, &mut store_fork_plan] {
-        plan.terminal_condition = RunTerminalCondition::VirtualTime;
-        plan.max_virtual_time = Some(format!("{fork_frontier}ticks"));
-        plan.max_virtual_time_ticks = Some(fork_frontier);
-    }
-    assert!(guarded_campaign_fork_eligible(
-        &handle_fork_plan,
-        &handle_fork_evidence
-    ));
-    assert!(guarded_campaign_fork_eligible(
-        &store_fork_plan,
-        &store_fork_evidence
-    ));
+    handle_fork_plan.terminal_condition = RunTerminalCondition::VirtualTime;
+    handle_fork_plan.max_virtual_time = Some(format!("{fork_frontier}ticks"));
+    handle_fork_plan.max_virtual_time_ticks = Some(fork_frontier);
+    assert!(validate_campaign_fork_contract(&handle_fork_plan, &handle_fork_evidence).is_ok());
 
     if with_selection {
         handle_evidence
             .replay_closure
             .validate_for_schedule(&handle_evidence.scenario_form, &handle_evidence.schedule)
-            .expect("v5 handle closure authenticates its typed schedule");
+            .expect("v6 handle closure authenticates its typed schedule");
         assert!(
             ensure_session_replay_evidence_supported(
                 "typed fork regression",
@@ -2228,30 +2146,22 @@ fn assert_campaign_save_exports_closure(
             assert_eq!(lifecycle_starts.load(Ordering::Relaxed), 1);
         }
 
-        for (reader, mut plan, mut fork_plan, evidence) in [
-            (
-                "v5 handle",
-                handle_resume_plan.clone(),
-                handle_fork_plan.clone(),
-                handle_evidence.clone(),
-            ),
-            (
-                "v3 DAG index",
-                store_resume_plan.clone(),
-                store_fork_plan.clone(),
-                store_evidence.clone(),
-            ),
-        ] {
+        for (reader, mut plan, mut fork_plan, evidence) in [(
+            "v6 handle",
+            handle_resume_plan.clone(),
+            handle_fork_plan.clone(),
+            handle_evidence.clone(),
+        )] {
             let source_frontier = evidence.checkpoint.virtual_time.ticks;
             let terminal_frontier = source_frontier.saturating_mul(2);
             plan.terminal_condition = RunTerminalCondition::VirtualTime;
             plan.max_virtual_time = Some(format!("{terminal_frontier}ticks"));
             plan.max_virtual_time_ticks = Some(terminal_frontier);
-            assert!(guarded_campaign_resume_eligible(&plan, &evidence));
+            assert!(validate_campaign_resume_contract(&plan, &evidence).is_ok());
             fork_plan.terminal_condition = RunTerminalCondition::VirtualTime;
             fork_plan.max_virtual_time = Some(format!("{terminal_frontier}ticks"));
             fork_plan.max_virtual_time_ticks = Some(terminal_frontier);
-            assert!(guarded_campaign_fork_eligible(&fork_plan, &evidence));
+            assert!(validate_campaign_fork_contract(&fork_plan, &evidence).is_ok());
 
             // This modeled lifecycle proves campaign ownership and exact
             // reply application. Packaged-QEMU acceptance remains a VM gate.
@@ -2361,22 +2271,12 @@ fn assert_campaign_save_exports_closure(
                 .unwrap_or_else(|error| {
                     panic!("{reader} fork closure should cover terminal schedule: {error}")
                 });
-            assert_eq!(
-                expected_live_qemu_execution_owner(
-                    &live_artifact.contract,
-                    &fork_report.terminal_configuration.schedule,
-                    true,
-                ),
-                RunExecutionOwner::Campaign,
-            );
-            let replay_closure = campaign_owner_replay_closure(
-                "fork",
-                &fork_report.terminal_configuration.schedule,
-                Some(replay_closure),
-            )
-            .unwrap_or_else(|error| {
-                panic!("{reader} fork replay should admit its closure: {error}")
-            });
+            validate_live_qemu_campaign_replay_contract(&live_artifact.contract, true)
+                .unwrap_or_else(|error| panic!("{reader} fork contract should pass: {error}"));
+            let replay_closure = campaign_owner_replay_closure("fork", Some(replay_closure))
+                .unwrap_or_else(|error| {
+                    panic!("{reader} fork replay should admit its closure: {error}")
+                });
             replay_closure
                 .validate_for_schedule(
                     &evidence.scenario_form,
@@ -2393,39 +2293,21 @@ fn assert_campaign_save_exports_closure(
             );
         }
 
-        let handle_text = std::fs::read_to_string(&output).expect("read v5 handle");
+        let handle_text = std::fs::read_to_string(&output).expect("read v6 handle");
         let missing_closure = handle_text
             .lines()
             .filter(|line| !line.starts_with("campaign-replay-closure\t"))
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        assert!(decode_savepoint_handle(missing_closure.as_bytes()).is_err());
         if handle_evidence.source_observation_proof.is_some() {
+            assert!(decode_savepoint_handle(missing_closure.as_bytes()).is_err());
             return;
         }
-        let historical_schema = match stop {
-            StopCondition::NamedBoundary(_) => "crucible.savepoint-handle.v4",
-            StopCondition::VirtualTimeNanoseconds(_) => "crucible.savepoint-handle.v3",
-            _ => panic!("typed portable-save regression uses marker or virtual time"),
-        };
-        let typed_legacy_handle = handle_text
-            .lines()
-            .filter(|line| !line.starts_with("campaign-replay-closure\t"))
-            .map(|line| {
-                if line == "schema\tcrucible.savepoint-handle.v5" {
-                    format!("schema\t{historical_schema}")
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        let typed_legacy_handle = decode_savepoint_handle(typed_legacy_handle.as_bytes())
-            .expect("historical schema remains structurally readable");
-        let error = savepoint_handle_evidence("resume", &typed_legacy_handle)
-            .expect_err("historical typed handle without closure must fail closed");
+        let missing_closure =
+            decode_savepoint_handle(missing_closure.as_bytes()).expect("decode current handle");
+        let error = savepoint_handle_evidence("resume", &missing_closure)
+            .expect_err("typed handle without its replay closure must fail closed");
         assert!(error.to_string().contains("missing the replay closure"));
         let empty_closure =
             GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&Schedule::empty())
@@ -2453,36 +2335,6 @@ fn assert_campaign_save_exports_closure(
         let error = savepoint_handle_evidence("resume", &mismatched_closure)
             .expect_err("closure must cover its exact typed schedule");
         assert!(error.to_string().contains("missing a schedule selection"));
-
-        let store = crucible::LocalDagStore::new(temporary.path().to_path_buf());
-        let index = store
-            .read_checkpoint_closure_index(checkpoint)
-            .expect("read v3 checkpoint closure index");
-        let replay_object = index
-            .opaque_replay_artifact
-            .expect("v3 index retains replay closure object");
-        assert_eq!(
-            index.referenced_objects(),
-            BTreeSet::from([index.reproduction_artifact, replay_object])
-        );
-        assert!(
-            store
-                .delete(&replay_object)
-                .expect("delete closure fixture")
-        );
-        let error = savepoint_store_evidence("resume", checkpoint, temporary.path())
-            .expect_err("missing retained closure object must fail closed");
-        assert!(error.to_string().contains("missing retained object"));
-        store
-            .write_checkpoint_closure_index(
-                checkpoint,
-                index.reproduction_artifact,
-                handle_evidence.checkpoint.virtual_time,
-            )
-            .expect("write historical v2 typed index fixture");
-        let error = savepoint_store_evidence("resume", checkpoint, temporary.path())
-            .expect_err("historical typed index without closure must fail closed");
-        assert!(error.to_string().contains("missing the replay closure"));
     }
 }
 

@@ -170,7 +170,7 @@
       }
       {
         label = "assertion proximity catalog class test";
-        needle = "(\"assertion_proximity\", EventClass::Observational)";
+        needle = "(\"assertion_proximity\", SchedulerEventLogClass::Observational)";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_log_assertion_proximity.rs" proximityTest [
@@ -224,7 +224,7 @@
       }
       {
         label = "observational class assertion";
-        needle = "EventClass::Observational";
+        needle = "SchedulerEventLogClass::Observational";
       }
       {
         label = "event-log-only graph cache API";

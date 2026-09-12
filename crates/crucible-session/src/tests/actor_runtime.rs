@@ -1639,7 +1639,7 @@ impl QuantumLoop for RecordingLoop {
         }
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = valid_step(&request.configuration, decision.clone());
         Ok(QuantumOutcome {
             configuration,
             frontier: VirtualTime { ticks: self.quanta },
@@ -1707,7 +1707,7 @@ impl QuantumLoop for ControlSensitiveLoop {
         self.apply_control_batch(&request.control);
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.decision_seed());
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = valid_step(&request.configuration, decision.clone());
         Ok(QuantumOutcome {
             configuration,
             frontier: VirtualTime { ticks: self.quanta },
@@ -1831,7 +1831,7 @@ impl QuantumLoop for ScriptedStepLoop {
             .event_log_entries
             .saturating_add(usize_to_u64(entries.len()));
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = valid_step(&request.configuration, decision.clone());
         Ok(QuantumOutcome {
             configuration,
             frontier: at,
@@ -1895,7 +1895,7 @@ impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
             Vec::new()
         };
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = valid_step(&request.configuration, decision.clone());
         Ok(QuantumOutcome {
             configuration,
             frontier: at,
@@ -1988,7 +1988,7 @@ impl QuantumLoop for AppendingLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = valid_step(&request.configuration, decision.clone());
         Ok(QuantumOutcome {
             configuration,
             frontier: VirtualTime { ticks: self.quanta },

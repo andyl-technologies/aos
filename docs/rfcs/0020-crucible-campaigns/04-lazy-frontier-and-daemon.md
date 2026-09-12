@@ -340,11 +340,10 @@ real-node executor flight remain open.
 Every attempt carries the ordered branch-edge path by which it was admitted. On
 canonical completion, the projector credits its observation to the expansion
 state at each branch point on that path. No in-memory MCTS stack is required.
-New schema-v2 paths carry exact `(BranchPointId, BranchEdgeId)` segments because
-an edge digest is deliberately non-invertible. Legacy schema-v1 edge-only paths
-remain identity-preserving historical inputs and are admissible only for a
-single-edge genesis request, whose authenticated request recovers the point.
-Nested admission and feedback require a fully scoped cumulative v2 path.
+Current schema-v2 paths carry exact `(BranchPointId, BranchEdgeId)` segments
+because an edge digest is deliberately non-invertible. Normal admission rejects
+schema-v1 edge-only paths because their
+branch-point ownership cannot be authenticated.
 
 ```text
 root branch point B0
@@ -541,10 +540,8 @@ reservation, or VM. A projector/planner later pulls one source continuation
 under current budget and backpressure. An imported successor is accepted only
 if replaying the transition over its parent produces the exact exploration-root
 delta, reproduces any recorded acceptance summary, and makes no unrelated root
-or policy change. Historical `BranchRequestIssued` facts remain readable. An
-idempotent replay of one recomputes its missing summary from the original
-parent graph, returns the original prior/new snapshot pair, and marks the
-summary as legacy-recomputed.
+or policy change. The removed `BranchRequestIssued` fact is rejected because it
+lacks the immutable summary required for current replay.
 
 The summary separates addressable source cardinality from the
 proposal-budget-visible window. It reports exact counts when the source owner
@@ -734,12 +731,10 @@ nested path set under
 `observations.configuration-path-index[ConfigurationArtifactId]` in the source
 snapshot. Canonical observation incorporation adds the complete path under the
 exact child configuration; convergence retains all distinct path identities.
-Legacy edge-only paths remain admissible only for one-edge genesis requests.
 For atomic planner `Issue`, the pure planner ranks only the semantic
 branch-point/source continuation. The coordinator chooses the member with the
 lowest `BranchPathId` ordering key from the exact parent set. The
-chosen member must be a scoped version-2 path; a lowest legacy member fails
-closed without scanning an unbounded historical prefix. The coordinator
+chosen member must be a scoped version-2 path. The coordinator
 appends the selected terminal segment and records that cumulative path in the
 derived attempt. This owner rule is independent of page boundaries and is
 recomputed identically for imported successors.
@@ -885,8 +880,8 @@ set. The compact expansion cache retains neutral guidance fields. Separate
 exact-snapshot coverage-novelty and policy-weighted finding-reward folds
 described in RFC 03 are now implemented read-only. Exact owner-published
 objective evaluations add their signed scalar reward through the same bounded
-batch. Canonical frontier engine version 2 consumes the exact decomposed
-PUCT evidence only through the bounded request-batch contract in RFC 03; it
+batch. Canonical frontier engine version 8 with state schema 3 consumes the exact
+decomposed PUCT evidence only through the bounded request-batch contract in RFC 03; it
 cannot trust or read compact expansion-cache guidance fields. Loading an
 `ExpansionState` repeats the complete source-snapshot validation and owner
 recomputation; a structurally valid cache with an omitted request, proposal, or
@@ -931,7 +926,7 @@ admission is rejected.
   wakeup MUST equal the exact nested credit-set count. The compact expansion
   cache MUST keep reward, novelty, and finding fields neutral. A separate PUCT
   projection MAY use only the bounded exact-snapshot coverage and weighted-
-  finding owners in RFC 03; canonical frontier engine version 2 consumes that
+  finding owners in RFC 03; current PUCT engine version 6/state 2 consumes that
   projection through exact owner-built guidance records, including signed
   objective reward.
 

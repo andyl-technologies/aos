@@ -574,7 +574,7 @@ pub enum QemuExactThinRunnerError<E> {
     /// The post-materialization attempt driver failed.
     #[error("QEMU campaign attempt driver failed")]
     Driver(E),
-    /// This legacy runner cannot independently authenticate a selected origin.
+    /// This exact-thin runner cannot independently authenticate a selected origin.
     #[error("exact-thin runner cannot execute a selected continuation origin")]
     SelectedOriginUnsupported,
 }
@@ -913,6 +913,10 @@ mod tests {
     };
 
     use super::*;
+
+    fn valid_step(configuration: &Configuration, decision: crucible::Decision) -> Configuration {
+        crucible::try_step(configuration, decision).expect("test decision should be valid")
+    }
 
     struct FinishTrackingSession {
         finishes: Arc<AtomicUsize>,
@@ -1364,7 +1368,7 @@ mod tests {
                 name: String::from("selected"),
             },
         });
-        let selected = crucible::step(&initial, decision.clone());
+        let selected = valid_step(&initial, decision.clone());
         let root = exact_checkpoint_id(b"valid-resume-root");
         let scheduler = scheduler_for(&initial, vec![decision]);
         let mut realization = resumed_realization(&selected, &selected, Some(&initial));

@@ -58,7 +58,7 @@ fn fixture_campaign_fact(byte: u8) -> CampaignFactId {
 }
 
 #[test]
-fn completed_responses_version_finding_candidates_and_decode_legacy_none() {
+fn completed_responses_encode_current_optional_finding_candidates() {
     let assignment = fixture_request();
     let execution = ExecutionId::from_bytes([0x71; 16]).expect("execution");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
@@ -86,7 +86,7 @@ fn completed_responses_version_finding_candidates_and_decode_legacy_none() {
     );
     assert_eq!(
         SubmitAttemptResponse::new(&assignment, submit_disposition)
-            .expect("legacy submit response")
+            .expect("candidate-free submit response")
             .finding_candidate(),
         None
     );
@@ -515,76 +515,33 @@ fn savepoint_capture_scope_is_explicit_versioned_and_control_bound() {
             .expect("decode scoped cancellation"),
         cancel
     );
-}
 
-#[test]
-fn legacy_control_requests_decode_in_the_semantic_scope() {
-    let assignment = fixture_request();
-    let status = GetAttemptExecutionRequest::new(
-        &assignment,
-        ExecutionId::from_bytes([0x37; 16]).expect("status execution"),
-    )
-    .expect("status request");
-    let checkpoint = CheckpointAttemptExecutionRequest::new(
-        &assignment,
-        ExecutionId::from_bytes([0x3b; 16]).expect("checkpoint execution"),
-    )
-    .expect("checkpoint request");
-    let cancel = CancelAttemptExecutionRequest::new(
-        &assignment,
-        ExecutionId::from_bytes([0x39; 16]).expect("cancellation execution"),
-    )
-    .expect("cancellation request");
-    let legacy_status = semantic_control_v2_bytes(status.canonical_bytes());
-    let legacy_checkpoint = semantic_control_v2_bytes(checkpoint.canonical_bytes());
-    let legacy_cancel = semantic_control_v2_bytes(cancel.canonical_bytes());
+    let mut obsolete_status = status.canonical_bytes();
+    obsolete_status[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert!(matches!(
+        GetAttemptExecutionRequest::from_canonical_bytes(&obsolete_status),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported executor control-request schema version"
+        })
+    ));
 
-    let decoded = GetAttemptExecutionRequest::from_canonical_bytes(&legacy_status)
-        .expect("decode legacy semantic request");
-    assert_eq!(decoded.execution_scope(), AttemptExecutionScope::Semantic);
-    assert_eq!(decoded.canonical_bytes(), legacy_status);
-    assert_eq!(
-        CheckpointAttemptExecutionRequest::from_canonical_bytes(&legacy_checkpoint)
-            .expect("decode legacy checkpoint")
-            .execution_scope(),
-        AttemptExecutionScope::Semantic
-    );
-    assert_eq!(
-        CancelAttemptExecutionRequest::from_canonical_bytes(&legacy_cancel)
-            .expect("decode legacy cancellation")
-            .execution_scope(),
-        AttemptExecutionScope::Semantic
-    );
-    assert_eq!(
-        CampaignHash::derive(
-            "crucible.test.get-attempt-execution-request-vector.v2",
-            &legacy_status,
-        )
-        .to_hex(),
-        "ef1b1a52e9f1bce2ad5f56a3d038c2a48cbd7c3e1809e0cd999edb4f1f64d5f3"
-    );
-    assert_eq!(
-        CampaignHash::derive(
-            "crucible.test.checkpoint-attempt-execution-request-vector.v2",
-            &legacy_checkpoint,
-        )
-        .to_hex(),
-        "2f1dfdb45541a18fd2b09e3033e982af8e110c8ebd443bc06823751c45cc4a2e"
-    );
-    assert_eq!(
-        CampaignHash::derive(
-            "crucible.test.cancel-attempt-execution-request-vector.v2",
-            &legacy_cancel,
-        )
-        .to_hex(),
-        "b3ca93e0286e939ba61708de078d38588c5e9298611b4c30482453ee649e367e"
-    );
-}
+    let mut obsolete_checkpoint = checkpoint.canonical_bytes();
+    obsolete_checkpoint[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert!(matches!(
+        CheckpointAttemptExecutionRequest::from_canonical_bytes(&obsolete_checkpoint),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported executor control-request schema version"
+        })
+    ));
 
-fn semantic_control_v2_bytes(mut current: Vec<u8>) -> Vec<u8> {
-    assert_eq!(current.pop(), Some(0), "semantic scope tag is last");
-    current[..4].copy_from_slice(&2_u32.to_be_bytes());
-    current
+    let mut obsolete_cancel = cancel.canonical_bytes();
+    obsolete_cancel[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert!(matches!(
+        CancelAttemptExecutionRequest::from_canonical_bytes(&obsolete_cancel),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported executor control-request schema version"
+        })
+    ));
 }
 
 #[test]
@@ -836,24 +793,22 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
     let policy_basis = AttemptRetentionPolicyBasis::new(
         CampaignSnapshotId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignSnapshot,
-            2,
+            3,
             b"materialized-start-policy-snapshot",
         ))
         .expect("policy snapshot"),
         AttemptAdmissionId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            1,
+            3,
             b"materialized-start-policy-admission",
         ))
         .expect("policy admission"),
-        Some(
-            CampaignPolicyId::from_content_id(ContentId::for_bytes(
-                ObjectKind::Policy,
-                1,
-                b"materialized-start-policy",
-            ))
-            .expect("policy"),
-        ),
+        CampaignPolicyId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Policy,
+            1,
+            b"materialized-start-policy",
+        ))
+        .expect("policy"),
     );
     let policy_assignment = assignment
         .clone()
@@ -960,7 +915,7 @@ fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
     let ordinary = fixture_request();
     let snapshot = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignSnapshot,
-        2,
+        3,
         b"selected-resume-snapshot",
     ))
     .expect("snapshot");

@@ -70,10 +70,6 @@
         label = "state transition subscription";
         needle = "state_transitions.subscribe";
       }
-      {
-        label = "state update lag error";
-        needle = "StateUpdateStreamLagged";
-      }
     ]
     ++ failuresFor "crates/crucible-api/src/client.rs" client [
       {

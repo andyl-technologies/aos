@@ -59,8 +59,8 @@
         needle = "pub enum EventLevel";
       }
       {
-        label = "event class compatibility alias";
-        needle = "pub type EventClass = SchedulerEventLogClass";
+        label = "event log class enum";
+        needle = "pub enum SchedulerEventLogClass";
       }
       {
         label = "entry stores full time";

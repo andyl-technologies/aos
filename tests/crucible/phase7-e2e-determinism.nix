@@ -276,8 +276,6 @@ in
             modeled_profile_reproduction=true
             native_qemu_execution=false
             cross_machine_reproduction=false
-            shared_artifact_format=checks.crucible.phase7.reproductionArtifactFormat
-            machine_independent_reproduction=checks.crucible.phase7.machineIndependentReproduction
             native_reduction_slice=checks.fleet.crucible-e2e-determinism
             ci_wiring_guard=checks.crucible.phase7.crucibleGateCiWiring
             cli_component=implemented_shared_mock_artifact

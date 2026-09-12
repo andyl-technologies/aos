@@ -261,7 +261,7 @@ ListCampaignsResponseV1 = version | request_digest |
 
 GetCampaignSnapshotRequestV1 = version | principal | campaign | snapshot
 GetCampaignSnapshotResponseV1 = version | request_digest | snapshot |
-                                CampaignSnapshotV2OrV3
+                                CampaignSnapshotV3
 
 WatchCampaignRequestV1 = version | principal | campaign |
                          optional after_snapshot
@@ -274,35 +274,35 @@ MerkleScanProofV1 = node_count:u64 |
 QueryCampaignGraphRequestV1 = version | principal | campaign | snapshot |
                               optional after_key | limit
 QueryCampaignGraphResponseV1 = version | request_digest | snapshot |
-                               CampaignSnapshotV2OrV3 |
+                               CampaignSnapshotV3 |
                                entries[CampaignGraphEntryV1] |
                                optional next_after | MerkleScanProofV1
 
 QueryCampaignFindingsRequestV1 = version | principal | campaign | snapshot |
                                  optional after_signature_key | limit
 QueryCampaignFindingsResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2OrV3 |
-                                  findings[FindingV1] |
+                                  CampaignSnapshotV3 |
+                                  findings[FindingV2-or-V4] |
                                   optional next_after_signature_key |
                                   MerkleScanProofV1
 GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
                                     finding_id | object_kind
 GetCampaignFindingObjectResponseV1 = version | request_digest |
-                                     CampaignSnapshotV2OrV3 | FindingV1 |
+                                     CampaignSnapshotV3 | FindingV2-or-V4 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV1-through-V8 |
-                  1 latest ObservationV1-through-V8 |
+FindingObjectV1 = 0 ObservationV1-through-V12 |
+                  1 latest ObservationV1-through-V12 |
                   2 ReproductionArtifactV1 |
                   3 minimized ReproductionArtifactV1
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
-                                   CampaignSnapshotV2OrV3 | AttemptV1-or-V2 |
-                                   AttemptAdmissionV1-through-V3 | BranchPathV2 |
+                                   CampaignSnapshotV3 | AttemptV1-through-V4-or-V7-or-V8 |
+                                   AttemptAdmissionV3 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV1 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV1-through-V8 |
+                                   optional ObservationV1-through-V12 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -312,7 +312,7 @@ ExplainCampaignAttemptResponseV2 = version | request_digest |
 GetCampaignPlannerRankingsRequestV1 = version | principal | campaign |
                                       snapshot | PlannerStepId
 GetCampaignPlannerRankingsResponseV1 = version | request_digest |
-                                       CampaignSnapshotV2OrV3 | PlannerStepV4 |
+                                       CampaignSnapshotV3 | PlannerStepV4 |
                                        RetainedPlannerRequestV1 |
                                        MerkleLookupProofV1
 
@@ -322,17 +322,15 @@ proposal names a planner invocation. The proof resolves
 snapshot. The step MUST name that invocation, proposal policy, and guidance
 view; its selected branch point and source MUST equal the proposal, and its
 issued-proposal set MUST contain the exact proposal ID. Operator, exhaustive,
-and debugger proposals carry neither field. Response version 1 remains
-structurally readable for offline compatibility but does not carry
-planner-decision evidence; the version-20 loopback endpoint writes only version
-2.
+and debugger proposals carry neither field. Response version 1 is rejected. The version-20 loopback endpoint writes and
+reads only response version 2.
 
 MerkleLookupProofV1 = node_count:u64 |
                       nodes[node_id | canonical MerkleNodeV1 envelope bytes]
 GetCampaignGraphObjectRequestV1 = version | principal | campaign | snapshot |
                                   graph_key
 GetCampaignGraphObjectResponseV1 = version | request_digest |
-                                   CampaignSnapshotV2OrV3 |
+                                   CampaignSnapshotV3 |
                                    canonical ObjectEnvelopeV1 bytes |
                                    MerkleLookupProofV1
 
@@ -340,7 +338,7 @@ CampaignChoiceEntryV1 = ChoiceOpportunityId
 QueryCampaignChoicesRequestV1 = version | principal | campaign | snapshot |
                                 optional after_opportunity | limit
 QueryCampaignChoicesResponseV1 = version | request_digest |
-                                 CampaignSnapshotV2OrV3 |
+                                 CampaignSnapshotV3 |
                                  entries[CampaignChoiceEntryV1] |
                                  optional next_after |
                                  MerkleLookupProofV1 |
@@ -355,7 +353,7 @@ ContinuationProjectionV1 = version | BranchRequestId | BranchPointId |
 QueryCampaignFrontierRequestV1 = version | principal | campaign | snapshot |
                                  optional after_request | limit
 QueryCampaignFrontierResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2OrV3 |
+                                  CampaignSnapshotV3 |
                                   projections[ContinuationProjectionV1] |
                                   optional next_after |
                                   MerkleLookupProofV1 |
@@ -363,9 +361,9 @@ QueryCampaignFrontierResponseV1 = version | request_digest |
 GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
                                      snapshot | BranchRequestId
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
-                                      CampaignSnapshotV2OrV3 |
+                                      CampaignSnapshotV3 |
                                       ContinuationProjectionV1 |
-                                     BranchRequestV1-through-V6 |
+                                     BranchRequestV2-through-V9 |
                                       MerkleLookupProofV1 |
                                       MerkleLookupProofV1
 
@@ -374,7 +372,7 @@ CampaignChoiceObjectV1 = kind | SelectableDeclarationV1-or-ChoiceDomainV1
 GetCampaignChoiceObjectRequestV1 = version | principal | campaign | snapshot |
                                    opportunity | CampaignChoiceObjectKindV1
 GetCampaignChoiceObjectResponseV1 = version | request_digest |
-                                    CampaignSnapshotV2OrV3 | ChoiceOpportunityV1 |
+                                    CampaignSnapshotV3 | ChoiceOpportunityV1 |
                                     CampaignChoiceObjectV1 |
                                     MerkleLookupProofV1
 
@@ -395,7 +393,7 @@ SubmitCampaignDiscoveryResponseV1 = version | request_digest | prior_snapshot |
                                     new_snapshot | attempt | admission | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
-                                expected_snapshot | BranchRequestV1-through-V6
+                                expected_snapshot | BranchRequestV2-through-V9
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
@@ -608,12 +606,10 @@ specification = "/absolute/path/generator.bin"
 Unknown fields, zero entries, duplicate configuration pairs, duplicate
 generator paths, relative paths, dot components, symlinks, non-regular files,
 owner mismatch, and group/other-writable files are rejected. Configuration
-entries decode ScenarioDefForm compact binary V5/V6/V7 and Schedule compact
-binary V1/V2. Scenario V5 is accepted only with implicit empty measurement and
-selectable components; scenario V6 is accepted only with an empty selectable
-component. New imports normalize to current V7 bytes and publish campaign
+entries decode ScenarioDefForm compact binary V7 and Schedule compact binary
+V2. Older scenario and schedule forms fail closed. Imports publish campaign
 scenario payload V3 plus configuration payload V2 after semantic identity
-re-derivation; retained scenario payloads V1 and V2 remain readable. Generator entries
+re-derivation. Generator entries
 decode the current strict canonical `CandidateGeneratorSpec` and must appear
 after any child generator records on which they depend. A manifest path and
 every named path are at most 4,095 bytes.
@@ -696,7 +692,7 @@ minimal-proof, exact-node-set, range, lookahead, and EOF rules to
 key, and `limit` is in `1..=4`. For signature cluster key `c`, that key is
 `H("crucible.campaign-map-key.v1", u64be(len("findings.signature")) ||
 "findings.signature" || c)`. Each proof leaf value MUST equal the content ID
-reconstructed from the complete corresponding `FindingV1` body, and its key
+reconstructed from the complete corresponding current `FindingV2` or `FindingV4` body, and its key
 MUST equal the body signature's derived cluster key transformed by that exact
 formula. The checked client rejects substitution, reordering, false EOF,
 foreign snapshots, and unused proof nodes before exposing a finding.
@@ -725,10 +721,10 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
-lookup proofs bind the complete `AttemptV1-or-V2` body and its unique execution-basis
-`AttemptAdmissionV1-through-V3`; a third proof binds the execution-basis `ProposalV1` in
+lookup proofs bind the complete `AttemptV1-through-V4-or-V7-or-V8` body and its unique execution-basis
+`AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV1` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV1-through-V8` or authenticated absence. The response
+either the canonical `ObservationV1-through-V12` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -762,10 +758,9 @@ kind.
 genesis snapshots anchor one canonical empty choice-index Merkle root; every
 explicit or observation-driven discovery updates that root in the same
 snapshot transition as the authoritative and branch-point-scoped graph keys.
-Imported legacy version-2 snapshots without this optional index remain valid,
-but the query fails closed with `InvalidRequest` until an explicit complete
-migration is implemented. Ordinary discoveries preserve the unindexed legacy
-shape rather than synthesizing a partial index. The exclusive cursor is a
+Current version-3 snapshots always carry this index. Normal repository reads
+reject older snapshots and snapshots without the complete authenticated index.
+The exclusive cursor is a
 `ChoiceOpportunityId`, `limit` is in
 `1..=8`, and the result contains IDs only. The separately authorized
 `GetGraphObject` call uses `CampaignChoiceEntryV1`'s deterministic graph key to
@@ -792,8 +787,7 @@ index. New genesis snapshots anchor one canonical empty index, and the owner
 updates it atomically with request issue, proposal, disposition admission, and
 atomic planner-issue transitions. Imported validation recomputes each exact
 state change from the authoritative request, proposal, and accounting roots.
-Legacy snapshots without the anchor remain readable, but this query returns
-`InvalidRequest`; ordinary mutations never create a partial legacy index.
+Normal repository admission rejects snapshots without the anchor.
 
 The exclusive cursor is a `BranchRequestId` and `limit` is in `1..=8`. The
 response carries the complete anchoring snapshot body, so authorization grants
@@ -816,8 +810,8 @@ before generated work is advertised as executable.
 
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
-authenticated projection and returns the strict `BranchRequestV1` through
-`BranchRequestV6` body. The
+authenticated projection and returns the strict `BranchRequestV2` through
+`BranchRequestV9` body. The
 first minimal lookup proof authenticates the fixed frontier-index anchor; the
 second authenticates the request-keyed projection ID inside that index. A
 checked client reconstructs both the projection and request content IDs,
@@ -1346,125 +1340,29 @@ request children before publishing the request. Rejection therefore remains
 zero-write, while accepted requests remain closure-complete and restart-
 auditable.
 
-The built-in `crucible-canonical-frontier` implementation version 1 is a closed
-pure engine for this capability. It considers only `Ready` offers, chooses the
-least `PlanningScanPosition`, and carries that small exact position/domain/
-value/ordinal tuple in `canonical-frontier-planner` state version 1 across
-pages. It returns `ContinueScan` before EOF, `Issue` at EOF when an offer
-exists, and `NoWork` at EOF otherwise. When issuing a carried offer, it
-reconstructs the proposal under the final invocation; the coordinator
-independently recomputes the same source ordinal and value. This establishes a
-complete executable planner/frontier loop without granting repository or
-Merkle authority to the engine. The first invocation requires the exact empty
-state, and local acceptance plus imported/restart validation rerun this built-in
-pure transition and compare its complete next state, usage claim, evidence, and
-disposition.
+The built-in `crucible-canonical-frontier` implementation version 8 with
+`canonical-frontier-planner` state version 3 is the current canonical-order
+engine. The built-in `crucible-canonical-puct` implementation version 6 with
+`canonical-frontier-puct-planner` state version 2 is the current PUCT engine.
+Both are closed pure engines. They accept only their exact current descriptor
+and state versions; obsolete packaged descriptors fail normal admission.
 
-The same engine name at implementation version 2 additionally advertises
-`canonical-frontier-puct-v1`. Every Ready position has one exact offer and one
-`PlannerCandidateGuidanceV2`; non-Ready positions have neither. The guidance
-body is bounded to 64 KiB and encodes, in order:
+Every `Ready` position carries one exact `ProposalV1` candidate-offer envelope,
+one `PlannerCandidateGuidanceV2`, and one `PlannerCandidateBudgetV2` when the
+engine needs that evidence. Guidance authenticates the input view, active
+policy, position, semantic domain, value, ordinal, edge, PUCT statistics,
+novelty, objective reward, and bounded finding counts. Budget evidence adds the
+owner-computed proposal, aggregate-attempt, and request-local-attempt allowance.
+The coordinator recomputes these records from the authenticated current view,
+rejects missing or forged evidence, and enforces spending again in the atomic
+issue transaction.
 
-```text
-schema_version = 2
-input_view: CampaignViewId
-policy: CampaignPolicyId
-position: PlanningScanPosition
-domain: ChoiceDomainId
-domain_semantics: ChoiceDomainSemanticId
-value: ChoiceValue
-ordinal: u64
-edge: BranchEdgeId
-statistics: PuctEdgeStatistics
-novelty_events: u64
-objective_reward_micros: i64
-finding_events: map<FindingKind, u64>  # at most three positive entries
-```
-
-Its envelope children are the exact input view, policy, served request, and
-domain. `edge` MUST derive from the branch point, semantic domain, and value;
-the novelty count MUST agree with the Boolean statistic; the objective field
-MUST equal the bounded owner projection in RFC 03; and the reward sum MUST equal
-the saturating addition of that signed field and the by-value policy's
-configured closed finding weights times occurrence counts. Completed edges
-reuse exact authenticated statistics and their earliest execution-basis source
-weights. An unseen offered edge is the sole prospective addition to the
-completed set, with zero visits/reward/novelty/objective/findings, exact RFC 03
-normalization over completed weights plus its BranchRequest-v2 explicit weight
-or implicit weight one, and fairness reserved. Schema-v1 bodies omit
-`objective_reward_micros`, remain canonical
-with neutral objective reward, and are accepted through identity-preserving
-historical recomputation; new request construction emits v2.
-
-The owner computes one batch per page. Aggregate credited observations and
-credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
-observation and finding roots are each scanned at most once; unique decoded
-choice-domain bodies are capped at 128 MiB; and distinct prospective raw
-weights charge at most 1,000,000 completed-edge normalization visits. Version
-2 ranks higher exact total
-first, then lower `BranchEdgeId`, then lower `PlanningScanPosition`, carries the
-winner across pages in `canonical-frontier-puct-planner` state version 1, and
-issues only at EOF. Acceptance publishes guidance envelopes with offers only
-after complete zero-write preflight and recomputes/reruns the exact transition
-on restart and import. Version 1 remains canonically replayable.
-
-Implementation versions 3 (canonical order) and 4 (PUCT) additionally advertise
-`canonical-frontier-budget-v1`. Every Ready position has an exact offer and one
-`PlannerCandidateBudgetV1`, including positions that cannot currently afford
-issuance. Non-Ready positions have neither. This preserves request-local
-continuation semantics while allowing a scan to pass an unfunded new attempt
-and select a convergent cause that needs no additional attempt allowance. The
-budget body encodes, in order:
-
-```text
-schema_version = 1
-input_view: CampaignViewId
-position: PlanningScanPosition
-proposal: ProposalId
-remaining_proposals: u128
-remaining_attempts: u128
-new_attempt: bool
-```
-
-Its exact envelope children are the input view, served request, and offered
-proposal. Structural validation binds the record to that exact offer; the
-owner independently recomputes both remaining allowances and the semantic
-attempt's existing execution-basis membership before accepting or replaying a
-request. Missing, repeated, mismatched, or forged eligibility fails closed.
-As with guidance, these derived records become retained request children only
-after complete read-only preflight. They are evidence, not spending authority:
-the final atomic issue transaction separately enforces aggregate proposal and
-unique-attempt costs across the whole batch.
-
-Both budget-aware engines rank only affordable offers, scan through EOF, and carry a
-blocked-offer bit in version-2 portable state, including across an empty final
-page. A complete scan with no affordable offer and a retained blocker yields a
-waitable driver outcome without committing `NoWork` as settled. Repeating the
-unchanged blocked head does not reinvoke the engine. A grant changes the
-accounting planning-view root and restarts selection with fresh eligibility.
-Exact legacy engine descriptors retain their original offer sets, ranking,
-state bytes, and owner-recomputed transitions; the new capability does not
-reinterpret historical planner steps.
-
-Implementation versions 5 (canonical order) and 6 (PUCT) additionally require
-`canonical-frontier-request-budget-v1`. Their candidate budget schema is version
-2: the same fields and children above, followed by the exact big-endian `u64`
-`remaining_request_attempts`. Owner validation recomputes this allowance from
-the authenticated request-spending ledger index and the served request's cap.
-For legacy ledgers only, a dense prior proposal/admission traversal is bounded
-by 65,536 pairs shared across the entire input bundle; exceeding it fails
-closed. Indexed ledgers instead need one outer trie lookup and one nested root
-read per request, independent of unrelated campaign history.
-
-These engines skip a locally capped new attempt before recording aggregate
-blockage. A frontier containing only locally capped new attempts settles as
-`NoWork`; an aggregate grant cannot reset a request's cap. A later view in which
-another cause creates that semantic execution basis can make its convergent
-offer eligible without additional request-local spending. Version-2 portable
-state remains unchanged because its blocked bit still denotes aggregate
-funding only. Versions 3 and 4 retain schema-1 budget projections and their
-original aggregate-only selection; versions 1 and 2 retain their original
-version-1 portable states. No retained request changes interpretation.
+Both engines scan through EOF, retain the best affordable offer and aggregate
+blocked state across pages, and issue only from the exact current portable
+state. Canonical order chooses the least eligible position. PUCT chooses the
+highest exact total, then the lower edge and position. Complete read-only
+preflight precedes publication, and restart validation reruns the same pure
+transition against the authenticated current indexes.
 
 New campaigns serve these canonical positions from an authenticated ordered
 scan index in the exploration root, not a sort over all exploration records.
@@ -1472,8 +1370,8 @@ The index includes all request states and preserves branch-point, request-schema
 and request-digest ordering. Each page reads its bounded window and one
 lookahead; current-head authentication supplies trusted roots for reused
 invocation dependencies. New basis objects still require closure authentication,
-and the global closure bound is preserved. Legacy roots lacking the index keep
-their original page computation and byte identities.
+and the global closure bound is preserved. A missing index anchor fails closed
+in normal admission and in migration when authenticated evidence is absent.
 
 Bounded
 model-resolved finite masses are retained in branch-request schema v3 and
@@ -1803,7 +1701,7 @@ CancelAttemptExecutionResponseV4 = version | daemon_epoch | attempt_id |
 Version 3 of `GetAttemptExecutionResponse` adds the `TerminalFailure`
 disposition. Version 3 of the submit and resume responses adds the matching
 `TerminalFailure` rejection for a new assignment or resume that encounters the
-durable quarantine. The executor records that state in attempt-state record v7
+durable quarantine. The executor records that state in the current attempt-state record v15
 when a non-retryable worker failure stops an execution. The coordinator closes
 the admitted ordinal with `AttemptClosed(TerminalWorkerFailure)` in campaign
 fact v10. This operational classification does not synthesize a guest
@@ -1829,11 +1727,9 @@ Its `AttemptExecutionScope` is either `semantic` or
 `savepoint-capture(capture-request fact ID)`. The scope has canonical schema
 version 1 and is bound into the request and execution-basis digests. Version 3
 of each status, checkpoint, and cancellation request carries that scope
-explicitly; version 2 decodes only as `semantic`. An executor uses the explicit
-scope for direct lookup and never scans or infers a scope from a lineage and
-attempt ID. Attempt-state record v11 persists the scope and uses a separate
-version 2 storage-key domain for nonsemantic state while preserving the exact
-semantic version 1 path digest.
+explicitly. An executor uses the explicit scope for direct lookup and never
+scans or infers a scope from a lineage and attempt ID. Attempt-state record v15
+persists the scope and uses the current scope-bound storage-key domain.
 
 Version 6 of `SubmitAttemptRequest` binds an authenticated finding-retention
 policy basis to semantic execute and selected-savepoint assignments. Capture
@@ -2149,20 +2045,26 @@ The single-host daemon persists two bounded operational record families:
 ```text
 AssignmentRecordV1 = magic | request_bytes | response_bytes | checksum
 
-AttemptStateRecordV6 = magic | lineage_id | attempt_id |
-                       execution_basis_digest |
-                       execution_origin(initial |
-                         exact-checkpoint(assignment_id, request_digest,
-                           prior_execution_id, exact_checkpoint_id)) |
-                       (running | observation-publishing |
-                        checkpoint-requested | checkpoint-publishing | paused |
-                        checkpoint-promoting(source, promoted) |
-                        completed | canceled) |
-                       daemon_epoch | execution_id |
-                       observation_id? | output_exact_checkpoint_id? |
-                       source_exact_checkpoint_id? |
-                       promotion_basis?(resource_limits, retention_intent) |
-                       checksum
+AttemptStateRecordV15 = magic | lineage_id | attempt_id |
+                        execution_basis_digest | execution_scope |
+                        execution_origin(initial |
+                          exact-checkpoint(assignment_id, request_digest,
+                            prior_execution_id, exact_checkpoint_id) |
+                          selected-savepoint(snapshot_id, capture_request_id,
+                            source_attempt_id, source_observation_id,
+                            exact_checkpoint_id)) |
+                        (running | observation-publishing |
+                         checkpoint-requested | checkpoint-publishing | paused |
+                         checkpoint-promoting(source, promoted) |
+                         terminal-worker-failure | publishing | completed | canceled) |
+                        daemon_epoch | execution_id |
+                        observation_id? | output_exact_checkpoint_id? |
+                        source_exact_checkpoint_id? |
+                        promotion_basis?(start_mode, resource_limits, retention_intent) |
+                        pending_finding_candidate? |
+                        acknowledged_finding_candidate? |
+                        replay_capture_outcomes? | exact_checkpoint_roots? |
+                        prepared_result_digest? | checksum
 ```
 
 Each record is at most 16 KiB, carries a domain-separated checksum, and strictly
@@ -2176,17 +2078,10 @@ limits and retention intent, but excludes assignment and daemon-epoch
 identities. Restart therefore reads only requested and active IDs; it does not
 load assignment history into memory. The in-memory ledger implements the
 identical trait only for fake components and tests.
-The version-10 attempt-state reader retains strict read compatibility for
-versions 1 through 9. Versions 5 through 10 may encode
-`checkpoint-promoting`; version 6 additionally retains the exact resource and
-retention basis in `paused` and `checkpoint-promoting` records. A legacy pause
-without that basis remains a durable GC root but cannot launch a new guarded
-comparison after restart. A legacy staged pair remains discoverable because a
-complete replacement can be authenticated and reconciled without QEMU.
-Version 7 adds the terminal-worker-failure state, version 8 adds the optional
-pending finding-candidate root, and version 9 distinguishes pending from
-acknowledged candidate roots. Version 10 binds the start mode into checkpoint
-promotion state; earlier promotion records decode as ordinary execution. The
+The normal assignment ledger admits only attempt-state v15. Its scope, origin,
+promotion basis, candidate roots, capture outcomes, exact-checkpoint roots, and
+prepared-result digest are authenticated before restart recovery. Any other
+schema fails closed before a worker or recovery mutation can run. The
 terminal-worker-failure state retains its exact execution basis and prevents
 submission or resume from starting another incarnation.
 
@@ -2202,7 +2097,7 @@ silently substitute a different checkpoint. An already-paused exact basis is
 replayed without starting guest work. The executor never releases the active
 reservation merely because capture was requested or a root was staged.
 Restart discovery streams lineage-qualified attempt records and emits only raw
-pauses with a complete version-6 promotion basis plus every staged pair; it
+pauses with a complete current promotion basis plus every staged pair; it
 does not materialize the operational ledger in memory. Immutable checkpoint
 authentication and guarded replay happen after supervisor ownership is
 released.
@@ -2262,12 +2157,13 @@ reuse in the packaged trusted-daemon path; its public constructors and key
 installer do not make it an in-process unforgeability boundary against arbitrary
 linked code. If a
 closure is incomplete, a fresh daemon may recover publication under a new
-execution identity, but the committed observation ID remains fixed. Readers
-retain every registered prior attempt-state version; new writes use v15.
+execution identity, but the committed observation ID remains fixed. Normal
+readers and writers accept only attempt-state v15; every other schema fails
+closed before operational recovery.
 
-The local Crucible execution adapter owns nested payload schemas. Scenario
-payload versions 1, 2, and 3 are respectively the strict `ScenarioDefForm`
-compact-binary V5, V6, and V7 encodings; configuration payload version 2 is the
+The local Crucible execution adapter owns nested payload schemas. Current
+scenario payload version 3 is the strict `ScenarioDefForm` compact-binary V7
+encoding; configuration payload version 2 is the
 strict `Schedule` compact-binary V2 encoding. Before VM launch the adapter decodes both, authenticates the exact
 scenario-artifact reference, reconstructs `Configuration`, and requires its
 re-derived `ScenarioDefId` and `ConfigurationId` to equal the campaign record.
@@ -2278,8 +2174,10 @@ The envelope contains only strict `Selection` canonical bytes and is globally
 dependent for reduction until its typed producer proves narrower locality. It
 contains no callback, native pointer, QEMU object, or consumer closure. Compact
 schedule V1 is rejected at this boundary instead of being silently interpreted
-through the new decision taxonomy. General execution-model readers retain
-selection-free Schedule V1 for legacy reproduction and continuation envelopes.
+through the new decision taxonomy. General execution-model readers also reject
+Schedule V1. An explicit bounded offline migration admits only resolved
+delivery-order and raw RNG evidence, emits Schedule V2, and rejects untyped
+override, preemption, application-random, and forged selection decisions.
 Checkpoint V4 carries selection decisions; selection-free Checkpoint V3 remains
 readable, while a selection tag under V3 is rejected.
 

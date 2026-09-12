@@ -24,7 +24,7 @@ use crucible::{
     ScenarioSelectables, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SearchFrontierChoices, SearchRuntimeFrontier,
     SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, Seed, SelectionDecision,
-    SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode, step,
+    SignalFaultSelectable, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_api::vm_lifecycle::production_permanently_failed_loop_for_test;
 use crucible_api::{
@@ -39,12 +39,12 @@ use crucible_campaign::{
     ChoiceDiscovery, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact,
     ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, DiscoveryRequest,
     ExecutionId, ExecutionRetentionIntent, ExecutorRejection, ExecutorService, ExplorerPolicy,
-    FairnessPolicy, FindingCandidateBundleId, FindingExactPins, MeasurementSet, Observation,
-    ObservationCandidate, ObservationCondition, ObservationEventLogProof, ObservationId,
-    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
-    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, RetentionPolicy, ScenarioArtifact,
-    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    FairnessPolicy, FindingCandidateBundleId, FindingExactPins, Observation, ObservationCandidate,
+    ObservationCondition, ObservationEventLogProof, ObservationId, ObservationQuantumBoundary,
+    ObservationStopProof, ObservationStopSatisfaction, PropertyEvidence, PropertyVerdict,
+    PropertyVerdictSet, RetentionPolicy, ScenarioArtifact, ScenarioDefId, SelectableDeclaration,
+    Selection, SelectionOrigin, SelectionReplayMismatchKind, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
@@ -148,7 +148,7 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
         width: 64,
         value: selected,
     };
-    let parent = step(
+    let parent = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision { stream, value: raw }),
     );
@@ -156,7 +156,7 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
         .expect("app-random request should reconstruct")
         .branch_selection(&parent, selected)
         .expect("exact parent should admit branch selection");
-    let target = step(
+    let target = valid_step(
         &parent,
         Decision::Selection(SelectionDecision::new(&selection)),
     );
@@ -195,6 +195,7 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         id: SearchChoiceId::from_content_hash(crucible::ContentHash::from_bytes(b"choice")),
         candidates_digest: crucible::ContentHash::from_bytes(b"candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
@@ -253,7 +254,7 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
         width: 64,
         value: selected,
     };
-    let parent = step(
+    let parent = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision { stream, value: raw }),
     );
@@ -261,7 +262,7 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
         .expect("foreign-domain selectable should remain structurally valid")
         .branch_selection(&parent, selected)
         .expect("exact parent should admit a structural branch selection");
-    let target = step(
+    let target = valid_step(
         &parent,
         Decision::Selection(SelectionDecision::new(&selection)),
     );
@@ -1776,7 +1777,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         stream: RngStreamId::from_name("supplemental-collision"),
         value: 1,
     });
-    let finding_configuration = step(input.start().configuration(), decision.clone());
+    let finding_configuration = valid_step(input.start().configuration(), decision.clone());
     let source = GuardedCampaignFindingOracleSource::new(
         ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes)),
         "application/vnd.crucible.test-named-truth+binary",
@@ -2101,7 +2102,7 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
         stream: RngStreamId::from_name("fresh-runner-non-genesis"),
         value: 7,
     });
-    let configuration = step(base.start().configuration(), decision.clone());
+    let configuration = valid_step(base.start().configuration(), decision.clone());
     let input = finding_candidate_input_with_configuration_and_stop(
         &base,
         configuration,
@@ -2403,6 +2404,10 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         )),
         candidates_digest: crucible::ContentHash::from_bytes(b"finding-replay-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Transition(vec![
+            crucible::ContentHash::from_bytes(b"signal-transition-a"),
+            crucible::ContentHash::from_bytes(b"signal-transition-b"),
+        ]),
         selected_index: None,
         overridden: false,
     };
@@ -2913,6 +2918,7 @@ fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
         )),
         candidates_digest: crucible::ContentHash::from_bytes(b"fresh-runner-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
@@ -3032,7 +3038,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         crucible_campaign::SelectionOrigin::Default,
     )
     .expect("default guest selection");
-    let default_target = step(
+    let default_target = valid_step(
         &parent,
         Decision::Selection(SelectionDecision::new(&default_selection)),
     );
@@ -3052,7 +3058,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
         discovery.opportunity().branch_point_id(parent_id),
     )
     .expect("campaign selection");
-    let target = step(
+    let target = valid_step(
         &parent,
         Decision::Selection(SelectionDecision::new(&selection)),
     );
@@ -3733,7 +3739,7 @@ fn production_lifecycle_resource_admission_keeps_retry_and_cancel_classes() {
 #[test]
 fn production_continuation_plan_consumes_the_authenticated_reseed() {
     let input = fresh_runner_input();
-    let source = step(
+    let source = valid_step(
         input.start().configuration(),
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("continuation-plan-source"),

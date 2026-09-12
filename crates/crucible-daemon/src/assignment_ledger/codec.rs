@@ -155,75 +155,14 @@ pub(super) fn encode_attempt_state(
 pub(super) fn decode_attempt_state(
     bytes: &[u8],
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
-    let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
-        (payload, ATTEMPT_STATE_MAGIC)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V14) {
-        (payload, ATTEMPT_STATE_MAGIC_V14)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V13) {
-        (payload, ATTEMPT_STATE_MAGIC_V13)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V12) {
-        (payload, ATTEMPT_STATE_MAGIC_V12)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11) {
-        (payload, ATTEMPT_STATE_MAGIC_V11)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10) {
-        (payload, ATTEMPT_STATE_MAGIC_V10)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9) {
-        (payload, ATTEMPT_STATE_MAGIC_V9)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8) {
-        (payload, ATTEMPT_STATE_MAGIC_V8)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V7) {
-        (payload, ATTEMPT_STATE_MAGIC_V7)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V6) {
-        (payload, ATTEMPT_STATE_MAGIC_V6)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V5) {
-        (payload, ATTEMPT_STATE_MAGIC_V5)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4) {
-        (payload, ATTEMPT_STATE_MAGIC_V4)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3) {
-        (payload, ATTEMPT_STATE_MAGIC_V3)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2) {
-        (payload, ATTEMPT_STATE_MAGIC_V2)
-    } else {
-        (
-            open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V1)?,
-            ATTEMPT_STATE_MAGIC_V1,
-        )
-    };
+    let payload = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN)?;
     let mut cursor = RecordCursor::new(payload);
-    cursor.require(magic)?;
+    cursor.require(ATTEMPT_STATE_MAGIC)?;
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
-    let scope = if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-        || magic == ATTEMPT_STATE_MAGIC_V13)
-        || magic == ATTEMPT_STATE_MAGIC_V12
-        || magic == ATTEMPT_STATE_MAGIC_V11
-    {
-        AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?
-    } else {
-        AttemptExecutionScope::Semantic
-    };
+    let scope = AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?;
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-        || magic == ATTEMPT_STATE_MAGIC_V13)
-        || magic == ATTEMPT_STATE_MAGIC_V12
-        || magic == ATTEMPT_STATE_MAGIC_V11
-        || magic == ATTEMPT_STATE_MAGIC_V10
-        || magic == ATTEMPT_STATE_MAGIC_V9
-        || magic == ATTEMPT_STATE_MAGIC_V8
-        || magic == ATTEMPT_STATE_MAGIC_V7
-        || magic == ATTEMPT_STATE_MAGIC_V6
-        || magic == ATTEMPT_STATE_MAGIC_V5
-        || magic == ATTEMPT_STATE_MAGIC_V4
-    {
-        decode_attempt_origin(
-            &mut cursor,
-            ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                || magic == ATTEMPT_STATE_MAGIC_V13)
-                || magic == ATTEMPT_STATE_MAGIC_V12,
-        )?
-    } else {
-        AttemptExecutionOrigin::Initial
-    };
+    let origin = decode_attempt_origin(&mut cursor)?;
     let tag = cursor.byte()?;
     let daemon_epoch = DaemonEpoch::from_bytes(cursor.fixed()?)?;
     let execution = ExecutionId::from_bytes(cursor.fixed()?)?;
@@ -236,22 +175,11 @@ pub(super) fn decode_attempt_state(
         },
         1 => {
             let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
-            let finding_candidate = decode_optional_finding_candidate(&mut cursor, magic)?;
-            let finding_candidate_acknowledged = if ((magic == ATTEMPT_STATE_MAGIC
-                || magic == ATTEMPT_STATE_MAGIC_V14)
-                || magic == ATTEMPT_STATE_MAGIC_V13)
-                || magic == ATTEMPT_STATE_MAGIC_V12
-                || magic == ATTEMPT_STATE_MAGIC_V11
-                || magic == ATTEMPT_STATE_MAGIC_V10
-                || magic == ATTEMPT_STATE_MAGIC_V9
-            {
-                match cursor.byte()? {
-                    0 => false,
-                    1 => true,
-                    _ => return Err(corrupt("attempt-state-finding-candidate-acknowledged-tag")),
-                }
-            } else {
-                false
+            let finding_candidate = decode_optional_finding_candidate(&mut cursor)?;
+            let finding_candidate_acknowledged = match cursor.byte()? {
+                0 => false,
+                1 => true,
+                _ => return Err(corrupt("attempt-state-finding-candidate-acknowledged-tag")),
             };
             let finding_candidate = match (finding_candidate, finding_candidate_acknowledged) {
                 (None, false) => CompletedFindingCandidate::None,
@@ -270,11 +198,7 @@ pub(super) fn decode_attempt_state(
                 execution,
                 observation,
                 finding_candidate,
-                prepared_result_digest: if magic == ATTEMPT_STATE_MAGIC {
-                    decode_optional_campaign_hash(&mut cursor)?
-                } else {
-                    None
-                },
+                prepared_result_digest: decode_optional_campaign_hash(&mut cursor)?,
             }
         }
         2 => AttemptRuntimeState::Canceled {
@@ -283,211 +207,53 @@ pub(super) fn decode_attempt_state(
             daemon_epoch,
             execution,
         },
-        8 if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7 =>
-        {
-            AttemptRuntimeState::TerminalFailure {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-            }
-        }
-        3 if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3
-            || magic == ATTEMPT_STATE_MAGIC_V2 =>
-        {
-            AttemptRuntimeState::Publishing {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
-                finding_candidate: decode_optional_finding_candidate(&mut cursor, magic)?,
-                finding_replay_captures: if (magic == ATTEMPT_STATE_MAGIC
-                    || magic == ATTEMPT_STATE_MAGIC_V14)
-                    || magic == ATTEMPT_STATE_MAGIC_V13
-                {
-                    decode_optional_finding_replay_captures(&mut cursor)?
-                } else {
-                    None
-                },
-                finding_exact_retention_roots: if magic == ATTEMPT_STATE_MAGIC
-                    || magic == ATTEMPT_STATE_MAGIC_V14
-                {
-                    decode_finding_exact_retention_roots(&mut cursor)?
-                } else {
-                    [None; MAX_PUBLISHING_FINDING_EXACT_ROOTS]
-                },
-                prepared_result_digest: if magic == ATTEMPT_STATE_MAGIC
-                    || magic == ATTEMPT_STATE_MAGIC_V14
-                {
-                    decode_optional_campaign_hash(&mut cursor)?
-                } else {
-                    None
-                },
-            }
-        }
-        4 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::CheckpointRequested {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-            }
-        }
-        5 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::CheckpointPublishing {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-            }
-        }
-        6 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::Paused {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if matches!(
-                    magic,
-                    ATTEMPT_STATE_MAGIC
-                        | ATTEMPT_STATE_MAGIC_V14
-                        | ATTEMPT_STATE_MAGIC_V13
-                        | ATTEMPT_STATE_MAGIC_V12
-                        | ATTEMPT_STATE_MAGIC_V11
-                        | ATTEMPT_STATE_MAGIC_V10
-                        | ATTEMPT_STATE_MAGIC_V9
-                        | ATTEMPT_STATE_MAGIC_V8
-                        | ATTEMPT_STATE_MAGIC_V7
-                        | ATTEMPT_STATE_MAGIC_V6
-                ) {
-                    decode_checkpoint_promotion_basis(
-                        &mut cursor,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11
-                            || magic == ATTEMPT_STATE_MAGIC_V10,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11,
-                        ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12,
-                    )?
-                } else {
-                    None
-                },
-            }
-        }
-        7 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5 =>
-        {
-            AttemptRuntimeState::CheckpointPromoting {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if matches!(
-                    magic,
-                    ATTEMPT_STATE_MAGIC
-                        | ATTEMPT_STATE_MAGIC_V14
-                        | ATTEMPT_STATE_MAGIC_V13
-                        | ATTEMPT_STATE_MAGIC_V12
-                        | ATTEMPT_STATE_MAGIC_V11
-                        | ATTEMPT_STATE_MAGIC_V10
-                        | ATTEMPT_STATE_MAGIC_V9
-                        | ATTEMPT_STATE_MAGIC_V8
-                        | ATTEMPT_STATE_MAGIC_V7
-                        | ATTEMPT_STATE_MAGIC_V6
-                ) {
-                    decode_checkpoint_promotion_basis(
-                        &mut cursor,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11
-                            || magic == ATTEMPT_STATE_MAGIC_V10,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11,
-                        ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12,
-                    )?
-                } else {
-                    None
-                },
-            }
-        }
+        3 => AttemptRuntimeState::Publishing {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
+            finding_candidate: decode_optional_finding_candidate(&mut cursor)?,
+            finding_replay_captures: decode_optional_finding_replay_captures(&mut cursor)?,
+            finding_exact_retention_roots: decode_finding_exact_retention_roots(&mut cursor)?,
+            prepared_result_digest: decode_optional_campaign_hash(&mut cursor)?,
+        },
+        4 => AttemptRuntimeState::CheckpointRequested {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+        },
+        5 => AttemptRuntimeState::CheckpointPublishing {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+        },
+        6 => AttemptRuntimeState::Paused {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            promotion_basis: decode_checkpoint_promotion_basis(&mut cursor)?,
+        },
+        7 => AttemptRuntimeState::CheckpointPromoting {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            promotion_basis: decode_checkpoint_promotion_basis(&mut cursor)?,
+        },
+        8 => AttemptRuntimeState::TerminalFailure {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+        },
         _ => return Err(corrupt("attempt-state-unknown-tag")),
     };
     let promotion_basis = match state {
@@ -617,19 +383,7 @@ pub(super) fn decode_finding_exact_retention_roots(
 
 pub(super) fn decode_optional_finding_candidate(
     cursor: &mut RecordCursor<'_>,
-    magic: &[u8],
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
-    if magic != ATTEMPT_STATE_MAGIC
-        && magic != ATTEMPT_STATE_MAGIC_V14
-        && magic != ATTEMPT_STATE_MAGIC_V13
-        && magic != ATTEMPT_STATE_MAGIC_V12
-        && magic != ATTEMPT_STATE_MAGIC_V11
-        && magic != ATTEMPT_STATE_MAGIC_V10
-        && magic != ATTEMPT_STATE_MAGIC_V9
-        && magic != ATTEMPT_STATE_MAGIC_V8
-    {
-        return Ok(None);
-    }
     match cursor.byte()? {
         0 => Ok(None),
         1 => parse_typed(cursor.bytes()?, FindingCandidateBundleId::parse).map(Some),
@@ -685,9 +439,6 @@ pub(super) fn encode_checkpoint_promotion_basis(
 
 pub(super) fn decode_checkpoint_promotion_basis(
     cursor: &mut RecordCursor<'_>,
-    has_start_mode: bool,
-    has_savepoint_capture: bool,
-    has_selected_savepoint: bool,
 ) -> Result<Option<CheckpointPromotionExecutionBasis>, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(None),
@@ -704,31 +455,21 @@ pub(super) fn decode_checkpoint_promotion_basis(
                 2 => ExecutionRetentionIntent::RetainAlways,
                 _ => return Err(corrupt("checkpoint-promotion-retention-tag")),
             };
-            let start_mode = if has_start_mode {
-                match cursor.byte()? {
-                    0 => AttemptStartMode::Execute,
-                    1 => AttemptStartMode::CaptureMaterializedStart {
-                        configuration: parse_typed(
-                            cursor.bytes()?,
-                            ConfigurationArtifactId::parse,
-                        )?,
-                    },
-                    2 if has_savepoint_capture => AttemptStartMode::SavepointCapture {
-                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                        configuration: parse_typed(
-                            cursor.bytes()?,
-                            ConfigurationArtifactId::parse,
-                        )?,
-                    },
-                    3 if has_selected_savepoint => AttemptStartMode::SelectedSavepoint {
-                        snapshot: parse_typed(cursor.bytes()?, CampaignSnapshotId::parse)?,
-                        selection: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                        request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
-                    },
-                    _ => return Err(corrupt("checkpoint-promotion-start-mode-tag")),
-                }
-            } else {
-                AttemptStartMode::Execute
+            let start_mode = match cursor.byte()? {
+                0 => AttemptStartMode::Execute,
+                1 => AttemptStartMode::CaptureMaterializedStart {
+                    configuration: parse_typed(cursor.bytes()?, ConfigurationArtifactId::parse)?,
+                },
+                2 => AttemptStartMode::SavepointCapture {
+                    request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                    configuration: parse_typed(cursor.bytes()?, ConfigurationArtifactId::parse)?,
+                },
+                3 => AttemptStartMode::SelectedSavepoint {
+                    snapshot: parse_typed(cursor.bytes()?, CampaignSnapshotId::parse)?,
+                    selection: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                    request: parse_typed(cursor.bytes()?, CampaignFactId::parse)?,
+                },
+                _ => return Err(corrupt("checkpoint-promotion-start-mode-tag")),
             };
             Ok(Some(CheckpointPromotionExecutionBasis::new_for_start_mode(
                 resources, retention, start_mode,
@@ -783,7 +524,6 @@ pub(super) fn encode_attempt_origin(payload: &mut Vec<u8>, origin: AttemptExecut
 
 pub(super) fn decode_attempt_origin(
     cursor: &mut RecordCursor<'_>,
-    has_selected_savepoint: bool,
 ) -> Result<AttemptExecutionOrigin, AssignmentLedgerError> {
     match cursor.byte()? {
         0 => Ok(AttemptExecutionOrigin::Initial),
@@ -793,7 +533,7 @@ pub(super) fn decode_attempt_origin(
             prior_execution: ExecutionId::from_bytes(cursor.fixed()?)?,
             checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
         }),
-        2 if has_selected_savepoint => {
+        2 => {
             let certificate = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
             let request = parse_typed(cursor.bytes()?, CampaignFactId::parse)?;
             let source_attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;

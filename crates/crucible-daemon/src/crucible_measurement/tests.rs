@@ -13,8 +13,8 @@ use crucible::model::{
 use crucible::{Icount, MarkerId, NodeId, NodeTemplate, ReadyPoint, VirtualTime, WhiteBoxPolicy};
 use crucible_campaign::{
     CampaignMode, CampaignPolicy, CampaignSeed, ConfigurationId, CoverageProjection,
-    ExplorerPolicy, FairnessPolicy, MeasurementSeries, MetricValue, Objective, ObjectiveGoal,
-    Observation, PuctPolicy, RetentionPolicy, StopOutcome,
+    ExplorerPolicy, FairnessPolicy, Objective, ObjectiveGoal, Observation, PuctPolicy,
+    RetentionPolicy, StopOutcome,
 };
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
@@ -83,13 +83,13 @@ fn verified_evaluation_round_trips_through_campaign_v2() {
     let verified = verify_crucible_measurement_set(&set, definitions, &[], Vec::new(), &terminal())
         .expect("verified evaluation");
     assert_eq!(
-        set.evaluation().expect("v2 evaluation").evaluation(),
+        set.evaluation().evaluation(),
         campaign_hash(verified.content_hash())
     );
 }
 
 #[test]
-fn forged_and_legacy_measurement_sets_fail_closed() {
+fn forged_measurement_set_fails_closed() {
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")
         .scenario;
@@ -111,21 +111,6 @@ fn forged_and_legacy_measurement_sets_fail_closed() {
         Err(CrucibleMeasurementError::Evaluation(
             MeasurementEvaluationError::ReplayMismatch
         ))
-    ));
-
-    let legacy = MeasurementSet::new(BTreeMap::from([(
-        "legacy".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(1)],
-            MetricValue::Unsigned(1),
-            BTreeSet::new(),
-        )
-        .expect("legacy series"),
-    )]))
-    .expect("legacy set");
-    assert!(matches!(
-        verify_crucible_measurement_set(&legacy, definitions, &[], Vec::new(), &terminal()),
-        Err(CrucibleMeasurementError::LegacyMeasurementSet)
     ));
 }
 

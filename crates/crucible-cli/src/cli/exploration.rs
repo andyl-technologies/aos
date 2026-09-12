@@ -284,12 +284,6 @@ pub(super) fn emit_backend_command_output(
                     "crucible: reproduce side {} with:\n    {}",
                     label, report.footer.replay_command
                 );
-                if outcome.status.is_non_passing() {
-                    println!(
-                        "crucible: debug side {} at the failure with:\n    {}",
-                        label, report.footer.debug_command
-                    );
-                }
             }
         }
         return Ok(());
@@ -315,10 +309,6 @@ pub(super) fn emit_backend_command_output(
             println!(
                 "crucible: reproduce with:\n    {}",
                 report.footer.replay_command
-            );
-            println!(
-                "crucible: debug at the failure with:\n    {}",
-                report.footer.debug_command
             );
         }
     }

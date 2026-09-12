@@ -48,10 +48,10 @@ impl CampaignLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignLoopbackEndpointError::InvalidPath`] when `path` is
+    /// Returns [`LocalComponentEndpointError::InvalidPath`] when `path` is
     /// relative, noncanonical, contains NUL, has no ordinary filename, or
     /// exceeds the 107-byte Linux pathname-socket ceiling. Returns
-    /// [`CampaignLoopbackEndpointError::InvalidSocketMode`] when `socket_mode`
+    /// [`LocalComponentEndpointError::InvalidSocketMode`] when `socket_mode`
     /// contains bits outside `0o777` or grants no write permission to any
     /// principal.
     pub fn new(
@@ -59,7 +59,7 @@ impl CampaignLoopbackEndpointConfig {
         owner_user_id: u32,
         owner_group_id: u32,
         socket_mode: u32,
-    ) -> Result<Self, CampaignLoopbackEndpointError> {
+    ) -> Result<Self, LocalComponentEndpointError> {
         let path = path.into();
         let encoded_path = path.as_os_str().as_encoded_bytes();
         let ordinary_name = path.file_name().is_some();
@@ -72,10 +72,10 @@ impl CampaignLoopbackEndpointConfig {
             || encoded_path.contains(&0)
             || encoded_path.len() > MAX_ENDPOINT_PATH_BYTES
         {
-            return Err(CampaignLoopbackEndpointError::InvalidPath);
+            return Err(LocalComponentEndpointError::InvalidPath);
         }
         if socket_mode == 0 || socket_mode & !0o777 != 0 || socket_mode & 0o222 == 0 {
-            return Err(CampaignLoopbackEndpointError::InvalidSocketMode);
+            return Err(LocalComponentEndpointError::InvalidSocketMode);
         }
         Ok(Self {
             path,
@@ -120,10 +120,10 @@ impl CampaignLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignLoopbackEndpointError`] when the namespace contract,
+    /// Returns [`LocalComponentEndpointError`] when the namespace contract,
     /// stale entry, lifetime lock, bind result, ownership, permissions, or
     /// directory synchronization cannot be validated exactly.
-    pub fn bind(&self) -> Result<ManagedCampaignLoopbackListener, CampaignLoopbackEndpointError> {
+    pub fn bind(&self) -> Result<ManagedCampaignLoopbackListener, LocalComponentEndpointError> {
         let (listener, guard) = self.bind_parts(
             CAMPAIGN_ENDPOINT_LOCK_FILE,
             "bind-campaign-endpoint",
@@ -137,11 +137,11 @@ impl CampaignLoopbackEndpointConfig {
         lock_file: &'static str,
         bind_operation: &'static str,
         mode_operation: &'static str,
-    ) -> Result<(UnixListener, LocalEndpointGuard), CampaignLoopbackEndpointError> {
+    ) -> Result<(UnixListener, LocalEndpointGuard), LocalComponentEndpointError> {
         let parent = self
             .path
             .parent()
-            .ok_or(CampaignLoopbackEndpointError::InvalidPath)?;
+            .ok_or(LocalComponentEndpointError::InvalidPath)?;
         let parent_path_metadata = fs::symlink_metadata(parent)
             .map_err(|source| io_error("stat-endpoint-directory", parent, source))?;
         validate_parent_metadata(self, &parent_path_metadata)?;
@@ -167,7 +167,7 @@ impl CampaignLoopbackEndpointConfig {
         validate_lock(self, &lock_path, &endpoint_lock)?;
         let endpoint_lock = OwnedAdvisoryLock::try_exclusive(endpoint_lock).map_err(|source| {
             if source == rustix::io::Errno::WOULDBLOCK {
-                CampaignLoopbackEndpointError::EndpointInUse
+                LocalComponentEndpointError::EndpointInUse
             } else {
                 io_error(
                     "lock-endpoint-namespace",
@@ -227,7 +227,7 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError`] for the same invalid path,
+    /// Returns [`LocalComponentEndpointError`] for the same invalid path,
     /// ownership profile, or socket mode as
     /// [`CampaignLoopbackEndpointConfig::new`].
     pub fn new(
@@ -235,7 +235,7 @@ impl ExecutorLoopbackEndpointConfig {
         owner_user_id: u32,
         owner_group_id: u32,
         socket_mode: u32,
-    ) -> Result<Self, ExecutorLoopbackEndpointError> {
+    ) -> Result<Self, LocalComponentEndpointError> {
         CampaignLoopbackEndpointConfig::new(path, owner_user_id, owner_group_id, socket_mode)
             .map(|inner| Self { inner })
     }
@@ -268,10 +268,10 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError`] when the namespace contract,
+    /// Returns [`LocalComponentEndpointError`] when the namespace contract,
     /// stale entry, lifetime lock, bind result, ownership, permissions, or
     /// directory synchronization cannot be validated exactly.
-    pub fn bind(&self) -> Result<ManagedExecutorLoopbackListener, ExecutorLoopbackEndpointError> {
+    pub fn bind(&self) -> Result<ManagedExecutorLoopbackListener, LocalComponentEndpointError> {
         let (listener, guard) = self.inner.bind_parts(
             EXECUTOR_ENDPOINT_LOCK_FILE,
             "bind-executor-endpoint",
@@ -290,11 +290,11 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError`] when the parent, named socket,
+    /// Returns [`LocalComponentEndpointError`] when the parent, named socket,
     /// connection, peer credentials, or before/after identity cannot be
     /// authenticated exactly. A connected stream is shut down before any
     /// post-connect authentication error is returned.
-    pub fn connect(&self) -> Result<UnixStream, ExecutorLoopbackEndpointError> {
+    pub fn connect(&self) -> Result<UnixStream, LocalComponentEndpointError> {
         self.connect_with_timeout(DEFAULT_EXECUTOR_CONNECT_TIMEOUT)
     }
 
@@ -305,21 +305,21 @@ impl ExecutorLoopbackEndpointConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ExecutorLoopbackEndpointError::InvalidConnectTimeout`] when
+    /// Returns [`LocalComponentEndpointError::InvalidConnectTimeout`] when
     /// `timeout` is zero or exceeds one hour. Other failures match
     /// [`Self::connect`].
     pub fn connect_with_timeout(
         &self,
         timeout: Duration,
-    ) -> Result<UnixStream, ExecutorLoopbackEndpointError> {
+    ) -> Result<UnixStream, LocalComponentEndpointError> {
         if timeout.is_zero() || timeout > MAX_EXECUTOR_CONNECT_TIMEOUT {
-            return Err(CampaignLoopbackEndpointError::InvalidConnectTimeout);
+            return Err(LocalComponentEndpointError::InvalidConnectTimeout);
         }
         let config = &self.inner;
         let parent = config
             .path
             .parent()
-            .ok_or(CampaignLoopbackEndpointError::InvalidPath)?;
+            .ok_or(LocalComponentEndpointError::InvalidPath)?;
         let parent_metadata = fs::symlink_metadata(parent)
             .map_err(|source| io_error("stat-executor-endpoint-directory", parent, source))?;
         validate_parent_metadata(config, &parent_metadata)?;
@@ -345,7 +345,7 @@ impl ExecutorLoopbackEndpointConfig {
             })?;
             validate_connected_executor_socket(config, &after)?;
             if FileIdentity::from_metadata(&after) != socket_identity {
-                return Err(CampaignLoopbackEndpointError::InvalidConnectedSocket);
+                return Err(LocalComponentEndpointError::InvalidConnectedSocket);
             }
             revalidate_parent(config, parent, &parent_directory, parent_identity)?;
             let peer = rustix::net::sockopt::socket_peercred(&stream).map_err(|source| {
@@ -358,7 +358,7 @@ impl ExecutorLoopbackEndpointConfig {
             if peer.uid.as_raw() != config.owner_user_id
                 || peer.gid.as_raw() != config.owner_group_id
             {
-                return Err(CampaignLoopbackEndpointError::InvalidConnectedSocket);
+                return Err(LocalComponentEndpointError::InvalidConnectedSocket);
             }
             Ok(())
         })();
@@ -441,7 +441,7 @@ impl Drop for LocalEndpointGuard {
 
 /// Failure to establish or retain one managed local component endpoint.
 #[derive(Debug, thiserror::Error)]
-pub enum CampaignLoopbackEndpointError {
+pub enum LocalComponentEndpointError {
     /// The endpoint path was not absolute, bounded, or ordinarily named.
     #[error("local component endpoint path is invalid")]
     InvalidPath,
@@ -491,9 +491,6 @@ pub enum CampaignLoopbackEndpointError {
     },
 }
 
-/// Failure to establish or retain one managed executor endpoint.
-pub type ExecutorLoopbackEndpointError = CampaignLoopbackEndpointError;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileIdentity {
     device: u64,
@@ -512,15 +509,15 @@ impl FileIdentity {
 fn validate_parent_metadata(
     config: &CampaignLoopbackEndpointConfig,
     metadata: &fs::Metadata,
-) -> Result<(), CampaignLoopbackEndpointError> {
+) -> Result<(), LocalComponentEndpointError> {
     if !metadata.file_type().is_dir() {
-        return Err(CampaignLoopbackEndpointError::ParentNotDirectory);
+        return Err(LocalComponentEndpointError::ParentNotDirectory);
     }
     if metadata.uid() != config.owner_user_id || metadata.gid() != config.owner_group_id {
-        return Err(CampaignLoopbackEndpointError::ParentOwnershipMismatch);
+        return Err(LocalComponentEndpointError::ParentOwnershipMismatch);
     }
     if metadata.mode() & 0o022 != 0 {
-        return Err(CampaignLoopbackEndpointError::ParentNamespaceWritable);
+        return Err(LocalComponentEndpointError::ParentNamespaceWritable);
     }
     Ok(())
 }
@@ -528,13 +525,13 @@ fn validate_parent_metadata(
 fn validate_connected_executor_socket(
     config: &CampaignLoopbackEndpointConfig,
     metadata: &fs::Metadata,
-) -> Result<(), CampaignLoopbackEndpointError> {
+) -> Result<(), LocalComponentEndpointError> {
     if !metadata.file_type().is_socket()
         || metadata.uid() != config.owner_user_id
         || metadata.gid() != config.owner_group_id
         || metadata.mode() & 0o7777 != config.socket_mode
     {
-        return Err(CampaignLoopbackEndpointError::InvalidConnectedSocket);
+        return Err(LocalComponentEndpointError::InvalidConnectedSocket);
     }
     Ok(())
 }
@@ -542,7 +539,7 @@ fn validate_connected_executor_socket(
 fn connect_executor_stream(
     path: &Path,
     timeout: Duration,
-) -> Result<UnixStream, CampaignLoopbackEndpointError> {
+) -> Result<UnixStream, LocalComponentEndpointError> {
     let socket = rustix::net::socket_with(
         AddressFamily::UNIX,
         SocketType::STREAM,
@@ -577,10 +574,10 @@ fn wait_for_executor_connect(
     socket: &std::os::fd::OwnedFd,
     path: &Path,
     timeout: Duration,
-) -> Result<(), CampaignLoopbackEndpointError> {
+) -> Result<(), LocalComponentEndpointError> {
     let deadline = endpoint_now()
         .checked_add(timeout)
-        .ok_or(CampaignLoopbackEndpointError::InvalidConnectTimeout)?;
+        .ok_or(LocalComponentEndpointError::InvalidConnectTimeout)?;
     loop {
         let remaining = deadline
             .checked_duration_since(endpoint_now())
@@ -633,7 +630,7 @@ fn validate_lock(
     config: &CampaignLoopbackEndpointConfig,
     path: &Path,
     lock: &File,
-) -> Result<(), CampaignLoopbackEndpointError> {
+) -> Result<(), LocalComponentEndpointError> {
     rustix::fs::fchmod(lock, Mode::RUSR | Mode::WUSR).map_err(|source| {
         io_error(
             "set-endpoint-lock-mode",
@@ -649,14 +646,14 @@ fn validate_lock(
         || metadata.gid() != config.owner_group_id
         || metadata.mode() & 0o777 != 0o600
     {
-        return Err(CampaignLoopbackEndpointError::InvalidLockFile);
+        return Err(LocalComponentEndpointError::InvalidLockFile);
     }
     Ok(())
 }
 
 fn remove_stale_socket(
     config: &CampaignLoopbackEndpointConfig,
-) -> Result<(), CampaignLoopbackEndpointError> {
+) -> Result<(), LocalComponentEndpointError> {
     let metadata = match fs::symlink_metadata(&config.path) {
         Ok(metadata) => metadata,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -666,7 +663,7 @@ fn remove_stale_socket(
         || metadata.uid() != config.owner_user_id
         || metadata.gid() != config.owner_group_id
     {
-        return Err(CampaignLoopbackEndpointError::InvalidStalePath);
+        return Err(LocalComponentEndpointError::InvalidStalePath);
     }
     fs::remove_file(&config.path)
         .map_err(|source| io_error("remove-stale-endpoint", &config.path, source))
@@ -678,7 +675,7 @@ fn finish_bound_socket(
     parent_directory: &File,
     parent_identity: FileIdentity,
     mode_operation: &'static str,
-) -> Result<FileIdentity, CampaignLoopbackEndpointError> {
+) -> Result<FileIdentity, LocalComponentEndpointError> {
     fs::set_permissions(&config.path, Permissions::from_mode(config.socket_mode))
         .map_err(|source| io_error(mode_operation, &config.path, source))?;
     let metadata = fs::symlink_metadata(&config.path)
@@ -688,7 +685,7 @@ fn finish_bound_socket(
         || metadata.gid() != config.owner_group_id
         || metadata.mode() & 0o777 != config.socket_mode
     {
-        return Err(CampaignLoopbackEndpointError::InvalidBoundSocket);
+        return Err(LocalComponentEndpointError::InvalidBoundSocket);
     }
     revalidate_parent(config, parent, parent_directory, parent_identity)?;
     parent_directory
@@ -702,13 +699,13 @@ fn revalidate_parent(
     path: &Path,
     directory: &File,
     identity: FileIdentity,
-) -> Result<(), CampaignLoopbackEndpointError> {
+) -> Result<(), LocalComponentEndpointError> {
     require_file_identity(directory, identity, path)?;
     let metadata = fs::symlink_metadata(path)
         .map_err(|source| io_error("restat-endpoint-directory", path, source))?;
     validate_parent_metadata(config, &metadata)?;
     if FileIdentity::from_metadata(&metadata) != identity {
-        return Err(CampaignLoopbackEndpointError::DirectoryIdentityChanged);
+        return Err(LocalComponentEndpointError::DirectoryIdentityChanged);
     }
     Ok(())
 }
@@ -717,12 +714,12 @@ fn require_file_identity(
     file: &File,
     expected: FileIdentity,
     path: &Path,
-) -> Result<(), CampaignLoopbackEndpointError> {
+) -> Result<(), LocalComponentEndpointError> {
     let metadata = file
         .metadata()
         .map_err(|source| io_error("stat-pinned-endpoint-directory", path, source))?;
     if FileIdentity::from_metadata(&metadata) != expected || !metadata.file_type().is_dir() {
-        return Err(CampaignLoopbackEndpointError::DirectoryIdentityChanged);
+        return Err(LocalComponentEndpointError::DirectoryIdentityChanged);
     }
     Ok(())
 }
@@ -731,8 +728,8 @@ fn io_error(
     operation: &'static str,
     path: &Path,
     source: io::Error,
-) -> CampaignLoopbackEndpointError {
-    CampaignLoopbackEndpointError::Io {
+) -> LocalComponentEndpointError {
+    LocalComponentEndpointError::Io {
         operation,
         path: path.to_owned(),
         source,
@@ -743,7 +740,7 @@ fn rustix_io_error(
     operation: &'static str,
     path: &Path,
     source: rustix::io::Errno,
-) -> CampaignLoopbackEndpointError {
+) -> LocalComponentEndpointError {
     io_error(
         operation,
         path,

@@ -1126,6 +1126,7 @@ mod tests {
                 accounting: root,
                 coordination: root,
             },
+            crate::test_budget_ledger_id(),
         )
         .expect("snapshot")
     }

@@ -38,7 +38,7 @@
       }
       {
         label = "T-CLI-11 local child runner progress";
-        needle = "store-backed no-divergence local-double forks through an independent child";
+        needle = "no-divergence local-double forks through an independent child";
       }
       {
         label = "T-CLI-11 override execution progress";
@@ -54,7 +54,7 @@
       }
       {
         label = "T-CLI-11 local-QEMU fork routing progress";
-        needle = "routes explicitly selected local-QEMU forks through the same child-session";
+        needle = "routes explicitly selected local-QEMU forks through the authenticated campaign";
       }
       {
         label = "T-CLI-11 process qemu fork progress";
@@ -84,7 +84,7 @@
       }
       {
         label = "phase5 CLI fork local-QEMU progress";
-        needle = "explicitly selected local-QEMU forks through\n  the same child-session materialization";
+        needle = "explicitly selected local-QEMU forks through\n  the authenticated campaign continuation";
       }
       {
         label = "phase5 CLI process qemu fork progress";
@@ -134,7 +134,7 @@
       }
       {
         label = "fork local-QEMU thin-replay proof";
-        needle = "fork-thin-replay";
+        needle = "fork-campaign-default-path";
       }
       {
         label = "fork child actor runner";
@@ -198,19 +198,15 @@
       }
       {
         label = "fork planning test";
-        needle = "cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs";
-      }
-      {
-        label = "fork bare-hash store loader test";
-        needle = "cli_fork_workflow_executes_local_double_bare_hash_from_store";
+        needle = "cli_fork_workflow_plans_handle_overrides_and_rejects_nonportable_inputs";
       }
       {
         label = "fork execution test";
         needle = "cli_fork_workflow_executes_local_double_handle";
       }
       {
-        label = "fork local-QEMU live route test";
-        needle = "cli_fork_workflow_routes_local_qemu_into_live_guest_configuration";
+        label = "fork campaign route test";
+        needle = "campaign_fork_route_accepts_standard_controlled_workflows";
       }
       {
         label = "fork tampered frontier test";
@@ -219,8 +215,8 @@
     ]
     ++ failuresFor "crates/crucible-cli/src/cli/resume_fork.rs" cliFork [
       {
-        label = "fork local-QEMU production reseed";
-        needle = "config.with_branch_reseed(";
+        label = "fork campaign dispatch";
+        needle = "run_local_qemu_campaign_fork_workflow(backend, fork_plan, &evidence)";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" apiLifecycle [

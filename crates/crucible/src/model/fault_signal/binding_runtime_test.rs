@@ -610,17 +610,57 @@ fn finite_binding_search_choices_replay_once_and_reject_unused_overrides() {
     assert_eq!(choice.candidate_count, 2);
     assert_eq!(choice.selected_index, Some(1));
     assert!(!choice.overridden);
+    assert_eq!(
+        choice.candidate_semantics,
+        BindingSearchCandidateSemantics::Parameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            candidates: [10_u64, 20]
+                .into_iter()
+                .map(|duration| {
+                    ContentHash::from_canonical_material(
+                        "crucible.search-parameter-candidate.v1",
+                        &format!("parameter=duration-nanos;value=duration_nanos:{duration}"),
+                    )
+                })
+                .collect(),
+        }
+    );
 
     let overrides: BTreeMap<SearchChoiceId, SearchOverride> = [(
         choice.id,
         SearchOverride {
             candidate_index: 0,
             candidates_digest: choice.candidates_digest,
+            candidate: choice
+                .candidate_semantics
+                .candidate(0)
+                .expect("fixture candidate must exist"),
             parent_branch: Some(ContentHash::from_bytes(b"search-parent")),
         },
     )]
     .into_iter()
     .collect();
+
+    let mut wrong_semantics = overrides.clone();
+    wrong_semantics
+        .get_mut(&choice.id)
+        .unwrap_or_else(|| panic!("fixture override must exist"))
+        .candidate = BindingSearchCandidate::Transition(ContentHash::from_bytes(b"wrong-kind"));
+    let mut rejected = FaultBindingRuntime::new_with_search_overrides(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+        wrong_semantics,
+    )
+    .unwrap_or_else(|error| panic!("invalid mismatch runtime: {error}"));
+    assert!(matches!(
+        rejected.evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default()),
+        Err(BindingRuntimeError::SearchChoice)
+    ));
+
     let mut replay = FaultBindingRuntime::new_with_search_overrides(
         &program,
         vec![binding.clone()],

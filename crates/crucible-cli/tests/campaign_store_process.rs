@@ -559,7 +559,7 @@ fn public_offline_archive_transfer_reports_and_authenticates_sensitive_closure()
         &source.store,
         format!(
             r#"schema = "crucible.campaign-repository-store"
-version = 1
+version = 2
 root = "read-through"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {:?}
@@ -902,7 +902,7 @@ impl ComposedFlightFixture {
             &base.store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 1
+version = 2
 root = "profile"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}
@@ -1257,7 +1257,7 @@ campaign = "*"
             &store,
             format!(
                 r#"schema = "crucible.campaign-repository-store"
-version = 1
+version = 2
 root = "primary"
 admitted_kinds = ["campaign-fact", "campaign-snapshot", "merkle-node", "scenario", "configuration", "policy", "exact-manifest", "ram-extent", "disk-extent", "device-state", "observation", "finding", "projection", "trace"]
 ref_directory = {refs:?}

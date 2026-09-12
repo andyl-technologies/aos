@@ -328,8 +328,8 @@ fn logged(log: &SharedLog) -> Vec<RealizationCall> {
     log.borrow().clone()
 }
 
-fn world(name: &str) -> World {
-    World::from_content_hash(hash("world", name))
+fn world(_name: &str) -> World {
+    World::from_nodes(Vec::new()).expect("empty test world should build")
 }
 
 fn scenario(name: &str) -> ScenarioDef {

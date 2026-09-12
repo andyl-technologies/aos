@@ -166,11 +166,7 @@ pub(crate) fn parse_failure_findings_ledger_v4_bytes(
         previous_finding_id = Some(finding_id);
         let mut occurrence_reports = Vec::new();
         for occurrence in campaign_occurrences(&item) {
-            let Some(replays) =
-                campaign_occurrence_native_triage_replays(occurrence, &item.report)?
-            else {
-                continue;
-            };
+            let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?;
             let report = triage_finding_evidence_from_replay(&replays.minimization_original);
             let stored = store
                 .put(&report.finding.artifact.to_compact_binary())

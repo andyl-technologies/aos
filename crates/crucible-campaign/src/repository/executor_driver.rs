@@ -1606,7 +1606,6 @@ fn savepoint_resolution_command(
         SavepointCaptureOutcome::Ready => 0,
         SavepointCaptureOutcome::Canceled => 1,
         SavepointCaptureOutcome::Failed => 2,
-        SavepointCaptureOutcome::Discarded => 3,
     });
     basis.extend_from_slice(snapshot.content_id().encode().as_bytes());
     CampaignCommandId::from_hash(CampaignHash::derive(

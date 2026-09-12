@@ -96,7 +96,7 @@ fn live_app_random_consumes_an_exact_parent_campaign_selection() {
         width: 64,
         value: selected,
     };
-    let parent = step(
+    let parent = valid_scheduler_step(
         &configuration,
         Decision::RngDraw(RngDecision { stream, value: raw }),
     );
@@ -120,7 +120,10 @@ fn live_app_random_consumes_an_exact_parent_campaign_selection() {
     .expect("live selected value should authenticate");
 
     assert_eq!(scheduler.pending_branch_effect_choice_count(), 0);
-    assert_eq!(advanced.id(), step(&parent, recorded[1].clone()).id());
+    assert_eq!(
+        advanced.id(),
+        valid_scheduler_step(&parent, recorded[1].clone()).id()
+    );
     assert_eq!(discoveries.len(), 1);
     assert!(matches!(
         recorded.as_slice(),
@@ -470,6 +473,7 @@ fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
         )),
         candidates_digest: ContentHash::from_bytes(b"typed-scheduler-signal-candidates"),
         candidate_count: 2,
+        candidate_semantics: crate::model::BindingSearchCandidateSemantics::Outcome,
         selected_index: None,
         overridden: false,
     };
@@ -538,7 +542,7 @@ fn external_selection_advances_the_authoritative_scheduler_frontier() {
         .branch_selection(&parent, live.value)
         .expect("selection should bind to the exact parent");
     let decision = SelectionDecision::new(&selection);
-    let selected = step(&parent, Decision::Selection(decision.clone()));
+    let selected = valid_scheduler_step(&parent, Decision::Selection(decision.clone()));
     let configuration_before_failure = scheduler.configuration().clone();
     let quanta_before_failure = scheduler.quanta();
     let offset_before_failure = scheduler.event_log_offset();

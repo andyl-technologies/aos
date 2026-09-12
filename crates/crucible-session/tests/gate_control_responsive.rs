@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use crucible::{
     BackendEffect, Checkpoint, CheckpointKind, Configuration, ControlOperation,
-    ControlOperationKind, Decision, DeliveryOrderDecision, EventClass, EventDiagnosticPayload,
-    EventKey, EventLevel, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
-    ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed, SimDouble,
-    SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime, compare_event_log_determinism,
-    step,
+    ControlOperationKind, Decision, DeliveryOrderDecision, EventDiagnosticPayload, EventKey,
+    EventLevel, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
+    ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed,
+    SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
+    compare_event_log_determinism,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_session::{
@@ -20,6 +20,10 @@ use crucible_session::{
     PauseReason, SessionActor, SessionCommand,
 };
 use tokio::sync::mpsc;
+
+fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    crucible::try_step(configuration, decision).expect("test decision should be valid")
+}
 
 const CONTROL_RESPONSIVE_BACKEND: &str = "crucible::SimDouble quantum-loop adapter";
 const CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU: bool = false;
@@ -228,10 +232,10 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
         streamed.push(frame.entry.clone());
         let has_causal = streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Causal);
+            .any(|entry| entry.class() == SchedulerEventLogClass::Causal);
         let has_observational = streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Observational);
+            .any(|entry| entry.class() == SchedulerEventLogClass::Observational);
         if has_causal && has_observational {
             break;
         }
@@ -241,12 +245,12 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
     assert!(
         streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Causal)
+            .any(|entry| entry.class() == SchedulerEventLogClass::Causal)
     );
     assert!(
         streamed
             .iter()
-            .any(|entry| entry.class() == EventClass::Observational)
+            .any(|entry| entry.class() == SchedulerEventLogClass::Observational)
     );
     let comparison = compare_event_log_determinism(&streamed, &streamed);
     assert!(comparison.passes());
@@ -489,7 +493,7 @@ impl QuantumLoop for SimDoubleQuantumLoop {
             SimulationBackend::step_to(&mut self.backend, VirtualTime { ticks: self.quanta })?;
         assert_eq!(observation.reached, VirtualTime { ticks: self.quanta });
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = valid_step(&request.configuration, decision.clone());
         let control = request.control;
         record_control_operations(&self.observed_control, &control);
         let event_log_entries = self.event_log_entries(&control);

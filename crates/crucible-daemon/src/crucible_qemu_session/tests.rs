@@ -27,6 +27,10 @@ use crucible_qemu::{
 
 use super::*;
 
+fn valid_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    crucible::try_step(configuration, decision).expect("test decision should be valid")
+}
+
 #[derive(Default)]
 struct FakeBackend;
 
@@ -543,7 +547,7 @@ fn captured_scheduler_configuration_is_checked_before_qemu_capture() {
     )));
     assert!(validate_captured_scheduler_configuration(&initial.def, &matching, &scheduler).is_ok());
 
-    let selected = crucible::step(
+    let selected = valid_step(
         &initial,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("capture-scheduler-basis"),
@@ -989,7 +993,7 @@ fn exact_attempt_resume_is_delegated_under_the_same_guard_and_basis() {
         "crucible.test.live-session",
         "resume-initial",
     ));
-    let selected = crucible::step(
+    let selected = valid_step(
         &initial,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("resume-selection"),
@@ -1298,7 +1302,7 @@ fn replay_fixture() -> (RuntimeState, QemuVmReplayRequest) {
         stream: RngStreamId::from_name("guarded-replay"),
         value: 7,
     });
-    let to = crucible::step(&from, decision.clone());
+    let to = valid_step(&from, decision.clone());
     let runtime = RuntimeState {
         id: ContentHash::from_canonical_material(
             "crucible.test.live-session",

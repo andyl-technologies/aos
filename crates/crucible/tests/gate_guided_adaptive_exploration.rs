@@ -29,7 +29,7 @@ use crucible::{
     SearchBudget, SearchFailureOracle, SearchStrategy, Seed, SelectionDecision, TemporalGraph,
     VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake,
     lint_guidance_determinism_source, preemption_branch_decisions, reduce,
-    run_adaptive_strategy_selection, step, try_step,
+    run_adaptive_strategy_selection, try_step,
 };
 
 #[test]
@@ -399,7 +399,7 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
         } else {
             (decision_b, decision_a, config_a)
         };
-    let frontier = step(&root, frontier_decision.clone());
+    let frontier = valid_step(&root, frontier_decision.clone());
     graph.record_step(&root, frontier_decision.clone())?;
     let policy = FrontierReductionPolicy::none().with_partial_order(
         PartialOrderReductionPolicy::new()
@@ -452,14 +452,14 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     let observed_selection = selectable.sampled_selection(42)?;
     let observed = SelectionDecision::new(&observed_selection);
     let discovery = selectable.into_discovery()?;
-    let parent = step(
+    let parent = valid_step(
         &root,
         Decision::RngDraw(RngDecision {
             stream: stream.clone(),
             value: 42,
         }),
     );
-    let observed_frontier = step(&parent, Decision::Selection(observed.clone()));
+    let observed_frontier = valid_step(&parent, Decision::Selection(observed.clone()));
     graph.record_step(
         &root,
         Decision::RngDraw(RngDecision {
@@ -486,7 +486,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
         app_random_branch_decisions(&root, &observed, &discovery, &base_config),
         Err(AppRandomBranchError::MissingParentDraw)
     ));
-    let mismatched_parent = step(
+    let mismatched_parent = valid_step(
         &root,
         Decision::RngDraw(RngDecision {
             stream: stream.clone(),
@@ -580,7 +580,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     )?;
     let capped_observed = SelectionDecision::new(&capped_selectable.sampled_selection(9)?);
     let capped_discovery = capped_selectable.into_discovery()?;
-    let capped_parent = step(
+    let capped_parent = valid_step(
         &capped,
         Decision::RngDraw(RngDecision {
             stream: capped_stream,
@@ -647,4 +647,11 @@ fn node(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
     }
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

@@ -68,12 +68,7 @@ pub(super) fn build_campaign_triage_minimization(
                         "campaign finding has no retained candidate occurrence for a selected triage member",
                     )
                 })?;
-            let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?
-                .ok_or_else(|| {
-                    artifact_error(
-                        "campaign finding candidate predates native triage replay evidence",
-                    )
-                })?;
+            let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?;
             let target_signature_key = member
                 .signature
                 .signature_key(plan.policy)
@@ -174,17 +169,18 @@ fn campaign_occurrence_for_artifact(
     item: &CampaignTriageFindingEvidence,
     artifact: crucible::ContentHash,
 ) -> Result<Option<&CampaignFindingOccurrenceProof>, CliError> {
-    let mut legacy_match = None;
     for occurrence in campaign_occurrences(item) {
         let reproduction = campaign_occurrence_reproduction(occurrence)?;
         if crucible::ContentHash::from_bytes(reproduction.payload()) == artifact {
-            if occurrence.triage_evidence.is_some() {
-                return Ok(Some(occurrence));
+            if occurrence.triage_evidence.is_none() {
+                return Err(artifact_error(
+                    "campaign occurrence has no native triage replay evidence",
+                ));
             }
-            legacy_match = Some(occurrence);
+            return Ok(Some(occurrence));
         }
     }
-    Ok(legacy_match)
+    Ok(None)
 }
 
 fn campaign_occurrence_bundle(
@@ -270,10 +266,10 @@ fn campaign_model_finding_reproduction(
 fn campaign_occurrence_native_triage_replays(
     occurrence: &CampaignFindingOccurrenceProof,
     template: &TriageFindingEvidence,
-) -> Result<Option<CampaignOccurrenceNativeTriageReplays>, CliError> {
-    let Some(triage) = &occurrence.triage_evidence else {
-        return Ok(None);
-    };
+) -> Result<CampaignOccurrenceNativeTriageReplays, CliError> {
+    let triage = occurrence.triage_evidence.as_ref().ok_or_else(|| {
+        artifact_error("campaign occurrence has no native triage replay evidence")
+    })?;
     let bundle_triage = campaign_occurrence_bundle(occurrence)?
         .triage_evidence()
         .ok_or_else(|| artifact_error("campaign occurrence bundle has no triage evidence set"))?;
@@ -284,7 +280,7 @@ fn campaign_occurrence_native_triage_replays(
     let selected_finding =
         campaign_model_finding_reproduction(&template.finding, selected_reproduction)?;
 
-    Ok(Some(CampaignOccurrenceNativeTriageReplays {
+    Ok(CampaignOccurrenceNativeTriageReplays {
         minimization_original: decode_campaign_occurrence_triage_replay(
             &triage.minimization_original,
             crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal,
@@ -313,7 +309,7 @@ fn campaign_occurrence_native_triage_replays(
             selected_reproduction,
             selected_finding,
         )?,
-    }))
+    })
 }
 
 fn decode_campaign_occurrence_triage_replay(
@@ -493,10 +489,7 @@ pub(super) fn campaign_triage_report_evidence_for_run(
         else {
             continue;
         };
-        let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?
-            .ok_or_else(|| {
-                artifact_error("campaign candidate predates native triage report evidence")
-            })?;
+        let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?;
         let selected = triage_finding_evidence_from_replay(&replays.minimization_selected);
         if selected.finding.artifact.id() != run.minimized_artifact() {
             return Err(artifact_error(

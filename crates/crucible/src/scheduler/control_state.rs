@@ -891,12 +891,12 @@ impl SchedulerActor {
                 self.scheduler.queue_control(operation);
                 Ok(())
             }
-            SchedulerActorMessage::QueueTopologyChange(change) => {
-                self.scheduler.queue_topology_change(change);
-                Ok(())
-            }
+            SchedulerActorMessage::QueueTopologyChange(change) => self
+                .scheduler
+                .schedule_topology_change(change)
+                .map_err(SchedulerActorError::Scheduler),
             SchedulerActorMessage::DriveQuantum { request, reply } => {
-                self.drain_boundary_messages_before_quantum();
+                self.drain_boundary_messages_before_quantum()?;
                 reply
                     .send(self.scheduler.drive_quantum(request))
                     .map_err(|_| SchedulerActorError::ReplyDropped)
@@ -907,14 +907,16 @@ impl SchedulerActor {
         }
     }
 
-    fn drain_boundary_messages_before_quantum(&mut self) {
+    fn drain_boundary_messages_before_quantum(&mut self) -> Result<(), SchedulerActorError> {
         loop {
             match self.inbox.try_recv() {
                 Ok(SchedulerActorMessage::QueueControl(operation)) => {
                     self.scheduler.queue_control(operation);
                 }
                 Ok(SchedulerActorMessage::QueueTopologyChange(change)) => {
-                    self.scheduler.queue_topology_change(change);
+                    self.scheduler
+                        .schedule_topology_change(change)
+                        .map_err(SchedulerActorError::Scheduler)?;
                 }
                 Ok(message) => {
                     self.deferred.push_back(message);
@@ -922,6 +924,7 @@ impl SchedulerActor {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
+        Ok(())
     }
 }
 
@@ -1014,6 +1017,8 @@ pub enum SchedulerActorError {
     MailboxClosed,
     /// A request reply was dropped before delivery.
     ReplyDropped,
+    /// The scheduler rejected a queued operation before applying it.
+    Scheduler(SchedulerError),
 }
 
 impl fmt::Display for SchedulerActorError {
@@ -1021,6 +1026,9 @@ impl fmt::Display for SchedulerActorError {
         match self {
             Self::MailboxClosed => formatter.write_str("scheduler actor mailbox is closed"),
             Self::ReplyDropped => formatter.write_str("scheduler actor reply was dropped"),
+            Self::Scheduler(error) => {
+                write!(formatter, "scheduler rejected actor message: {error}")
+            }
         }
     }
 }

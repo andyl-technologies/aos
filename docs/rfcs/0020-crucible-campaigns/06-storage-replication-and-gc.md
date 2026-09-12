@@ -580,13 +580,13 @@ only with a durable transfer journal whose protected roots participate in GC.
 `crucible serve --campaign-store PATH` loads the registered
 `crucible.campaign-repository-store` TOML deployment. The file is
 an absolute, lexically normalized, exact-owner mode-`0600` regular file of at
-most 256 KiB; unknown fields and schema versions other than 1 and 2 fail
-closed. Version one remains the S3-free local compatibility profile. Its
-closed top-level fields are:
+most 256 KiB; unknown fields and schema versions other than 2 fail closed.
+Version two supports either a local ref directory or one authenticated S3 ref
+backend. Its closed top-level fields for a local deployment are:
 
 ```toml
 schema = "crucible.campaign-repository-store"
-version = 1
+version = 2
 root = "profile"
 admitted_kinds = [
   "campaign-fact", "campaign-snapshot", "merkle-node", "scenario",
@@ -630,7 +630,7 @@ policy = "crucible.campaign.object-profile.v1"
 `admitted_kinds` MUST contain every listed campaign kind exactly once so a
 successful startup cannot defer an unsupported repository operation until
 later. `nodes` uses a unique `id` plus one closed `[nodes.spec]` variant. Version
-one admits `directory`, `compressed-directory`, `encrypted-directory`,
+two admits `directory`, `compressed-directory`, `encrypted-directory`,
 `compressed-encrypted-directory`, `packed`, `verified`, `routed`, `tiered`,
 `read-through`, `write-through`, `write-back`, `durability-policy`, `metrics`,
 `logical-quota`, `physical-quota`, `namespaced`, and `profile-validated` with
@@ -660,11 +660,10 @@ or executor capabilities. A maintenance operation must receive an explicit
 bounded owner-side loan rather than reconstruct or promote authority from the
 ordinary graph.
 
-Memory and S3 nodes are deliberately absent from version one: memory cannot
-satisfy durable daemon admission, while S3 requires an async credential/client
-lifecycle and strong-CAS evidence for remote refs. Version two adds the `s3`
-node and either a local `ref_directory` or one remote `[s3_ref]`, exactly one,
-without embedding credentials in canonical graph identity. For example:
+Memory nodes are absent because they cannot satisfy durable daemon admission.
+Version two also supports the `s3` node and one remote `[s3_ref]` instead of a
+local `ref_directory`, without embedding credentials in canonical graph
+identity. For example:
 
 ```toml
 schema = "crucible.campaign-repository-store"

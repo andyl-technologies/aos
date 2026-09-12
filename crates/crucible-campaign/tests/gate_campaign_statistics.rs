@@ -349,8 +349,13 @@ fn finite_static_statistical_report_preserves_exact_p_q_after_restart() -> Resul
         1,
         b"statistical child".to_vec(),
     )?;
-    let measurements =
-        repository.publish_measurement_set(&MeasurementSet::new(BTreeMap::new())?)?;
+    let measurements = repository.publish_measurement_set(&MeasurementSet::from_evaluation(
+        CampaignHash::derive("test.measurement", b"statistics.measurement-definitions"),
+        1,
+        CampaignHash::derive("test.measurement", b"statistics.measurement-evaluation"),
+        b"statistics-measurements".to_vec(),
+        BTreeSet::new(),
+    )?)?;
     let properties =
         repository.publish_property_verdict_set(&PropertyVerdictSet::new(BTreeMap::new())?)?;
     let coverage = repository

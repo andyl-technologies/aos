@@ -26,9 +26,8 @@ use crate::{
     AttemptExecutionReconciliationStep, AttemptWorkerFailure, AutomaticFindingPreparationError,
     AutomaticFindingReplayOutcome, CapturedAttemptCheckpoint, CrucibleArtifactError,
     CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
-    FindingReplayIncompatibility, PreparedFindingExactRetention, PreparedSemanticAttemptResult,
-    QemuFreshExecutionRunner, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact,
+    FindingReplayIncompatibility, PreparedFindingExactRetention, QemuFreshExecutionRunner,
+    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
     prepare_automatic_signature_preserving_finding_with_outcomes,
 };
 
@@ -972,20 +971,6 @@ where
         let (product, materialization) = main.into_parts();
         let result = match product {
             AttemptExecutionProduct::PreparedSemantic(result) => result,
-            AttemptExecutionProduct::ObservationWithFinding {
-                observation,
-                finding,
-            } => match PreparedSemanticAttemptResult::new(*observation, Some(*finding)) {
-                Ok(result) => Box::new(result),
-                Err(error) => {
-                    self.main.quarantine_pending_execution();
-                    return Err(AttemptWorkerFailure::Terminal(
-                        AutomaticFindingExecutionRunnerError::Preparation(
-                            AutomaticFindingPreparationError::PreparedResult(error),
-                        ),
-                    ));
-                }
-            },
             product => return Ok(CrucibleExecutionOutcome::new(product, materialization)),
         };
         if let Some(finding) = result.finding() {
@@ -1190,13 +1175,7 @@ fn prepare_existing_finding_exact_retention(
     let policy = context.finding_retention_policy()?;
     let basis = policy.basis();
     match policy.retention() {
-        None => Some(PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason:
-                crucible_campaign::FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis,
-            discarded_checkpoint: None,
-        }),
-        Some(retention) if retention.exact_findings() => {
+        retention if retention.exact_findings() => {
             Some(PreparedFindingExactRetention::Incomplete {
                 basis,
                 reason:
@@ -1204,7 +1183,7 @@ fn prepare_existing_finding_exact_retention(
                 discarded_checkpoint: None,
             })
         }
-        Some(_) => Some(PreparedFindingExactRetention::Disabled { basis }),
+        _ => Some(PreparedFindingExactRetention::Disabled { basis }),
     }
 }
 
@@ -1592,14 +1571,7 @@ where
 {
     let policy = context.finding_retention_policy()?;
     let basis = policy.basis();
-    let Some(retention) = policy.retention() else {
-        return Some(PreparedFindingExactRetention::Incomplete {
-            basis,
-            reason:
-                crucible_campaign::FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis,
-            discarded_checkpoint: None,
-        });
-    };
+    let retention = policy.retention();
     if !retention.exact_findings() {
         return Some(PreparedFindingExactRetention::Disabled { basis });
     }

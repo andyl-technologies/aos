@@ -9,6 +9,8 @@
 use super::*;
 use crate::{PlannerCandidateRanking, PlannerRequest, PlannerStep, PlannerStepId};
 
+const PLANNER_RANKINGS_RESPONSE_SCHEMA_VERSION: u32 = 2;
+
 /// Strict request for one accepted planner-step ranking page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetCampaignPlannerRankingsRequest {
@@ -144,7 +146,7 @@ impl GetCampaignPlannerRankingsResponse {
         proof: MerkleMapLookupProof,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: PLANNER_RANKINGS_RESPONSE_SCHEMA_VERSION,
             request_digest: request.request_digest(),
             snapshot_body,
             step,
@@ -273,9 +275,13 @@ impl Canonical for GetCampaignPlannerRankingsResponse {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_service_version(u32::decode(decoder)?)?;
+        if u32::decode(decoder)? != PLANNER_RANKINGS_RESPONSE_SCHEMA_VERSION {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported campaign planner-ranking response schema version",
+            });
+        }
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: PLANNER_RANKINGS_RESPONSE_SCHEMA_VERSION,
             request_digest: CampaignHash::decode(decoder)?,
             snapshot_body: CampaignSnapshot::decode(decoder)?,
             step: PlannerStep::decode(decoder)?,
@@ -312,7 +318,7 @@ mod tests {
             CampaignName::new("campaign/ranking").expect("campaign"),
             CampaignSnapshotId::from_content_id(ContentId::for_bytes(
                 crate::CampaignRecordKind::Snapshot.object_kind(),
-                2, // This frozen request intentionally retains its version-2 snapshot ID.
+                crate::CampaignRecordKind::Snapshot.schema_version(),
                 b"planner ranking request snapshot",
             ))
             .expect("snapshot ID"),
@@ -326,7 +332,7 @@ mod tests {
         );
         assert_eq!(
             request.request_digest().to_hex(),
-            "85f79b6646c3631711943e55b8c32f39a997101e26c222a91f2e32b9e54bd194"
+            "02bd9cb85931fead0b71795b92272b813f23d5cd2a83354b5cdb1edf95e94b3a"
         );
     }
 }

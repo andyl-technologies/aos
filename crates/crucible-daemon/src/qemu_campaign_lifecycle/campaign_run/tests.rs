@@ -1147,7 +1147,7 @@ fn observation_capture_only_stops_before_any_continuation_attempt_or_quantum() {
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (capture_request, capture_node) = request();
-    let checkpoint = legacy_resume_checkpoint(
+    let checkpoint = campaign_resume_checkpoint(
         &capture_request,
         &source_schedule,
         source.evidence().frontier(),
@@ -1200,7 +1200,7 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = request();
-    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let request = request
@@ -1226,7 +1226,7 @@ fn selection_free_resume_authenticates_the_exact_source_before_continuing() {
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
 
     let completed = run_guarded_default_campaign_with_runner(request, runner, evidence)
-        .expect("selection-free legacy resume should complete");
+        .expect("selection-free campaign resume should complete");
     let resume = completed.resume().expect("authenticated resume proof");
     let source_savepoint = resume
         .source_savepoint()
@@ -1356,7 +1356,7 @@ fn controlled_resume(
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = request();
     let schedule = Schedule::empty();
-    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let control = GuardedCampaignContinuationControl::reseed(source_frontier, continuation_seed);
@@ -1436,7 +1436,7 @@ fn rejected_control(
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = request();
     let schedule = Schedule::empty();
-    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let request = request.with_controlled_resume_source(
@@ -1472,7 +1472,7 @@ fn selection_free_resume_terminal_at_source_needs_no_continuation() {
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = request();
     let schedule = Schedule::empty();
-    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let request = request.with_resume_source(
@@ -1512,7 +1512,7 @@ fn selection_free_resume_rejects_terminal_before_the_source_boundary() {
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = request();
     let schedule = Schedule::empty();
-    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let request = request.with_resume_source(
@@ -1550,7 +1550,7 @@ fn selection_free_resume_rejects_a_checkpoint_for_another_configuration() {
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = request();
-    let checkpoint = legacy_resume_checkpoint(&request, &Schedule::empty(), source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &Schedule::empty(), source_frontier);
     let schedule = Schedule::from_decisions([crucible::Decision::DeliveryOrder(
         crucible::DeliveryOrderDecision {
             at: VirtualTime { ticks: 10 },
@@ -1617,7 +1617,7 @@ fn portable_resume_rejects_override_and_app_random_before_execution() {
         let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
         let checkpoints = exact_checkpoint_store(&checkpoint_directory);
         let (request, node) = request();
-        let checkpoint = legacy_resume_checkpoint(&request, &schedule, VirtualTime::default());
+        let checkpoint = campaign_resume_checkpoint(&request, &schedule, VirtualTime::default());
         let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
             .expect("non-selection decisions require no separate choice records");
         let request = request.with_resume_source(
@@ -1658,7 +1658,7 @@ fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() 
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = request();
     let schedule = Schedule::empty();
-    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let request = request.with_resume_source(
@@ -1707,7 +1707,7 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = selectable_request();
     let schedule = Schedule::empty();
-    let checkpoint = legacy_resume_checkpoint(&request, &schedule, source_frontier);
+    let checkpoint = campaign_resume_checkpoint(&request, &schedule, source_frontier);
     let closure = GuardedCampaignReplayClosure::empty_for_selection_free_schedule(&schedule)
         .expect("selection-free replay closure");
     let request = request.with_resume_source(
@@ -1896,7 +1896,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
     let ref_root = temp.path().join("refs");
     let ledger_root = temp.path().join("ledger");
     let journal_root = temp.path().join("gc-journal");
-    let store_node = StoreNodeId::new("legacy-run-directory").expect("store node");
+    let store_node = StoreNodeId::new("campaign-run-directory").expect("store node");
     let graph_config = || StoreGraphConfig {
         root: store_node.clone(),
         admitted_kinds: campaign_object_kinds(),
@@ -1936,7 +1936,7 @@ fn terminal_discovery_selection_survives_gc_restart_and_replay() {
         .copied()
         .expect("terminal observation selection");
     let expected_configuration = completed.terminal_configuration().clone();
-    let orphan_bytes = b"legacy-run-unreachable-after-terminal";
+    let orphan_bytes = b"campaign-run-unreachable-after-terminal";
     let orphan =
         crucible_cas::content_store::ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
     graph
@@ -2159,7 +2159,7 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
     let scenario = request.scenario.clone();
     let completed = run_selectable_campaign(request, node, Arc::new(AtomicUsize::new(0)));
     let configuration = completed.terminal_configuration().clone();
-    let checkpoint = legacy_resume_checkpoint(
+    let checkpoint = campaign_resume_checkpoint(
         &selectable_request().0,
         &configuration.schedule,
         VirtualTime { ticks: 7 },
@@ -2218,7 +2218,7 @@ fn remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes(
     );
 
     let empty_configuration = Configuration::genesis(scenario.scenario_def());
-    let empty_checkpoint = legacy_resume_checkpoint(
+    let empty_checkpoint = campaign_resume_checkpoint(
         &selectable_request().0,
         &Schedule::empty(),
         VirtualTime::default(),
@@ -2336,7 +2336,7 @@ fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {
 
 fn exact_checkpoint_store(directory: &tempfile::TempDir) -> Arc<ExactCheckpointStore> {
     let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "legacy-run-savepoint-tests",
+        "campaign-run-savepoint-tests",
         directory.path(),
     ));
     Arc::new(
@@ -2344,7 +2344,7 @@ fn exact_checkpoint_store(directory: &tempfile::TempDir) -> Arc<ExactCheckpointS
     )
 }
 
-fn legacy_resume_checkpoint(
+fn campaign_resume_checkpoint(
     request: &GuardedDefaultCampaignRunRequest,
     schedule: &Schedule,
     frontier: VirtualTime,
@@ -2360,7 +2360,7 @@ fn legacy_resume_checkpoint(
             def: configuration.def.clone(),
             schedule: schedule
                 .prefix(schedule.len() - 1)
-                .expect("legacy resume parent schedule"),
+                .expect("campaign resume parent schedule"),
         })
     };
 
@@ -2372,7 +2372,7 @@ fn legacy_resume_checkpoint(
         CheckpointKind::Fat,
         BTreeMap::new(),
     )
-    .expect("legacy resume logical checkpoint")
+    .expect("campaign resume logical checkpoint")
 }
 
 fn selectable_request() -> (GuardedDefaultCampaignRunRequest, NodeId) {

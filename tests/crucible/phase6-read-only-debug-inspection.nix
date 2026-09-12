@@ -181,7 +181,7 @@
       }
       {
         label = "observational class assertion";
-        needle = "entry.class() == EventClass::Observational";
+        needle = "entry.class() == SchedulerEventLogClass::Observational";
       }
       {
         label = "diagnostic names assertion";
@@ -241,7 +241,7 @@
       }
       {
         label = "causal debug entry assertion";
-        needle = "EventClass::Causal";
+        needle = "SchedulerEventLogClass::Causal";
       }
     ];
 in

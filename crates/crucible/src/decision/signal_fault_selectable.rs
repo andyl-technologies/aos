@@ -7,31 +7,36 @@
 //! It performs no repository mutation and deliberately does not decide when a
 //! historical frontier is safe to publish as campaign knowledge.
 
+mod semantics;
+
 use std::collections::BTreeSet;
 
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
-    ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationId, ExactRational, IntegerDomain,
-    IntegerRepresentation, IntegerValue, ScenarioDefId, SelectableDeclaration, Selection,
+    ChoiceDomain, ChoiceSource, ConfigurationId, ScenarioDefId, SelectableDeclaration, Selection,
 };
 use thiserror::Error;
 
+use self::semantics::{
+    SignalFaultChoiceSemantics, collect_candidate_semantics, parse_candidate_semantics,
+    semantics_from_records,
+};
 use crate::model::{BindingSearchChoice, SearchChoiceId, SearchOverride};
-use crate::{Configuration, Decision, SearchRuntimeFrontier, SelectionDecision, VirtualTime, step};
+use crate::{
+    Configuration, Decision, EngineError, SearchRuntimeFrontier, SelectionDecision, VirtualTime,
+    try_step,
+};
 
 /// Stable environment-adapter identity for promoted signal-fault choices.
 pub const SIGNAL_FAULT_CAMPAIGN_ADAPTER: &str = "crucible.signal-fault-search.v1";
 
 /// Maximum finite candidates promoted from one signal-fault event.
-pub const MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES: usize = 4_096;
+pub const MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES: usize = 4_095;
 
 /// Maximum promoted signal-fault events retained in one replay plan.
 pub const MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES: usize = 4_096;
 
-const SIGNAL_FAULT_DOMAIN_VERSION: u32 = 1;
-const SIGNAL_FAULT_DECLARATION_NAME: &str = "signal-fault-event-outcome";
 const SIGNAL_FAULT_INSTANCE_PREFIX: &str = "frontier-";
-const SIGNAL_FAULT_CANDIDATE_UNIT: &str = "candidate-index";
 
 /// One exact finite signal-fault frontier expressed as a campaign selectable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +46,7 @@ pub struct SignalFaultSelectable {
     choice: SearchChoiceId,
     candidates_digest: crate::ContentHash,
     candidate_count: u32,
+    semantics: SignalFaultChoiceSemantics,
     declaration: SelectableDeclaration,
     domain: ChoiceDomain,
     opportunity: crucible_campaign::ChoiceOpportunity,
@@ -52,8 +58,9 @@ impl SignalFaultSelectable {
     /// Candidate order is semantic: the frontier must contain the exact dense
     /// sequence `candidate/0..candidate_count` for one search-choice identity,
     /// candidate-set digest, parent configuration, and virtual-time boundary.
-    /// The campaign domain adds one final sentinel value representing the
-    /// unmodified model result.
+    /// Transition and parameter domains add one final discrete alternative for
+    /// the unmodified model result. Boolean outcomes use `false` and `true`
+    /// directly because those values already exhaust the effect outcome.
     ///
     /// # Errors
     ///
@@ -73,12 +80,17 @@ impl SignalFaultSelectable {
 
         let parent_id = frontier.configuration.id();
         let mut basis = None;
+        let mut semantic_candidates = Vec::with_capacity(choices.len());
         for (expected_index, choice) in choices.iter().enumerate() {
             let [Decision::Override(decision)] = choice.decisions() else {
                 return Err(SignalFaultSelectableError::InvalidFrontierDecision {
                     index: expected_index,
                 });
             };
+            semantic_candidates.push(parse_candidate_semantics(
+                &decision.choice.name,
+                expected_index,
+            )?);
             let Some((choice_id, search_override)) =
                 SearchOverride::from_override_decision(decision)
             else {
@@ -106,12 +118,14 @@ impl SignalFaultSelectable {
         };
         let candidate_count = u32::try_from(choices.len())
             .map_err(|_| SignalFaultSelectableError::CandidateLimitExceeded)?;
+        let semantics = collect_candidate_semantics(semantic_candidates)?;
         Self::from_basis(
             frontier.configuration.clone(),
             frontier.at,
             choice,
             candidates_digest,
             candidate_count,
+            semantics,
         )
     }
 
@@ -121,6 +135,7 @@ impl SignalFaultSelectable {
         choice: SearchChoiceId,
         candidates_digest: crate::ContentHash,
         candidate_count: u32,
+        semantics: SignalFaultChoiceSemantics,
     ) -> Result<Self, SignalFaultSelectableError> {
         if candidate_count == 0 {
             return Err(SignalFaultSelectableError::EmptyFrontier);
@@ -131,26 +146,24 @@ impl SignalFaultSelectable {
             return Err(SignalFaultSelectableError::CandidateLimitExceeded);
         }
 
-        let domain = signal_fault_domain(candidate_count)?;
+        semantics.validate_count(candidate_count)?;
+        let domain = semantics.domain()?;
         let source = ChoiceSource::Environment {
             adapter: String::from(SIGNAL_FAULT_CAMPAIGN_ADAPTER),
             target: CampaignHash::from_bytes(choice.content_hash().bytes),
         };
-        let default = ChoiceValue::Integer(IntegerValue::Unsigned(u64::from(candidate_count)));
+        let default = semantics.default_value();
         let class_context = ChoiceClassContext::new(BTreeSet::from([
             String::from("per-event"),
             String::from("signal-fault"),
         ]))?;
         let declaration = SelectableDeclaration::new(
-            SIGNAL_FAULT_DECLARATION_NAME,
+            semantics.declaration_name(),
             source,
             domain.clone(),
             default,
             class_context,
-            BTreeSet::from([
-                String::from("event-outcome"),
-                String::from("hierarchical-promotion"),
-            ]),
+            semantics.semantic_tags(),
             false,
         )?;
         let opportunity = crucible_campaign::ChoiceOpportunity::new(
@@ -171,6 +184,7 @@ impl SignalFaultSelectable {
             choice,
             candidates_digest,
             candidate_count,
+            semantics,
             declaration,
             domain,
             opportunity,
@@ -200,7 +214,9 @@ impl SignalFaultSelectable {
             return Err(SignalFaultSelectableError::ProducerContractMismatch);
         }
 
-        let candidate_count = signal_fault_candidate_count(domain)?;
+        let semantics =
+            semantics_from_records(declaration.name(), declaration.semantic_tags(), domain)?;
+        let candidate_count = semantics.candidate_count()?;
         let frontier = parse_frontier_instance(opportunity.instance())?;
         let reconstructed = Self::from_basis(
             parent.clone(),
@@ -212,6 +228,7 @@ impl SignalFaultSelectable {
                 bytes: opportunity.coordinate().producer.as_bytes(),
             },
             candidate_count,
+            semantics,
         )?;
         if reconstructed.declaration != *declaration
             || reconstructed.domain != *domain
@@ -246,7 +263,7 @@ impl SignalFaultSelectable {
         self.candidates_digest
     }
 
-    /// Returns the number of override candidates, excluding the default sentinel.
+    /// Returns the number of typed override candidates.
     #[must_use]
     pub const fn candidate_count(&self) -> u32 {
         self.candidate_count
@@ -258,7 +275,7 @@ impl SignalFaultSelectable {
         &self.declaration
     }
 
-    /// Returns the finite candidate-index domain plus default sentinel.
+    /// Returns the typed Boolean or discrete campaign domain.
     #[must_use]
     pub const fn domain(&self) -> &ChoiceDomain {
         &self.domain
@@ -286,8 +303,10 @@ impl SignalFaultSelectable {
 
     /// Builds one exact campaign branch selection.
     ///
-    /// `candidate_index == candidate_count` selects the unmodified model result;
-    /// lower values select the corresponding finite override candidate.
+    /// For transition and parameter domains, `candidate_index ==
+    /// candidate_count` selects the unmodified model result. Lower values
+    /// select finite override candidates. Boolean outcomes use indices zero
+    /// and one directly.
     ///
     /// # Errors
     ///
@@ -301,14 +320,12 @@ impl SignalFaultSelectable {
         if parent != &self.parent {
             return Err(SignalFaultSelectableError::FrontierParentMismatch);
         }
-        if candidate_index > self.candidate_count {
-            return Err(SignalFaultSelectableError::CandidateOutsideDomain);
-        }
+        let value = self.semantics.choice_value(candidate_index)?;
         let parent = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
         Ok(Selection::new_campaign_branch(
             &self.opportunity,
             &self.domain,
-            ChoiceValue::Integer(IntegerValue::Unsigned(u64::from(candidate_index))),
+            value,
             self.opportunity.branch_point_id(parent),
         )?)
     }
@@ -330,14 +347,7 @@ impl SignalFaultSelectable {
             &self.domain,
             self.opportunity.branch_point_id(parent_id),
         )?;
-        let ChoiceValue::Integer(IntegerValue::Unsigned(index)) = selection.value() else {
-            return Err(SignalFaultSelectableError::CandidateOutsideDomain);
-        };
-        let index = u32::try_from(*index)
-            .map_err(|_| SignalFaultSelectableError::CandidateOutsideDomain)?;
-        if index > self.candidate_count {
-            return Err(SignalFaultSelectableError::CandidateOutsideDomain);
-        }
+        let index = self.semantics.candidate_index(selection.value())?;
 
         let mut decisions = vec![Decision::Selection(SelectionDecision::new(selection))];
         if index < self.candidate_count {
@@ -345,6 +355,7 @@ impl SignalFaultSelectable {
                 id: self.choice,
                 candidates_digest: self.candidates_digest,
                 candidate_count: self.candidate_count,
+                candidate_semantics: self.semantics.runtime_semantics(),
                 selected_index: Some(index),
                 overridden: true,
             };
@@ -358,15 +369,16 @@ impl SignalFaultSelectable {
         let selected = decisions
             .iter()
             .cloned()
-            .fold(self.parent.clone(), |configuration, decision| {
-                step(&configuration, decision)
-            });
+            .try_fold(self.parent.clone(), |configuration, decision| {
+                try_step(&configuration, decision)
+            })?;
         Ok(SignalFaultCampaignBranch {
             parent: self.parent.clone(),
             frontier: self.frontier,
             choice: self.choice,
             candidates_digest: self.candidates_digest,
             candidate_count: self.candidate_count,
+            candidate_semantics: self.semantics.runtime_semantics(),
             selected_candidate: (index < self.candidate_count).then_some(index),
             decisions,
             selected,
@@ -382,6 +394,7 @@ pub struct SignalFaultCampaignBranch {
     choice: SearchChoiceId,
     candidates_digest: crate::ContentHash,
     candidate_count: u32,
+    candidate_semantics: crate::model::BindingSearchCandidateSemantics,
     selected_candidate: Option<u32>,
     decisions: Vec<Decision>,
     selected: Configuration,
@@ -508,6 +521,7 @@ impl SignalFaultCampaignBranch {
             && choice.id == self.choice
             && choice.candidates_digest == self.candidates_digest
             && choice.candidate_count == self.candidate_count
+            && choice.candidate_semantics == self.candidate_semantics
             && match self.selected_candidate {
                 Some(index) => choice.overridden && choice.selected_index == Some(index),
                 None => !choice.overridden,
@@ -522,12 +536,13 @@ impl SignalFaultCampaignBranch {
     pub fn matches_runtime_frontier(&self, frontier: &SearchRuntimeFrontier) -> bool {
         self.selected_candidate.is_none()
             && Self::runtime_frontier_basis(frontier).is_some_and(
-                |(parent, at, choice, candidates_digest, candidate_count)| {
+                |(parent, at, choice, candidates_digest, candidate_count, candidate_semantics)| {
                     parent == self.parent
                         && at == self.frontier
                         && choice == self.choice
                         && candidates_digest == self.candidates_digest
                         && candidate_count == self.candidate_count
+                        && candidate_semantics == self.candidate_semantics
                 },
             )
     }
@@ -535,16 +550,17 @@ impl SignalFaultCampaignBranch {
     /// Returns the exact finite override required by a candidate branch.
     #[must_use]
     pub fn expected_search_override(&self) -> Option<(SearchChoiceId, SearchOverride)> {
-        self.selected_candidate.map(|candidate_index| {
-            (
-                self.choice,
-                SearchOverride {
-                    candidate_index,
-                    candidates_digest: self.candidates_digest,
-                    parent_branch: Some(self.parent.id()),
-                },
-            )
-        })
+        let candidate_index = self.selected_candidate?;
+        let candidate = self.candidate_semantics.candidate(candidate_index)?;
+        Some((
+            self.choice,
+            SearchOverride {
+                candidate_index,
+                candidates_digest: self.candidates_digest,
+                candidate,
+                parent_branch: Some(self.parent.id()),
+            },
+        ))
     }
 
     fn runtime_frontier_basis(
@@ -555,6 +571,7 @@ impl SignalFaultCampaignBranch {
         SearchChoiceId,
         crate::ContentHash,
         u32,
+        crate::model::BindingSearchCandidateSemantics,
     )> {
         let selectable = SignalFaultSelectable::from_frontier(frontier).ok()?;
         Some((
@@ -563,6 +580,7 @@ impl SignalFaultCampaignBranch {
             selectable.choice,
             selectable.candidates_digest,
             selectable.candidate_count,
+            selectable.semantics.runtime_semantics(),
         ))
     }
 
@@ -582,6 +600,9 @@ impl SignalFaultCampaignBranch {
 /// Failure to normalize or replay one promoted signal-fault choice.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SignalFaultSelectableError {
+    /// Appending a validated campaign decision exceeded the scenario model limit.
+    #[error(transparent)]
+    Configuration(#[from] EngineError),
     /// The runtime frontier supplied no finite candidates.
     #[error("signal-fault search frontier is empty")]
     EmptyFrontier,
@@ -600,13 +621,19 @@ pub enum SignalFaultSelectableError {
     /// Candidate decisions named different search identities or candidate sets.
     #[error("signal-fault search frontier mixes candidate bases")]
     MixedCandidateBasis,
+    /// Candidate tags did not preserve one homogeneous typed RFC-0014 domain.
+    #[error("signal-fault search frontier mixes typed candidate semantics")]
+    MixedCandidateSemantics,
+    /// An index-only legacy candidate cannot be promoted as a typed choice.
+    #[error("signal-fault search frontier candidate lacks typed semantics")]
+    UntypedCandidate,
     /// The decision parent differs from the promoted exact configuration.
     #[error("signal-fault search frontier parent is inconsistent")]
     FrontierParentMismatch,
     /// Authenticated records differ from the standardized producer contract.
     #[error("signal-fault campaign producer contract is inconsistent")]
     ProducerContractMismatch,
-    /// The selected integer is outside the candidate plus sentinel domain.
+    /// The campaign selection is outside the typed candidate domain.
     #[error("signal-fault campaign candidate is outside its domain")]
     CandidateOutsideDomain,
     /// One configuration retained too many promoted signal-fault events.
@@ -618,44 +645,6 @@ pub enum SignalFaultSelectableError {
     /// Canonical campaign record validation failed.
     #[error(transparent)]
     Campaign(#[from] CampaignCodecError),
-}
-
-fn signal_fault_domain(candidate_count: u32) -> Result<ChoiceDomain, CampaignCodecError> {
-    Ok(ChoiceDomain::Integer(IntegerDomain::new(
-        SIGNAL_FAULT_DOMAIN_VERSION,
-        IntegerRepresentation::Unsigned64,
-        IntegerValue::Unsigned(0),
-        IntegerValue::Unsigned(u64::from(candidate_count)),
-        1,
-        Some(String::from(SIGNAL_FAULT_CANDIDATE_UNIT)),
-        ExactRational::new(1, 1)?,
-        Vec::new(),
-    )?))
-}
-
-fn signal_fault_candidate_count(domain: &ChoiceDomain) -> Result<u32, SignalFaultSelectableError> {
-    let ChoiceDomain::Integer(integer) = domain else {
-        return Err(SignalFaultSelectableError::ProducerContractMismatch);
-    };
-    let IntegerValue::Unsigned(maximum) = integer.maximum() else {
-        return Err(SignalFaultSelectableError::ProducerContractMismatch);
-    };
-    let candidate_count =
-        u32::try_from(maximum).map_err(|_| SignalFaultSelectableError::CandidateLimitExceeded)?;
-    if candidate_count == 0
-        || usize::try_from(candidate_count)
-            .map_or(true, |count| count > MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES)
-        || integer.semantic_version() != SIGNAL_FAULT_DOMAIN_VERSION
-        || integer.representation() != IntegerRepresentation::Unsigned64
-        || integer.minimum() != IntegerValue::Unsigned(0)
-        || integer.step() != 1
-        || integer.unit() != Some(SIGNAL_FAULT_CANDIDATE_UNIT)
-        || integer.scale() != ExactRational::new(1, 1)?
-        || !integer.landmarks().is_empty()
-    {
-        return Err(SignalFaultSelectableError::ProducerContractMismatch);
-    }
-    Ok(candidate_count)
 }
 
 fn parse_frontier_instance(instance: &str) -> Result<VirtualTime, SignalFaultSelectableError> {
@@ -675,7 +664,9 @@ fn parse_frontier_instance(instance: &str) -> Result<VirtualTime, SignalFaultSel
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::model::BindingSearchCandidateSemantics;
     use crate::{ScenarioDef, SearchFrontierChoices};
+    use crucible_campaign::ChoiceValue;
 
     fn fixture(candidate_count: u32) -> (SearchRuntimeFrontier, BindingSearchChoice) {
         let scenario = ScenarioDef::from_canonical_material(
@@ -683,10 +674,18 @@ mod tests {
             "signal fault selectable",
         );
         let parent = Configuration::genesis(scenario);
+        let candidate_semantics = BindingSearchCandidateSemantics::Transition(
+            (0..candidate_count)
+                .map(|index| {
+                    crate::ContentHash::from_bytes(format!("candidate-{index}").as_bytes())
+                })
+                .collect(),
+        );
         let choice = BindingSearchChoice {
             id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"choice")),
             candidates_digest: crate::ContentHash::from_bytes(b"candidates"),
             candidate_count,
+            candidate_semantics,
             selected_index: None,
             overridden: false,
         };
@@ -703,6 +702,158 @@ mod tests {
             },
             choice,
         )
+    }
+
+    fn frontier_for(choice: &BindingSearchChoice) -> SearchRuntimeFrontier {
+        let parent = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.signal-fault-selectable.typed",
+            "typed signal fault selectable",
+        ));
+        let decisions = choice
+            .override_decisions(parent.id())
+            .into_iter()
+            .map(Decision::Override);
+        SearchRuntimeFrontier {
+            configuration: parent,
+            at: VirtualTime { ticks: 0x4321 },
+            choices: SearchFrontierChoices::from_decisions(decisions),
+        }
+    }
+
+    fn rewrite_frontier_names(
+        frontier: &SearchRuntimeFrontier,
+        rewrite: impl Fn(usize, &str) -> String,
+    ) -> SearchRuntimeFrontier {
+        let decisions: Vec<_> = frontier
+            .choices
+            .choices()
+            .iter()
+            .enumerate()
+            .map(|(index, choice)| {
+                let Decision::Override(mut decision) = choice.decision().clone() else {
+                    panic!("fixture decisions are overrides");
+                };
+                decision.choice.name = rewrite(index, &decision.choice.name);
+                Decision::Override(decision)
+            })
+            .collect();
+        SearchRuntimeFrontier {
+            configuration: frontier.configuration.clone(),
+            at: frontier.at,
+            choices: SearchFrontierChoices::from_decisions(decisions),
+        }
+    }
+
+    #[test]
+    fn outcome_search_is_one_boolean_campaign_choice() {
+        let choice = BindingSearchChoice {
+            id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"outcome")),
+            candidates_digest: crate::ContentHash::from_bytes(b"outcome-candidates"),
+            candidate_count: 2,
+            candidate_semantics: BindingSearchCandidateSemantics::Outcome,
+            selected_index: Some(1),
+            overridden: false,
+        };
+        let frontier = frontier_for(&choice);
+        let selectable = SignalFaultSelectable::from_frontier(&frontier).expect("outcome choice");
+
+        assert!(matches!(selectable.domain(), ChoiceDomain::Boolean(_)));
+        assert_eq!(
+            selectable.declaration().default(),
+            &ChoiceValue::Boolean(false)
+        );
+        assert_eq!(selectable.domain().cardinality(), 2);
+        assert!(
+            selectable
+                .branch_selection(&frontier.configuration, 0)
+                .is_ok()
+        );
+        assert!(
+            selectable
+                .branch_selection(&frontier.configuration, 1)
+                .is_ok()
+        );
+        assert_eq!(
+            selectable.branch_selection(&frontier.configuration, 2),
+            Err(SignalFaultSelectableError::CandidateOutsideDomain)
+        );
+    }
+
+    #[test]
+    fn parameter_search_is_one_typed_discrete_campaign_choice() {
+        let choice = BindingSearchChoice {
+            id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"parameter")),
+            candidates_digest: crate::ContentHash::from_bytes(b"parameter-candidates"),
+            candidate_count: 2,
+            candidate_semantics: BindingSearchCandidateSemantics::Parameter {
+                parameter: crate::model::MappedEffectParameter::DurationNanos,
+                candidates: vec![
+                    crate::ContentHash::from_bytes(b"duration-10"),
+                    crate::ContentHash::from_bytes(b"duration-20"),
+                ],
+            },
+            selected_index: Some(0),
+            overridden: false,
+        };
+        let frontier = frontier_for(&choice);
+        let selectable = SignalFaultSelectable::from_frontier(&frontier).expect("parameter choice");
+
+        assert!(matches!(selectable.domain(), ChoiceDomain::Discrete(_)));
+        assert_eq!(selectable.domain().cardinality(), 3);
+        assert!(
+            selectable
+                .declaration()
+                .semantic_tags()
+                .contains("parameter-duration-nanos")
+        );
+        assert_eq!(
+            SignalFaultSelectable::from_records(
+                &frontier.configuration,
+                selectable.declaration(),
+                selectable.opportunity(),
+                selectable.domain(),
+            ),
+            Ok(selectable)
+        );
+    }
+
+    #[test]
+    fn index_only_frontier_is_rejected_at_the_campaign_boundary() {
+        let (mut frontier, _) = fixture(2);
+        let legacy = frontier
+            .choices
+            .choices()
+            .iter()
+            .enumerate()
+            .map(|(index, choice)| {
+                let Decision::Override(mut decision) = choice.decision().clone() else {
+                    panic!("fixture decisions are overrides");
+                };
+                decision.choice.name = format!("candidate/{index}");
+                Decision::Override(decision)
+            })
+            .collect::<Vec<_>>();
+        frontier.choices = SearchFrontierChoices::from_decisions(legacy);
+
+        assert_eq!(
+            SignalFaultSelectable::from_frontier(&frontier),
+            Err(SignalFaultSelectableError::UntypedCandidate)
+        );
+
+        let (frontier, _) = fixture(2);
+        for alias in ["00", "+0"] {
+            let noncanonical = rewrite_frontier_names(&frontier, |index, name| {
+                if index == 0 {
+                    name.replacen("candidate/0/", &format!("candidate/{alias}/"), 1)
+                } else {
+                    String::from(name)
+                }
+            });
+            assert_eq!(
+                SignalFaultSelectable::from_frontier(&noncanonical),
+                Err(SignalFaultSelectableError::NonDenseCandidates)
+            );
+        }
     }
 
     #[test]
@@ -757,6 +908,10 @@ mod tests {
                 SearchOverride {
                     candidate_index: 1,
                     candidates_digest: choice.candidates_digest,
+                    candidate: choice
+                        .candidate_semantics
+                        .candidate(1)
+                        .expect("fixture candidate must exist"),
                     parent_branch: Some(frontier.configuration.id()),
                 },
             ))
@@ -779,6 +934,29 @@ mod tests {
             &choice,
         ));
         assert_eq!(branch.expected_search_override(), None);
+
+        let forged_kind = rewrite_frontier_names(&frontier, |index, name| {
+            let identity = name
+                .rsplit_once('/')
+                .map_or("missing", |(_, identity)| identity);
+            format!("candidate/{index}/parameter/duration-nanos/{identity}")
+        });
+        assert!(!branch.matches_runtime_frontier(&forged_kind));
+
+        let forged_identity = rewrite_frontier_names(&frontier, |index, name| {
+            if index == 0 {
+                let (prefix, _) = name
+                    .rsplit_once('/')
+                    .expect("fixture candidate must contain an identity");
+                format!(
+                    "{prefix}/{}",
+                    crate::ContentHash::from_bytes(b"forged-candidate").to_hex()
+                )
+            } else {
+                String::from(name)
+            }
+        });
+        assert!(!branch.matches_runtime_frontier(&forged_identity));
     }
 
     #[test]
@@ -793,17 +971,22 @@ mod tests {
             .resolve_branch(&first_selection)
             .expect("first branch");
 
-        let between = step(
+        let between = try_step(
             first.selected(),
             Decision::RngDraw(crate::RngDecision {
                 stream: crate::RngStreamId::from_name("between-promoted-frontiers"),
                 value: 7,
             }),
-        );
+        )
+        .expect("test configuration step");
         let second_choice = BindingSearchChoice {
             id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"second-choice")),
             candidates_digest: crate::ContentHash::from_bytes(b"second-candidates"),
             candidate_count: 2,
+            candidate_semantics: BindingSearchCandidateSemantics::Transition(vec![
+                crate::ContentHash::from_bytes(b"second-candidate-0"),
+                crate::ContentHash::from_bytes(b"second-candidate-1"),
+            ]),
             selected_index: None,
             overridden: false,
         };
@@ -901,6 +1084,10 @@ mod tests {
             id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"other-choice")),
             candidates_digest: crate::ContentHash::from_bytes(b"other-candidates"),
             candidate_count: 2,
+            candidate_semantics: BindingSearchCandidateSemantics::Transition(vec![
+                crate::ContentHash::from_bytes(b"other-candidate-0"),
+                crate::ContentHash::from_bytes(b"other-candidate-1"),
+            ]),
             selected_index: None,
             overridden: false,
         };
@@ -920,6 +1107,13 @@ mod tests {
             SignalFaultSelectable::from_frontier(&mixed),
             Err(SignalFaultSelectableError::MixedCandidateBasis)
         );
+
+        let (maximum, _) = fixture(
+            u32::try_from(MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES).expect("candidate cap fits u32"),
+        );
+        let maximum = SignalFaultSelectable::from_frontier(&maximum)
+            .expect("maximum candidates plus sentinel fit the shared discrete-domain cap");
+        assert_eq!(maximum.domain().cardinality(), 4_096);
 
         let (excess, _) = fixture(
             u32::try_from(MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES + 1)

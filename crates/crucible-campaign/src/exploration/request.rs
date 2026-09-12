@@ -901,11 +901,10 @@ impl BranchRequest {
     /// Cross-record parent/opportunity/domain bindings are authenticated by the
     /// repository before publication or use. A modeled finite source emits
     /// schema version 3; the established uniform, explicit, and generated
-    /// forms continue to emit version 2 so their keyed identities do not drift.
+    /// forms continue to emit version 2.
     /// A modeled generated source emits schema version 4. Extended execution-
     /// budget stops emit schema version 6, and post-quantum observation stops
-    /// emit schema version 9. Earlier versions retain their established bytes
-    /// and identities.
+    /// emit schema version 9.
     ///
     /// # Errors
     ///
@@ -1007,7 +1006,7 @@ impl BranchRequest {
             schema_version == OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION;
         if !matches!(
             schema_version,
-            1..=OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
+            2..=OBSERVATION_STOP_BRANCH_REQUEST_SCHEMA_VERSION
         ) || incompatible_source
             || incompatible_cause
             || (schema_version == STATISTICAL_BRANCH_REQUEST_SCHEMA_VERSION

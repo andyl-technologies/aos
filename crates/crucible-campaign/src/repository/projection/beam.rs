@@ -597,8 +597,7 @@ impl CampaignRepository {
             };
             if let Some(transition) = current.transition() {
                 match self.read_fact(transition.content_id())? {
-                    CampaignFact::ObservationPublished(observation)
-                    | CampaignFact::ObservationCredited(observation) => {
+                    CampaignFact::ObservationCredited(observation) => {
                         if !known.contains(&observation.content_id()) {
                             content.insert(observation.content_id());
                         }
@@ -953,7 +952,7 @@ mod tests {
     use super::*;
     use crate::{
         CampaignCommandId, CampaignMode, CampaignSeed, DebugSessionId, ExplorerPolicy,
-        FairnessPolicy, MeasurementSet, MetricValue, Objective, ObjectiveGoal, ObjectiveValue,
+        FairnessPolicy, MeasurementSet, Objective, ObjectiveGoal, ObjectiveValue,
         PropertyVerdictSet, RankingDisposition, RetentionPolicy, StopOutcome,
     };
     use crucible_cas::content_store::{ContentId, ObjectKind};
@@ -1061,16 +1060,9 @@ mod tests {
         let candidates = [(first, 1_u64), (second, 2), (third, 100)]
             .into_iter()
             .map(|(configuration, latency)| {
-                let measurements = MeasurementSet::new(BTreeMap::from([(
-                    metric.to_owned(),
-                    crate::MeasurementSeries::new(
-                        vec![MetricValue::Unsigned(latency)],
-                        MetricValue::Unsigned(latency),
-                        BTreeSet::new(),
-                    )
-                    .expect("measurement series"),
-                )]))
-                .expect("measurements");
+                let measurements =
+                    MeasurementSet::test_evaluation(&latency.to_be_bytes(), BTreeSet::new())
+                        .expect("measurements");
                 let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
                 let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new())
                     .expect("evaluation coverage");
@@ -1091,7 +1083,7 @@ mod tests {
                     .expect("configuration artifact id"),
                     crate::BranchPathId::from_content_id(ContentId::for_bytes(
                         ObjectKind::CampaignFact,
-                        1,
+                        2,
                         format!("path-{suffix}").as_bytes(),
                     ))
                     .expect("branch path id"),

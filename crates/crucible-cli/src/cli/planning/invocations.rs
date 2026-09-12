@@ -21,7 +21,6 @@ impl DeterminismErgonomicsPlan {
         self.seed_printed_at_run_start
             && self.failure_artifact_rule.self_contained_artifact
             && self.failure_artifact_rule.replay_command_copy_pasteable
-            && self.failure_artifact_rule.debug_command_copy_pasteable
             && self.trace_formats
                 == vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table]
             && self.jsonl_streams_entries
@@ -84,7 +83,6 @@ pub(crate) enum SeedSource {
 pub(crate) struct FailureArtifactRule {
     pub(crate) self_contained_artifact: bool,
     pub(crate) replay_command_copy_pasteable: bool,
-    pub(crate) debug_command_copy_pasteable: bool,
 }
 
 pub(crate) const RUN_INTERACTIVE_ACK_QUANTA_BOUND: u64 =
@@ -415,31 +413,18 @@ pub(crate) struct CliNodeTemplateToml {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum ResumeSavepointRef {
-    CheckpointHash(crucible::ContentHash),
-    Handle {
-        path: PathBuf,
-        handle: SavepointHandle,
-    },
+pub(crate) struct ResumeSavepointRef {
+    pub(crate) path: PathBuf,
+    pub(crate) handle: SavepointHandle,
 }
 
 impl ResumeSavepointRef {
     pub(crate) fn checkpoint(&self) -> crucible::ContentHash {
-        match self {
-            Self::CheckpointHash(checkpoint) => *checkpoint,
-            Self::Handle { handle, .. } => handle.checkpoint,
-        }
+        self.handle.checkpoint
     }
 
     pub(crate) fn label(&self) -> String {
-        match self {
-            Self::CheckpointHash(checkpoint) => format_content_hash_ref(*checkpoint),
-            Self::Handle { path, handle } => {
-                format!("{} ({})", handle.label, path.display())
-            }
-        }
+        format!("{} ({})", self.handle.label, self.path.display())
     }
 }
 

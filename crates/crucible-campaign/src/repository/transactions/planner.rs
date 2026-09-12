@@ -666,7 +666,6 @@ impl CampaignRepository {
                         &snapshot,
                         &puct_projections[&position.branch_point()],
                         &offer,
-                        crate::PlannerCandidateGuidance::current_schema_version(),
                         &mut candidate_cache,
                     )?;
                     push_retained_planner_input(
@@ -1120,14 +1119,8 @@ impl CampaignRepository {
         let retained_limit = limit_usize
             .checked_add(1)
             .ok_or_else(|| integrity("planner-scan-page-limit-is-invalid"))?;
-        let retained = if let Some(indexed) =
-            self.indexed_planner_scan_positions(view.exploration(), after, retained_limit)?
-        {
-            indexed
-        } else {
-            self.legacy_planner_scan_positions(view, after, retained_limit)?
-        };
-        let mut retained = retained;
+        let mut retained =
+            self.indexed_planner_scan_positions(view.exploration(), after, retained_limit)?;
         let complete = retained.len() <= limit_usize;
         if !complete {
             retained.pop_last();
@@ -1145,44 +1138,5 @@ impl CampaignRepository {
             input_bytes,
         )
         .map_err(Into::into)
-    }
-
-    pub(in crate::repository) fn legacy_planner_scan_positions(
-        &self,
-        view: &CampaignPlanningView,
-        after: Option<PlanningScanPosition>,
-        retained_limit: usize,
-    ) -> Result<BTreeMap<PlanningScanPosition, u64>, CampaignRepositoryError> {
-        let mut retained = BTreeMap::<PlanningScanPosition, u64>::new();
-        let mut storage_after = None;
-        loop {
-            let page = self.merkle.scan(
-                view.exploration(),
-                storage_after,
-                PLANNER_SCAN_STORAGE_PAGE_ITEMS,
-            )?;
-            for (key, value) in page.entries() {
-                if *key != map_key_content("exploration.branch-request", *value) {
-                    continue;
-                }
-                let request = self.read_branch_request(*value)?;
-                let position = PlanningScanPosition::new(request.branch_point(), request.id()?);
-                if after.is_some_and(|after| position <= after) {
-                    continue;
-                }
-                let input_bytes = u64::try_from(request.canonical_bytes().len())
-                    .map_err(|_| integrity("planner-scan-page-input-byte-overflow"))?;
-                retained.insert(position, input_bytes);
-                if retained.len() > retained_limit {
-                    retained.pop_last();
-                }
-            }
-            let Some(next) = page.next_after() else {
-                break;
-            };
-            storage_after = Some(next);
-        }
-
-        Ok(retained)
     }
 }

@@ -19,7 +19,6 @@ fn smc_policy(
         crate::ExactRational::new(1, 2).expect("SMC ESS threshold"),
     )
 }
-
 // crucible-lint: allow rust-allow -- the fixture keeps every policy axis explicit at each call site.
 #[allow(clippy::too_many_arguments)]
 fn smc_policy_with_resampling(
@@ -486,7 +485,7 @@ fn execute_smc_transition(
         .paths_by_parent
         .get(&request.parent())
         .expect("SMC transition source path");
-    let ancestors = source_path.segments().expect("scoped SMC source path");
+    let ancestors = source_path.segments();
     let (path, attempt) = statistical_attempt(&fixture.repository, &request, &proposal, ancestors);
     let label = format!("smc-stage-{stage}-slot-{slot}");
     let (observed, child_content, _) = publish_observation_for_attempt_with(
@@ -749,9 +748,7 @@ fn forced_resampling_executes_duplicate_ancestry_and_replays_after_restart() {
         &fixture.repository,
         &first_request,
         &first_proposal,
-        first_source_path
-            .segments()
-            .expect("first scoped resampled source path"),
+        first_source_path.segments(),
     );
     let (first_observed, stage_one_child, _) = publish_observation_for_attempt_with(
         &fixture.repository,
@@ -786,9 +783,7 @@ fn forced_resampling_executes_duplicate_ancestry_and_replays_after_restart() {
         &fixture.repository,
         &second_request,
         &second_proposal,
-        second_source_path
-            .segments()
-            .expect("second scoped resampled source path"),
+        second_source_path.segments(),
     );
     assert_eq!(second_path, first_path);
     assert_eq!(
@@ -1070,9 +1065,7 @@ fn smc_issues_each_request_before_its_proposal_and_waits_for_all_stage_observati
         &fixture.repository,
         &first_request,
         &first_proposal,
-        first_source_path
-            .segments()
-            .expect("first scoped stage-one path"),
+        first_source_path.segments(),
     );
     let (first_observed, _, _) = publish_observation_for_attempt_with(
         &fixture.repository,
@@ -1095,9 +1088,7 @@ fn smc_issues_each_request_before_its_proposal_and_waits_for_all_stage_observati
         &fixture.repository,
         &second_request,
         &second_proposal,
-        second_source_path
-            .segments()
-            .expect("second scoped stage-one path"),
+        second_source_path.segments(),
     );
     let (second_observed, _, _) = publish_observation_for_attempt_with(
         &fixture.repository,
@@ -1117,197 +1108,5 @@ fn smc_issues_each_request_before_its_proposal_and_waits_for_all_stage_observati
             stage_two.particle().slot()
         ),
         (2, 0)
-    );
-}
-
-#[test]
-fn finite_statistical_version_seven_engine_issues_the_next_draw_after_cold_restart() {
-    let (repository, lineage, base, _, planner_authority, debugger_authority) =
-        authorized_fixture();
-    let draw_model = model("finite-v7-restart");
-    let draw_distribution = distribution(1, 3, 3, 1);
-    let first_template = modeled_branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        "finite-v7-first",
-        draw_model,
-        draw_distribution.target_masses().clone(),
-    );
-    let second_template = modeled_branch_request(
-        &repository,
-        &lineage,
-        lineage.genesis_content(),
-        lineage.genesis(),
-        "finite-v7-second",
-        draw_model,
-        draw_distribution.target_masses().clone(),
-    );
-    let first_opportunity = repository
-        .load_choice_opportunity(first_template.opportunity())
-        .expect("first finite-v7 opportunity");
-    let second_opportunity = repository
-        .load_choice_opportunity(second_template.opportunity())
-        .expect("second finite-v7 opportunity");
-    let design = crate::StatisticalSamplingDesign::new(
-        BTreeMap::from([(draw_model, draw_distribution)]),
-        BTreeMap::from([
-            (
-                0,
-                crate::StatisticalDrawPlan::new(
-                    None,
-                    &first_opportunity,
-                    draw_model,
-                    StopCondition::NextChoice,
-                )
-                .expect("first finite-v7 draw"),
-            ),
-            (
-                1,
-                crate::StatisticalDrawPlan::new(
-                    None,
-                    &second_opportunity,
-                    draw_model,
-                    StopCondition::NextChoice,
-                )
-                .expect("second finite-v7 draw"),
-            ),
-        ]),
-        BTreeSet::from([0, 1]),
-    )
-    .expect("finite-v7 design");
-    let policy = statistical_policy(&base, design, base.retention());
-    let campaign = "finite-statistical-v7-cold-restart";
-    let genesis = repository
-        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
-        .expect("create finite-v7 campaign");
-    let first_discovery = repository
-        .discover_choice_opportunity(
-            campaign,
-            genesis.snapshot_id(),
-            lineage.genesis_content(),
-            first_template.opportunity(),
-        )
-        .expect("discover first finite-v7 opportunity");
-    let second_discovery = repository
-        .discover_choice_opportunity(
-            campaign,
-            first_discovery.new_snapshot,
-            lineage.genesis_content(),
-            second_template.opportunity(),
-        )
-        .expect("discover second finite-v7 opportunity");
-    repository
-        .apply_control(
-            campaign,
-            &command(
-                "resume-finite-v7",
-                second_discovery.new_snapshot,
-                CampaignControlAction::Resume,
-            ),
-        )
-        .expect("resume finite-v7 campaign");
-
-    let engine = PlannerEngine::new(
-        "crucible-canonical-frontier",
-        7,
-        1,
-        BTreeSet::from([
-            crate::CANONICAL_FRONTIER_OFFERS_CAPABILITY.to_owned(),
-            crate::CANONICAL_FRONTIER_BUDGET_CAPABILITY.to_owned(),
-            crate::CANONICAL_FRONTIER_REQUEST_BUDGET_CAPABILITY.to_owned(),
-        ]),
-    )
-    .expect("version-seven canonical frontier engine");
-    assert_eq!(
-        CanonicalFrontierPlanner::descriptor()
-            .expect("current canonical frontier descriptor")
-            .implementation_version(),
-        8
-    );
-    let dependency_bytes = b"crucible-canonical-frontier-planner.v7".to_vec();
-    let dependency = ContentId::for_bytes(ObjectKind::Trace, 1, &dependency_bytes);
-    repository
-        .blobs
-        .put_if_absent(dependency, &BlobHandle::from_bytes(dependency_bytes))
-        .expect("publish finite-v7 dependency");
-    let artifact = PolicyArtifact::new(
-        engine.id().expect("version-seven engine ID"),
-        1,
-        dependency,
-        BTreeSet::new(),
-        BTreeMap::new(),
-    )
-    .expect("version-seven policy artifact");
-    let initial_state = CanonicalFrontierPlanner::initial_state_for_engine(&engine)
-        .expect("version-seven planner state");
-    let repository = Arc::new(repository);
-    let mut driver = statistical_planner_driver_with_basis(
-        Arc::clone(&repository),
-        planner_authority.clone(),
-        engine.clone(),
-        artifact.clone(),
-        initial_state.clone(),
-    );
-    let (_, first_request) = drive_statistical_request(&mut driver, &repository, campaign);
-    let (first_admitted, first_proposal) =
-        drive_statistical_proposal(&mut driver, &repository, campaign);
-    let (first_path, first_attempt) =
-        statistical_attempt(&repository, &first_request, &first_proposal, &[]);
-    let (first_observed, _, _) = publish_observation_for_attempt(
-        &repository,
-        &lineage,
-        campaign,
-        first_admitted.new_snapshot,
-        &first_request,
-        &first_path,
-        &first_attempt,
-        "finite-v7-first-child",
-    );
-    drop(driver);
-
-    let restarted = Arc::new(
-        CampaignRepository::with_component_authorities(
-            repository.blobs.clone(),
-            repository.refs.clone(),
-            planner_authority.clone(),
-            debugger_authority,
-        )
-        .expect("restart finite-v7 repository"),
-    );
-    restarted
-        .validate_complete_head(first_observed.new_snapshot.content_id())
-        .expect("cold validate finite-v7 head");
-    let mut restarted_driver = statistical_planner_driver_with_basis(
-        Arc::clone(&restarted),
-        planner_authority,
-        engine,
-        artifact,
-        initial_state,
-    );
-    let (issued, second_request) =
-        drive_statistical_request(&mut restarted_driver, &restarted, campaign);
-    let CandidateSource::StatisticalFinite(source) = second_request.source() else {
-        panic!(
-            "second finite-v7 request source: {:?}",
-            second_request.source()
-        )
-    };
-    assert_eq!(source.coordinate(), 1);
-    let step = restarted
-        .load_planner_step_at(issued.new_snapshot, issued.step)
-        .expect("load post-restart finite-v7 planner step");
-    let retained = restarted
-        .load_planner_request(step.request())
-        .expect("load post-restart finite-v7 planner request");
-    assert_eq!(retained.engine().implementation_version(), 7);
-    assert_eq!(
-        u32::from_be_bytes(
-            retained.canonical_bytes()[..4]
-                .try_into()
-                .expect("planner request schema bytes")
-        ),
-        2
     );
 }

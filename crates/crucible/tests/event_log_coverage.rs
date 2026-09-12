@@ -10,7 +10,7 @@ use crucible::{
     MaterializationTrigger, MemoryDagStore, NodeId, ObservableEvent, RngDecision, RngStreamId,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
     TemporalGraph, VirtualTime, World, bake, compare_event_log_determinism,
-    coverage_fingerprint_from_event_log, event_log_coverage_projection, step,
+    coverage_fingerprint_from_event_log, event_log_coverage_projection,
 };
 
 fn node(name: &str) -> NodeId {
@@ -146,7 +146,10 @@ fn coverage_entries_project_as_observational_coverage_payloads() {
         block_entry.event_payload().string("block"),
         Some("0x5000+0x30")
     );
-    assert_eq!(block_entry.class(), crucible::EventClass::Observational);
+    assert_eq!(
+        block_entry.class(),
+        crucible::SchedulerEventLogClass::Observational
+    );
 
     assert_eq!(named_entry.event_payload().kind(), "coverage");
     assert_eq!(named_entry.event_payload().string("kind"), Some("named"));
@@ -155,7 +158,10 @@ fn coverage_entries_project_as_observational_coverage_payloads() {
         named_entry.event_payload().icount("retired_icount"),
         Some(icount(22))
     );
-    assert_eq!(named_entry.class(), crucible::EventClass::Observational);
+    assert_eq!(
+        named_entry.class(),
+        crucible::SchedulerEventLogClass::Observational
+    );
 }
 
 #[test]
@@ -183,13 +189,10 @@ fn coverage_fingerprint_is_checkpoint_feedback_from_log_projection() {
 
 #[test]
 fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-coverage.world",
-        "graph-cache-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = step(
+    let child = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("graph-cache-stamping"),
@@ -254,13 +257,10 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
 
 #[test]
 fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-coverage.world",
-        "delayed-closure-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
-    let child = step(
+    let child = valid_step(
         &genesis,
         Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name("delayed-closure-stamping"),
@@ -333,4 +333,11 @@ fn coverage_projection_is_excluded_from_causal_determinism_comparison() {
         coverage_fingerprint_from_event_log(&expected),
         coverage_fingerprint_from_event_log(&reproduced)
     );
+}
+
+fn valid_step(
+    configuration: &crucible::Configuration,
+    decision: crucible::Decision,
+) -> crucible::Configuration {
+    crucible::try_step(configuration, decision).expect("test configuration step")
 }

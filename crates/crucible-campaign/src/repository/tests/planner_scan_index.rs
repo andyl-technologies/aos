@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
+fn indexed_pages_match_canonical_order_across_request_shapes_and_restart() {
     let (repository, lineage, policy, blobs) = counted_fixture();
     repository
         .create("scan-order", &lineage, &policy, &BTreeMap::new())
@@ -18,7 +18,7 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
             &format!("scan-branch-{branch}"),
         );
         // Insert versions and causes in reverse order, not in scan order.
-        for schema in (1_u32..=4).rev() {
+        for schema in (2_u32..=4).rev() {
             for cause in (0..3).rev() {
                 let request = BranchRequest::new(
                     template.branch_point(),
@@ -92,17 +92,8 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
             let page = cold
                 .planner_scan_page(&view, after, limit)
                 .expect("indexed page");
-            let mut legacy = cold
-                .legacy_planner_scan_positions(&view, after, limit as usize + 1)
-                .expect("legacy order");
-            let complete = legacy.len() <= limit as usize;
-            if !complete {
-                legacy.pop_last();
-            }
-            assert_eq!(page.positions(), legacy.keys().copied().collect::<Vec<_>>());
-            assert_eq!(page.complete(), complete);
             seen.extend_from_slice(page.positions());
-            if complete {
+            if page.complete() {
                 break;
             }
             after = page.positions().last().copied();
@@ -126,9 +117,9 @@ fn indexed_pages_match_legacy_order_across_request_schemas_and_restart() {
         head.snapshot().active_policy(),
         roots,
         head.snapshot().transition().expect("transition"),
+        head.snapshot().budget_ledger(),
     )
-    .expect("forged snapshot")
-    .with_budget_ledger(head.snapshot().budget_ledger().expect("ledger"));
+    .expect("forged snapshot");
     let forged_id = repository
         .put_snapshot(&forged)
         .expect("publish forged snapshot");

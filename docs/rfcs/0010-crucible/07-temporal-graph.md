@@ -572,7 +572,7 @@ RFC-0007 (`ratchet`) could be merged (README "Relationship to RFC-0007"; 26
 
 ## 8. Garbage collection of the DAG
 
-Search and interactive forking create checkpoints faster than they are kept:
+Search and campaign forking create checkpoints faster than they are kept:
 abandoned branches, evicted fat snapshots, and dead-end explorations accumulate.
 The store therefore needs garbage collection, and because everything is
 content-addressed and reference-counted, GC is standard and safe.

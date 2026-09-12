@@ -291,14 +291,10 @@ impl BranchPath {
         &self.edges
     }
 
-    /// Returns scoped path segments, or `None` for a decoded legacy v1 path.
-    ///
-    /// Version 1 remains readable with its exact historical content identity,
-    /// but its edge hashes cannot be inverted into branch points. New writers
-    /// always produce version 2 scoped segments.
+    /// Returns the branch-point-scoped path segments.
     #[must_use]
-    pub fn segments(&self) -> Option<&[BranchPathSegment]> {
-        (self.schema_version == BRANCH_PATH_SCHEMA_VERSION).then_some(self.segments.as_slice())
+    pub fn segments(&self) -> &[BranchPathSegment] {
+        &self.segments
     }
 
     /// Returns strict canonical bytes.
@@ -334,24 +330,11 @@ impl BranchPath {
 impl Canonical for BranchPath {
     fn encode(&self, encoder: &mut Encoder) {
         self.schema_version.encode(encoder);
-        if self.schema_version == RECORD_SCHEMA_VERSION {
-            self.edges.encode(encoder);
-        } else {
-            self.segments.encode(encoder);
-        }
+        self.segments.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         match u32::decode(decoder)? {
-            RECORD_SCHEMA_VERSION => Ok(Self {
-                schema_version: RECORD_SCHEMA_VERSION,
-                edges: decoder.sequence_bounded(
-                    MAX_BRANCH_PATH_EDGES,
-                    "branch-path-edge-count",
-                    BranchEdgeId::decode,
-                )?,
-                segments: Vec::new(),
-            }),
             BRANCH_PATH_SCHEMA_VERSION => Self::new(decoder.sequence_bounded(
                 MAX_BRANCH_PATH_EDGES,
                 "branch-path-edge-count",
@@ -749,36 +732,13 @@ pub struct AttemptAdmission {
     schema_version: u32,
     attempt: AttemptId,
     role: AttemptAdmissionRole,
-    retention_policy: Option<CampaignPolicyId>,
+    retention_policy: CampaignPolicyId,
 }
 
 impl AttemptAdmission {
-    /// Builds a legacy attempt admission record without an explicit policy binding.
-    ///
-    /// This constructor preserves the exact version 1 and version 2 encodings
-    /// needed to validate historical campaign records. New admissions must use
-    /// [`Self::new_policy_bound`].
+    /// Builds an attempt admission bound to its retention policy.
     #[must_use]
-    pub const fn new(attempt: AttemptId, role: AttemptAdmissionRole) -> Self {
-        let schema_version = match role {
-            AttemptAdmissionRole::ExecutionBasis {
-                cause: BranchRequestCause::ScenarioDefault(_),
-                ..
-            } => ATTEMPT_ADMISSION_SCHEMA_VERSION,
-            AttemptAdmissionRole::ExecutionBasis { .. }
-            | AttemptAdmissionRole::AdditionalCause { .. } => RECORD_SCHEMA_VERSION,
-        };
-        Self {
-            schema_version,
-            attempt,
-            role,
-            retention_policy: None,
-        }
-    }
-
-    /// Builds a version 3 attempt admission bound to its retention policy.
-    #[must_use]
-    pub const fn new_policy_bound(
+    pub const fn new(
         attempt: AttemptId,
         role: AttemptAdmissionRole,
         retention_policy: CampaignPolicyId,
@@ -787,7 +747,7 @@ impl AttemptAdmission {
             schema_version: ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION,
             attempt,
             role,
-            retention_policy: Some(retention_policy),
+            retention_policy,
         }
     }
 
@@ -803,26 +763,10 @@ impl AttemptAdmission {
         self.role
     }
 
-    /// Returns the policy governing retention for this admission when derivable.
-    ///
-    /// Version 3 records carry the policy directly. Historical records can
-    /// recover it from policy-bearing request causes; proposal-backed version 1
-    /// records require repository resolution of the proposal.
+    /// Returns the policy governing retention for this admission.
     #[must_use]
-    pub const fn retention_policy(self) -> Option<CampaignPolicyId> {
-        match self.retention_policy {
-            Some(policy) => Some(policy),
-            None => match self.role {
-                AttemptAdmissionRole::ExecutionBasis {
-                    cause:
-                        BranchRequestCause::ExhaustivePolicy(policy)
-                        | BranchRequestCause::ScenarioDefault(policy),
-                    ..
-                } => Some(policy),
-                AttemptAdmissionRole::ExecutionBasis { .. }
-                | AttemptAdmissionRole::AdditionalCause { .. } => None,
-            },
-        }
+    pub const fn retention_policy(self) -> CampaignPolicyId {
+        self.retention_policy
     }
 
     /// Returns strict canonical bytes.
@@ -878,9 +822,10 @@ impl AttemptAdmission {
                 children.push(("proposal".to_owned(), proposal.content_id()));
             }
         }
-        if let Some(policy) = self.retention_policy {
-            children.push(("retention-policy".to_owned(), policy.content_id()));
-        }
+        children.push((
+            "retention-policy".to_owned(),
+            self.retention_policy.content_id(),
+        ));
         children
     }
 
@@ -896,37 +841,19 @@ impl Canonical for AttemptAdmission {
         self.schema_version.encode(encoder);
         self.attempt.encode(encoder);
         self.role.encode(encoder);
-        if let Some(policy) = self.retention_policy {
-            policy.encode(encoder);
-        }
+        self.retention_policy.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let schema_version = u32::decode(decoder)?;
         let attempt = AttemptId::decode(decoder)?;
         let role = AttemptAdmissionRole::decode(decoder)?;
-        let retention_policy = match schema_version {
-            ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION => Some(CampaignPolicyId::decode(decoder)?),
-            _ => None,
-        };
-        let scenario_default_basis = matches!(
-            role,
-            AttemptAdmissionRole::ExecutionBasis {
-                cause: BranchRequestCause::ScenarioDefault(_),
-                ..
-            }
-        );
-        let compatible = match schema_version {
-            RECORD_SCHEMA_VERSION => !scenario_default_basis,
-            ATTEMPT_ADMISSION_SCHEMA_VERSION => scenario_default_basis,
-            ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION => retention_policy.is_some(),
-            _ => false,
-        };
-        if !compatible {
+        if schema_version != ATTEMPT_ADMISSION_RETENTION_SCHEMA_VERSION {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported attempt-admission schema or role",
+                reason: "unsupported attempt-admission schema version",
             });
         }
+        let retention_policy = CampaignPolicyId::decode(decoder)?;
         Ok(Self {
             schema_version,
             attempt,

@@ -42,8 +42,8 @@
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "unified log entry name";
-        needle = "pub type LogEntry = SchedulerEventLogEntry";
+        label = "unified log entry type";
+        needle = "pub struct SchedulerEventLogEntry";
       }
       {
         label = "unified event log owner";
@@ -96,8 +96,8 @@
         needle = "IoCompletion,";
       }
       {
-        label = "LogEntry export";
-        needle = "LogEntry,";
+        label = "SchedulerEventLogEntry export";
+        needle = "SchedulerEventLogEntry,";
       }
       {
         label = "NetworkLookahead export";

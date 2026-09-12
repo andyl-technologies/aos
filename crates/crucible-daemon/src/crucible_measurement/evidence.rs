@@ -678,7 +678,7 @@ fn evaluate_crucible_measurement_evidence(
 ///
 /// # Errors
 ///
-/// Returns [`CrucibleMeasurementError`] for a legacy or unsupported payload,
+/// Returns [`CrucibleMeasurementError`] for an unsupported payload,
 /// non-singleton evidence set, binding mismatch, invalid raw input, or disagreement
 /// between replay output and the retained derived evaluation.
 pub fn verify_crucible_measurement_publication(
@@ -688,9 +688,7 @@ pub fn verify_crucible_measurement_publication(
     configuration: ConfigurationId,
     definitions: &MeasurementDefinitions,
 ) -> Result<MeasurementEvaluation, CrucibleMeasurementError> {
-    let retained = measurement_set
-        .evaluation()
-        .ok_or(CrucibleMeasurementError::LegacyMeasurementSet)?;
+    let retained = measurement_set.evaluation();
     if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual: retained.payload_schema(),

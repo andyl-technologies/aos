@@ -1747,53 +1747,33 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
             let id = parse_content_hash_line(lines.next(), "scenario-id=")?;
             let scenario_seed = parse_seed_line(lines.next(), "scenario-seed=")?;
             let app_random_draw_cap = parse_u64_line(lines.next(), "app-random-draw-cap=")?;
-            let next = lines.next();
-            let (scenario_form, seed_line) = if let Some(line) = next {
-                if line.starts_with("scenario-payload=") {
-                    let scenario = parse_scenario_form_line(Some(line), "scenario-payload=")?;
-                    let scenario_def = scenario.scenario_def();
-                    if scenario_def.id() != id {
-                        return Err(format!(
-                            "scenario payload id {} did not match request scenario id {}",
-                            scenario_def.id().to_hex(),
-                            id.to_hex()
-                        ));
-                    }
-                    if scenario.seed() != scenario_seed {
-                        return Err(format!(
-                            "scenario payload seed {} did not match request scenario seed {}",
-                            scenario.seed().to_hex(),
-                            scenario_seed.to_hex()
-                        ));
-                    }
-                    if scenario.app_random_draw_cap() != app_random_draw_cap {
-                        return Err(format!(
-                            "scenario payload app-random draw cap {} did not match request cap {}",
-                            scenario.app_random_draw_cap(),
-                            app_random_draw_cap
-                        ));
-                    }
-                    (Some(scenario), lines.next())
-                } else {
-                    (None, Some(line))
-                }
-            } else {
-                (None, None)
-            };
-            let seed = parse_seed_line(seed_line, "seed=")?;
+            let scenario = parse_scenario_form_line(lines.next(), "scenario-payload=")?;
+            let scenario_def = scenario.scenario_def();
+            if scenario_def.id() != id {
+                return Err(format!(
+                    "scenario payload id {} did not match request scenario id {}",
+                    scenario_def.id().to_hex(),
+                    id.to_hex()
+                ));
+            }
+            if scenario.seed() != scenario_seed {
+                return Err(format!(
+                    "scenario payload seed {} did not match request scenario seed {}",
+                    scenario.seed().to_hex(),
+                    scenario_seed.to_hex()
+                ));
+            }
+            if scenario.app_random_draw_cap() != app_random_draw_cap {
+                return Err(format!(
+                    "scenario payload app-random draw cap {} did not match request cap {}",
+                    scenario.app_random_draw_cap(),
+                    app_random_draw_cap
+                ));
+            }
+            let seed = parse_seed_line(lines.next(), "seed=")?;
             let start_paused = parse_bool_line(lines.next(), "start-paused=")?;
             reject_extra_line(lines.next())?;
-            let scenario = ScenarioDef::from_content_hash_seed_and_app_random_draw_cap(
-                id,
-                scenario_seed,
-                app_random_draw_cap,
-            );
-            let request = if let Some(scenario_form) = scenario_form {
-                CreateSessionRequest::inline_form(scenario_form, seed)
-            } else {
-                CreateSessionRequest::inline(scenario, seed)
-            };
-            Ok(request.with_start_paused(start_paused))
+            Ok(CreateSessionRequest::inline(scenario, seed).with_start_paused(start_paused))
         }
         source => Err(format!("unexpected create-session source `{source}`")),
     }
@@ -2525,7 +2505,6 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             &error.to_string(),
         ),
         LifecycleApiError::ScenarioSeedMismatch { .. }
-        | LifecycleApiError::InlineScenarioIdentityMismatch { .. }
         | LifecycleApiError::ResumeCheckpoint { .. } => typed_rpc_status_response(
             StatusCode::BAD_REQUEST,
             RpcStatusCode::InvalidArgument,
@@ -2610,8 +2589,7 @@ fn streaming_error_response(error: StreamingApiError) -> Response {
         ),
         StreamingApiError::CommandChannelClosed { .. }
         | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. }
-        | StreamingApiError::StateUpdateStreamLagged { .. } => typed_rpc_status_response(
+        | StreamingApiError::EventStreamLagged { .. } => typed_rpc_status_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             RpcStatusCode::Internal,
             "internal",

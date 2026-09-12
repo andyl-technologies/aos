@@ -62,12 +62,10 @@ profile `[A-Za-z0-9._\-/:]+`. Constructors sort measurement IDs, metric IDs,
 cohort nodes, enumeration alternatives, and histogram boundaries before
 content addressing and reject duplicates.
 
-Scenario TOML and compact scenario forms write schema v6. Scenario v5 remains
-readable only as the exact compatibility form with no measurement definitions;
-empty definitions deliberately preserve the prior scenario identity. A
-nonempty component contributes its exact component content hash to scenario
-identity. Reproduction artifacts carrying v6 scenario bytes write outer v6,
-while prior outer v5 artifacts remain readable.
+Scenario TOML and compact scenario forms write and admit schema v7. Earlier
+scenario forms fail closed in normal runtime admission. The measurement
+component contributes its exact content hash to scenario identity.
+Reproduction artifacts likewise write and admit outer v7 only.
 
 The measurement component's canonical body is whitespace-free UTF-8 JSON over
 the field order shown above; the repeated `metrics` Rust field has wire key
@@ -79,11 +77,10 @@ decimal JSON numbers, and collections use the canonical orders required above.
 No object map with implementation-dependent key order occurs in this body. Its
 identity is
 `H("crucible.model.measurement-definitions.v1", lowercase_hex(body))`, using
-the execution model's canonical-material hash function. Scenario compact v6
+the execution model's canonical-material hash function. Scenario compact v7
 stores that body as one length-prefixed blob and readers must re-encode and
 compare it exactly after semantic validation. Campaign `ScenarioArtifact`
-payload v1 remains the retained scenario-form-v5 profile; new scenario-form-v6
-imports use payload v2.
+payload v3 carries the current scenario-form-v7 encoding.
 
 The closed v1 tags are:
 
@@ -392,10 +389,10 @@ missing or additional evidence edge, stale binding, forged or non-dense log,
 invalid guest message, noncanonical leaf, or replay disagreement fails closed.
 Immutable storage alone does not confer semantic status on either payload.
 
-Legacy measurement-set schema v1 remains readable and preserves its original
-content identity. It contains named `MeasurementSeries` values with a nonempty
-sample vector and claimed same-type aggregate, and is explicitly not a verified
-evaluation or valid new policy input. `PropertyVerdictSet` and
+Measurement-set schema v1 is recognized only by the bounded repository
+migration and rejected because its claimed aggregate lacks the raw evidence
+needed for a verified evaluation. Normal runtime admission accepts schema v2
+only. `PropertyVerdictSet` and
 `CoverageProjection` remain bounded name/identity maps or sets with generic
 child-bearing envelopes. Model-owned sample production is implemented by
 T-CAM-3.3. Payload schema 2 provides the codec and replay foundation for
@@ -424,11 +421,10 @@ count and set hash. Journal-state version 2 admits result versions 2 through 6
 and authenticates the exact payload version, bytes, length, and hash. Other
 state/payload combinations fail closed and are never rewritten in place.
 
-Attempt-state version 13 adds the four capture outcomes to `Publishing`.
-Version 14 adds at most three sorted complete exact-checkpoint roots and the
-full prepared-result digest. Version 15 carries that digest into `Completed`,
-so finding handoff recovery cannot authorize an ID-only candidate. Readers
-retain versions 1 through 14 with absent newer fields.
+Attempt-state v15 is the sole normal schema. It persists all four capture
+outcomes, at most three sorted complete exact-checkpoint roots, and the full
+prepared-result digest in `Publishing`, and preserves the digest in
+`Completed`, so finding handoff recovery cannot authorize an ID-only candidate.
 
 Under GC exclusion, writers publish replay-capture and exact-checkpoint
 children and bind the complete prepared payload. For Complete v5 retention they
@@ -436,7 +432,7 @@ authenticate the full bounded candidate inventory, stream only selected
 checkpoint closures from the checkpoint store into campaign CAS, and publish
 the semantic candidate and observation while the original guard still excludes
 GC. They then fsync the payload into a hidden staging directory, commit the
-matching version-14-or-later Publishing roots and digest, and promote the
+matching v15 `Publishing` roots and digest, and promote the
 journal name into the visible recovery namespace before releasing that guard.
 Later publication is idempotent and cold-validates the already-published
 candidate through selected roots only. The Completed v15 CAS preserves the same
@@ -615,20 +611,15 @@ pub struct Finding {
     pub occurrences: MerkleSet<ObservationId>,
     pub minimized: Option<ReproductionArtifactId>,
     pub exact_pins: FindingExactPins,
+    pub candidate_bundle: Option<FindingCandidateBundleId>,
+    pub candidate_occurrences: Option<FindingCandidateOccurrenceSet>,
 }
 ```
 
-The canonical schema-v1 record represents `occurrences` as an authenticated
+The canonical schema-v2 record represents `occurrences` as an authenticated
 Merkle-set root plus a checked count of at most 1,000,000 observations. It also
 retains the exact latest occurrence so the owner can prove one set insertion
-without rescanning history. `exact_pins` is a sorted bounded set of at most 256
-`ExactCheckpointId` values, and the signature retains at most 4,096 canonical
-evidence object IDs. Every referenced identity or root is an exact envelope
-child. `first_seen_snapshot` is the authenticated parent snapshot at which the
-first observation was already visible; using the successor that publishes the
-finding would create a content-address cycle.
-
-Schema v2 replaces the untyped `exact_pins` set with four sorted sets:
+without rescanning history. `exact_pins` contains four sorted sets:
 `pre_failure`, `measurement_boundary`, `post_failure`, and `additional`. The
 256 bound charges role associations, so one checkpoint serving two roles costs
 two entries even though its immutable body is stored once. Rediscovery unions
@@ -638,6 +629,14 @@ the greatest event count strictly before the causal failure, the greatest count
 at or before the last successful measurement boundary, and the least count at
 or after failure; equal-count candidates choose the content-address-least root.
 Missing eligible roles remain empty and never prevent thin reproduction.
+Schema v4 extends schema v2 with the first verified candidate bundle and an
+authenticated occurrence set retaining every verified bundle. Finding schemas
+v1 and v3 are rejected by normal admission.
+The signature retains at most 4,096 canonical evidence object IDs. Every
+referenced identity or root is an exact envelope child. `first_seen_snapshot`
+is the authenticated parent snapshot at which the first observation was already
+visible; using the successor that publishes the finding would create a
+content-address cycle.
 
 `ReproductionArtifact` schema v1 binds the semantic scenario and configuration,
 their exact `ScenarioArtifactId` and `ConfigurationArtifactId`, the stable
@@ -673,7 +672,7 @@ sets under the RFC 03 aggregate bounds, matches only canonical observations
 already credited to the requested branch point, and adds the configured
 positive millionth weight once per cluster occurrence. The compact event counts
 remain explainable by finding class; unconfigured classes do not affect reward.
-Canonical frontier engine version 2 consumes these counts only through the
+Canonical frontier engine version 8 with state schema 3 consumes these counts only through the
 exact snapshot-bound `PlannerCandidateGuidanceV2` record. The coordinator
 recomputes the record and its saturating weighted reward before publication and
 again during restart/import validation; the planner never reads the finding

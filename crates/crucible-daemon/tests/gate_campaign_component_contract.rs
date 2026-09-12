@@ -799,7 +799,20 @@ fn observation_candidate(
     let child_artifact = encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
         .expect("encode child configuration artifact");
     let child = child_artifact.configuration();
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = MeasurementSet::from_evaluation(
+        CampaignHash::derive(
+            "crucible.test.component-contract.measurements.v1",
+            b"definitions",
+        ),
+        1,
+        CampaignHash::derive(
+            "crucible.test.component-contract.evaluation.v1",
+            b"evaluation",
+        ),
+        b"empty evaluation".to_vec(),
+        BTreeSet::new(),
+    )
+    .expect("measurements");
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("property verdicts");
     let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
     let observation = Observation::new(

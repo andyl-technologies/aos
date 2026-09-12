@@ -229,7 +229,7 @@ fn worked_network_fixture() -> Result<WorkedNetworkFixture, CliError> {
             .id()
             .map_err(|error| fixture_error(format!("address configuration artifact: {error}")))?,
         env!("CARGO_PKG_VERSION"),
-        "reference-qemu-10.0.2",
+        "reference-qemu-11.1.1",
         BTreeMap::from([
             (String::from("control"), 1),
             (String::from("shared-memory"), 1),

@@ -5,8 +5,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    EventClass, EventLevel, EventLog, EventSource, Icount, MarkerId, NodeId, ObservableEvent,
-    VirtualTime,
+    EventLevel, EventLog, EventSource, Icount, MarkerId, NodeId, ObservableEvent,
+    SchedulerEventLogClass, VirtualTime,
 };
 
 #[test]
@@ -25,7 +25,7 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     assert_eq!(entry.at(), VirtualTime { ticks: 99 });
     assert_eq!(entry.source(), &EventSource::Guest { node: node.clone() });
     assert_eq!(entry.level(), EventLevel::Info);
-    assert_eq!(entry.class(), EventClass::Observational);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
 
     let stamp = &entry.time().icount;
     assert_eq!(stamp.node, Some(node));

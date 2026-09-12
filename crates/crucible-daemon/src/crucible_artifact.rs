@@ -5,11 +5,8 @@
 //! nested payload schemas:
 //!
 //! ```text
-//! CrucibleScenarioPayloadV1      = ScenarioDefForm compact binary V5
-//! CrucibleScenarioPayloadV2      = ScenarioDefForm compact binary V6
 //! CrucibleScenarioPayloadV3      = ScenarioDefForm compact binary V7
 //! CrucibleConfigurationPayloadV2 = Schedule compact binary V2
-//! CrucibleReproductionPayloadV2  = ReproductionArtifact compact binary V6
 //! CrucibleReproductionPayloadV3  = ReproductionArtifact compact binary V7
 //! ```
 //!
@@ -57,18 +54,10 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::ContentId;
 
-/// Payload schema for a compact canonical Crucible scenario definition.
-pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1: u32 = 1;
-/// Payload schema for a scenario form with measurement-definition identity.
-pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2: u32 = 2;
 /// Payload schema for a scenario form with typed selectable declarations.
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3: u32 = 3;
 /// Payload schema for a compact canonical Crucible configuration schedule.
 pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2: u32 = 2;
-/// Payload schema for a compact canonical Crucible reproduction artifact.
-pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V1: u32 = 1;
-/// Payload schema for a reproduction artifact carrying scenario form v6.
-pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V2: u32 = 2;
 /// Payload schema for a reproduction carrying scenario form version seven.
 pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3: u32 = 3;
 /// Maximum bytes accepted from one pre-bind Crucible artifact import file.
@@ -2092,14 +2081,6 @@ pub fn decode_crucible_scenario_artifact(
     artifact: &ScenarioArtifact,
 ) -> Result<ScenarioDefForm, CrucibleArtifactError> {
     match artifact.payload_schema() {
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V1
-            if artifact
-                .payload()
-                .starts_with(b"crucible.scenario-def-form.v5\0") => {}
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V2
-            if artifact
-                .payload()
-                .starts_with(b"crucible.scenario-def-form.v6\0") => {}
         CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3
             if artifact
                 .payload()

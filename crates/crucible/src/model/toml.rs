@@ -29,13 +29,7 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
     Ok(())
 }
 
-pub(super) const SCENARIO_FORM_BINARY_MAGIC_V5: &[u8] = b"crucible.scenario-def-form.v5\0";
-pub(super) const SCENARIO_FORM_BINARY_MAGIC_V6: &[u8] = b"crucible.scenario-def-form.v6\0";
 pub(super) const SCENARIO_FORM_BINARY_MAGIC_V7: &[u8] = b"crucible.scenario-def-form.v7\0";
-pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V5: &[u8] =
-    b"crucible.reproduction-artifact.v5\0";
-pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V6: &[u8] =
-    b"crucible.reproduction-artifact.v6\0";
 pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7: &[u8] =
     b"crucible.reproduction-artifact.v7\0";
 pub(super) const SCHEDULE_BINARY_MAGIC_V1: &[u8] = b"crucible.schedule.v1\0";
@@ -85,8 +79,6 @@ pub(super) struct ScenarioDefToml {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ScenarioSchemaToml {
-    V5,
-    V6,
     V7,
 }
 
@@ -96,8 +88,6 @@ impl Serialize for ScenarioSchemaToml {
         S: serde::Serializer,
     {
         serializer.serialize_str(match self {
-            Self::V5 => "crucible.scenario.v5",
-            Self::V6 => "crucible.scenario.v6",
             Self::V7 => "crucible.scenario.v7",
         })
     }
@@ -110,17 +100,17 @@ impl<'de> Deserialize<'de> for ScenarioSchemaToml {
     {
         let schema = String::deserialize(deserializer)?;
         match schema.as_str() {
-            "crucible.scenario.v5" => Ok(Self::V5),
-            "crucible.scenario.v6" => Ok(Self::V6),
             "crucible.scenario.v7" => Ok(Self::V7),
             "crucible.scenario.v1"
             | "crucible.scenario.v2"
             | "crucible.scenario.v3"
-            | "crucible.scenario.v4" => Err(de::Error::custom(
-                "legacy Crucible scenarios are not supported; rewrite the scenario using `crucible.scenario.v7`",
+            | "crucible.scenario.v4"
+            | "crucible.scenario.v5"
+            | "crucible.scenario.v6" => Err(de::Error::custom(
+                "obsolete Crucible scenarios are not supported; migrate the persisted owner to `crucible.scenario.v7`",
             )),
             _ => Err(de::Error::custom(format!(
-                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v5`, `crucible.scenario.v6`, or `crucible.scenario.v7`"
+                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v7`"
             ))),
         }
     }
@@ -715,56 +705,32 @@ pub(super) fn scenario_form_to_toml(
 pub(super) fn scenario_form_from_toml(
     toml: ScenarioDefToml,
 ) -> Result<ScenarioDefForm, EngineError> {
-    if matches!(toml.schema, ScenarioSchemaToml::V5) && !toml.measurement.is_empty() {
-        return Err(scenario_serialization_error(
-            "scenario v5 cannot carry measurement definitions",
-        ));
-    }
-    if !matches!(toml.schema, ScenarioSchemaToml::V7) && !toml.selectable.is_empty() {
-        return Err(scenario_serialization_error(
-            "scenario v5/v6 cannot carry selectable declarations",
-        ));
-    }
-    let selectable_limits = match toml.schema {
-        ScenarioSchemaToml::V7 => ScenarioSelectableLimits::new(
-            toml.scenario
-                .selectable_declarations_per_node
-                .ok_or_else(|| {
-                    scenario_serialization_error(
-                        "scenario v7 is missing selectable_declarations_per_node",
-                    )
-                })?,
-            toml.scenario
-                .selectable_declarations_per_world
-                .ok_or_else(|| {
-                    scenario_serialization_error(
-                        "scenario v7 is missing selectable_declarations_per_world",
-                    )
-                })?,
-            toml.scenario
-                .selectable_requests_per_selectable
-                .ok_or_else(|| {
-                    scenario_serialization_error(
-                        "scenario v7 is missing selectable_requests_per_selectable",
-                    )
-                })?,
-            toml.scenario.selectable_requests_per_node.ok_or_else(|| {
-                scenario_serialization_error("scenario v7 is missing selectable_requests_per_node")
+    let selectable_limits = ScenarioSelectableLimits::new(
+        toml.scenario
+            .selectable_declarations_per_node
+            .ok_or_else(|| {
+                scenario_serialization_error(
+                    "scenario v7 is missing selectable_declarations_per_node",
+                )
             })?,
-        )?,
-        ScenarioSchemaToml::V5 | ScenarioSchemaToml::V6 => {
-            if toml.scenario.selectable_declarations_per_node.is_some()
-                || toml.scenario.selectable_declarations_per_world.is_some()
-                || toml.scenario.selectable_requests_per_selectable.is_some()
-                || toml.scenario.selectable_requests_per_node.is_some()
-            {
-                return Err(scenario_serialization_error(
-                    "scenario v5/v6 cannot carry selectable limits",
-                ));
-            }
-            ScenarioSelectableLimits::default()
-        }
-    };
+        toml.scenario
+            .selectable_declarations_per_world
+            .ok_or_else(|| {
+                scenario_serialization_error(
+                    "scenario v7 is missing selectable_declarations_per_world",
+                )
+            })?,
+        toml.scenario
+            .selectable_requests_per_selectable
+            .ok_or_else(|| {
+                scenario_serialization_error(
+                    "scenario v7 is missing selectable_requests_per_selectable",
+                )
+            })?,
+        toml.scenario.selectable_requests_per_node.ok_or_else(|| {
+            scenario_serialization_error("scenario v7 is missing selectable_requests_per_node")
+        })?,
+    )?;
     let world = world_from_toml(toml.world)?;
     let (properties_id, assertions) = properties_assertions_from_toml(toml.properties)?;
     let plan = plan_from_toml_with_assertions(
@@ -816,11 +782,7 @@ pub(super) fn world_to_toml(world: &World) -> WorldToml {
     let fault_topology = world.fault_topology();
     WorldToml {
         id: format_content_hash_ref(world.id()),
-        node: world
-            .topology_nodes()
-            .iter()
-            .map(world_node_def_to_toml)
-            .collect(),
+        node: world.nodes().iter().map(world_node_def_to_toml).collect(),
         link: world.links().iter().map(link_to_toml).collect(),
         fault_domain: fault_topology.fault_domains.clone(),
         network_interface: fault_topology.network_interfaces.clone(),

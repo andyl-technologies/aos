@@ -29,7 +29,7 @@ impl ImmutableBlobBackend for ReadCountingBackend {
 }
 
 #[test]
-fn ten_thousand_distinct_request_transitions_keep_indexed_cap_queries_bounded() {
+fn distinct_request_transitions_keep_indexed_cap_queries_bounded() {
     const REQUESTS: u64 = 2_500;
     const CAMPAIGN: &str = "request-index-scale";
 
@@ -115,12 +115,12 @@ fn ten_thousand_distinct_request_transitions_keep_indexed_cap_queries_bounded() 
 
     let head = repository.head(CAMPAIGN).expect("scaled head");
     let ledger = repository
-        .read_budget_ledger(head.snapshot().budget_ledger().expect("ledger id"))
+        .read_budget_ledger(head.snapshot().budget_ledger())
         .expect("ledger");
     assert_eq!(
         repository
             .merkle
-            .inspect_shallow(ledger.request_spending().expect("index"))
+            .inspect_shallow(ledger.request_spending())
             .expect("request index")
             .entry_count(),
         REQUESTS

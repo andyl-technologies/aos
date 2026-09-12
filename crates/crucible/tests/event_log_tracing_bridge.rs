@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    Decision, EventAttributeValue, EventClass, EventDiagnosticPayload, EventLevel, EventLog,
-    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    Decision, EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLog, RngDecision,
+    RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, TracingBridge, TracingBridgeConfig, VirtualTime,
     compare_event_log_determinism, event_log_causal_projection,
 };
@@ -48,7 +48,7 @@ fn tracing_bridge_entries_are_observational_diagnostics() {
         )
         .unwrap_or_else(|| panic!("enabled bridge should produce a diagnostic entry"));
 
-    assert_eq!(entry.class(), EventClass::Observational);
+    assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
     assert_eq!(entry.source(), &crucible::EventSource::Engine);
     assert_eq!(entry.level(), EventLevel::Warn);
     assert_eq!(entry.event_payload().kind(), "diagnostic");

@@ -326,10 +326,14 @@ fn configuration_prefix(configuration: &Configuration, prefix_len: usize) -> Con
 fn record_representative_decision(recorder: &mut DecisionRecorder, index: u64) {
     match index % 3 {
         0 => {
-            let _value = recorder.draw_u64(stream(&format!("node-a/faults/{index}")));
+            let _value = recorder
+                .draw_u64(stream(&format!("node-a/faults/{index}")))
+                .expect("record node draw");
         }
         1 => {
-            let _value = recorder.draw_u64(stream(&format!("node-b/network/{index}")));
+            let _value = recorder
+                .draw_u64(stream(&format!("node-b/network/{index}")))
+                .expect("record network draw");
         }
         _ => match recorder.serve_app_random(node("node-a"), stream("node-a/app-random"), 16) {
             Ok(_value) => {}

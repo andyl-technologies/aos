@@ -123,7 +123,9 @@ fn seed_is_scenario_identity_and_name_hashed_stream_root() {
     );
     assert_eq!(world_node_draws.next_u64(), expanded_node_draws.next_u64());
     assert_eq!(
-        seeded_recorder.draw_u64(node_stream.clone()),
+        seeded_recorder
+            .draw_u64(node_stream.clone())
+            .expect("seeded recorder draw"),
         expected_recorder_stream.next_u64()
     );
 
@@ -883,10 +885,12 @@ pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
 }
 
 pub(super) fn generated_world(seed: u64) -> World {
-    World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.world.generated",
-        &format!("nodes=a,b\nlinks=a-b\nseed={seed}"),
-    ))
+    world_from_nodes(vec![ready_node(
+        &format!("generated-{seed}"),
+        ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+    )])
 }
 
 pub(super) fn world_from_nodes(nodes: Vec<WorldNode>) -> World {

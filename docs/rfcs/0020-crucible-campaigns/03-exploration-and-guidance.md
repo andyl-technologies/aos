@@ -122,14 +122,12 @@ source remains an auditable operator/planner override even when the opportunity
 names a model, and the model is used only when the request selects
 `ModeledFinite` or `ModeledGenerated`.
 They do not change canonical value order, legality, request budgets,
-deduplication, or attempt identity. Branch-request schema v2 adds the explicit
-weighted finite encoding, v3 adds the modeled finite encoding, and v4 adds the
-model-ID plus generator-ID encoding; schema-v1 uniform/generated, schema-v2
-explicit, and schema-v3 modeled-finite requests retain their exact identity.
-Generator draws are keyed by `BranchRequestId`, so a newly authored v2
-generated request intentionally owns a distinct stream from an otherwise equal
-v1 request; replay of the retained v1 body continues to use its original ID and
-stream.
+deduplication, or attempt identity. Branch-request schema v2 carries uniform,
+generated, and explicitly weighted finite sources, v3 adds modeled finite, v4
+adds modeled generated, v5 adds scenario-default ownership, v6 adds extended
+stops, v7 and v8 add the two statistical source forms, and v9 adds observation
+stops. Retired schema v1 is rejected because it has no authenticated current
+representation. Generator draws are keyed by the current `BranchRequestId`.
 Statistical finite and SMC sources retain complete positive target and proposal
 mass maps plus their checked totals. They are emitted only by schema-v7 and
 schema-v8 branch requests respectively; candidate-source tags 5 and 6 preserve
@@ -746,48 +744,23 @@ is already completed, its established completed-edge basis wins. The
 hypothetical contains no other offers, so its score is independent of planner
 page shape.
 
-The first executable closed-planner checkpoint established the pure paged
-frontier loop before adaptive scoring. Engine
-`crucible-canonical-frontier` implementation version 1 receives the
-coordinator's exact authenticated continuation state and next legal candidate
-for every served source, considers only `Ready` sources, and chooses the least
-canonical `PlanningScanPosition`. It carries that offer across pages and issues
-only at EOF. This ordering is deterministic fairness bootstrap behavior, not a
-claim that PUCT is complete.
+The current closed planners are `crucible-canonical-frontier`
+implementation version 8 with portable state version 3 and
+`crucible-canonical-puct` implementation version 6 with portable state version
+2. The first chooses the least affordable `PlanningScanPosition`; the second
+scores exact `PlannerCandidateGuidanceV2` and chooses the highest fixed-point
+total, then the lower `BranchEdgeId` and position. Both carry their candidate
+and blocked state across bounded pages and issue only at EOF.
 
-Implementation version 2 additionally advertises
-`canonical-frontier-puct-v1`. The coordinator supplies an exact
-`PlannerCandidateGuidanceV2` beside every Ready offer, recomputed from the
-authenticated view and active policy. A whole served page is one bounded
+The coordinator builds every offer, guidance, and `PlannerCandidateBudgetV2`
+record from the authenticated current view. A whole served page is one bounded
 projection batch: at most 65,536 aggregate credited observations and 128 MiB of
 credit/path bodies, one bounded observation-root novelty scan, one bounded
-finding-root scan, and at most 128 MiB of unique decoded choice-domain bodies.
-Shared branch points, observations, objective evaluations, findings, coverage
-bodies, and domains are not reparsed per offer. Objective work additionally
-admits at most 65,536 unique evaluations and 128 MiB of their deduplicated
-evaluation/observation/property basis bodies.
-Prospective normalization is shared by `(BranchPointId, raw_weight)` and
-charges at most 1,000,000 completed-edge visits per served page, preventing
-many distinct explicit weights from multiplying a large completed-edge set.
-The retained request remains subject to its 32 MiB stored-body and 65,529-child
-profile.
-
-Version 2 derives the exact score from the by-value policy and guidance, carries
-the best candidate across pages, and issues only at EOF. Higher fixed-point
-total wins. Equal totals choose the lower `BranchEdgeId`, then the lower
-`PlanningScanPosition`; this is the closed frontier engine's complete tie rule.
-The engine receives no repository or Merkle authority. Local acceptance,
-restart, and imported-snapshot validation recompute every guidance record and
-rerun the complete pure transition. Version 1 remains replay-compatible and
-keeps its original least-position ordering. Guidance schema v1 remains
-identity-preserving for retained history; all newly projected guidance is
-schema v2. Engine version 2 consumes the owner-normalized explicit,
-modeled-finite, modeled-uniform-generated, or uniform prospective/completed
-priors, exact owner-published objective reward, global coverage novelty,
-configured closed finding rewards,
-and fairness. Additional opaque non-finite scenario-model distributions remain
-open until a concrete adapter and versioned portable generator contract are
-defined for each model family.
+finding-root scan, at most 128 MiB of unique decoded choice-domain bodies, and
+at most 1,000,000 completed-edge normalization visits. Local acceptance and
+restart validation recompute the records and rerun the pure transition. Normal
+admission rejects obsolete packaged planner descriptors, states, guidance, and
+budget schemas.
 
 ## 03.5 Guidance signals and objectives
 
@@ -898,22 +871,27 @@ mapping mutation seams without turning every signal sample into a branch.
   high-rate opportunities is to select model parameters and sample keyed
   outcomes, then promote a bounded interesting window for exact branching.
 
-The implemented promotion-normalization boundary accepts at most 4,096 exact
+The implemented promotion-normalization boundary accepts at most 4,095 exact
 signal-fault candidates from one `SearchRuntimeFrontier`. The candidates MUST
 be the dense ordered sequence for one search-choice ID, candidate-set digest,
-parent configuration, and virtual-time coordinate. It represents candidate
-indexes as an unsigned integer campaign domain and adds one final sentinel for
-the unmodified model result. The standardized environment adapter is
+parent configuration, virtual-time coordinate, and typed candidate semantics.
+Outcome searches use the Boolean campaign domain. Transition and parameter
+searches use stable discrete identities derived from their canonical object or
+typed-value content and add one final alternative for an unmodified model
+result, keeping the resulting domain within the shared 4,096-alternative cap.
+The standardized environment adapter is
 `crucible.signal-fault-search.v1`; the opportunity coordinate retains the exact
 parent and candidate-set digest, while its instance retains the frontier time.
 
 Repository-authenticated records reconstruct either a typed campaign
-`Selection` followed by the exact `signal-fault/.../candidate/N` override, or a
-selection-only unmodified branch. This pure conversion does not itself admit a
-historical frontier. A live promotion owner MUST still prove that execution is
-paused at the frontier's exact parent before publishing the opportunity or
-using the reconstructed prefix for QEMU injection. Retrospective search
-frontiers MUST NOT be mislabeled as discoveries at a later observation child.
+`Selection` followed by the exact typed `signal-fault/.../candidate/N/...`
+override, or a selection-only unmodified branch for transition and parameter
+searches. Index-only and unknown semantic tags fail closed. This pure conversion
+does not itself admit a historical frontier. A live promotion owner MUST still
+prove that execution is paused at the frontier's exact parent before publishing
+the opportunity or using the reconstructed prefix for QEMU injection.
+Retrospective search frontiers MUST NOT be mislabeled as discoveries at a later
+observation child.
 
 The production lifecycle implements that live boundary by snapshotting the
 retained frontier count before each scheduler quantum. Only a frontier first
