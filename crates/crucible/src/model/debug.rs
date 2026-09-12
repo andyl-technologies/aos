@@ -1675,7 +1675,6 @@ impl DebugTargetResolverRequest {
         self.event_coordinates.insert(sequence, configuration);
         self
     }
-
 }
 
 /// Result of resolving an operator-facing debug target.
