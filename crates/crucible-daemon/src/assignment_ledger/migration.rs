@@ -3,126 +3,49 @@
 //! This module is reachable only from the stopped-daemon operator migration.
 //! Normal execution and restart decoding remain confined to v15.
 
-use std::fs;
+use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use crate::OperationalStateMigrationError;
+use crate::anchored_fs::{AnchoredDirectory, AnchoredFile};
+use crate::operational_state_migration::receipt::{
+    ASSIGNMENT_RECEIPT, MigrationObjectReceipt, authenticated_id, load_phase_receipt,
+    persist_phase_receipt,
+};
 
 use super::codec::*;
 use super::*;
 
-pub(super) const ATTEMPT_STATE_MAGIC_V14: &[u8] = b"crucible.executor.attempt-state-record.v14\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V13: &[u8] = b"crucible.executor.attempt-state-record.v13\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V12: &[u8] = b"crucible.executor.attempt-state-record.v12\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V11: &[u8] = b"crucible.executor.attempt-state-record.v11\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V10: &[u8] = b"crucible.executor.attempt-state-record.v10\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V9: &[u8] = b"crucible.executor.attempt-state-record.v9\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V8: &[u8] = b"crucible.executor.attempt-state-record.v8\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V7: &[u8] = b"crucible.executor.attempt-state-record.v7\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V6: &[u8] = b"crucible.executor.attempt-state-record.v6\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V5: &[u8] = b"crucible.executor.attempt-state-record.v5\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V4: &[u8] = b"crucible.executor.attempt-state-record.v4\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V3: &[u8] = b"crucible.executor.attempt-state-record.v3\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V2: &[u8] = b"crucible.executor.attempt-state-record.v2\0";
-pub(super) const ATTEMPT_STATE_MAGIC_V1: &[u8] = b"crucible.executor.attempt-state-record.v1\0";
-
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V14: &str =
-    "crucible.executor.attempt-state-record.v14";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V13: &str =
-    "crucible.executor.attempt-state-record.v13";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V12: &str =
-    "crucible.executor.attempt-state-record.v12";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V11: &str =
-    "crucible.executor.attempt-state-record.v11";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V10: &str =
-    "crucible.executor.attempt-state-record.v10";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V9: &str =
-    "crucible.executor.attempt-state-record.v9";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V8: &str =
-    "crucible.executor.attempt-state-record.v8";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V7: &str =
-    "crucible.executor.attempt-state-record.v7";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V6: &str =
-    "crucible.executor.attempt-state-record.v6";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V5: &str =
-    "crucible.executor.attempt-state-record.v5";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V4: &str =
-    "crucible.executor.attempt-state-record.v4";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V3: &str =
-    "crucible.executor.attempt-state-record.v3";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V2: &str =
-    "crucible.executor.attempt-state-record.v2";
-pub(super) const ATTEMPT_STATE_CHECKSUM_DOMAIN_V1: &str =
-    "crucible.executor.attempt-state-record.v1";
-
 pub(super) fn decode_migratable_attempt_state(
     bytes: &[u8],
 ) -> Result<(AttemptExecutionKey, AttemptRuntimeState), AssignmentLedgerError> {
-    let (payload, magic) = if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN) {
-        (payload, ATTEMPT_STATE_MAGIC)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V14) {
-        (payload, ATTEMPT_STATE_MAGIC_V14)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V13) {
-        (payload, ATTEMPT_STATE_MAGIC_V13)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V12) {
-        (payload, ATTEMPT_STATE_MAGIC_V12)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V11) {
-        (payload, ATTEMPT_STATE_MAGIC_V11)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V10) {
-        (payload, ATTEMPT_STATE_MAGIC_V10)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V9) {
-        (payload, ATTEMPT_STATE_MAGIC_V9)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V8) {
-        (payload, ATTEMPT_STATE_MAGIC_V8)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V7) {
-        (payload, ATTEMPT_STATE_MAGIC_V7)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V6) {
-        (payload, ATTEMPT_STATE_MAGIC_V6)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V5) {
-        (payload, ATTEMPT_STATE_MAGIC_V5)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V4) {
-        (payload, ATTEMPT_STATE_MAGIC_V4)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V3) {
-        (payload, ATTEMPT_STATE_MAGIC_V3)
-    } else if let Ok(payload) = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V2) {
-        (payload, ATTEMPT_STATE_MAGIC_V2)
-    } else {
-        (
-            open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN_V1)?,
-            ATTEMPT_STATE_MAGIC_V1,
-        )
-    };
+    let current = open_sealed(bytes, ATTEMPT_STATE_CHECKSUM_DOMAIN)
+        .ok()
+        .map(|payload| (15, payload, ATTEMPT_STATE_MAGIC.to_vec()));
+    let legacy = (1..=14).rev().find_map(|version| {
+        let domain = format!("crucible.executor.attempt-state-record.v{version}");
+        let mut magic = domain.as_bytes().to_vec();
+        magic.push(0);
+        open_sealed(bytes, &domain)
+            .ok()
+            .map(|payload| (version, payload, magic))
+    });
+    let (version, payload, magic) = current
+        .or(legacy)
+        .ok_or_else(|| corrupt("attempt-state-checksum"))?;
     let mut cursor = RecordCursor::new(payload);
-    cursor.require(magic)?;
+    cursor.require(&magic)?;
     let lineage = parse_typed(cursor.bytes()?, CampaignLineageId::parse)?;
     let attempt = parse_typed(cursor.bytes()?, AttemptId::parse)?;
-    let scope = if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-        || magic == ATTEMPT_STATE_MAGIC_V13)
-        || magic == ATTEMPT_STATE_MAGIC_V12
-        || magic == ATTEMPT_STATE_MAGIC_V11
-    {
+    let scope = if version >= 11 {
         AttemptExecutionScope::from_canonical_bytes(cursor.bytes()?)?
     } else {
         AttemptExecutionScope::Semantic
     };
     let execution_basis = CampaignHash::from_bytes(cursor.fixed()?);
-    let origin = if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-        || magic == ATTEMPT_STATE_MAGIC_V13)
-        || magic == ATTEMPT_STATE_MAGIC_V12
-        || magic == ATTEMPT_STATE_MAGIC_V11
-        || magic == ATTEMPT_STATE_MAGIC_V10
-        || magic == ATTEMPT_STATE_MAGIC_V9
-        || magic == ATTEMPT_STATE_MAGIC_V8
-        || magic == ATTEMPT_STATE_MAGIC_V7
-        || magic == ATTEMPT_STATE_MAGIC_V6
-        || magic == ATTEMPT_STATE_MAGIC_V5
-        || magic == ATTEMPT_STATE_MAGIC_V4
-    {
-        decode_attempt_origin(
-            &mut cursor,
-            ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                || magic == ATTEMPT_STATE_MAGIC_V13)
-                || magic == ATTEMPT_STATE_MAGIC_V12,
-        )?
+    let origin = if version >= 4 {
+        decode_attempt_origin(&mut cursor, version >= 12)?
     } else {
         AttemptExecutionOrigin::Initial
     };
@@ -138,15 +61,8 @@ pub(super) fn decode_migratable_attempt_state(
         },
         1 => {
             let observation = parse_typed(cursor.bytes()?, ObservationId::parse)?;
-            let finding_candidate = decode_legacy_optional_finding_candidate(&mut cursor, magic)?;
-            let finding_candidate_acknowledged = if ((magic == ATTEMPT_STATE_MAGIC
-                || magic == ATTEMPT_STATE_MAGIC_V14)
-                || magic == ATTEMPT_STATE_MAGIC_V13)
-                || magic == ATTEMPT_STATE_MAGIC_V12
-                || magic == ATTEMPT_STATE_MAGIC_V11
-                || magic == ATTEMPT_STATE_MAGIC_V10
-                || magic == ATTEMPT_STATE_MAGIC_V9
-            {
+            let finding_candidate = decode_legacy_optional_finding_candidate(&mut cursor, version)?;
+            let finding_candidate_acknowledged = if version >= 9 {
                 match cursor.byte()? {
                     0 => false,
                     1 => true,
@@ -172,7 +88,7 @@ pub(super) fn decode_migratable_attempt_state(
                 execution,
                 observation,
                 finding_candidate,
-                prepared_result_digest: if magic == ATTEMPT_STATE_MAGIC {
+                prepared_result_digest: if version >= 15 {
                     decode_optional_campaign_hash(&mut cursor)?
                 } else {
                     None
@@ -185,211 +101,83 @@ pub(super) fn decode_migratable_attempt_state(
             daemon_epoch,
             execution,
         },
-        8 if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7 =>
-        {
-            AttemptRuntimeState::TerminalFailure {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-            }
-        }
-        3 if ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3
-            || magic == ATTEMPT_STATE_MAGIC_V2 =>
-        {
-            AttemptRuntimeState::Publishing {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
-                finding_candidate: decode_legacy_optional_finding_candidate(&mut cursor, magic)?,
-                finding_replay_captures: if (magic == ATTEMPT_STATE_MAGIC
-                    || magic == ATTEMPT_STATE_MAGIC_V14)
-                    || magic == ATTEMPT_STATE_MAGIC_V13
-                {
-                    decode_optional_finding_replay_captures(&mut cursor)?
-                } else {
-                    None
-                },
-                finding_exact_retention_roots: if magic == ATTEMPT_STATE_MAGIC
-                    || magic == ATTEMPT_STATE_MAGIC_V14
-                {
-                    decode_finding_exact_retention_roots(&mut cursor)?
-                } else {
-                    [None; MAX_PUBLISHING_FINDING_EXACT_ROOTS]
-                },
-                prepared_result_digest: if magic == ATTEMPT_STATE_MAGIC
-                    || magic == ATTEMPT_STATE_MAGIC_V14
-                {
-                    decode_optional_campaign_hash(&mut cursor)?
-                } else {
-                    None
-                },
-            }
-        }
-        4 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::CheckpointRequested {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-            }
-        }
-        5 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::CheckpointPublishing {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-            }
-        }
-        6 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5
-            || magic == ATTEMPT_STATE_MAGIC_V4
-            || magic == ATTEMPT_STATE_MAGIC_V3 =>
-        {
-            AttemptRuntimeState::Paused {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if matches!(
-                    magic,
-                    ATTEMPT_STATE_MAGIC
-                        | ATTEMPT_STATE_MAGIC_V14
-                        | ATTEMPT_STATE_MAGIC_V13
-                        | ATTEMPT_STATE_MAGIC_V12
-                        | ATTEMPT_STATE_MAGIC_V11
-                        | ATTEMPT_STATE_MAGIC_V10
-                        | ATTEMPT_STATE_MAGIC_V9
-                        | ATTEMPT_STATE_MAGIC_V8
-                        | ATTEMPT_STATE_MAGIC_V7
-                        | ATTEMPT_STATE_MAGIC_V6
-                ) {
-                    decode_checkpoint_promotion_basis(
-                        &mut cursor,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11
-                            || magic == ATTEMPT_STATE_MAGIC_V10,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11,
-                        ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12,
-                    )?
-                } else {
-                    None
-                },
-            }
-        }
-        7 if (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-            || magic == ATTEMPT_STATE_MAGIC_V13)
-            || magic == ATTEMPT_STATE_MAGIC_V12)
-            || magic == ATTEMPT_STATE_MAGIC_V11
-            || magic == ATTEMPT_STATE_MAGIC_V10
-            || magic == ATTEMPT_STATE_MAGIC_V9
-            || magic == ATTEMPT_STATE_MAGIC_V8
-            || magic == ATTEMPT_STATE_MAGIC_V7
-            || magic == ATTEMPT_STATE_MAGIC_V6
-            || magic == ATTEMPT_STATE_MAGIC_V5 =>
-        {
-            AttemptRuntimeState::CheckpointPromoting {
-                execution_basis,
-                origin,
-                daemon_epoch,
-                execution,
-                source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
-                promotion_basis: if matches!(
-                    magic,
-                    ATTEMPT_STATE_MAGIC
-                        | ATTEMPT_STATE_MAGIC_V14
-                        | ATTEMPT_STATE_MAGIC_V13
-                        | ATTEMPT_STATE_MAGIC_V12
-                        | ATTEMPT_STATE_MAGIC_V11
-                        | ATTEMPT_STATE_MAGIC_V10
-                        | ATTEMPT_STATE_MAGIC_V9
-                        | ATTEMPT_STATE_MAGIC_V8
-                        | ATTEMPT_STATE_MAGIC_V7
-                        | ATTEMPT_STATE_MAGIC_V6
-                ) {
-                    decode_checkpoint_promotion_basis(
-                        &mut cursor,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11
-                            || magic == ATTEMPT_STATE_MAGIC_V10,
-                        (((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12)
-                            || magic == ATTEMPT_STATE_MAGIC_V11,
-                        ((magic == ATTEMPT_STATE_MAGIC || magic == ATTEMPT_STATE_MAGIC_V14)
-                            || magic == ATTEMPT_STATE_MAGIC_V13)
-                            || magic == ATTEMPT_STATE_MAGIC_V12,
-                    )?
-                } else {
-                    None
-                },
-            }
-        }
+        8 if version >= 7 => AttemptRuntimeState::TerminalFailure {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+        },
+        3 if version >= 2 => AttemptRuntimeState::Publishing {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            observation: parse_typed(cursor.bytes()?, ObservationId::parse)?,
+            finding_candidate: decode_legacy_optional_finding_candidate(&mut cursor, version)?,
+            finding_replay_captures: if version >= 13 {
+                decode_optional_finding_replay_captures(&mut cursor)?
+            } else {
+                None
+            },
+            finding_exact_retention_roots: if version >= 14 {
+                decode_finding_exact_retention_roots(&mut cursor)?
+            } else {
+                [None; MAX_PUBLISHING_FINDING_EXACT_ROOTS]
+            },
+            prepared_result_digest: if version >= 14 {
+                decode_optional_campaign_hash(&mut cursor)?
+            } else {
+                None
+            },
+        },
+        4 if version >= 3 => AttemptRuntimeState::CheckpointRequested {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+        },
+        5 if version >= 3 => AttemptRuntimeState::CheckpointPublishing {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+        },
+        6 if version >= 3 => AttemptRuntimeState::Paused {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            promotion_basis: if version >= 6 {
+                decode_checkpoint_promotion_basis(
+                    &mut cursor,
+                    version >= 10,
+                    version >= 11,
+                    version >= 12,
+                )?
+            } else {
+                None
+            },
+        },
+        7 if version >= 5 => AttemptRuntimeState::CheckpointPromoting {
+            execution_basis,
+            origin,
+            daemon_epoch,
+            execution,
+            source_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            promoted_checkpoint: parse_typed(cursor.bytes()?, ExactCheckpointId::parse)?,
+            promotion_basis: if version >= 6 {
+                decode_checkpoint_promotion_basis(
+                    &mut cursor,
+                    version >= 10,
+                    version >= 11,
+                    version >= 12,
+                )?
+            } else {
+                None
+            },
+        },
         _ => return Err(corrupt("attempt-state-unknown-tag")),
     };
     let promotion_basis = match state {
@@ -428,17 +216,9 @@ pub(super) fn decode_migratable_attempt_state(
 
 fn decode_legacy_optional_finding_candidate(
     cursor: &mut RecordCursor<'_>,
-    magic: &[u8],
+    version: u8,
 ) -> Result<Option<FindingCandidateBundleId>, AssignmentLedgerError> {
-    if magic != ATTEMPT_STATE_MAGIC
-        && magic != ATTEMPT_STATE_MAGIC_V14
-        && magic != ATTEMPT_STATE_MAGIC_V13
-        && magic != ATTEMPT_STATE_MAGIC_V12
-        && magic != ATTEMPT_STATE_MAGIC_V11
-        && magic != ATTEMPT_STATE_MAGIC_V10
-        && magic != ATTEMPT_STATE_MAGIC_V9
-        && magic != ATTEMPT_STATE_MAGIC_V8
-    {
+    if version < 8 {
         return Ok(None);
     }
     decode_optional_finding_candidate(cursor)
@@ -447,147 +227,200 @@ fn decode_legacy_optional_finding_candidate(
 #[derive(Debug)]
 struct ValidatedAttemptMigration {
     path: PathBuf,
+    source: AnchoredFile,
     current_bytes: Option<Vec<u8>>,
+    staging: Option<AnchoredFile>,
+    receipt: MigrationObjectReceipt,
 }
 
 pub(super) fn migrate_attempt_records(
     ledger: &DirectoryAssignmentLedger,
-    maximum_records: usize,
-) -> Result<AssignmentMigrationSummary, AssignmentLedgerError> {
-    let paths = attempt_record_paths(&ledger.root, maximum_records)?;
-    let mut records = Vec::with_capacity(paths.len());
+    receipt_guard: &AnchoredDirectory,
+    maximum_entries: usize,
+    maximum_bytes: u64,
+) -> Result<AssignmentMigrationSummary, OperationalStateMigrationError> {
+    const OUTPUT_SCHEMA: &str = "crucible.executor.attempt-state-record.v15";
+    let root_guard = ledger.authority();
+    let anchored_root = root_guard.anchored_path();
+    let existing = load_phase_receipt(receipt_guard, ASSIGNMENT_RECEIPT, OUTPUT_SCHEMA)?;
+    let mut inventory = AttemptInventory {
+        records: Vec::new(),
+        staging: Vec::new(),
+    };
+    visit_bounded_ledger_inventory(
+        &anchored_root,
+        usize::MAX,
+        maximum_entries,
+        maximum_bytes,
+        true,
+        &mut |entry| {
+            match entry {
+                AttemptInventoryEntry::Record(path) => inventory.records.push(path.to_owned()),
+                AttemptInventoryEntry::Staging(path) => inventory.staging.push(path.to_owned()),
+            }
+            Ok(())
+        },
+    )?;
+    inventory.records.sort();
+    inventory.staging.sort();
+    let mut staging = BTreeMap::new();
+    let mut stale_staging = Vec::new();
+    for path in inventory.staging {
+        let authority = root_guard
+            .open_regular_optional(&path, "pin-attempt-migration-staging")?
+            .ok_or_else(|| corrupt("attempt-staging-disappeared"))?;
+        let bytes = authority.read_bounded(MAX_LEDGER_RECORD_BYTES)?;
+        let Ok((key, state)) = decode_attempt_state(&bytes) else {
+            stale_staging.push(authority);
+            continue;
+        };
+        let destination = attempt_path_at(&anchored_root, key);
+        if destination.parent() != path.parent()
+            || staging
+                .insert(destination, (path, authority, bytes, key, state))
+                .is_some()
+        {
+            return Err(corrupt("attempt-staging-identity-mismatch").into());
+        }
+    }
+    let mut records = Vec::with_capacity(inventory.records.len());
 
     // Authenticate every source before creating or replacing anything.
-    for path in paths {
-        let bytes = read_optional_bounded(&path)?
+    for path in inventory.records {
+        let source = root_guard
+            .open_regular_optional(&path, "pin-attempt-migration-source")?
             .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
-        let (key, state) = decode_migratable_attempt_state(&bytes)?;
-        if attempt_path_at(&ledger.root, key) != path {
-            return Err(corrupt("attempt-root-record-path-identity-mismatch"));
+        let bytes = source.read_bounded(MAX_LEDGER_RECORD_BYTES)?;
+        let staged = staging.remove(&path);
+        let recovered = decode_migratable_attempt_state(&bytes).is_err();
+        let (key, state) = if recovered {
+            let Some((_, _, _, key, state)) = &staged else {
+                return Err(corrupt("attempt-state-migration-source-corrupt").into());
+            };
+            (*key, state.clone())
+        } else {
+            decode_migratable_attempt_state(&bytes)?
+        };
+        if attempt_path_at(&anchored_root, key) != path {
+            return Err(corrupt("attempt-root-record-path-identity-mismatch").into());
         }
         let current_bytes = match decode_attempt_state(&bytes) {
             Ok((current_key, current_state)) if current_key == key && current_state == state => {
                 None
             }
-            Ok(_) => return Err(corrupt("attempt-state-migration-current-mismatch")),
+            Ok(_) => return Err(corrupt("attempt-state-migration-current-mismatch").into()),
             Err(_) => Some(encode_attempt_state(key, state)),
         };
+        if let Some((_, _, staged_bytes, staged_key, staged_state)) = &staged
+            && (*staged_key != key
+                || staged_state != &state
+                || staged_bytes != current_bytes.as_ref().unwrap_or(&bytes))
+        {
+            return Err(corrupt("attempt-staging-output-mismatch").into());
+        }
+        let output = current_bytes.as_deref().unwrap_or(&bytes);
+        let key = key.storage_digest().to_hex().to_string();
+        let current_id = authenticated_id("crucible.assignment-migration-object.v1", &[&bytes]);
+        let output_id = authenticated_id("crucible.assignment-migration-object.v1", &[output]);
+        let source_id = existing
+            .as_ref()
+            .and_then(|receipt| receipt.objects.iter().find(|object| object.key == key))
+            .map(|object| {
+                if object.output_object_id != output_id
+                    || (!recovered
+                        && object.source_object_id != current_id
+                        && output_id != current_id)
+                {
+                    Err(OperationalStateMigrationError::InvalidReceipt)
+                } else {
+                    Ok(object.source_object_id.clone())
+                }
+            })
+            .transpose()?
+            .unwrap_or(current_id);
         records.push(ValidatedAttemptMigration {
             path,
+            source,
             current_bytes,
+            staging: staged.map(|(_, authority, ..)| authority),
+            receipt: MigrationObjectReceipt {
+                key,
+                source_object_id: source_id,
+                output_object_id: output_id,
+            },
         });
     }
+    if !staging.is_empty() {
+        return Err(corrupt("attempt-staging-target-missing").into());
+    }
 
+    let receipt_objects = records
+        .iter()
+        .map(|record| record.receipt.clone())
+        .collect::<Vec<_>>();
+    let receipt = match existing {
+        Some(existing) if existing.objects == receipt_objects => existing,
+        Some(_) => return Err(OperationalStateMigrationError::InvalidReceipt),
+        None => persist_phase_receipt(
+            receipt_guard,
+            ASSIGNMENT_RECEIPT,
+            OUTPUT_SCHEMA,
+            receipt_objects,
+        )?,
+    };
+
+    receipt.verify_path_binding()?;
+    for authority in stale_staging {
+        root_guard.remove_bound_file(&authority, "remove-invalid-attempt-staging")?;
+    }
     let mut staged = Vec::new();
-    for record in &records {
+    for (record_index, record) in records.iter_mut().enumerate() {
         let Some(bytes) = &record.current_bytes else {
+            if let Some(authority) = record.staging.take() {
+                root_guard.remove_bound_file(&authority, "remove-completed-attempt-staging")?;
+            }
             continue;
         };
+        if let Some(authority) = record.staging.take() {
+            staged.push((authority, record_index));
+            continue;
+        }
         let directory = record
             .path
             .parent()
             .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
-        let (path, mut file) = create_staging(directory)?;
-        if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-            remove_staged(&staged);
-            return Err(io_error("write-attempt-migration-staging", &path, source));
-        }
-        sync_directory(directory)?;
-        staged.push((path, record.path.clone()));
+        let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(".staging-{}-{ordinal}", std::process::id()));
+        let mut file = root_guard.create_file(&path, "create-attempt-migration-staging")?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| io_error("write-attempt-migration-staging", &path, source))?;
+        let authority = root_guard
+            .open_regular_optional(&path, "pin-created-attempt-staging")?
+            .ok_or_else(|| corrupt("attempt-staging-disappeared"))?;
+        staged.push((authority, record_index));
     }
 
     let migrated = staged.len();
-    for (staging, destination) in staged {
-        fs::rename(&staging, &destination)
-            .map_err(|source| io_error("publish-attempt-state-migration", &destination, source))?;
-        sync_record_parent(&destination)?;
+    for (authority, record_index) in staged {
+        let record = &records[record_index];
+        record.source.replace_contents(
+            record
+                .current_bytes
+                .as_deref()
+                .ok_or_else(|| corrupt("attempt-staging-without-current-output"))?,
+        )?;
+        root_guard.remove_bound_file(&authority, "remove-published-attempt-staging")?;
     }
 
     Ok(AssignmentMigrationSummary {
         records: records.len(),
         migrated,
+        receipt,
     })
 }
 
-fn remove_staged(paths: &[(PathBuf, PathBuf)]) {
-    for (path, _) in paths {
-        let _ = fs::remove_file(path);
-    }
-}
-
-fn attempt_record_paths(
-    root: &Path,
-    maximum: usize,
-) -> Result<Vec<PathBuf>, AssignmentLedgerError> {
-    let attempts = root.join("attempts");
-    let shards = match fs::read_dir(&attempts) {
-        Ok(shards) => shards,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(io_error("read-attempt-root-shards", &attempts, source)),
-    };
-    let mut paths = Vec::new();
-    for shard in shards {
-        let shard =
-            shard.map_err(|source| io_error("read-attempt-root-shard", &attempts, source))?;
-        let shard_path = shard.path();
-        let shard_name = shard.file_name();
-        let shard_name = shard_name
-            .to_str()
-            .ok_or_else(|| corrupt("attempt-root-shard-name"))?;
-        if !is_lower_hex(shard_name, 2)
-            || !shard
-                .file_type()
-                .map_err(|source| io_error("stat-attempt-root-shard", &shard_path, source))?
-                .is_dir()
-        {
-            return Err(corrupt("attempt-root-shard-shape"));
-        }
-        for record in fs::read_dir(&shard_path)
-            .map_err(|source| io_error("read-attempt-root-records", &shard_path, source))?
-        {
-            let record = record
-                .map_err(|source| io_error("read-attempt-root-record", &shard_path, source))?;
-            let name = record.file_name();
-            let name = name
-                .to_str()
-                .ok_or_else(|| corrupt("attempt-root-record-name"))?;
-            if name.starts_with('.') && is_staging_name(name) {
-                if !record
-                    .file_type()
-                    .map_err(|source| {
-                        io_error(
-                            "stat-attempt-root-migration-staging",
-                            &record.path(),
-                            source,
-                        )
-                    })?
-                    .is_file()
-                {
-                    return Err(corrupt("attempt-root-migration-staging-shape"));
-                }
-                continue;
-            }
-            if !is_lower_hex(name, 64)
-                || !record
-                    .file_type()
-                    .map_err(|source| io_error("stat-attempt-root-record", &record.path(), source))?
-                    .is_file()
-            {
-                return Err(corrupt("attempt-root-record-shape"));
-            }
-            if paths.len() == maximum {
-                return Err(corrupt("attempt-record-migration-limit"));
-            }
-            paths.push(record.path());
-        }
-    }
-    paths.sort();
-    Ok(paths)
-}
-
-fn is_lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+struct AttemptInventory {
+    records: Vec<PathBuf>,
+    staging: Vec<PathBuf>,
 }

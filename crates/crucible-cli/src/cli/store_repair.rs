@@ -130,6 +130,8 @@ struct OperationalStateRepairReport {
     assignments_migrated: usize,
     prepared_journals: usize,
     prepared_journals_migrated: usize,
+    receipt: String,
+    receipt_id: String,
     authenticated: bool,
 }
 
@@ -141,8 +143,10 @@ fn run_operational_state_repair(
     let config = crucible_daemon::OperationalStateMigrationConfig {
         assignment_ledger: args.ledger.clone(),
         prepared_results: args.prepared_results.clone(),
-        maximum_assignment_records: args.maximum_assignment_records,
-        maximum_prepared_journals: args.maximum_prepared_journals,
+        receipt: args.receipt.clone(),
+        maximum_assignment_entries: args.maximum_assignment_entries,
+        maximum_assignment_bytes: args.maximum_assignment_bytes,
+        maximum_prepared_result_entries: args.maximum_prepared_result_entries,
         maximum_prepared_result_bytes: args.maximum_prepared_result_bytes,
     };
     let summary = crucible_daemon::migrate_operational_state(&config)
@@ -153,6 +157,8 @@ fn run_operational_state_repair(
         assignments_migrated: summary.assignments_migrated,
         prepared_journals: summary.prepared_journals,
         prepared_journals_migrated: summary.prepared_journals_migrated,
+        receipt: args.receipt.display().to_string(),
+        receipt_id: summary.receipt_id,
         authenticated: true,
     };
     match format {
@@ -169,11 +175,13 @@ fn run_operational_state_repair(
             })
             .map_err(|error| repair_error(format!("encode migration report: {error}"))),
         OutputFormat::Table | OutputFormat::Markdown => Ok(format!(
-            "authenticated operational state: {} assignment records ({} migrated), {} prepared journals ({} migrated)\n",
+            "authenticated operational state: {} assignment records ({} migrated), {} prepared journals ({} migrated); receipt {} at {}\n",
             report.assignment_records,
             report.assignments_migrated,
             report.prepared_journals,
             report.prepared_journals_migrated,
+            report.receipt_id,
+            report.receipt,
         )),
     }
 }
@@ -422,8 +430,10 @@ mod tests {
                 policy,
                 ledger: ledger_root.clone(),
                 prepared_results,
-                maximum_assignment_records: 10,
-                maximum_prepared_journals: 10,
+                receipt: root.join("migration-receipt"),
+                maximum_assignment_entries: 10,
+                maximum_assignment_bytes: 1_024,
+                maximum_prepared_result_entries: 10,
                 maximum_prepared_result_bytes: 1_024,
             }),
         };
