@@ -13,7 +13,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use aos_ability_model::builtin::{
     credential_delivery_effects_interface, foreground_process_supervision_guarantee,
     host_network_policy_interface, host_network_policy_loopback_tcp_egress_guarantee,
@@ -56,7 +56,7 @@ use aos_package::config_eval::native_resource_map::{
     HostStorageLifetime, HostStorageOwner, NativeHttpConsumerObservation, NativeOutputLocator,
     NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
 };
-use aos_package::config_eval::runtime::{RuntimeResolution, resolve_runtime};
+use aos_package::config_eval::runtime::{resolve_runtime, RuntimeResolution};
 use aos_package::platform::native_platform;
 use aos_package::registry::RegistrySet;
 use aos_package::types::ProfileScope;
@@ -194,7 +194,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         || (arguments.len() - 5) % 2 != 0
     {
         bail!(
-            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO] [--execution-stage host|application-container] [--tls-version VERSION --tls-bundle PATH] [--systemd-manager-method METHOD --systemd-manager-revision REVISION]"
+            "usage: aos-release-fleet-fixture ability-activation OUTPUT PRIMARY_RESPONSE SECONDARY_RESPONSE --operator-authority-output AUTHORITY_DIR [--lifecycle SCENARIO] [--execution-stage host|application-container] [--tls-version VERSION --tls-bundle PATH] [--systemd-manager-method METHOD --systemd-manager-revision REVISION] [--provider-incarnation-revision REVISION]"
         );
     }
     let output = Path::new(&arguments[0]);
@@ -207,6 +207,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let mut execution_stage = ExecutionStage::Host;
     let mut systemd_manager_method = None;
     let mut systemd_manager_revision = None;
+    let mut provider_incarnation_revision = None;
     for option in arguments[5..].chunks_exact(2) {
         match option[0].as_str() {
             "--lifecycle" => lifecycle = ReferenceLifecycle::parse(&option[1])?,
@@ -221,6 +222,9 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
             }
             "--systemd-manager-method" => systemd_manager_method = Some(option[1].clone()),
             "--systemd-manager-revision" => systemd_manager_revision = Some(option[1].clone()),
+            "--provider-incarnation-revision" => {
+                provider_incarnation_revision = Some(option[1].clone())
+            }
             unknown => bail!("unknown reference activation option {unknown:?}"),
         }
     }
@@ -265,6 +269,16 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         (None, None) => None,
         _ => bail!("systemd-manager method and revision must be provided together"),
     };
+    if let Some(revision) = &provider_incarnation_revision {
+        ensure!(
+            !revision.is_empty()
+                && revision.len() <= 128
+                && revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte)),
+            "provider incarnation revision is outside the safe fixture subset"
+        );
+    }
     ensure!(
         authority_output != output,
         "operator authority output must be separate from the activation descriptor output"
@@ -285,7 +299,11 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     fs::create_dir_all(output)
         .with_context(|| format!("creating ability fixture output {}", output.display()))?;
     let (_runtime, packages) = load_verified_packages()?;
-    let fixture = ReferenceFixture::new(&packages, execution_stage)?;
+    let fixture = ReferenceFixture::new(
+        &packages,
+        execution_stage,
+        provider_incarnation_revision.as_deref(),
+    )?;
     let composed = fixture.compose(
         primary_response,
         secondary_response,
@@ -482,7 +500,11 @@ pub(super) fn load_verified_packages() -> Result<(RuntimeResolution, VerifiedAbi
 }
 
 impl ReferenceFixture {
-    fn new(verified: &VerifiedAbilityPackageSet, execution_stage: ExecutionStage) -> Result<Self> {
+    fn new(
+        verified: &VerifiedAbilityPackageSet,
+        execution_stage: ExecutionStage,
+        provider_incarnation_revision: Option<&str>,
+    ) -> Result<Self> {
         let mut identified_packages = verified
             .iter()
             .map(|package| {
@@ -587,7 +609,10 @@ impl ReferenceFixture {
                         .clone(),
                     implementation: implementation.clone(),
                     state: ProviderState::Available,
-                    incarnation: Some(aos_ability_model::IncarnationId::new("reference-terminal")?),
+                    incarnation: Some(provider_incarnation(
+                        "reference-terminal",
+                        provider_incarnation_revision,
+                    )?),
                     guarantees: interface_guarantees
                         .get(terminal_name)
                         .with_context(|| format!("missing guarantees for {terminal_name}"))?
@@ -607,8 +632,9 @@ impl ReferenceFixture {
                         .context("missing foreground-process implementation")?
                         .clone(),
                     state: ProviderState::Available,
-                    incarnation: Some(aos_ability_model::IncarnationId::new(
+                    incarnation: Some(provider_incarnation(
                         "reference-foreground-terminal",
+                        provider_incarnation_revision,
                     )?),
                     guarantees: vec![foreground_process_supervision_guarantee()?],
                 });
@@ -637,10 +663,13 @@ impl ReferenceFixture {
                         .with_context(|| format!("missing {interface_name} implementation"))?
                         .clone(),
                     state: ProviderState::Available,
-                    incarnation: Some(aos_ability_model::IncarnationId::new(&format!(
-                        "reference-{name}-{}-terminal",
-                        interface_name.replace('.', "-")
-                    ))?),
+                    incarnation: Some(provider_incarnation(
+                        &format!(
+                            "reference-{name}-{}-terminal",
+                            interface_name.replace('.', "-")
+                        ),
+                        provider_incarnation_revision,
+                    )?),
                     guarantees: if interface_name == "aos.host-network-policy-effects" {
                         policy_guarantees.clone()
                     } else {
@@ -661,8 +690,9 @@ impl ReferenceFixture {
                 .context("missing native systemd-manager implementation")?
                 .clone(),
             state: ProviderState::Available,
-            incarnation: Some(aos_ability_model::IncarnationId::new(
+            incarnation: Some(provider_incarnation(
                 "reference-systemd-manager-terminal",
+                provider_incarnation_revision,
             )?),
             guarantees: vec![aos_ability_model::builtin::local_systemd_manager_guarantee()?],
         });
@@ -2329,6 +2359,16 @@ fn instance(environment: &EnvironmentId, name: &str) -> Result<InstanceId> {
         environment: environment.clone(),
         key: key(name)?,
     })
+}
+
+fn provider_incarnation(
+    identity: &str,
+    revision: Option<&str>,
+) -> Result<aos_ability_model::IncarnationId> {
+    let identity = revision
+        .map(|revision| format!("{identity}-{revision}"))
+        .unwrap_or_else(|| identity.to_string());
+    aos_ability_model::IncarnationId::new(&identity).map_err(anyhow::Error::from)
 }
 
 fn binding_key(request: &aos_ability_model::RequestId) -> Result<LocalKey> {

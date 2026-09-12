@@ -176,10 +176,17 @@ def rollout_request(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def rollout_host(request: dict[str, Any], mode: str, label: str) -> str:
+def rollout_host(
+    request: dict[str, Any],
+    mode: str,
+    label: str,
+    provider_incarnation_revision: str | None = None,
+) -> str:
     """Writes an authenticated candidate host that retains the observer."""
 
-    activation = generate_rollout_activation(request, mode, label)
+    activation = generate_rollout_activation(
+        request, mode, label, provider_incarnation_revision
+    )
     path = f"/var/lib/aos/ability-boundary-test/rollout-host-{label}.nix"
     write_rollout_host(path, activation, OBSERVER_HOST_MODULE)
     runtime.succeed(f"{OBSERVER_CONTROLLER} persist-file {shlex.quote(path)}")

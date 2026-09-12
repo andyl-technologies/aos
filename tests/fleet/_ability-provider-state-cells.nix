@@ -32,6 +32,17 @@
   all = groups.reference ++ groups.kubernetes ++ groups.rollout ++ groups.foreground;
   retained = builtins.filter (lib.hasSuffix "/activate-retained-target") all;
   unsupported = builtins.filter (lib.hasSuffix "/reject-unsupported-transfer") all;
+  blockedCompatible = builtins.filter (cell:
+    cell.adapter
+    != "postgresql"
+    && lib.hasSuffix "/adopt-compatible-state" cell.id)
+  matrix.cells;
+  instanceLifetimeBlocked = map (cell: cell.id) (
+    builtins.filter (cell: cell.adapter != "image-rollout") blockedCompatible
+  );
+  missingStateFormatBlocked = map (cell: cell.id) (
+    builtins.filter (cell: cell.adapter == "image-rollout") blockedCompatible
+  );
 in
   assert builtins.length all == 90;
   assert builtins.length (lib.unique all) == 90;
@@ -41,6 +52,9 @@ in
   assert builtins.length groups.foreground == 6;
   assert builtins.length retained == 45;
   assert builtins.length unsupported == 45;
+  assert builtins.length blockedCompatible == 45;
+  assert builtins.length instanceLifetimeBlocked == 36;
+  assert builtins.length missingStateFormatBlocked == 9;
   assert builtins.all (cell:
     builtins.length cell.postconditions
     == (
@@ -49,5 +63,14 @@ in
       else 7
     ))
   selected; {
-    inherit all groups retained scenarios unsupported;
+    inherit
+      all
+      blockedCompatible
+      groups
+      instanceLifetimeBlocked
+      missingStateFormatBlocked
+      retained
+      scenarios
+      unsupported
+      ;
   }

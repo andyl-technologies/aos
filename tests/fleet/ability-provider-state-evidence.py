@@ -51,6 +51,7 @@ class RetainedTargetObservation:
     boundary_timeline: list[dict[str, Any]]
     authority_before: dict[str, Any]
     authority_after: dict[str, Any]
+    source_authority: dict[str, Any]
     ledger_before: dict[str, Any]
     ledger_unsettled: dict[str, Any]
     ledger_after: dict[str, Any]
@@ -170,6 +171,18 @@ class ProviderStateEvidence:
         ]:
             raise RuntimeError("recovered authority predates its retained authority")
 
+        source_authority = _current_authority(
+            observation.source_authority, None, None
+        )
+        _fresh_receiving_authority(source_authority, authority_before)
+        source_binding, source_assignment = _unique_authorized_route(
+            source_authority, operation
+        )
+        if _assignment_core(source_assignment) != _assignment_core(assignment_before):
+            raise RuntimeError("retained target selected another provider route")
+        if source_assignment["incarnation"] == assignment_before["incarnation"]:
+            raise RuntimeError("retained target reused the predecessor incarnation")
+
         _exact_resource_observation(authority_before, operation, usable=False)
         _exact_resource_observation(authority_after, operation, usable=False)
         dependency_edge = _exact_dependent(
@@ -218,11 +231,11 @@ class ProviderStateEvidence:
         evidence = {
             "schema": EVIDENCE_SCHEMA,
             "scenario": RETAINED_SCENARIO,
-            "subject": subject,
             "plan-bundle": bundle,
             "journal-before-loss": observation.journal_before_loss,
             "authority-before": authority_before,
             "authority-after": authority_after,
+            "source-authority": source_authority,
             "ledger-before": observation.ledger_before,
             "ledger-unsettled": observation.ledger_unsettled,
             "ledger-after": observation.ledger_after,
@@ -288,6 +301,9 @@ class ProviderStateEvidence:
                         "binding": binding_after,
                         "authority-before": sha256_bytes(canonical(authority_before)),
                         "authority-after": sha256_bytes(canonical(authority_after)),
+                        "source-authority": sha256_bytes(canonical(source_authority)),
+                        "predecessor-incarnation": source_assignment["incarnation"],
+                        "candidate-incarnation": assignment_before["incarnation"],
                         "authority-sequence-before": authority_before["sequence"],
                         "authority-sequence-after": authority_after["sequence"],
                         "reauthorized": True,
@@ -436,7 +452,6 @@ class ProviderStateEvidence:
         evidence = {
             "schema": EVIDENCE_SCHEMA,
             "scenario": UNSUPPORTED_SCENARIO,
-            "subject": subject,
             "plan-bundle": bundle,
             "transfer-contract": contract,
             "journal-at-rejection": observation.journal_at_rejection,
@@ -597,6 +612,7 @@ class ProviderStateEvidence:
         if set(probes) != expected:
             raise RuntimeError("provider-state probes differ from matrix postconditions")
         evidence_bytes = canonical(evidence)
+        subject["evidence-digest"] = sha256_bytes(evidence_bytes)
         self.subjects[cell_id] = subject
         self.evidence[cell_id] = evidence_bytes
         self.probes[cell_id] = probes

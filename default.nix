@@ -456,6 +456,14 @@
     "postgresql/aos.postgresql-effects/abi-1/observe/adopt-compatible-state"
     "postgresql/aos.postgresql-effects/abi-1/observe/activate-retained-target"
     "postgresql/aos.postgresql-effects/abi-1/restart/adopt-compatible-state"
+    "postgresql/aos.postgresql-effects/abi-1/start/adopt-compatible-state"
+    "postgresql/aos.postgresql-effects/abi-1/stop/adopt-compatible-state"
+    "postgresql/aos.postgresql-effects/abi-1/observe/reject-unsupported-transfer"
+    "postgresql/aos.postgresql-effects/abi-1/restart/reject-unsupported-transfer"
+    "postgresql/aos.postgresql-effects/abi-1/start/reject-unsupported-transfer"
+    "postgresql/aos.postgresql-effects/abi-1/stop/reject-unsupported-transfer"
+    "postgresql/aos.postgresql-effects/abi-1/start/activate-retained-target"
+    "postgresql/aos.postgresql-effects/abi-1/stop/activate-retained-target"
   ];
   nativeEffectBoundaryCells = import ./tests/fleet/_ability-effect-boundary-cells.nix {
     inherit lib;
@@ -483,6 +491,29 @@
       systems = discoverSystems;
     })
   nativeEffectBoundaryCells.groups.rollout;
+
+  nativeProviderStateCells = import ./tests/fleet/_ability-provider-state-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeProviderStateKubernetesCohort = import ./tests/fleet/ability-native-provider-state-kubernetes.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeProviderStateForegroundCohort = import ./tests/fleet/ability-native-provider-state-foreground.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeProviderStateRolloutCohorts = map (cellId:
+    import ./tests/fleet/_ability-provider-state-rollout-cohort.nix {
+      inherit lib mkSystem pkgs cellId;
+      systems = discoverSystems;
+    })
+  nativeProviderStateCells.groups.rollout;
 
   nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
     inherit lib;
@@ -648,6 +679,7 @@
       ++ nativeEffectBoundaryCells.groups.kubernetes
       ++ nativeEffectBoundaryCells.groups.rollout
       ++ nativeEffectBoundaryCells.groups.foreground
+      ++ nativeProviderStateCells.all
       ++ nativeCancellationKubernetesCells
       ++ nativeCancellationCells.groups.postgresql
       ++ nativeCancellationSystemdCells
@@ -667,9 +699,9 @@
       0
       selected;
   in
-    assert builtins.length selected == 1253;
-    assert builtins.length (lib.unique selected) == 1253;
-    assert postconditions == 5119; selected;
+    assert builtins.length selected == 1355;
+    assert builtins.length (lib.unique selected) == 1355;
+    assert postconditions == 5780; selected;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
@@ -726,6 +758,33 @@
             qualifiedCells = nativeEffectBoundaryCells.groups.foreground;
             inherit (nativeEffectForegroundCohort) testScript;
             inherit (nativeEffectForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-state-reference";
+            qualifiedCells = nativeProviderStateCells.groups.reference;
+            inherit (nativeProviderStateReferenceCohort) testScript;
+            inherit (nativeProviderStateReferenceCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-state-kubernetes";
+            qualifiedCells = nativeProviderStateCells.groups.kubernetes;
+            inherit (nativeProviderStateKubernetesCohort) testScript;
+            inherit (nativeProviderStateKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ]
+        ++ lib.imap (index: cohort: {
+          id = "provider-state-rollout-${builtins.toString index}";
+          qualifiedCells = [(builtins.elemAt nativeProviderStateCells.groups.rollout index)];
+          inherit (cohort) testScript;
+          inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+        })
+        nativeProviderStateRolloutCohorts
+        ++ [
+          {
+            id = "provider-state-foreground";
+            qualifiedCells = nativeProviderStateCells.groups.foreground;
+            inherit (nativeProviderStateForegroundCohort) testScript;
+            inherit (nativeProviderStateForegroundCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
           {
             id = "provider-cancellation-kubernetes";

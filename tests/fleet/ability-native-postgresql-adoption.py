@@ -1735,6 +1735,22 @@ NATIVE_ADAPTER_MATRIX_PROBES = {
     },
 }
 
+retained_adoption_subject = postgresql_cohort_subject(
+    bundle_adoption_final_v1,
+    subject_adoption_final_v1["candidate"]["handler_method"],
+    bundle_bytes_adoption_final_v1,
+)
+retained_durable = NATIVE_ADAPTER_MATRIX_PROBES[retained_cell][
+    "durable-attempt-state-classified"
+]["observations"]
+if retained_adoption_subject["operation"] != subject_adoption_final_v1["operation"]:
+    retained_durable["adoption-operation"] = retained_adoption_subject["operation"]
+    retained_durable["adoption-timeline"] = operation_timeline(
+        generation_adoption_final_v1,
+        transaction_adoption_final_v1,
+        retained_adoption_subject["operation"],
+    )
+
 
 def add_ordered_postgresql_state_cell(
     method,
@@ -1837,7 +1853,7 @@ def add_postgresql_ordered_method_cell(method, scenario, base_cell):
 
     adoption_subject = postgresql_cohort_subject(
         bundle_adoption_final_v1,
-        "restart",
+        subject["candidate"]["handler_method"],
         bundle_bytes_adoption_final_v1,
     )
     durable = probes["durable-attempt-state-classified"]["observations"]
@@ -2006,6 +2022,10 @@ for rejection_method, rejection_attempt in additional_incompatible_attempts.item
         rejection_attempt[0],
         rejection_attempt[1],
     )
+
+NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS.update(POSTGRESQL_PENDING_STATE_SUBJECTS)
+NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE.update(POSTGRESQL_PENDING_STATE_EVIDENCE)
+NATIVE_ADAPTER_MATRIX_PROBES.update(POSTGRESQL_PENDING_STATE_PROBES)
 
 # Every PostgreSQL probe carries its exact cell operation. Besides binding the
 # provider-specific facts to the method, this prevents replay across cells that

@@ -266,6 +266,11 @@
         $out/share/aos-release/qualification-native-adapter-cohort.py \
         ${../..}/tests/fleet/ability-effect-boundary-evidence.py
 
+      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-provider-state-test-pycache \
+        ${pkgs.buildPackages.python3}/bin/python3 \
+        ${../..}/tests/fleet/ability-provider-state-evidence-self-test.py \
+        $out/share/aos-release/qualification-native-adapter-cohort.py
+
       PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-cancellation-test-pycache \
         ${pkgs.buildPackages.python3}/bin/python3 \
         ${./qualification-native-adapter-cancellation-self-test.py} \

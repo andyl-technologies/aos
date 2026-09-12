@@ -13,7 +13,7 @@
   image = imageLifecycle.abilityRolloutFixture;
   rollout = import ./_image-rollout-runtime-reference.nix {
     inherit lib pkgs;
-    qualificationImage = true;
+    guestTools = true;
   };
   matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   matrixSpec = pkgs.writeTextFile {

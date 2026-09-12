@@ -58,6 +58,7 @@ class RetainedTargetBridge:
     flight_cell_id: str
     retained_generation: int
     predecessor_generation: int
+    source_authority: dict[str, Any]
     observe: Callable[[dict[str, Any]], dict[str, Any]]
     acquisition: tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None = None
 
@@ -104,6 +105,7 @@ class RetainedTargetBridge:
             boundary_timeline=effect_observation.boundary_timeline,
             authority_before=authority_before,
             authority_after=authority_after,
+            source_authority=self.source_authority,
             ledger_before=ledger_before,
             ledger_unsettled=ledger_before,
             ledger_after=ledger_after,

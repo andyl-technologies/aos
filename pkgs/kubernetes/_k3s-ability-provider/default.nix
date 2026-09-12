@@ -511,8 +511,27 @@ in rec {
   # convergent operation. State qualification binds that call to the existing
   # service owner while an object update supplies the ordinary readiness path.
   providerStateQualificationTransition = context: let
-    fragment = transition context;
-    ready = builtins.filter (operation: operation.method == "observe-manager") fragment.operations;
+    fragment = effectQualificationTransition context;
+    readyCandidates = builtins.filter (operation:
+      operation.method
+      == "observe-manager"
+      && !builtins.any (candidate:
+        candidate.interface
+        == operation.interface
+        && candidate.method == "start"
+        && candidate.target.resource == operation.target.resource)
+      fragment.operations)
+    fragment.operations;
+    ready = builtins.foldl' (selected: operation:
+      if
+        builtins.any (candidate:
+          candidate.interface
+          == operation.interface
+          && candidate.target.resource == operation.target.resource)
+        selected
+      then selected
+      else selected ++ [operation]) []
+    readyCandidates;
     start = operation:
       operation
       // {

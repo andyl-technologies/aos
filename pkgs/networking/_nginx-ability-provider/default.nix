@@ -1746,9 +1746,17 @@ in rec {
   # remains Present and owned. Each operation keeps the production binding,
   # request, target, and handler selected by the ordinary nginx transition.
   providerStateQualificationTransition = context: let
-    fragment = transition context;
+    fragment = effectQualificationTransition context;
     stateMethod = operation:
-      if operation.interface.name == "aos.host-storage-effects" && operation.method == "observe"
+      if operation.interface.name == "aos.foreground-process" && operation.method == "observe"
+      then {
+        method = "start";
+        family = {
+          kind = "foreground-process";
+          action = "start";
+        };
+      }
+      else if operation.interface.name == "aos.host-storage-effects" && operation.method == "observe"
       then {
         method = "ensure";
         family = {
@@ -1781,7 +1789,31 @@ in rec {
         };
       }
       else null;
-    selected = builtins.filter (operation: stateMethod operation != null) fragment.operations;
+    hasMethod = operation: method:
+      builtins.any (candidate:
+        candidate.interface
+        == operation.interface
+        && candidate.method == method
+        && candidate.target.resource == operation.target.resource)
+      fragment.operations;
+    candidates = builtins.filter (operation: let
+      state = stateMethod operation;
+    in
+      state != null && !hasMethod operation state.method)
+    fragment.operations;
+    selected = builtins.foldl' (selected: operation: let
+      method = (stateMethod operation).method;
+      repeated = builtins.any (candidate:
+        candidate.interface
+        == operation.interface
+        && candidate.target.resource == operation.target.resource
+        && (stateMethod candidate).method == method)
+      selected;
+    in
+      if repeated
+      then selected
+      else selected ++ [operation]) []
+    candidates;
     mutation = operation: let
       state = stateMethod operation;
       route = value:
