@@ -2120,6 +2120,23 @@ in {
       NATIVE_ADAPTER_MATRIX_RUNTIME_AUDIT = json.loads(
           runtime.succeed(f"{COREUTILS}/cat {shlex.quote(runtime_audit_output)}")
       )
+      interruption_output = "/var/lib/aos/qualification-interruption.json"
+      interruption_arguments = " ".join(
+          shlex.quote(value)
+          for value in [
+              RUNTIME_AUDIT_MATRIX_SPEC,
+              interruption_output,
+              *RUNTIME_AUDIT_INTERFACE_ROOTS,
+          ]
+      )
+      runtime.succeed(
+          f"{Path(PACKAGE_RUNTIME).parent}/aos-ability-interruption-audit "
+          f"{interruption_arguments}",
+          timeout=1800,
+      )
+      NATIVE_ADAPTER_MATRIX_INTERRUPTION_AUDIT = json.loads(
+          runtime.succeed(f"{COREUTILS}/cat {shlex.quote(interruption_output)}")
+      )
     '';
   }
   // lib.optionalAttrs qualificationImage {

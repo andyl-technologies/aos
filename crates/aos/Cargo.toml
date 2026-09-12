@@ -39,6 +39,11 @@ name = "aos-ability-authority-audit"
 path = "tests/support/ability_authority_audit.rs"
 required-features = ["release-fleet-fixture"]
 
+[[bin]]
+name = "aos-ability-interruption-audit"
+path = "tests/support/ability_interruption_audit.rs"
+required-features = ["release-fleet-fixture"]
+
 [dependencies]
 rustix = { workspace = true, features = ["process"] }
 aos-contract = { workspace = true }

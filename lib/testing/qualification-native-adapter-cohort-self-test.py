@@ -1339,6 +1339,142 @@ def main() -> None:
     else:
         raise AssertionError("runtime audit accepted provider-specific cancellation")
 
+    interruption_cell = copy.deepcopy(cell_spec)
+    interruption_cell.update(
+        {
+            "id": (
+                "managed-configuration/aos.managed-configuration-effects/abi-1/"
+                "publish/interrupt-before-acquisition"
+            ),
+            "boundary": "before-acquisition",
+            "failure": "injected-interruption",
+            "predecessor": "none",
+        }
+    )
+    interruption_digest = module.sha256(interruption_cell)
+    interruption_plan = "sha256:" + "c1" * 32
+    interruption_transaction = "interruption-fixture"
+    interruption_operation = {"scope": ["audit"], "key": "publish"}
+    interruption_dependent = {"scope": ["audit"], "key": "dependent"}
+    boundary_bytes = {
+        "schema": "aos.qualification.interruption-boundary/v1",
+        "scenario": "interrupt-before-acquisition",
+        "transaction": interruption_transaction,
+        "operation": {
+            "plan": interruption_plan,
+            "operation": interruption_operation,
+        },
+        "attempt": 1,
+        "purpose": "effect",
+        "boundary": "BeforeResourceAcquisition",
+    }
+    journal = {
+        "digest": "sha256:" + "c2" * 32,
+        "head": "sha256:" + "c3" * 32,
+        "state": "pending",
+        "events": {"transaction-planned": 1},
+    }
+    interruption_record = {
+        "cell_digest": interruption_digest,
+        "subject": {
+            "schema": "aos.qualification.interruption-subject/v1",
+            "cell-id": interruption_cell["id"],
+            "cell-digest": interruption_digest,
+            "interface": interruption_cell["interface"],
+            "method": interruption_cell["method"],
+            "plan": interruption_plan,
+            "transaction": interruption_transaction,
+            "operation": interruption_operation,
+            "dependent-operation": interruption_dependent,
+        },
+        "plan_bundle": {
+            "schema": "aos.qualification.interruption-plan/v1",
+            "digest": "sha256:" + "c4" * 32,
+            "bytes-sha256": "sha256:" + "c4" * 32,
+        },
+        "evidence": {
+            "scenario": "interrupt-before-acquisition",
+            "runtime-boundary": "BeforeResourceAcquisition",
+            "declared-recovery-routes": interruption_cell["recovery"],
+            "fixture-recovery-routes": {
+                "reconcile": interruption_cell["method"],
+                "cancel": None,
+            },
+            "boundary-record": {
+                "digest": module.sha256(boundary_bytes),
+                "bytes": boundary_bytes,
+            },
+            "journal-at-fault": journal,
+            "journal-after-restart": copy.deepcopy(journal),
+            "reservation-ledger": {
+                "digest": "sha256:" + "c5" * 32,
+                "acquire-calls": 0,
+                "release-calls": 0,
+                "max-owners": 0,
+                "owners": [],
+            },
+            "adapter-calls": {"total": 0, "dependent": 0},
+            "primary-ready-at-restart": True,
+            "dependent-ready-at-restart": False,
+            "foreign-before": "sha256:" + "c6" * 32,
+            "foreign-after": "sha256:" + "c6" * 32,
+        },
+    }
+    combined_spec = {
+        "cells": [*runtime_spec["cells"], interruption_cell]
+    }
+    interruption_audit = {
+        "schema": "aos.qualification.interruption-audit/v1",
+        "matrix_spec_digest": module.sha256(combined_spec),
+        "cells": {interruption_cell["id"]: interruption_record},
+    }
+    combined_runtime_audit = copy.deepcopy(runtime_audit)
+    combined_runtime_audit["matrix_spec_digest"] = module.sha256(combined_spec)
+    combined_scope = [
+        *scope,
+        interruption_cell["id"],
+        *runtime_scope[len(scope) :],
+    ]
+    combined_cells, combined_count = module.build_cells(
+        combined_spec,
+        probes,
+        combined_scope,
+        {qualified: subject for qualified in scope},
+        {qualified: plan_bundle for qualified in scope},
+        "sha256:" + "11" * 32,
+        "sha256:" + "22" * 32,
+        combined_runtime_audit,
+        interruption_audit,
+    )
+    assert combined_count == 24
+    interruption_observation = {
+        cell["id"]: cell for cell in combined_cells
+    }[interruption_cell["id"]]
+    assert all(
+        value["passed"]
+        for value in interruption_observation["postconditions"].values()
+    )
+    rejected_interruption = copy.deepcopy(interruption_audit)
+    rejected_interruption["cells"][interruption_cell["id"]]["evidence"][
+        "reservation-ledger"
+    ]["acquire-calls"] = 1
+    try:
+        module.build_cells(
+            combined_spec,
+            probes,
+            combined_scope,
+            {qualified: subject for qualified in scope},
+            {qualified: plan_bundle for qualified in scope},
+            "sha256:" + "11" * 32,
+            "sha256:" + "22" * 32,
+            combined_runtime_audit,
+            rejected_interruption,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("interruption audit accepted a resource acquisition")
+
     first_cell = cell_spec
     replay_cell = copy.deepcopy(first_cell)
     replay_cell["id"] = replay_cell["id"].replace(
