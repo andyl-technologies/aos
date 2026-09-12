@@ -1418,6 +1418,40 @@ in
                   "$f" 2>/dev/null || true
               done
 
+            ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+              # compile.sh must retain its native platform for the bootstrap JDK
+              # toolchains. Select BLAKE3's ARM implementation explicitly while
+              # the output configuration uses the cross compiler.
+              BLAKE3_BUILD=$(find ../vendor_dir -maxdepth 2 \
+                -path '*/blake3*/BUILD.bazel' -print -quit)
+              test -n "$BLAKE3_BUILD"
+              if grep -q '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD"; then
+                test "$(grep -Fc '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD")" = 2
+                test "$(grep -Fc '@bazel_tools//src/conditions:linux_aarch64' "$BLAKE3_BUILD")" = 2
+                sed -i \
+                  -e 's|@bazel_tools//src/conditions:linux_x86_64|@bazel_tools//src/conditions:linux_ppc|g' \
+                  -e 's|@bazel_tools//src/conditions:linux_aarch64|@bazel_tools//src/conditions:linux_x86_64|g' \
+                  "$BLAKE3_BUILD"
+              else
+                BLAKE3_BUILD=$(dirname "$BLAKE3_BUILD")/c/BUILD.bazel
+                test "$(grep -Fc '@platforms//cpu:x86_64' "$BLAKE3_BUILD")" = 1
+                test "$(grep -Fc '@platforms//cpu:aarch64' "$BLAKE3_BUILD")" = 1
+                sed -i \
+                  -e 's|@platforms//cpu:x86_64|@platforms//cpu:ppc|g' \
+                  -e 's|@platforms//cpu:aarch64|@platforms//cpu:x86_64|g' \
+                  "$BLAKE3_BUILD"
+
+                ABSEIL_RANDOM_BUILD=$(find ../vendor_dir -path \
+                  '*/abseil-cpp*/absl/random/internal/BUILD.bazel' -print -quit)
+                test "$(grep -Fc '@platforms//cpu:x86_64' "$ABSEIL_RANDOM_BUILD")" = 1
+                test "$(grep -Fc '@platforms//cpu:aarch64' "$ABSEIL_RANDOM_BUILD")" = 1
+                sed -i \
+                  -e 's|@platforms//cpu:x86_64|@platforms//cpu:s390x|g' \
+                  -e 's|@platforms//cpu:aarch64|@platforms//cpu:x86_64|g' \
+                  "$ABSEIL_RANDOM_BUILD"
+              fi
+            ''}
+
             # Derive bootstrapTools lib path from CONFIG_SHELL (set by mkDerivation)
             BT_LIB=$(dirname "$(dirname "$CONFIG_SHELL")")/lib
 
@@ -1464,6 +1498,13 @@ in
             export EXTRA_BAZEL_ARGS="
               --verbose_failures
               --curses=no
+              ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+              --cpu=aarch64
+              --host_cpu=aarch64
+              --noenable_platform_specific_config
+              --linkopt=-Wl,-rpath,${gcc-libs}/lib
+              --host_linkopt=-Wl,-rpath,${gcc-libs}/lib
+            ''}
               --tool_java_runtime_version=local_jdk_21
               --java_runtime_version=local_jdk_21
               --tool_java_language_version=21
@@ -1475,8 +1516,8 @@ in
               --incompatible_strict_action_env
               --action_env=PATH=${buildToolsPath}
               --host_action_env=PATH=${buildToolsPath}
-              --action_env=LD_LIBRARY_PATH=$BT_LIB
-              --host_action_env=LD_LIBRARY_PATH=$BT_LIB
+              --action_env=LD_LIBRARY_PATH=$BT_LIB${lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ":${gcc-libs}/lib"}
+              --host_action_env=LD_LIBRARY_PATH=$BT_LIB${lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ":${gcc-libs}/lib"}
               --shell_executable=$(cd ../tools && pwd)/bash-with-path
               --python_path=${buildPython3}/bin/python3
             "
