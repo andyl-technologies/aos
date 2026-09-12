@@ -727,6 +727,14 @@ impl NativeSystemdAdapter {
         })
     }
 
+    fn preflight_authority(
+        &self,
+        request: &SystemdAbilityRequest,
+        remaining_millis: u64,
+    ) -> Result<(), io::Error> {
+        self.observe(request, remaining_millis).map(|_| ())
+    }
+
     fn record(
         &self,
         state: &str,
@@ -1047,6 +1055,25 @@ impl TrustedAdapter for NativeSystemdAdapter {
                 None,
             ));
         }
+        if let Err(error) = self.preflight_authority(request, call_remaining_millis(control)) {
+            return if error.kind() == io::ErrorKind::InvalidData {
+                EffectDisposition::RejectedBeforeEffect(self.record(
+                    "authority-changed-before-dispatch",
+                    request,
+                    None,
+                    None,
+                    None,
+                ))
+            } else {
+                EffectDisposition::Indeterminate(self.record(
+                    "authority-check-unavailable",
+                    request,
+                    None,
+                    None,
+                    None,
+                ))
+            };
+        }
         if request.durable.action == SystemdAbilityAction::Observe {
             return match self.observe(request, call_remaining_millis(control)) {
                 Ok(observation) => EffectDisposition::Completed(observation.record),
@@ -1283,6 +1310,14 @@ impl NativeSystemdServiceAdapter {
                 &revision_text(request.durable.revision),
             ),
         )
+    }
+
+    fn preflight_authority(
+        &self,
+        request: &SystemdAbilityRequest,
+        remaining_millis: u64,
+    ) -> Result<(), io::Error> {
+        self.observe(request, remaining_millis).map(|_| ())
     }
 
     fn manager_readiness_completion(
@@ -1544,6 +1579,13 @@ impl TrustedAdapter for NativeSystemdServiceAdapter {
     ) -> EffectDisposition<Self::Completion, Self::Observation> {
         if control.is_cancelled() {
             return EffectDisposition::RejectedBeforeEffect(self.unsettled.clone());
+        }
+        if let Err(error) = self.preflight_authority(request, call_remaining_millis(control)) {
+            return if error.kind() == io::ErrorKind::InvalidData {
+                EffectDisposition::RejectedBeforeEffect(self.unsettled.clone())
+            } else {
+                EffectDisposition::Indeterminate(self.unsettled.clone())
+            };
         }
         if request.durable.action == SystemdAbilityAction::Observe {
             return match self.observe(request, call_remaining_millis(control)) {
@@ -1856,7 +1898,14 @@ where
         runtime
             .block_on(async move { tokio::time::timeout(timeout, future).await })
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "systemd call timed out"))?
-            .map_err(|error| io::Error::other(error.to_string()))
+            .map_err(|error| {
+                let kind = if error.is_authority_mismatch() {
+                    io::ErrorKind::InvalidData
+                } else {
+                    io::ErrorKind::Other
+                };
+                io::Error::new(kind, error.to_string())
+            })
     })
 }
 
@@ -2631,10 +2680,15 @@ mod tests {
         let mut adapter = NativeSystemdAdapter::initialize(assignment)?;
         *example_documentation.lock().unwrap() = Vec::new();
         let starts_before_stale_dispatch = example_starts.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(matches!(
-            adapter.execute(&start_request, &TestControl),
-            EffectDisposition::Indeterminate(_)
-        ));
+        let EffectDisposition::RejectedBeforeEffect(stale_record) =
+            adapter.execute(&start_request, &TestControl)
+        else {
+            panic!("a changed loaded revision must reject before the lifecycle call");
+        };
+        assert_eq!(
+            stale_record.durable().as_json()["state"],
+            "authority-changed-before-dispatch"
+        );
         assert_eq!(
             example_starts.load(std::sync::atomic::Ordering::SeqCst),
             starts_before_stale_dispatch,

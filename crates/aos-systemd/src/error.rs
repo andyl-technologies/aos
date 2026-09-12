@@ -79,6 +79,19 @@ pub enum Error {
 }
 
 impl Error {
+    /// Returns `true` when the admitted manager, unit, or revision authority changed.
+    #[must_use]
+    pub fn is_authority_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::ManagerIncarnationChanged
+                | Self::UnitAlias { .. }
+                | Self::UnitIdentityChanged { .. }
+                | Self::UnitRevisionUnknown { .. }
+                | Self::UnitRevisionChanged { .. }
+        )
+    }
+
     /// Returns `true` when the error is systemd's `NoSuchUnit` method error.
     ///
     /// This lets callers treat stop/remove operations on already-unloaded

@@ -118,6 +118,18 @@ pub(super) fn require_current_state(request: &NativeHostRequest) -> Result<HostS
     Ok(state)
 }
 
+/// Rejects a live marker owned by another resource before provider dispatch.
+///
+/// An absent marker remains valid for creation methods. The catalog records
+/// that absence during acquisition, but another actor can publish the same
+/// physical target before the durable request reaches the adapter.
+pub(super) fn require_uncontested_state(request: &NativeHostRequest) -> Result<(), io::Error> {
+    if let Some(state) = read_state_optional(&request.resource.state_path)? {
+        require_matching_state(request, &state)?;
+    }
+    Ok(())
+}
+
 pub(super) fn require_matching_state(
     request: &NativeHostRequest,
     state: &HostState,

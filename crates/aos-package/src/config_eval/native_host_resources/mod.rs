@@ -75,7 +75,8 @@ use state::{
     postgresql_probe_principal, postgresql_probe_uid, postgresql_slot_principal,
     postgresql_slot_uid, protected_directory, read_protected_file, read_state_optional,
     remove_atomic_temporary_root, remove_regular_optional, require_current_state,
-    require_matching_state, require_state, state_matches_spec, write_state,
+    require_matching_state, require_state, require_uncontested_state, state_matches_spec,
+    write_state,
 };
 pub(crate) use storage::{
     HostResourceAllocations, StorageAllocationRequest, authenticate_storage_dependency,
@@ -559,6 +560,13 @@ impl TrustedAdapter for NativeHostResourceAdapter {
     ) -> EffectDisposition<Self::Completion, Self::Observation> {
         if control.is_cancelled() {
             return EffectDisposition::RejectedBeforeEffect(rejection_record(request));
+        }
+        if let Err(error) = require_uncontested_state(request) {
+            return if error.kind() == io::ErrorKind::InvalidData {
+                EffectDisposition::RejectedBeforeEffect(rejection_record(request))
+            } else {
+                EffectDisposition::Indeterminate(rejection_record(request))
+            };
         }
         match execute_request(request, control) {
             Ok(record) => EffectDisposition::Completed(record),

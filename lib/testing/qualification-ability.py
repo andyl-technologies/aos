@@ -1565,6 +1565,7 @@ class Scenario:
         cohort_evidence: dict[str, bytes] = {}
         runtime_audit: dict[str, Any] | None = None
         interruption_audit: dict[str, Any] | None = None
+        provider_negative_audit: dict[str, Any] | None = None
         for cohort_id, namespace in self.fixture_namespaces.items():
             cohort_input = one(
                 [entry for entry in MATRIX_COHORTS if entry["id"] == cohort_id],
@@ -1583,6 +1584,9 @@ class Scenario:
             cohort_interruption_audit = namespace.get(
                 "NATIVE_ADAPTER_MATRIX_INTERRUPTION_AUDIT"
             )
+            cohort_provider_negative_audit = namespace.get(
+                "NATIVE_ADAPTER_MATRIX_PROVIDER_NEGATIVE_AUDIT"
+            )
             runtime_cells: dict[str, Any] = {}
             if cohort_runtime_audit is not None:
                 if not isinstance(cohort_runtime_audit, dict) or not isinstance(
@@ -1597,6 +1601,21 @@ class Scenario:
                 ):
                     raise RuntimeError("matrix cohort retained a malformed interruption audit")
                 interruption_cells = cohort_interruption_audit["cells"]
+            provider_negative_cells: dict[str, Any] = {}
+            if cohort_provider_negative_audit is not None:
+                if not isinstance(
+                    cohort_provider_negative_audit, dict
+                ) or not isinstance(
+                    cohort_provider_negative_audit.get("cells"), dict
+                ):
+                    raise RuntimeError(
+                        "matrix cohort retained a malformed provider-negative audit"
+                    )
+                provider_negative_cells = cohort_provider_negative_audit["cells"]
+            if cohort_probes is None and provider_negative_cells:
+                cohort_probes = {}
+                subject_map = {}
+                evidence_map = {}
             if subject_map is None and isinstance(cohort_probes, dict):
                 legacy_subject = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT")
                 legacy_bundle = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE")
@@ -1609,14 +1628,21 @@ class Scenario:
                 or not isinstance(subject_map, dict)
                 or not isinstance(evidence_map, dict)
                 or any(not isinstance(value, bytes) for value in evidence_map.values())
-                or set(cohort_probes) & (set(runtime_cells) | set(interruption_cells))
+                or set(cohort_probes)
+                & (set(runtime_cells) | set(interruption_cells) | set(provider_negative_cells))
                 or set(runtime_cells) & set(interruption_cells)
+                or set(runtime_cells) & set(provider_negative_cells)
+                or set(interruption_cells) & set(provider_negative_cells)
             ):
                 raise RuntimeError(
                     f"matrix cohort {cohort_id!r} did not retain exact production evidence"
                 )
-            if set(cohort_probes) | set(runtime_cells) | set(interruption_cells) != set(
-                cohort_input["qualifiedCells"]
+            if (
+                set(cohort_probes)
+                | set(runtime_cells)
+                | set(interruption_cells)
+                | set(provider_negative_cells)
+                != set(cohort_input["qualifiedCells"])
             ):
                 raise RuntimeError(
                     f"matrix cohort {cohort_id!r} differs from its declared cells"
@@ -1642,6 +1668,31 @@ class Scenario:
                 ):
                     raise RuntimeError("matrix cohorts repeat or malformed interruption audit")
                 interruption_audit = cohort_interruption_audit
+            if cohort_provider_negative_audit is not None:
+                if not isinstance(cohort_provider_negative_audit, dict):
+                    raise RuntimeError(
+                        "matrix cohort retained a malformed provider-negative audit"
+                    )
+                if provider_negative_audit is None:
+                    provider_negative_audit = {
+                        "schema": cohort_provider_negative_audit.get("schema"),
+                        "matrix_spec_digest": cohort_provider_negative_audit.get(
+                            "matrix_spec_digest"
+                        ),
+                        "cells": {},
+                    }
+                if (
+                    cohort_provider_negative_audit.get("schema")
+                    != provider_negative_audit["schema"]
+                    or cohort_provider_negative_audit.get("matrix_spec_digest")
+                    != provider_negative_audit["matrix_spec_digest"]
+                    or set(provider_negative_audit["cells"])
+                    & set(provider_negative_cells)
+                ):
+                    raise RuntimeError(
+                        "matrix provider-negative cohorts conflict or repeat a cell"
+                    )
+                provider_negative_audit["cells"].update(provider_negative_cells)
 
         if runtime_audit is None:
             raise RuntimeError("matrix cohort did not retain its runtime audit")
@@ -1716,6 +1767,7 @@ class Scenario:
             environment_digest,
             runtime_audit,
             interruption_audit,
+            provider_negative_audit,
         )
 
         finished = time.time()

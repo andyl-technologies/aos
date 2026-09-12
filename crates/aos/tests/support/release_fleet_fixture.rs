@@ -99,6 +99,9 @@ async fn main() -> Result<()> {
             postgresql_activation_fixture::generate_terminal(&arguments[1..])
         }
         Some("rollout-activation") => rollout_activation_fixture::generate(&arguments[1..]),
+        Some("rollout-foreign-map-audit") => {
+            rollout_activation_fixture::audit_foreign_map(&arguments[1..])
+        }
         Some("ability-authority-provision") => {
             ability_activation_fixture::provision_authority(&arguments[1..])
         }

@@ -132,6 +132,8 @@ enum ReferenceLifecycle {
     RemovePrimaryContributor,
     RemoveMainContributors,
     DisableMain,
+    DisableAll,
+    RemoveAll,
 }
 
 impl ReferenceLifecycle {
@@ -141,6 +143,8 @@ impl ReferenceLifecycle {
             "remove-primary-contributor" => Ok(Self::RemovePrimaryContributor),
             "remove-main-contributors" => Ok(Self::RemoveMainContributors),
             "disable-main" => Ok(Self::DisableMain),
+            "disable-all" => Ok(Self::DisableAll),
+            "remove-all" => Ok(Self::RemoveAll),
             _ => bail!("unknown reference lifecycle scenario {value:?}"),
         }
     }
@@ -154,7 +158,15 @@ impl ReferenceLifecycle {
     }
 
     const fn enables_main(self) -> bool {
-        !matches!(self, Self::DisableMain)
+        !matches!(self, Self::DisableMain | Self::DisableAll)
+    }
+
+    const fn enables_secondary(self) -> bool {
+        !matches!(self, Self::DisableAll)
+    }
+
+    const fn includes_instances(self) -> bool {
+        !matches!(self, Self::RemoveAll)
     }
 }
 
@@ -791,20 +803,24 @@ impl ReferenceFixture {
             }
             AbilityValue::new(configuration).map_err(Into::into)
         };
-        let mut instances = vec![
-            DesiredInstance {
-                instance: nginx_main.clone(),
-                package: self.nginx_package,
-                enabled: lifecycle.enables_main(),
-                configuration: Some(configuration("nginx-main", 18081, 18443)?),
-            },
-            DesiredInstance {
-                instance: nginx_secondary.clone(),
-                package: self.nginx_package,
-                enabled: true,
-                configuration: Some(configuration("nginx-secondary", 18082, 18444)?),
-            },
-        ];
+        let mut instances = if lifecycle.includes_instances() {
+            vec![
+                DesiredInstance {
+                    instance: nginx_main.clone(),
+                    package: self.nginx_package,
+                    enabled: lifecycle.enables_main(),
+                    configuration: Some(configuration("nginx-main", 18081, 18443)?),
+                },
+                DesiredInstance {
+                    instance: nginx_secondary.clone(),
+                    package: self.nginx_package,
+                    enabled: lifecycle.enables_secondary(),
+                    configuration: Some(configuration("nginx-secondary", 18082, 18444)?),
+                },
+            ]
+        } else {
+            Vec::new()
+        };
         if let Some(matrix) = systemd_manager {
             instances.push(DesiredInstance {
                 instance: instance(&self.environment.environment, "matrix-systemd")?,
@@ -818,12 +834,16 @@ impl ReferenceFixture {
         }
         let mut child_requests = Vec::new();
         let mut contributions = Vec::new();
-        let mut applications = vec![(
-            "app-c",
-            &nginx_secondary,
-            "gamma.example",
-            secondary_response,
-        )];
+        let mut applications = if lifecycle.includes_instances() {
+            vec![(
+                "app-c",
+                &nginx_secondary,
+                "gamma.example",
+                secondary_response,
+            )]
+        } else {
+            Vec::new()
+        };
         if lifecycle.includes_main_contributors() {
             applications.push(("app-b", &nginx_main, "beta.example", "beta-v1"));
         }

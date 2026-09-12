@@ -585,6 +585,13 @@ impl TrustedAdapter for NativeNginxAdapter {
         if control.is_cancelled() {
             return EffectDisposition::RejectedBeforeEffect(self.failure.clone());
         }
+        match observe_association(&request.resource) {
+            Ok(ResourceRevisionObservation::Unknown) => {
+                return EffectDisposition::RejectedBeforeEffect(self.failure.clone());
+            }
+            Err(_) => return EffectDisposition::Indeterminate(self.failure.clone()),
+            Ok(ResourceRevisionObservation::Absent | ResourceRevisionObservation::Present(_)) => {}
+        }
         match request.durable.action {
             NginxAction::Validate => {
                 match authenticate_request_dependencies(request).and_then(|()| {
@@ -1901,6 +1908,44 @@ mod tests {
         assert!(
             validate_recovered_request(&durable, &NginxAction::Validate, &fixture.resource,)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn adapter_rejects_foreign_association_before_validation_effect() {
+        let fixture = nginx_fixture("runtime");
+        let request = test_request(NginxAction::Validate, &fixture.resource);
+        let mut foreign = fixture.resource.spec.resource.clone();
+        foreign.key = LocalKey::new("foreign").expect("foreign key is valid");
+        let association = AssociationRecord {
+            schema: ASSOCIATION_SCHEMA.to_string(),
+            resource: foreign,
+            generation: revision("foreign"),
+            candidate_digest: fixture.resource.candidate_digest,
+            credential_evidence: Vec::new(),
+            storage_paths: BTreeMap::new(),
+        };
+        fixture
+            .resource
+            .association_path
+            .atomic_write(
+                &serde_json::to_vec(&association).expect("association encodes"),
+                false,
+            )
+            .expect("foreign association is installed after durable preparation");
+
+        let mut adapter = test_adapter(&fixture.resource);
+        assert!(matches!(
+            adapter.execute(&request, &ZeroBudgetControl),
+            EffectDisposition::RejectedBeforeEffect(_)
+        ));
+        assert!(
+            !fixture
+                .resource
+                .candidate_path
+                .exists()
+                .expect("candidate path is inspectable"),
+            "foreign authority must reject before candidate staging"
         );
     }
 

@@ -178,6 +178,352 @@ def assert_semantic_validators(module, subject, cell, observations):
         raise AssertionError(f"{name} semantic validator accepted false facts")
 
 
+def assert_provider_negative_validator(module, template_cell):
+    """Exercises candidate-linked paired-flight validation and rejection."""
+
+    cell = copy.deepcopy(template_cell)
+    cell.update(
+        {
+            "id": (
+                "network-endpoint/aos.network-endpoint-effects/abi-1/"
+                "materialize/reject-foreign-resource-mutation"
+            ),
+            "adapter": "network-endpoint",
+            "interface": {
+                "name": "aos.network-endpoint-effects",
+                "abi": 1,
+                "descriptor": "sha256:" + "10" * 32,
+            },
+            "method": "materialize",
+            "boundary": "foreign-resource",
+            "failure": "foreign-authority-rejected",
+            "postconditions": [
+                "durable-attempt-state-classified",
+                "at-most-one-resource-owner",
+                "foreign-resources-unchanged",
+                "dependent-effects-not-executed",
+                "foreign-attempt-rejected-before-mutation",
+            ],
+        }
+    )
+    cell_digest = module.sha256(cell)
+    foreign_resource = {"provider": "fixture", "key": "foreign-endpoint"}
+    successor_resource = {"provider": "fixture", "key": "blocked-endpoint"}
+    foreign_operation = {
+        "key": {"scope": ["negative"], "key": "foreign"},
+        "ordinal": 0,
+        "interface": cell["interface"],
+        "method": cell["method"],
+        "resource": foreign_resource,
+    }
+    dependent_operation = {
+        "key": {"scope": ["negative"], "key": "dependent"},
+        "ordinal": 1,
+        "interface": cell["interface"],
+        "method": cell["method"],
+        "resource": successor_resource,
+    }
+    subject = {
+        "schema": module.PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
+        "cell-id": cell["id"],
+        "cell-digest": cell_digest,
+        "adapter": cell["adapter"],
+        "interface": cell["interface"],
+        "method": cell["method"],
+        "scenario": "reject-foreign-resource-mutation",
+        "plan": "sha256:" + "20" * 32,
+        "transaction": "provider-negative",
+        "flight": "endpoint-materialize",
+    }
+    plan = {
+        "schema": module.PROVIDER_NEGATIVE_PLAN_SCHEMA,
+        "digest": "sha256:" + "30" * 32,
+        "plan": subject["plan"],
+        "foreign-operation": foreign_operation,
+        "dependent-operation": dependent_operation,
+        "required-success": {
+            "from": foreign_operation,
+            "to": dependent_operation,
+            "kind": "required-success",
+        },
+        "behavioral-witness": None,
+    }
+    snapshot = "sha256:" + "40" * 32
+    record = {
+        "cell_digest": cell_digest,
+        "subject": subject,
+        "plan_bundle": plan,
+        "evidence": {
+            "provider-route": {
+                "adapter": cell["adapter"],
+                "interface": cell["interface"],
+                "method": cell["method"],
+                "candidate-linked": True,
+                "artifact": "sha256:" + "50" * 32,
+                "handler": "network-endpoint-terminal",
+                "entry-point": "libexec/aos-network-endpoint-handler-v1",
+            },
+            "boundary": "after-durable-intent-before-external-effect",
+            "journal": {
+                "digest": "sha256:" + "60" * 32,
+                "failure-record": "sha256:" + "70" * 32,
+                "foreign-operation": foreign_operation,
+                "foreign-timeline": [
+                    {
+                        "sequence": 1,
+                        "kind": "operation-admitted",
+                        "node-ordinal": 0,
+                    },
+                    {
+                        "sequence": 2,
+                        "kind": "effect-started",
+                        "node-ordinal": 0,
+                    },
+                    {
+                        "sequence": 3,
+                        "kind": "rejected-before-effect",
+                        "node-ordinal": 0,
+                    },
+                ],
+                "dependent-operation": dependent_operation,
+                "dependent-timeline": [],
+                "behavioral-witness": None,
+                "witness-timeline": [],
+                "classified": "foreign-authority-rejected",
+            },
+            "ownership": {
+                "foreign-owner-count-before": 1,
+                "foreign-owner-count-after": 1,
+                "candidate-owner-count": 0,
+                "maximum-owner-count": 1,
+            },
+            "foreign-resource": {
+                "kind": "loopback-listener",
+                "resource": foreign_resource,
+                "before": snapshot,
+                "after": snapshot,
+                "unchanged": True,
+                "live": True,
+            },
+            "blocked-successor": {
+                "kind": "loopback-listener",
+                "resource": successor_resource,
+                "before": snapshot,
+                "after": snapshot,
+                "unchanged": True,
+                "live": True,
+            },
+            "blocked-witness": None,
+        },
+    }
+
+    module._validated_provider_negative_cell(
+        cell, record, "sha256:" + "80" * 32, set()
+    )
+    forged = copy.deepcopy(record)
+    forged["evidence"]["provider-route"]["candidate-linked"] = False
+    try:
+        module._validated_provider_negative_cell(
+            cell, forged, "sha256:" + "80" * 32, set()
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("provider-negative validator accepted an unlinked route")
+
+
+def assert_rollout_provider_negative_validator(module, template_cell):
+    """Exercises same-machine dependency and one-machine map rejection proofs."""
+
+    interface = {
+        "name": "aos.ab-image-rollout-effects",
+        "abi": 1,
+        "descriptor": "sha256:" + "09" * 32,
+    }
+    machine = {"provider": {"key": "rollout"}, "key": "machine"}
+    forged_machine = {"provider": {"key": "rollout"}, "key": "foreign-machine"}
+    sentinel = {"provider": {"key": "sentinel"}, "key": "foreign-service"}
+    snapshot = "sha256:" + "44" * 32
+
+    def oracle(kind, resource):
+        return {
+            "kind": kind,
+            "resource": resource,
+            "before": snapshot,
+            "after": snapshot,
+            "unchanged": True,
+            "live": True,
+        }
+
+    for mode, scenario, method, effect_class in [
+        ("rollout-dependency", "block-dependent-effect", "observe-boot", "observation"),
+        (
+            "rollout-map-validation",
+            "reject-foreign-resource-mutation",
+            "prepare",
+            "mutation",
+        ),
+    ]:
+        cell = copy.deepcopy(template_cell)
+        cell.update(
+            {
+                "id": f"image-rollout/aos.ab-image-rollout-effects/abi-1/{method}/{scenario}",
+                "adapter": "image-rollout",
+                "interface": interface,
+                "method": method,
+                "effect_class": effect_class,
+                "boundary": "dependency" if scenario == "block-dependent-effect" else "foreign-resource",
+                "failure": "prerequisite-failed" if scenario == "block-dependent-effect" else "foreign-authority-rejected",
+                "postconditions": [
+                    "durable-attempt-state-classified",
+                    "at-most-one-resource-owner",
+                    "foreign-resources-unchanged",
+                    "dependent-effects-not-executed",
+                    (
+                        "prerequisite-failure-recorded"
+                        if scenario == "block-dependent-effect"
+                        else "foreign-attempt-rejected-before-mutation"
+                    ),
+                ],
+            }
+        )
+        cell_digest = module.sha256(cell)
+        predecessor_resource = machine if mode == "rollout-dependency" else forged_machine
+        predecessor = {
+            "key": {"scope": ["negative"], "key": "predecessor"},
+            "ordinal": 0,
+            "interface": interface,
+            "method": method,
+            "resource": predecessor_resource,
+        }
+        dependent = {
+            "key": {"scope": ["negative"], "key": "dependent"},
+            "ordinal": 1,
+            "interface": interface,
+            "method": method,
+            "resource": machine,
+        }
+        witness = (
+            {
+                "key": {"scope": ["negative"], "key": "witness"},
+                "ordinal": 2,
+                "interface": interface,
+                "method": "hold",
+                "resource": machine,
+            }
+            if effect_class == "observation"
+            else None
+        )
+        plan_digest = "sha256:" + "20" * 32
+        subject = {
+            "schema": module.PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
+            "cell-id": cell["id"],
+            "cell-digest": cell_digest,
+            "adapter": "image-rollout",
+            "interface": interface,
+            "method": method,
+            "scenario": scenario,
+            "plan": plan_digest,
+            "transaction": "rollout-negative",
+            "flight": "rollout-flight",
+        }
+        classification = (
+            {
+                "kind": "execution-journal",
+                "digest": "sha256:" + "30" * 32,
+                "failure-record": "sha256:" + "31" * 32,
+                "predecessor-timeline": [
+                    {"kind": "operation-admitted"},
+                    {"kind": "effect-started"},
+                    {"kind": "rejected-before-effect"},
+                ],
+                "dependent-timeline": [],
+                "witness-timeline": [],
+                "classified": "boot-slot-authority-rejected",
+            }
+            if mode == "rollout-dependency"
+            else {
+                "kind": "native-resource-map-validation",
+                "digest": "sha256:" + "30" * 32,
+                "attempted-map-digest": "sha256:" + "31" * 32,
+                "failure-record": "sha256:" + "32" * 32,
+                "classified": "foreign-authority-rejected",
+                "dependent-timeline": [],
+                "witness-timeline": [],
+            }
+        )
+        ownership = (
+            {
+                "machine-owner-count-before": 1,
+                "machine-owner-count-after": 1,
+                "candidate-owner-count": 0,
+                "maximum-owner-count": 1,
+            }
+            if mode == "rollout-dependency"
+            else {
+                "machine-owner-count-before": 1,
+                "machine-owner-count-after": 1,
+                "forged-owner-count": 0,
+                "maximum-owner-count": 1,
+            }
+        )
+        record = {
+            "mode": mode,
+            "cell_digest": cell_digest,
+            "subject": subject,
+            "plan_bundle": {
+                "schema": module.PROVIDER_NEGATIVE_PLAN_SCHEMA,
+                "digest": "sha256:" + "40" * 32,
+                "plan": plan_digest,
+                "foreign-operation": predecessor,
+                "dependent-operation": dependent,
+                "required-success": {
+                    "from": predecessor,
+                    "to": dependent,
+                    "kind": "required-success",
+                },
+                "behavioral-witness": witness,
+            },
+            "evidence": {
+                "provider-route": {
+                    "adapter": "image-rollout",
+                    "interface": interface,
+                    "method": method,
+                    "candidate-linked": True,
+                    "artifact": "sha256:" + "50" * 32,
+                    "handler": "image-rollout-terminal",
+                    "entry-point": "libexec/aos-ab-image-rollout-handler-v1",
+                },
+                "boundary": (
+                    "after-durable-intent-before-external-effect"
+                    if mode == "rollout-dependency"
+                    else "native-resource-map-validation"
+                ),
+                "classification": classification,
+                "ownership": ownership,
+                "foreign-resource": oracle("systemd-unit", sentinel),
+                "blocked-successor": oracle("boot-slot", machine),
+                "blocked-witness": (
+                    oracle("boot-slot", machine) if witness is not None else None
+                ),
+            },
+        }
+
+        module._validated_provider_negative_cell(
+            cell, record, "sha256:" + "60" * 32, set()
+        )
+        forged = copy.deepcopy(record)
+        forged["evidence"]["blocked-successor"]["after"] = "sha256:" + "61" * 32
+        try:
+            module._validated_provider_negative_cell(
+                cell, forged, "sha256:" + "60" * 32, set()
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("rollout validator accepted changed boot-slot state")
+
+
 def assert_negative_semantic_validators(module, subject, base_cell):
     """Exercises the production dependency and foreign-resource proof shapes."""
 
@@ -1117,6 +1463,8 @@ def main() -> None:
         probe["cell_digest"] for probe in cell_observation["probes"].values()
     } == {module.sha256(cell_spec)}
     assert_semantic_validators(module, subject, cell_spec, observations)
+    assert_provider_negative_validator(module, cell_spec)
+    assert_rollout_provider_negative_validator(module, cell_spec)
     assert_negative_semantic_validators(module, subject, cell_spec)
     assert_postgresql_cohort(module)
 

@@ -479,6 +479,7 @@
       systems = discoverSystems;
     })
   nativeEffectBoundaryCells.groups.rollout;
+
   nativeCancellationCells = import ./tests/fleet/_ability-cancellation-cells.nix {
     inherit lib;
     matrix = nativeAdapterMatrix;
@@ -525,6 +526,58 @@
     inherit lib mkSystem pkgs;
     qualificationImage = true;
   };
+
+  nativeProviderNegativeCells = import ./tests/fleet/_ability-provider-negative-cells.nix {
+    inherit lib;
+    matrix = nativeAdapterMatrix;
+  };
+  nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeProviderNegativePostgresql = import ./tests/fleet/ability-native-provider-negative-postgresql.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeProviderNegativeSystemdManager = import ./tests/fleet/ability-native-provider-negative-systemd-manager.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeProviderNegativeKubernetes = import ./tests/fleet/ability-native-provider-negative-kubernetes.nix {
+    inherit lib mkSystem pkgs;
+    qualificationImage = true;
+  };
+  nativeProviderNegativeRolloutMethods = [
+    "drain"
+    "hold"
+    "observe-boot"
+    "observe-health"
+    "prepare"
+    "retain"
+    "retire"
+    "select"
+    "withdraw"
+  ];
+  nativeProviderNegativeRollouts =
+    map (method: let
+      cellIds =
+        builtins.filter (
+          cellId:
+            builtins.elemAt (lib.splitString "/" cellId) 3 == method
+        )
+        nativeProviderNegativeCells.groups.rollout;
+      cohort = import ./tests/fleet/_ability-provider-negative-rollout-cohort.nix {
+        inherit lib mkSystem method pkgs cellIds;
+        systems = discoverSystems;
+      };
+    in {
+      id = "provider-negative-rollout-${method}";
+      qualifiedCells = cellIds;
+      inherit (cohort) testScript;
+      inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
+    })
+    nativeProviderNegativeRolloutMethods;
+
   nativeAdapterRoleScenarios = [
     "revoke-caller-before-acquisition"
     "revoke-caller-after-acquisition"
@@ -572,6 +625,7 @@
       builtins.elemAt (lib.splitString "/" cell.id) 4 == "interrupt-before-acquisition")
     nativeAdapterMatrix.cells
   );
+
   nativeAdapterQualifiedCells = let
     selected =
       nativeAdapterPrimaryCells
@@ -591,7 +645,8 @@
       ++ nativeCancellationSystemdCells
       ++ nativeCancellationCells.groups.reference
       ++ nativeCancellationCells.groups.foreground
-      ++ nativeCancellationCells.groups.rollout;
+      ++ nativeCancellationCells.groups.rollout
+      ++ nativeProviderNegativeCells.all;
     cellsById = builtins.listToAttrs (map (cell: {
         name = cell.id;
         value = cell;
@@ -604,9 +659,10 @@
       0
       selected;
   in
-    assert builtins.length selected == 1155;
-    assert builtins.length (lib.unique selected) == 1155;
-    assert postconditions == 4629; selected;
+    assert builtins.length selected == 1253;
+    assert builtins.length (lib.unique selected) == 1253;
+    assert postconditions == 5119; selected;
+
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =
       mkNativeAbilityScenario
@@ -648,6 +704,8 @@
             inherit (nativeEffectKubernetesCohort) testScript;
             inherit (nativeEffectKubernetesCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
           }
+
+
         ]
         ++ lib.imap (index: cohort: {
           id = "provider-effect-boundary-rollout-${builtins.toString index}";
@@ -656,6 +714,7 @@
           inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
         })
         nativeEffectRolloutCohorts
+
         ++ [
           {
             id = "provider-effect-boundaries-foreground";
@@ -700,7 +759,35 @@
           inherit (cohort) testScript;
           inherit (cohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
         })
-        nativeCancellationRolloutCohorts;
+        nativeCancellationRolloutCohorts
+        ++ [
+          {
+            id = "provider-negative-reference";
+            qualifiedCells = nativeProviderNegativeCells.groups.reference;
+            inherit (nativeProviderNegativeReference) testScript;
+            inherit (nativeProviderNegativeReference.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-negative-postgresql";
+            qualifiedCells = nativeProviderNegativeCells.groups.postgresql;
+            inherit (nativeProviderNegativePostgresql) testScript;
+            inherit (nativeProviderNegativePostgresql.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-negative-systemd-manager";
+            qualifiedCells = nativeProviderNegativeCells.groups.systemd-manager;
+            inherit (nativeProviderNegativeSystemdManager) testScript;
+            inherit (nativeProviderNegativeSystemdManager.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+          {
+            id = "provider-negative-kubernetes";
+            qualifiedCells = nativeProviderNegativeCells.groups.kubernetes;
+            inherit (nativeProviderNegativeKubernetes) testScript;
+            inherit (nativeProviderNegativeKubernetes.qualification) candidateRuntimeCompanions extraClosures setupBody;
+          }
+        ]
+        ++ nativeProviderNegativeRollouts;
+
       inherit (nativeAdapterMatrixCohort) testScript;
       inherit (nativeAdapterMatrixCohort.qualification) candidateRuntimeCompanions extraClosures setupBody;
     };

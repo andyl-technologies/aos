@@ -10,9 +10,9 @@ use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use aos_ability_model::builtin::{
-    AB_IMAGE_ROLLOUT_FEATURE, ab_image_rollout_interface, ab_image_rollout_request_schema,
+    ab_image_rollout_interface, ab_image_rollout_request_schema, AB_IMAGE_ROLLOUT_FEATURE,
 };
 use aos_ability_model::document::{
     DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory, ProviderState,
@@ -50,6 +50,7 @@ use super::ability_activation_fixture::{retain_sidecar, write_operator_authority
 
 const PACKAGE_NAME: &str = "ability-reference-image-rollout";
 const HIGH_LEVEL_INTERFACE: &str = "aos.ab-image-rollout";
+const FOREIGN_MAP_AUDIT_SCHEMA: &str = "aos.qualification.rollout-foreign-map-audit/v1";
 
 struct RolloutFixture {
     context: ValidationContext,
@@ -194,6 +195,89 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
         .context("encoding canonical rollout activation input")?;
     fs::write(output.join("activation.json"), bytes)
         .with_context(|| format!("writing {}/activation.json", output.display()))?;
+    Ok(())
+}
+
+/// Audits a forged logical rollout against the production one-machine map invariant.
+///
+/// Arguments are `OUTPUT REQUEST_JSON METHOD`. The command authenticates the
+/// production package, composes the real request, then submits a second logical
+/// resource with the same physical A/B qualification to [`NativeResourceMap`].
+///
+/// # Errors
+///
+/// Returns an error when the request, method, package, composition, or expected
+/// physical-collision rejection is absent or malformed.
+pub(super) fn audit_foreign_map(arguments: &[String]) -> Result<()> {
+    let [output, request_path, method] = arguments else {
+        bail!(
+            "usage: aos-release-fleet-fixture rollout-foreign-map-audit OUTPUT REQUEST_JSON METHOD"
+        );
+    };
+    let interface = ab_image_rollout_interface()?;
+    ensure!(
+        interface.interface.methods.contains_key(&key(method)?),
+        "rollout foreign-map audit names an unsupported method {method:?}"
+    );
+
+    let request_bytes = fs::read(request_path)
+        .with_context(|| format!("reading rollout request {request_path}"))?;
+    let request: AbRolloutRequest = serde_json::from_slice(&request_bytes)
+        .with_context(|| format!("decoding rollout request {request_path}"))?;
+    ensure!(
+        request_bytes == aos_contract::canonical::to_vec(&request)?,
+        "rollout request is not exact canonical JSON"
+    );
+
+    let packages = load_verified_package()?;
+    let fixture = RolloutFixture::new(&packages)?;
+    let composed = fixture.compose(&request, ActivationMode::Rollout)?;
+    let valid = rollout_resource_map(&composed, &request, ActivationMode::Rollout)?;
+    let [real] = valid.entries.as_slice() else {
+        bail!("rollout foreign-map audit requires one real mapping");
+    };
+    let mut forged = real.clone();
+    forged.resource.key = key("foreign-machine")?;
+    let attempted_entries = vec![real.clone(), forged.clone()];
+    let error = NativeResourceMap::new(valid.desired_state, attempted_entries.clone())
+        .expect_err("distinct logical rollouts must reject the one-machine collision");
+    ensure!(
+        error.to_string().contains("A/B image rollout host"),
+        "rollout map rejected for another reason: {error:#}"
+    );
+
+    let interface_key = interface.interface_key()?;
+    let operation = |resource: &ResourceId, operation_method: &str, suffix: &str| {
+        serde_json::json!({
+            "key": {"scope": ["provider-negative", method], "key": suffix},
+            "interface": interface_key.clone(),
+            "method": operation_method,
+            "resource": resource,
+        })
+    };
+    let behavioral_witness = matches!(method.as_str(), "observe-boot" | "observe-health")
+        .then(|| operation(&real.resource, "hold", "blocked-mutation-witness"));
+    let audit = serde_json::json!({
+        "schema": FOREIGN_MAP_AUDIT_SCHEMA,
+        "method": method,
+        "desired-state": valid.desired_state,
+        "real-mapping": real,
+        "forged-mapping": forged,
+        "attempted-map-digest": Sha256Digest::of_bytes(
+            &aos_contract::canonical::to_vec(&attempted_entries)?
+        ),
+        "rejection": {
+            "class": "physical-resource-collision",
+            "resource": "A/B image rollout host",
+            "message-digest": Sha256Digest::of_bytes(error.to_string().as_bytes()),
+        },
+        "foreign-operation": operation(&forged.resource, method, "foreign-attempt"),
+        "dependent-operation": operation(&real.resource, method, "blocked-real-machine"),
+        "behavioral-witness": behavioral_witness,
+    });
+    let bytes = aos_contract::canonical::to_vec(&audit)?;
+    fs::write(output, bytes)
+        .with_context(|| format!("writing rollout foreign-map audit {output}"))?;
     Ok(())
 }
 
