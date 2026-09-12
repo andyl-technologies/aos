@@ -1,7 +1,6 @@
 //! Executable requirement-to-gate traceability for RFC-0020.
 
 #![forbid(unsafe_code)]
-
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
@@ -256,7 +255,8 @@ fn component_automated_contract_validates_evidence_without_completing_gate()
         .iter()
         .find_map(|target| match target.kind {
             CampaignGateTargetKind::LibExact { selectors, .. } => selectors.first(),
-            CampaignGateTargetKind::Integration { .. } => None,
+            CampaignGateTargetKind::Integration { .. }
+            | CampaignGateTargetKind::NixFlight { .. } => None,
         })
         .ok_or("hot-fork-isolation component selector is missing")?;
     let selector_source = fs::read_to_string(root.join(first_selector.source))?;
@@ -328,6 +328,41 @@ fn campaign_replay_component_evidence_keeps_production_scope_open() -> Result<()
             "gate:campaign-replay: component automation does not complete the RFC contract; remaining scope: production-qemu,native"
         )]
     );
+
+    Ok(())
+}
+
+#[test]
+fn typed_choice_product_checkpoint_uses_the_real_network_flight() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let gate = find_campaign_gate("gate:typed-choice-product-checkpoint")
+        .ok_or("typed-choice product checkpoint gate is missing")?;
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
+        return Err("typed-choice product checkpoint must be automated".into());
+    };
+
+    assert_eq!(
+        nix_attr,
+        "checks.crucible.phase2.gates.typedChoiceProductCheckpoint"
+    );
+    assert_eq!(targets.len(), 1);
+    let CampaignGateTargetKind::NixFlight { nix_source } = targets[0].kind else {
+        return Err("typed-choice product checkpoint must use its Nix flight".into());
+    };
+    let source = fs::read_to_string(root.join(nix_source))?;
+    for evidence in [
+        "pkgs.qemu-crucible",
+        "crucible-qemu-live-selectable-product",
+        "guest=real-network-product-initramfs",
+        "restored_pending_exact=true",
+        "selected_value=discrete-fast,integer-7",
+        "source_process_force_crashed=true",
+    ] {
+        assert!(
+            source.contains(evidence),
+            "typed-choice product flight omits {evidence}"
+        );
+    }
 
     Ok(())
 }
@@ -501,6 +536,9 @@ fn automated_contract_failures(
                     ignored,
                 ));
             }
+            CampaignGateTargetKind::NixFlight { nix_source } => {
+                failures.extend(nix_flight_target_failures(root, gate, nix_source, nix_attr));
+            }
         }
     }
 
@@ -508,6 +546,32 @@ fn automated_contract_failures(
         failures.push(format!(
             "{gate}: evaluated Nix target {nix_attr} is not registered"
         ));
+    }
+
+    failures
+}
+
+fn nix_flight_target_failures(
+    root: &Path,
+    gate: &str,
+    nix_source: &str,
+    nix_attr: &str,
+) -> Vec<String> {
+    let source_path = root.join(nix_source);
+    let Ok(source) = fs::read_to_string(&source_path) else {
+        return vec![format!(
+            "{gate}: Nix flight source {} is missing",
+            source_path.display()
+        )];
+    };
+    let mut failures = Vec::new();
+    if !source.contains(&format!("attrPath ? \"{nix_attr}\"")) {
+        failures.push(format!(
+            "{gate}: Nix flight has the wrong default attribute"
+        ));
+    }
+    if !source.contains(&format!("gate={gate}")) {
+        failures.push(format!("{gate}: Nix flight has the wrong result gate"));
     }
 
     failures
