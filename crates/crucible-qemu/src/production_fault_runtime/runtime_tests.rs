@@ -196,15 +196,10 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
         .unwrap_or_else(|error| panic!("drained search choice should checkpoint: {error}"));
 
     let choice = evaluation.search_choices[0].clone();
-    let expected = SearchOverride {
-        candidate_index: 1,
-        candidates_digest: choice.candidates_digest,
-        candidate: choice
-            .candidate_semantics
-            .candidate(1)
-            .expect("fixture candidate must exist"),
-        parent_branch: Some(ContentHash::from_bytes(b"campaign-parent")),
-    };
+    let decision =
+        choice.override_decisions(ContentHash::from_bytes(b"campaign-parent"))[1].clone();
+    let (_, expected) = SearchOverride::from_override_decision(&decision)
+        .expect("canonical fixture decision should decode");
     let mut replay = ProductionFaultRuntime::new_with_search_overrides(
         replay_plan,
         Some(Arc::new(NoArtifacts)),
