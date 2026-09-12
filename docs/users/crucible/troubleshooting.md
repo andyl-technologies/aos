@@ -66,11 +66,10 @@ Use the same store root as the producing command:
 ```sh
 ./result/bin/crucible \
   --store /path/to/original/store \
-  resume blake3:<checkpoint>
+  resume /path/to/savepoint.crucible-savepoint
 ```
 
-For a portable handoff, prefer the exported savepoint handle or failure
-artifact over a bare checkpoint hash.
+Bare checkpoint hashes are not portable savepoints and fail normal admission.
 
 ### Triage input lacks discovery evidence
 

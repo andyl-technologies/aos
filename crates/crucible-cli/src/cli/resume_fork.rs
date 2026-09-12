@@ -152,15 +152,7 @@ pub(super) fn savepoint_evidence(
     command_name: &'static str,
     savepoint: &ResumeSavepointRef,
 ) -> Result<ResumeHandleEvidence, CliError> {
-    match savepoint {
-        ResumeSavepointRef::CheckpointHash(checkpoint) => Err(artifact_error(format!(
-            "{command_name} checkpoint {} requires a .crucible-savepoint handle; a checkpoint hash is valid only within the active session that owns it",
-            format_content_hash_ref(*checkpoint)
-        ))),
-        ResumeSavepointRef::Handle { handle, .. } => {
-            savepoint_handle_evidence(command_name, handle)
-        }
-    }
+    savepoint_handle_evidence(command_name, &savepoint.handle)
 }
 
 #[cfg(any(test, feature = "test-double"))]

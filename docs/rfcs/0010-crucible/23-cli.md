@@ -525,12 +525,12 @@ completion window rather than the short streaming acknowledgement yield budget,
 so a valid long-running QEMU quantum cannot be misreported as a missing
 breakpoint.
 
-The exported `crucible.savepoint-handle.v3` records the selector kind and name
+The exported `crucible.savepoint-handle.v6` records the selector kind and name
 (`property-violation` or `guest-marker`) plus the exact boundary proof. A
 breakpoint proof carries its actor-assigned ID, suspending disposition, frontier,
 and quantum; a companion content-addressed canonical predicate payload binds
 that proof to the selector. A virtual-time proof carries its exact frontier and
-quantum and no predicate. v3 admission checks selector kind, predicate,
+quantum and no predicate. Admission checks selector kind, predicate,
 scenario-declared property identity, terminal condition, and proof shape as one
 consistent boundary claim. The canonical trace emits the same information as a
 `save_boundary_proof` entry so an operator can audit why the save succeeded
@@ -552,24 +552,16 @@ source node to be a white-box-enabled node in the embedded scenario. These
 checks establish the structural closure; the campaign's execution and capture
 replay establish that the event was actually observed.
 
-Campaign-backed virtual-time and marker saves export
-`crucible.savepoint-handle.v5`. A v5 handle requires one
+All current saves export the same v6 schema. Campaign-owned handles include a
 `campaign-replay-closure` line containing the closure's content digest and
 canonical bytes. Before any handle is written, export decodes those bytes
 canonically and proves that the records are complete and exact for the
 schedule's typed guest Selections. Offline resume and fork require the portable
-handle; a bare checkpoint hash is valid only inside the active server session
-that owns it. Standard non-interactive local-QEMU resume accepts delivery-order,
-random-draw, preemption, and typed Selection decisions and authenticates the
-supplied closure before opening attempt host resources. Historical override and
-application-random decisions remain unsupported. Remote resume consumes the
-same closure through a content-bound envelope and a daemon-side validator
-before session allocation. Session-owned local-double, interactive, and
-divergent fork execution paths reject typed Selection schedules before launch
-because they do not consume the campaign closure.
+handle; a bare checkpoint hash fails admission. Standard non-interactive
+local-QEMU resume authenticates the supplied closure before opening attempt host
+resources.
 
-Campaign-backed quiescence and property saves export
-`crucible.savepoint-handle.v6`. Its `campaign-observation` boundary proof
+The v6 `campaign-observation` boundary proof
 carries two independently content-addressed canonical payloads: the campaign
 observation-stop proof and the retained v2 raw measurement evidence. Decode
 binds the proof to the evidence's configuration, absolute pre- and post-quantum
@@ -631,7 +623,7 @@ distinguish the resumed runtime boundary from the zero-time baked genesis.
   crucible resume <SAVEPOINT> [FLAGS]
 
   ARGS
-    <SAVEPOINT>   A savepoint handle / checkpoint content hash (07).
+    <SAVEPOINT>   A current portable savepoint handle (07).
 
   FLAGS
     --until <...>   Terminal condition, as in `run` (§6).
@@ -678,7 +670,7 @@ sharing the parent's checkpoints CoW (07 §5).
   crucible fork <SAVEPOINT> [FLAGS]
 
   ARGS
-    <SAVEPOINT>   The fork point: a savepoint handle / checkpoint hash (07).
+    <SAVEPOINT>   The fork point: a current portable savepoint handle (07).
 
   FLAGS
     --seed <u64|hex>          New root seed for the forked future (06 §5.3).
@@ -737,7 +729,7 @@ operator-facing.
 
   FLAGS
     --check <original-log>   Assert the replayed canonical log is byte-identical to this one.
-    --to <savepoint>        Validate a target savepoint handle or checkpoint hash.
+    --to <savepoint>        Validate a target savepoint handle.
     --bisect <other-artifact>    Bisect this artifact against another (24 §5).
 ```
 
@@ -1282,8 +1274,8 @@ branch on the verdict without parsing output:
   arbitrary non-quiescent scheduler quanta until selector evidence arrives,
   bounds missing selectors with a companion quiescence breakpoint, rejects
   irrelevant `--max-virtual-time` flags outside virtual-time saves,
-  emits selector identity and exact breakpoint coordinates in v3 handles and
-  canonical traces while retaining v2 read compatibility, rejects
+  emits selector identity and exact breakpoint coordinates in current v6
+  handles and canonical traces, rejects
   wrong-marker and no-source marker selectors while retaining their partial
   canonical command traces, routes explicitly selected local-QEMU saves
   through the same create-savepoint/export/oracle workflow with resolved
@@ -1305,10 +1297,8 @@ branch on the verdict without parsing output:
   Completed under `checks.crucible.phase5.cliResumeWorkflow`: the CLI now
   parses `resume <SAVEPOINT>` with `--until`, `--max-virtual-time`,
   `--interactive`, and `--watch`, decodes `.crucible-savepoint` handles exported
-  by `save`, validates their compact scenario and schedule evidence, loads bare
-  `blake3:<hash>` checkpoint references from the local DAG-store checkpoint
-  closure index, validates malformed handles as artifact errors, and executes
-  handle- or store-backed local-double resume to quiescence, virtual-time,
+  by `save`, validates their compact scenario and schedule evidence, rejects bare checkpoint hashes, validates malformed handles as artifact errors,
+  and executes handle-backed local-double resume to quiescence, virtual-time,
   interactive command driving, or a declared property violation by rebuilding
   the temporal graph, validating
   property-stop breakpoint firing evidence when requested, stopping with a
@@ -1373,12 +1363,11 @@ branch on the verdict without parsing output:
   Completed under `checks.crucible.phase5.cliForkWorkflow`: the CLI now
   parses `fork <SAVEPOINT>` with global `--seed`, repeatable `--override
   decision=value`, `--until`, `--max-virtual-time`, `--label`, `--interactive`,
-  and `--watch`; resolves `.crucible-savepoint` handles and direct
-  `blake3:<hash>` checkpoint references through the shared savepoint evidence
-  loader, including local DAG-store checkpoint closure indexes; validates
+  and `--watch`; resolves current `.crucible-savepoint` handles through the
+  shared savepoint evidence loader and rejects bare checkpoint hashes; validates
   override pairs, virtual-time budgets, malformed handles, and
   conflicting explicit `--seed` plus `--override`; executes handle-backed
-  and store-backed no-divergence local-double forks through an independent child
+  no-divergence local-double forks through an independent child
   session to quiescence, virtual-time, or interactive command boundaries; applies
   repeatable post-fork `--override` decisions through the session fork path,
   rejects free-form coordinates, requires production live-network choices to be
@@ -1406,8 +1395,8 @@ branch on the verdict without parsing output:
   post-branch guest request comes from cursor zero under the branch seed.
   Standard unattended local-QEMU forks without reseeding or overrides now use
   the shared campaign continuation owner for virtual-time and stopped targets.
-  They accept handle- and store-backed typed Selection prefixes only when the
-  v5/v3 portable savepoint evidence authenticates the exact campaign replay
+  They accept handle-backed typed Selection prefixes only when the current v6
+  portable savepoint evidence authenticates the exact campaign replay
   closure. The projected fork retains the source checkpoint as its branch point
   and carries the campaign closure into its child reproduction artifact;
   divergent, interactive, property, and quiescence recipes stay on the session
@@ -1430,9 +1419,8 @@ branch on the verdict without parsing output:
   by validating both artifacts, requiring matching
   replay inputs, localizing the first differing canonical-log/fingerprint
   coordinate, and returning the replay-check failure exit path on divergence.
-  `replay --to <SAVEPOINT>` now accepts a savepoint handle or local DAG-store
-  checkpoint hash; a v3 artifact also resolves its own terminal checkpoint
-  hash from the embedded scenario, schedule, and live frontier. It validates
+  `replay --to <SAVEPOINT>` accepts a current savepoint handle and rejects bare
+  checkpoint hashes. It validates
   the target through savepoint evidence and the pure
   replay oracle, proves the savepoint scenario identity matches the artifact,
   builds a payload-backed typed schedule-prefix proof from the target `Schedule`,
@@ -1627,7 +1615,7 @@ branch on the verdict without parsing output:
   ledgers instead of fabricating missing discovery-time signature evidence.
   Requested minimization records timeout representatives as the deterministic
   `not-applicable-timeout` no-op rather than attempting an assertion shrink.
-- [x] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
+- [ ] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
   the session read-only debugging commands (20 §4.4): instantiate +
   restore-nearest-checkpoint-replay to the coordinate
   (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`), open the gdbstub
@@ -1636,19 +1624,10 @@ branch on the verdict without parsing output:
   labelled whole-world NON-CANONICAL branch,
   `--checkpoint-stride`. — satisfies [CLI-27]; spec §17, §4; cross-ref 36,
   20 §4.4.
-  Completed under `checks.crucible.phase6.debugCliSurface`:
-  `crucible debug` is parsed as a thin session/debugger wrapper with coordinate
-  selection, target-aware coordinate defaults, gdbstub proxy listen/node controls,
-  reverse verbs routed through the debug reverse-step/goto path instead of
-  unsupported forward session step modes, read-only default, explicit
-  `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
-  and explicit at-failure target resolution. The completed
-  remote surface exposes explicit `fork-debug`, authenticated stable GDB relay,
-  actor-owned goto/reverse operations, and fork-gated guest exec/PTY/SSH without
-  admitting mutation or free control before the explicit transition.
-  The daemonless local route remains an open production-executor task and fails
-  with exit `4` before a generic QEMU probe; it never emits a successful
-  planned-only result or claims that a debugger verb executed.
+  The authenticated daemon Session surface provides the current remote debugger
+  operations. The prior gate also required retired artifact/savepoint ownership
+  and a removed local-QEMU route, so it has been deleted. Completion requires a
+  focused gate over the current Session-only command surface.
 - [x] **T-CLI-19** Validate a discovered QEMU plugin by reading its ELF dynamic
   symbol table, not by scanning the file for symbol-name bytes, so a file that
   merely contains the string cannot impersonate a plugin.

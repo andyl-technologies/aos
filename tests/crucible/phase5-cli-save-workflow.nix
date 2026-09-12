@@ -270,7 +270,7 @@
     ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifactConstants [
       {
         label = "save handle schema";
-        needle = "crucible.savepoint-handle.v3";
+        needle = "crucible.savepoint-handle.v6";
       }
     ]
     ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [

@@ -42,7 +42,6 @@
     cliRuntimeProtocolBypasses;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
-  artifactFormatGate = builtins.readFile ./phase7-reproduction-artifact-format.nix;
   releaseManifestGate = builtins.readFile ./phase7-crucible-release-manifest.nix;
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
@@ -355,16 +354,6 @@
       {
         label = "CLI live verify witnesses make artifacts optional";
         needle = "artifact: Option<Vec<u8>>";
-      }
-    ]
-    ++ failuresFor "tests/crucible/phase7-reproduction-artifact-format.nix" artifactFormatGate [
-      {
-        label = "format gate reports v2 schema";
-        needle = "schema=crucible.reproduction-artifact.v3";
-      }
-      {
-        label = "format gate reports expanded pinned identities";
-        needle = "qemu-patch-series,shmem-abi,guest-host-protocol,rpc-abi";
       }
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-release-manifest.nix" releaseManifestGate [

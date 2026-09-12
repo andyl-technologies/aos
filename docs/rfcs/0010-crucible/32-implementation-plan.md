@@ -512,14 +512,13 @@ long-held locks.
   exporting the replay-oracle-validated handle.
   `T-CLI-10` is completed through `checks.crucible.phase5.cliResumeWorkflow`, which
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
-  decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
-  checkpoint reference parsing and local DAG-store checkpoint closure loading,
+  decoding with compact scenario/schedule evidence, bare-checkpoint rejection,
   virtual-time budget validation, malformed-handle artifact errors, and
   runtime-only fat checkpoint support when deterministic execution advances the
   frontier without appending a schedule decision, including exact-frontier thin
   replay, bounded stagnation and overshoot rejection, genuine thin-checkpoint
   coverage, and strict zero-time baked-genesis validation, and
-  executable handle- or store-backed local-double resume to quiescence,
+  executable handle-backed local-double resume to quiescence,
   virtual-time, interactive command driving, or a declared property violation
   through the session checkpoint-resume API with breakpoint-firing proof for the
   property stop and replay-oracle validation for terminal savepoints, plus
@@ -561,10 +560,9 @@ long-held locks.
   `T-CLI-11` is completed through `checks.crucible.phase5.cliForkWorkflow`, which
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,
-  virtual-time budget validation, `.crucible-savepoint` handle decoding, direct
-  `blake3:<hash>` checkpoint references loaded from the local DAG-store
-  checkpoint closure index, malformed-handle artifact errors, seed/override
-  conflict usage errors, handle- and store-backed no-divergence local-double fork
+  virtual-time budget validation, current `.crucible-savepoint` handle
+  decoding, bare-checkpoint rejection, malformed-handle artifact errors,
+  seed/override conflict usage errors, handle-backed no-divergence local-double fork
   execution through an independent child session, repeatable post-fork
   `--override` decision application with fail-closed admission to the production
   scheduler's live World-network point and choice taxonomy, exact-choice
@@ -599,8 +597,8 @@ long-held locks.
   artifact-to-artifact
   `--bisect <other-artifact>` over validated matching replay inputs with
   canonical-log/fingerprint divergence localization, and `replay --to
-  <SAVEPOINT>` validation for savepoint handles or local DAG-store checkpoint
-  hashes through savepoint evidence, scenario-identity matching, artifact
+  <SAVEPOINT>` validation for current savepoint handles through savepoint
+  evidence, scenario-identity matching, artifact
   decision-count bound checks, payload-backed typed schedule-prefix proof with
   equal-length non-prefix and missing-prefix-payload rejection, pure
   replay-oracle validation, and unified model temporal-graph replay
@@ -770,24 +768,11 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   `fork` marker flagged non-canonical, excludes the branch from replay-oracle and
   `(seed, scenario, schedule)` artifacts, and stores arbitrary guest edits only
   in a never-model-reproducible debug-edit script;
-  `T-DBG-7` is green through `checks.crucible.phase6.debugTargetResolver`, which
-  resolves `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, and
-  divergence-bisection targets into replay-checked debug `goto` requests;
-  `T-DBG-8`/`T-CLI-18` are completed through `checks.crucible.phase6.debugCliSurface`, which implements the
-  `crucible debug` parser and planner as a stateless session/debugger wrapper over
-  target-aware coordinate defaults, target resolution, session query/snapshot/fork
-  commands, debug reverse-step/goto restore-plus-replay operations, the mediated
-  gdbstub proxy, read-only default inspection, explicit non-canonical mutation
-  branches, no-symbol-server ownership, coherent multi-vCPU gdb threads, and
-  disabled raw gdb single-step. The command resolves and boots the hermetic
-  packaged QEMU/plugin backend before reporting the delegated debug plan. The
-  remote path additionally exposes controller-leased GDB relay plus explicit
-  whole-world guest-introspection fork, argv exec, PTY, and configured in-guest
-  SSH byte bridging through the bounded public protocol, with opt-in bounded
-  branch-local transcript files. A configurable response-idle deadline now
-  attempts bounded cleanup and controller-lease release for an unresponsive
-  guest channel instead of allowing agent-driven `exec`, PTY, or SSH clients to
-  wait forever.
+  `T-DBG-7` remains open after removal of the retired artifact/savepoint target
+  gate; its replacement must exercise the authenticated daemon Session owner;
+  `T-DBG-8`/`T-CLI-18` remain open after removal of the gate that mixed the
+  current authenticated daemon Session surface with retired artifact/savepoint
+  targets and a removed local-QEMU route.
   Controller-leased
   `goto`, `reverse-step`, and `reverse-continue` carry operator intent only;
   the actor binds that intent to its authoritative configuration, event-log

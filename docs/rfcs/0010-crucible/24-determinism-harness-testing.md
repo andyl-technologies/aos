@@ -1109,41 +1109,20 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   [HARN-23] only after that live replay passes. T-HARN-23 remains open because
   the native run does not yet apply the full randomized worker, wall-clock,
   varied-core, and host-I/O-stall matrix required by [HARN-22].
-- [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
+- [ ] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into
   failures and the CLI. — satisfies [HARN-27], [HARN-29]; spec §12.
-  Completed by `checks.crucible.phase7.reproductionArtifactFormat`:
-  `crucible_harness::reproduction` now defines the versioned canonical text
-  artifact format with `(seed, ScenarioDef reference, Schedule)`, stable
-  `cas:crucible-hash:` component references, inline payload records for small
-  self-contained components, pinned engine/artifact/QEMU/plugin identity fields,
-  schedule-order and digest validation, canonical encode/decode support, and a
-  representative mock e2e producer that carries its ScenarioDef material. The
-  `crucible` CLI now validates artifacts through `replay <artifact>` and has a
-  failure-artifact writer that emits the artifact plus parseable replay/debug
-  command lines. This completes the mock format and CLI validation seam.
-  T-HARN-25 adds the shared mock machine-profile verifier and identity-mismatch
-  replay failure; BLAKE3/DagStore-backed durable identities and real AOS fleet
-  reproduction remain packaging work.
-- [x] **T-HARN-25** Implement machine-independent reproduction verification
+  The prior independent harness codec and its gate were removed because they
+  did not prove ownership of the current Campaign repository closure. Completion
+  requires the sole current CLI artifact to carry and authenticate that bounded
+  closure before replay.
+- [ ] **T-HARN-25** Implement machine-independent reproduction verification
   (re-run from artifact on a different host profile ⇒ byte-identical) and fail
   loudly on engine/ABI/QEMU identity mismatch. — satisfies [HARN-28]; spec §12.
-  Completed by `checks.crucible.phase7.machineIndependentReproduction`:
-  `crucible_harness::reproduction` now verifies versioned artifacts by decoding
-  canonical `(seed, ScenarioDef reference, Schedule)` bytes, checking the pinned
-  engine/artifact/QEMU/plugin identity, loading recorded producer canonical-log
-  and final-fingerprint evidence, the source producer artifact digest, and
-  recorded decision payloads from content-addressed artifact components,
-  recomputing the producer artifact digest from the decoded ScenarioDef payload
-  plus recorded decisions/backend identity, replaying through the host-adversary
-  fixture on a baseline and at least one different machine profile,
-  reconstructing the canonical mock e2e log from the versioned artifact, and
-  requiring every replay to match the producer evidence byte-for-byte. The
-  `crucible` CLI now rejects replay artifacts whose pinned identity differs
-  from the selected local replay identity with exit code 3, including QEMU build
-  identity drift. This closes the shared mock artifact machine-profile route;
-  physical AOS VM/fleet reproduction remains with the packaging and fleet gates.
+  This remains open until a repository-authenticated current Campaign artifact
+  is replayed on a distinct physical machine profile with exact identity and
+  output comparison.
 - [x] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
   green-before-advance, with `gate:signal-fault-system` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.

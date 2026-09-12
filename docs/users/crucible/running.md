@@ -164,8 +164,8 @@ savepoint-<label>-<digest>.crucible-savepoint
 ```
 
 Keep a savepoint handle with the DAG store that produced it. A self-contained
-failure artifact embeds its critical reproduction material, but a store-backed
-component or direct checkpoint hash still requires the corresponding store.
+failure artifact embeds its critical reproduction material. Bare checkpoint
+hashes are not accepted as portable resume or fork inputs.
 
 ## Exit codes
 
