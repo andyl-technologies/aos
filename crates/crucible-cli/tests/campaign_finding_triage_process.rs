@@ -80,7 +80,7 @@ fn public_cli_authenticates_and_triages_campaign_finding_v4() -> Result<(), Box<
     assert_failure_contains(
         "cross-principal proof mutation",
         &proof_failure,
-        "object proof was rejected: campaign service protocol or response validation failed",
+        "triage replay segment proof was rejected: campaign service protocol or response validation failed",
     );
 
     let payload_failure = run_triage(

@@ -212,7 +212,7 @@ pub fn step(config: &Configuration, decision: Decision) -> Configuration {
 /// # Errors
 ///
 /// Returns [`EngineError::AppRandomDrawCapExceeded`] when `schedule` contains
-/// more legacy [`Decision::AppRandom`] entries or standardized typed
+/// more direct guest [`Decision::AppRandom`] entries or standardized typed
 /// app-random selections than `def` admits.
 pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineError> {
     validate_app_random_draw_cap(def, schedule)?;

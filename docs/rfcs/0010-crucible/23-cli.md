@@ -262,10 +262,8 @@ canonical event-log format.
   20 §2), the CLI MUST write a self-contained reproduction artifact `(seed,
   ScenarioDef, Schedule)` (06 §7.1, 24 §12) to `--artifact-dir` and MUST print a
   copy-pasteable `crucible replay <artifact>` command that reproduces the run
-  bit-identically. The failure footer MUST additionally print a copy-pasteable
-  `crucible debug <artifact> --at-failure` command (§16) that opens the
-  time-travel debugger positioned at the violation. The printed commands and the
-  artifact together MUST be sufficient to reproduce and debug with no other input
+  bit-identically. The printed replay command and artifact MUST be sufficient to
+  reproduce the failure with no other input
   ([HARN-27]). *Gate:* `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §4,
   §16; cross-ref 06 §7.1, 24 §12.
 
@@ -975,7 +973,7 @@ reverse verbs. It introduces no determinism mechanism of its own ([CLI-1]).
                               seed is exactly 64 lowercase hexadecimal digits.
     --at <virtual-time|icount>   Open at this coordinate (20 §4.4 DebugCoordinate).
     --at-event <seq>          Open at this event-log sequence position (19).
-    --at-failure              Open at the run's first property violation (the failure footer's verb, §4).
+    --at-failure              Open at the run's first recorded property violation.
     --at-checkpoint <id>      Open at this checkpoint id (07).
     --node <id>               Which node's gdbstub to open. Default: the failing node.
     --gdb-listen <addr>       Address QEMU's gdbstub listens on. Default: a local port.
@@ -1393,13 +1391,13 @@ branch on the verdict without parsing output:
   embedded seed remains the scenario-form seed while CLI output reports the fork
   seed provenance, separate model artifact/replay-state evidence for the same
   child configuration, and terminal child savepoint replay-oracle validation;
-  routes explicitly selected local-QEMU forks through the same child-session
-  materialization with resolved QEMU/plugin identity provenance in stdout and
+  routes explicitly selected local-QEMU forks through the authenticated campaign
+  continuation with resolved QEMU/plugin identity provenance in stdout and
   the canonical log; and process-tests real-binary `fork --backend qemu` JSONL
   output and child artifact creation through marker-resolved QEMU/plugin
   identity. The selected QEMU backend now requires a successful independent
   packaged-QEMU/plugin boot before the child workflow begins; the
-  backend-agnostic prefix, independently materialized child session, and
+  backend-agnostic prefix, independently materialized campaign continuation, and
   standalone child artifact prove the child does not depend on the parent
   process. For the production QEMU backend, `--seed` now re-seeds the live
   scheduler, World-network, block, 9p, and plugin-served app-random streams at
@@ -1636,8 +1634,7 @@ branch on the verdict without parsing output:
   (`--node`/`--gdb-listen`, [SESS-32]), interactive reverse verbs, read-only
   default with `--allow-mutate` authorizing an explicit `fork-debug` that creates a
   labelled whole-world NON-CANONICAL branch,
-  `--checkpoint-stride`; print the `crucible debug <artifact> --at-failure` footer
-  line on a non-passing run. — satisfies [CLI-27]; spec §17, §4; cross-ref 36,
+  `--checkpoint-stride`. — satisfies [CLI-27]; spec §17, §4; cross-ref 36,
   20 §4.4.
   Completed under `checks.crucible.phase6.debugCliSurface`:
   `crucible debug` is parsed as a thin session/debugger wrapper with coordinate
@@ -1645,7 +1642,7 @@ branch on the verdict without parsing output:
   reverse verbs routed through the debug reverse-step/goto path instead of
   unsupported forward session step modes, read-only default, explicit
   `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
-  and the at-failure footer shared with failure artifact emission. The completed
+  and explicit at-failure target resolution. The completed
   remote surface exposes explicit `fork-debug`, authenticated stable GDB relay,
   actor-owned goto/reverse operations, and fork-gated guest exec/PTY/SSH without
   admitting mutation or free control before the explicit transition.

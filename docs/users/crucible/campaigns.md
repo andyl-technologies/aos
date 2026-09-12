@@ -216,7 +216,7 @@ the manifest contains 1 through 65,536 decisions, each delivery order contains
 1 through 65,536 events, and authored strings are bounded to 4,096 bytes without
 NUL or line breaks. The compiler rejects unknown fields and variants, re-decodes
 and byte-compares the canonical Schedule V2, and never replaces an existing
-output. It does not author legacy `AppRandom` or campaign `Selection` decisions.
+output. It does not author direct guest `AppRandom` or campaign `Selection` decisions.
 Selections require authenticated opportunity/domain/origin resolution, and
 runtime replay remains the final authority that an authored scheduling point is
 valid for the scenario.

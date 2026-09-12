@@ -1,7 +1,7 @@
 //! Test fixture for exercising the guarded campaign savepoint projection path.
 //!
 //! The lifecycle is a deterministic modeled test double. It covers campaign
-//! capture ownership and legacy result projection; native-QEMU acceptance is a
+//! capture ownership and campaign result projection; native-QEMU acceptance is a
 //! separate packaged VM gate.
 
 use std::collections::BTreeMap;
