@@ -5,8 +5,8 @@ use super::*;
 /// Discovery path that produced an interesting finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FindingDiscoveryPath {
-    /// Finding was produced by an interactive fork/session operation.
-    InteractiveFork,
+    /// Finding was produced by a campaign fork operation.
+    CampaignFork,
     /// Finding was produced by state-space search.
     StateSpaceSearch,
     /// Finding was produced by coverage-guided fuzzing.

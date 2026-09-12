@@ -39,12 +39,12 @@ use crucible_campaign::{
     ChoiceDiscovery, ChoiceDomain, ChoiceSource, ChoiceValue, ConfigurationArtifact,
     ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, DiscoveryRequest,
     ExecutionId, ExecutionRetentionIntent, ExecutorRejection, ExecutorService, ExplorerPolicy,
-    FairnessPolicy, FindingCandidateBundleId, FindingExactPins, MeasurementSet, Observation,
-    ObservationCandidate, ObservationCondition, ObservationEventLogProof, ObservationId,
-    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
-    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, RetentionPolicy, ScenarioArtifact,
-    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
+    FairnessPolicy, FindingCandidateBundleId, FindingExactPins, Observation, ObservationCandidate,
+    ObservationCondition, ObservationEventLogProof, ObservationId, ObservationQuantumBoundary,
+    ObservationStopProof, ObservationStopSatisfaction, PropertyEvidence, PropertyVerdict,
+    PropertyVerdictSet, RetentionPolicy, ScenarioArtifact, ScenarioDefId, SelectableDeclaration,
+    Selection, SelectionOrigin, SelectionReplayMismatchKind, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest,
 };
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
@@ -2404,7 +2404,10 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         )),
         candidates_digest: crucible::ContentHash::from_bytes(b"finding-replay-signal-candidates"),
         candidate_count: 2,
-        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Transition(vec![
+            crucible::ContentHash::from_bytes(b"signal-transition-a"),
+            crucible::ContentHash::from_bytes(b"signal-transition-b"),
+        ]),
         selected_index: None,
         overridden: false,
     };

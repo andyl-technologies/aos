@@ -346,10 +346,9 @@ impl CampaignRepository {
                     {
                         return Err(integrity("attempt-branch-edge-mismatch"));
                     }
-                    if path.segments().is_some_and(|segments| {
-                        segments.last().copied()
-                            != Some(crate::BranchPathSegment::new(branch_point, edge))
-                    }) {
+                    if path.segments().last().copied()
+                        != Some(crate::BranchPathSegment::new(branch_point, edge))
+                    {
                         return Err(integrity("attempt-branch-path-terminal-scope-mismatch"));
                     }
                     ValidatedAttempt {

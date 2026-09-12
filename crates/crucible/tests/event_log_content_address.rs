@@ -239,10 +239,7 @@ fn resumed_event_log_continues_appending_after_stored_offset() {
 
 #[test]
 fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-content-address",
-        "temporal-graph",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let child = step(
@@ -321,10 +318,7 @@ fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
 
 #[test]
 fn thin_replay_rejects_stale_nonzero_event_log_offset() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-content-address",
-        "stale-offset-replay",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
     let first = step(

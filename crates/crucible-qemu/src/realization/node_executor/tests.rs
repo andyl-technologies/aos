@@ -346,7 +346,7 @@ fn qemu_node_realization_executor_loads_baked_genesis_before_node_replay()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "baked"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let config = Configuration::genesis(scenario("baked"));
     let checkpoint = checkpoint_for_config("baked", &config, &node, 3, CheckpointKind::Fat)?;
     let baked = QemuBakedGenesisSnapshot {
@@ -504,7 +504,7 @@ fn guarded_replay_validation_reaps_fat_probe_before_thin_launch()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "guarded-replay-validation"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let config = Configuration::genesis(scenario("guarded-replay-validation"));
     let runtime_id = hash("runtime", "guarded-replay-validation");
     let exact = QemuVmSnapshot::diskless(
@@ -588,7 +588,7 @@ fn failed_realization_surrenders_the_active_node_for_quarantine()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "quarantine"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let config = Configuration::genesis(scenario("quarantine"));
     let checkpoint = checkpoint_for_config("quarantine", &config, &node, 3, CheckpointKind::Fat)?;
     let baked = QemuBakedGenesisSnapshot {
@@ -642,7 +642,7 @@ fn qemu_node_realization_executor_replays_without_generic_snapshot_or_restore()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "replay"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let genesis = Configuration::genesis(scenario("replay"));
     let target = config_with_decision_values(genesis.def.clone(), &[42]);
     let checkpoint =
@@ -695,7 +695,7 @@ fn qemu_node_realization_executor_replays_without_generic_snapshot_or_restore()
 fn replay_rejects_a_foreign_event_log_before_backend_work() -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "foreign-event-log"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let genesis = Configuration::genesis(scenario("foreign-event-log"));
     let target = config_with_decision_values(genesis.def.clone(), &[7]);
     let checkpoint =
@@ -740,7 +740,7 @@ fn replay_preserves_an_exact_nonzero_event_log_continuation() -> Result<(), Qemu
 {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "resumed-event-log"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let genesis = Configuration::genesis(scenario("resumed-event-log"));
     let target = config_with_decision_values(genesis.def.clone(), &[8]);
     let mut checkpoint =
@@ -828,7 +828,7 @@ fn live_realization_capability_borrows_only_the_installed_node_and_reaps_it()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "live-capability"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let config = Configuration::genesis(scenario("live-capability"));
     let checkpoint =
         checkpoint_for_config("live-capability", &config, &node, 17, CheckpointKind::Fat)?;
@@ -882,7 +882,7 @@ fn final_drain_change_is_measured_from_the_executor_owned_log() -> Result<(), Qe
 {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "owned-final-log"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let config = Configuration::genesis(scenario("owned-final-log"));
     let checkpoint =
         checkpoint_for_config("owned-final-log", &config, &node, 17, CheckpointKind::Fat)?;
@@ -925,7 +925,7 @@ fn live_exact_capture_authenticates_and_seals_the_installed_basis()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "live-capture"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let config = Configuration::genesis(scenario("live-capture"));
     let checkpoint =
         checkpoint_for_config("live-capture", &config, &node, 23, CheckpointKind::Fat)?;
@@ -964,7 +964,7 @@ fn live_exact_capture_rejects_a_foreign_log_after_sealing_without_capture()
 -> Result<(), QemuVmRealizationError> {
     let log = shared_log();
     let node = node_id();
-    let world = World::from_content_hash(hash("world", "foreign-capture-log"));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let config = Configuration::genesis(scenario("foreign-capture-log"));
     let mut checkpoint = checkpoint_for_config(
         "foreign-capture-log",

@@ -67,8 +67,6 @@ pub enum FindingExactRetentionIncomplete {
     SelectionFailed,
     /// Selected roots could not be durable before operational protection ended.
     DurableStagingFailed,
-    /// The admission closure cannot authenticate one governing campaign policy.
-    MissingAuthenticatedPolicyBasis,
 }
 
 impl Canonical for FindingExactRetentionIncomplete {
@@ -80,7 +78,6 @@ impl Canonical for FindingExactRetentionIncomplete {
             Self::CandidateAuthenticationFailed => 3,
             Self::SelectionFailed => 4,
             Self::DurableStagingFailed => 5,
-            Self::MissingAuthenticatedPolicyBasis => 6,
         });
     }
 
@@ -92,7 +89,9 @@ impl Canonical for FindingExactRetentionIncomplete {
             3 => Ok(Self::CandidateAuthenticationFailed),
             4 => Ok(Self::SelectionFailed),
             5 => Ok(Self::DurableStagingFailed),
-            6 => Ok(Self::MissingAuthenticatedPolicyBasis),
+            6 => Err(CampaignCodecError::InvalidValue {
+                reason: "missing finding retention policy requires offline migration",
+            }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "finding-exact-retention-incomplete",
                 tag,
@@ -143,7 +142,7 @@ impl Canonical for FindingExactRetentionDisposition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FindingExactRetention {
     snapshot: CampaignSnapshotId,
-    policy: Option<CampaignPolicyId>,
+    policy: CampaignPolicyId,
     admission: AttemptAdmissionId,
     authenticated_candidates: u32,
     disposition: FindingExactRetentionDisposition,
@@ -158,7 +157,7 @@ impl FindingExactRetention {
     /// candidate count exceeds 4,096.
     pub fn new(
         snapshot: CampaignSnapshotId,
-        policy: Option<CampaignPolicyId>,
+        policy: CampaignPolicyId,
         admission: AttemptAdmissionId,
         authenticated_candidates: u32,
         disposition: FindingExactRetentionDisposition,
@@ -182,18 +181,6 @@ impl FindingExactRetention {
                 reason: "incomplete finding exact retention has authenticated candidates",
             });
         }
-        let missing_policy = matches!(
-            disposition,
-            FindingExactRetentionDisposition::Incomplete(
-                FindingExactRetentionIncomplete::MissingAuthenticatedPolicyBasis
-            )
-        );
-        if missing_policy != policy.is_none() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding exact retention policy basis disagrees with disposition",
-            });
-        }
-
         Ok(Self {
             snapshot,
             policy,
@@ -211,7 +198,7 @@ impl FindingExactRetention {
 
     /// Returns the authenticated active policy that decided retention.
     #[must_use]
-    pub const fn policy(self) -> Option<CampaignPolicyId> {
+    pub const fn policy(self) -> CampaignPolicyId {
         self.policy
     }
 
@@ -237,16 +224,22 @@ impl FindingExactRetention {
 impl Canonical for FindingExactRetention {
     fn encode(&self, encoder: &mut Encoder) {
         self.snapshot.encode(encoder);
-        self.policy.encode(encoder);
+        Some(self.policy).encode(encoder);
         self.admission.encode(encoder);
         self.authenticated_candidates.encode(encoder);
         self.disposition.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let snapshot = CampaignSnapshotId::decode(decoder)?;
+        let policy = Option::<CampaignPolicyId>::decode(decoder)?.ok_or(
+            CampaignCodecError::InvalidValue {
+                reason: "finding exact retention requires a policy",
+            },
+        )?;
         Self::new(
-            CampaignSnapshotId::decode(decoder)?,
-            Option::<CampaignPolicyId>::decode(decoder)?,
+            snapshot,
+            policy,
             AttemptAdmissionId::decode(decoder)?,
             u32::decode(decoder)?,
             FindingExactRetentionDisposition::decode(decoder)?,
@@ -1496,9 +1489,10 @@ impl FindingCandidateBundle {
                 "exact-retention.snapshot".to_owned(),
                 exact_retention.snapshot().content_id(),
             ));
-            if let Some(policy) = exact_retention.policy() {
-                children.push(("exact-retention.policy".to_owned(), policy.content_id()));
-            }
+            children.push((
+                "exact-retention.policy".to_owned(),
+                exact_retention.policy().content_id(),
+            ));
             children.push((
                 "exact-retention.admission".to_owned(),
                 exact_retention.admission().content_id(),
@@ -1815,7 +1809,7 @@ mod tests {
         .expect("policy ID");
         let admission = AttemptAdmissionId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            2,
+            3,
             b"finding-exact-retention-admission",
         ))
         .expect("admission ID");
@@ -1826,7 +1820,7 @@ mod tests {
                 b"finding-exact-retention-snapshot",
             ))
             .expect("snapshot ID"),
-            Some(policy),
+            policy,
             admission,
             0,
             FindingExactRetentionDisposition::Incomplete(

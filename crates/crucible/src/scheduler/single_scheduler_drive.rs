@@ -183,23 +183,6 @@ impl SingleScheduler {
         blockers
     }
 
-    /// Queues a topology change for the next quantum boundary.
-    ///
-    /// This is the infallible legacy entry point and is signature-compatible with
-    /// its prior form. A change armed at an activation virtual time the run has
-    /// already passed (`at < frontier`) cannot apply — its activation cap can never
-    /// reach an instant below the frontier. Rather than wedge the run with a vague,
-    /// repeating per-node "missed exact virtual time" boundary error at apply time,
-    /// such a change is still enqueued but the next boundary surfaces a clear,
-    /// localized [`SchedulerError::TopologyActivationInPast`] (see
-    /// `SingleScheduler::apply_topology_changes_at_boundary`). Callers that can
-    /// observe a `Result` should prefer [`SingleScheduler::schedule_topology_change`],
-    /// which rejects the same condition at enqueue time.
-    pub fn queue_topology_change(&mut self, change: SchedulerTopologyChange) {
-        self.topology_changes.push(change);
-        self.topology_changes.sort_by(topology_change_order);
-    }
-
     /// Consumes a network-link latency recompute signal and schedules lookahead refresh.
     ///
     /// `crucible-device` owns the live network-link fault table. When a link's
@@ -344,12 +327,9 @@ impl SingleScheduler {
         };
         for change in changes {
             if let Some(activation_time) = change.activation_time {
-                // Fail loud and localized for a change armed in the past. The
-                // infallible `queue_topology_change` entry point cannot reject at
-                // enqueue time, so an `at < frontier` change reaches here; surface a
-                // clear `TopologyActivationInPast` rather than deferring it forever
-                // (a silent wedge) or letting `topology_activation_ready` report a
-                // vague per-node skew error.
+                // Keep boundary admission fail-closed even though current enqueue
+                // paths reject a change armed in the past. This guards decoded or
+                // otherwise reconstructed scheduler state before applying it.
                 if activation_time < frontier {
                     return Err(SchedulerError::TopologyActivationInPast {
                         at: activation_time.nanos,
@@ -1098,7 +1078,7 @@ impl SingleScheduler {
         // The gate on a non-empty `effective_topology` mirrors the synthetic-
         // liveness exemption: when no live edge set is installed, the per-node
         // `network_lookahead` is a pre-supplied fixed parking point rather than a
-        // frontier-tracking CMB bound, so the legacy idle-on-reach behavior is
+        // frontier-tracking CMB bound, so the fixed-cap idle-on-reach behavior is
         // retained.
         let network_bounded = !self.effective_topology.edges().is_empty()
             && horizon.source == SchedulerHorizonSource::NetworkLookahead;

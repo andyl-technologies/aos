@@ -300,8 +300,10 @@ impl SignalFaultSelectable {
 
     /// Builds one exact campaign branch selection.
     ///
-    /// `candidate_index == candidate_count` selects the unmodified model result;
-    /// lower values select the corresponding finite override candidate.
+    /// For transition and parameter domains, `candidate_index ==
+    /// candidate_count` selects the unmodified model result. Lower values
+    /// select finite override candidates. Boolean outcomes use indices zero
+    /// and one directly.
     ///
     /// # Errors
     ///

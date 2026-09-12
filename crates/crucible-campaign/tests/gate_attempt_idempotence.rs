@@ -16,10 +16,9 @@ use crucible_campaign::{
     ChoiceCoordinate, ChoiceDomain, ChoiceOpportunity, ChoicePolicy, ChoiceSource, ChoiceValue,
     ConfigurationId, ControlRequest, CoverageProjection, DaemonEpoch, ExecutionId,
     ExecutionRetentionIntent, ExecutorClient, ExecutorRejection, ExecutorService, ExplorerPolicy,
-    FairnessPolicy, MeasurementSeries, MeasurementSet, MetricValue, Observation,
-    ObservationDisposition, ProgressiveWideningPolicy, PropertyEvidence, PropertyVerdict,
-    PropertyVerdictSet, Proposal, PuctPolicy, RetentionPolicy, ScenarioDefId,
-    SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
+    FairnessPolicy, MeasurementSet, Observation, ObservationDisposition, ProgressiveWideningPolicy,
+    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, Proposal, PuctPolicy, RetentionPolicy,
+    ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse,
 };
 use crucible_cas::content_store::{
@@ -599,15 +598,19 @@ fn build_observation(
             format!("child:{latency}").into_bytes(),
         )
         .expect("child artifact");
-    let measurements = MeasurementSet::new(BTreeMap::from([(
-        "latency".to_owned(),
-        MeasurementSeries::new(
-            vec![MetricValue::Unsigned(latency)],
-            MetricValue::Unsigned(latency),
-            BTreeSet::new(),
-        )
-        .expect("measurement series"),
-    )]))
+    let measurements = MeasurementSet::from_evaluation(
+        CampaignHash::derive(
+            "test.measurement",
+            b"attempt-idempotence.measurement-definitions",
+        ),
+        1,
+        CampaignHash::derive(
+            "test.measurement",
+            b"attempt-idempotence.measurement-evaluation",
+        ),
+        latency.to_be_bytes().to_vec(),
+        BTreeSet::new(),
+    )
     .expect("measurement set");
     let measurements = repository
         .publish_measurement_set(&measurements)

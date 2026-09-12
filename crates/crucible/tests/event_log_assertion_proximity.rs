@@ -263,10 +263,7 @@ fn scheduler_appends_report_proximities_to_unified_event_log() {
 
 #[test]
 fn graph_cache_snapshot_stamps_checkpoint_assertion_proximity_from_event_log_projection() {
-    let world = World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.event-log-assertion-proximity.world",
-        "graph-cache-stamping",
-    ));
+    let world = World::from_nodes(Vec::new()).expect("empty test world should build");
     let scenario = world.scenario_def();
     let genesis = Configuration::genesis(scenario);
     let child = step(

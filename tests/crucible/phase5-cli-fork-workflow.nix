@@ -134,7 +134,7 @@
       }
       {
         label = "fork local-QEMU thin-replay proof";
-        needle = "fork-thin-replay";
+        needle = "fork-campaign-default-path";
       }
       {
         label = "fork child actor runner";

@@ -46,7 +46,8 @@ pub(super) fn repository_service_failure(
 ) -> CampaignServiceFailure {
     match error {
         CampaignRepositoryError::Budget(_)
-        | CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. } => {
+        | CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. }
+        | CampaignRepositoryError::MigrationBudgetExceeded { .. } => {
             CampaignServiceFailure::ResourceExhausted
         }
         CampaignRepositoryError::Store(error) => store_service_failure(error),

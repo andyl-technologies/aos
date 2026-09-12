@@ -182,7 +182,7 @@ fn gate_unifying_view_validates_every_advanced_operation_on_one_graph() -> Resul
     let minimization_target = failure_fingerprint_for_schedule(&scenario, &fork.branch.schedule)?
         .ok_or("fork branch should violate the assertion")?;
     let original_finding = FindingReproductionArtifact::capture(
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         minimization_target,
         &scenario,
         &fork.branch,
@@ -382,7 +382,7 @@ fn gate_unifying_view_rejects_mismatched_operation_evidence() -> Result<(), Box<
     let minimization_target = failure_fingerprint_for_schedule(&scenario, &fork.branch.schedule)?
         .ok_or("fork branch should violate the assertion")?;
     let original_finding = FindingReproductionArtifact::capture(
-        FindingDiscoveryPath::InteractiveFork,
+        FindingDiscoveryPath::CampaignFork,
         minimization_target,
         &scenario,
         &fork.branch,

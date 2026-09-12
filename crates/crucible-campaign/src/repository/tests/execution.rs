@@ -6,13 +6,12 @@ use crate::{
     CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
     CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, ExactCheckpointId,
     ExecutorClient, ExecutorControlService, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, Finding, FindingCandidateBundle, FindingExactPins, FindingKind,
-    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingOccurrenceSet,
-    FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
-    GetAttemptExecutionDisposition, GetAttemptExecutionRequest, GetAttemptExecutionResponse,
-    Objective, ObjectiveGoal, ObjectiveValue, ResumeAttemptExecutionDisposition,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SelectionOrigin,
-    evaluate_objectives,
+    ExecutorStatusService, FindingCandidateBundle, FindingExactPins, FindingKind,
+    FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+    FindingSignatureMinimizationEvidence, FindingTarget, GetAttemptExecutionDisposition,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, Objective, ObjectiveGoal,
+    ObjectiveValue, ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
+    ResumeAttemptExecutionResponse, SelectionOrigin, evaluate_objectives,
 };
 
 struct CompletingExecutor {

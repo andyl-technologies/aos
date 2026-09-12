@@ -182,13 +182,13 @@ pub struct AttemptExecutionRuntimeBasis {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttemptFindingRetentionPolicy {
     basis: AttemptRetentionPolicyBasis,
-    retention: Option<RetentionPolicy>,
+    retention: RetentionPolicy,
 }
 
 impl AttemptFindingRetentionPolicy {
     pub(crate) const fn new(
         basis: AttemptRetentionPolicyBasis,
-        retention: Option<RetentionPolicy>,
+        retention: RetentionPolicy,
     ) -> Self {
         Self { basis, retention }
     }
@@ -199,9 +199,9 @@ impl AttemptFindingRetentionPolicy {
         self.basis
     }
 
-    /// Returns the policy's semantic retention settings when canonically bound.
+    /// Returns the policy's semantic retention settings.
     #[must_use]
-    pub const fn retention(self) -> Option<RetentionPolicy> {
+    pub const fn retention(self) -> RetentionPolicy {
         self.retention
     }
 }

@@ -179,7 +179,7 @@
       }
       {
         label = "resume local-QEMU thin-replay proof";
-        needle = "resume-thin-replay";
+        needle = "resume-campaign-default-path";
       }
       {
         label = "resume terminal configuration report";

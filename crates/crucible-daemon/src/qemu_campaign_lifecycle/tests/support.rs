@@ -1173,7 +1173,7 @@ pub(super) fn owned_finding_candidate(
     property: &str,
 ) -> ObservationCandidate {
     let child = finding_candidate_artifact(input);
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("owned measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::from([(
         property.to_owned(),
         PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new())
@@ -1267,13 +1267,7 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let request =
         publish_composed_candidate_input(&repository, &store, &input, &discovery, &selection);
-    let final_event = SchedulerEventLogEntry::assertion_state_observation(
-        1,
-        VirtualTime { ticks: 1 },
-        assertion.clone(),
-        AssertionPhase::Violated,
-    );
-    let decisions = input
+    let decisions: VecDeque<_> = input
         .start()
         .configuration()
         .schedule
@@ -1281,6 +1275,15 @@ pub(super) fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .iter()
         .cloned()
         .collect();
+    let decision_frontier = u64::try_from(decisions.len()).expect("fixture decision count");
+    let final_event = SchedulerEventLogEntry::assertion_state_observation(
+        decision_frontier,
+        VirtualTime {
+            ticks: decision_frontier,
+        },
+        assertion.clone(),
+        AssertionPhase::Violated,
+    );
     let production_boundaries = Arc::new(Mutex::new(Vec::new()));
     let mut runner = crate::packaged_qemu_executor::packaged_finding_replay_runner(
         lifecycle.clone(),

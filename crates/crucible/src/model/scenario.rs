@@ -7,27 +7,10 @@ mod definition;
 pub use definition::ScenarioDef;
 
 impl World {
-    /// Builds an opaque world handle from an already-computed content address.
-    ///
-    /// This is the compatibility path for backend tests and adapters that do
-    /// not yet carry full spatial-graph node material.
-    #[must_use]
-    pub fn from_content_hash(id: ContentHash) -> Self {
-        Self {
-            id,
-            topology_nodes: Vec::new(),
-            nodes: Vec::new(),
-            links: Vec::new(),
-            fault_topology: WorldFaultTopology::default(),
-            fault_topology_id: ContentHash::default(),
-            fault_topology_wire: Vec::new(),
-        }
-    }
-
     /// Builds a world from an already-recorded identity and validated topology.
     ///
-    /// This compatibility path lets adapters preserve an external world handle
-    /// while still enforcing the same static topology invariants as
+    /// VM realization uses this constructor to validate an externally recorded
+    /// world handle against the same static topology invariants as
     /// [`World::from_nodes_and_links`]. Non-empty logical worlds derive
     /// [`ScenarioDef`] and bake identity from their heterogeneous node/link material rather
     /// than this recorded handle.
@@ -98,15 +81,6 @@ impl World {
     #[must_use]
     pub fn vm_nodes(&self) -> &[WorldNode] {
         &self.nodes
-    }
-
-    /// Returns the canonical heterogeneous logical node topology.
-    ///
-    /// This compatibility spelling is equivalent to [`World::nodes`]. New code
-    /// should use `nodes` to match the public RFC vocabulary.
-    #[must_use]
-    pub fn topology_nodes(&self) -> &[WorldNodeDef] {
-        self.nodes()
     }
 
     /// Iterates the world's first-class deterministic I/O sub-nodes.

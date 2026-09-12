@@ -21,7 +21,6 @@ impl DeterminismErgonomicsPlan {
         self.seed_printed_at_run_start
             && self.failure_artifact_rule.self_contained_artifact
             && self.failure_artifact_rule.replay_command_copy_pasteable
-            && self.failure_artifact_rule.debug_command_copy_pasteable
             && self.trace_formats
                 == vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table]
             && self.jsonl_streams_entries
@@ -84,7 +83,6 @@ pub(crate) enum SeedSource {
 pub(crate) struct FailureArtifactRule {
     pub(crate) self_contained_artifact: bool,
     pub(crate) replay_command_copy_pasteable: bool,
-    pub(crate) debug_command_copy_pasteable: bool,
 }
 
 pub(crate) const RUN_INTERACTIVE_ACK_QUANTA_BOUND: u64 =

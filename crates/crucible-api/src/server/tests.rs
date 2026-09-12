@@ -425,7 +425,7 @@ async fn debugger_operation_gate_blocks_controller_handoff_until_dispatch_finish
         .control_plane
         .lock()
         .await
-        .create_session(CreateSessionRequest::inline_form(
+        .create_session(CreateSessionRequest::inline(
             scenario.clone(),
             scenario.seed(),
         ))
@@ -472,7 +472,7 @@ async fn controller_release_cannot_bypass_a_live_relay_holder() -> Result<(), Bo
         .control_plane
         .lock()
         .await
-        .create_session(CreateSessionRequest::inline_form(
+        .create_session(CreateSessionRequest::inline(
             scenario.clone(),
             scenario.seed(),
         ))
@@ -542,7 +542,7 @@ async fn rejected_reacquisition_preserves_existing_controller() -> Result<(), Bo
         .control_plane
         .lock()
         .await
-        .create_session(CreateSessionRequest::inline_form(
+        .create_session(CreateSessionRequest::inline(
             scenario.clone(),
             scenario.seed(),
         ))

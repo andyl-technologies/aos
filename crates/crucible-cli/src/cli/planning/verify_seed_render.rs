@@ -466,7 +466,6 @@ pub(crate) fn plan_determinism_ergonomics(
         failure_artifact_rule: FailureArtifactRule {
             self_contained_artifact: true,
             replay_command_copy_pasteable: true,
-            debug_command_copy_pasteable: true,
         },
         trace_formats: vec![OutputFormat::Jsonl, OutputFormat::Json, OutputFormat::Table],
         jsonl_streams_entries: true,
@@ -849,18 +848,15 @@ pub(crate) fn canonical_state_wall_clock_guard() -> bool {
 pub(crate) struct ReproductionFooter {
     pub(crate) artifact_path: PathBuf,
     pub(crate) replay_command: String,
-    pub(crate) debug_command: String,
     pub(crate) self_contained_artifact: bool,
 }
 
 pub(crate) fn reproduction_footer(path: PathBuf) -> ReproductionFooter {
-    let artifact = path.display().to_string();
     ReproductionFooter {
         replay_command: format!(
             "crucible replay {}",
-            shell_quote_command_argument(&artifact)
+            shell_quote_command_argument(&path.display().to_string())
         ),
-        debug_command: crucible::DebugFailureFooterCommand::new(artifact).debug_command,
         artifact_path: path,
         self_contained_artifact: true,
     }

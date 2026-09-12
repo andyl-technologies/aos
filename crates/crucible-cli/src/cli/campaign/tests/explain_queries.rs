@@ -253,6 +253,7 @@ fn continuation_attempt_service(
             cause: service.branch_request.cause(),
             admission_ordinal: AdmissionOrdinal::new(2),
         },
+        service.snapshot.active_policy(),
     );
 
     let mut roots = service.snapshot.roots();
@@ -300,6 +301,7 @@ fn continuation_attempt_service(
         service.snapshot.active_policy(),
         roots,
         transition,
+        service.snapshot.budget_ledger(),
     )
     .expect("continuation attempt snapshot");
     let snapshot_id = snapshot.id().expect("continuation snapshot ID");
@@ -373,6 +375,7 @@ fn mismatch_explanation_frontier(
         service.snapshot.lineage(),
         service.snapshot.active_policy(),
         roots,
+        service.snapshot.budget_ledger(),
     )
     .expect("mismatched explanation snapshot");
     let snapshot_id = snapshot.id().expect("mismatched explanation snapshot ID");
@@ -401,7 +404,7 @@ fn planner_attempt_explanations_render_guidance_and_accounting() {
             BranchRequestId,
             "crucible.campaign.branch-request",
             ObjectKind::CampaignFact,
-            1,
+            2,
             "planner-explanation-request"
         ),
     );

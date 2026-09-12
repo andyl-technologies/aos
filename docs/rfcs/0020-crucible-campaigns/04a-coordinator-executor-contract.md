@@ -261,7 +261,7 @@ ListCampaignsResponseV1 = version | request_digest |
 
 GetCampaignSnapshotRequestV1 = version | principal | campaign | snapshot
 GetCampaignSnapshotResponseV1 = version | request_digest | snapshot |
-                                CampaignSnapshotV2OrV3
+                                CampaignSnapshotV3
 
 WatchCampaignRequestV1 = version | principal | campaign |
                          optional after_snapshot
@@ -274,35 +274,35 @@ MerkleScanProofV1 = node_count:u64 |
 QueryCampaignGraphRequestV1 = version | principal | campaign | snapshot |
                               optional after_key | limit
 QueryCampaignGraphResponseV1 = version | request_digest | snapshot |
-                               CampaignSnapshotV2OrV3 |
+                               CampaignSnapshotV3 |
                                entries[CampaignGraphEntryV1] |
                                optional next_after | MerkleScanProofV1
 
 QueryCampaignFindingsRequestV1 = version | principal | campaign | snapshot |
                                  optional after_signature_key | limit
 QueryCampaignFindingsResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2OrV3 |
-                                  findings[FindingV1] |
+                                  CampaignSnapshotV3 |
+                                  findings[FindingV2-or-V4] |
                                   optional next_after_signature_key |
                                   MerkleScanProofV1
 GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
                                     finding_id | object_kind
 GetCampaignFindingObjectResponseV1 = version | request_digest |
-                                     CampaignSnapshotV2OrV3 | FindingV1 |
+                                     CampaignSnapshotV3 | FindingV2-or-V4 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV1-through-V8 |
-                  1 latest ObservationV1-through-V8 |
+FindingObjectV1 = 0 ObservationV1-through-V12 |
+                  1 latest ObservationV1-through-V12 |
                   2 ReproductionArtifactV1 |
                   3 minimized ReproductionArtifactV1
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
-                                   CampaignSnapshotV2OrV3 | AttemptV1-or-V2 |
-                                   AttemptAdmissionV1-through-V3 | BranchPathV2 |
+                                   CampaignSnapshotV3 | AttemptV1-through-V4-or-V7-or-V8 |
+                                   AttemptAdmissionV3 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV1 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV1-through-V8 |
+                                   optional ObservationV1-through-V12 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -312,7 +312,7 @@ ExplainCampaignAttemptResponseV2 = version | request_digest |
 GetCampaignPlannerRankingsRequestV1 = version | principal | campaign |
                                       snapshot | PlannerStepId
 GetCampaignPlannerRankingsResponseV1 = version | request_digest |
-                                       CampaignSnapshotV2OrV3 | PlannerStepV4 |
+                                       CampaignSnapshotV3 | PlannerStepV4 |
                                        RetainedPlannerRequestV1 |
                                        MerkleLookupProofV1
 
@@ -332,7 +332,7 @@ MerkleLookupProofV1 = node_count:u64 |
 GetCampaignGraphObjectRequestV1 = version | principal | campaign | snapshot |
                                   graph_key
 GetCampaignGraphObjectResponseV1 = version | request_digest |
-                                   CampaignSnapshotV2OrV3 |
+                                   CampaignSnapshotV3 |
                                    canonical ObjectEnvelopeV1 bytes |
                                    MerkleLookupProofV1
 
@@ -340,7 +340,7 @@ CampaignChoiceEntryV1 = ChoiceOpportunityId
 QueryCampaignChoicesRequestV1 = version | principal | campaign | snapshot |
                                 optional after_opportunity | limit
 QueryCampaignChoicesResponseV1 = version | request_digest |
-                                 CampaignSnapshotV2OrV3 |
+                                 CampaignSnapshotV3 |
                                  entries[CampaignChoiceEntryV1] |
                                  optional next_after |
                                  MerkleLookupProofV1 |
@@ -355,7 +355,7 @@ ContinuationProjectionV1 = version | BranchRequestId | BranchPointId |
 QueryCampaignFrontierRequestV1 = version | principal | campaign | snapshot |
                                  optional after_request | limit
 QueryCampaignFrontierResponseV1 = version | request_digest |
-                                  CampaignSnapshotV2OrV3 |
+                                  CampaignSnapshotV3 |
                                   projections[ContinuationProjectionV1] |
                                   optional next_after |
                                   MerkleLookupProofV1 |
@@ -363,9 +363,9 @@ QueryCampaignFrontierResponseV1 = version | request_digest |
 GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
                                      snapshot | BranchRequestId
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
-                                      CampaignSnapshotV2OrV3 |
+                                      CampaignSnapshotV3 |
                                       ContinuationProjectionV1 |
-                                     BranchRequestV1-through-V6 |
+                                     BranchRequestV2-through-V9 |
                                       MerkleLookupProofV1 |
                                       MerkleLookupProofV1
 
@@ -374,7 +374,7 @@ CampaignChoiceObjectV1 = kind | SelectableDeclarationV1-or-ChoiceDomainV1
 GetCampaignChoiceObjectRequestV1 = version | principal | campaign | snapshot |
                                    opportunity | CampaignChoiceObjectKindV1
 GetCampaignChoiceObjectResponseV1 = version | request_digest |
-                                    CampaignSnapshotV2OrV3 | ChoiceOpportunityV1 |
+                                    CampaignSnapshotV3 | ChoiceOpportunityV1 |
                                     CampaignChoiceObjectV1 |
                                     MerkleLookupProofV1
 
@@ -395,7 +395,7 @@ SubmitCampaignDiscoveryResponseV1 = version | request_digest | prior_snapshot |
                                     new_snapshot | attempt | admission | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
-                                expected_snapshot | BranchRequestV1-through-V6
+                                expected_snapshot | BranchRequestV2-through-V9
 SubmitCampaignBranchResponseV1 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
@@ -696,7 +696,7 @@ minimal-proof, exact-node-set, range, lookahead, and EOF rules to
 key, and `limit` is in `1..=4`. For signature cluster key `c`, that key is
 `H("crucible.campaign-map-key.v1", u64be(len("findings.signature")) ||
 "findings.signature" || c)`. Each proof leaf value MUST equal the content ID
-reconstructed from the complete corresponding `FindingV1` body, and its key
+reconstructed from the complete corresponding current `FindingV2` or `FindingV4` body, and its key
 MUST equal the body signature's derived cluster key transformed by that exact
 formula. The checked client rejects substitution, reordering, false EOF,
 foreign snapshots, and unused proof nodes before exposing a finding.
@@ -725,10 +725,10 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
-lookup proofs bind the complete `AttemptV1-or-V2` body and its unique execution-basis
-`AttemptAdmissionV1-through-V3`; a third proof binds the execution-basis `ProposalV1` in
+lookup proofs bind the complete `AttemptV1-through-V4-or-V7-or-V8` body and its unique execution-basis
+`AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV1` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV1-through-V8` or authenticated absence. The response
+either the canonical `ObservationV1-through-V12` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -762,10 +762,10 @@ kind.
 genesis snapshots anchor one canonical empty choice-index Merkle root; every
 explicit or observation-driven discovery updates that root in the same
 snapshot transition as the authoritative and branch-point-scoped graph keys.
-Imported legacy version-2 snapshots without this optional index remain valid,
-but the query fails closed with `InvalidRequest` until an explicit complete
-migration is implemented. Ordinary discoveries preserve the unindexed legacy
-shape rather than synthesizing a partial index. The exclusive cursor is a
+Current version-3 snapshots always carry this index. Normal repository reads
+reject older snapshots; the explicit bounded store migration either constructs
+the complete authenticated index or rejects the old head before publication.
+The exclusive cursor is a
 `ChoiceOpportunityId`, `limit` is in
 `1..=8`, and the result contains IDs only. The separately authorized
 `GetGraphObject` call uses `CampaignChoiceEntryV1`'s deterministic graph key to
@@ -792,8 +792,9 @@ index. New genesis snapshots anchor one canonical empty index, and the owner
 updates it atomically with request issue, proposal, disposition admission, and
 atomic planner-issue transitions. Imported validation recomputes each exact
 state change from the authoritative request, proposal, and accounting roots.
-Legacy snapshots without the anchor remain readable, but this query returns
-`InvalidRequest`; ordinary mutations never create a partial legacy index.
+Normal repository admission rejects snapshots without the anchor; the bounded
+store migration must construct the complete index before publishing a current
+head.
 
 The exclusive cursor is a `BranchRequestId` and `limit` is in `1..=8`. The
 response carries the complete anchoring snapshot body, so authorization grants
@@ -816,8 +817,8 @@ before generated work is advertised as executable.
 
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
-authenticated projection and returns the strict `BranchRequestV1` through
-`BranchRequestV6` body. The
+authenticated projection and returns the strict `BranchRequestV2` through
+`BranchRequestV9` body. The
 first minimal lookup proof authenticates the fixed frontier-index anchor; the
 second authenticates the request-keyed projection ID inside that index. A
 checked client reconstructs both the projection and request content IDs,

@@ -182,10 +182,12 @@ fn partition_removed_edge_blocks_send_until_heal_restores_it() {
         .expect_err("partitioned edge must block sends");
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
 
-    scheduler.queue_topology_change(SchedulerTopologyChange::heal(
-        2,
-        vec![edge(&producer, &consumer, 8)],
-    ));
+    scheduler
+        .schedule_topology_change(SchedulerTopologyChange::heal(
+            2,
+            vec![edge(&producer, &consumer, 8)],
+        ))
+        .expect("future topology change should enqueue");
     drive_one_quantum(&mut scheduler);
 
     let authorization = scheduler

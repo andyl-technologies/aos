@@ -96,7 +96,7 @@ fn measurement_with_evidence(
     evidence: &CrucibleMeasurementReplayEvidence,
     definitions: CampaignHash,
 ) -> MeasurementSet {
-    let retained = template.evaluation().expect("measurement evaluation");
+    let retained = template.evaluation();
     MeasurementSet::from_evaluation(
         definitions,
         retained.payload_schema(),
@@ -206,7 +206,7 @@ fn replay_evidence(
     CrucibleFindingReplayEvidence::new(
         Some(signature),
         configuration,
-        MeasurementSet::new(BTreeMap::new()).expect("empty replay measurements"),
+        crate::crucible_measurement::empty_test_measurement_set(),
         PropertyVerdictSet::new(BTreeMap::new()).expect("empty replay properties"),
         CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("empty replay coverage"),
         Vec::new(),
@@ -331,7 +331,7 @@ pub(crate) fn prepared_finding_recovery_fixture(
     let attempt_record = repository
         .load_attempt(attempt)
         .expect("load recovery attempt");
-    let measurements = MeasurementSet::new(BTreeMap::new()).expect("measurements");
+    let measurements = crate::crucible_measurement::empty_test_measurement_set();
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage = CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage");
     let observation = Observation::new(

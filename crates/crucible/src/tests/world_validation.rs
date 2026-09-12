@@ -883,10 +883,12 @@ pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
 }
 
 pub(super) fn generated_world(seed: u64) -> World {
-    World::from_content_hash(ContentHash::from_canonical_material(
-        "crucible.test.world.generated",
-        &format!("nodes=a,b\nlinks=a-b\nseed={seed}"),
-    ))
+    world_from_nodes(vec![ready_node(
+        &format!("generated-{seed}"),
+        ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+    )])
 }
 
 pub(super) fn world_from_nodes(nodes: Vec<WorldNode>) -> World {

@@ -1506,7 +1506,7 @@ mod tests {
         SearchRuntimeFrontier, SelectionDecision, SignalFaultSelectable, VirtualTime,
     };
     use crucible_campaign::{
-        CampaignExecutorStore, CampaignRepository, ChoiceDiscovery, FindingKind, MeasurementSet,
+        CampaignExecutorStore, CampaignRepository, ChoiceDiscovery, FindingKind,
         PropertyVerdictSet, ResolvedSelection,
     };
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
@@ -1551,7 +1551,7 @@ mod tests {
         let replay = CrucibleFindingReplayEvidence::new(
             Some(signature),
             configuration_record,
-            MeasurementSet::new(BTreeMap::new()).expect("measurements"),
+            crate::crucible_measurement::empty_test_measurement_set(),
             PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
             CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
             Vec::new(),
@@ -1601,7 +1601,7 @@ mod tests {
         CrucibleFindingReplayEvidence::new(
             None,
             configuration_record,
-            MeasurementSet::new(BTreeMap::new()).expect("measurements"),
+            crate::crucible_measurement::empty_test_measurement_set(),
             PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
             CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
             Vec::new(),

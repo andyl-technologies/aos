@@ -42,7 +42,7 @@
       }
       {
         label = "ADV-29 discovery paths";
-        needle = "regardless of how\n  the finding was reached (interactive forking, state-space search, or\n  coverage-guided fuzzing)";
+        needle = "regardless of how\n  the finding was reached (campaign forking, state-space search, or\n  coverage-guided fuzzing)";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
@@ -63,8 +63,8 @@
         needle = "pub fn load_from_store";
       }
       {
-        label = "interactive fork hook";
-        needle = "FindingDiscoveryPath::InteractiveFork";
+        label = "campaign fork hook";
+        needle = "FindingDiscoveryPath::CampaignFork";
       }
       {
         label = "search failure hook";
@@ -248,7 +248,7 @@ in
             tasks=${taskList}
             gate=gate:reproduction-artifacts
             artifact=self-contained-seed-scenario-schedule
-            paths=interactive-fork,state-space-search,coverage-guided-fuzzing,retained-corpus
+            paths=campaign-fork,state-space-search,coverage-guided-fuzzing,retained-corpus
             replay=store-independent
             RESULT
           '';

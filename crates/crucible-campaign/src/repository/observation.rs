@@ -21,23 +21,6 @@ struct ObservationProjection {
     accounting: BTreeMap<CampaignHash, ContentId>,
 }
 
-#[derive(Clone, Copy)]
-enum ObservationOwnerVersion {
-    Legacy,
-    Credits,
-    ScopedPaths,
-}
-
-impl ObservationOwnerVersion {
-    const fn credits(self) -> bool {
-        !matches!(self, Self::Legacy)
-    }
-
-    const fn indexes_path(self) -> bool {
-        matches!(self, Self::ScopedPaths)
-    }
-}
-
 impl CampaignRepository {
     /// Publishes one fully validated immutable executor result without advancing a campaign.
     ///
@@ -211,7 +194,6 @@ impl CampaignRepository {
             observation,
             &mut choice_cache,
             maintain_choice_index,
-            ObservationOwnerVersion::ScopedPaths,
         )?;
         self.preflight_observation_closure(&current, observation, &mut choice_cache)?;
         let observation_content = self.put_observation(observation)?;
@@ -329,34 +311,6 @@ impl CampaignRepository {
         }
     }
 
-    pub(super) fn validate_observation_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        observation_id: ObservationId,
-        choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(), CampaignRepositoryError> {
-        if self
-            .validate_observation_successor_version(
-                parent,
-                child,
-                observation_id,
-                choice_cache,
-                ObservationOwnerVersion::Credits,
-            )
-            .is_ok()
-        {
-            return Ok(());
-        }
-        self.validate_observation_successor_version(
-            parent,
-            child,
-            observation_id,
-            choice_cache,
-            ObservationOwnerVersion::Legacy,
-        )
-    }
-
     pub(super) fn validate_credited_observation_successor(
         &self,
         parent: &LoadedSnapshot,
@@ -364,13 +318,7 @@ impl CampaignRepository {
         observation_id: ObservationId,
         choice_cache: &mut ChoiceValidationCache,
     ) -> Result<(), CampaignRepositoryError> {
-        self.validate_observation_successor_version(
-            parent,
-            child,
-            observation_id,
-            choice_cache,
-            ObservationOwnerVersion::ScopedPaths,
-        )
+        self.validate_observation_successor_version(parent, child, observation_id, choice_cache)
     }
 
     fn validate_observation_successor_version(
@@ -379,7 +327,6 @@ impl CampaignRepository {
         child: &LoadedSnapshot,
         observation_id: ObservationId,
         choice_cache: &mut ChoiceValidationCache,
-        owner: ObservationOwnerVersion,
     ) -> Result<(), CampaignRepositoryError> {
         if child.snapshot.lineage() != parent.snapshot.lineage()
             || child.snapshot.active_policy() != parent.snapshot.active_policy()
@@ -401,7 +348,6 @@ impl CampaignRepository {
             self.merkle
                 .get(prior.graph, choice_index_anchor_key())?
                 .is_some(),
-            owner,
         )?;
         for (before, after, upserts, reason) in [
             (
@@ -458,7 +404,6 @@ impl CampaignRepository {
         observation: &Observation,
         choice_cache: &mut ChoiceValidationCache,
         maintain_choice_index: bool,
-        owner: ObservationOwnerVersion,
     ) -> Result<ObservationProjection, CampaignRepositoryError> {
         self.validate_observation_references_cached(observation, choice_cache)?;
         let roots = parent.snapshot.roots();
@@ -604,11 +549,7 @@ impl CampaignRepository {
             }
         }
 
-        let credits = if owner.credits() {
-            self.expansion_credits(observation_id, &attempt)?
-        } else {
-            Vec::new()
-        };
+        let credits = self.expansion_credits(observation_id, &attempt)?;
         for credit in &credits {
             let anchor = branch_credit_index_key(credit.branch_point());
             let prior_credit_index = self
@@ -630,9 +571,7 @@ impl CampaignRepository {
                 )?,
             );
         }
-        let indexed_path = owner
-            .indexes_path()
-            .then_some((observation.child_content(), observation.path()));
+        let indexed_path = Some((observation.child_content(), observation.path()));
         if let Some((configuration, path)) = indexed_path {
             let anchor = configuration_path_index_key(configuration);
             let prior_path_index = self
@@ -755,28 +694,7 @@ impl CampaignRepository {
     ) -> Result<Vec<ExpansionCredit>, CampaignRepositoryError> {
         let path = self.read_branch_path(attempt.path().content_id())?;
         let mut branch_points = BTreeSet::new();
-        if let Some(segments) = path.segments() {
-            branch_points.extend(segments.iter().map(|segment| segment.branch_point()));
-        } else if !path.edges().is_empty() {
-            let AttemptStart::Branch {
-                edge, selection, ..
-            } = attempt.start()
-            else {
-                return Err(integrity("legacy-discovery-attempt-has-nonempty-path"));
-            };
-            let resolved = self.resolve_selection(selection)?;
-            let crate::SelectionOrigin::CampaignBranch {
-                branch_point,
-                edge: selected_edge,
-            } = resolved.selection().origin()
-            else {
-                return Err(integrity("legacy-branch-selection-origin-mismatch"));
-            };
-            if selected_edge != edge || path.edges().last() != Some(&edge) {
-                return Err(integrity("legacy-branch-path-terminal-scope-mismatch"));
-            }
-            branch_points.insert(branch_point);
-        }
+        branch_points.extend(path.segments().iter().map(|segment| segment.branch_point()));
 
         Ok(branch_points
             .into_iter()

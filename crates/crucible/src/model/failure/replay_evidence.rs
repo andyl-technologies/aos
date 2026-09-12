@@ -979,7 +979,7 @@ fn recompute_failure_signature(
 
 const fn discovery_path_tag(path: FindingDiscoveryPath) -> u8 {
     match path {
-        FindingDiscoveryPath::InteractiveFork => 0,
+        FindingDiscoveryPath::CampaignFork => 0,
         FindingDiscoveryPath::StateSpaceSearch => 1,
         FindingDiscoveryPath::CoverageGuidedFuzzing => 2,
         FindingDiscoveryPath::RetainedCorpusEntry => 3,
@@ -988,7 +988,7 @@ const fn discovery_path_tag(path: FindingDiscoveryPath) -> u8 {
 
 fn decode_discovery_path(tag: u8) -> Result<FindingDiscoveryPath, EngineError> {
     match tag {
-        0 => Ok(FindingDiscoveryPath::InteractiveFork),
+        0 => Ok(FindingDiscoveryPath::CampaignFork),
         1 => Ok(FindingDiscoveryPath::StateSpaceSearch),
         2 => Ok(FindingDiscoveryPath::CoverageGuidedFuzzing),
         3 => Ok(FindingDiscoveryPath::RetainedCorpusEntry),

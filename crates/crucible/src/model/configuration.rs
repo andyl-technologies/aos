@@ -294,27 +294,8 @@ impl ScenarioDefForm {
     /// id mismatches, or the same validation errors as the component constructors
     /// when the parsed world, plan, or properties are invalid.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let (mut reader, has_measurements, has_selectables) =
-            if bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V7) {
-                (
-                    ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V7)?,
-                    true,
-                    true,
-                )
-            } else if bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V6) {
-                (
-                    ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V6)?,
-                    true,
-                    false,
-                )
-            } else {
-                (
-                    ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V5)?,
-                    false,
-                    false,
-                )
-            };
-        let form = read_scenario_form_binary(&mut reader, has_measurements, has_selectables)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V7)?;
+        let form = read_scenario_form_binary(&mut reader)?;
         reader.finish()?;
         Ok(form)
     }
