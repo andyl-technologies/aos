@@ -15,7 +15,8 @@ use crate::execution::machine::{
 };
 use crate::execution::{
     AdmissionError, AdmittedOperation, AuthorityCheckBoundary, CompensationInterventionReason,
-    ExecutionError, ExecutionStep, ExecutionTransaction, RecoveryAction, TrustedAdmissionPolicy,
+    ExecutionError, ExecutionStep, ExecutionTransaction, OperationInterventionReason,
+    OperationState, RecoveryAction, TrustedAdmissionPolicy,
 };
 
 impl<'plan> ExecutionTransaction<'plan> {
@@ -290,6 +291,138 @@ impl<'plan> ExecutionTransaction<'plan> {
             admitted.prepared_request().request(),
             &mut authorize_after_intent,
         )
+    }
+
+    /// Persists that cancellation cannot be routed for a current admitted attempt.
+    ///
+    /// This terminal transition retains every admitted resource and binds the
+    /// evidence to the exact checked contract and live admission token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the token is stale, the contract has a cancellation
+    /// method, or the intervention event cannot be made durable.
+    pub fn record_unsupported_cancellation<Request, Handle, Clock>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Request, Handle>,
+        clock: &Clock,
+    ) -> Result<(), ExecutionError>
+    where
+        Clock: MonotonicClock,
+    {
+        if !admitted.belongs_to_session(self.session())
+            || admitted.plan().id() != self.plan().id()
+            || admitted.transaction() != self.transaction()
+            || admitted.operation_id().operation != admitted.operation().key
+            || admitted.operation().recovery.cancel.is_some()
+        {
+            return Err(ExecutionError::StaleAdmission);
+        }
+        let history = self
+            .history(&admitted.operation().key)
+            .map_err(ExecutionError::Transaction)?;
+        let resources_match = admitted.resources().eq(history.admitted_resources().iter());
+        let already_recorded = matches!(
+            history.state(),
+            OperationState::RuntimeInterventionRequired {
+                attempt,
+                reason: OperationInterventionReason::CancellationUnsupported,
+            } if attempt == &admitted.attempt()
+        );
+        let unresolved = matches!(
+            history.state(),
+            OperationState::Admitted { .. }
+                | OperationState::IntentDurable { .. }
+                | OperationState::Indeterminate { .. }
+                | OperationState::ReconciliationIntentDurable { .. }
+                | OperationState::CancellationIntentDurable { .. }
+        );
+        if history.current_attempt() != Some(admitted.attempt())
+            || admitted.operation_sequence() > history.last_sequence()
+            || !resources_match
+            || history.resources_released()
+            || (!unresolved && !already_recorded)
+        {
+            return Err(ExecutionError::StaleAdmission);
+        }
+        if already_recorded {
+            return Ok(());
+        }
+
+        let elapsed_millis =
+            observed_operation_elapsed(admitted, clock).max(history.elapsed_millis());
+        self.record_operation_intervention(
+            &admitted.operation().key,
+            OperationInterventionReason::CancellationUnsupported,
+            elapsed_millis,
+        )
+        .map_err(ExecutionError::Transaction)
+    }
+
+    /// Persists that reconciliation cannot be routed for an unresolved attempt.
+    ///
+    /// This terminal transition retains every admitted resource and binds the
+    /// evidence to the exact checked contract and live admission token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the token is stale, the contract has a
+    /// reconciliation method, or the intervention event cannot be made durable.
+    pub fn record_unsupported_reconciliation<Request, Handle, Clock>(
+        &mut self,
+        admitted: &AdmittedOperation<'plan, Request, Handle>,
+        clock: &Clock,
+    ) -> Result<(), ExecutionError>
+    where
+        Clock: MonotonicClock,
+    {
+        if !admitted.belongs_to_session(self.session())
+            || admitted.plan().id() != self.plan().id()
+            || admitted.transaction() != self.transaction()
+            || admitted.operation_id().operation != admitted.operation().key
+            || admitted.operation().recovery.reconcile.is_some()
+        {
+            return Err(ExecutionError::StaleAdmission);
+        }
+        let history = self
+            .history(&admitted.operation().key)
+            .map_err(ExecutionError::Transaction)?;
+        let resources_match = admitted.resources().eq(history.admitted_resources().iter());
+        let already_recorded = matches!(
+            history.state(),
+            OperationState::RuntimeInterventionRequired {
+                attempt,
+                reason: OperationInterventionReason::ReconciliationUnsupported
+                    | OperationInterventionReason::RecoveryBudgetExhausted,
+            } if attempt == &admitted.attempt()
+        );
+        let unresolved = matches!(
+            history.state(),
+            OperationState::IntentDurable { .. }
+                | OperationState::Indeterminate { .. }
+                | OperationState::ReconciliationIntentDurable { .. }
+                | OperationState::CancellationIntentDurable { .. }
+        );
+        if history.current_attempt() != Some(admitted.attempt())
+            || admitted.operation_sequence() > history.last_sequence()
+            || !resources_match
+            || history.resources_released()
+            || (!unresolved && !already_recorded)
+        {
+            return Err(ExecutionError::StaleAdmission);
+        }
+        if already_recorded {
+            return Ok(());
+        }
+
+        let elapsed_millis =
+            observed_operation_elapsed(admitted, clock).max(history.elapsed_millis());
+        self.record_operation_intervention(
+            &admitted.operation().key,
+            OperationInterventionReason::ReconciliationUnsupported,
+            elapsed_millis,
+        )
+        .map_err(ExecutionError::Transaction)
     }
 
     fn cancellation_context<'token, Adapter, Clock>(

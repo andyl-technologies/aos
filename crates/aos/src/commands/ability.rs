@@ -21,7 +21,7 @@ use aos_ability_inspect::{
 use aos_ability_model::{LocalKey, PlanNodeKey, RequiredFeature, TransactionId};
 use aos_ability_runtime::execution::{
     CancellationResult, CheckedExecutionJournalSnapshot, DispatchAbortReason, ExecutionEventKind,
-    ReconciliationResult,
+    OperationInterventionReason, ReconciliationResult,
 };
 use aos_ability_runtime::journal::{JournalLimits, JournalRecord};
 use aos_contract::Sha256Digest;
@@ -529,6 +529,17 @@ fn project_journal_record(
             }
             CancellationResult::Completed => TimelineEventKind::CancellationObservedCompletion,
             CancellationResult::Indeterminate => TimelineEventKind::CancellationIndeterminate,
+        },
+        ExecutionEventKind::OperationInterventionRequired { reason, .. } => match reason {
+            OperationInterventionReason::CancellationUnsupported => {
+                TimelineEventKind::CancellationUnsupported
+            }
+            OperationInterventionReason::ReconciliationUnsupported => {
+                TimelineEventKind::ReconciliationUnsupported
+            }
+            OperationInterventionReason::RecoveryBudgetExhausted => {
+                TimelineEventKind::RecoveryBudgetExhausted
+            }
         },
         ExecutionEventKind::OperationSettledFailure { .. } => TimelineEventKind::SettledFailure,
         ExecutionEventKind::OwnershipTransferred { .. } => TimelineEventKind::OwnershipTransferred,

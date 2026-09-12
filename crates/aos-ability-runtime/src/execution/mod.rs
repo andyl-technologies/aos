@@ -20,7 +20,8 @@ pub use admission::{
 };
 pub use event::{
     CancellationResult, CompensationInterventionReason, DispatchAbortReason,
-    EXECUTION_EVENT_SCHEMA, ExecutionEvent, ExecutionEventKind, ReconciliationResult,
+    EXECUTION_EVENT_SCHEMA, ExecutionEvent, ExecutionEventKind, OperationInterventionReason,
+    ReconciliationResult,
 };
 pub use inputs::InputResolutionError;
 pub use lifecycle::{ResourceReleaseError, ResourceReleaseFailure};

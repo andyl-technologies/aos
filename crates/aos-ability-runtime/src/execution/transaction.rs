@@ -20,7 +20,8 @@ use crate::adapter::{
 use crate::execution::summary::{operation_status, transaction_result};
 use crate::execution::{
     CompensationInterventionReason, ExecutionEvent, ExecutionEventKind, OperationHistory,
-    OperationState, OperationStatus, OperationSummary, StateError, TerminalResult,
+    OperationInterventionReason, OperationState, OperationStatus, OperationSummary, StateError,
+    TerminalResult,
 };
 use crate::journal::{
     FileJournal, JournalError, JournalLimits, JournalOpenResult, JournalRecord, JournalSnapshot,
@@ -738,6 +739,28 @@ impl<'plan> ExecutionTransaction<'plan> {
         })
     }
 
+    pub(crate) fn record_operation_intervention(
+        &mut self,
+        operation: &ScopedOperationKey,
+        reason: OperationInterventionReason,
+        elapsed_millis: u64,
+    ) -> Result<(), TransactionError> {
+        let history = self.history(operation)?;
+        let attempt = history.current_attempt().ok_or_else(|| {
+            invalid(
+                self.replay.next_sequence,
+                "operation intervention requires an admitted attempt",
+            )
+        })?;
+        self.append(ExecutionEventKind::OperationInterventionRequired {
+            transaction: self.transaction().clone(),
+            operation: history.operation_id().clone(),
+            attempt,
+            reason,
+            elapsed_millis: elapsed_millis.max(history.elapsed_millis()),
+        })
+    }
+
     pub(crate) fn ensure_journal_capacity(
         &mut self,
         additional_records: usize,
@@ -1225,6 +1248,36 @@ fn validate_checked_operation_event(
                 ));
             }
         }
+        ExecutionEventKind::OperationInterventionRequired { reason, .. } => match reason {
+            OperationInterventionReason::CancellationUnsupported
+                if operation.recovery.cancel.is_none() => {}
+            OperationInterventionReason::ReconciliationUnsupported
+                if operation.recovery.reconcile.is_none()
+                    || outcome.indeterminate
+                        == aos_ability_model::IndeterminateSemantics::InterventionRequired => {}
+            OperationInterventionReason::RecoveryBudgetExhausted
+                if event.elapsed_millis().is_some_and(|elapsed| {
+                    elapsed >= operation.deadline.total_recovery_millis.get()
+                }) => {}
+            OperationInterventionReason::CancellationUnsupported => {
+                return Err(invalid(
+                    sequence,
+                    "unsupported-cancellation evidence contradicts the checked cancellation route",
+                ));
+            }
+            OperationInterventionReason::ReconciliationUnsupported => {
+                return Err(invalid(
+                    sequence,
+                    "unsupported-reconciliation evidence contradicts the checked recovery route",
+                ));
+            }
+            OperationInterventionReason::RecoveryBudgetExhausted => {
+                return Err(invalid(
+                    sequence,
+                    "recovery-budget evidence precedes the checked total deadline",
+                ));
+            }
+        },
         ExecutionEventKind::RetryBackoffScheduled {
             observed_at_millis,
             eligible_at_millis,
@@ -1549,7 +1602,8 @@ fn event_attempt(event: &ExecutionEventKind) -> Option<std::num::NonZeroU32> {
         | ExecutionEventKind::ReconciliationIntent { attempt, .. }
         | ExecutionEventKind::ReconciliationObserved { attempt, .. }
         | ExecutionEventKind::CancellationRequested { attempt, .. }
-        | ExecutionEventKind::CancellationObserved { attempt, .. } => Some(*attempt),
+        | ExecutionEventKind::CancellationObserved { attempt, .. }
+        | ExecutionEventKind::OperationInterventionRequired { attempt, .. } => Some(*attempt),
         ExecutionEventKind::OperationSettledFailure { attempt, .. } => *attempt,
         ExecutionEventKind::TransactionPlanned { .. }
         | ExecutionEventKind::BranchSelected { .. }
@@ -1734,7 +1788,8 @@ fn operation_blockage(
         }
         OperationState::Completed { .. } => return (true, false),
         OperationState::SettledFailure { .. } => return (true, false),
-        OperationState::InterventionRequired { .. } => return (true, true),
+        OperationState::InterventionRequired { .. }
+        | OperationState::RuntimeInterventionRequired { .. } => return (true, true),
         OperationState::Pending => {}
         _ => return (false, false),
     }

@@ -267,6 +267,39 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_systemd_routes_are_an_exact_closed_set() {
+        let cancellation = NATIVE_METHODS
+            .iter()
+            .filter(|contract| contract.cancel.is_none())
+            .map(|contract| (contract.adapter, contract.method))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cancellation,
+            [
+                (NativeAdapterId::SystemdBootstrap, "start"),
+                (NativeAdapterId::SystemdManager, "reload"),
+                (NativeAdapterId::SystemdManager, "restart"),
+                (NativeAdapterId::SystemdManager, "start"),
+                (NativeAdapterId::SystemdServiceLegacy, "reload"),
+                (NativeAdapterId::SystemdServiceLegacy, "start"),
+            ]
+        );
+
+        let reconciliation = NATIVE_METHODS
+            .iter()
+            .filter(|contract| contract.reconcile.is_none())
+            .map(|contract| (contract.adapter, contract.method))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reconciliation,
+            [
+                (NativeAdapterId::SystemdServiceLegacy, "reload"),
+                (NativeAdapterId::SystemdServiceLegacy, "start"),
+            ]
+        );
+    }
+
+    #[test]
     fn exact_route_binds_interface_abi_and_effect_method() {
         assert!(supports_exact_route(
             NativeAdapterId::ManagedConfiguration,

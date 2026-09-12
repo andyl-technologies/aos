@@ -33,8 +33,9 @@ use crate::execution::{
     AdmissionError, AuthorityCheckBoundary, AuthorityRejection, CheckedExecutionJournalSnapshot,
     ExecutionBoundaryControl, ExecutionBoundaryObservation, ExecutionBoundaryObserver,
     ExecutionError, ExecutionEvent, ExecutionEventKind, ExecutionStep, ExecutionTransaction,
-    OperationState, OperationStatus, RecoveryAction, ResourceReleaseError, RuntimeAuthorityRole,
-    TerminalResult, TrustedAdmissionPolicy, TrustedAuthoritySnapshot,
+    OperationInterventionReason, OperationState, OperationStatus, RecoveryAction,
+    ResourceReleaseError, RuntimeAuthorityRole, TerminalResult, TrustedAdmissionPolicy,
+    TrustedAuthoritySnapshot,
 };
 use crate::journal::{FileJournal, JournalLimits};
 
@@ -255,7 +256,8 @@ fn reopened_settled_operation_reacquires_handles_only_for_release()
 }
 
 #[test]
-fn schema_invalid_completion_stays_at_durable_intent() -> Result<(), Box<dyn std::error::Error>> {
+fn scheduler_durably_stops_when_reconciliation_is_unsupported()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = RuntimeFixture::new()?;
     let mut store = TestStore;
     let mut transaction = fixture.open(&mut store)?;
@@ -292,6 +294,110 @@ fn schema_invalid_completion_stays_at_durable_intent() -> Result<(), Box<dyn std
     assert_eq!(
         transaction.next_action(fixture.operation())?,
         RecoveryAction::InterventionRequired
+    );
+
+    let ready = transaction.schedule_ready(NonZeroUsize::MIN)?;
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].action(), &RecoveryAction::InterventionRequired);
+    assert!(matches!(
+        transaction.history(fixture.operation())?.state(),
+        OperationState::RuntimeInterventionRequired {
+            attempt: NonZeroU32::MIN,
+            reason: OperationInterventionReason::ReconciliationUnsupported,
+        }
+    ));
+    assert!(
+        !transaction
+            .history(fixture.operation())?
+            .resources_released()
+    );
+    assert_eq!(
+        transaction.summary().terminal(),
+        Some(TerminalResult::InterventionRequired)
+    );
+
+    let journal_length_before = std::fs::metadata(fixture.journal_path())?.len();
+    transaction.record_unsupported_reconciliation(&admitted, &TestClock)?;
+    assert_eq!(
+        std::fs::metadata(fixture.journal_path())?.len(),
+        journal_length_before
+    );
+
+    drop(admitted);
+    drop(transaction);
+    let mut reopened = fixture.open(&mut store)?;
+    let journal_length_before = std::fs::metadata(fixture.journal_path())?.len();
+    assert!(matches!(
+        reopened.history(fixture.operation())?.state(),
+        OperationState::RuntimeInterventionRequired {
+            reason: OperationInterventionReason::ReconciliationUnsupported,
+            ..
+        }
+    ));
+    let ready = reopened.schedule_ready(NonZeroUsize::MIN)?;
+    assert_eq!(ready[0].action(), &RecoveryAction::InterventionRequired);
+    assert_eq!(
+        std::fs::metadata(fixture.journal_path())?.len(),
+        journal_length_before
+    );
+    Ok(())
+}
+
+#[test]
+fn unsupported_cancellation_is_durable_and_retains_ownership()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = RuntimeFixture::new()?;
+    let mut store = TestStore;
+    let mut transaction = fixture.open(&mut store)?;
+    let mut catalog = TestCatalog::default();
+    let mut policy = AllowPolicy;
+    let adapter = TestAdapter::valid();
+    let admitted = transaction
+        .admit(
+            fixture.operation(),
+            &adapter,
+            &mut catalog,
+            &mut policy,
+            &TestClock,
+        )
+        .map_err(admission_error)?;
+
+    transaction.record_unsupported_cancellation(&admitted, &TestClock)?;
+
+    let journal_length = std::fs::metadata(fixture.journal_path())?.len();
+    transaction.record_unsupported_cancellation(&admitted, &TestClock)?;
+    assert_eq!(
+        std::fs::metadata(fixture.journal_path())?.len(),
+        journal_length
+    );
+
+    let history = transaction.history(fixture.operation())?;
+    assert!(matches!(
+        history.state(),
+        OperationState::RuntimeInterventionRequired {
+            attempt: NonZeroU32::MIN,
+            reason: OperationInterventionReason::CancellationUnsupported,
+        }
+    ));
+    assert!(!history.resources_released());
+    assert_eq!(catalog.release_calls, 0);
+    assert_eq!(
+        transaction.summary().terminal(),
+        Some(TerminalResult::InterventionRequired)
+    );
+    drop(admitted);
+    drop(transaction);
+    let reopened = fixture.open(&mut store)?;
+    assert!(matches!(
+        reopened.history(fixture.operation())?.state(),
+        OperationState::RuntimeInterventionRequired {
+            reason: OperationInterventionReason::CancellationUnsupported,
+            ..
+        }
+    ));
+    assert_eq!(
+        reopened.summary().terminal(),
+        Some(TerminalResult::InterventionRequired)
     );
     Ok(())
 }

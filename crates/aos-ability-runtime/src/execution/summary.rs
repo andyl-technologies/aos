@@ -200,7 +200,10 @@ pub(super) fn operation_status(history: &OperationHistory) -> OperationStatus {
         OperationState::Completed { .. } | OperationState::SettledFailure { .. } => {
             OperationStatus::Recovering
         }
-        OperationState::InterventionRequired { .. } => OperationStatus::InterventionRequired,
+        OperationState::InterventionRequired { .. }
+        | OperationState::RuntimeInterventionRequired { .. } => {
+            OperationStatus::InterventionRequired
+        }
     }
 }
 

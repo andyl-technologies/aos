@@ -16,6 +16,7 @@ use crate::adapter::InvocationPurpose;
 use crate::execution::event::{CancellationResult, ExecutionEventKind, ReconciliationResult};
 use crate::execution::{
     AuthorityCheckBoundary, CompensationInterventionReason, DispatchAbortReason,
+    OperationInterventionReason,
 };
 use crate::journal::JournalRecord;
 
@@ -70,6 +71,11 @@ pub enum OperationState {
     InterventionRequired {
         attempt: NonZeroU32,
         evidence: AbilityValue,
+    },
+    /// The runtime proved that the checked recovery contract cannot continue.
+    RuntimeInterventionRequired {
+        attempt: NonZeroU32,
+        reason: OperationInterventionReason,
     },
     /// The operation settled without a possible live effect or successful target.
     SettledFailure {
@@ -499,7 +505,10 @@ impl OperationHistory {
                     RecoveryAction::ReleaseResources
                 }
             }
-            OperationState::InterventionRequired { .. } => RecoveryAction::InterventionRequired,
+            OperationState::InterventionRequired { .. }
+            | OperationState::RuntimeInterventionRequired { .. } => {
+                RecoveryAction::InterventionRequired
+            }
             OperationState::SettledFailure { .. } => {
                 if self.resources_released {
                     RecoveryAction::None
@@ -1142,6 +1151,37 @@ impl OperationHistory {
                 self.observe_elapsed(sequence, *elapsed_millis)?;
                 self.interrupted_call_budget_millis = 0;
             }
+            ExecutionEventKind::OperationInterventionRequired {
+                operation,
+                attempt,
+                reason,
+                elapsed_millis,
+                ..
+            } if operation == &self.operation => {
+                self.require_attempt(sequence, *attempt, |state| match reason {
+                    OperationInterventionReason::CancellationUnsupported => matches!(
+                        state,
+                        OperationState::Admitted { .. }
+                            | OperationState::IntentDurable { .. }
+                            | OperationState::Indeterminate { .. }
+                            | OperationState::ReconciliationIntentDurable { .. }
+                    ),
+                    OperationInterventionReason::ReconciliationUnsupported
+                    | OperationInterventionReason::RecoveryBudgetExhausted => matches!(
+                        state,
+                        OperationState::IntentDurable { .. }
+                            | OperationState::Indeterminate { .. }
+                            | OperationState::ReconciliationIntentDurable { .. }
+                            | OperationState::CancellationIntentDurable { .. }
+                    ),
+                })?;
+                self.state = OperationState::RuntimeInterventionRequired {
+                    attempt: *attempt,
+                    reason: *reason,
+                };
+                self.observe_elapsed(sequence, *elapsed_millis)?;
+                self.interrupted_call_budget_millis = 0;
+            }
             ExecutionEventKind::OperationSettledFailure {
                 operation,
                 attempt,
@@ -1203,6 +1243,7 @@ impl OperationHistory {
                         | OperationState::ReconciliationIntentDurable { .. }
                         | OperationState::CancellationIntentDurable { .. }
                         | OperationState::InterventionRequired { .. }
+                        | OperationState::RuntimeInterventionRequired { .. }
                 );
                 let compensation_unresolved = matches!(
                     self.compensation,
@@ -1391,7 +1432,8 @@ fn state_attempt(state: &OperationState) -> Option<NonZeroU32> {
         | OperationState::RetryBackoff { attempt, .. }
         | OperationState::RetryReady { attempt }
         | OperationState::CancellationIntentDurable { attempt }
-        | OperationState::InterventionRequired { attempt, .. } => Some(*attempt),
+        | OperationState::InterventionRequired { attempt, .. }
+        | OperationState::RuntimeInterventionRequired { attempt, .. } => Some(*attempt),
         OperationState::SettledFailure { attempt, .. } => *attempt,
     }
 }

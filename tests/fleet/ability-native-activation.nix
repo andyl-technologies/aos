@@ -246,6 +246,41 @@ in {
           assert terminal["terminal"] == "settled-failure", terminal
 
 
+      def assert_unsupported_reconciliation(generation, transaction, instance, method):
+          bundle, diagnostic = native_transaction_documents(generation, transaction)
+          operations = bundle["transition"]["effect_document"]["operations"]
+          matching = [
+              ordinal
+              for ordinal, operation in enumerate(operations)
+              if (
+                  operation["target"]["resource"]["key"],
+                  operation["method"],
+              ) == (f"{instance}-service", method)
+          ]
+          assert len(matching) == 1, (instance, method, operations)
+          ordinal = matching[0]
+          kinds = [
+              event["kind"]
+              for event in diagnostic["timeline"]["events"]
+              if event.get("node_ordinal") == ordinal
+          ]
+          assert kinds == [
+              "operation-admitted",
+              "effect-started",
+              "effect-indeterminate",
+              "reconciliation-unsupported",
+          ], (kinds, diagnostic)
+
+          terminal_path = (
+              f"/var/lib/profiles/system/gen-{generation}/ability-transactions/"
+              f"{transaction}/terminal.json"
+          )
+          terminal = json.loads(runtime.succeed(
+              f"{COREUTILS}/cat {shlex.quote(terminal_path)}"
+          ))
+          assert terminal["terminal"] == "intervention-required", terminal
+
+
       def assert_prepublication_failure(
           generation, transaction, failed_method, forbidden_methods
       ):
@@ -894,6 +929,65 @@ in {
       )
       for path in secondary_storage_paths.values():
           runtime.succeed(f"test -d {shlex.quote(path)}")
+
+      # Re-enabling the disabled unit dispatches the production legacy Start
+      # route. A real systemd job failure leaves the effect unresolved; the
+      # checked null reconciliation route must become durable intervention
+      # evidence while ownership remains retained.
+      activation_v7 = generate_activation_fixture(
+          "/run/ability-activation-v7",
+          "alpha-v7",
+          "gamma-v3",
+          "/run/ability-authority-v7",
+      )
+      provision_operator_authority(activation_v7, "/run/ability-authority-v7")
+      failed_start_module = (
+          "  systemd.services.nginx-nginx-main.serviceConfig.ExecStart = "
+          f"lib.mkForce \"{COREUTILS}/false\";\n"
+          "  systemd.services.nginx-nginx-main.serviceConfig.Restart = "
+          "lib.mkForce \"no\";\n"
+      )
+      write_activation_host(
+          "/run/ability-host-v7.nix", activation_v7, failed_start_module
+      )
+      status, stdout, stderr = runtime.execute(
+          f"{APM} switch --from /run/ability-host-v7.nix "
+          "--eval-root /run/ability-eval-v7",
+          timeout=600,
+      )
+      assert status == 6, (status, stdout, stderr)
+      generation_v7 = current_generation()
+      assert generation_v7 not in {
+          generation_v1,
+          generation_v2,
+          generation_v3,
+          generation_v4,
+          generation_v5,
+          generation_v6,
+      }
+      failed_start_record = json.loads(runtime.succeed(
+          f"{COREUTILS}/cat "
+          f"/var/lib/profiles/system/gen-{generation_v7}/activation.json"
+      ))
+      failed_start_transaction = failed_start_record[
+          "native_ability_transaction"
+      ]
+      assert_unsupported_reconciliation(
+          generation_v7,
+          failed_start_transaction,
+          "nginx-main",
+          "start",
+      )
+      runtime.fail("systemctl is-active --quiet nginx-nginx-main.service")
+      assert_route("gamma.example", 18082, "app-c", "gamma-v3")
+
+      runtime.succeed(
+          f"{APM} rollback --system --generation {generation_v6}",
+          timeout=600,
+      )
+      assert current_generation() == generation_v6
+      runtime.fail("systemctl is-active --quiet nginx-nginx-main.service")
+      assert_route("gamma.example", 18082, "app-c", "gamma-v3")
 
       # A TLS generation cannot enter candidate validation without its typed
       # credential source. The currently selected HTTP service remains live.

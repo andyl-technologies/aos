@@ -57,6 +57,18 @@ pub enum DispatchAbortReason {
     AuthorityRejected,
 }
 
+/// Records why automatic recovery stopped without invoking a provider method.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperationInterventionReason {
+    /// Cancellation was requested but the checked operation has no cancellation route.
+    CancellationUnsupported,
+    /// The checked contract has no permitted reconciliation route for an unresolved effect.
+    ReconciliationUnsupported,
+    /// The finite total recovery budget expired while the effect remained unresolved.
+    RecoveryBudgetExhausted,
+}
+
 /// Records why compensation stopped and now requires an operator decision.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -413,6 +425,19 @@ pub enum ExecutionEventKind {
         /// Retains consumed operation recovery budget across reboot.
         elapsed_millis: u64,
     },
+    /// Records a durable fail-closed stop without claiming provider evidence.
+    OperationInterventionRequired {
+        /// Identifies this durable execution allocation.
+        transaction: TransactionId,
+        /// Identifies the unresolved operation.
+        operation: OperationId,
+        /// Identifies the attempt that retains resource ownership.
+        attempt: NonZeroU32,
+        /// States why the checked runtime cannot continue automatically.
+        reason: OperationInterventionReason,
+        /// Retains consumed operation recovery budget across reboot.
+        elapsed_millis: u64,
+    },
     /// Records a settled failure only when no unresolved effect remains.
     OperationSettledFailure {
         /// Identifies this durable execution allocation.
@@ -483,6 +508,7 @@ impl ExecutionEventKind {
             | Self::ReconciliationObserved { transaction, .. }
             | Self::CancellationRequested { transaction, .. }
             | Self::CancellationObserved { transaction, .. }
+            | Self::OperationInterventionRequired { transaction, .. }
             | Self::OperationSettledFailure { transaction, .. }
             | Self::OwnershipTransferred { transaction, .. }
             | Self::ResourcesReleased { transaction, .. } => transaction,
@@ -515,6 +541,7 @@ impl ExecutionEventKind {
             | Self::ReconciliationObserved { operation, .. }
             | Self::CancellationRequested { operation, .. }
             | Self::CancellationObserved { operation, .. }
+            | Self::OperationInterventionRequired { operation, .. }
             | Self::OperationSettledFailure { operation, .. }
             | Self::OwnershipTransferred { operation, .. }
             | Self::ResourcesReleased { operation, .. } => Some(operation),
@@ -541,7 +568,8 @@ impl ExecutionEventKind {
             | Self::ReconciliationIntent { attempt, .. }
             | Self::ReconciliationObserved { attempt, .. }
             | Self::CancellationRequested { attempt, .. }
-            | Self::CancellationObserved { attempt, .. } => Some(*attempt),
+            | Self::CancellationObserved { attempt, .. }
+            | Self::OperationInterventionRequired { attempt, .. } => Some(*attempt),
             Self::OperationSettledFailure { attempt, .. } => *attempt,
             Self::TransactionPlanned { .. }
             | Self::CompensationRequested { .. }
@@ -587,6 +615,7 @@ impl ExecutionEventKind {
             | Self::ReconciliationObserved { elapsed_millis, .. }
             | Self::CancellationRequested { elapsed_millis, .. }
             | Self::CancellationObserved { elapsed_millis, .. }
+            | Self::OperationInterventionRequired { elapsed_millis, .. }
             | Self::OperationSettledFailure { elapsed_millis, .. }
             | Self::OwnershipTransferred { elapsed_millis, .. }
             | Self::ResourcesReleased { elapsed_millis, .. } => Some(*elapsed_millis),

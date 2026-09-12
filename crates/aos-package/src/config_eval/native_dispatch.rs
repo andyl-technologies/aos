@@ -3310,6 +3310,10 @@ where
                 }
             }
             NativeCancellationAction::Unsupported => {
+                session
+                    .record_unsupported_cancellation(&admitted, clock)
+                    .map_err(anyhow::Error::new)?
+                    .map_err(anyhow::Error::new)?;
                 return Err(anyhow!(
                     "native operation {:?} was cancelled but its checked contract has no cancellation method",
                     admitted.operation().key
@@ -3341,6 +3345,10 @@ where
                         continue;
                     }
                     Err(ExecutionError::CancelledBeforeIntent) if cancellation.is_cancelled() => {
+                        session
+                            .record_unsupported_cancellation(&admitted, clock)
+                            .map_err(anyhow::Error::new)?
+                            .map_err(anyhow::Error::new)?;
                         return Err(anyhow!(
                             "native operation {:?} was cancelled but its checked contract has no cancellation method",
                             admitted.operation().key
@@ -3366,6 +3374,18 @@ where
                         }
                     }
                 };
+            }
+            RecoveryAction::InterventionRequired
+                if admitted.operation().recovery.reconcile.is_none() =>
+            {
+                session
+                    .record_unsupported_reconciliation(&admitted, clock)
+                    .map_err(anyhow::Error::new)?
+                    .map_err(anyhow::Error::new)?;
+                return Err(anyhow!(
+                    "native operation {:?} requires operator intervention because its checked contract has no reconciliation method",
+                    admitted.operation().key
+                ));
             }
             RecoveryAction::InterventionRequired
             | RecoveryAction::CompensationInterventionRequired => {
