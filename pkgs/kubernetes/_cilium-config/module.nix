@@ -6,7 +6,14 @@
   ...
 }: let
   inherit (lib) mkIf mkOption types;
-  package = builtins.fromJSON (builtins.readFile "${outputs.self}/share/cilium-package.json");
+  # Runtime output names are authenticated configuration data. Their contents
+  # remain unavailable until activation, after pure evaluation has completed.
+  packageName = builtins.baseNameOf outputs.self;
+  versionMatch = builtins.match "[0-9a-z]{32}-cilium-(.+)" packageName;
+  version =
+    if versionMatch != null
+    then builtins.head versionMatch
+    else throw "Cilium received an invalid authenticated runtime output name: ${packageName}";
   cfg = config.cilium;
   values = ''
     kubeProxyReplacement: ${
@@ -53,7 +60,7 @@ in {
         chart: cilium
         repo: https://helm.cilium.io/
         targetNamespace: kube-system
-        version: ${package.version}
+        version: ${version}
         valuesContent: |-
       ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
     '';
