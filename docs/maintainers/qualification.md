@@ -499,7 +499,9 @@ The same candidate runtime proves trusted-clock deadline expiry for every
 method, injected cleanup and release failures for every method, and durable
 unsupported-cancellation intervention for the six methods without a declared
 cancellation route. These 147 cells use runtime-owned controls and never infer
-provider behavior from a generic adapter. Each run retains an execution
+provider behavior from a generic adapter. The evidence records each declared
+provider route separately from the type-compatible fixture route, which is
+never invoked for these controls. Each run retains an execution
 journal, reservation ledger, exact re-loadable plan bundle, and an independent
 foreign-resource sentinel. The 41 cancellation cells with a declared route
 remain explicit failures until each production provider's cancellation handler

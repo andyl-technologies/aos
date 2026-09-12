@@ -600,6 +600,7 @@ def _validated_failure_control_cell(
             "scenario",
             "classification",
             "recovery-routes",
+            "fixture-recovery-routes",
             "journal",
             "reservation-ledger",
             "adapter",
@@ -609,6 +610,13 @@ def _validated_failure_control_cell(
         }
         or evidence.get("scenario") != scenario
         or evidence.get("recovery-routes") != cell["recovery"]
+        or evidence.get("fixture-recovery-routes")
+        != {
+            "reconcile": cell["method"]
+            if cell["recovery"]["reconcile"] is not None
+            else None,
+            "cancel": None,
+        }
         or not _matches(DIGEST, evidence.get("foreign-before"))
         or evidence.get("foreign-after") != evidence.get("foreign-before")
     ):
@@ -627,11 +635,15 @@ def _validated_failure_control_cell(
             "cancellation-requested",
             "cancellation-observed",
             "cancellation-interventions",
-            "dependent-events",
+            "deadline-aborts",
+            "dependent-effect-events",
+            "dependent-settlements",
         }
         or not _matches(DIGEST, journal.get("digest"))
         or not _matches(DIGEST, journal.get("head"))
-        or journal.get("dependent-events") != 0
+        or journal.get("dependent-effect-events") != 0
+        or journal.get("dependent-settlements")
+        != int(scenario in {"cancel-unsettled-attempt", "fail-release"})
         or not isinstance(ledger, dict)
         or set(ledger)
         != {
@@ -679,6 +691,7 @@ def _validated_failure_control_cell(
             or journal.get("cancellation-requested") != 0
             or journal.get("cancellation-observed") != 0
             or journal.get("cancellation-interventions") != 1
+            or journal.get("deadline-aborts") != 0
         ):
             raise RuntimeError("cancellation acknowledgement evidence is invalid")
     elif scenario == "expire-attempt-deadline":
@@ -696,6 +709,7 @@ def _validated_failure_control_cell(
                 "cancellation-observed",
                 "cancellation-interventions",
             ])
+            or journal.get("deadline-aborts") != 1
         ):
             raise RuntimeError("trusted-clock deadline evidence is invalid")
     elif scenario == "fail-cleanup":
@@ -707,6 +721,7 @@ def _validated_failure_control_cell(
             or ledger.get("cleanup-errors") != 1
             or adapter.get("execute-calls") != 0
             or adapter.get("cancel-calls") != 0
+            or journal.get("deadline-aborts") != 0
         ):
             raise RuntimeError("cleanup failure evidence is invalid")
     elif (
@@ -717,6 +732,7 @@ def _validated_failure_control_cell(
         or ledger.get("cleanup-errors") != 0
         or adapter.get("execute-calls") != 1
         or adapter.get("cancel-calls") != 0
+        or journal.get("deadline-aborts") != 0
     ):
         raise RuntimeError("release failure evidence is invalid")
 
@@ -732,6 +748,7 @@ def _validated_failure_control_cell(
             "scenario": scenario,
             "classification": evidence["classification"],
             "recovery-routes": evidence["recovery-routes"],
+            "fixture-recovery-routes": evidence["fixture-recovery-routes"],
         },
         "at-most-one-resource-owner": {
             "cell": cell["id"],
@@ -750,7 +767,8 @@ def _validated_failure_control_cell(
         },
         "dependent-effects-not-executed": {
             "cell": cell["id"],
-            "dependent-events": journal["dependent-events"],
+            "dependent-effect-events": journal["dependent-effect-events"],
+            "dependent-settlements": journal["dependent-settlements"],
             "blocked": True,
         },
     }
