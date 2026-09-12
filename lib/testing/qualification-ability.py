@@ -1481,6 +1481,11 @@ CHECK_DETAILS = {
     "post-expiry-rollout-root-retirement": (
         "A separately admitted transition removed rollout-specific roots only "
         "after the retention deadline and physical finalization."
+    ),
+    "stage-specific-manager-and-foreground-contracts-with-unqualified-container-cells": (
+        "Host and container execution strategies selected their exact manager or foreground "
+        "contracts, while unqualified stage cells remained absent from the support matrix."
+    ),
     "typed-opaque-tls-credential-version-delivery-and-validation-binding": (
         "An opaque TLS content version selected a protected credential view, and native "
         "nginx validation authenticated its exact resource, path, version, and content digest."
