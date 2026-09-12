@@ -124,6 +124,7 @@ struct GenerateOptions {
     artifact: String,
     adoption_from: Option<String>,
     adoption_current_planning: Option<Sha256Digest>,
+    adoption_method: LocalKey,
 }
 
 struct PostgresqlFixture {
@@ -216,6 +217,7 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
         Some(provider_adoption_authority(
             &composed,
             &current,
+            &options.adoption_method,
             options
                 .adoption_current_planning
                 .context("provider adoption lacks the retained current planning digest")?,
@@ -284,6 +286,7 @@ fn generate_with_options(options: GenerateOptions) -> Result<()> {
 fn provider_adoption_authority(
     desired: &ComposedPostgresql,
     current: &ComposedPostgresql,
+    method: &LocalKey,
     expected_current_planning: Sha256Digest,
 ) -> Result<TransitionAuthorizationDocument> {
     let desired_planning = desired
@@ -323,9 +326,8 @@ fn provider_adoption_authority(
         "provider adoption source lacks the retained PostgreSQL resource"
     );
 
-    let method = key("materialize")?;
-    let candidate = adoption_endpoint(desired, resource, &method)?;
-    let source = adoption_endpoint(current, resource, &method)?;
+    let candidate = adoption_endpoint(desired, resource, method)?;
+    let source = adoption_endpoint(current, resource, method)?;
     ensure!(
         source.handler_interface == candidate.handler_interface,
         "provider adoption changes the PostgreSQL resource kind"
@@ -443,14 +445,15 @@ fn adoption_endpoint(
                 && binding.interface.name.as_str() == "aos.postgresql-effects"
                 && binding.caller_grant.methods.contains(method)
                 && binding.caller_grant.resources.iter().any(|permission| {
-                    permission.resource == *resource
-                        && permission.access.is_write()
-                        && permission.operations.contains(method)
+                    permission.resource == *resource && permission.operations.contains(method)
                 })
         })
         .collect::<Vec<_>>();
     let [binding] = binding.as_slice() else {
-        bail!("provider adoption lacks one exact PostgreSQL materialization binding");
+        bail!(
+            "provider adoption lacks one exact PostgreSQL {:?} binding",
+            method.as_str()
+        );
     };
     let handler_package = binding
         .provider_package
@@ -564,7 +567,7 @@ fn load_verified_packages(
 fn parse_credentialed(arguments: &[String]) -> Result<GenerateOptions> {
     if arguments.len() < 7 {
         bail!(
-            "usage: aos-release-fleet-fixture postgresql-activation OUTPUT DATABASE ROLE CREDENTIAL_VERSION --configuration LABEL [--lifecycle full|remove] [--fault NAME] [--additional-postgresql DATABASE ROLE VERSION CONFIGURATION]... [--postgresql-artifact baseline|upgrade|adoption-v1|adoption-v2|adoption-v2-interrupted|adoption-incompatible] [--provider-adoption-from adoption-v1|adoption-v2|adoption-v2-interrupted --provider-adoption-current-planning DIGEST] --operator-authority-output DIR"
+            "usage: aos-release-fleet-fixture postgresql-activation OUTPUT DATABASE ROLE CREDENTIAL_VERSION --configuration LABEL [--lifecycle full|remove] [--fault NAME] [--additional-postgresql DATABASE ROLE VERSION CONFIGURATION]... [--postgresql-artifact baseline|upgrade|adoption-v1|adoption-v2|adoption-v2-interrupted|adoption-incompatible] [--provider-adoption-from adoption-v1|adoption-v2|adoption-v2-interrupted --provider-adoption-current-planning DIGEST --provider-adoption-method materialize|observe|restart|start|stop] --operator-authority-output DIR"
         );
     }
     let mut options = GenerateOptions {
@@ -582,6 +585,7 @@ fn parse_credentialed(arguments: &[String]) -> Result<GenerateOptions> {
         artifact: "baseline".to_string(),
         adoption_from: None,
         adoption_current_planning: None,
+        adoption_method: key("materialize")?,
     };
     let mut index = 4;
     while index < arguments.len() {
@@ -647,6 +651,15 @@ fn parse_credentialed(arguments: &[String]) -> Result<GenerateOptions> {
                 );
                 index += 2;
             }
+            "--provider-adoption-method" => {
+                let value = required_option(arguments, index, 1, "--provider-adoption-method")?;
+                ensure!(
+                    options.adoption_method.as_str() == "materialize",
+                    "--provider-adoption-method is repeated"
+                );
+                options.adoption_method = key(&value[0])?;
+                index += 2;
+            }
             "--operator-authority-output" => {
                 let value = required_option(arguments, index, 1, "--operator-authority-output")?;
                 ensure!(
@@ -696,6 +709,7 @@ fn parse_terminal(arguments: &[String]) -> Result<GenerateOptions> {
         artifact: "baseline".to_string(),
         adoption_from: None,
         adoption_current_planning: None,
+        adoption_method: key("materialize")?,
     })
 }
 
@@ -776,10 +790,20 @@ fn validate_options(options: &GenerateOptions) -> Result<()> {
             options.adoption_current_planning.is_some(),
             "provider adoption requires the retained current planning digest"
         );
+        ensure!(
+            ["materialize", "observe", "restart", "start", "stop"]
+                .contains(&options.adoption_method.as_str()),
+            "unknown PostgreSQL provider-adoption method {:?}",
+            options.adoption_method
+        );
     } else {
         ensure!(
             options.adoption_current_planning.is_none(),
             "a retained current planning digest requires provider adoption"
+        );
+        ensure!(
+            options.adoption_method.as_str() == "materialize",
+            "a provider-adoption method requires provider adoption"
         );
     }
     Ok(())

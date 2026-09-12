@@ -294,6 +294,7 @@ in {
           postgresql_artifact="baseline",
           provider_adoption_from=None,
           provider_adoption_current_planning=None,
+          provider_adoption_method="materialize",
           additional=None,
       ):
           runtime.succeed(
@@ -320,9 +321,12 @@ in {
                   + shlex.quote(provider_adoption_from)
                   + " --provider-adoption-current-planning "
                   + shlex.quote(provider_adoption_current_planning)
+                  + " --provider-adoption-method "
+                  + shlex.quote(provider_adoption_method)
               )
           else:
               assert provider_adoption_current_planning is None
+              assert provider_adoption_method == "materialize"
           for entry in additional or []:
               (
                   additional_database,
