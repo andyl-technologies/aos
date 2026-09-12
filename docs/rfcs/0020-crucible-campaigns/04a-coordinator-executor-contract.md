@@ -2278,8 +2278,10 @@ The envelope contains only strict `Selection` canonical bytes and is globally
 dependent for reduction until its typed producer proves narrower locality. It
 contains no callback, native pointer, QEMU object, or consumer closure. Compact
 schedule V1 is rejected at this boundary instead of being silently interpreted
-through the new decision taxonomy. General execution-model readers retain
-selection-free Schedule V1 for legacy reproduction and continuation envelopes.
+through the new decision taxonomy. General execution-model readers also reject
+Schedule V1. An explicit bounded offline migration admits only resolved
+delivery-order and raw RNG evidence, emits Schedule V2, and rejects untyped
+override, preemption, application-random, and forged selection decisions.
 Checkpoint V4 carries selection decisions; selection-free Checkpoint V3 remains
 readable, while a selection tag under V3 is rejected.
 

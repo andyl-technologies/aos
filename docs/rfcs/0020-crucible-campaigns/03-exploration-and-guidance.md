@@ -901,19 +901,23 @@ mapping mutation seams without turning every signal sample into a branch.
 The implemented promotion-normalization boundary accepts at most 4,096 exact
 signal-fault candidates from one `SearchRuntimeFrontier`. The candidates MUST
 be the dense ordered sequence for one search-choice ID, candidate-set digest,
-parent configuration, and virtual-time coordinate. It represents candidate
-indexes as an unsigned integer campaign domain and adds one final sentinel for
-the unmodified model result. The standardized environment adapter is
+parent configuration, virtual-time coordinate, and typed candidate semantics.
+Outcome searches use the Boolean campaign domain. Transition and parameter
+searches use stable discrete identities derived from their canonical object or
+typed-value content and add one final alternative for an unmodified model
+result. The standardized environment adapter is
 `crucible.signal-fault-search.v1`; the opportunity coordinate retains the exact
 parent and candidate-set digest, while its instance retains the frontier time.
 
 Repository-authenticated records reconstruct either a typed campaign
-`Selection` followed by the exact `signal-fault/.../candidate/N` override, or a
-selection-only unmodified branch. This pure conversion does not itself admit a
-historical frontier. A live promotion owner MUST still prove that execution is
-paused at the frontier's exact parent before publishing the opportunity or
-using the reconstructed prefix for QEMU injection. Retrospective search
-frontiers MUST NOT be mislabeled as discoveries at a later observation child.
+`Selection` followed by the exact typed `signal-fault/.../candidate/N/...`
+override, or a selection-only unmodified branch for transition and parameter
+searches. Index-only and unknown semantic tags fail closed. This pure conversion
+does not itself admit a historical frontier. A live promotion owner MUST still
+prove that execution is paused at the frontier's exact parent before publishing
+the opportunity or using the reconstructed prefix for QEMU injection.
+Retrospective search frontiers MUST NOT be mislabeled as discoveries at a later
+observation child.
 
 The production lifecycle implements that live boundary by snapshotting the
 retained frontier count before each scheduler quantum. Only a frontier first
