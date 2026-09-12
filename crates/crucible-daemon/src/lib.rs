@@ -220,13 +220,13 @@ pub use campaign_endpoint::{
 pub use campaign_gc::{
     CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
-    CampaignGcCandidateManifestVersion, CampaignGcCandidateReason, CampaignGcCandidateSetId,
-    CampaignGcCandidateSetSummary, CampaignGcJournalCreateDisposition, CampaignGcJournalError,
-    CampaignGcJournalPhase, CampaignGcJournalTransition, CampaignGcManifestError, CampaignGcPlan,
-    CampaignGcPlanError, CampaignGcPlanId, CampaignGcPlanVersion, CampaignGcPlanningError,
-    CampaignGcPreparedPlan, CampaignGcRootManifest, CampaignGcRootSetId,
-    DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, MAX_CAMPAIGN_GC_MANIFEST_ENTRIES,
-    MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES, MAX_CAMPAIGN_GC_PLAN_BYTES,
+    CampaignGcCandidateReason, CampaignGcCandidateSetId, CampaignGcCandidateSetSummary,
+    CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
+    CampaignGcJournalTransition, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
+    CampaignGcPlanId, CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest,
+    CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
+    MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
+    MAX_CAMPAIGN_GC_PLAN_BYTES,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use campaign_gc::{

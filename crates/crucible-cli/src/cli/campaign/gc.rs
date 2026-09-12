@@ -10,7 +10,7 @@ use crucible_daemon::campaign_store_composition::{
 use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
     CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcJournalTransition,
-    CampaignGcPlan, CampaignGcPlanVersion, CampaignLocalServiceConfig, CampaignLocalServiceMode,
+    CampaignGcPlan, CampaignLocalServiceConfig, CampaignLocalServiceMode,
     CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig,
     DirectoryAssignmentRetentionReader, DirectoryCampaignGcJournal,
     DirectoryExactPinMaterializationReader, EXACT_PIN_MATERIALIZATION_DIRECTORY,
@@ -26,6 +26,7 @@ use crate::cli_campaign_store::{
 };
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
+const CAMPAIGN_GC_PLAN_VERSION: &str = "v2";
 const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
 const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
 const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v1";
@@ -327,7 +328,7 @@ pub(super) fn run_campaign_store_gc(
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
                 operation: "plan",
-                plan_version: plan_version(planned.plan()),
+                plan_version: CAMPAIGN_GC_PLAN_VERSION,
                 plan: plan_id.to_hex(),
                 journal: journal.root().display().to_string(),
                 journal_disposition: match disposition {
@@ -358,7 +359,7 @@ pub(super) fn run_campaign_store_gc(
             })?;
             let roots = journal.roots().len();
             let physical = physical_report(journal.plan());
-            let plan_version = plan_version(journal.plan());
+            let plan_version = CAMPAIGN_GC_PLAN_VERSION;
             let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
             let result = authority
                 .apply(&mut journal, &mut ledger, Some(&mut exact_pins))
@@ -400,7 +401,7 @@ fn cancel_campaign_store_gc(args: &CampaignStoreGcArgs) -> Result<CampaignStoreG
         .map_err(|error| maintenance_error(format!("campaign GC plan identity failed: {error}")))?;
     let roots = journal.roots().len();
     let physical = physical_report(journal.plan());
-    let plan_version = plan_version(journal.plan());
+    let plan_version = CAMPAIGN_GC_PLAN_VERSION;
     let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
     let (unreachable_candidates, reachable_cache_candidates) =
         candidate_reason_counts(journal.candidates())?;
@@ -446,13 +447,6 @@ fn candidate_reason_counts(
     ))
 }
 
-const fn plan_version(plan: &CampaignGcPlan) -> &'static str {
-    match plan.version() {
-        CampaignGcPlanVersion::V1 => "v1",
-        CampaignGcPlanVersion::V2 => "v2",
-    }
-}
-
 fn cache_required_copy_report(
     plan: &CampaignGcPlan,
     candidates: &CampaignGcCandidateManifest,
@@ -472,9 +466,7 @@ fn cache_required_copy_report(
                 .iter()
                 .find(|basis| basis.backend() == required_backend)
                 .ok_or_else(|| maintenance_error("campaign GC required-copy basis is absent"))?;
-            let identity = basis.storage_identity().ok_or_else(|| {
-                maintenance_error("campaign GC required-copy physical identity is absent")
-            })?;
+            let identity = basis.storage_identity();
             Ok(CampaignStoreGcRequiredCopyReport {
                 candidate_backend: candidate.backend().to_owned(),
                 content: candidate.id().to_string(),

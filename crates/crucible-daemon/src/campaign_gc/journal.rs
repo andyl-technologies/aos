@@ -5,9 +5,9 @@
 //!
 //! ```text
 //! <journal>/lock
-//! <journal>/plan-v1
+//! <journal>/plan-v2
 //! <journal>/roots-v1
-//! <journal>/candidates-v1
+//! <journal>/candidates-v2
 //! <journal>/state-v1
 //! ```
 //!
@@ -32,15 +32,14 @@ use thiserror::Error;
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
 use super::{
-    CampaignGcCandidateManifest, CampaignGcCandidateManifestVersion, CampaignGcManifestError,
-    CampaignGcPlan, CampaignGcPlanError, CampaignGcPlanId, CampaignGcPlanVersion,
-    CampaignGcPreparedPlan, CampaignGcRootManifest, MAX_CAMPAIGN_GC_PLAN_BYTES,
+    CampaignGcCandidateManifest, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
+    CampaignGcPlanId, CampaignGcPreparedPlan, CampaignGcRootManifest, MAX_CAMPAIGN_GC_PLAN_BYTES,
 };
 
 const JOURNAL_LOCK_FILE: &str = "lock";
-const JOURNAL_PLAN_FILE: &str = "plan-v1";
+const JOURNAL_PLAN_FILE: &str = "plan-v2";
 const JOURNAL_ROOTS_FILE: &str = "roots-v1";
-const JOURNAL_CANDIDATES_FILE: &str = "candidates-v1";
+const JOURNAL_CANDIDATES_FILE: &str = "candidates-v2";
 const JOURNAL_STATE_FILE: &str = "state-v1";
 const JOURNAL_STATE_MAGIC: &[u8] = b"crucible.campaign.gc-journal-state.v1\0";
 const JOURNAL_STATE_HASH_DOMAIN: &str = "crucible.campaign.gc-journal-state.v1";
@@ -409,19 +408,6 @@ fn validate_record_binding(
     roots: &CampaignGcRootManifest,
     candidates: &CampaignGcCandidateManifest,
 ) -> Result<(), CampaignGcJournalError> {
-    let versions_match = matches!(
-        (plan.version(), candidates.version()),
-        (
-            CampaignGcPlanVersion::V1,
-            CampaignGcCandidateManifestVersion::V1
-        ) | (
-            CampaignGcPlanVersion::V2,
-            CampaignGcCandidateManifestVersion::V2
-        )
-    );
-    if !versions_match {
-        return Err(CampaignGcJournalError::CandidateManifestMismatch);
-    }
     if plan.root_set() != roots.id() {
         return Err(CampaignGcJournalError::RootManifestMismatch);
     }
