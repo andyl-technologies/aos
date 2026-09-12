@@ -225,7 +225,20 @@ UNSUPPORTED_POSTCONDITIONS = [
 ]
 RETAINED_CELL = cell(MODULE.RETAINED_SCENARIO, RETAINED_POSTCONDITIONS)
 UNSUPPORTED_CELL = cell(MODULE.UNSUPPORTED_SCENARIO, UNSUPPORTED_POSTCONDITIONS)
-MATRIX = {"cells": [RETAINED_CELL, UNSUPPORTED_CELL]}
+MATRIX = {
+    "surface": {
+        "adapters": [
+            {
+                "adapter": "host-storage",
+                "provider_contract": {
+                    "resource_lifetime": "instance",
+                    "state_format": None,
+                },
+            }
+        ]
+    },
+    "cells": [RETAINED_CELL, UNSUPPORTED_CELL],
+}
 
 
 def retained_observation() -> object:
@@ -353,7 +366,9 @@ def verify_shared_consumer(builder, cell_document: dict) -> None:
     subjects, evidence, probes = builder.finish()
     cell_id = cell_document["id"]
     subject = subjects[cell_id]
-    verifier._validate_cohort_subject(cell_document, subject, evidence[cell_id])
+    verifier._validate_cohort_subject(
+        cell_document, subject, evidence[cell_id], MATRIX
+    )
     for postcondition, probe in probes[cell_id].items():
         verifier._validate_probe_facts(
             postcondition,
@@ -366,7 +381,7 @@ def verify_shared_consumer(builder, cell_document: dict) -> None:
     forged_subject["evidence-digest"] = "sha256:" + "00" * 32
     must_reject(
         lambda: verifier._validate_cohort_subject(
-            cell_document, forged_subject, evidence[cell_id]
+            cell_document, forged_subject, evidence[cell_id], MATRIX
         )
     )
 
@@ -379,7 +394,7 @@ def verify_shared_consumer(builder, cell_document: dict) -> None:
     )
     must_reject(
         lambda: verifier._validate_cohort_subject(
-            cell_document, forged_subject, forged_evidence_bytes
+            cell_document, forged_subject, forged_evidence_bytes, MATRIX
         )
     )
 
@@ -432,6 +447,19 @@ must_reject(
         MATRIX, [UNSUPPORTED_CELL["id"]]
     ).retain_unsupported_transfer(
         UNSUPPORTED_CELL["id"], BUNDLE, bytes(forged_contract), unsupported_observation()
+    )
+)
+
+lifetime_drift = json.loads(unsupported_contract())
+lifetime_drift["disposition"]["rejection"]["request_lifetime"] = "persistent"
+must_reject(
+    lambda: MODULE.ProviderStateEvidence(
+        MATRIX, [UNSUPPORTED_CELL["id"]]
+    ).retain_unsupported_transfer(
+        UNSUPPORTED_CELL["id"],
+        BUNDLE,
+        MODULE.canonical(lifetime_drift),
+        unsupported_observation(),
     )
 )
 

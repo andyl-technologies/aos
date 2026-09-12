@@ -848,6 +848,10 @@ mod tests {
                     "method": "apply",
                     "reconcile": "apply",
                 }],
+                "provider_contract": {
+                    "resource_lifetime": "persistent",
+                    "state_format": Sha256Digest::of_bytes(b"state format"),
+                },
                 "scope": "host-resource",
             }],
             "limits": {

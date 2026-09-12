@@ -7,9 +7,18 @@
     "activate-retained-target"
     "reject-unsupported-transfer"
   ];
+  inapplicableById = builtins.listToAttrs (
+    map (entry: {
+      name = entry.cell_id;
+      value = entry.reason;
+    })
+    matrix.inapplicable_cells
+  );
+  compatibleCellId = cell:
+    "${cell.adapter}/${cell.interface.name}/abi-${toString cell.interface.abi}/${cell.method}/adopt-compatible-state";
+  hasUnsupportedTransfer = cell: builtins.hasAttr (compatibleCellId cell) inapplicableById;
   selected = builtins.filter (cell:
-    cell.adapter
-    != "postgresql"
+    hasUnsupportedTransfer cell
     && builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios)
   matrix.cells;
   byAdapters = adapters:
@@ -32,16 +41,14 @@
   all = groups.reference ++ groups.kubernetes ++ groups.rollout ++ groups.foreground;
   retained = builtins.filter (lib.hasSuffix "/activate-retained-target") all;
   unsupported = builtins.filter (lib.hasSuffix "/reject-unsupported-transfer") all;
-  blockedCompatible = builtins.filter (cell:
-    cell.adapter
-    != "postgresql"
-    && lib.hasSuffix "/adopt-compatible-state" cell.id)
-  matrix.cells;
-  instanceLifetimeBlocked = map (cell: cell.id) (
-    builtins.filter (cell: cell.adapter != "image-rollout") blockedCompatible
+  blockedCompatible = builtins.filter (
+    cell: builtins.hasAttr cell.id inapplicableById
+  ) matrix.cells;
+  instanceLifetimeBlocked = map (entry: entry.cell_id) (
+    builtins.filter (entry: entry.reason == "non-persistent-lifetime") matrix.inapplicable_cells
   );
-  missingStateFormatBlocked = map (cell: cell.id) (
-    builtins.filter (cell: cell.adapter == "image-rollout") blockedCompatible
+  missingStateFormatBlocked = map (entry: entry.cell_id) (
+    builtins.filter (entry: entry.reason == "missing-authenticated-state-format") matrix.inapplicable_cells
   );
 in
   assert builtins.length all == 90;

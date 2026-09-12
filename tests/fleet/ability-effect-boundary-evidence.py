@@ -145,8 +145,19 @@ class EffectBoundaryEvidence:
             raise RuntimeError("effect-boundary cohort repeats a cell identity")
         if any(cell_id not in cells for cell_id in qualified_cells):
             raise RuntimeError("effect-boundary cohort names a foreign matrix cell")
+        adapters = matrix_spec.get("surface", {}).get("adapters")
+        if not isinstance(adapters, list):
+            raise RuntimeError("effect-boundary cohort has no provider contracts")
+        contracts = {
+            adapter["adapter"]: adapter["provider_contract"] for adapter in adapters
+        }
+        if len(contracts) != len(adapters):
+            raise RuntimeError("effect-boundary cohort repeats a provider contract")
+        if any(cell["adapter"] not in contracts for cell in cells.values()):
+            raise RuntimeError("effect-boundary cell has no provider contract")
 
         self._cells = cells
+        self._contracts = contracts
         self._qualified = set(qualified_cells)
         self.subjects: dict[str, Any] = {}
         self.plan_bundles: dict[str, bytes] = {}
@@ -185,6 +196,11 @@ class EffectBoundaryEvidence:
         operation_identity = _operation_identity(operation, ordinal)
         if operation["target"]["interface"] != cell["interface"]:
             raise RuntimeError("matrix operation targets another interface")
+        if (
+            operation["target"]["lifetime"]
+            != self._contracts[cell["adapter"]]["resource_lifetime"]
+        ):
+            raise RuntimeError("matrix operation differs from its provider contract lifetime")
         if not any(
             event.get("boundary") == SCENARIO_BOUNDARIES[scenario]
             and event.get("purpose") == "effect"

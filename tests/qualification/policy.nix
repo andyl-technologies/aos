@@ -181,6 +181,15 @@
   nativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   containerExecutionMatrix = import ../../qualification/modules/_container-execution-matrix.nix {inherit lib;};
   nativeAdapterSurface = builtins.fromJSON (builtins.readFile ../../qualification/native-adapter-surface.json);
+  providerContract = adapterName:
+    (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
+  postgresqlAbilityContract = import ../../lib/abilities/postgresql.nix {inherit lib;};
+  postgresqlExport = postgresqlAbilityContract.postgresqlExport postgresqlAbilityContract.compatibleStateFormat;
+  rolloutPackageContract = import ../abilities/reference-image-rollout/package.nix {
+    inherit lib;
+    mkDerivation = arguments: arguments;
+    rolloutRuntime = "/nix/store/00000000000000000000000000000000-rollout-runtime";
+  };
   nativeCells = nativeAdapterMatrix.cells;
   firstNativeCell = builtins.head nativeCells;
   remainingNativeCells = builtins.tail nativeCells;
@@ -400,6 +409,20 @@ in
   == 9;
   assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
   assert nativeAdapterMatrix.applicability_digest == "sha256:12615a636200a1b6fc6b001333631b858e1c6fd81a5178f11ce9dbd9947fc517";
+  assert (providerContract "postgresql")
+  == {
+    resource_lifetime = "persistent";
+    state_format = postgresqlAbilityContract.compatibleStateFormat;
+  };
+  assert postgresqlExport.outputs.clusters.lifetime == "persistent";
+  assert postgresqlExport.state_format == (providerContract "postgresql").state_format;
+  assert (providerContract "image-rollout")
+  == {
+    resource_lifetime = "persistent";
+    state_format = null;
+  };
+  assert rolloutPackageContract.abilityPackage.exports.rollout.export.outputs.machine.lifetime == "persistent";
+  assert (rolloutPackageContract.abilityPackage.exports.rollout.export.state_format or null) == null;
   assert builtins.length nativeRoleRevocationCells == 600;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
   assert builtins.length nativeFailureControlCells == 156;
@@ -445,6 +468,38 @@ in
         scenarios =
           [(builtins.head nativeAdapterSurface.scenarios // {failure = "none";})]
           ++ builtins.tail nativeAdapterSurface.scenarios;
+      };
+  };
+  assert rejectsNativeMatrix {
+    surface =
+      nativeAdapterSurface
+      // {
+        adapters = [
+          ((builtins.head nativeAdapterSurface.adapters)
+            // {
+              provider_contract =
+                (builtins.head nativeAdapterSurface.adapters).provider_contract
+                // {resource_lifetime = "persistent";};
+            })
+        ]
+        ++ builtins.tail nativeAdapterSurface.adapters;
+      };
+  };
+  assert rejectsNativeMatrix {
+    surface =
+      nativeAdapterSurface
+      // {
+        adapters =
+          lib.take 4 nativeAdapterSurface.adapters
+          ++ [
+            ((builtins.elemAt nativeAdapterSurface.adapters 4)
+              // {
+                provider_contract =
+                  (builtins.elemAt nativeAdapterSurface.adapters 4).provider_contract
+                  // {state_format = "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596";};
+              })
+          ]
+          ++ lib.drop 5 nativeAdapterSurface.adapters;
       };
   };
   assert rejectsNativeMatrix {invalidatedBy = ["subject" "policy" "executor"];};

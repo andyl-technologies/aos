@@ -198,6 +198,16 @@ pub struct NativeAdapterSurfaceMethod {
     pub reconcile: Option<String>,
 }
 
+/// Authenticated state-transfer metadata projected from one provider contract.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAdapterProviderContract {
+    /// Checked lifetime shared by the resource request, binding, and target.
+    pub resource_lifetime: String,
+    /// Provider-implementation state-format descriptor, when one is declared.
+    pub state_format: Option<Sha256Digest>,
+}
+
 /// One native adapter and its exact public interface surface.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -212,6 +222,8 @@ pub struct NativeAdapterSurfaceAdapter {
     pub interface_name: String,
     /// Sorted exact methods dispatched by this adapter.
     pub methods: Vec<NativeAdapterSurfaceMethod>,
+    /// State-transfer facts from the authenticated production provider contract.
+    pub provider_contract: NativeAdapterProviderContract,
     /// Native execution scope containing the adapter effects.
     pub scope: String,
 }
@@ -1595,14 +1607,30 @@ pub(crate) fn validate_native_adapter_matrix_spec(spec: &NativeAdapterMatrixSpec
         bail!("native adapter matrix cells differ from their deterministic surface expansion");
     }
 
+    let provider_contracts = spec
+        .surface
+        .adapters
+        .iter()
+        .map(|adapter| (adapter.adapter.as_str(), &adapter.provider_contract))
+        .collect::<BTreeMap<_, _>>();
     let expected_inapplicable_cells = expected_cells
         .iter()
-        .filter_map(|cell| {
-            native_adapter_inapplicable_reason(cell).map(|reason| NativeAdapterInapplicableCell {
-                cell_id: cell.id.clone(),
-                reason: reason.into(),
-            })
+        .map(|cell| {
+            let contract = provider_contracts
+                .get(cell.adapter.as_str())
+                .ok_or_else(|| anyhow::anyhow!("native adapter cell has no provider contract"))?;
+            Ok(
+                native_adapter_inapplicable_reason(cell, contract).map(|reason| {
+                    NativeAdapterInapplicableCell {
+                        cell_id: cell.id.clone(),
+                        reason: reason.into(),
+                    }
+                }),
+            )
         })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
     let expected_required_cells = expected_cells
         .len()
@@ -1635,25 +1663,20 @@ pub fn native_adapter_applicable_cells(
         .collect()
 }
 
-fn native_adapter_inapplicable_reason(cell: &NativeAdapterCellSpec) -> Option<&'static str> {
+pub(crate) fn native_adapter_inapplicable_reason(
+    cell: &NativeAdapterCellSpec,
+    contract: &NativeAdapterProviderContract,
+) -> Option<&'static str> {
     if !cell.id.ends_with("/adopt-compatible-state") {
         return None;
     }
 
-    match cell.adapter.as_str() {
-        "credential-delivery"
-        | "foreground-process"
-        | "host-network-policy"
-        | "host-storage"
-        | "kubernetes-object"
-        | "managed-configuration"
-        | "network-endpoint"
-        | "nginx-validation"
-        | "systemd-bootstrap"
-        | "systemd-manager"
-        | "systemd-service-legacy" => Some("non-persistent-lifetime"),
-        "image-rollout" => Some("missing-authenticated-state-format"),
-        _ => None,
+    if contract.resource_lifetime != "persistent" {
+        Some("non-persistent-lifetime")
+    } else if contract.state_format.is_none() {
+        Some("missing-authenticated-state-format")
+    } else {
+        None
     }
 }
 
@@ -1776,6 +1799,8 @@ fn valid_native_adapter(adapter: &NativeAdapterSurfaceAdapter) -> bool {
             "kubernetes-cluster",
         ]
         .contains(&adapter.scope.as_str())
+        || !["attempt", "transaction", "instance", "persistent"]
+            .contains(&adapter.provider_contract.resource_lifetime.as_str())
         || adapter.methods.is_empty()
         || !strictly_sorted_by(&adapter.methods, |method| method.method.clone())
     {

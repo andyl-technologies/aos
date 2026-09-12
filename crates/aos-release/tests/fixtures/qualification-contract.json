@@ -194,7 +194,7 @@
     },
     {
       "checks": [
-        "native-adapter-matrix-v1-sha256-91696f83c573e1b41d90de01d28240170724b3c31c3a883386b0ebecbbf4783e",
+        "native-adapter-matrix-v1-sha256-ac339fbba4fba272575e076d18332d369988b1bcba046845620ee342058ce6ab",
         "stage-specific-manager-and-foreground-contracts-with-unqualified-container-cells"
       ],
       "id": "ability-native-adapter-matrix",

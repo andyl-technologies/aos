@@ -22,19 +22,7 @@ SPEC = pathlib.Path(os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_SPEC"])
 EXPECTED_CHECK = os.environ["AOS_QUALIFICATION_NATIVE_ADAPTER_MATRIX_CHECK"]
 SCENARIO_REGISTRY = ROOT / "scenario-registry.json"
 APPLICABILITY_SCHEMA = "aos.qualification.native-adapter-matrix-applicability/v1"
-INSTANCE_LIFETIME_ADAPTERS = {
-    "credential-delivery",
-    "foreground-process",
-    "host-network-policy",
-    "host-storage",
-    "kubernetes-object",
-    "managed-configuration",
-    "network-endpoint",
-    "nginx-validation",
-    "systemd-bootstrap",
-    "systemd-manager",
-    "systemd-service-legacy",
-}
+RESOURCE_LIFETIMES = {"attempt", "transaction", "instance", "persistent"}
 
 
 def canonical(value: Any) -> bytes:
@@ -78,13 +66,43 @@ def applicable_cells(spec: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(cells, list) or not isinstance(applicability, dict):
         raise RuntimeError("matrix applicability is missing")
 
+    adapters = spec.get("surface", {}).get("adapters")
+    if not isinstance(adapters, list):
+        raise RuntimeError("matrix provider contracts are missing")
+    contracts = {}
+    for adapter in adapters:
+        contract = adapter.get("provider_contract")
+        if (
+            not isinstance(contract, dict)
+            or set(contract) != {"resource_lifetime", "state_format"}
+            or contract.get("resource_lifetime") not in RESOURCE_LIFETIMES
+            or (
+                contract.get("state_format") is not None
+                and (
+                    not isinstance(contract.get("state_format"), str)
+                    or len(contract["state_format"]) != 71
+                    or not contract["state_format"].startswith("sha256:")
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in contract["state_format"][7:]
+                    )
+                )
+            )
+            or adapter.get("adapter") in contracts
+        ):
+            raise RuntimeError("matrix provider contract metadata is malformed")
+        contracts[adapter.get("adapter")] = contract
+
     expected = []
     for cell in cells:
         if cell["id"].rsplit("/", 1)[-1] != "adopt-compatible-state":
             continue
-        if cell["adapter"] in INSTANCE_LIFETIME_ADAPTERS:
+        contract = contracts.get(cell["adapter"])
+        if contract is None:
+            raise RuntimeError("matrix cell has no authenticated provider contract")
+        if contract["resource_lifetime"] != "persistent":
             reason = "non-persistent-lifetime"
-        elif cell["adapter"] == "image-rollout":
+        elif contract["state_format"] is None:
             reason = "missing-authenticated-state-format"
         else:
             continue
