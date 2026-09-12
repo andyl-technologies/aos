@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use crate::digest::Sha256Digest;
 use crate::evidence::GateResult;
@@ -321,6 +321,25 @@ fn complete_observation(
         &matrix,
     )?;
     let check = native_adapter_matrix_check(&matrix, passed)?;
+    let mut checks = case
+        .checks
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                CheckObservation {
+                    passed: true,
+                    detail: "fixture check".into(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let matrix_check = case
+        .checks
+        .iter()
+        .find(|name| name.starts_with("native-adapter-matrix-v1-sha256-"))
+        .context("matrix fixture case lacks its policy check")?;
+    checks.insert(matrix_check.clone(), check);
     let postcondition_count = matrix
         .cells
         .iter()
@@ -335,7 +354,7 @@ fn complete_observation(
         case_digest: case.digest()?,
         executor_digest: digest("executor"),
         environment_digest,
-        checks: BTreeMap::from([(case.checks[0].clone(), check)]),
+        checks,
         observed_seconds: 1,
         operations: BTreeMap::from([
             (
@@ -918,9 +937,14 @@ fn aggregate_check_and_operation_denominators_are_derived() -> Result<()> {
     assert_eq!(validate_matrix_for_case(&case, &observation)?, Some(true));
 
     let mut arbitrary_detail = observation.clone();
+    let matrix_check = case
+        .checks
+        .iter()
+        .find(|name| name.starts_with("native-adapter-matrix-v1-sha256-"))
+        .context("matrix fixture case lacks its policy check")?;
     arbitrary_detail
         .checks
-        .get_mut(&case.checks[0])
+        .get_mut(matrix_check)
         .unwrap()
         .detail = "a coarse regression passed".into();
     assert!(validate_matrix_for_case(&case, &arbitrary_detail).is_err());

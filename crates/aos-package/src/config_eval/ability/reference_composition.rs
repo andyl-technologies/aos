@@ -1480,7 +1480,7 @@ fn checked_reference_source_rejects_a_strategy_incompatible_with_its_stage() {
     let nginx = instance(&environment, "nginx-main");
     let mut deployment = Deployment {
         fixture: &mut fixture,
-        nginx_instances: vec![nginx],
+        nginx_instances: vec![nginx.clone()],
         app_routes: vec![app_route(
             "app-a",
             "nginx-main",
@@ -1490,7 +1490,11 @@ fn checked_reference_source_rejects_a_strategy_incompatible_with_its_stage() {
         )],
     };
     let mut seed = deployment.seed(true);
-    let configuration = seed.instances[0]
+    let configuration = seed
+        .instances
+        .iter()
+        .find(|instance| instance.instance == nginx)
+        .expect("nginx instance must be present")
         .configuration
         .as_ref()
         .unwrap()
@@ -1502,7 +1506,11 @@ fn checked_reference_source_rejects_a_strategy_incompatible_with_its_stage() {
         "execution_strategy".to_string(),
         serde_json::json!("foreground-process"),
     );
-    seed.instances[0].configuration = Some(value(serde_json::Value::Object(incompatible)));
+    seed.instances
+        .iter_mut()
+        .find(|instance| instance.instance == nginx)
+        .expect("nginx instance must be present")
+        .configuration = Some(value(serde_json::Value::Object(incompatible)));
 
     let error = match deployment.try_compose(seed) {
         Ok(_) => panic!("an incompatible execution strategy reached a planning snapshot"),

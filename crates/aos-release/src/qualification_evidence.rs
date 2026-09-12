@@ -1422,10 +1422,14 @@ pub fn validate_matrix_for_case(
         observation.executor_digest,
         matrix,
     )?;
-    let check = case
+    let matrix_check = case
         .checks
-        .first()
-        .and_then(|name| observation.checks.get(name))
+        .iter()
+        .find(|name| name.starts_with(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX))
+        .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its policy check"))?;
+    let check = observation
+        .checks
+        .get(matrix_check)
         .ok_or_else(|| anyhow::anyhow!("native adapter matrix case lacks its derived check"))?;
     let expected_check = native_adapter_matrix_check(matrix, passed)?;
     if check != &expected_check {

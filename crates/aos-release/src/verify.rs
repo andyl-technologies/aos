@@ -969,12 +969,17 @@ pub(crate) mod tests {
                             executor_digest,
                             &matrix,
                         )?;
-                    checks = BTreeMap::from([(
-                        case.checks[0].clone(),
+                    let matrix_check = case
+                        .checks
+                        .iter()
+                        .find(|check| check.starts_with("native-adapter-matrix-v1-sha256-"))
+                        .context("matrix fixture case lacks its policy check")?;
+                    checks.insert(
+                        matrix_check.clone(),
                         crate::qualification_evidence::native_adapter_matrix_check(
                             &matrix, passed,
                         )?,
-                    )]);
+                    );
                     operations = BTreeMap::from([
                         (
                             "matrix_cells_reported".into(),
