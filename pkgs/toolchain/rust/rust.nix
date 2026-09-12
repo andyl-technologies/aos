@@ -152,6 +152,9 @@ in
             [build]
             docs = false
             extended = true
+            # Rebuild the compiler, standard library, and native support
+            # artifacts at every bootstrap stage instead of uplifting them.
+            full-bootstrap = true
             tools = ["cargo", "rustdoc", "clippy", "rustfmt", "rust-analyzer", "src"]
             vendor = true
             profiler = true
@@ -322,6 +325,71 @@ in
                     if find "$out" "$dev" -type f -exec grep -a -l -m1 -F \
                       "$old_source_root" {} + | grep -q .; then
                       echo "Rust output retains its bootstrap source root" >&2
+                      exit 1
+                    fi
+
+                    wasm_lib="$out/lib/rustlib/wasm32-unknown-unknown/lib"
+                    profiler_archive=$(find "$wasm_lib" -maxdepth 1 -name 'libprofiler_builtins-*.rlib' -print -quit)
+                    if [ -n "$profiler_archive" ]; then
+                      echo "wasm target unexpectedly contains a profiler runtime" >&2
+                      exit 1
+                    fi
+
+                    archive_check="$TMPDIR/rust-archive-check"
+                    mkdir -p "$archive_check"
+                    found_native_object=false
+                    native_lib="$out/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+                    for archive in "$native_lib"/*.rlib; do
+                      for member in $(${stdenv.cc}/bin/ar t "$archive"); do
+                        case "$member" in
+                          *.o)
+                            ${stdenv.cc}/bin/ar p "$archive" "$member" > "$archive_check/member.o"
+                            magic=$(head -c 4 "$archive_check/member.o" | od -An -tx1 | tr -d ' \n')
+                            case "$magic" in
+                              7f454c46)
+                                machine=$(od -An -tx1 -j18 -N2 "$archive_check/member.o" | tr -d ' \n')
+                                if [ "$machine" != 3e00 ]; then
+                                  echo "$archive contains object $member for unexpected ELF machine $machine" >&2
+                                  exit 1
+                                fi
+                                ;;
+                              4243c0de|dec0170b) ;;
+                              *)
+                                echo "$archive contains invalid native object $member (magic $magic)" >&2
+                                exit 1
+                                ;;
+                            esac
+                            found_native_object=true
+                            ;;
+                        esac
+                      done
+                    done
+                    if [ "$found_native_object" != true ]; then
+                      echo "native target contains no inspectable object members" >&2
+                      exit 1
+                    fi
+
+                    found_wasm_object=false
+                    for archive in "$wasm_lib"/*.rlib; do
+                      for member in $(${stdenv.cc}/bin/ar t "$archive"); do
+                        case "$member" in
+                          *.o)
+                            ${stdenv.cc}/bin/ar p "$archive" "$member" > "$archive_check/member.o"
+                            magic=$(head -c 4 "$archive_check/member.o" | od -An -tx1 | tr -d ' \n')
+                            case "$magic" in
+                              0061736d|4243c0de|dec0170b) ;;
+                              *)
+                                echo "$archive contains non-wasm object $member (magic $magic)" >&2
+                                exit 1
+                                ;;
+                            esac
+                            found_wasm_object=true
+                            ;;
+                        esac
+                      done
+                    done
+                    if [ "$found_wasm_object" != true ]; then
+                      echo "wasm target contains no inspectable object members" >&2
                       exit 1
                     fi
           '';
