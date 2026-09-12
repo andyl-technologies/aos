@@ -2339,7 +2339,7 @@ mod tests {
         clients
             .insert_administration(
                 StoreS3EndpointId::new("minio/graph").expect("admin endpoint"),
-                administration,
+                administration.clone(),
             )
             .expect("S3 administration capability");
         assert!(matches!(
@@ -2449,9 +2449,92 @@ mod tests {
             .generation();
         assert_eq!(
             target
-                .repair_with_authenticated_bytes(id, bytes, generation)
+                .repair_with_authenticated_bytes(id, bytes.clone(), generation)
                 .expect("repair missing observational S3 placement"),
             super::super::StoreGraphPhysicalRepairDisposition::ReplacedMissing
+        );
+
+        let corrupt_id = ContentId::for_bytes(ObjectKind::Finding, 1, &bytes);
+        let corrupt_location = (
+            "campaign-archive".to_owned(),
+            format!("tenant-a/objects/{corrupt_id}"),
+        );
+        client.objects.lock().expect("object lock").insert(
+            corrupt_location.clone(),
+            Arc::from(b"corrupt placement".as_slice()),
+        );
+        administration
+            .force_delete_conflict
+            .store(true, Ordering::SeqCst);
+        let generation = target
+            .admin()
+            .acquire_inventory_fence()
+            .expect("delete-conflict inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("delete-conflict inventory")
+            .generation();
+        assert!(matches!(
+            target.repair_with_authenticated_bytes(corrupt_id, bytes.clone(), generation),
+            Err(StoreError::Incompatible)
+        ));
+        let retained = target.read(corrupt_id).expect("open retained corruption");
+        assert!(matches!(
+            retained.copy_to(&mut std::io::sink()),
+            Err(StoreError::Corrupt { id: corrupt }) if corrupt == corrupt_id
+        ));
+
+        administration
+            .force_delete_conflict
+            .store(false, Ordering::SeqCst);
+        client.fail_part.store(true, Ordering::SeqCst);
+        let generation = target
+            .admin()
+            .acquire_inventory_fence()
+            .expect("corrupt publication-failure inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("corrupt publication-failure inventory")
+            .generation();
+        assert!(
+            target
+                .repair_with_authenticated_bytes(corrupt_id, bytes.clone(), generation)
+                .is_err()
+        );
+        assert!(matches!(
+            target.read(corrupt_id),
+            Err(StoreError::NotFound { id: missing }) if missing == corrupt_id
+        ));
+
+        client.fail_part.store(false, Ordering::SeqCst);
+        let generation = target
+            .admin()
+            .acquire_inventory_fence()
+            .expect("corrupt repair retry inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("corrupt repair retry inventory")
+            .generation();
+        assert_eq!(
+            target
+                .repair_with_authenticated_bytes(corrupt_id, bytes.clone(), generation)
+                .expect("retry repair after corrupt publication failure"),
+            super::super::StoreGraphPhysicalRepairDisposition::ReplacedMissing
+        );
+
+        client.objects.lock().expect("object lock").insert(
+            corrupt_location,
+            Arc::from(b"second corrupt placement".as_slice()),
+        );
+        let generation = target
+            .admin()
+            .acquire_inventory_fence()
+            .expect("corrupt inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("corrupt inventory")
+            .generation();
+        assert_eq!(
+            target
+                .repair_with_authenticated_bytes(corrupt_id, bytes, generation)
+                .expect("replace corrupt observational S3 placement"),
+            super::super::StoreGraphPhysicalRepairDisposition::ReplacedCorrupt
         );
     }
 }

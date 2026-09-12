@@ -1862,6 +1862,7 @@ fn validate_runtime_attempt_inventory(root: &Path) -> Result<(), AssignmentLedge
 enum AttemptInventoryEntry<'a> {
     Record(&'a Path),
     Staging(&'a Path),
+    Removal(&'a Path),
 }
 
 fn visit_bounded_ledger_inventory(
@@ -1936,6 +1937,8 @@ fn visit_bounded_ledger_inventory(
                         let name = name
                             .to_str()
                             .ok_or_else(|| corrupt("attempt-root-record-name"))?;
+                        let removal =
+                            crate::anchored_fs::removal_original_name(std::ffi::OsStr::new(name));
                         if is_lower_hex(name, 64) {
                             if records >= maximum_records {
                                 return Ok(false);
@@ -1944,6 +1947,13 @@ fn visit_bounded_ledger_inventory(
                             visitor(AttemptInventoryEntry::Record(&path))?;
                         } else if permit_staging && is_staging_name(name) {
                             visitor(AttemptInventoryEntry::Staging(&path))?;
+                        } else if permit_staging
+                            && removal
+                                .as_deref()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(is_staging_name)
+                        {
+                            visitor(AttemptInventoryEntry::Removal(&path))?;
                         } else {
                             return Err(corrupt("attempt-root-record-shape"));
                         }

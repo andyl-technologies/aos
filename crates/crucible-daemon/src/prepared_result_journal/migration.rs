@@ -38,14 +38,21 @@ pub(super) fn migrate_prepared_result_journals(
 
     // Retain every per-key lock and child directory authority through cleanup.
     for journal in inventory {
+        if (journal.files.pending_state.is_some()
+            || journal.files.pending_result.is_some()
+            || !journal.files.removals.is_empty())
+            && existing.is_none()
+        {
+            return Err(OperationalStateMigrationError::InvalidReceipt);
+        }
         let source_version = journal.files.source_version()?;
         let (source, recovery_destinations) =
             match read_migration_journal(&journal.root, maximum_payload_bytes, source_version) {
                 Ok(source) => (source, None),
                 Err(_)
                     if source_version == MigrationJournalVersion::V2
-                        && journal.files.pending_state
-                        && journal.files.pending_result
+                        && journal.files.pending_state.is_some()
+                        && journal.files.pending_result.is_some()
                         && existing.is_some() =>
                 {
                     let source = read_migration_journal_files(
@@ -127,10 +134,27 @@ pub(super) fn migrate_prepared_result_journals(
         });
     }
 
-    let objects = migrations
+    let mut objects = migrations
         .iter()
         .map(|migration| migration.receipt.clone())
         .collect::<Vec<_>>();
+    if let Some(existing) = &existing {
+        for migration in &migrations {
+            migration.validate_removal_receipts(existing, maximum_payload_bytes)?;
+        }
+        objects.extend(
+            existing
+                .objects
+                .iter()
+                .filter(|object| object.key.starts_with("cleanup/"))
+                .cloned(),
+        );
+    } else {
+        for migration in &migrations {
+            objects.extend(migration.initial_cleanup_receipts(maximum_payload_bytes)?);
+        }
+    }
+    objects.sort_by(|left, right| left.key.cmp(&right.key));
     let receipt = match existing {
         Some(existing) if existing.objects == objects => existing,
         Some(_) => return Err(OperationalStateMigrationError::InvalidReceipt),
@@ -182,6 +206,7 @@ impl JournalMigration {
         let migrated = self.source.version == MigrationJournalVersion::V1
             || !self.source.payload_current
             || self.files.has_legacy()
+            || !self.files.removals.is_empty()
             || self.recovery_destinations.is_some();
         let root = self.root.path();
         if let Some((result_destination, state_destination)) = &self.recovery_destinations {
@@ -195,29 +220,13 @@ impl JournalMigration {
                 "remove-resumed-current-result",
             )?;
         }
-        for pending in self.files.pending_paths(root).into_iter().filter(|path| {
-            self.recovery_destinations.is_none()
-                || !matches!(
-                    path.file_name().and_then(|name| name.to_str()),
-                    Some(CURRENT_STATE_PENDING | CURRENT_RESULT_PENDING)
-                )
-        }) {
-            let authority = self
-                .root
-                .open_regular_optional(&pending, "pin-journal-migration-temporary")?
-                .ok_or(PreparedResultJournalError::Incomplete)?;
-            self.root
-                .remove_bound_file(&authority, "remove-journal-migration-temporary")?;
-        }
         if self.source.version == MigrationJournalVersion::V1 && !self.files.current_complete() {
             let (payload, state) = self.current_pair(maximum_payload_bytes)?;
             if !self.files.current_result {
-                self.root
-                    .write_once(&root.join(JOURNAL_RESULT_FILE), &payload)?;
+                publish_resumable(&self.root, &root.join(JOURNAL_RESULT_FILE), &payload)?;
             }
             if !self.files.current_state {
-                self.root
-                    .write_once(&root.join(JOURNAL_STATE_FILE), &state)?;
+                publish_resumable(&self.root, &root.join(JOURNAL_STATE_FILE), &state)?;
             }
         } else if !self.source.payload_current {
             let (payload, state) = self.current_pair(maximum_payload_bytes)?;
@@ -259,6 +268,23 @@ impl JournalMigration {
             self.root
                 .remove_bound_file(authority, "remove-legacy-state")?;
         }
+        if self.source.version == MigrationJournalVersion::V2
+            && self.source.payload_current
+            && self.recovery_destinations.is_none()
+        {
+            if let Some(authority) = &self.files.pending_result {
+                self.root
+                    .remove_bound_file(authority, "remove-staged-current-result")?;
+            }
+            if let Some(authority) = &self.files.pending_state {
+                self.root
+                    .remove_bound_file(authority, "remove-staged-current-state")?;
+            }
+        }
+        for removal in &self.files.removals {
+            self.root
+                .remove_bound_file(&removal.authority, "complete-interrupted-journal-removal")?;
+        }
         self.root.verify_path_binding()?;
         Ok(migrated)
     }
@@ -280,6 +306,104 @@ impl JournalMigration {
         )?;
         Ok((payload, state))
     }
+
+    fn initial_cleanup_receipts(
+        &self,
+        maximum_payload_bytes: usize,
+    ) -> Result<Vec<MigrationObjectReceipt>, OperationalStateMigrationError> {
+        let mut receipts = Vec::new();
+        for (name, authority, maximum) in [
+            (
+                JOURNAL_STATE_FILE_V1,
+                self.files.legacy_state.as_ref(),
+                MAX_JOURNAL_STATE_BYTES as u64,
+            ),
+            (
+                JOURNAL_RESULT_FILE_V1,
+                self.files.legacy_result.as_ref(),
+                maximum_payload_bytes as u64,
+            ),
+        ] {
+            if let Some(authority) = authority {
+                receipts.push(self.cleanup_receipt(name, &authority.read_bounded(maximum)?));
+            }
+        }
+        if (self.source.version == MigrationJournalVersion::V1 && !self.files.current_complete())
+            || !self.source.payload_current
+        {
+            let (payload, state) = self.current_pair(maximum_payload_bytes)?;
+            receipts.push(self.cleanup_receipt(CURRENT_RESULT_PENDING, &payload));
+            receipts.push(self.cleanup_receipt(CURRENT_STATE_PENDING, &state));
+        }
+        Ok(receipts)
+    }
+
+    fn validate_removal_receipts(
+        &self,
+        receipt: &crate::operational_state_migration::receipt::PhaseReceipt,
+        maximum_payload_bytes: usize,
+    ) -> Result<(), OperationalStateMigrationError> {
+        let (payload, state) = self.current_pair(maximum_payload_bytes)?;
+        for (name, authority, expected) in [
+            (
+                CURRENT_RESULT_PENDING,
+                self.files.pending_result.as_ref(),
+                payload.as_slice(),
+            ),
+            (
+                CURRENT_STATE_PENDING,
+                self.files.pending_state.as_ref(),
+                state.as_slice(),
+            ),
+        ] {
+            if let Some(authority) = authority {
+                let bytes = authority.read_bounded(expected.len() as u64)?;
+                if !expected.starts_with(&bytes)
+                    || !receipt
+                        .objects
+                        .contains(&self.cleanup_receipt(name, expected))
+                {
+                    return Err(OperationalStateMigrationError::InvalidReceipt);
+                }
+            }
+        }
+        for removal in &self.files.removals {
+            let maximum = match removal.logical_name.as_str() {
+                JOURNAL_STATE_FILE_V1 | CURRENT_STATE_PENDING => MAX_JOURNAL_STATE_BYTES as u64,
+                JOURNAL_RESULT_FILE_V1 | CURRENT_RESULT_PENDING => maximum_payload_bytes as u64,
+                _ => return Err(OperationalStateMigrationError::InvalidReceipt),
+            };
+            let bytes = removal.authority.read_bounded(maximum)?;
+            let expected = match removal.logical_name.as_str() {
+                CURRENT_RESULT_PENDING => payload.as_slice(),
+                CURRENT_STATE_PENDING => state.as_slice(),
+                _ => bytes.as_slice(),
+            };
+            if !expected.starts_with(&bytes)
+                || !receipt
+                    .objects
+                    .contains(&self.cleanup_receipt(&removal.logical_name, expected))
+            {
+                return Err(OperationalStateMigrationError::InvalidReceipt);
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_receipt(&self, name: &str, bytes: &[u8]) -> MigrationObjectReceipt {
+        let key = hex(self.source.key.storage_digest().as_bytes());
+        MigrationObjectReceipt {
+            key: format!("cleanup/{key}/{name}"),
+            source_object_id: authenticated_id(
+                "crucible.prepared-result-migration-cleanup-source.v1",
+                &[bytes],
+            ),
+            output_object_id: authenticated_id(
+                "crucible.prepared-result-migration-cleanup-output.v1",
+                &[b"absent"],
+            ),
+        }
+    }
 }
 
 fn write_pending(
@@ -287,11 +411,33 @@ fn write_pending(
     path: &Path,
     bytes: &[u8],
 ) -> Result<(), OperationalStateMigrationError> {
-    let mut file = root.create_file(path, "create-journal-migration-pending")?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| io_error("write-journal-migration-pending", path, source))?;
+    match root.open_regular_optional(path, "open-journal-migration-pending")? {
+        Some(pending) => {
+            let existing = pending.read_bounded(bytes.len() as u64)?;
+            if !bytes.starts_with(&existing) {
+                return Err(OperationalStateMigrationError::InvalidReceipt);
+            }
+            pending.replace_contents(bytes)?;
+        }
+        None => {
+            let mut file = root.create_file(path, "create-journal-migration-pending")?;
+            file.write_all(bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|source| io_error("write-journal-migration-pending", path, source))?;
+        }
+    }
     Ok(root.sync()?)
+}
+
+fn publish_resumable(
+    root: &AnchoredDirectory,
+    destination: &Path,
+    bytes: &[u8],
+) -> Result<(), OperationalStateMigrationError> {
+    let pending_path = root.write_once_pending_path(destination)?;
+    write_pending(root, &pending_path, bytes)?;
+    root.rename_noreplace(&pending_path, destination, "publish-journal-migration-file")?;
+    Ok(())
 }
 
 struct JournalInventory {
@@ -304,8 +450,14 @@ struct JournalFiles {
     legacy_result: Option<AnchoredFile>,
     current_state: bool,
     current_result: bool,
-    pending_state: bool,
-    pending_result: bool,
+    pending_state: Option<AnchoredFile>,
+    pending_result: Option<AnchoredFile>,
+    removals: Vec<RemovalFile>,
+}
+
+struct RemovalFile {
+    logical_name: String,
+    authority: AnchoredFile,
 }
 
 impl JournalFiles {
@@ -329,17 +481,6 @@ impl JournalFiles {
 
     fn legacy_partial(&self) -> bool {
         self.legacy_state.is_some() != self.legacy_result.is_some()
-    }
-
-    fn pending_paths(&self, root: &Path) -> Vec<PathBuf> {
-        [
-            self.pending_result
-                .then(|| root.join(CURRENT_RESULT_PENDING)),
-            self.pending_state.then(|| root.join(CURRENT_STATE_PENDING)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
     }
 }
 
@@ -420,8 +561,9 @@ fn inventory_journal_directory(
         legacy_result: None,
         current_state: false,
         current_result: false,
-        pending_state: false,
-        pending_result: false,
+        pending_state: None,
+        pending_result: None,
+        removals: Vec::new(),
     };
     let anchored = root.anchored_path();
     for entry in fs::read_dir(&anchored)
@@ -447,25 +589,46 @@ fn inventory_journal_directory(
                 .len(),
             maximum_bytes,
         )?;
-        match entry.file_name().to_str() {
+        let actual_name = entry.file_name();
+        let removal = crate::anchored_fs::removal_original_name(&actual_name);
+        let logical_name = removal.as_deref().unwrap_or(&actual_name);
+        let authority = root
+            .open_inventory_file(&entry.path(), "pin-journal-migration-file")
+            .map_err(migration_guard_error)?
+            .ok_or(PreparedResultJournalError::Incomplete)?;
+        if removal.is_some() {
+            match logical_name.to_str() {
+                Some(
+                    JOURNAL_STATE_FILE_V1
+                    | JOURNAL_RESULT_FILE_V1
+                    | CURRENT_STATE_PENDING
+                    | CURRENT_RESULT_PENDING,
+                ) => files.removals.push(RemovalFile {
+                    logical_name: logical_name
+                        .to_str()
+                        .ok_or(PreparedResultJournalError::InvalidDirectory)?
+                        .to_owned(),
+                    authority,
+                }),
+                _ => return Err(PreparedResultJournalError::InvalidDirectory),
+            }
+            continue;
+        }
+        match logical_name.to_str() {
             Some(JOURNAL_STATE_FILE_V1) if files.legacy_state.is_none() => {
-                files.legacy_state = Some(
-                    root.open_regular_optional(&entry.path(), "pin-legacy-journal-state")
-                        .map_err(migration_guard_error)?
-                        .ok_or(PreparedResultJournalError::Incomplete)?,
-                );
+                files.legacy_state = Some(authority);
             }
             Some(JOURNAL_RESULT_FILE_V1) if files.legacy_result.is_none() => {
-                files.legacy_result = Some(
-                    root.open_regular_optional(&entry.path(), "pin-legacy-journal-result")
-                        .map_err(migration_guard_error)?
-                        .ok_or(PreparedResultJournalError::Incomplete)?,
-                );
+                files.legacy_result = Some(authority);
             }
             Some(JOURNAL_STATE_FILE) if !files.current_state => files.current_state = true,
             Some(JOURNAL_RESULT_FILE) if !files.current_result => files.current_result = true,
-            Some(CURRENT_STATE_PENDING) if !files.pending_state => files.pending_state = true,
-            Some(CURRENT_RESULT_PENDING) if !files.pending_result => files.pending_result = true,
+            Some(CURRENT_STATE_PENDING) if files.pending_state.is_none() => {
+                files.pending_state = Some(authority);
+            }
+            Some(CURRENT_RESULT_PENDING) if files.pending_result.is_none() => {
+                files.pending_result = Some(authority);
+            }
             _ => return Err(PreparedResultJournalError::InvalidDirectory),
         }
     }

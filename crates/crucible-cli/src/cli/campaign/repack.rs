@@ -342,15 +342,11 @@ fn accounting_markdown(label: &str, accounting: StoreRepackAccountingReport) -> 
 }
 
 fn encode_configuration(configuration: StoreGraphConfigurationId) -> String {
-    encode_bytes(&configuration.as_bytes())
+    encode_store_bytes(&configuration.as_bytes())
 }
 
 fn encode_plan_id(plan: PackedRepackPlanId) -> String {
-    encode_bytes(&plan.as_bytes())
-}
-
-fn encode_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    encode_store_bytes(&plan.as_bytes())
 }
 
 fn plan_file_error(operation: &str, path: &Path, error: std::io::Error) -> CliError {

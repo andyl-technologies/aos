@@ -183,7 +183,7 @@ fn run_store_verify(args: &StoreVerifyArgs, format: OutputFormat) -> Result<Stri
     let verified = verify_campaign_store_inventory(&args.deployment)?;
     let report = StoreVerifyReport {
         schema: STORE_VERIFY_REPORT_SCHEMA,
-        configuration: encode_bytes(&verified.configuration),
+        configuration: encode_store_bytes(&verified.configuration),
         maximum_placements: MAX_STORE_VERIFY_PLACEMENTS,
         maximum_logical_bytes: MAX_STORE_VERIFY_LOGICAL_BYTES,
         placements: verified.placements,
@@ -226,11 +226,7 @@ fn store_status_report(graph: &StoreGraph) -> StoreStatusReport {
 }
 
 fn store_configuration(graph: &StoreGraph) -> String {
-    encode_bytes(&graph.configuration_id().as_bytes())
-}
-
-fn encode_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    encode_store_bytes(&graph.configuration_id().as_bytes())
 }
 
 const fn store_node_kind(kind: StoreNodeKind) -> &'static str {
