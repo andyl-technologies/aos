@@ -51,7 +51,12 @@ pub(super) fn validate_details_identity(
         || current.run_path != format!("{SOCKET_ROOT}/{:02}", current.slot)
         || current.server_port != 20_000 + u16::from(current.slot)
         || current.storage_path
-            != path_text(&super::super::storage_path(&current.storage_resource)?)?
+            != path_text(&super::super::storage_path(
+                &current.storage_resource,
+                &current.cluster,
+                "database",
+                crate::config_eval::native_resource_map::HostStorageOwner::PostgresqlSlot,
+            )?)?
         || current.data_path != format!("{}/data", current.storage_path)
     {
         return Err(invalid("PostgreSQL state identity is inconsistent"));
@@ -325,6 +330,8 @@ pub(crate) fn retained_associations()
                 storage_resource: details.storage_resource,
                 storage_path: details.storage_path,
                 cluster: details.cluster,
+                lifetime: crate::config_eval::native_resource_map::HostStorageLifetime::Persistent,
+                owner: crate::config_eval::native_resource_map::HostStorageOwner::PostgresqlSlot,
                 purpose: "database".to_string(),
                 slot: details.slot,
                 uid: details.uid,

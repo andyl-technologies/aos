@@ -8,7 +8,7 @@ let
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:7ffd8615920764d2e93eb2072c6e822bcf7a0c47622952d3b9c6712cf06380b6";
+    "sha256:64bc590155806e0b69dac2503f44cca63e16dc0603b72fa6602b46d49f135e67";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -20,7 +20,7 @@ let
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6";
+    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -29,6 +29,10 @@ let
     interface
     "aos.host-network-policy-effects"
     "sha256:13851cb0af020c2ba09663d562017a706124e00ae4a66279d09bf9ffec3dd199";
+  storageEffects =
+    interface
+    "aos.host-storage-effects"
+    "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
   systemdEffects =
     interface
     "aos.systemd-service-effects"
@@ -225,6 +229,13 @@ let
       context.contributions;
     virtualHosts = validated.virtualHosts;
     consumerProbe = validateConsumerProbe context.configuration;
+    storageScope = builtins.substring 0 32 (builtins.hashString "sha256" (builtins.toJSON context.provider));
+    storagePath = purpose: "/var/lib/aos/ability-runtime/storage/${storageScope}-${purpose}";
+    storagePaths = {
+      logs = storagePath "logs";
+      runtime = storagePath "runtime";
+      state = storagePath "state";
+    };
     tlsHosts =
       builtins.filter
       (virtualHost: virtualHost.tls or false)
@@ -294,8 +305,11 @@ let
         methods = ["apply" "observe" "remove"];
         guarantees = [loopbackIngressGuarantee];
       };
+    storageRequest =
+      (childRequest context scope "storage" storageEffects)
+      // {methods = ["ensure" "observe" "release"];};
     requests =
-      [configurationRequest endpointRequest networkPolicyRequest]
+      [configurationRequest endpointRequest networkPolicyRequest storageRequest]
       ++ (
         if usesTls
         then [credentialRequest]
@@ -329,6 +343,7 @@ let
       consumer_endpoint = "${consumerProbe.address}:${builtins.toString consumerProbe.port}";
       unit = "nginx-${context.provider.key}.service";
       virtual_host_count = builtins.length virtualHosts;
+      storage_paths = storagePaths;
     };
     serviceRevision = "sha256:${builtins.hashString "sha256" (builtins.toJSON serviceValue)}";
     contributions =
@@ -338,6 +353,7 @@ let
         consumer_controller_revision = serviceRevision;
         consumer_instance = builtins.toJSON context.provider;
         consumer_probe = consumerProbe;
+        consumer_storage_paths = storagePaths;
       }
       ++ (
         if usesTls
@@ -367,6 +383,26 @@ let
       provider = context.provider;
       key = "${listener.name}-network-policy-${builtins.toString listener.port}";
     };
+    storageContract = purpose: {
+      cluster = storageScope;
+      lifetime =
+        if purpose == "runtime"
+        then "instance"
+        else "persistent";
+      owner = "root";
+      inherit purpose;
+    };
+    storageResource = purpose: {
+      provider = context.provider;
+      key = "${purpose}-storage";
+    };
+    storageResources =
+      builtins.map
+      (purpose: {
+        resource = storageResource purpose;
+        revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON (storageContract purpose))}";
+      })
+      ["logs" "runtime" "state"];
     listenerResources =
       builtins.concatMap
       (listener: [
@@ -396,7 +432,8 @@ let
           })}";
         }
       ]
-      ++ listenerResources;
+      ++ listenerResources
+      ++ storageResources;
   in {
     schema = "aos.ability.composition-fragment/v1";
     requests =
@@ -449,6 +486,7 @@ in {
   inherit compose;
 
   transition = context: let
+    storageScope = builtins.substring 0 32 (builtins.hashString "sha256" (builtins.toJSON context.provider));
     bindingsFor = requestKey: expectedInterface: requiredMethods:
       builtins.filter
       (entry:
@@ -484,6 +522,7 @@ in {
       then (builtins.head selected).binding
       else throw "nginx transition permits at most one authorized ${requestKey} binding";
     validation = desiredBinding "validation-terminal" nginxValidation ["record" "release" "validate"];
+    storage = desiredBinding "storage" storageEffects ["ensure" "observe" "release"];
     configuration = desiredBinding "configuration" managedConfiguration [];
     credential = optionalBinding "credential" credentialDelivery [];
     executionStage = context.provider.environment.stage;
@@ -532,12 +571,16 @@ in {
     serviceChanged = createdOrUpdated (changesThrough service);
     endpointChanges = changesForRequest "endpoint" endpointEffects ["materialize" "observe" "release"];
     networkPolicyChanges = changesForRequest "network-policy" networkPolicyEffects ["apply" "observe" "remove"];
+    storageChanges = changesForRequest "storage" storageEffects ["ensure" "observe" "release"];
     endpointAvailable = builtins.filter (change: change.kind != "remove") endpointChanges;
     endpointRemoved = builtins.filter (change: change.kind == "remove") endpointChanges;
     networkPolicyAvailable = builtins.filter (change: change.kind != "remove") networkPolicyChanges;
     networkPolicyRemoved = builtins.filter (change: change.kind == "remove") networkPolicyChanges;
     endpointChanged = createdOrUpdated endpointChanges;
     networkPolicyChanged = createdOrUpdated networkPolicyChanges;
+    storageAvailable = builtins.filter (change: change.kind != "remove") storageChanges;
+    storageRemoved = builtins.filter (change: change.kind == "remove") storageChanges;
+    storageChanged = createdOrUpdated storageChanges;
     owned =
       builtins.filter
       (change: change.resource.provider == context.provider)
@@ -557,7 +600,7 @@ in {
       if builtins.length serviceResources == 1
       then (builtins.head serviceResources).resource
       else throw "nginx transition requires exactly one authorized service resource";
-    needsValidation = configurationChanged != [] || credentialChanged != [];
+    needsValidation = configurationChanged != [] || credentialChanged != [] || storageChanged != [];
     credentialAvailable =
       if needsValidation
       then
@@ -575,7 +618,8 @@ in {
       needsValidation
       || serviceChanged != []
       || endpointChanged != []
-      || networkPolicyChanged != [];
+      || networkPolicyChanged != []
+      || storageChanged != [];
     needsAssociation =
       needsConvergence
       || builtins.any
@@ -627,7 +671,7 @@ in {
         "${credentialMethod change}-${change.resource.key}"
         "credential-view")
       credentialAvailable;
-    validationInputs = candidate: credentialViews: {
+    validationInputs = candidate: credentialViews: storagePaths: {
       source = "object";
       fields = {
         candidate = {
@@ -638,6 +682,7 @@ in {
           source = "list";
           items = credentialViews;
         };
+        storage_paths = storagePaths;
       };
     };
     controllerFor = resource: let
@@ -710,6 +755,12 @@ in {
       inherit (resource) provider;
       key = builtins.replaceStrings ["-network-policy-"] ["-endpoint-"] resource.key;
     };
+    storagePurpose = resource: let
+      matched = builtins.match "(logs|runtime|state)-storage" resource.key;
+    in
+      if matched == null
+      then throw "nginx transition received malformed storage resource '${resource.key}'"
+      else builtins.head matched;
     changeFor = changes: resource: let
       selected = builtins.filter (change: change.resource == resource) changes;
     in
@@ -781,6 +832,41 @@ in {
         compensate = null;
       };
     };
+    storageOperation = authorityRole: change: let
+      purpose = storagePurpose change.resource;
+      method =
+        if authorityRole == "teardown"
+        then "release"
+        else selectedAction change "ensure" "observe";
+    in
+      nativeOperation {
+        inherit authorityRole method;
+        requestKey = "storage";
+        expectedInterface = storageEffects;
+        resource = change.resource;
+        family = {
+          kind = "host-storage";
+          action = method;
+        };
+        phase =
+          if authorityRole == "teardown"
+          then "converging"
+          else "preparing";
+        inputPhase = "planning";
+        inputs = literal {
+          cluster = storageScope;
+          lifetime =
+            if purpose == "runtime"
+            then "instance"
+            else "persistent";
+          owner = "root";
+          inherit purpose;
+        };
+        access =
+          if method == "observe"
+          then "read"
+          else "exclusive-write";
+      };
     endpointOperation = authorityRole: change: let
       listener = listenerFromResource "endpoint" change.resource;
       method =
@@ -860,6 +946,25 @@ in {
           then "read"
           else "exclusive-write";
       };
+    storagePathInputs = let
+      pathFor = purpose: let
+        selected =
+          builtins.filter
+          (change: storagePurpose change.resource == purpose)
+          storageAvailable;
+        change =
+          if builtins.length selected == 1
+          then builtins.head selected
+          else throw "nginx transition requires one ${purpose} storage resource";
+        method = selectedAction change "ensure" "observe";
+      in
+        operationResult "${method}-${change.resource.key}" "path";
+    in
+      object {
+        logs = pathFor "logs";
+        runtime = pathFor "runtime";
+        state = pathFor "state";
+      };
     validate = change: {
       key = scopedKey "validate-${change.resource.key}";
       branch_context = [];
@@ -876,7 +981,7 @@ in {
         operations = ["validate"];
         lifetime = "instance";
       };
-      inputs = validationInputs true credentialViewInputs;
+      inputs = validationInputs true credentialViewInputs storagePathInputs;
       preconditions = [];
       accesses = [
         {
@@ -919,7 +1024,7 @@ in {
         operations = ["record"];
         lifetime = "instance";
       };
-      inputs = validationInputs true [];
+      inputs = validationInputs true [] (literal null);
       preconditions = [];
       accesses = [
         {
@@ -1057,7 +1162,7 @@ in {
         operations = ["release"];
         lifetime = "instance";
       };
-      inputs = validationInputs false [];
+      inputs = validationInputs false [] (literal null);
       preconditions = [];
       accesses = [
         {
@@ -1178,8 +1283,8 @@ in {
         }
       ]
       else [];
-    credentialOnlyEdges =
-      if credentialChanged != [] && configurationChanged == []
+    validationOnlyEdges =
+      if needsValidation && configurationChanged == []
       then
         builtins.map
         (change: {
@@ -1204,6 +1309,26 @@ in {
     networkPolicyOperations =
       if needsConvergence
       then builtins.map (networkPolicyOperation "desired") networkPolicyAvailable
+      else [];
+    storageOperations =
+      if needsConvergence
+      then builtins.map (storageOperation "desired") storageAvailable
+      else [];
+    storageValidationEdges =
+      if needsValidation
+      then
+        builtins.concatMap
+        (change: let
+          method = selectedAction change "ensure" "observe";
+        in
+          builtins.map
+          (association: {
+            from = node "${method}-${change.resource.key}";
+            to = node "validate-${association.resource.key}";
+            kind = "data";
+          })
+          associationChanges)
+        storageAvailable
       else [];
     endpointPolicyEdges =
       if needsConvergence
@@ -1230,6 +1355,7 @@ in {
       else [];
     endpointReleaseOperations = builtins.map (endpointOperation "teardown") endpointRemoved;
     networkPolicyRemoveOperations = builtins.map (networkPolicyOperation "teardown") networkPolicyRemoved;
+    storageReleaseOperations = builtins.map (storageOperation "teardown") storageRemoved;
     networkTeardownEdges =
       builtins.concatMap
       (change: let
@@ -1252,6 +1378,17 @@ in {
         }
       ])
       networkPolicyRemoved;
+    storageTeardownEdges =
+      builtins.map
+      (change: {
+        from =
+          if removed != []
+          then node "stop-${serviceResource.key}"
+          else node "observe-${serviceResource.key}";
+        to = node "release-${change.resource.key}";
+        kind = "required-success";
+      })
+      storageRemoved;
     dependencyRank = kind:
       builtins.getAttr kind {
         data = 0;
@@ -1297,8 +1434,10 @@ in {
           ))
           ++ endpointOperations
           ++ networkPolicyOperations
+          ++ storageOperations
           ++ endpointReleaseOperations
           ++ networkPolicyRemoveOperations
+          ++ storageReleaseOperations
           ++ (builtins.map record associationChanges)
           ++ (builtins.map release removed)
           ++ (
@@ -1318,10 +1457,12 @@ in {
         builtins.sort edgeLess
         (
           convergenceEdges
-          ++ credentialOnlyEdges
+          ++ validationOnlyEdges
           ++ endpointPolicyEdges
+          ++ storageValidationEdges
           ++ teardownEdges
           ++ networkTeardownEdges
+          ++ storageTeardownEdges
         );
       exports = [];
       imports = builtins.sort importLess (
@@ -1339,7 +1480,14 @@ in {
   in
     if usesForeground
     then throw "nginx foreground activation remains an unresolved deployment obligation"
-    else if associationChanges == [] && removed == [] && credentialRemoved == []
+    else if
+      associationChanges
+      == []
+      && removed == []
+      && credentialRemoved == []
+      && endpointRemoved == []
+      && networkPolicyRemoved == []
+      && storageRemoved == []
     then
       fragment
       // {

@@ -1113,9 +1113,10 @@ pub fn assess_observations(
 
 /// Validates exact per-cell results and derives whether the complete matrix passed.
 ///
-/// The release case supplies the trusted specification digest through its sole
-/// acceptance-check token. The observation must retain the full preimage and
-/// one result for every cell in the same order. No aggregate status is trusted.
+/// The release case supplies the trusted specification digest through one
+/// exact native-adapter-matrix acceptance-check token. The observation must
+/// retain the full preimage and one result for every cell in the same order.
+/// No aggregate status is trusted.
 ///
 /// # Errors
 ///
@@ -1459,14 +1460,20 @@ pub fn validate_matrix_for_case(
 }
 
 fn native_adapter_matrix_policy_digest(case: &QualificationCase) -> Result<Sha256Digest> {
-    if case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT || case.checks.len() != 1 {
+    if case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT {
         bail!("native adapter matrix case lacks one exact policy check");
     }
-    let encoded = case.checks[0]
-        .strip_prefix(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX)
-        .ok_or_else(|| {
-            anyhow::anyhow!("native adapter matrix check has an unsupported identity")
-        })?;
+
+    let mut matrix_checks = case
+        .checks
+        .iter()
+        .filter_map(|check| check.strip_prefix(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX));
+    let encoded = matrix_checks.next().ok_or_else(|| {
+        anyhow::anyhow!("native adapter matrix case lacks one exact policy check")
+    })?;
+    if matrix_checks.next().is_some() {
+        bail!("native adapter matrix case has multiple policy checks");
+    }
     Sha256Digest::parse(&format!("sha256:{encoded}"))
 }
 

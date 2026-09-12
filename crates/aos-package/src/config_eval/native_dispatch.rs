@@ -878,6 +878,7 @@ impl<'a> NativeAdapterRegistry<'a> {
             desired_generation: (route.generation == NativeResourceGeneration::Desired)
                 .then_some(route.mapping.revision),
             credential_dependencies: self.nginx_credential_dependencies(route.mapping)?,
+            storage_dependencies: self.nginx_storage_dependencies(route.mapping)?,
         })
     }
 
@@ -970,6 +971,85 @@ impl<'a> NativeAdapterRegistry<'a> {
             "nginx validation consumes one credential resource more than once"
         );
 
+        Ok(dependencies)
+    }
+
+    fn nginx_storage_dependencies(
+        &self,
+        mapping: &NativeResourceMapping,
+    ) -> Result<Vec<NativeDependencyBinding>> {
+        let mut validations = self.plan.operations().iter().filter(|operation| {
+            operation.target.resource == mapping.resource
+                && operation.family == aos_ability_model::OperationFamily::ValidateCandidate
+        });
+        let Some(operation) = validations.next() else {
+            return Ok(Vec::new());
+        };
+        ensure!(
+            validations.next().is_none(),
+            "nginx resource has ambiguous validation operations"
+        );
+        let ValueExpression::Object { fields } = &operation.inputs else {
+            return Err(anyhow!("nginx validation input is not a typed record"));
+        };
+        let Some(ValueExpression::Object { fields: storage }) = fields.get("storage_paths") else {
+            return Err(anyhow!("nginx validation input has no typed storage paths"));
+        };
+
+        let mut dependencies = Vec::new();
+        for purpose in ["logs", "runtime", "state"] {
+            let Some(ValueExpression::OperationResult { reference }) = storage.get(purpose) else {
+                return Err(anyhow!("nginx {purpose} storage has no runtime producer"));
+            };
+            let ResultProducerKey::Operation { key } = &reference.producer else {
+                return Err(anyhow!("nginx {purpose} storage producer is ambiguous"));
+            };
+            let producer = self
+                .plan
+                .operation(key)
+                .context("nginx storage producer is absent from the checked plan")?;
+            ensure!(
+                matches!(producer.method.as_str(), "ensure" | "observe")
+                    && reference.output.as_str()
+                        == aos_ability_model::builtin::HOST_STORAGE_PATH_OUTPUT,
+                "nginx storage path has a foreign producer contract"
+            );
+            let from = PlanNodeKey::Operation { key: key.clone() };
+            let to = PlanNodeKey::Operation {
+                key: operation.key.clone(),
+            };
+            ensure!(
+                self.plan.edges().iter().any(|edge| {
+                    edge.from == from && edge.to == to && edge.kind == DependencyKind::Data
+                }),
+                "nginx storage path has no checked data dependency"
+            );
+            let producer_mapping = self
+                .desired
+                .entries
+                .iter()
+                .find(|candidate| candidate.resource == producer.target.resource)
+                .context("nginx storage producer has no native mapping")?;
+            let producer_route =
+                self.preflight_mapping(producer_mapping, NativeResourceGeneration::Desired)?;
+            ensure!(
+                producer_route.kind
+                    == NativeAdapterKind::HostResource(NativeHostResourceKind::Storage)
+                    && producer_route.assignment_interface == producer.interface,
+                "nginx storage path selects another provider contract"
+            );
+            dependencies.push(NativeDependencyBinding {
+                input: purpose.to_string(),
+                producer: key.clone(),
+                resource: producer.target.resource.clone(),
+                revision: producer_mapping.revision,
+                qualification: producer_mapping.qualification.clone(),
+                interface: producer.interface.clone(),
+                method: producer.method.clone(),
+                output: reference.output.clone(),
+            });
+        }
+        dependencies.sort_by(|left, right| left.input.cmp(&right.input));
         Ok(dependencies)
     }
 
@@ -1128,19 +1208,28 @@ impl<'a> NativeAdapterRegistry<'a> {
             .iter()
             .chain(self.current.into_iter().flat_map(|map| &map.entries))
         {
-            let NativeResourceQualification::HostStorage { cluster, purpose } =
-                &mapping.qualification
+            let NativeResourceQualification::HostStorage {
+                cluster,
+                lifetime,
+                owner,
+                purpose,
+            } = &mapping.qualification
             else {
                 continue;
             };
             let request = StorageAllocationRequest {
                 resource: mapping.resource.clone(),
                 cluster: cluster.clone(),
+                lifetime: *lifetime,
+                owner: *owner,
                 purpose: purpose.clone(),
             };
             if let Some(previous) = storage.insert(mapping.resource.clone(), request) {
                 ensure!(
-                    previous.cluster == *cluster && previous.purpose == *purpose,
+                    previous.cluster == *cluster
+                        && previous.lifetime == *lifetime
+                        && previous.owner == *owner
+                        && previous.purpose == *purpose,
                     "retained storage resource changed its stable identity"
                 );
             }

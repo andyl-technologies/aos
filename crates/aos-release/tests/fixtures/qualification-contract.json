@@ -149,7 +149,8 @@
         "credential-renewal-reloads-and-serves-new-version",
         "selected-tls-generation-and-credential-view-survive-gc-and-reboot",
         "tls-disable-and-cleartext-transition-release-credential-views-after-service-change",
-        "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order"
+        "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order",
+        "authenticated-nginx-storage-ownership-lifetime-and-service-ordering"
       ],
       "id": "ability-native-activation",
       "invalidated_by": [
@@ -169,7 +170,7 @@
     },
     {
       "checks": [
-        "native-adapter-matrix-v1-sha256-9064a8557457de9eafae4cad104a837a0d2905487fe4b6954a57bd0cc015615d",
+        "native-adapter-matrix-v1-sha256-b2573d76abe2a164ae312a159c8a5ac250d624b02e4931708feb13451fff43f6",
         "stage-specific-manager-and-foreground-contracts-with-unqualified-container-cells"
       ],
       "id": "ability-native-adapter-matrix",

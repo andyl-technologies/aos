@@ -57,7 +57,7 @@
     {
       "adapter": "host-storage",
       "interface_abi": 1,
-      "interface_descriptor": "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f",
+      "interface_descriptor": "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8",
       "interface_name": "aos.host-storage-effects",
       "methods": [
         {
@@ -228,7 +228,7 @@
     {
       "adapter": "nginx-validation",
       "interface_abi": 1,
-      "interface_descriptor": "sha256:c781b7f06eabaa9386ab0438f150b028e98b6d07ad78a907a567d27ee14602a6",
+      "interface_descriptor": "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1",
       "interface_name": "aos.nginx-validation",
       "methods": [
         {

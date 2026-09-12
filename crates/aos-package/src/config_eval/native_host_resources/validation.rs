@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use super::super::native_adapter_surface::{
     adapter_interface_descriptor, host_adapter_id, supports_any_route,
 };
-use super::super::native_resource_map::NativeResourceQualification;
+use super::super::native_resource_map::{
+    HostStorageLifetime, HostStorageOwner, NativeResourceQualification,
+};
 use super::{
     CREDENTIAL_ROOT, NativeHostResourceKind, STORAGE_ROOT, decode_input, invalid, store_error,
 };
@@ -46,6 +48,8 @@ pub(super) struct EndpointInput {
 #[serde(deny_unknown_fields)]
 pub(super) struct StorageInput {
     pub(super) cluster: String,
+    pub(super) lifetime: HostStorageLifetime,
+    pub(super) owner: HostStorageOwner,
     pub(super) purpose: String,
 }
 
@@ -121,10 +125,19 @@ pub(super) fn validate_inputs(
         }
         (
             NativeHostResourceKind::Storage,
-            NativeResourceQualification::HostStorage { cluster, purpose },
+            NativeResourceQualification::HostStorage {
+                cluster,
+                lifetime,
+                owner,
+                purpose,
+            },
         ) => {
             let input: StorageInput = decode_input(inputs, "host storage")?;
-            if input.cluster != *cluster || input.purpose != *purpose {
+            if input.cluster != *cluster
+                || input.lifetime != *lifetime
+                || input.owner != *owner
+                || input.purpose != *purpose
+            {
                 return Err(invalid(
                     "storage input differs from its static qualification",
                 ));
@@ -388,8 +401,20 @@ pub(super) fn resource_key(resource: &ResourceId) -> Result<String, io::Error> {
         .map_err(store_error)
 }
 
-pub(super) fn storage_path(resource: &ResourceId) -> Result<PathBuf, io::Error> {
-    Ok(Path::new(STORAGE_ROOT).join(resource_key(resource)?))
+pub(super) fn storage_path(
+    resource: &aos_ability_model::ResourceId,
+    cluster: &str,
+    purpose: &str,
+    owner: HostStorageOwner,
+) -> Result<PathBuf, io::Error> {
+    if LocalKey::new(cluster).is_err() || LocalKey::new(purpose).is_err() {
+        return Err(invalid("storage path identity is not a local key"));
+    }
+    let name = match owner {
+        HostStorageOwner::PostgresqlSlot => resource_key(resource)?,
+        HostStorageOwner::Root => format!("{cluster}-{purpose}"),
+    };
+    Ok(Path::new(STORAGE_ROOT).join(name))
 }
 
 pub(super) fn path_text(path: &Path) -> Result<String, io::Error> {

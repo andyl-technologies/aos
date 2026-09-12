@@ -1429,7 +1429,7 @@ class Scenario:
 
 
 CHECK_DETAILS = {
-    "native-adapter-matrix-v1-sha256-9064a8557457de9eafae4cad104a837a0d2905487fe4b6954a57bd0cc015615d": (
+    "native-adapter-matrix-v1-sha256-b2573d76abe2a164ae312a159c8a5ac250d624b02e4931708feb13451fff43f6": (
         "The closed native-adapter matrix bound every durability and authority "
         "cell to the exact adapter interface name, ABI, and descriptor."
     ),
@@ -1519,6 +1519,11 @@ CHECK_DETAILS = {
     "endpoint-and-ingress-policy-precede-service-readiness-and-release-in-reverse-order": (
         "Authenticated transition edges placed each loopback endpoint before its ingress policy, "
         "placed policy before service convergence and readiness, and reversed that order on removal."
+    ),
+    "authenticated-nginx-storage-ownership-lifetime-and-service-ordering": (
+        "Each nginx instance consumed authenticated root-owned runtime, state, and log paths; "
+        "storage preparation preceded validation, service stop preceded release, instance "
+        "runtime storage was removed, and persistent state and logs were retained."
     ),
     "authenticated-k3s-bootstrap-and-provider-authority": (
         "The published guest bootstrapped K3s only from authenticated packages "

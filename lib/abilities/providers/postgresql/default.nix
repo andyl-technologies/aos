@@ -8,7 +8,7 @@ let
   storageEffects = {
     name = "aos.host-storage-effects";
     abi = 1;
-    descriptor = "sha256:f87cd9e408e229dd2fb121ee7f49d57bc452cb427da539cb35cb4c66256aac0f";
+    descriptor = "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
   };
   networkPolicyEffects = {
     name = "aos.host-network-policy-effects";
@@ -470,6 +470,8 @@ let
         inputPhase = "planning";
         inputs = literal {
           inherit cluster;
+          lifetime = "persistent";
+          owner = "postgresql-slot";
           purpose = "database";
         };
         access =
@@ -744,6 +746,8 @@ let
         inputPhase = "planning";
         inputs = literal {
           inherit cluster;
+          lifetime = "persistent";
+          owner = "postgresql-slot";
           purpose = "database";
         };
         access = "exclusive-write";
