@@ -518,10 +518,12 @@ struct StoreArgs {
 enum StoreCommand {
     /// Describe one exact admitted store graph without accessing object bytes.
     Status(StoreStatusArgs),
-    /// Authenticate one complete content-addressed object through the graph.
+    /// Read and authenticate one complete object without repair or promotion.
     Ensure(StoreEnsureArgs),
     /// Authenticate every bounded physical placement in one stable generation.
     Verify(StoreVerifyArgs),
+    /// Restore one missing or corrupt physical copy from an authenticated peer.
+    Repair(StoreRepairArgs),
     /// Plan, cancel, or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
     /// Plan or apply deterministic repacking for one configured packed leaf.
@@ -550,6 +552,31 @@ struct StoreEnsureArgs {
     /// Strict composed repository-store deployment file.
     #[arg(long = "in", value_name = "STORE")]
     deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreRepairArgs {
+    /// Exact canonical content ID to repair.
+    #[arg(value_name = "CONTENT_ID")]
+    content: String,
+    /// Strict composed repository-store deployment file.
+    #[arg(long = "in", value_name = "STORE")]
+    deployment: PathBuf,
+    /// Exact physical node that supplies authenticated bytes.
+    #[arg(long, value_name = "NODE")]
+    source: String,
+    /// Exact physical node whose placement may be replaced.
+    #[arg(long, value_name = "NODE")]
+    target: String,
+    /// Maximum logical bytes admitted into the bounded repair buffer.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
+    maximum_bytes: u64,
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "PATH")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "PATH")]
+    policy: PathBuf,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -2477,6 +2504,8 @@ mod cli_run_save;
 mod cli_store;
 #[path = "cli/campaign/repack.rs"]
 mod cli_store_repack;
+#[path = "cli/store_repair.rs"]
+mod cli_store_repair;
 #[path = "cli/triage_debug.rs"]
 mod cli_triage_debug;
 #[path = "cli/verify_serve.rs"]

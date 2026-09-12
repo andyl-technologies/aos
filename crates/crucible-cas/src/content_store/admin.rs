@@ -164,7 +164,10 @@ pub enum PlannedDeleteDisposition {
 /// summary. Removing a candidate remains an administrative primitive: callers
 /// must first validate a complete immutable GC plan and every external root-set
 /// fence required by that plan. A visitor must not call back into the fenced
-/// backend; the exclusive fence is intentionally non-reentrant.
+/// backend. An exact authenticated repair may instead reproduce the inventory
+/// generation under this fence before replacing its one diagnosed corrupt
+/// candidate. A visitor must not call back into the fenced backend; the
+/// exclusive fence is intentionally non-reentrant.
 pub trait BlobInventoryFence {
     /// Streams every exact logical-object placement while fenced.
     ///

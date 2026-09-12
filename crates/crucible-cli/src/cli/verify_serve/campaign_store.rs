@@ -386,10 +386,14 @@ pub(super) fn load_campaign_repository_store_observational(
     .into_store()
 }
 
-pub(super) fn load_campaign_store_graph(
+pub(super) fn load_campaign_store_graph_observational(
     deployment_path: &Path,
 ) -> Result<Arc<StoreGraph>, CliError> {
-    Ok(load_campaign_repository_graph(deployment_path)?.graph)
+    Ok(load_campaign_repository_graph_with_mode(
+        deployment_path,
+        CampaignStoreLoadMode::MaintenanceObservational,
+    )?
+    .graph)
 }
 
 /// Loads a graph maintenance boundary without creating or repairing store state.
@@ -414,7 +418,10 @@ pub(super) fn load_campaign_store_maintenance_observational(
 pub(super) fn verify_campaign_store_inventory(
     deployment_path: &Path,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
-    let loaded = load_campaign_repository_graph(deployment_path)?;
+    let loaded = load_campaign_repository_graph_with_mode(
+        deployment_path,
+        CampaignStoreLoadMode::MaintenanceObservational,
+    )?;
     verify_loaded_campaign_store_inventory(loaded, StoreGraphVerificationLimits::PRODUCTION)
 }
 

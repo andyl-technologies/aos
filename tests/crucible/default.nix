@@ -3280,6 +3280,12 @@ in rec {
   };
   phase9 = {
     gates = {
+      campaignOperatorFlightContract = import ./phase9-campaign-operator-flight-contract.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase9.gates.campaignOperatorFlightContract";
+        taskIds = ["T-CAM-0.5" "T-CAM-4.8" "T-CAM-5.8" "T-CAM-7.7" "T-CAM-8.6" "T-CAM-9.7"];
+        dependencies = [];
+      };
       campaignDestructiveRecoveryContract = import ./phase9-campaign-destructive-recovery-contract.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase9.gates.campaignDestructiveRecoveryContract";
