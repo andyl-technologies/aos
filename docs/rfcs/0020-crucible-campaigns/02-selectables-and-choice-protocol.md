@@ -231,11 +231,13 @@ fault-firing, RNG-draw, override, preemption, and application-random decision
 variants remain readable and are not silently reclassified as selections;
 producer-by-producer normalization remains implementation work. New campaign
 configuration payloads write Schedule V2 and reject nested Schedule V1 at the
-executor boundary. The general execution-model reader retains selection-free
-Schedule V1 for older reproduction artifacts and scheduler continuations, but
-rejects a selection tag under V1. Checkpoint V4 carries the expanded decision
-grammar while selection-free Checkpoint V3 remains readable. Domain-specific
-applied-effect evidence remains in the event log and adapter checkpoint state.
+executor boundary. The general execution-model reader also rejects Schedule V1.
+An explicit bounded offline migration accepts only V1 delivery-order and raw
+RNG evidence, emits the current V2 representation, and rejects every untyped
+override, preemption, application-random, or forged selection decision at its
+exact position. Checkpoint V4 carries the expanded decision grammar while
+selection-free Checkpoint V3 remains readable. Domain-specific applied-effect
+evidence remains in the event log and adapter checkpoint state.
 Campaign execution resolves no more than 4,096 selection decisions in one
 configuration and permits at most 256 MiB of conservative aggregate
 schedule-prefix byte work across campaign-branch provenance checks. The latter
