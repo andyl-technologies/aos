@@ -178,6 +178,10 @@
     path = ../../../tests/abilities/reference-nginx/providers/managed-configuration;
     name = "aos-ability-reference-managed-configuration";
   };
+  abilityReferenceHttpBackendFixture = builtins.path {
+    path = ../../../tests/abilities/reference-nginx/providers/http-backend-registry;
+    name = "aos-ability-reference-http-backend";
+  };
   abilityReferenceCredentialFixture = builtins.path {
     path = ../../../tests/abilities/reference-nginx/providers/credential;
     name = "aos-ability-reference-credential";
@@ -192,7 +196,7 @@
   };
   abilityReferenceNginxGraph = mkReferenceGraph {
     rootPaths =
-      [abilityReferenceNginxFixture]
+      [abilityReferenceNginxFixture abilityReferenceHttpBackendFixture]
       ++ builtins.map (package: package.abilities) (builtins.attrValues abilityReferenceRegistryPackages);
     pname = "aos-ability-reference-nginx-graph";
   };
@@ -452,6 +456,8 @@ in
       export AOS_TEST_ABILITY_BUILD_SYSTEM=${lib.escapeShellArg stdenv.buildPlatform.system}
       export AOS_TEST_ABILITY_REFERENCE_NGINX="${abilityReferenceNginxFixture}"
       export AOS_TEST_ABILITY_REFERENCE_NGINX_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceNginxFixture})"
+      export AOS_TEST_ABILITY_REFERENCE_HTTP_BACKEND="${abilityReferenceHttpBackendFixture}"
+      export AOS_TEST_ABILITY_REFERENCE_HTTP_BACKEND_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceHttpBackendFixture})"
       export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION="${abilityReferenceManagedConfigurationFixture}"
       export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceManagedConfigurationFixture})"
       export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL="${abilityReferenceCredentialFixture}"

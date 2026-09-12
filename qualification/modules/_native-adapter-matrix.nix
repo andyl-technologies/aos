@@ -25,7 +25,7 @@
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
-  expectedSurfaceDigest = "4fab681e6945452e47097306b87a7520557d11741cb43ad9b91ae9dc9f8a8148";
+  expectedSurfaceDigest = "e6a2431b0f00a40b9e10376271c8bd0d9d0a9845b8a929140aeca1fefc20d4a2";
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0

@@ -16,15 +16,15 @@ let
   systemdService =
     interface
     "aos.systemd-service"
-    "sha256:b712c9e3697e87d62bb62549d8692b4d8f825bae9733ae523f76a40bd3882666";
+    "sha256:c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d";
   nginxValidation =
     interface
     "aos.nginx-validation"
-    "sha256:6b9bf98724f7bd138b5e0c59806f07b47e9697b61f1f07d9ac4110a294091de6";
+    "sha256:3aaa289923966ca40279d7030374aa6d72d0cbf07e655b9c61741ca5b59507e1";
   httpBackend =
     interface
     "aos.http-backend"
-    "sha256:d2a053b3b69a6c0beddf569db7b1b245262c1bd4dd429b1edf8c5a7361e20dcf";
+    "sha256:289893585ef1b59314c8adfb77c26e698d6db1333178e3b3d1e1e0c0b54754c0";
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -289,35 +289,46 @@ let
       })
       tlsHosts));
 
-    backendRequestFor = contribution:
-      childRequest
-      context
-      (scope ++ [contribution.slot])
-      "backend"
-      httpBackend
-      [];
-    proxyContributions = builtins.filter
+    proxyContributions =
+      builtins.filter
       (contribution: contribution.value.proxy_backend or false)
       context.contributions;
-    backendRequests = builtins.map backendRequestFor proxyContributions;
-    backendEndpointFor = contribution: let
-      request = backendRequestFor contribution;
-      binding = bindingFor context request;
-      selected = outputFrom context binding httpBackend "backend" "endpoint";
+    backendRequest = childRequest context scope "backend" httpBackend [];
+    backendRequests =
+      if proxyContributions == []
+      then []
+      else [backendRequest];
+    backendEndpoints = let
+      binding = bindingFor context backendRequest;
+      selected = outputFrom context binding httpBackend "backend" "endpoints";
     in
       if binding == null || selected == []
       then null
       else if builtins.length selected != 1
-      then throw "nginx backend binding produced an ambiguous endpoint"
+      then throw "nginx backend binding produced an ambiguous endpoint registry"
       else let
         expression = (builtins.head selected).value;
       in
-        if expression.source != "literal"
-        then throw "nginx backend endpoint must be available during planning"
-        else if expression.value == null
+        if expression.source == "literal" && expression.value == null
         then null
-        else validateBackendEndpoint expression.value;
-    resolvedVirtualHosts = builtins.map
+        else if expression.source != "object"
+        then throw "nginx backend registry must be available during planning"
+        else expression.fields;
+    backendEndpointFor = contribution: let
+      selected =
+        if backendEndpoints == null || !builtins.hasAttr contribution.slot backendEndpoints
+        then null
+        else backendEndpoints.${contribution.slot};
+    in
+      if selected == null
+      then null
+      else if selected.source != "literal"
+      then throw "nginx backend endpoint must be available during planning"
+      else if selected.value == null
+      then null
+      else validateBackendEndpoint selected.value;
+    resolvedVirtualHosts =
+      builtins.map
       (contribution: let
         virtualHost = validateVirtualHost contribution;
       in
@@ -328,7 +339,8 @@ let
           else {}
         ))
       context.contributions;
-    backendsReady = builtins.all
+    backendsReady =
+      builtins.all
       (virtualHost: !(virtualHost.proxy_backend or false) || virtualHost.backend_endpoint != null)
       resolvedVirtualHosts;
 
@@ -394,7 +406,8 @@ let
       (childRequest context scope "storage" storageEffects [])
       // {methods = ["ensure" "observe" "release"];};
     requests =
-      [configurationRequest]
+      backendRequests
+      ++ [configurationRequest]
       ++ (
         if usesTls
         then [credentialRequest]
@@ -406,8 +419,7 @@ let
         then []
         else [serviceRequest]
       )
-      ++ [serviceTerminalRequest storageRequest validationRequest]
-      ++ backendRequests;
+      ++ [serviceTerminalRequest storageRequest validationRequest];
     validationRequestWithMethod = validationRequest // {methods = ["record" "release" "validate"];};
     serviceTerminalRequestWithMethods =
       serviceTerminalRequest
@@ -436,14 +448,15 @@ let
     contributions =
       (
         if backendsReady
-        then lowerContribution context configurationRequest "configuration" {
-          virtualHosts = resolvedVirtualHosts;
-          consumer_content_revision = configurationRevision;
-          consumer_controller_revision = serviceRevision;
-          consumer_instance = builtins.toJSON context.provider;
-          consumer_probe = consumerProbe;
-          consumer_storage_paths = storagePaths;
-        }
+        then
+          lowerContribution context configurationRequest "configuration" {
+            virtualHosts = resolvedVirtualHosts;
+            consumer_content_revision = configurationRevision;
+            consumer_controller_revision = serviceRevision;
+            consumer_instance = builtins.toJSON context.provider;
+            consumer_probe = consumerProbe;
+            consumer_storage_paths = storagePaths;
+          }
         else []
       )
       ++ (
@@ -541,20 +554,24 @@ let
         ])
       proxyContributions;
     ownedResources =
-      [
-        {
-          resource = {
-            provider = context.provider;
-            key = "virtual-hosts";
-          };
-          revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
-            inherit consumerProbe resolvedVirtualHosts;
-          })}";
-        }
-      ]
-      ++ listenerResources
-      ++ backendResources
-      ++ storageResources;
+      builtins.sort
+      (left: right: left.resource.key < right.resource.key)
+      (
+        [
+          {
+            resource = {
+              provider = context.provider;
+              key = "virtual-hosts";
+            };
+            revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
+              inherit consumerProbe resolvedVirtualHosts;
+            })}";
+          }
+        ]
+        ++ listenerResources
+        ++ backendResources
+        ++ storageResources
+      );
   in {
     schema = "aos.ability.composition-fragment/v1";
     requests =

@@ -1630,12 +1630,18 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
         host_storage_interface()?,
         interface_document(
             "aos.http-backend",
-            ValueSchema::Boolean,
-            Some(endpoint.clone()),
+            endpoint.clone(),
+            None,
             vec![(
-                "endpoint",
+                "endpoints",
                 ValueSchema::Optional {
-                    value: Box::new(endpoint),
+                    value: Box::new(ValueSchema::Map {
+                        key: map_key_constraint(),
+                        value: Box::new(ValueSchema::Optional {
+                            value: Box::new(endpoint),
+                        }),
+                        max_entries: 1024,
+                    }),
                 },
             )],
         )?,
