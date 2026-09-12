@@ -4,6 +4,7 @@
   mkSystem,
   pkgs,
   guestTools ? false,
+  effectQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   packageSet = import ../abilities/reference-kubernetes/package.nix {
@@ -11,7 +12,7 @@
     inherit (pkgs) mkDerivation;
     kubernetesRuntime = pkgs.kubectl;
     systemdRuntime = pkgs.aos.packageRuntime;
-    inherit transitionTransform;
+    inherit effectQualification transitionTransform;
   };
 
   orderedPackages = [
@@ -47,7 +48,7 @@
     emptyAddonPayload
     // {
       revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON emptyAddonPayload)}";
-  };
+    };
 
   runtimeModule = {
     aos.packages.k3s-combined = {

@@ -166,7 +166,7 @@ let
       })
       contributions;
   };
-in {
+in rec {
   inherit compose;
 
   transition = context: let
@@ -373,4 +373,52 @@ in {
         exports = [];
       }
     else fragment;
+
+  # Publish and release are terminal graph nodes in this provider. The
+  # qualification graph follows each with the same real idempotent filesystem
+  # operation so a RequiredSuccess barrier has an observable handler call.
+  effectQualificationTransition = context: let
+    fragment = transition context;
+    operationLess = left: right: left.key.key < right.key.key;
+    edgeLess = left: right:
+      if left.from.key.key != right.from.key.key
+      then left.from.key.key < right.from.key.key
+      else left.to.key.key < right.to.key.key;
+    terminal =
+      builtins.filter (
+        operation: builtins.elem operation.method ["publish" "release"]
+      )
+      fragment.operations;
+    witnesses =
+      builtins.map (operation: let
+        witness =
+          operation
+          // {
+            key = operation.key // {key = "settle-${operation.key.key}";};
+          };
+      in {
+        inherit witness;
+        edge = {
+          from = {
+            kind = "operation";
+            key = operation.key;
+          };
+          to = {
+            kind = "operation";
+            key = witness.key;
+          };
+          kind = "required-success";
+        };
+      })
+      terminal;
+  in
+    fragment
+    // {
+      operations = builtins.sort operationLess (
+        fragment.operations ++ builtins.map (entry: entry.witness) witnesses
+      );
+      edges = builtins.sort edgeLess (
+        fragment.edges ++ builtins.map (entry: entry.edge) witnesses
+      );
+    };
 }

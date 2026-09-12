@@ -4,6 +4,7 @@
   providerArtifact,
   runtimeArtifact ? null,
   hostResourceRuntime ? null,
+  effectQualification ? false,
 }: let
   inherit (lib.abilities) schemas;
 
@@ -491,7 +492,10 @@ in {
           transitionEntry = "transition";
           ownsResourceKinds = ["aos.nginx"];
           compose = provider.compose;
-          transition = provider.transition;
+          transition =
+            if effectQualification
+            then provider.effectQualificationTransition
+            else provider.transition;
         };
       };
 

@@ -4,6 +4,7 @@
   mkDerivation,
   kubernetesRuntime,
   systemdRuntime,
+  effectQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   contracts = import ../../../pkgs/kubernetes/_ability-contracts.nix {inherit lib;};
@@ -39,7 +40,7 @@ in {
 
   k3s = mkPackage "ability-reference-k3s" k3sArtifact (contracts.k3sPackage {
     providerArtifact = k3sArtifact;
-    inherit transitionTransform;
+    inherit effectQualification transitionTransform;
   });
 
   systemd = mkPackage "ability-reference-systemd-bootstrap" systemdArtifact (

@@ -7,6 +7,7 @@
   managedConfigurationRuntime ? ./providers/managed-configuration,
   nginxRuntime ? ../../../pkgs/networking/_nginx-ability-provider,
   systemdRuntime ? ./providers/systemd,
+  effectQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   inherit (lib.abilities) schemas;
@@ -534,7 +535,7 @@
   systemdProvider = import ./providers/systemd/default.nix;
   httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
   baseNginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
-    inherit lib hostResourceRuntime;
+    inherit effectQualification lib hostResourceRuntime;
     providerArtifact = nginxArtifact;
     runtimeArtifact = nginxRuntime;
   };
@@ -659,7 +660,11 @@ in {
             transitionEntry = "transition";
             ownsResourceKinds = [managedConfiguration.name];
             compose = managedConfigurationProvider.compose;
-            transition = transitionTransform managedConfigurationProvider.transition;
+            transition = transitionTransform (
+              if effectQualification
+              then managedConfigurationProvider.effectQualificationTransition
+              else managedConfigurationProvider.transition
+            );
           };
         };
         managed-configuration-effects = {
@@ -715,7 +720,11 @@ in {
             transitionEntry = "transition";
             ownsResourceKinds = [credentialDelivery.name];
             compose = credentialProvider.compose;
-            transition = transitionTransform credentialProvider.transition;
+            transition = transitionTransform (
+              if effectQualification
+              then credentialProvider.effectQualificationTransition
+              else credentialProvider.transition
+            );
           };
         };
         credential-delivery-effects = {

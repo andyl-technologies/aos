@@ -8,6 +8,7 @@
   packageRuntime,
   postgresql,
   writeTextFile,
+  effectQualification ? false,
   transitionTransform ? transition: transition,
 }: let
   contract = import ../../../lib/abilities/postgresql.nix {inherit lib;};
@@ -205,7 +206,14 @@
             export = let
               base = postgresqlExport stateFormat;
             in
-              base // {transition = transitionTransform base.transition;};
+              base
+              // {
+                transition = transitionTransform (
+                  if effectQualification
+                  then postgresqlProvider.effectQualificationTransition
+                  else base.transition
+                );
+              };
           };
           credential = {
             artifact = packageRuntime;

@@ -620,7 +620,6 @@ let
       })
       ownedResources;
   };
-
   backendTransition = _context: {
     schema = "aos.ability.transition-fragment/v1";
     operations = [];
@@ -634,7 +633,7 @@ let
     provider_readiness = [];
     obligations = [];
   };
-in {
+in rec {
   inherit backendCompose backendTransition compose;
 
   transition = context: let
@@ -1674,4 +1673,71 @@ in {
         links = [];
       }
     else fragment;
+
+  # These provider-authored settlement calls cover terminal host-resource and
+  # nginx-validation nodes whose ordinary graph ends at an export or data edge.
+  # Each witness retains the authenticated binding, physical resource, inputs,
+  # and real native handler selected by the production transition.
+  effectQualificationTransition = context: let
+    fragment = transition context;
+    witnessedInterfaces = [
+      endpointEffects.name
+      storageEffects.name
+      nginxValidation.name
+    ];
+    terminal =
+      builtins.filter (
+        operation: builtins.elem operation.interface.name witnessedInterfaces
+      )
+      fragment.operations;
+    witnesses =
+      builtins.map (operation: let
+        witness =
+          operation
+          // {
+            key = operation.key // {key = "settle-${operation.key.key}";};
+          };
+      in {
+        inherit witness;
+        edge = {
+          from = {
+            kind = "operation";
+            key = operation.key;
+          };
+          to = {
+            kind = "operation";
+            key = witness.key;
+          };
+          kind = "required-success";
+        };
+      })
+      terminal;
+    dependencyRank = kind:
+      builtins.getAttr kind {
+        data = 0;
+        required-success = 1;
+        ordering-only = 2;
+        readiness = 3;
+        branch-guard = 4;
+        branch-merge = 5;
+        retention = 6;
+        communication = 7;
+      };
+    operationLess = left: right: left.key.key < right.key.key;
+    edgeLess = left: right:
+      if left.from.key.key != right.from.key.key
+      then left.from.key.key < right.from.key.key
+      else if left.to.key.key != right.to.key.key
+      then left.to.key.key < right.to.key.key
+      else dependencyRank left.kind < dependencyRank right.kind;
+  in
+    fragment
+    // {
+      operations = builtins.sort operationLess (
+        fragment.operations ++ builtins.map (entry: entry.witness) witnesses
+      );
+      edges = builtins.sort edgeLess (
+        fragment.edges ++ builtins.map (entry: entry.edge) witnesses
+      );
+    };
 }

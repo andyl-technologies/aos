@@ -211,6 +211,9 @@ let
     prepare = operation "prepare" "prepare" "prepare" "preparing" [] "exclusive-write";
     retain = operation "retain" "retain" "retain" "preparing" [] "exclusive-write";
     select = operation "select" "select" "select" "publishing" [] "exclusive-write";
+    settleHoldFallback = operation "settle-hold-fallback" "hold" "hold" "recovering" (branch "fallback") "exclusive-write";
+    settleHoldHealthy = operation "settle-hold-healthy" "hold" "hold" "recovering" (branch "healthy") "exclusive-write";
+    settleObserveHealth = operation "settle-observe-health" "observe-health" "observe-health" "converging" [] "read";
     withdraw = operation "withdraw" "withdraw" "withdraw" "recovering" (branch "fallback") "exclusive-write";
     edge = from: to: kind: {inherit from to kind;};
     rollout =
@@ -225,6 +228,9 @@ let
           prepare
           retain
           select
+          settleHoldFallback
+          settleHoldHealthy
+          settleObserveHealth
           withdraw
         ];
         decisions = [
@@ -232,7 +238,7 @@ let
             key = scopedKey "health-decision";
             branch_context = [];
             selector = {
-              result = result "observe-health" "healthy";
+              result = result "settle-observe-health" "healthy";
               tag_field = null;
             };
             alternatives = [
@@ -266,8 +272,8 @@ let
                 lifetime = "persistent";
               };
               alternatives = {
-                fallback = result "hold-fallback" "rollout-state";
-                healthy = result "hold-healthy" "rollout-state";
+                fallback = result "settle-hold-fallback" "rollout-state";
+                healthy = result "settle-hold-healthy" "rollout-state";
               };
             };
           }
@@ -279,20 +285,32 @@ let
           (edge (operationNode "drain") (operationNode "select") "required-success")
           (edge (operationNode "select") (operationNode "observe-boot") "required-success")
           (edge (operationNode "observe-boot") (operationNode "observe-health") "required-success")
-          (edge (operationNode "observe-health") (decisionNode "health-decision") "data")
+          (edge (operationNode "observe-health") (operationNode "settle-observe-health") "required-success")
+          (edge (operationNode "settle-observe-health") (decisionNode "health-decision") "data")
           (edge (decisionNode "health-decision") (operationNode "hold-fallback") "branch-guard")
+          (edge (decisionNode "health-decision") (operationNode "settle-hold-fallback") "branch-guard")
           (edge (decisionNode "health-decision") (operationNode "hold-healthy") "branch-guard")
+          (edge (decisionNode "health-decision") (operationNode "settle-hold-healthy") "branch-guard")
           (edge (decisionNode "health-decision") (operationNode "withdraw") "branch-guard")
           (edge (operationNode "withdraw") (operationNode "hold-fallback") "required-success")
-          (edge (operationNode "hold-fallback") (mergeNode "terminal") "branch-merge")
-          (edge (operationNode "hold-healthy") (mergeNode "terminal") "branch-merge")
+          (edge (operationNode "hold-fallback") (operationNode "settle-hold-fallback") "required-success")
+          (edge (operationNode "settle-hold-fallback") (mergeNode "terminal") "branch-merge")
+          (edge (operationNode "hold-healthy") (operationNode "settle-hold-healthy") "required-success")
+          (edge (operationNode "settle-hold-healthy") (mergeNode "terminal") "branch-merge")
         ];
       };
     retirement =
       empty
       // {
-        operations = [
-          (operation "retire" "retire" "retire" "recovering" [] "exclusive-write")
+        operations = let
+          retire = operation "retire" "retire" "retire" "recovering" [] "exclusive-write";
+          observeRetirement = operation "retirement-observation" "observe-health" "observe-health" "recovering" [] "read";
+        in [retire observeRetirement];
+        edges = [
+          (edge
+            (operationNode "retire")
+            (operationNode "retirement-observation")
+            "required-success")
         ];
       };
   in
