@@ -4,6 +4,7 @@
 //! restart opens remain confined to the current v2 format.
 
 use super::*;
+use std::io::Write;
 
 use crate::OperationalStateMigrationError;
 use crate::anchored_fs::{AnchoredDirectory, AnchoredFile};
@@ -222,8 +223,8 @@ impl JournalMigration {
             let (payload, state) = self.current_pair(maximum_payload_bytes)?;
             let result_pending = root.join(CURRENT_RESULT_PENDING);
             let state_pending = root.join(CURRENT_STATE_PENDING);
-            self.root.write_once(&result_pending, &payload)?;
-            self.root.write_once(&state_pending, &state)?;
+            write_pending(&self.root, &result_pending, &payload)?;
+            write_pending(&self.root, &state_pending, &state)?;
             let result_pending_authority = self
                 .root
                 .open_regular_optional(&result_pending, "pin-staged-current-result")?
@@ -250,13 +251,13 @@ impl JournalMigration {
         {
             return Err(PreparedResultJournalError::InvalidState.into());
         }
-        if self.files.legacy_result {
+        if let Some(authority) = &self.files.legacy_result {
             self.root
-                .remove_file(&root.join(JOURNAL_RESULT_FILE_V1), "remove-legacy-result")?;
+                .remove_bound_file(authority, "remove-legacy-result")?;
         }
-        if self.files.legacy_state {
+        if let Some(authority) = &self.files.legacy_state {
             self.root
-                .remove_file(&root.join(JOURNAL_STATE_FILE_V1), "remove-legacy-state")?;
+                .remove_bound_file(authority, "remove-legacy-state")?;
         }
         self.root.verify_path_binding()?;
         Ok(migrated)
@@ -281,14 +282,26 @@ impl JournalMigration {
     }
 }
 
+fn write_pending(
+    root: &AnchoredDirectory,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), OperationalStateMigrationError> {
+    let mut file = root.create_file(path, "create-journal-migration-pending")?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| io_error("write-journal-migration-pending", path, source))?;
+    Ok(root.sync()?)
+}
+
 struct JournalInventory {
     root: AnchoredDirectory,
     files: JournalFiles,
 }
 
 struct JournalFiles {
-    legacy_state: bool,
-    legacy_result: bool,
+    legacy_state: Option<AnchoredFile>,
+    legacy_result: Option<AnchoredFile>,
     current_state: bool,
     current_result: bool,
     pending_state: bool,
@@ -297,7 +310,7 @@ struct JournalFiles {
 
 impl JournalFiles {
     fn source_version(&self) -> Result<MigrationJournalVersion, PreparedResultJournalError> {
-        if self.legacy_state && self.legacy_result {
+        if self.legacy_state.is_some() && self.legacy_result.is_some() {
             Ok(MigrationJournalVersion::V1)
         } else if self.current_complete() {
             Ok(MigrationJournalVersion::V2)
@@ -311,11 +324,11 @@ impl JournalFiles {
     }
 
     fn has_legacy(&self) -> bool {
-        self.legacy_state || self.legacy_result
+        self.legacy_state.is_some() || self.legacy_result.is_some()
     }
 
     fn legacy_partial(&self) -> bool {
-        self.legacy_state != self.legacy_result
+        self.legacy_state.is_some() != self.legacy_result.is_some()
     }
 
     fn pending_paths(&self, root: &Path) -> Vec<PathBuf> {
@@ -403,8 +416,8 @@ fn inventory_journal_directory(
     maximum_bytes: u64,
 ) -> Result<JournalFiles, PreparedResultJournalError> {
     let mut files = JournalFiles {
-        legacy_state: false,
-        legacy_result: false,
+        legacy_state: None,
+        legacy_result: None,
         current_state: false,
         current_result: false,
         pending_state: false,
@@ -435,8 +448,20 @@ fn inventory_journal_directory(
             maximum_bytes,
         )?;
         match entry.file_name().to_str() {
-            Some(JOURNAL_STATE_FILE_V1) if !files.legacy_state => files.legacy_state = true,
-            Some(JOURNAL_RESULT_FILE_V1) if !files.legacy_result => files.legacy_result = true,
+            Some(JOURNAL_STATE_FILE_V1) if files.legacy_state.is_none() => {
+                files.legacy_state = Some(
+                    root.open_regular_optional(&entry.path(), "pin-legacy-journal-state")
+                        .map_err(migration_guard_error)?
+                        .ok_or(PreparedResultJournalError::Incomplete)?,
+                );
+            }
+            Some(JOURNAL_RESULT_FILE_V1) if files.legacy_result.is_none() => {
+                files.legacy_result = Some(
+                    root.open_regular_optional(&entry.path(), "pin-legacy-journal-result")
+                        .map_err(migration_guard_error)?
+                        .ok_or(PreparedResultJournalError::Incomplete)?,
+                );
+            }
             Some(JOURNAL_STATE_FILE) if !files.current_state => files.current_state = true,
             Some(JOURNAL_RESULT_FILE) if !files.current_result => files.current_result = true,
             Some(CURRENT_STATE_PENDING) if !files.pending_state => files.pending_state = true,
@@ -444,7 +469,8 @@ fn inventory_journal_directory(
             _ => return Err(PreparedResultJournalError::InvalidDirectory),
         }
     }
-    if !(files.legacy_state && files.legacy_result) && !files.current_complete() {
+    if !(files.legacy_state.is_some() && files.legacy_result.is_some()) && !files.current_complete()
+    {
         return Err(PreparedResultJournalError::Incomplete);
     }
     Ok(files)

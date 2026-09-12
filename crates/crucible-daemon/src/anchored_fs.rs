@@ -119,11 +119,23 @@ impl AnchoredFile {
         }
     }
 
-    pub(crate) fn write_byte(&self, offset: u64, value: u8) -> Result<(), AnchoredFsError> {
+    pub(crate) fn truncate(&self, length: u64) -> Result<(), AnchoredFsError> {
         let file = self.open_for_write()?;
-        file.write_all_at(&[value], offset)
+        file.set_len(length)
             .and_then(|()| file.sync_all())
-            .map_err(|source| anchored_io("write-anchored-file", &self.path, source))?;
+            .map_err(|source| anchored_io("truncate-anchored-file", &self.path, source))?;
+        self.verify_path_binding()
+    }
+
+    pub(crate) fn append_at(&self, offset: u64, bytes: &[u8]) -> Result<(), AnchoredFsError> {
+        let final_length = offset
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| invalid_path(&self.path))?;
+        let file = self.open_for_write()?;
+        file.write_all_at(bytes, offset)
+            .and_then(|()| file.set_len(final_length))
+            .and_then(|()| file.sync_all())
+            .map_err(|source| anchored_io("append-anchored-file", &self.path, source))?;
         self.verify_path_binding()
     }
 
@@ -134,6 +146,54 @@ impl AnchoredFile {
             .and_then(|()| file.sync_all())
             .map_err(|source| anchored_io("replace-anchored-file", &self.path, source))?;
         self.verify_path_binding()
+    }
+
+    fn remove_after_validation(&self, operation: &'static str) -> Result<(), AnchoredFsError> {
+        let mut quarantine = std::ffi::OsString::from(".");
+        quarantine.push(&self.name);
+        quarantine.push(format!(".removing-{:x}-{:x}", self.device, self.inode));
+        renameat_with(
+            &self.parent,
+            &self.name,
+            &self.parent,
+            &quarantine,
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(|source| self.io_error(operation, source))?;
+
+        let descriptor = openat2(
+            &self.parent,
+            &quarantine,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+        )
+        .map_err(|source| self.io_error(operation, source))?;
+        let metadata = File::from(descriptor)
+            .metadata()
+            .map_err(|source| anchored_io(operation, &self.path, source))?;
+        if !metadata.is_file() || metadata.dev() != self.device || metadata.ino() != self.inode {
+            renameat_with(
+                &self.parent,
+                &quarantine,
+                &self.parent,
+                &self.name,
+                RenameFlags::NOREPLACE,
+            )
+            .map_err(|source| self.io_error("restore-replaced-file", source))?;
+            self.parent
+                .sync_all()
+                .map_err(|source| anchored_io("sync-directory", &self.path, source))?;
+            return Err(AnchoredFsError::DirectoryReplaced {
+                path: self.path.clone(),
+            });
+        }
+
+        unlinkat(&self.parent, &quarantine, AtFlags::empty())
+            .map_err(|source| self.io_error(operation, source))?;
+        self.parent
+            .sync_all()
+            .map_err(|source| anchored_io("sync-directory", &self.path, source))
     }
 
     fn open_for_write(&self) -> Result<File, AnchoredFsError> {
@@ -296,10 +356,11 @@ impl AnchoredDirectory {
         let parent = relative.parent().ok_or(invalid_path(path))?;
         let name = relative.file_name().ok_or(invalid_path(path))?;
         let directory = self.open_directory(parent, "open-write-parent")?;
-        let temporary = format!(".{}.pending", name.to_string_lossy());
+        let temporary_path = self.write_once_pending_path(path)?;
+        let temporary = temporary_path.file_name().ok_or(invalid_path(path))?;
         let descriptor = openat2(
             &directory,
-            temporary.as_str(),
+            temporary,
             OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::CREATE | OFlags::EXCL,
             Mode::RUSR | Mode::WUSR,
             ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
@@ -311,7 +372,7 @@ impl AnchoredDirectory {
             .map_err(|source| anchored_io("write-temporary", path, source))?;
         renameat_with(
             &directory,
-            temporary.as_str(),
+            temporary,
             &directory,
             name,
             RenameFlags::NOREPLACE,
@@ -320,6 +381,15 @@ impl AnchoredDirectory {
         directory
             .sync_all()
             .map_err(|source| anchored_io("sync-directory", path, source))
+    }
+
+    pub(crate) fn write_once_pending_path(&self, path: &Path) -> Result<PathBuf, AnchoredFsError> {
+        self.relative(path)?;
+        let name = path.file_name().ok_or(invalid_path(path))?;
+        let mut temporary = std::ffi::OsString::from(".");
+        temporary.push(name);
+        temporary.push(".pending");
+        Ok(path.with_file_name(temporary))
     }
 
     pub(crate) fn create_file(
@@ -340,22 +410,14 @@ impl AnchoredDirectory {
         Ok(File::from(descriptor))
     }
 
-    pub(crate) fn remove_file(
-        &self,
-        path: &Path,
-        operation: &'static str,
-    ) -> Result<(), AnchoredFsError> {
-        self.unlink(path, operation, AtFlags::empty(), false)
-            .map(|_| ())
-    }
-
     pub(crate) fn remove_bound_file(
         &self,
         file: &AnchoredFile,
         operation: &'static str,
     ) -> Result<(), AnchoredFsError> {
+        self.verify_path_binding()?;
         file.verify_path_binding()?;
-        self.remove_file(&file.path, operation)
+        file.remove_after_validation(operation)
     }
 
     pub(crate) fn remove_file_if_present(
@@ -586,6 +648,30 @@ mod tests {
 
         assert!(pinned.replace_contents(b"current").is_err());
         assert!(guard.remove_bound_file(&pinned, "remove-state").is_err());
+        assert_eq!(fs::read(&path).expect("replacement"), b"replacement");
+        assert_eq!(fs::read(&moved).expect("pinned"), b"pinned");
+    }
+
+    #[test]
+    fn bound_file_removal_restores_replacement_after_validation_race() {
+        let root = TempDir::new().expect("root");
+        let path = root.path().join("state");
+        let moved = root.path().join("moved");
+        fs::write(&path, b"pinned").expect("pinned file");
+        let guard = AnchoredDirectory::new(root.path().to_owned()).expect("root guard");
+        let pinned = guard
+            .open_regular_optional(&path, "pin-state")
+            .expect("open state")
+            .expect("state exists");
+        pinned.verify_path_binding().expect("initial validation");
+
+        fs::rename(&path, &moved).expect("move pinned state after validation");
+        fs::write(&path, b"replacement").expect("replacement state");
+
+        assert!(matches!(
+            pinned.remove_after_validation("remove-state"),
+            Err(AnchoredFsError::DirectoryReplaced { .. })
+        ));
         assert_eq!(fs::read(&path).expect("replacement"), b"replacement");
         assert_eq!(fs::read(&moved).expect("pinned"), b"pinned");
     }

@@ -11,10 +11,7 @@ use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 
-use crate::components::{
-    format_timestamp, EmptyState, HashValue, HelpTooltip, InlineError, ReviewedPlanCard,
-    StatusBadge,
-};
+use crate::components::{EmptyState, HashValue, HelpTooltip, InlineError, ReviewedPlanCard, StatusBadge, format_timestamp};
 use crate::mutation::{idempotency_key, PendingPlan};
 use crate::transport::ApiClient;
 

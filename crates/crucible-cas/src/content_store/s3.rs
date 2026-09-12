@@ -953,7 +953,41 @@ impl ImmutableBlobBackend for S3BlobBackend {
                 capability: "observational blob mutation",
             });
         }
+        self.put_authenticated(id, source)
+    }
+
+    fn repair_put_if_absent(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+        expected_generation: super::InventoryGeneration,
+    ) -> Result<PutReceipt, StoreError> {
+        if self.administration.is_none() {
+            return Err(StoreError::Unsupported {
+                capability: "S3 physical repair without administration",
+            });
+        }
+        let mut fence = self.acquire_admin_repair_fence(expected_generation)?;
+        self.put_authenticated_inner(id, source, || fence.advance_generation())
+    }
+}
+
+impl S3BlobBackend {
+    fn put_authenticated(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
         let _publication = self.acquire_admin_publication_guard()?;
+        self.put_authenticated_inner(id, source, || self.advance_admin_generation())
+    }
+
+    fn put_authenticated_inner(
+        &self,
+        id: ContentId,
+        source: &BlobHandle,
+        advance_generation: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<PutReceipt, StoreError> {
         let logical_length = source.logical_length();
         if logical_length > self.maximum_logical_object_bytes {
             return Err(StoreError::Quota);
@@ -962,7 +996,7 @@ impl ImmutableBlobBackend for S3BlobBackend {
         if self.contains(id)? {
             return self.authenticate_existing(id);
         }
-        self.advance_admin_generation()?;
+        advance_generation()?;
         let outcome = if logical_length == 0 {
             self.client
                 .put_empty_if_absent(&self.bucket, &self.key(id))?
@@ -2263,7 +2297,7 @@ mod tests {
         let administration = Arc::new(FakeBlobAdminClient::new(client.clone()));
         let mut clients = StoreGraphS3Clients::new();
         clients
-            .insert(endpoint.clone(), client)
+            .insert(endpoint.clone(), client.clone())
             .expect("S3 capability");
         let root = StoreNodeId::new("archive").expect("node");
         let config = StoreGraphConfig {
@@ -2321,8 +2355,8 @@ mod tests {
         ));
         drop(graph);
         drop(admin);
-        let (_graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
-            config,
+        let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
+            config.clone(),
             &super::super::StoreGraphKeyring::new(),
             &super::super::StoreGraphNamespaceAuthorizers::new(),
             &super::super::StoreGraphObjectProfilers::new(),
@@ -2333,5 +2367,91 @@ mod tests {
         assert_eq!(admin.physical().len(), 1);
         assert_eq!(admin.physical()[0].node().as_str(), "archive");
         assert_eq!(admin.s3_multipart_cleanup().len(), 1);
+        admin.physical()[0]
+            .admin()
+            .acquire_inventory_fence()
+            .expect("initialize S3 inventory state")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("initialize S3 inventory");
+        drop(graph);
+        drop(admin);
+
+        let (_graph, admin) = StoreGraph::build_observational_with_admin_and_all_capabilities(
+            config.clone(),
+            &super::super::StoreGraphKeyring::new(),
+            &super::super::StoreGraphNamespaceAuthorizers::new(),
+            &super::super::StoreGraphObjectProfilers::new(),
+            &super::super::StoreGraphPhysicalQuotaBinders::new(),
+            &clients,
+        )
+        .expect("observational administrable S3 graph");
+        let target = admin.physical()[0];
+        let bytes = b"authenticated observational S3 repair".to_vec();
+        let id = ContentId::for_bytes(ObjectKind::Finding, 1, &bytes);
+        let generation = target
+            .admin()
+            .acquire_inventory_fence()
+            .expect("repair inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("repair inventory")
+            .generation();
+        assert!(matches!(
+            target.repair_with_authenticated_bytes(id, b"substitution".to_vec(), generation),
+            Err(StoreError::Corrupt { id: rejected }) if rejected == id
+        ));
+
+        let (writer, _) = StoreGraph::build_with_admin_and_all_capabilities(
+            config,
+            &super::super::StoreGraphKeyring::new(),
+            &super::super::StoreGraphNamespaceAuthorizers::new(),
+            &super::super::StoreGraphObjectProfilers::new(),
+            &super::super::StoreGraphPhysicalQuotaBinders::new(),
+            &clients,
+        )
+        .expect("operational S3 writer");
+        let concurrent = b"concurrent generation change".to_vec();
+        let concurrent_id = ContentId::for_bytes(ObjectKind::Finding, 1, &concurrent);
+        writer
+            .put_if_absent(concurrent_id, &BlobHandle::from_bytes(concurrent))
+            .expect("advance generation after graph check");
+        assert!(matches!(
+            target.repair_with_authenticated_bytes(id, bytes.clone(), generation),
+            Err(StoreError::Incompatible)
+        ));
+        assert!(matches!(
+            target.read(id),
+            Err(StoreError::NotFound { id: missing }) if missing == id
+        ));
+
+        client.fail_part.store(true, Ordering::SeqCst);
+        let generation = target
+            .admin()
+            .acquire_inventory_fence()
+            .expect("failure inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("failure inventory")
+            .generation();
+        assert!(
+            target
+                .repair_with_authenticated_bytes(id, bytes.clone(), generation)
+                .is_err()
+        );
+        assert!(
+            matches!(target.read(id), Err(StoreError::NotFound { id: missing }) if missing == id)
+        );
+        client.fail_part.store(false, Ordering::SeqCst);
+        let generation = target
+            .admin()
+            .acquire_inventory_fence()
+            .expect("retry inventory fence")
+            .visit_inventory(&mut |_| Ok(()))
+            .expect("retry inventory")
+            .generation();
+        assert_eq!(
+            target
+                .repair_with_authenticated_bytes(id, bytes, generation)
+                .expect("repair missing observational S3 placement"),
+            super::super::StoreGraphPhysicalRepairDisposition::ReplacedMissing
+        );
     }
 }

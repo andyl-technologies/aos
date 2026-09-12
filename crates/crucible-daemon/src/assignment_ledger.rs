@@ -1896,18 +1896,19 @@ fn visit_bounded_ledger_inventory(
                 .strip_prefix(root)
                 .map_err(|_| corrupt("ledger-inventory-path"))?;
             let components = relative.iter().collect::<Vec<_>>();
-            let in_attempts = components.first().is_some_and(|name| *name == "attempts");
             if metadata.file_type().is_symlink() {
                 return Err(corrupt("ledger-inventory-symlink"));
             }
             if metadata.is_dir() {
-                if in_attempts
-                    && ((components.len() == 2
-                        && !components[1]
-                            .to_str()
-                            .is_some_and(|name| is_lower_hex(name, 2)))
-                        || components.len() > 2)
-                {
+                let valid = match components.as_slice() {
+                    [kind] => *kind == "assignments" || *kind == "attempts",
+                    [kind, shard] => {
+                        (*kind == "assignments" || *kind == "attempts")
+                            && shard.to_str().is_some_and(|name| is_lower_hex(name, 2))
+                    }
+                    _ => false,
+                };
+                if !valid {
                     return Err(corrupt("attempt-root-shard-shape"));
                 }
                 pending.push(path);
@@ -1918,24 +1919,36 @@ fn visit_bounded_ledger_inventory(
                 if bytes > maximum_bytes {
                     return Err(corrupt("ledger-inventory-byte-limit"));
                 }
-                if in_attempts {
-                    if components.len() != 3 {
-                        return Err(corrupt("attempt-root-record-shape"));
-                    }
-                    let name = components[2]
-                        .to_str()
-                        .ok_or_else(|| corrupt("attempt-root-record-name"))?;
-                    if is_lower_hex(name, 64) {
-                        if records >= maximum_records {
-                            return Ok(false);
+                match components.as_slice() {
+                    [name]
+                        if *name == "writer.lock"
+                            || *name == RETENTION_STATE_FILE
+                            || *name
+                                == crate::operational_state_migration::receipt::ACTIVE_MARKER => {}
+                    [kind, shard, name]
+                        if *kind == "assignments"
+                            && shard.to_str().is_some_and(|name| is_lower_hex(name, 2))
+                            && name.to_str().is_some_and(|name| is_lower_hex(name, 32)) => {}
+                    [kind, shard, name]
+                        if *kind == "attempts"
+                            && shard.to_str().is_some_and(|name| is_lower_hex(name, 2)) =>
+                    {
+                        let name = name
+                            .to_str()
+                            .ok_or_else(|| corrupt("attempt-root-record-name"))?;
+                        if is_lower_hex(name, 64) {
+                            if records >= maximum_records {
+                                return Ok(false);
+                            }
+                            records += 1;
+                            visitor(AttemptInventoryEntry::Record(&path))?;
+                        } else if permit_staging && is_staging_name(name) {
+                            visitor(AttemptInventoryEntry::Staging(&path))?;
+                        } else {
+                            return Err(corrupt("attempt-root-record-shape"));
                         }
-                        records += 1;
-                        visitor(AttemptInventoryEntry::Record(&path))?;
-                    } else if permit_staging && is_staging_name(name) {
-                        visitor(AttemptInventoryEntry::Staging(&path))?;
-                    } else {
-                        return Err(corrupt("attempt-root-record-shape"));
                     }
+                    _ => return Err(corrupt("ledger-inventory-root-shape")),
                 }
             } else {
                 return Err(corrupt("ledger-inventory-entry-type"));

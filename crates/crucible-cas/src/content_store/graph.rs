@@ -705,7 +705,8 @@ impl<'a> StoreGraphPhysicalAdmin<'a> {
         drop(fence);
 
         let source = BlobHandle::from_bytes(bytes);
-        self.backend.put_if_absent(id, &source)?;
+        self.backend
+            .repair_put_if_absent(id, &source, expected_generation)?;
         self.backend.read(id, None)?.copy_to(&mut std::io::sink())?;
         Ok(disposition)
     }

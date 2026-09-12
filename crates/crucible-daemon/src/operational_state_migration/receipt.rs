@@ -60,7 +60,8 @@ impl PhaseReceipt {
 
 pub(crate) struct ActiveMarker {
     authority: AnchoredFile,
-    phase_offset: u64,
+    active_length: u64,
+    completion: Vec<u8>,
 }
 
 pub(crate) fn load_phase_receipt(
@@ -226,6 +227,7 @@ pub(crate) fn activate_marker(
         prepared_results,
         MARKER_COMPLETE,
     )?;
+    reconcile_pending_marker(root, &path, &active)?;
     let authority = match root.open_regular_optional(&path, "open-marker")? {
         Some(authority) => authority,
         None => {
@@ -235,16 +237,38 @@ pub(crate) fn activate_marker(
         }
     };
     let bytes = authority.read_bounded(MAX_RECEIPT_BYTES)?;
-    if bytes == complete {
-        authority.write_byte((bytes.len() - 1) as u64, MARKER_ACTIVE)?;
-    } else if bytes != active {
+    if bytes != active {
+        let suffix = bytes.strip_prefix(active.as_slice());
+        if !suffix.is_some_and(|suffix| complete.starts_with(suffix)) {
+            return Err(OperationalStateMigrationError::InvalidReceipt);
+        }
+        authority.truncate(active.len() as u64)?;
+    }
+    if !marker_is_active(&active).map_err(|_| OperationalStateMigrationError::InvalidReceipt)? {
         return Err(OperationalStateMigrationError::InvalidReceipt);
     }
     authority.verify_path_binding()?;
     Ok(ActiveMarker {
         authority,
-        phase_offset: (active.len() - 1) as u64,
+        active_length: active.len() as u64,
+        completion: complete,
     })
+}
+
+fn reconcile_pending_marker(
+    root: &AnchoredDirectory,
+    marker: &Path,
+    expected: &[u8],
+) -> Result<(), OperationalStateMigrationError> {
+    let pending_path = root.write_once_pending_path(marker)?;
+    let Some(pending) = root.open_regular_optional(&pending_path, "open-pending-marker")? else {
+        return Ok(());
+    };
+    let bytes = pending.read_bounded(MAX_RECEIPT_BYTES)?;
+    if !expected.starts_with(&bytes) {
+        return Err(OperationalStateMigrationError::InvalidReceipt);
+    }
+    Ok(root.remove_bound_file(&pending, "remove-pending-marker")?)
 }
 
 pub(crate) fn finish_marker(
@@ -254,7 +278,7 @@ pub(crate) fn finish_marker(
     receipt_directory.verify_path_binding()?;
     Ok(marker
         .authority
-        .write_byte(marker.phase_offset, MARKER_COMPLETE)?)
+        .append_at(marker.active_length, &marker.completion)?)
 }
 
 pub(crate) fn marker_present_guarded(root: &AnchoredDirectory) -> std::io::Result<bool> {
@@ -302,13 +326,34 @@ fn marker_bytes(
         bytes.extend_from_slice(&length.to_be_bytes());
         bytes.extend_from_slice(path);
     }
+    bytes.push(phase);
     let checksum = blake3::derive_key(RECEIPT_HASH_DOMAIN, &bytes);
     bytes.extend_from_slice(&checksum);
-    bytes.push(phase);
     Ok(bytes)
 }
 
 fn marker_is_active(bytes: &[u8]) -> std::io::Result<bool> {
+    let (phase, active_length) = marker_phase(bytes)?;
+    if phase != MARKER_ACTIVE {
+        return Err(invalid_marker());
+    }
+    if active_length == bytes.len() {
+        return Ok(true);
+    }
+    let (completion_phase, completion_length) = marker_phase(&bytes[active_length..])?;
+    let active_paths = &bytes[..active_length - 33];
+    let completion_paths = &bytes[active_length..active_length + completion_length - 33];
+    if completion_phase != MARKER_COMPLETE
+        || active_length != completion_length
+        || active_length + completion_length != bytes.len()
+        || active_paths != completion_paths
+    {
+        return Err(invalid_marker());
+    }
+    Ok(false)
+}
+
+fn marker_phase(bytes: &[u8]) -> std::io::Result<(u8, usize)> {
     if bytes.len() < MARKER_MAGIC.len() + 3 * 4 + 33 || !bytes.starts_with(MARKER_MAGIC) {
         return Err(invalid_marker());
     }
@@ -326,17 +371,18 @@ fn marker_is_active(bytes: &[u8]) -> std::io::Result<bool> {
             return Err(invalid_marker());
         }
     }
-    let checksum_offset = offset;
-    if checksum_offset.checked_add(33) != Some(bytes.len()) {
+    let phase = *bytes.get(offset).ok_or_else(invalid_marker)?;
+    let checksum_offset = offset + 1;
+    let record_length = checksum_offset.checked_add(32).ok_or_else(invalid_marker)?;
+    if record_length > bytes.len() {
         return Err(invalid_marker());
     }
     let expected = blake3::derive_key(RECEIPT_HASH_DOMAIN, &bytes[..checksum_offset]);
     if bytes[checksum_offset..checksum_offset + 32] != expected {
         return Err(invalid_marker());
     }
-    match bytes[checksum_offset + 32] {
-        MARKER_ACTIVE => Ok(true),
-        MARKER_COMPLETE => Ok(false),
+    match phase {
+        MARKER_ACTIVE | MARKER_COMPLETE => Ok((phase, record_length)),
         _ => Err(invalid_marker()),
     }
 }
@@ -462,6 +508,95 @@ mod tests {
 
             let guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
             assert!(marker_present_guarded(&guard).is_err());
+        }
+    }
+
+    #[test]
+    fn marker_reader_rejects_unauthenticated_phase_change() {
+        let root = TempDir::new().expect("root");
+        let receipt_parent = TempDir::new().expect("receipt parent");
+        let receipt_path = receipt_parent.path().join("receipt");
+        let root_guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
+        let receipt_guard = prepare_receipt_directory(&receipt_path).expect("receipt directory");
+        activate_marker(
+            &root_guard,
+            &receipt_guard,
+            root.path(),
+            receipt_parent.path(),
+        )
+        .expect("active marker");
+
+        let marker_path = root.path().join(ACTIVE_MARKER);
+        let mut bytes = fs::read(&marker_path).expect("marker bytes");
+        let phase_offset = bytes.len() - 33;
+        bytes[phase_offset] = MARKER_COMPLETE;
+        fs::write(&marker_path, bytes).expect("tamper phase");
+
+        assert!(marker_present_guarded(&root_guard).is_err());
+    }
+
+    #[test]
+    fn marker_retry_reconciles_internal_publish_cuts() {
+        for fraction in [0, 1, 2] {
+            let root = TempDir::new().expect("root");
+            let receipt_parent = TempDir::new().expect("receipt parent");
+            let receipt_path = receipt_parent.path().join("receipt");
+            let root_guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
+            let receipt_guard =
+                prepare_receipt_directory(&receipt_path).expect("receipt directory");
+            let assignment = root.path().canonicalize().expect("assignment path");
+            let prepared = receipt_parent.path().canonicalize().expect("prepared path");
+            let expected =
+                marker_bytes(receipt_guard.path(), &assignment, &prepared, MARKER_ACTIVE)
+                    .expect("marker bytes");
+            let marker_path = root.path().join(ACTIVE_MARKER);
+            let pending_path = root_guard
+                .write_once_pending_path(&marker_path)
+                .expect("pending path");
+            let length = expected.len() * fraction / 2;
+            fs::write(pending_path, &expected[..length]).expect("interrupted marker write");
+
+            activate_marker(&root_guard, &receipt_guard, &assignment, &prepared)
+                .unwrap_or_else(|error| panic!("resume marker cut {fraction}: {error}"));
+            assert!(marker_present_guarded(&root_guard).expect("active marker"));
+        }
+    }
+
+    #[test]
+    fn marker_retry_reconciles_internal_completion_cuts() {
+        for fraction in [0, 1, 2] {
+            let root = TempDir::new().expect("root");
+            let receipt_parent = TempDir::new().expect("receipt parent");
+            let receipt_path = receipt_parent.path().join("receipt");
+            let root_guard = AnchoredDirectory::new(root.path().to_owned()).expect("guard root");
+            let receipt_guard =
+                prepare_receipt_directory(&receipt_path).expect("receipt directory");
+            let assignment = root.path().canonicalize().expect("assignment path");
+            let prepared = receipt_parent.path().canonicalize().expect("prepared path");
+            activate_marker(&root_guard, &receipt_guard, &assignment, &prepared)
+                .expect("active marker");
+            let completion = marker_bytes(
+                receipt_guard.path(),
+                &assignment,
+                &prepared,
+                MARKER_COMPLETE,
+            )
+            .expect("completion bytes");
+            let marker_path = root.path().join(ACTIVE_MARKER);
+            let mut marker = fs::OpenOptions::new()
+                .append(true)
+                .open(&marker_path)
+                .expect("open marker for interrupted completion");
+            let length = completion.len() * fraction / 2;
+            use std::io::Write as _;
+            marker
+                .write_all(&completion[..length])
+                .expect("write interrupted completion");
+            marker.sync_all().expect("sync interrupted completion");
+
+            activate_marker(&root_guard, &receipt_guard, &assignment, &prepared)
+                .unwrap_or_else(|error| panic!("resume completion cut {fraction}: {error}"));
+            assert!(marker_present_guarded(&root_guard).expect("active marker"));
         }
     }
 }
