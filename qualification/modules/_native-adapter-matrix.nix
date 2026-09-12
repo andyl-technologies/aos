@@ -16,23 +16,11 @@
   ],
 }: let
   expectedSurfaceKeys = ["adapters" "limits" "matrix_schema" "scenarios" "schema" "subject_schema"];
-  expectedAdapterKeys = ["adapter" "interface_abi" "interface_descriptor" "interface_name" "methods" "scope"];
+  expectedAdapterKeys = ["adapter" "interface_abi" "interface_descriptor" "interface_name" "methods" "provider_contract" "scope"];
   expectedMethodKeys = ["cancel" "effect_class" "method" "reconcile"];
+  expectedProviderContractKeys = ["resource_lifetime" "state_format"];
   expectedScenarioKeys = ["boundary" "candidate" "failure" "id" "predecessor"];
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
-  instanceLifetimeAdapters = [
-    "credential-delivery"
-    "foreground-process"
-    "host-network-policy"
-    "host-storage"
-    "kubernetes-object"
-    "managed-configuration"
-    "network-endpoint"
-    "nginx-validation"
-    "systemd-bootstrap"
-    "systemd-manager"
-    "systemd-service-legacy"
-  ];
   allowedRegressions = [
     "checks.fleet.ability-native-activation"
     "checks.fleet.ability-native-foreground-container"
@@ -41,7 +29,7 @@
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
-  expectedSurfaceDigest = "9e508420352823db510e6d4a24c221dd04046f82a1ebd5b49328241097e25d2a";
+  expectedSurfaceDigest = "aa02914f3ebc3a5f38ee125ef469865860bf00ea96ce23d2155b9b9030068f58";
   expectedApplicabilityDigest = "12615a636200a1b6fc6b001333631b858e1c6fd81a5178f11ce9dbd9947fc517";
   token = value:
     builtins.isString value
@@ -136,12 +124,16 @@
   expectedCells = builtins.sort (left: right: builtins.lessThan left.id right.id) (
     builtins.concatMap (pair: map (cellFor pair) surface.scenarios) adapterMethods
   );
-  inapplicableReason = cell:
+  providerContractFor = cell:
+    builtins.head (builtins.filter (adapter: adapter.adapter == cell.adapter) surface.adapters);
+  inapplicableReason = cell: let
+    contract = (providerContractFor cell).provider_contract;
+  in
     if !lib.hasSuffix "/adopt-compatible-state" cell.id
     then null
-    else if builtins.elem cell.adapter instanceLifetimeAdapters
+    else if contract.resource_lifetime != "persistent"
     then "non-persistent-lifetime"
-    else if cell.adapter == "image-rollout"
+    else if contract.state_format == null
     then "missing-authenticated-state-format"
     else null;
   inapplicableCells = builtins.filter (entry: entry != null) (
@@ -196,6 +188,11 @@
     && builtins.elem method.effect_class ["mutation" "observation"]
     && (method.reconcile == null || token method.reconcile)
     && (method.cancel == null || token method.cancel);
+  validProviderContract = contract:
+    builtins.attrNames contract
+    == expectedProviderContractKeys
+    && builtins.elem contract.resource_lifetime ["attempt" "transaction" "instance" "persistent"]
+    && (contract.state_format == null || digest contract.state_format);
   validAdapter = adapter:
     builtins.attrNames adapter
     == expectedAdapterKeys
@@ -203,6 +200,7 @@
     && token adapter.interface_name
     && adapter.interface_abi == 1
     && digest adapter.interface_descriptor
+    && validProviderContract adapter.provider_contract
     && builtins.elem adapter.scope [
       "bootstrap-manager"
       "application-container-process"

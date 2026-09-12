@@ -200,10 +200,34 @@ def main() -> None:
             }
         ],
     )
-    builder = evidence.EffectBoundaryEvidence({"cells": [cell]}, [cell_id])
+    matrix = {
+        "surface": {
+            "adapters": [
+                {
+                    "adapter": cell["adapter"],
+                    "provider_contract": {
+                        "resource_lifetime": "instance",
+                        "state_format": None,
+                    },
+                }
+            ]
+        },
+        "cells": [cell],
+    }
+    builder = evidence.EffectBoundaryEvidence(matrix, [cell_id])
     builder.retain(cell_id, bundle_bytes, authority, authority, observation)
     subjects, bundles, probes = builder.finish()
     subject = subjects[cell_id]
+
+    changed_lifetime = copy.deepcopy(matrix)
+    changed_lifetime["surface"]["adapters"][0]["provider_contract"][
+        "resource_lifetime"
+    ] = "persistent"
+    rejected(
+        lambda: evidence.EffectBoundaryEvidence(
+            changed_lifetime, [cell_id]
+        ).retain(cell_id, bundle_bytes, authority, authority, observation)
+    )
 
     cohort._validate_effect_boundary_subject(cell, subject, bundles[cell_id])
     for postcondition, record in probes[cell_id].items():

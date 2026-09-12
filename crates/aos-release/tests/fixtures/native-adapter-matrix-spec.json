@@ -46911,7 +46911,7 @@
     "method_count": 50,
     "scenario_count": 28,
     "schema": "aos.qualification.native-adapter-subject/v1",
-    "surface_digest": "sha256:9e508420352823db510e6d4a24c221dd04046f82a1ebd5b49328241097e25d2a"
+    "surface_digest": "sha256:aa02914f3ebc3a5f38ee125ef469865860bf00ea96ce23d2155b9b9030068f58"
   },
   "surface": {
     "adapters": [
@@ -46940,6 +46940,10 @@
             "reconcile": "release"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-resource"
       },
       {
@@ -46967,6 +46971,10 @@
             "reconcile": "observe"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "application-container-process"
       },
       {
@@ -46994,6 +47002,10 @@
             "reconcile": "remove"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-resource"
       },
       {
@@ -47021,6 +47033,10 @@
             "reconcile": "release"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-resource"
       },
       {
@@ -47084,6 +47100,10 @@
             "reconcile": "withdraw"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "persistent",
+          "state_format": null
+        },
         "scope": "host-machine"
       },
       {
@@ -47111,6 +47131,10 @@
             "reconcile": "observe"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "kubernetes-cluster"
       },
       {
@@ -47138,6 +47162,10 @@
             "reconcile": "release"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-filesystem"
       },
       {
@@ -47165,6 +47193,10 @@
             "reconcile": "release"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-resource"
       },
       {
@@ -47192,6 +47224,10 @@
             "reconcile": "validate"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-process"
       },
       {
@@ -47231,6 +47267,10 @@
             "reconcile": "stop"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "persistent",
+          "state_format": "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596"
+        },
         "scope": "host-resource"
       },
       {
@@ -47258,6 +47298,10 @@
             "reconcile": "observe-manager"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "bootstrap-manager"
       },
       {
@@ -47297,6 +47341,10 @@
             "reconcile": "observe"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-manager"
       },
       {
@@ -47330,6 +47378,10 @@
             "reconcile": "observe"
           }
         ],
+        "provider_contract": {
+          "resource_lifetime": "instance",
+          "state_format": null
+        },
         "scope": "host-manager"
       }
     ],

@@ -97,29 +97,19 @@ REPLACEMENT_SCENARIOS = {
 MATRIX_APPLICABILITY_SCHEMA = (
     "aos.qualification.native-adapter-matrix-applicability/v1"
 )
-INSTANCE_LIFETIME_ADAPTERS = {
-    "credential-delivery",
-    "foreground-process",
-    "host-network-policy",
-    "host-storage",
-    "kubernetes-object",
-    "managed-configuration",
-    "network-endpoint",
-    "nginx-validation",
-    "systemd-bootstrap",
-    "systemd-manager",
-    "systemd-service-legacy",
-}
+RESOURCE_LIFETIMES = {"attempt", "transaction", "instance", "persistent"}
 
 
-def _inapplicable_reason(cell: dict[str, Any]) -> str | None:
+def _inapplicable_reason(
+    cell: dict[str, Any], contract: dict[str, Any]
+) -> str | None:
     """Returns the exact provider-contract reason that excludes one cell."""
 
     if _cell_scenario(cell) != "adopt-compatible-state":
         return None
-    if cell.get("adapter") in INSTANCE_LIFETIME_ADAPTERS:
+    if contract["resource_lifetime"] != "persistent":
         return "non-persistent-lifetime"
-    if cell.get("adapter") == "image-rollout":
+    if contract["state_format"] is None:
         return "missing-authenticated-state-format"
     return None
 
@@ -131,11 +121,41 @@ def _applicable_specification_cells(spec: dict[str, Any]) -> list[dict[str, Any]
     if not isinstance(cells, list):
         raise RuntimeError("matrix specification cells are malformed")
 
-    expected = [
-        {"cell_id": cell["id"], "reason": reason}
-        for cell in cells
-        if (reason := _inapplicable_reason(cell)) is not None
-    ]
+    adapters = spec.get("surface", {}).get("adapters")
+    if not isinstance(adapters, list):
+        raise RuntimeError("matrix provider contracts are missing")
+    contracts = {}
+    for adapter in adapters:
+        contract = adapter.get("provider_contract")
+        if (
+            not isinstance(contract, dict)
+            or set(contract) != {"resource_lifetime", "state_format"}
+            or contract.get("resource_lifetime") not in RESOURCE_LIFETIMES
+            or (
+                contract.get("state_format") is not None
+                and (
+                    not isinstance(contract.get("state_format"), str)
+                    or len(contract["state_format"]) != 71
+                    or not contract["state_format"].startswith("sha256:")
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in contract["state_format"][7:]
+                    )
+                )
+            )
+            or adapter.get("adapter") in contracts
+        ):
+            raise RuntimeError("matrix provider contract metadata is malformed")
+        contracts[adapter.get("adapter")] = contract
+
+    expected = []
+    for cell in cells:
+        contract = contracts.get(cell.get("adapter"))
+        if contract is None:
+            raise RuntimeError("matrix cell has no authenticated provider contract")
+        reason = _inapplicable_reason(cell, contract)
+        if reason is not None:
+            expected.append({"cell_id": cell["id"], "reason": reason})
     applicability = spec.get("applicability")
     if (
         not isinstance(applicability, dict)
@@ -3340,7 +3360,7 @@ def _validate_cohort_subject(
         return
 
     if isinstance(subject, dict) and subject.get("schema") == PROVIDER_STATE_COHORT_SUBJECT_SCHEMA:
-        _validate_provider_state_subject(cell, subject, evidence_bytes)
+        _validate_provider_state_subject(cell, subject, evidence_bytes, matrix_spec)
         return
 
     _validate_managed_configuration_subject(cell, subject, evidence_bytes)
@@ -3558,7 +3578,10 @@ def _validate_effect_boundary_subject(
 
 
 def _validate_provider_state_subject(
-    cell: dict[str, Any], subject: Any, evidence_bytes: Any
+    cell: dict[str, Any],
+    subject: Any,
+    evidence_bytes: Any,
+    matrix_spec: dict[str, Any] | None,
 ) -> None:
     """Rebuilds a provider-state subject from its production flight evidence."""
 
@@ -3701,6 +3724,23 @@ def _validate_provider_state_subject(
     ):
         raise RuntimeError("provider-state subject differs from its exact matrix route")
 
+    if matrix_spec is None:
+        raise RuntimeError("provider-state evidence has no matrix provider contract")
+    adapters = matrix_spec.get("surface", {}).get("adapters")
+    if not isinstance(adapters, list):
+        raise RuntimeError("provider-state evidence has no matrix provider contract")
+    provider_contracts = {
+        adapter.get("adapter"): adapter.get("provider_contract")
+        for adapter in adapters
+        if isinstance(adapter, dict)
+    }
+    provider_contract = provider_contracts.get(cell["adapter"])
+    if not isinstance(provider_contract, dict):
+        raise RuntimeError("provider-state evidence has no matrix provider contract")
+    expected_lifetime = provider_contract.get("resource_lifetime")
+    if operation_document.get("target", {}).get("lifetime") != expected_lifetime:
+        raise RuntimeError("provider-state operation differs from its provider contract")
+
     live_snapshots = [
         value for name, value in evidence.items() if name.startswith("live-")
     ]
@@ -3748,6 +3788,15 @@ def _validate_provider_state_subject(
         ):
             raise RuntimeError("retained-target authority or ownership is not monotonic")
     else:
+        expected_reason = (
+            "non-persistent-lifetime"
+            if expected_lifetime != "persistent"
+            else (
+                "missing-authenticated-state-format"
+                if provider_contract.get("state_format") is None
+                else None
+            )
+        )
         candidate = _provider_state_authority(evidence["candidate-authority"])
         candidate_assignment = _provider_state_assignment(candidate, operation_document)
         contract = evidence["transfer-contract"]
@@ -3761,8 +3810,15 @@ def _validate_provider_state_subject(
             or contract.get("schema") != PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA
             or contract.get("plan") != bundle.get("plan")
             or contract.get("operation") != operation_document
-            or rejection.get("reason")
-            not in {"non-persistent-lifetime", "missing-authenticated-state-format"}
+            or rejection.get("reason") != expected_reason
+            or any(
+                rejection.get(field) != expected_lifetime
+                for field in (
+                    "target_lifetime",
+                    "request_lifetime",
+                    "binding_lifetime",
+                )
+            )
             or subject["transfer-contract-digest"] != sha256(contract)
             or _provider_state_ledger_claim(
                 evidence["ledger-before"], operation["target"]["resource"]

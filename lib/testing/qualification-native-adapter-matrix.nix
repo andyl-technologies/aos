@@ -18,6 +18,11 @@
       PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-matrix-pycache \
         ${pkgs.buildPackages.python3}/bin/python3 -m py_compile \
         $out/share/aos-release/qualification-native-adapter-matrix.py
+
+      PYTHONPYCACHEPREFIX=$TMPDIR/qualification-native-adapter-matrix-test-pycache \
+        ${pkgs.buildPackages.python3}/bin/python3 \
+        ${./qualification-native-adapter-matrix-self-test.py} \
+        $out/share/aos-release/qualification-native-adapter-matrix.py
     '';
   };
   executable = pkgs.writeShellScriptBin name ''

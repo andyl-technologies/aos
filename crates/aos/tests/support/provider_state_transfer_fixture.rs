@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result, bail};
 use aos_ability_model::Operation;
 use aos_ability_runtime::bundle::{PLAN_BUNDLE_MAX_BYTES, ReloadablePlanBundle};
-use aos_package::config_eval::ability_store::inspect_provider_state_transfer;
+use aos_package::config_eval::ability_store::inspect_native_adapter_provider_state_transfer;
 use aos_package::config_eval::supported_native_ability_features;
 
 const OPERATION_MAX_BYTES: u64 = 1024 * 1024;
@@ -46,7 +46,7 @@ pub(super) fn inspect(arguments: &[String]) -> Result<()> {
         .with_context(|| format!("reading exact operation {}", operation_path.display()))?;
     let operation: Operation = serde_json::from_slice(&operation_bytes)
         .context("decoding exact provider state-transfer operation")?;
-    let contract = inspect_provider_state_transfer(&plan, &operation)
+    let contract = inspect_native_adapter_provider_state_transfer(&plan, &operation)
         .context("inspecting exact provider state-transfer route")?;
 
     let mut output = OpenOptions::new()

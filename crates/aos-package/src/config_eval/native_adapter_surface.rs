@@ -5,6 +5,7 @@
 //! dispatcher implementations cannot silently disagree about an advertised
 //! interface, ABI, effect method, or recovery route.
 
+use aos_ability_model::ResourceLifetime;
 use aos_ability_runtime::adapter::InvocationPurpose;
 use aos_contract::Sha256Digest;
 
@@ -37,6 +38,10 @@ pub(crate) struct NativeMethodContract {
     pub(crate) method: &'static str,
     /// Classifies the method as mutation or observation.
     pub(crate) effect_class: EffectClass,
+    /// Checked lifetime projected from the production provider contract.
+    pub(crate) resource_lifetime: ResourceLifetime,
+    /// Authenticated owner state-format descriptor, when one is declared.
+    pub(crate) state_format: Option<Sha256Digest>,
     /// Names the only accepted reconciliation method, when supported.
     pub(crate) reconcile: Option<&'static str>,
     /// Names the only accepted cancellation method, when supported.
@@ -147,6 +152,33 @@ pub(crate) fn supports_any_route(
     })
 }
 
+/// Checks runtime state-transfer facts against the generated provider contract.
+pub(crate) fn matches_provider_contract(
+    interface_name: &str,
+    interface_abi: u32,
+    interface_descriptor: Sha256Digest,
+    effect_method: &str,
+    target_lifetime: ResourceLifetime,
+    request_lifetime: ResourceLifetime,
+    binding_lifetime: ResourceLifetime,
+    state_format: Option<Sha256Digest>,
+) -> bool {
+    NATIVE_METHODS
+        .iter()
+        .find(|contract| {
+            contract.interface_name == interface_name
+                && contract.interface_abi == interface_abi
+                && contract.interface_descriptor == interface_descriptor
+                && contract.method == effect_method
+        })
+        .is_some_and(|contract| {
+            contract.resource_lifetime == target_lifetime
+                && contract.resource_lifetime == request_lifetime
+                && contract.resource_lifetime == binding_lifetime
+                && contract.state_format == state_format
+        })
+}
+
 fn method_contract(
     adapter: NativeAdapterId,
     interface_name: &str,
@@ -210,6 +242,87 @@ mod tests {
             ) && !contract.scope.is_empty()
                 && contract.interface_descriptor == actual_descriptor(contract.adapter)
         }));
+        assert_eq!(
+            NATIVE_METHODS
+                .iter()
+                .filter(|contract| contract.resource_lifetime == ResourceLifetime::Instance)
+                .count(),
+            36
+        );
+        assert_eq!(
+            NATIVE_METHODS
+                .iter()
+                .filter(|contract| contract.resource_lifetime == ResourceLifetime::Persistent)
+                .count(),
+            14
+        );
+        assert_eq!(
+            NATIVE_METHODS
+                .iter()
+                .filter(|contract| contract.state_format.is_some())
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn production_provider_contract_gate_rejects_each_runtime_fact_drift() {
+        let contract = NATIVE_METHODS
+            .iter()
+            .find(|contract| contract.adapter == NativeAdapterId::Postgresql)
+            .expect("PostgreSQL method contract");
+        let state_format = contract.state_format;
+
+        assert!(matches_provider_contract(
+            contract.interface_name,
+            contract.interface_abi,
+            contract.interface_descriptor,
+            contract.method,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Persistent,
+            state_format,
+        ));
+        assert!(!matches_provider_contract(
+            contract.interface_name,
+            contract.interface_abi,
+            contract.interface_descriptor,
+            contract.method,
+            ResourceLifetime::Instance,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Persistent,
+            state_format,
+        ));
+        assert!(!matches_provider_contract(
+            contract.interface_name,
+            contract.interface_abi,
+            contract.interface_descriptor,
+            contract.method,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Instance,
+            ResourceLifetime::Persistent,
+            state_format,
+        ));
+        assert!(!matches_provider_contract(
+            contract.interface_name,
+            contract.interface_abi,
+            contract.interface_descriptor,
+            contract.method,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Instance,
+            state_format,
+        ));
+        assert!(!matches_provider_contract(
+            contract.interface_name,
+            contract.interface_abi,
+            contract.interface_descriptor,
+            contract.method,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Persistent,
+            ResourceLifetime::Persistent,
+            None,
+        ));
     }
 
     #[test]

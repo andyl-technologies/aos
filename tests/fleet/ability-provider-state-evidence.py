@@ -100,8 +100,19 @@ class ProviderStateEvidence:
             raise RuntimeError("provider-state cohort repeats a cell identity")
         if any(cell_id not in cells for cell_id in qualified_cells):
             raise RuntimeError("provider-state cohort names a foreign matrix cell")
+        adapters = matrix_spec.get("surface", {}).get("adapters")
+        if not isinstance(adapters, list):
+            raise RuntimeError("provider-state cohort has no provider contracts")
+        contracts = {
+            adapter["adapter"]: adapter["provider_contract"] for adapter in adapters
+        }
+        if len(contracts) != len(adapters):
+            raise RuntimeError("provider-state cohort repeats a provider contract")
+        if any(cell["adapter"] not in contracts for cell in cells.values()):
+            raise RuntimeError("provider-state cell has no provider contract")
 
         self._cells = cells
+        self._contracts = contracts
         self._qualified = set(qualified_cells)
         self.subjects: dict[str, Any] = {}
         self.evidence: dict[str, bytes] = {}
@@ -365,6 +376,25 @@ class ProviderStateEvidence:
             "missing-authenticated-state-format",
         }:
             raise RuntimeError("transfer contract has no truthful unsupported reason")
+        provider_contract = self._contracts[cell["adapter"]]
+        expected_lifetime = provider_contract["resource_lifetime"]
+        expected_reason = (
+            "non-persistent-lifetime"
+            if expected_lifetime != "persistent"
+            else (
+                "missing-authenticated-state-format"
+                if provider_contract["state_format"] is None
+                else None
+            )
+        )
+        if (
+            expected_reason is not None
+            and rejection.get("reason") != expected_reason
+        ) or any(
+            rejection.get(field) != expected_lifetime
+            for field in ("target_lifetime", "request_lifetime", "binding_lifetime")
+        ):
+            raise RuntimeError("transfer rejection differs from the provider contract")
 
         _ordered_generations(
             observation.source_generation, observation.candidate_generation
@@ -599,6 +629,11 @@ class ProviderStateEvidence:
         ordinal, operation = matches[0]
         if operation["target"]["interface"] != cell["interface"]:
             raise RuntimeError("provider-state operation targets another interface")
+        if (
+            operation["target"]["lifetime"]
+            != self._contracts[cell["adapter"]]["resource_lifetime"]
+        ):
+            raise RuntimeError("provider-state operation differs from its contract lifetime")
         return cell, bundle, operation, _operation_identity(operation, ordinal)
 
     def _store(

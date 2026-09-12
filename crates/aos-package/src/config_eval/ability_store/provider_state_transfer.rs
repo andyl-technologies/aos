@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::inventory::provider_state_transfer_owner;
 use super::GenerationAbilityStoreError;
+use crate::config_eval::native_adapter_surface::matches_provider_contract;
 
 /// Identifies the canonical provider state-transfer inspection contract.
 pub const PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA: &str =
@@ -193,6 +194,67 @@ pub fn inspect_provider_state_transfer(
     })
 }
 
+/// Inspects and verifies a state-transfer route against the native matrix surface.
+///
+/// This qualification entry point first runs the production state-transfer
+/// inspection, then checks its exact operation, request, binding, and
+/// authenticated state format against the generated native method contract.
+///
+/// # Errors
+///
+/// Returns an error under the conditions documented by
+/// [`inspect_provider_state_transfer`], or when the checked route differs from
+/// the native matrix provider contract compiled into this binary.
+pub fn inspect_native_adapter_provider_state_transfer(
+    plan: &CheckedEffectPlan,
+    operation: &Operation,
+) -> Result<ProviderStateTransferContract, GenerationAbilityStoreError> {
+    let contract = inspect_provider_state_transfer(plan, operation)?;
+    let binding = plan
+        .binding_plan()
+        .binding(&operation.binding)
+        .ok_or_else(|| {
+            GenerationAbilityStoreError::Conflict(
+                "native adapter state-transfer operation lost its checked binding".to_string(),
+            )
+        })?;
+    let request = plan
+        .binding_plan()
+        .document()
+        .requests
+        .iter()
+        .find(|request| request.id == binding.request)
+        .ok_or_else(|| {
+            GenerationAbilityStoreError::Conflict(
+                "native adapter state-transfer binding lost its checked request".to_string(),
+            )
+        })?;
+    let state_format = match &contract.disposition {
+        ProviderStateTransferDisposition::Supported { owner } => {
+            Some(owner.state_format.descriptor)
+        }
+        ProviderStateTransferDisposition::Unsupported { .. } => None,
+    };
+
+    if !matches_provider_contract(
+        operation.interface.name.as_str(),
+        operation.interface.abi.get(),
+        operation.interface.descriptor,
+        operation.method.as_str(),
+        operation.target.lifetime,
+        request.lifetime,
+        binding.lifetime,
+        state_format,
+    ) {
+        return Err(GenerationAbilityStoreError::Conflict(
+            "checked state-transfer route differs from the native adapter provider contract"
+                .to_string(),
+        ));
+    }
+
+    Ok(contract)
+}
+
 #[cfg(test)]
 mod tests {
     use aos_ability_validate::test_support::{
@@ -206,7 +268,7 @@ mod tests {
         let plan = checked_systemd_manager_effect_plan();
         let operation = &plan.operations()[0];
 
-        let contract = inspect_provider_state_transfer(&plan, operation)
+        let contract = inspect_native_adapter_provider_state_transfer(&plan, operation)
             .expect("checked systemd manager transfer contract");
 
         assert_eq!(contract.plan, plan.id());

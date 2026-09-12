@@ -13,12 +13,12 @@ use crate::qualification_evidence::{
     NativeAdapterCellSpec, NativeAdapterInterfaceIdentity, NativeAdapterMatrixApplicability,
     NativeAdapterMatrixComponentIdentity, NativeAdapterMatrixEnvironment,
     NativeAdapterMatrixEnvironmentStatus, NativeAdapterMatrixObservation, NativeAdapterMatrixSpec,
-    NativeAdapterMatrixSubject, NativeAdapterPostconditionProbe, NativeAdapterRecoverySpec,
-    NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits, NativeAdapterSurfaceMethod,
-    NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec, QualificationCase,
-    QualificationObservation, QualificationPredecessor, native_adapter_matrix_check,
-    validate_matrix_for_case, validate_native_adapter_matrix_observation,
-    validate_native_adapter_matrix_spec,
+    NativeAdapterMatrixSubject, NativeAdapterPostconditionProbe, NativeAdapterProviderContract,
+    NativeAdapterRecoverySpec, NativeAdapterSurfaceAdapter, NativeAdapterSurfaceLimits,
+    NativeAdapterSurfaceMethod, NativeAdapterSurfaceScenario, NativeAdapterSurfaceSpec,
+    QualificationCase, QualificationObservation, QualificationPredecessor,
+    native_adapter_inapplicable_reason, native_adapter_matrix_check, validate_matrix_for_case,
+    validate_native_adapter_matrix_observation, validate_native_adapter_matrix_spec,
 };
 use crate::verify::tests::{observations, qualification_fixture};
 
@@ -71,6 +71,10 @@ fn fixture() -> Result<(
                 method: "apply".into(),
                 reconcile: Some("apply".into()),
             }],
+            provider_contract: NativeAdapterProviderContract {
+                resource_lifetime: "persistent".into(),
+                state_format: Some(digest("state format")),
+            },
             scope: "host-resource".into(),
         }
     };
@@ -899,6 +903,50 @@ fn specification_order_and_v1_bounds_are_enforced() -> Result<()> {
             &incomplete_interfaces,
         )
         .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn provider_contract_metadata_changes_adoption_applicability_and_surface_identity() -> Result<()> {
+    let (_, _, observation) = fixture()?;
+    let mut cell = observation.spec.cells[0].clone();
+    cell.id = cell.id.rsplit_once('/').map_or_else(
+        || "fixture/adopt-compatible-state".to_owned(),
+        |(prefix, _)| format!("{prefix}/adopt-compatible-state"),
+    );
+
+    let mut contract = NativeAdapterProviderContract {
+        resource_lifetime: "persistent".into(),
+        state_format: Some(digest("state format")),
+    };
+    assert_eq!(native_adapter_inapplicable_reason(&cell, &contract), None);
+
+    let original_surface = crate::canonical::to_vec(&observation.spec.surface)?;
+    let mut changed_surface = observation.spec.surface.clone();
+    changed_surface.adapters[0]
+        .provider_contract
+        .resource_lifetime = "instance".into();
+    let changed_lifetime_surface = crate::canonical::to_vec(&changed_surface)?;
+    assert_ne!(original_surface, changed_lifetime_surface);
+    let mut stale_lifetime_spec = observation.spec.clone();
+    stale_lifetime_spec.surface = changed_surface.clone();
+    assert!(validate_native_adapter_matrix_spec(&stale_lifetime_spec).is_err());
+    assert_eq!(
+        native_adapter_inapplicable_reason(&cell, &changed_surface.adapters[0].provider_contract,),
+        Some("non-persistent-lifetime")
+    );
+
+    contract.state_format = None;
+    changed_surface.adapters[0].provider_contract = contract.clone();
+    let changed_state_format_surface = crate::canonical::to_vec(&changed_surface)?;
+    assert_ne!(original_surface, changed_state_format_surface);
+    let mut stale_state_format_spec = observation.spec.clone();
+    stale_state_format_spec.surface = changed_surface;
+    assert!(validate_native_adapter_matrix_spec(&stale_state_format_spec).is_err());
+    assert_eq!(
+        native_adapter_inapplicable_reason(&cell, &contract),
+        Some("missing-authenticated-state-format")
     );
     Ok(())
 }

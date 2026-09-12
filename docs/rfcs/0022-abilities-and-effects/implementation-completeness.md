@@ -140,11 +140,14 @@ PostgreSQL supplies the only authenticated persistent state-format contract in
 this surface. The other 36 non-rollout methods have instance lifetime, and the
 nine rollout methods have no authenticated state format; their corresponding
 compatible-adoption cells are explicitly inapplicable until those product
-contracts change. The matrix retains all 1,400 Cartesian cells and binds the 45
-exact exclusions and reasons into its immutable specification. Nix and Rust
-derive the same disjoint partition, leaving 1,355 mandatory production cells
-and 5,780 postconditions. Unsupported-transfer siblings remain mandatory and
-prove the rejection side of the replacement invariant before provider effects.
+contracts change. The surface projects each checked resource lifetime and
+authenticated provider state-format descriptor into its canonical digest. The
+matrix retains all 1,400 Cartesian cells and derives the 45 exact exclusions
+and reasons from that metadata. Nix, Rust, and the production evidence builder
+reject stale partitions after either contract field changes, leaving 1,355
+mandatory production cells and 5,780 postconditions. Unsupported-transfer
+siblings remain mandatory and prove the rejection side of the replacement
+invariant before provider effects.
 
 Supported cancellation is divided by production adapter because the physical
 state that establishes a safe cancellation result differs by provider:

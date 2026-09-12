@@ -24,10 +24,34 @@ def load(path: pathlib.Path):
 def classify(module, spec):
     """Adds the exact applicability envelope to one bounded matrix fixture."""
 
+    if "surface" not in spec:
+        adapters = sorted({cell["adapter"] for cell in spec["cells"]})
+        spec["surface"] = {
+            "adapters": [
+                {
+                    "adapter": adapter,
+                    "provider_contract": {
+                        "resource_lifetime": "persistent",
+                        "state_format": "sha256:" + "aa" * 32,
+                    },
+                }
+                for adapter in adapters
+            ]
+        }
+    contracts = {
+        adapter["adapter"]: adapter["provider_contract"]
+        for adapter in spec["surface"]["adapters"]
+    }
+
     expected = [
         {"cell_id": cell["id"], "reason": reason}
         for cell in spec["cells"]
-        if (reason := module._inapplicable_reason(cell)) is not None
+        if (
+            reason := module._inapplicable_reason(
+                cell, contracts[cell["adapter"]]
+            )
+        )
+        is not None
     ]
     spec["schema"] = "aos.qualification.native-adapter-matrix-spec/v1"
     spec["applicability"] = {
@@ -1290,6 +1314,44 @@ def main() -> None:
             }
         ]
     }
+    adoption_cell = copy.deepcopy(spec["cells"][0])
+    adoption_cell["id"] = adoption_cell["id"].rsplit("/", 1)[0] + "/adopt-compatible-state"
+    adoption_spec = classify(module, {"cells": [adoption_cell]})
+    adoption_contract = adoption_spec["surface"]["adapters"][0]["provider_contract"]
+    adoption_contract["resource_lifetime"] = "instance"
+    classify(module, adoption_spec)
+    assert module._applicable_specification_cells(adoption_spec) == []
+
+    lifetime_changed = copy.deepcopy(adoption_spec)
+    lifetime_changed["surface"]["adapters"][0]["provider_contract"][
+        "resource_lifetime"
+    ] = "persistent"
+    rejected_applicability = False
+    try:
+        module._applicable_specification_cells(lifetime_changed)
+    except RuntimeError:
+        rejected_applicability = True
+    assert rejected_applicability
+    classify(module, lifetime_changed)
+    assert lifetime_changed["applicability"]["inapplicable_cells"] == []
+
+    state_format_removed = copy.deepcopy(lifetime_changed)
+    state_format_removed["surface"]["adapters"][0]["provider_contract"][
+        "state_format"
+    ] = None
+    rejected_applicability = False
+    try:
+        module._applicable_specification_cells(state_format_removed)
+    except RuntimeError:
+        rejected_applicability = True
+    assert rejected_applicability
+    classify(module, state_format_removed)
+    assert state_format_removed["applicability"]["inapplicable_cells"] == [
+        {
+            "cell_id": adoption_cell["id"],
+            "reason": "missing-authenticated-state-format",
+        }
+    ]
     observations = {
         "durable-attempt-state-classified": {
             "transaction": "transaction",

@@ -470,7 +470,10 @@ host-resource preflight. Its exact canonical digest is pinned by both the Rust
 generator and Nix policy; changing the surface requires a deliberate schema and
 digest update. Each method records its full interface key (name, ABI, and
 descriptor), authority scope, mutation or observation class, and exact
-reconcile and cancellation routes.
+reconcile and cancellation routes. Each adapter also projects the checked
+resource lifetime and authenticated provider state-format descriptor from its
+production contract. Those fields participate in the canonical surface digest;
+changing either invalidates the matrix identity.
 Qualification expands those methods over 28 durability, revocation, upgrade,
 adoption, retained-target, dependency, and foreign-resource scenarios.
 The resulting 1,400 Cartesian cells retain every dimension, full interface key,
@@ -541,6 +544,8 @@ substrate independently of the execution journal. Foreground flights run system
 activation and dispatch inside the OCI container and bind receipts to the live
 PID, process group, ownership token, cgroup, and namespaces. The four effect
 cells already covered by the primary and PostgreSQL cohorts are not duplicated.
+The collector also compares every selected checked operation's target lifetime
+with the provider contract compiled from the matrix surface.
 
 The provider-negative cohorts account for the remaining 98 required-success
 dependency and foreign-resource rejection cells in that qualified total. They
@@ -578,10 +583,14 @@ qualification does not infer one from fixture labels.
 
 The matrix specification records those 45 exact cell IDs and reasons as
 inapplicable. Nix policy, the production evidence builder, and the Rust release
-verifier independently recompute the same ordered partition and reject missing,
-overlapping, reordered, or reason-mutated exclusions. Their corresponding
+verifier independently derive the ordered partition from each adapter's
+surface-bound provider contract, then reject missing, overlapping, reordered,
+or reason-mutated exclusions. Their corresponding
 unsupported-transfer cells remain mandatory and prove rejection before effects,
-so the replacement invariant is preserved. A product-contract change must
+and the production transfer inspector verifies the nonpersistent and
+missing-format reasons against the exact checked route. The PostgreSQL package
+contract check binds its declared format to the same surface descriptor. A
+product-contract change must
 remove the affected exclusions and add exact cell-bound production evidence in
 the same release.
 

@@ -63,7 +63,8 @@ pub use inventory::{NativeQualifiedResource, NativeResourceInventory};
 pub use provider_state_transfer::{
     PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA, ProviderStateTransferContract,
     ProviderStateTransferDisposition, ProviderStateTransferOwner, ProviderStateTransferRejection,
-    ProviderStateTransferRejectionReason, inspect_provider_state_transfer,
+    ProviderStateTransferRejectionReason, inspect_native_adapter_provider_state_transfer,
+    inspect_provider_state_transfer,
 };
 use verification::{AbilityArtifactVerifier, NativeAbilityArtifactVerifier};
 

@@ -17,7 +17,7 @@ const EXPECTED_METHODS: usize = 50;
 const EXPECTED_SCENARIOS: usize = 28;
 const MAX_SURFACE_BYTES: u64 = 64 * 1024;
 const EXPECTED_SURFACE_DIGEST: &str =
-    "9e508420352823db510e6d4a24c221dd04046f82a1ebd5b49328241097e25d2a";
+    "aa02914f3ebc3a5f38ee125ef469865860bf00ea96ce23d2155b9b9030068f58";
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -48,7 +48,15 @@ struct Adapter {
     interface_descriptor: String,
     interface_name: String,
     methods: Vec<Method>,
+    provider_contract: ProviderContract,
     scope: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderContract {
+    resource_lifetime: String,
+    state_format: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -242,6 +250,19 @@ fn validate(document: &SurfaceDocument) -> BuildResult<()> {
         validate_token(&adapter.scope, "scope")?;
         validate_token(&adapter.interface_name, "interface")?;
         validate_digest(&adapter.interface_descriptor)?;
+        if !matches!(
+            adapter.provider_contract.resource_lifetime.as_str(),
+            "attempt" | "transaction" | "instance" | "persistent"
+        ) {
+            return Err(format!(
+                "native adapter {} has an invalid provider resource lifetime",
+                adapter.adapter
+            )
+            .into());
+        }
+        if let Some(state_format) = adapter.provider_contract.state_format.as_deref() {
+            validate_digest(state_format)?;
+        }
         let Some((interface, scope, expected_methods)) = expected.get(adapter.adapter.as_str())
         else {
             return Err(format!("unknown native adapter {}", adapter.adapter).into());
@@ -389,7 +410,7 @@ fn generate(document: &SurfaceDocument) -> BuildResult<String> {
         for method in &adapter.methods {
             writeln!(
                 output,
-                "    NativeMethodContract {{ adapter: NativeAdapterId::{}, interface_name: {:?}, interface_abi: {}, interface_descriptor: {}, scope: {:?}, method: {:?}, effect_class: EffectClass::{}, reconcile: {}, cancel: {} }},",
+                "    NativeMethodContract {{ adapter: NativeAdapterId::{}, interface_name: {:?}, interface_abi: {}, interface_descriptor: {}, scope: {:?}, method: {:?}, effect_class: EffectClass::{}, resource_lifetime: ResourceLifetime::{}, state_format: {}, reconcile: {}, cancel: {} }},",
                 variant(&adapter.adapter)?,
                 adapter.interface_name,
                 adapter.interface_abi,
@@ -401,6 +422,8 @@ fn generate(document: &SurfaceDocument) -> BuildResult<String> {
                 } else {
                     "Observation"
                 },
+                lifetime_variant(&adapter.provider_contract.resource_lifetime)?,
+                optional_digest_literal(adapter.provider_contract.state_format.as_deref())?,
                 option_literal(method.reconcile.as_deref()),
                 option_literal(method.cancel.as_deref()),
             )?;
@@ -408,6 +431,23 @@ fn generate(document: &SurfaceDocument) -> BuildResult<String> {
     }
     output.push_str("];\n");
     Ok(output)
+}
+
+fn lifetime_variant(lifetime: &str) -> BuildResult<&'static str> {
+    Ok(match lifetime {
+        "attempt" => "Attempt",
+        "transaction" => "Transaction",
+        "instance" => "Instance",
+        "persistent" => "Persistent",
+        _ => return Err(format!("unknown provider resource lifetime {lifetime}").into()),
+    })
+}
+
+fn optional_digest_literal(value: Option<&str>) -> BuildResult<String> {
+    value.map_or_else(
+        || Ok("None".to_string()),
+        |value| Ok(format!("Some({})", digest_literal(value)?)),
+    )
 }
 
 fn variant(adapter: &str) -> BuildResult<&'static str> {
