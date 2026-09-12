@@ -28,6 +28,7 @@
   baseDependencies = {
     inherit lib mkDerivation coreutils findutils gzip jq tar common;
   };
+  abilityContractDependencies = baseDependencies // {inherit abilityContractValidator;};
   mkReferenceGraph = import ../reference-graph.nix {
     inherit lib mkDerivation coreutils jq;
   };
@@ -48,16 +49,14 @@ in rec {
 
   mkClosureLayer = import ./closure-layer.nix dependencies;
   mkRootMetadataLayer = import ./metadata-layer.nix baseDependencies;
-  mkImageLayout = import ./image-layout.nix baseDependencies;
-  mkMultiPlatformIndex = import ./multi-platform-index.nix baseDependencies;
+  mkImageLayout = import ./image-layout.nix abilityContractDependencies;
+  mkMultiPlatformIndex = import ./multi-platform-index.nix abilityContractDependencies;
   mkDockerArchive = import ./docker-archive.nix baseDependencies;
   mkEvidenceSourceGraph = import ./evidence-source-graph.nix {
     inherit lib mkDerivation coreutils jq;
   };
   mkEvidenceLayout = import ./evidence-layout.nix baseDependencies;
-  mkStaticAbilityContract = import ./static-ability-contract.nix (
-    baseDependencies // {inherit abilityContractValidator;}
-  );
+  mkStaticAbilityContract = import ./static-ability-contract.nix abilityContractDependencies;
 
   # Short aliases are useful to call sites while the long names preserve the
   # RFC vocabulary at the public boundary.
