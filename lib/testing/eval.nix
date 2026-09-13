@@ -1164,6 +1164,22 @@
     then throw "meta.execute must not be checked against the Nix scheduling system"
     else "ok";
 
+  # A module adding one sysctl must not drop the base performance set. An
+  # option's `default` applies only when nothing defines it at all, so the base
+  # tunables are contributed as a definition; this guards that arrangement.
+  sysctlDefinitionsMerge = let
+    baseKeys = builtins.attrNames system.config.aos.kernel.sysctl;
+    zfsKeys = builtins.attrNames zfsSystem.config.aos.kernel.sysctl;
+    missing = builtins.filter (key: !(builtins.elem key zfsKeys)) baseKeys;
+  in
+    if baseKeys == []
+    then throw "the base performance sysctls must reach a system that defines none of its own"
+    else if missing != []
+    then throw "a module adding a sysctl dropped the base set: ${builtins.toJSON missing}"
+    else if zfsSystem.config.aos.kernel.sysctl."vm.swappiness" != "10"
+    then throw "the base swappiness must survive a module that adds other sysctls"
+    else "merge";
+
   # ------------------------------------------------------------------------
   # ZFS memory and geometry policy
   #
@@ -1609,6 +1625,7 @@ in
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
         echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
+        echo "sysctl merge:   base performance tunables ${sysctlDefinitionsMerge} with module additions"
         echo "zfs memory:     ZFS kernel memory is ${zfsMemoryPolicy} by an absolute budget"
         echo "zfs datasets:   declared datasets are ${zfsDatasetRealization} with generated mounts"
         echo "zfs policy:     unsafe geometry is ${zfsPolicyRejections}"
