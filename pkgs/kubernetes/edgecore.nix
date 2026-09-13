@@ -24,6 +24,11 @@ in
     buildDeps = [buildPackages.go];
     runtimeDeps = [control];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "edgecore";
+    };
+
     expose = {
       units."edgecore.service" = {
         description = "KubeEdge edge node agent";

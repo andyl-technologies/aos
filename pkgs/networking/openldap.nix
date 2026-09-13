@@ -52,6 +52,11 @@ in
     runtimeDeps = [cyrus-sasl krb5 openssl libtool bash coreutils control];
     propagatedDeps = [];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "openldap";
+    };
+
     expose = {
       units."openldap.service" = {
         description = "OpenLDAP directory server";

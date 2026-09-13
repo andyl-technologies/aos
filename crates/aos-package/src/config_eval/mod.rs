@@ -2384,22 +2384,11 @@ fn enrich_expose_config_projections(
     let bindings = bindings
         .as_object()
         .context("evaluated configProjectionBindings must be an object")?;
-    let mut bindings = bindings.clone();
-    for (package, pin) in &runtime.packages {
-        if pin.uses_structured_effects() {
-            // The config module remains available to parse old host settings,
-            // but its rendered files and unit actions belong to the structured
-            // effect graph once that graph is selected.
-            bindings.remove(package);
-        }
-    }
+    let bindings = bindings.clone();
     let expected = runtime
         .packages
         .iter()
-        .filter_map(|(package, pin)| {
-            (!pin.uses_structured_effects() && pin.config_projection.is_some())
-                .then_some(package.as_str())
-        })
+        .filter_map(|(package, pin)| pin.config_projection.is_some().then_some(package.as_str()))
         .collect::<BTreeSet<_>>();
     let actual = bindings.keys().map(String::as_str).collect::<BTreeSet<_>>();
     if expected != actual {
@@ -2414,7 +2403,8 @@ fn enrich_expose_config_projections(
         .context("evaluated manifest config must be an object")?;
     let mut projections = BTreeMap::new();
     for package in expected {
-        let pin = runtime.packages[package]
+        let package_pin = &runtime.packages[package];
+        let pin = package_pin
             .config_projection
             .as_ref()
             .context("migrated package lost projection metadata")?;
@@ -2462,7 +2452,10 @@ fn enrich_expose_config_projections(
                 schema: materialize::ProjectedPackageConfig::SCHEMA.to_string(),
                 schema_hash: expected_schema_hash,
                 artifacts,
-                units: materialize::projected_unit_actions(&pin.config.artifacts),
+                units: materialize::projected_unit_actions_for_package(
+                    package_pin,
+                    &pin.config.artifacts,
+                ),
             },
         );
     }

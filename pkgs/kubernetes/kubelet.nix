@@ -29,6 +29,11 @@ in
     doCheck = false;
     runtimeDeps = [bash launcher];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "kubelet";
+    };
+
     expose = {
       units."kubelet.service" = {
         description = "Standalone Kubernetes node agent";

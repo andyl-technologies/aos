@@ -313,6 +313,13 @@
   productionPackageAdoption = import ../../tests/abilities/production-package-adoption.nix {
     inherit pkgs lib;
   };
+  migratedServiceAbilities =
+    map (
+      name: pkgs.${name}.abilities
+    )
+    (import ../../qualification/package-activation-inventory.nix {
+      inherit pkgs lib;
+    }).productionStructured;
   acceptedEffectImageFamily =
     (builtins.head
       (effectFixture.familyPlan {
@@ -728,5 +735,5 @@ in
           '';
         }
       ];
-      buildDeps = [authoringConformance];
+      buildDeps = [authoringConformance] ++ migratedServiceAbilities;
     }

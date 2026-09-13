@@ -73,6 +73,11 @@ in
       else [gnumake go];
     runtimeDeps = [control];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "etcd";
+    };
+
     expose = {
       units."etcd.service" = {
         description = "etcd distributed key-value store";

@@ -198,6 +198,11 @@ in
     runtimeDeps = [openssl bash coreutils control];
     propagatedDeps = [];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "krb5";
+    };
+
     expose = {
       units = {
         "krb5-kdc-init.service" = {
