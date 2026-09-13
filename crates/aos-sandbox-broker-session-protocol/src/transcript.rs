@@ -14,7 +14,10 @@ use crate::artifact::{
 };
 use crate::context::ProtectedBrokerSessionVerificationContextV1;
 use crate::model::{BrokerSessionKeyUsageV1, BrokerSessionValidationError};
-use crate::profile::{BrokerSessionNegotiationError, validate_authenticated_negotiation_v1};
+use crate::profile::{
+    BrokerSessionNegotiationError, ValidatedBrokerSessionNegotiationV1,
+    validate_authenticated_negotiation_v1,
+};
 use crate::projection::{
     BrokerSessionProjectionError, CanonicalBrokerClientHelloV1, CanonicalBrokerServerHelloV1,
 };
@@ -50,6 +53,37 @@ pub struct VerifiedBrokerSessionTranscriptV1 {
     negotiated_maximum_request_bytes: usize,
     negotiated_maximum_response_bytes: u32,
     phase: BrokerSessionTranscriptPhaseV1,
+}
+
+/// Retains a canonical ClientHello after strict locally keyed verification.
+///
+/// The caller-selected key is checked for active currentness and exact signer
+/// reference before strict Ed25519 verification. Only then may
+/// [`Self::authenticated_client_process`] be used as the dynamic process input
+/// to a locally constructed protected context. This stage alone does not check
+/// that context, negotiate a session, or confer authority.
+#[derive(Clone, Debug)]
+pub struct StrictlyVerifiedClientHelloV1 {
+    client: CanonicalBrokerClientHelloV1,
+    signer: crate::model::BrokerSessionSignerReferenceV1,
+    public_key: [u8; 32],
+}
+
+impl StrictlyVerifiedClientHelloV1 {
+    /// Returns the process claim authenticated by the locally selected hello key.
+    #[must_use]
+    pub const fn authenticated_client_process(&self) -> [u8; 16] {
+        self.client.signed_artifact().subject().client_process()
+    }
+}
+
+/// Retains a signed ClientHello after complete local-context comparison.
+///
+/// This remains non-authorizing and cannot form a transcript without the exact
+/// signed BrokerHello and the same protected context.
+#[derive(Clone, Debug)]
+pub struct ContextVerifiedClientHelloV1 {
+    client: StrictlyVerifiedClientHelloV1,
 }
 
 impl VerifiedBrokerSessionTranscriptV1 {
@@ -158,6 +192,57 @@ pub enum BrokerSessionTranscriptError {
     EqualNonces,
 }
 
+/// Strictly verifies a canonical ClientHello with one locally selected key.
+///
+/// Signature verification happens before the returned process value becomes
+/// available. Received signer metadata never selects `key`.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionTranscriptError`] when the key is inactive, the
+/// signer reference differs, or strict Ed25519 verification fails.
+pub fn verify_client_hello_signature_v1(
+    client: &CanonicalBrokerClientHelloV1,
+    key: &crate::context::ProtectedBrokerSessionKeyV1,
+) -> Result<StrictlyVerifiedClientHelloV1, BrokerSessionTranscriptError> {
+    key.matches_active(client.signed_artifact().signer())?;
+    client
+        .signed_artifact()
+        .verify_with_public_key(key.public_key())?;
+
+    Ok(StrictlyVerifiedClientHelloV1 {
+        client: client.clone(),
+        signer: key.signer().clone(),
+        public_key: *key.public_key(),
+    })
+}
+
+/// Compares a strictly verified ClientHello with one complete local context.
+///
+/// The context must retain the exact key used by the signature stage. Its
+/// dynamic client-process component may be taken from
+/// [`StrictlyVerifiedClientHelloV1::authenticated_client_process`]; every
+/// route, trust, revocation, protocol, execution, and key value remains locally
+/// selected.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionTranscriptError`] for an inactive context key, a key
+/// substitution between stages, or any signed/context/projection mismatch.
+pub fn verify_client_hello_context_v1(
+    client: StrictlyVerifiedClientHelloV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+) -> Result<ContextVerifiedClientHelloV1, BrokerSessionTranscriptError> {
+    context.require_all_active()?;
+    let context_key = context.key(BrokerSessionKeyUsageV1::ClientHello);
+    if context_key.signer() != &client.signer || context_key.public_key() != &client.public_key {
+        return Err(BrokerSessionTranscriptError::ContextMismatch);
+    }
+    require_client_context(&client.client, context)?;
+
+    Ok(ContextVerifiedClientHelloV1 { client })
+}
+
 /// Verifies two canonical authenticated hellos against one local context.
 ///
 /// The returned transcript is deliberately provisional. Verification is pure:
@@ -175,6 +260,7 @@ pub fn verify_broker_session_transcript_v1(
     broker: &CanonicalBrokerServerHelloV1,
     context: &ProtectedBrokerSessionVerificationContextV1,
 ) -> Result<VerifiedBrokerSessionTranscriptV1, BrokerSessionTranscriptError> {
+    // This public wrapper preserves the original fail-closed error precedence.
     context.require_all_active()?;
     let negotiation = validate_authenticated_negotiation_v1(
         client.message(),
@@ -184,29 +270,60 @@ pub fn verify_broker_session_transcript_v1(
         context.protocol_minor(),
         context.audience(),
     )?;
-    let protected_context_digest = context.protected_context_digest();
-    let client_subject = client.signed_artifact().subject();
-    if client_subject.node_id != context.node_id()
-        || client_subject.boot_id != context.boot_id()
-        || client_subject.protocol != context.protocol()
-        || client_subject.major != context.protocol_major()
-        || client_subject.minor != context.protocol_minor()
-        || client_subject.audience != context.audience()
-        || client_subject.client_process() != context.client_process()
-        || client_subject.protected_context_digest() != protected_context_digest
-        || client_subject.cleared_fields_digest() != client.cleared_fields_digest()
-        || client.message().protocol_major != u32::from(context.protocol_major())
-        || client.message().protocol_minor != u32::from(context.protocol_minor())
-        || client.message().audience.as_known() != Some(context.audience())
-    {
-        return Err(BrokerSessionTranscriptError::ContextMismatch);
-    }
+    require_client_context(client, context)?;
     let client_key = context.key(BrokerSessionKeyUsageV1::ClientHello);
     client_key.matches_active(client.signed_artifact().signer())?;
     client
         .signed_artifact()
         .verify_with_public_key(client_key.public_key())?;
 
+    verify_remaining_hello_pair(client, broker, context, negotiation)
+}
+
+/// Completes mutual transcript verification after staged ClientHello checks.
+///
+/// This preserves the signature-first dynamic-process boundary without
+/// repeating signature verification. The exact context supplied here must be
+/// the one used by [`verify_client_hello_context_v1`].
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionTranscriptError`] for a substituted context, invalid
+/// negotiation, BrokerHello signature/context/cross-link mismatch, or equal
+/// hello nonces.
+pub fn verify_broker_session_transcript_after_client_v1(
+    verified_client: &ContextVerifiedClientHelloV1,
+    broker: &CanonicalBrokerServerHelloV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+) -> Result<VerifiedBrokerSessionTranscriptV1, BrokerSessionTranscriptError> {
+    let client = &verified_client.client.client;
+    context.require_all_active()?;
+    require_client_context(client, context)?;
+    let client_key = context.key(BrokerSessionKeyUsageV1::ClientHello);
+    if client_key.signer() != &verified_client.client.signer
+        || client_key.public_key() != &verified_client.client.public_key
+    {
+        return Err(BrokerSessionTranscriptError::ContextMismatch);
+    }
+    let negotiation = validate_authenticated_negotiation_v1(
+        client.message(),
+        broker.message(),
+        context.protocol(),
+        context.protocol_major(),
+        context.protocol_minor(),
+        context.audience(),
+    )?;
+    verify_remaining_hello_pair(client, broker, context, negotiation)
+}
+
+fn verify_remaining_hello_pair(
+    client: &CanonicalBrokerClientHelloV1,
+    broker: &CanonicalBrokerServerHelloV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+    negotiation: ValidatedBrokerSessionNegotiationV1,
+) -> Result<VerifiedBrokerSessionTranscriptV1, BrokerSessionTranscriptError> {
+    let protected_context_digest = context.protected_context_digest();
+    let client_subject = client.signed_artifact().subject();
     let client_digest = complete_signed_client_hello_digest_v1(client.signed_artifact());
     let broker_subject = broker.signed_artifact().subject();
     if broker_subject.node_id != context.node_id()
@@ -254,6 +371,31 @@ pub fn verify_broker_session_transcript_v1(
         negotiated_maximum_response_bytes: negotiation.maximum_response_bytes,
         phase: BrokerSessionTranscriptPhaseV1::Provisional,
     })
+}
+
+fn require_client_context(
+    client: &CanonicalBrokerClientHelloV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+) -> Result<(), BrokerSessionTranscriptError> {
+    let protected_context_digest = context.protected_context_digest();
+    let subject = client.signed_artifact().subject();
+    if subject.node_id != context.node_id()
+        || subject.boot_id != context.boot_id()
+        || subject.protocol != context.protocol()
+        || subject.major != context.protocol_major()
+        || subject.minor != context.protocol_minor()
+        || subject.audience != context.audience()
+        || subject.client_process() != context.client_process()
+        || subject.protected_context_digest() != protected_context_digest
+        || subject.cleared_fields_digest() != client.cleared_fields_digest()
+        || client.message().protocol_major != u32::from(context.protocol_major())
+        || client.message().protocol_minor != u32::from(context.protocol_minor())
+        || client.message().audience.as_known() != Some(context.audience())
+    {
+        return Err(BrokerSessionTranscriptError::ContextMismatch);
+    }
+
+    Ok(())
 }
 
 fn session_binding(client: &[u8], broker: &[u8]) -> [u8; 32] {

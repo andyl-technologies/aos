@@ -1,12 +1,22 @@
 //! Role-local protected custody and narrow safe outputs.
 //!
 //! Client and broker endpoint types own only their two local signing seeds.
-//! The seeds remain private and this tranche exposes no signing operation.
+//! The seeds and purpose-specific hello finalizers remain crate-private; the
+//! public custody surface exposes no signing operation.
 //! Every output is surrounded by protected-file and process-incarnation
 //! currentness checks; any failure permanently poisons the object.
 
 use std::path::Path;
 
+use aos_sandbox_broker_session_protocol::{
+    BrokerClientHelloSubjectV1, BrokerHelloSubjectV1, CanonicalBrokerClientHelloV1,
+    ProtectedBrokerSessionVerificationContextV1, UntrustedBrokerSessionEndpointPublicationV1,
+    client_hello_fields_digest_v1, complete_signed_client_hello_digest_v1,
+    encode_signed_client_hello_packet_v1, encode_signed_server_hello_packet_v1,
+    hello_message::{BrokerClientHello, BrokerServerHello},
+    server_hello_fields_digest_v1, sign_broker_hello_v1, sign_client_hello_v1,
+};
+use ed25519_dalek::SigningKey;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::BrokerSessionSecurityError;
@@ -99,12 +109,32 @@ impl FreshNonce {
         self.manifest_binding.zeroize();
         self.counter.zeroize();
     }
+
+    fn matches_endpoint(&self, endpoint: &ProtectedEndpointV1) -> bool {
+        let expected_counter = endpoint
+            .next_nonce_counter
+            .and_then(|counter| counter.checked_sub(1))
+            .unwrap_or(u64::MAX);
+        self.process_execution_id == endpoint.process_execution_id
+            && self.manifest_binding == *endpoint.files.manifest().binding().as_bytes()
+            && self.counter == expected_counter
+    }
 }
 
 enum EndpointExecution {
     Retained(RetainedSelfExecutionGuard),
     #[cfg(test)]
     Scripted(Box<dyn CurrentSelfExecutionGuard>),
+}
+
+impl EndpointExecution {
+    fn boot_id(&self) -> [u8; 16] {
+        match self {
+            Self::Retained(guard) => guard.boot_id(),
+            #[cfg(test)]
+            Self::Scripted(_) => [0x77; 16],
+        }
+    }
 }
 
 impl CurrentSelfExecutionGuard for EndpointExecution {
@@ -244,6 +274,26 @@ impl ProtectedEndpointV1 {
         self.execution.validate_current()?;
         Ok(())
     }
+
+    fn context(
+        &self,
+        client_process: [u8; 16],
+        broker_process: [u8; 16],
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.files.manifest().verification_context(
+            self.execution.boot_id(),
+            client_process,
+            broker_process,
+        )
+    }
+
+    fn poison<T>(
+        &mut self,
+        error: BrokerSessionSecurityError,
+    ) -> Result<T, BrokerSessionSecurityError> {
+        self.poisoned = true;
+        Err(error)
+    }
 }
 
 /// Retains a client endpoint's protected manifest and two client signing seeds.
@@ -311,6 +361,76 @@ impl ProtectedBrokerSessionClientV1 {
         self.inner
             .fresh_nonce(&mut KernelEntropy)
             .map(FreshClientHelloNonceV1)
+    }
+
+    pub(crate) fn revalidate_handshake_custody(
+        &mut self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        self.inner.revalidate_after()
+    }
+
+    pub(crate) fn poison_handshake_custody(&mut self) -> BrokerSessionSecurityError {
+        self.inner.poisoned = true;
+        BrokerSessionSecurityError::Currentness
+    }
+
+    pub(crate) fn process_execution_id_bytes(&self) -> [u8; 16] {
+        self.inner.process_execution_id
+    }
+
+    pub(crate) fn context_for_handshake(
+        &self,
+        broker_process: [u8; 16],
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.inner
+            .context(self.inner.process_execution_id, broker_process)
+    }
+
+    pub(crate) fn finalize_client_hello(
+        &mut self,
+        message: BrokerClientHello,
+        broker_process: [u8; 16],
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let result = (|| {
+            let nonce = self.inner.fresh_nonce(&mut KernelEntropy)?;
+            if !nonce.matches_endpoint(&self.inner) {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let context = self
+                .inner
+                .context(self.inner.process_execution_id, broker_process)?;
+            let cleared_fields = client_hello_fields_digest_v1(&message)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let subject = BrokerClientHelloSubjectV1::new(
+                context.node_id(),
+                context.boot_id(),
+                context.protocol(),
+                context.protocol_major(),
+                context.protocol_minor(),
+                context.audience(),
+                self.inner.process_execution_id,
+                *nonce.bytes,
+                context.protected_context_digest(),
+                cleared_fields,
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let pin = &self.inner.files.manifest().key_pins()[0];
+            let key = SigningKey::from_bytes(self.inner.files.client_hello_seed()?);
+            let signed = sign_client_hello_v1(subject, pin.signer().clone(), &key)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            encode_signed_client_hello_packet_v1(message, &signed)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)
+        })();
+        let packet = match result {
+            Ok(packet) => packet,
+            Err(error) => return self.inner.poison(error),
+        };
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(packet)
     }
 }
 
@@ -380,6 +500,230 @@ impl ProtectedBrokerSessionBrokerV1 {
             .fresh_nonce(&mut KernelEntropy)
             .map(FreshBrokerHelloNonceV1)
     }
+
+    pub(crate) fn revalidate_handshake_custody(
+        &mut self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        self.inner.revalidate_after()
+    }
+
+    pub(crate) fn poison_handshake_custody(&mut self) -> BrokerSessionSecurityError {
+        self.inner.poisoned = true;
+        BrokerSessionSecurityError::Currentness
+    }
+
+    pub(crate) fn process_execution_id_bytes(&self) -> [u8; 16] {
+        self.inner.process_execution_id
+    }
+
+    pub(crate) fn context_for_handshake(
+        &self,
+        client_process: [u8; 16],
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.inner
+            .context(client_process, self.inner.process_execution_id)
+    }
+
+    pub(crate) fn client_hello_verification_key(
+        &self,
+    ) -> Result<
+        aos_sandbox_broker_session_protocol::ProtectedBrokerSessionKeyV1,
+        BrokerSessionSecurityError,
+    > {
+        let pin = &self.inner.files.manifest().key_pins()[0];
+        aos_sandbox_broker_session_protocol::ProtectedBrokerSessionKeyV1::new(
+            pin.signer().clone(),
+            *pin.public_key(),
+            pin.minimum_authority_generation(),
+            pin.minimum_key_generation(),
+            pin.is_revoked(),
+            pin.superseded_by_key_generation(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    pub(crate) fn finalize_endpoint_publication(
+        &mut self,
+    ) -> Result<[u8; 64], BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let result = UntrustedBrokerSessionEndpointPublicationV1::from_untrusted_broker_claims(
+            self.inner.process_execution_id,
+            *self.inner.files.manifest().binding().as_bytes(),
+        )
+        .map(UntrustedBrokerSessionEndpointPublicationV1::to_canonical_bytes)
+        .map_err(|_| BrokerSessionSecurityError::Currentness);
+        let packet = match result {
+            Ok(packet) => packet,
+            Err(error) => return self.inner.poison(error),
+        };
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(packet)
+    }
+
+    pub(crate) fn finalize_broker_hello(
+        &mut self,
+        message: BrokerServerHello,
+        client: &CanonicalBrokerClientHelloV1,
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let result = (|| {
+            let mut nonce = self.inner.fresh_nonce(&mut KernelEntropy)?;
+            for _ in 0..8 {
+                if *nonce.bytes != client.signed_artifact().subject().nonce() {
+                    break;
+                }
+                nonce = self.inner.fresh_nonce(&mut KernelEntropy)?;
+            }
+            if *nonce.bytes == client.signed_artifact().subject().nonce()
+                || !nonce.matches_endpoint(&self.inner)
+            {
+                return Err(BrokerSessionSecurityError::Entropy);
+            }
+            let context = self.inner.context(
+                client.signed_artifact().subject().client_process(),
+                self.inner.process_execution_id,
+            )?;
+            let cleared_fields = server_hello_fields_digest_v1(&message)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let subject = BrokerHelloSubjectV1::new(
+                context.node_id(),
+                context.boot_id(),
+                context.protocol(),
+                context.protocol_major(),
+                context.protocol_minor(),
+                context.audience(),
+                self.inner.process_execution_id,
+                *nonce.bytes,
+                context.protected_context_digest(),
+                complete_signed_client_hello_digest_v1(client.signed_artifact()),
+                cleared_fields,
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let pin = &self.inner.files.manifest().key_pins()[1];
+            let key = SigningKey::from_bytes(self.inner.files.broker_hello_seed()?);
+            let signed = sign_broker_hello_v1(subject, pin.signer().clone(), &key)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            encode_signed_server_hello_packet_v1(message, &signed)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)
+        })();
+        let packet = match result {
+            Ok(packet) => packet,
+            Err(error) => return self.inner.poison(error),
+        };
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(packet)
+    }
+}
+
+#[cfg(test)]
+struct HandshakeTestEntropy {
+    next: u8,
+}
+
+#[cfg(test)]
+impl EntropySource for HandshakeTestEntropy {
+    fn fill_once(&mut self, output: &mut [u8]) -> Result<usize, rustix::io::Errno> {
+        output.fill(self.next);
+        self.next = self.next.wrapping_add(1).max(1);
+        Ok(output.len())
+    }
+}
+
+#[cfg(test)]
+struct HandshakeTestExecution;
+
+#[cfg(test)]
+impl CurrentSelfExecutionGuard for HandshakeTestExecution {
+    fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct HandshakeScriptedExecution {
+    results: std::sync::Mutex<std::collections::VecDeque<Result<(), BrokerSessionSecurityError>>>,
+}
+
+#[cfg(test)]
+impl CurrentSelfExecutionGuard for HandshakeScriptedExecution {
+    fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+        self.results
+            .lock()
+            .map_err(|_| BrokerSessionSecurityError::ExecutionChanged)?
+            .pop_front()
+            .unwrap_or(Err(BrokerSessionSecurityError::ExecutionChanged))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn load_client_for_handshake_test(
+    path: &Path,
+    entropy_byte: u8,
+) -> Result<ProtectedBrokerSessionClientV1, BrokerSessionSecurityError> {
+    Ok(ProtectedBrokerSessionClientV1 {
+        inner: ProtectedEndpointV1::load_with_guard(
+            path,
+            EndpointRole::Client,
+            &mut HandshakeTestEntropy { next: entropy_byte },
+            HandshakeTestExecution,
+        )?,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn load_broker_for_handshake_test(
+    path: &Path,
+    entropy_byte: u8,
+) -> Result<ProtectedBrokerSessionBrokerV1, BrokerSessionSecurityError> {
+    Ok(ProtectedBrokerSessionBrokerV1 {
+        inner: ProtectedEndpointV1::load_with_guard(
+            path,
+            EndpointRole::Broker,
+            &mut HandshakeTestEntropy { next: entropy_byte },
+            HandshakeTestExecution,
+        )?,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn load_client_for_handshake_scripted_test(
+    path: &Path,
+    entropy_byte: u8,
+    results: impl IntoIterator<Item = Result<(), BrokerSessionSecurityError>>,
+) -> Result<ProtectedBrokerSessionClientV1, BrokerSessionSecurityError> {
+    Ok(ProtectedBrokerSessionClientV1 {
+        inner: ProtectedEndpointV1::load_with_guard(
+            path,
+            EndpointRole::Client,
+            &mut HandshakeTestEntropy { next: entropy_byte },
+            HandshakeScriptedExecution {
+                results: std::sync::Mutex::new(results.into_iter().collect()),
+            },
+        )?,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn load_broker_for_handshake_scripted_test(
+    path: &Path,
+    entropy_byte: u8,
+    results: impl IntoIterator<Item = Result<(), BrokerSessionSecurityError>>,
+) -> Result<ProtectedBrokerSessionBrokerV1, BrokerSessionSecurityError> {
+    Ok(ProtectedBrokerSessionBrokerV1 {
+        inner: ProtectedEndpointV1::load_with_guard(
+            path,
+            EndpointRole::Broker,
+            &mut HandshakeTestEntropy { next: entropy_byte },
+            HandshakeScriptedExecution {
+                results: std::sync::Mutex::new(results.into_iter().collect()),
+            },
+        )?,
+    })
 }
 
 #[cfg(test)]

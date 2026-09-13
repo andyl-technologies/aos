@@ -34,6 +34,11 @@ impl RetainedSelfExecutionGuard {
         let (pidfd, baseline) = capture_with(&mut source)?;
         Ok(Self { pidfd, baseline })
     }
+
+    /// Returns the boot identity pinned by the complete capture sandwich.
+    pub(crate) const fn boot_id(&self) -> [u8; 16] {
+        self.baseline.boot_id
+    }
 }
 
 impl CurrentSelfExecutionGuard for RetainedSelfExecutionGuard {

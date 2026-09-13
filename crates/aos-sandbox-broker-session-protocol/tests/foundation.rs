@@ -14,15 +14,16 @@ use aos_sandbox_broker_session_protocol::{
     BrokerClientHelloSubjectV1, BrokerHelloSubjectV1, BrokerOutcomeAdmissionV1,
     BrokerOutcomeSubjectV1, BrokerRequestAdmissionV1, BrokerRequestSubjectV1,
     BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSequenceError,
-    BrokerSessionSignerReferenceV1, BrokerSessionTrafficStateV1, BrokerSessionTranscriptPhaseV1,
-    ProtectedBrokerSessionKeyV1, ProtectedBrokerSessionVerificationContextV1,
-    SignedBrokerClientHelloV1, SignedBrokerHelloV1, SignedBrokerOutcomeV1, SignedBrokerRequestV1,
-    client_hello_fields_digest_v1, complete_signed_client_hello_digest_v1,
-    complete_signed_request_digest_v1, decode_canonical_client_hello_v1,
-    decode_canonical_request_v1, decode_canonical_response_v1, decode_canonical_server_hello_v1,
-    outcome_fields_digest_v1, request_fields_digest_v1, server_hello_fields_digest_v1,
-    sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1, sign_request_v1,
-    signer_set_digest_v1, verify_broker_session_transcript_v1,
+    BrokerSessionSignerReferenceV1, BrokerSessionTrafficStateV1, BrokerSessionTranscriptError,
+    BrokerSessionTranscriptPhaseV1, ProtectedBrokerSessionKeyV1,
+    ProtectedBrokerSessionVerificationContextV1, SignedBrokerClientHelloV1, SignedBrokerHelloV1,
+    SignedBrokerOutcomeV1, SignedBrokerRequestV1, client_hello_fields_digest_v1,
+    complete_signed_client_hello_digest_v1, complete_signed_request_digest_v1,
+    decode_canonical_client_hello_v1, decode_canonical_request_v1, decode_canonical_response_v1,
+    decode_canonical_server_hello_v1, outcome_fields_digest_v1, request_fields_digest_v1,
+    server_hello_fields_digest_v1, sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1,
+    sign_request_v1, signer_set_digest_v1, verify_broker_session_transcript_v1,
+    verify_client_hello_context_v1, verify_client_hello_signature_v1,
 };
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
@@ -434,6 +435,76 @@ fn verify_resigned_hellos(
     let broker = decode_canonical_server_hello_v1(&broker)
         .unwrap_or_else(|error| panic!("resigned broker decode failed: {error}"));
     verify_broker_session_transcript_v1(&client, &broker, &handshake.context).is_ok()
+}
+
+#[test]
+fn client_hello_signature_stage_precedes_dynamic_context_comparison() {
+    let handshake = handshake(BrokerSessionProtocolV1::Network, 1);
+    let client = decode_canonical_client_hello_v1(&handshake.client_packet)
+        .unwrap_or_else(|error| panic!("client decode failed: {error}"));
+    let key = &handshake.context.keys()[0];
+    let signed = verify_client_hello_signature_v1(&client, key)
+        .unwrap_or_else(|error| panic!("signature stage failed: {error}"));
+    assert_eq!(signed.authenticated_client_process(), CLIENT_PROCESS);
+    assert!(verify_client_hello_context_v1(signed, &handshake.context).is_ok());
+
+    let wrong_key = &handshake.context.keys()[1];
+    assert!(verify_client_hello_signature_v1(&client, wrong_key).is_err());
+}
+
+#[test]
+fn legacy_pair_verifier_preserves_multi_invalid_error_precedence() {
+    let handshake = handshake(BrokerSessionProtocolV1::Network, 1);
+    let client = decode_canonical_client_hello_v1(&handshake.client_packet)
+        .unwrap_or_else(|error| panic!("client decode failed: {error}"));
+    let broker = decode_canonical_server_hello_v1(&handshake.broker_packet)
+        .unwrap_or_else(|error| panic!("broker decode failed: {error}"));
+
+    let inactive = context_with_inactive_key(
+        BrokerSessionProtocolV1::Network,
+        1,
+        &handshake.keys,
+        Some((3, true, None)),
+    );
+    let mut invalid_broker_message = broker.message().clone();
+    invalid_broker_message.maximum_response_bytes = 1;
+    invalid_broker_message.signed_session_hello = handshake.broker.to_canonical_bytes();
+    let invalid_broker = decode_canonical_server_hello_v1(&invalid_broker_message.encode_to_vec())
+        .unwrap_or_else(|error| panic!("invalid broker decode failed: {error}"));
+    assert!(matches!(
+        verify_broker_session_transcript_v1(&client, &invalid_broker, &inactive),
+        Err(BrokerSessionTranscriptError::Signer(_))
+    ));
+
+    let mut invalid_client_message = client.message().clone();
+    invalid_client_message.signed_session_hello = handshake.client.to_canonical_bytes();
+    let signature_index = invalid_client_message.signed_session_hello.len() - 1;
+    invalid_client_message.signed_session_hello[signature_index] ^= 1;
+    let invalid_client = decode_canonical_client_hello_v1(&invalid_client_message.encode_to_vec())
+        .unwrap_or_else(|error| panic!("invalid client decode failed: {error}"));
+    let mismatched_context = explicit_context(
+        [61; 16],
+        [99; 16],
+        1,
+        [63; 32],
+        2,
+        [64; 32],
+        3,
+        [65; 32],
+        NODE,
+        BOOT,
+        BrokerSessionProtocolV1::Network,
+        1,
+        0,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        CLIENT_PROCESS,
+        BROKER_PROCESS,
+        protected_keys(&handshake.keys, None),
+    );
+    assert!(matches!(
+        verify_broker_session_transcript_v1(&invalid_client, &invalid_broker, &mismatched_context,),
+        Err(BrokerSessionTranscriptError::Negotiation(_))
+    ));
 }
 
 fn signed_request(handshake: &Handshake, binding: [u8; 32]) -> (SignedBrokerRequestV1, Vec<u8>) {
@@ -1430,6 +1501,9 @@ fn protected_context_digest_commits_every_component_key_and_currentness_shape() 
     let keys = keys();
     let base = context(BrokerSessionProtocolV1::Host, 1, &keys);
     let base_digest = base.protected_context_digest();
+    let signed_handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let signed_client = decode_canonical_client_hello_v1(&signed_handshake.client_packet)
+        .unwrap_or_else(|error| panic!("client decode failed: {error}"));
     for case in 0..16 {
         let changed = explicit_context(
             if case == 0 { [70; 16] } else { [61; 16] },
@@ -1463,6 +1537,12 @@ fn protected_context_digest_commits_every_component_key_and_currentness_shape() 
             base_digest,
             "case {case}"
         );
+        let staged = verify_client_hello_signature_v1(&signed_client, &changed.keys()[0])
+            .unwrap_or_else(|error| panic!("unchanged client key failed: {error}"));
+        assert!(
+            verify_client_hello_context_v1(staged, &changed).is_err(),
+            "staged context case {case}"
+        );
     }
 
     for key_index in 0..4 {
@@ -1491,6 +1571,13 @@ fn protected_context_digest_commits_every_component_key_and_currentness_shape() 
                 base_digest,
                 "key {key_index} substitution {substitution}"
             );
+            if let Ok(staged) = verify_client_hello_signature_v1(&signed_client, &changed.keys()[0])
+            {
+                assert!(
+                    verify_client_hello_context_v1(staged, &changed).is_err(),
+                    "staged key {key_index} substitution {substitution}"
+                );
+            }
         }
     }
 }

@@ -19,6 +19,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+rustix = { workspace = true, features = ["net"] }
 tempfile = "3"
 
 [lints]

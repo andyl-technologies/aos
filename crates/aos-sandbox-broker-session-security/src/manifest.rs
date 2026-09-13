@@ -22,6 +22,7 @@
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_SIGNER_REFERENCE_BYTES, BrokerSessionKeyUsageV1, BrokerSessionProtocolV1,
     BrokerSessionSignerReferenceV1, ProtectedBrokerSessionKeyV1,
+    ProtectedBrokerSessionVerificationContextV1, hello_message::Audience,
     supported_broker_session_version_v1,
 };
 use sha2::{Digest as _, Sha256};
@@ -64,6 +65,13 @@ impl BrokerSessionSecurityAudienceV1 {
             1 => Ok(Self::NodeController),
             5 => Ok(Self::RootMount),
             _ => Err(BrokerSessionSecurityError::manifest("audience")),
+        }
+    }
+
+    pub(crate) const fn protobuf(self) -> Audience {
+        match self {
+            Self::NodeController => Audience::AUDIENCE_NODE_CONTROLLER,
+            Self::RootMount => Audience::AUDIENCE_ROOT_MOUNT,
         }
     }
 }
@@ -516,6 +524,52 @@ impl BrokerSessionSecurityManifestV1 {
         } else {
             Err(BrokerSessionSecurityError::manifest("inactive key pin"))
         }
+    }
+
+    /// Builds the shape-only protocol context from this protected manifest.
+    pub(crate) fn verification_context(
+        &self,
+        boot_id: [u8; 16],
+        client_process: [u8; 16],
+        broker_process: [u8; 16],
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        let keys = self.keys.each_ref().map(|pin| {
+            ProtectedBrokerSessionKeyV1::new(
+                pin.signer.clone(),
+                pin.public_key,
+                pin.minimum_authority_generation,
+                pin.minimum_key_generation,
+                pin.revoked,
+                pin.superseded_by_key_generation,
+            )
+        });
+        let keys = keys
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| BrokerSessionSecurityError::manifest("key set"))?
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::manifest("key set"))?;
+
+        ProtectedBrokerSessionVerificationContextV1::new(
+            self.domain_id,
+            self.route_id,
+            self.route_generation,
+            self.route_digest,
+            self.trust_generation,
+            self.trust_digest,
+            self.revocation_generation,
+            self.revocation_digest,
+            self.node_id,
+            boot_id,
+            self.protocol,
+            self.major,
+            self.minor,
+            self.audience.protobuf(),
+            client_process,
+            broker_process,
+            keys,
+        )
+        .map_err(|_| BrokerSessionSecurityError::manifest("verification context"))
     }
 }
 

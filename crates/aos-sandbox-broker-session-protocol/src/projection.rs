@@ -260,6 +260,52 @@ pub fn server_hello_fields_digest_v1(
     )
 }
 
+/// Attaches one signed ClientHello artifact and canonically encodes its packet.
+///
+/// This helper performs no signing and does not establish protected custody.
+/// The caller must have computed the artifact over the cleared message.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionProjectionError`] unless the cleared message has an
+/// empty authentication field and the resulting packet passes the exact
+/// canonical authenticated ClientHello decoder.
+pub fn encode_signed_client_hello_packet_v1(
+    mut message: BrokerClientHello,
+    signed: &SignedBrokerClientHelloV1,
+) -> Result<Vec<u8>, BrokerSessionProjectionError> {
+    if !message.signed_session_hello.is_empty() {
+        return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
+    }
+    message.signed_session_hello = signed.to_canonical_bytes();
+    let encoded = message.encode_to_vec();
+    decode_canonical_client_hello_v1(&encoded)?;
+    Ok(encoded)
+}
+
+/// Attaches one signed BrokerHello artifact and canonically encodes its packet.
+///
+/// This helper performs no signing and does not establish protected custody.
+/// The caller must have computed the artifact over the cleared message.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionProjectionError`] unless the cleared message has an
+/// empty authentication field and the resulting packet passes the exact
+/// canonical authenticated BrokerHello decoder.
+pub fn encode_signed_server_hello_packet_v1(
+    mut message: BrokerServerHello,
+    signed: &SignedBrokerHelloV1,
+) -> Result<Vec<u8>, BrokerSessionProjectionError> {
+    if !message.signed_session_hello.is_empty() {
+        return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
+    }
+    message.signed_session_hello = signed.to_canonical_bytes();
+    let encoded = message.encode_to_vec();
+    decode_canonical_server_hello_v1(&encoded)?;
+    Ok(encoded)
+}
+
 /// Digests one outbound request whose authentication field is still clear.
 ///
 /// The canonical bytes commit the exact body, ordered contiguous descriptor

@@ -1254,20 +1254,77 @@ scalar, full verification context, or session binding. Process IDs and nonces
 come directly from blocking `getrandom(2)` with empty flags, exact partial-fill
 handling, at most eight interrupted-call retries, a hard zero-progress rule,
 and at most eight complete all-zero retries. Each nonce privately retains the
-process ID, manifest binding, and checked nonzero issuance counter for a
-future signing finalizer, but this increment exposes no finalizer or outbound
-signature API.
+process ID, manifest binding, and checked nonzero issuance counter.
+Purpose-specific ClientHello and BrokerHello finalizers now consume those
+private values, but no finalizer, nonce bytes, process bytes, key, generic
+signer, or outbound signature API is public.
 
 This foundation remains unused by Host, Storage, Mount, Network, and controller
-production code. Linux peer publication and transcript/context binding,
-external anti-rollback floors, protected deployment, signing finalizers,
-sealed plans, authenticated transport, receive allocation, caller-owned atomic
-request/result companions, every service/controller integration, MAC policy,
-readiness, and Nix remain open. Real fork continuation, cgroup/procfs mutation,
+production code. Production peer-policy binding, external anti-rollback floors,
+protected deployment, traffic-record finalizers, sealed plans, receive
+allocation, caller-owned atomic request/result companions, every
+service/controller integration, MAC policy, readiness, and Nix remain open.
+Real fork continuation, cgroup/procfs mutation,
 cross-process flock contention, cross-UID ownership, and MAC policy qualification
 remain VM and `SBX-P0-10` activation gates. It introduces no journal,
 descriptor-use permit, or effect authority and does not close `SBX-BPROTO-04`,
 `SBX-BPROTO-05`, or `SBX-P0-10`.
+
+### Broker endpoint publication and sealed hello flights (source-only, inert)
+
+The protocol crate additionally freezes the untrusted broker-only `AOSBSE01`
+publication as exactly 64 bytes: magic `AOSBSE01`, `u16be(1)`, role Broker=2,
+five zero reserved bytes, nonzero broker process-execution ID 16, and nonzero
+manifest binding 32. There is no client form, extension, signature, boot ID,
+nonce, descriptor, protocol, or audience field. Exact 63/64/65-byte bounds,
+every closed header byte, both sentinels, and trailing bytes are tested.
+Decoded values are explicitly untrusted: the binding must equal current local
+protected configuration and the process value becomes meaningful only when the
+later signed BrokerHello repeats it.
+
+ClientHello verification now has an explicit pure stage boundary. A broker
+first compares the received signer reference with its locally pinned active
+ClientHello key and performs strict Ed25519 verification. Only the resulting
+authenticated client process value may populate that dynamic field in a full
+locally constructed context; route, domain, trust, revocation, protocol,
+audience, node, boot, and all four keys/currentness states remain local. Full
+context and hello semantics then run, and the existing pair verifier delegates
+through those same checks. The signed subjects, artifacts, protected-context
+digest, session binding, protobuf carriers, and golden vectors are unchanged.
+
+The security crate contains a sealed private typestate for exactly three
+flights on one retained sequenced-packet endpoint: broker publication,
+ClientHello, and BrokerHello. Both ordinary and descriptor-subject carriers
+immediately consume and socket-bind each received record; the descriptor form
+requires exactly zero transferred descriptors. The state retains the
+connection peer and each record's independent nominated subject, including
+pidfd-backed PID/TGID/start-time/cgroup/full-credential/liveness evidence.
+Each capture and transition recheck uses `info-before -> process identity ->
+info-after -> final liveness`, requires the two complete information snapshots
+equal (and the carrier's initial snapshot equal at capture), and therefore
+closes PPID or credential drift inside one observation. PPID alone is omitted
+from the retained cross-transition comparison; all other fields remain exact.
+Publication and BrokerHello broker subjects must name the same execution, while
+the ClientHello subject is retained for a future ClientRecord comparison. This
+does not equate peer and nominated subject, identify the actual writer, or
+grant channel authority under descriptor delegation.
+
+Only the role-local hello key and one fresh role-local nonce can finalize each
+hello. BrokerHello also commits the exact signed ClientHello. Protected files
+and retained-self execution are checked around finalization, send, receive,
+and verification; retained peer/subject pidfds are rechecked at each transition.
+Prepared exact packets remain state-owned across nonblocking retry and are not
+re-signed or re-nonced. Invalid, duplicate, reordered, cross-channel, partial,
+or descriptor-bearing flights close the private handshake; local custody
+failure poisons custody. Completion exposes only a private non-authorizing
+Provisional transcript and performs no traffic-key proof.
+
+There is deliberately no public constructor, carrier trait, socket extractor,
+raw process/nonce/context/session accessor, generic signer, or production
+entrypoint. Protected peer/MAC policy, delegated-writer confinement, traffic
+proof and request/outcome signing, receive allocation, durable atomic
+companions, all service/controller wiring, readiness, Nix, and VM qualification
+remain open. `SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10` stay unchecked.
 
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and

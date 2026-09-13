@@ -7921,18 +7921,19 @@ liveness sandwich. PPID is required stable inside an observation but is the
 sole field excluded from cross-call baseline comparison. The random
 process-execution ID remains a separate opaque value.
 
-The only public outputs are a current manifest binding, opaque random nonzero
+The only public outputs remain a current manifest binding, opaque random nonzero
 process-execution ID, and opaque role-specific fresh hello nonce. Blocking
 Rustix `getrandom(2)` acquisition handles partial fills, bounded `EINTR`, zero
 progress, and bounded all-zero retries. There is deliberately no public seed,
 signing key, raw signer, descriptor, RNG injection, context/session-binding
-constructor, or signing/finalization method.
+constructor, or signing/finalization method. Private purpose-specific hello
+finalizers consume only the matching local hello seed and fresh nonce.
 
 This advances only the protected source foundation. No production crate calls
 or depends on it, and no feature advertisement, readiness, journal, descriptor
-permit, or effect path changes. Linux peer publication and binding, external
-rollback floors, protected deployment, signing finalizers and sealed plans,
-authenticated transport and allocation, atomic request/result companions, all
+permit, or effect path changes. Production peer-policy binding, external
+rollback floors, protected deployment, traffic finalizers and sealed plans,
+authenticated allocation, atomic request/result companions, all
 Host/Storage/Mount/Network/controller integrations, MAC, readiness, Nix, and VM
 qualification remain open. Real fork continuation, cgroup/procfs mutation,
 cross-process flock contention, cross-UID ownership, and MAC policy validation
@@ -7971,3 +7972,44 @@ protected custody, exact peer/subject/process/cgroup continuity, descriptor-role
 semantics, atomic owner companions, delegated-writer confinement, and enforcing
 MAC qualification remain required. `SBX-BPROTO-04`, `SBX-BPROTO-05`, and
 `SBX-P0-10` remain unchecked.
+
+### Broker endpoint publication and sealed hello-flight composition (source-only, inert)
+
+The protocol crate now owns exact untrusted broker publication codec
+`AOSBSE01`: 64 bytes containing version 1, closed Broker role 2, five zero
+reserved bytes, nonzero broker process-execution ID, and nonzero protected
+manifest binding. It has no client form or extension. A staged pure ClientHello
+verifier first applies the locally selected active signer/key and strict
+Ed25519 verification, exposes only then the authenticated dynamic client
+process value, and subsequently checks the full locally selected context.
+The existing pair verifier delegates through the same signature/context
+semantics. No AOSBSA01 subject, artifact, digest domain, carrier, or golden
+record changes.
+
+The security crate privately composes broker publication, ClientHello, and
+BrokerHello over one state-owned ordinary or descriptor-subject seqpacket
+socket. Every record passes the opt-in same-socket origin binding; descriptor
+flights require zero FDs. The private state retains the connection peer and
+each nominated record subject with pidfd-backed process/cgroup/credential/
+liveness evidence. Each evidence observation is an exact information-before,
+identity, information-after, final-liveness sandwich; the two complete
+information snapshots and capture-time initial snapshot must agree. PPID is
+excluded only from later cross-transition comparison. The composition requires
+publication/BrokerHello process and subject continuity and retains the
+ClientHello subject for later traffic proof. Peer, subject, and actual writer
+remain distinct concepts under socket activation and descriptor delegation.
+Prepared packets survive WouldBlock/Interrupted without recreation, re-signing,
+or a new nonce. All custody, send, receive, and verify transitions recheck
+protected files, retained-self execution, and applicable peer/subject evidence.
+Only a private non-authorizing Provisional transcript is formed; there is no
+first ClientRecord proof or effect authority.
+
+The entire composite is sealed and unreachable from production because
+protected peer/MAC policy is not implemented. It exports no typestate, carrier
+implementation point, socket/FD extractor, raw process/nonce/context/session
+bytes, generic signer, or bypass. No broker, controller, service, feature
+advertisement, readiness, protobuf, journal, traffic signing, Nix, or VM path
+changes. Protected deployment and rollback floors, delegated-writer policy,
+traffic proof, request/outcome finalizers, receive allocation, atomic effect
+companions, every integration, MAC qualification, and VM coverage remain open;
+`SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10` remain unchecked.
