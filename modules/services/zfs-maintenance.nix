@@ -566,8 +566,10 @@ in {
             vm.succeed("systemctl start aos-zfs-metrics.service")
             metrics = vm.succeed("cat ${cfg.metrics.path}")
 
+            # Values are parsed as floats because the fragmentation ratio is
+            # fractional; the counters compare equal to their integer values.
             published = {
-                line.split()[0]: int(line.split()[1])
+                line.split()[0]: float(line.split()[1])
                 for line in metrics.splitlines()
                 if line and not line.startswith("#") and " " in line
             }
