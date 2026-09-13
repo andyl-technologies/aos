@@ -1741,7 +1741,15 @@ mod tests {
 
     #[test]
     fn retained_identity_allows_an_owned_process_title() {
-        let spec = sleep_spec("retained-process-title");
+        let sleep = find_executable("sleep");
+        let spec = executable_spec(
+            "retained-process-title",
+            "bash",
+            vec![
+                "-c".to_string(),
+                format!("{} 30; printf %s ''", sleep.display()),
+            ],
+        );
         let command = QualifiedCommand::new(&spec).expect("command is qualified");
         let confinement = Confinement::current().expect("current confinement is readable");
         let token = ownership_token(&spec, &confinement).expect("ownership token is encodable");
@@ -1883,11 +1891,19 @@ mod tests {
     }
 
     fn sleep_spec(label: &str) -> ForegroundProcessResourceSpec {
-        let executable = find_executable("sleep");
+        executable_spec(label, "sleep", vec!["30".to_string()])
+    }
+
+    fn executable_spec(
+        label: &str,
+        executable_name: &str,
+        arguments: Vec<String>,
+    ) -> ForegroundProcessResourceSpec {
+        let executable = find_executable(executable_name);
         let store_path = store_root(&executable);
         let entry_point = executable
             .strip_prefix(&store_path)
-            .expect("sleep executable belongs to its store root")
+            .expect("test executable belongs to its store root")
             .to_string_lossy()
             .trim_start_matches('/')
             .to_string();
@@ -1911,7 +1927,7 @@ mod tests {
                 closure: Sha256Digest::of_bytes("foreground-test-closure"),
             },
             entry_point,
-            arguments: vec!["30".to_string()],
+            arguments,
         }
     }
 
@@ -1919,14 +1935,17 @@ mod tests {
         let candidate = std::env::split_paths(&std::env::var_os("PATH").expect("PATH is set"))
             .map(|directory| directory.join(name))
             .find(|candidate| candidate.is_file())
-            .expect("sleep exists in the hermetic test PATH");
+            .expect("test executable exists in the hermetic PATH");
         let artifact = store_root(
             &candidate
                 .canonicalize()
-                .expect("sleep resolves to its canonical executable"),
+                .expect("test executable resolves to its canonical path"),
         );
         let executable = artifact.join("bin").join(name);
-        assert!(executable.is_file(), "sleep is exposed by its artifact");
+        assert!(
+            executable.is_file(),
+            "test executable is exposed by its artifact"
+        );
         executable
     }
 
