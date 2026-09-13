@@ -261,7 +261,7 @@ mod tests {
                 .iter()
                 .filter(|contract| contract.state_format.is_some())
                 .count(),
-            5
+            14
         );
     }
 

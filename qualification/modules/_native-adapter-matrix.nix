@@ -29,8 +29,8 @@
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
-  expectedSurfaceDigest = "aa02914f3ebc3a5f38ee125ef469865860bf00ea96ce23d2155b9b9030068f58";
-  expectedApplicabilityDigest = "12615a636200a1b6fc6b001333631b858e1c6fd81a5178f11ce9dbd9947fc517";
+  expectedSurfaceDigest = "53cc3bf65b65ecf3def74d0d9955c4a8812b8bd85aba4dd1055c307e2fb28ffb";
+  expectedApplicabilityDigest = "283bd3c53cba28d8d119199129f251799d0f0545b96c68256a84e9d6c2f19b23";
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0
@@ -269,8 +269,8 @@ in
   assert exactCells;
   assert selectedApplicability == canonicalApplicability;
   assert applicabilityDigest == expectedApplicabilityDigest;
-  assert builtins.length applicableCells == 1355;
-  assert builtins.length inapplicableCells == 45;
+  assert builtins.length applicableCells == 1364;
+  assert builtins.length inapplicableCells == 36;
   assert builtins.length inapplicableCellIds
   == builtins.length (lib.unique inapplicableCellIds);
   assert builtins.all (cell: !builtins.elem cell.id inapplicableCellIds) applicableCells;
@@ -280,7 +280,7 @@ in
   assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") inapplicableCells)
   == 36;
   assert builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") inapplicableCells)
-  == 9; {
+  == 0; {
     schema = surface.matrix_schema;
     subject = canonicalSubject;
     spec = matrixSpec;

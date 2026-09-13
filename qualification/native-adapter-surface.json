@@ -187,7 +187,7 @@
       ],
       "provider_contract": {
         "resource_lifetime": "persistent",
-        "state_format": null
+        "state_format": "sha256:ab3d033a412b9b81a99491c719eb8ff6d564080701f45a20ccd723c1133fb8e8"
       },
       "scope": "host-machine"
     },

@@ -699,9 +699,9 @@
       0
       selected;
   in
-    assert builtins.length selected == 1355;
-    assert builtins.length (lib.unique selected) == 1355;
-    assert postconditions == 5780; selected;
+    assert builtins.length selected == 1364;
+    assert builtins.length (lib.unique selected) == 1364;
+    assert postconditions == 5834; selected;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =

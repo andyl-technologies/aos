@@ -181,24 +181,61 @@ def rollout_host(
     mode: str,
     label: str,
     provider_incarnation_revision: str | None = None,
-) -> str:
+    alternate_provider_incarnation_revision: str | None = None,
+    provider_package: str = "compatible",
+    provider_adoption_source_package: str | None = None,
+    provider_adoption_from: str | None = None,
+    provider_adoption_current_planning: str | None = None,
+    return_activation: bool = False,
+) -> Any:
     """Writes an authenticated candidate host that retains the observer."""
 
     activation = generate_rollout_activation(
-        request, mode, label, provider_incarnation_revision
+        request,
+        mode,
+        label,
+        provider_incarnation_revision,
+        alternate_provider_incarnation_revision,
+        provider_package,
+        provider_adoption_source_package,
+        provider_adoption_from,
+        provider_adoption_current_planning,
     )
     path = f"/var/lib/aos/ability-boundary-test/rollout-host-{label}.nix"
-    write_rollout_host(path, activation, OBSERVER_HOST_MODULE)
+    selected_packages = [
+        (
+            "ability-reference-image-rollout-incompatible"
+            if provider_package == "incompatible"
+            else "ability-reference-image-rollout"
+        )
+    ]
+    if provider_adoption_source_package == "compatible":
+        selected_packages.append("ability-reference-image-rollout")
+    write_rollout_host(
+        path, activation, OBSERVER_HOST_MODULE, sorted(set(selected_packages))
+    )
     runtime.succeed(f"{OBSERVER_CONTROLLER} persist-file {shlex.quote(path)}")
-    return path
+    return (path, activation) if return_activation else path
 
 
 def settle_initial_rollout(
-    request: dict[str, Any], label: str, mode: str = "rollout"
+    request: dict[str, Any],
+    label: str,
+    mode: str = "rollout",
+    provider_incarnation_revision: str | None = None,
+    alternate_provider_incarnation_revision: str | None = None,
 ) -> None:
     """Completes one healthy rollout so a later retirement is authorized."""
 
-    host = rollout_host(request, mode, label)
+    host = rollout_host(
+        request,
+        mode,
+        label,
+        provider_incarnation_revision=provider_incarnation_revision,
+        alternate_provider_incarnation_revision=(
+            alternate_provider_incarnation_revision
+        ),
+    )
     boot_id = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
     try:
         runtime.succeed(

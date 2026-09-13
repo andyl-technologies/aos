@@ -477,9 +477,9 @@ changing either invalidates the matrix identity.
 Qualification expands those methods over 28 durability, revocation, upgrade,
 adoption, retained-target, dependency, and foreign-resource scenarios.
 The resulting 1,400 Cartesian cells retain every dimension, full interface key,
-and exact surface digest. A schema-bound applicability partition enumerates 45
+and exact surface digest. A schema-bound applicability partition enumerates 36
 compatible-adoption cells that cannot exist under their current provider
-contracts. The remaining 1,355 production-VM cells carry 5,780 mandatory
+contracts. The remaining 1,364 production-VM cells carry 5,834 mandatory
 postconditions, including durable classification, one resource
 owner, dependent nonexecution after failure, and independent confirmation that
 foreign resources did not change. Adoption, unsupported transfer, and retained
@@ -489,7 +489,7 @@ Every applicable matrix cell requires a production VM observation. Source
 regressions exercise contract closure but remain marked separately and never
 satisfy those cells. The x86 release executor maps
 `ability-native-adapter-matrix` to independent published-image cohorts that
-exercise all 1,355 applicable cells and 5,780 postconditions. The primary
+exercise all 1,364 applicable cells and 5,834 postconditions. The primary
 cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
@@ -559,8 +559,9 @@ and same-machine dependency blocking. These cohorts exclude the managed
 configuration `publish` foreign-resource cell and legacy systemd `reload`
 dependency cell already owned by the primary cohort.
 
-Provider-state cohorts cover all 50 retained-target routes and all 50
-unsupported-transfer routes. Each retained flight establishes a live owned
+Provider-state cohorts cover all 50 retained-target routes, all 50
+unsupported-transfer routes, and every compatible-adoption route backed by a
+persistent state-format contract. Each retained flight establishes a live owned
 resource, activates a later predecessor, then rolls back to the exact retained
 generation. It captures the predecessor authority before launch, a distinct
 candidate provider incarnation at acquisition, the republished current grant,
@@ -572,25 +573,27 @@ inspector derives its rejection from the authenticated request, binding, target
 lifetime, owner implementation, and state-format declaration.
 
 All 15 PostgreSQL state-family cells run through its persistent state-format
-contract and real cluster operations. The remaining 45 cells are exactly the
-non-PostgreSQL `adopt-compatible-state` cross-product: 36 reference,
-Kubernetes, systemd, and foreground methods declare instance-lifetime routes,
-while the nine image-rollout methods declare persistent resources without an
-authenticated provider state format. Their matching unsupported-transfer
-flights retain those exact production-contract reasons. Adding a compatible
-adoption cell requires a new valid product lifetime or state-format contract;
-qualification does not infer one from fixture labels.
+contract and real cluster operations. The nine image-rollout methods bind the
+machine's execution journal, retained EFI payloads, and authenticated image
+identities to the versioned A/B rollout state format. Their compatible flights
+replace the terminal provider incarnation, transfer the sole ledger claim,
+recover the exact method, and settle its required-success successor while the
+retained boot state stays live. The remaining 36 `adopt-compatible-state`
+cells are exactly the reference, Kubernetes, systemd, and foreground methods
+whose process, manager-session, temporary-credential, API-transaction, or
+host-configuration resources have instance lifetime.
 
-The matrix specification records those 45 exact cell IDs and reasons as
+The matrix specification records those 36 exact cell IDs and reasons as
 inapplicable. Nix policy, the production evidence builder, and the Rust release
 verifier independently derive the ordered partition from each adapter's
 surface-bound provider contract, then reject missing, overlapping, reordered,
 or reason-mutated exclusions. Their corresponding
-unsupported-transfer cells remain mandatory and prove rejection before effects,
-and the production transfer inspector verifies the nonpersistent and
-missing-format reasons against the exact checked route. The PostgreSQL package
-contract check binds its declared format to the same surface descriptor. A
-product-contract change must
+unsupported-transfer cells remain mandatory and prove rejection before effects.
+The production transfer inspector verifies nonpersistent routes against the
+exact checked plan, while persistent providers reject an incompatible
+authenticated format before changing the owner ledger or live state. The
+PostgreSQL and image-rollout package contract checks bind their declared formats
+to the same surface descriptors. A product-contract change must
 remove the affected exclusions and add exact cell-bound production evidence in
 the same release.
 

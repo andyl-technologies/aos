@@ -5,6 +5,8 @@
   rolloutRuntime,
   transitionTransform ? transition: transition,
   qualificationCell ? false,
+  packageName ? "ability-reference-image-rollout",
+  stateFormatOverride ? null,
 }: let
   inherit (lib.abilities) schemas;
 
@@ -12,6 +14,10 @@
     if qualificationCell
     then ./providers/rollout-qualification
     else ./providers/rollout;
+  rolloutStateFormat =
+    if stateFormatOverride == null
+    then "sha256:${builtins.hashFile "sha256" ./state-format-v1.json}"
+    else stateFormatOverride;
 
   interface = name: descriptor: {
     inherit name descriptor;
@@ -158,7 +164,7 @@
   rolloutProvider = import (providerArtifact + "/default.nix");
 
   abilityPackage = {
-    requiredFeatures = ["ab-image-rollout-v1" "abilities-v1"];
+    requiredFeatures = ["ab-image-rollout-v1" "abilities-v1" "provider-state-format-v1"];
     activationMode = "structured-effects";
     ownership = [[]];
     artifacts = [];
@@ -193,7 +199,8 @@
           ];
           composeEntry = "compose";
           transitionEntry = "transition";
-          ownsResourceKinds = ["aos.ab-image-rollout"];
+          ownsResourceKinds = ["aos.ab-image-rollout" rolloutEffects.name];
+          stateFormat = rolloutStateFormat;
           compose = rolloutProvider.compose;
           transition = transitionTransform rolloutProvider.transition;
         };
@@ -238,7 +245,7 @@
   };
 in
   mkDerivation {
-    pname = "ability-reference-image-rollout";
+    pname = packageName;
     version = "1.0.0";
     src = providerArtifact;
     inherit abilityPackage;
