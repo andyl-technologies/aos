@@ -1,9 +1,14 @@
-##! Shared package contract for one package-owned systemd target.
+##! Shared package contract for manager-neutral service lifecycle.
 {
   lib,
   packageName,
 }: let
   inherit (lib.abilities) schemas;
+
+  serviceManagement = import ./service-management.nix {
+    inherit schemas;
+    inherit (lib.abilities) guarantee;
+  };
 
   catalog = import ./providers/service-package/catalog.nix;
   spec =
@@ -11,16 +16,6 @@
     or (throw "service ability package has no catalog entry for '${packageName}'");
   providerArtifact = ./providers/service-package;
 
-  systemdEffects = {
-    name = "aos.systemd-service-effects";
-    abi = 1;
-    descriptor = "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
-  };
-  localSystemdManager = lib.abilities.guarantee {
-    name = "aos.local-systemd-manager";
-    version = 1;
-    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
-  };
   revision = schemas.string {
     maxLength = 71;
     syntax = null;
@@ -58,12 +53,7 @@ in {
       };
       outputs = {};
       methods = {};
-      lifecycle = {
-        stableResourceIdentity = true;
-        releasesEphemeralOnDisable = true;
-        retainsPersistentByDefault = false;
-        persistentDeleteMethod = null;
-      };
+      lifecycle = serviceManagement.lifecycle;
       guarantees = [];
       aggregation = {
         scope = "provider-instance";
@@ -73,16 +63,16 @@ in {
         controllerGroup = "service";
       };
       requires.service-terminal = {
-        interface = systemdEffects.name;
-        inherit (systemdEffects) abi descriptor;
-        methods = ["start" "stop"];
-        guarantees = [localSystemdManager];
+        inherit (serviceManagement.interface) abi descriptor;
+        interface = serviceManagement.interface.name;
+        inherit (spec) methods;
+        guarantees = serviceManagement.featureGuarantees spec.features;
         strength = "required";
         fallback = null;
       };
       composeEntry = "compose";
       transitionEntry = "transition";
-      ownsResourceKinds = [systemdEffects.name];
+      ownsResourceKinds = [serviceManagement.interface.name];
       compose = provider.compose;
       transition = provider.transition;
     };
