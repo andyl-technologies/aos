@@ -90,22 +90,25 @@
     abi = 1;
     descriptor = "sha256:${lib.concatStrings (builtins.genList (_: "3") 64)}";
   };
-  revision = "sha256:${lib.concatStrings (builtins.genList (_: "4") 64)}";
+  manualOverrideRevision = "sha256:${lib.concatStrings (builtins.genList (_: "4") 64)}";
   activationRevision = "sha256:${lib.concatStrings (builtins.genList (_: "6") 64)}";
+  supplementalRevisionInput = "sha256:${lib.concatStrings (builtins.genList (_: "7") 64)}";
   composition = serviceProvider.compose {
-    provider = providerId;
-    interface = rsyncInterface;
-    configuration = {
-      enabled = true;
-      inherit revision;
-    };
-  };
-  automaticComposition = serviceProvider.compose {
     provider = providerId;
     interface = rsyncInterface;
     package = providerId.package;
     activation_revision = activationRevision;
     configuration.enabled = true;
+  };
+  manualOverrideComposition = serviceProvider.compose {
+    provider = providerId;
+    interface = rsyncInterface;
+    package = providerId.package;
+    activation_revision = activationRevision;
+    configuration = {
+      enabled = true;
+      revision = manualOverrideRevision;
+    };
   };
   customizedComposition = serviceProvider.compose {
     provider = providerId;
@@ -115,7 +118,7 @@
     configuration = {
       enabled = true;
       restart_token = "restart-on-demand";
-      revision_inputs = [revision];
+      revision_inputs = [supplementalRevisionInput];
     };
   };
   resource = (builtins.head composition.resources).resource;
@@ -197,10 +200,9 @@
   disabledComposition = serviceProvider.compose {
     provider = providerId;
     interface = rsyncInterface;
-    configuration = {
-      enabled = false;
-      inherit revision;
-    };
+    package = providerId.package;
+    activation_revision = activationRevision;
+    configuration.enabled = false;
   };
   invalidRevision = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
       provider = providerId;
@@ -218,7 +220,7 @@
       activation_revision = activationRevision;
       configuration = {
         enabled = true;
-        inherit revision;
+        revision = manualOverrideRevision;
         restart_token = "force-restart";
       };
     })
@@ -226,10 +228,9 @@
   unknownInterface = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
       provider = providerId;
       interface = rsyncInterface // {name = "aos.service.unknown";};
-      configuration = {
-        enabled = true;
-        inherit revision;
-      };
+      package = providerId.package;
+      activation_revision = activationRevision;
+      configuration.enabled = true;
     })
     true);
 
@@ -249,8 +250,8 @@ in
   assert builtins.all migratedContract migratedServices;
   assert inventory.legacyEffectful == [];
   assert composition.requests != [];
-  assert (builtins.head composition.resources).revision == revision;
-  assert (builtins.head automaticComposition.resources).revision == activationRevision;
+  assert (builtins.head composition.resources).revision == activationRevision;
+  assert (builtins.head manualOverrideComposition.resources).revision == manualOverrideRevision;
   assert (builtins.head customizedComposition.resources).revision != activationRevision;
   assert builtins.match "sha256:[0-9a-f]{64}" (builtins.head customizedComposition.resources).revision != null;
   assert start.method == "start";
