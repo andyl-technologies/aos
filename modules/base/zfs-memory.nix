@@ -539,6 +539,14 @@ in {
     # page requires ZFS to allocate the memory the write is trying to free.
     aos.zram.enable = lib.mkDefault true;
 
+    # zram's capacity is RAM the host can still end up spending, since
+    # incompressible pages approach their uncompressed size. The stock half of
+    # RAM is a large second claim on memory beside the ZFS budget, and on a
+    # large host it is enormous in absolute terms. Reclaim needs somewhere to
+    # put anonymous pages, not a swap device sized like a disk, so bound it the
+    # same way the ZFS budget is bounded.
+    aos.zram.size = lib.mkDefault "min(ram / 8, 2048)";
+
     systemd.services."aos-zfs-memory-policy" = {
       description = "Apply the bounded ZFS memory policy";
       wantedBy = ["local-fs.target"];
