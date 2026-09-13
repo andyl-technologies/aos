@@ -642,13 +642,22 @@ in {
           # ends the write.
           script = ''
             target = "${quotaProbeMountPoint}/overflow"
-            vm.fail(f"head -c ${toString (2 * quotaProbeLimitBytes)} /dev/urandom > {target}")
+            attempted = ${toString (2 * quotaProbeLimitBytes)}
+            quota = ${toString quotaProbeLimitBytes}
+
+            vm.fail(f"head -c {attempted} /dev/urandom > {target}")
 
             used = int(vm.succeed(
                 "zfs get -H -p -o value used ${pool}/${quotaProbeName}"
             ).strip())
-            assert used <= ${toString quotaProbeLimitBytes}, (
-                f"the quota let the dataset reach {used} bytes"
+
+            # The write stopped at the quota instead of running to completion.
+            assert used < attempted, f"the quota did not stop the write: {used} bytes"
+
+            # ZFS accounts a quota in whole blocks, so `used` settles at the
+            # limit plus a little metadata rather than exactly on it.
+            assert used <= quota + 1048576, (
+                f"the quota let the dataset reach {used} bytes against a {quota} byte limit"
             )
 
             vm.succeed(f"rm -f {target}")
