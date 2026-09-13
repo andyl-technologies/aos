@@ -136,16 +136,20 @@ candidate incarnation and monotonic current authority, or retains the
 checked-plan transfer rejection before that method crosses its provider effect
 boundary. Retained-target flights also require the method-specific durable
 journal, required-success settlement, and an independent provider observation.
-PostgreSQL supplies the only authenticated persistent state-format contract in
-this surface. The other 36 non-rollout methods have instance lifetime, and the
-nine rollout methods have no authenticated state format; their corresponding
-compatible-adoption cells are explicitly inapplicable until those product
-contracts change. The surface projects each checked resource lifetime and
+PostgreSQL and A/B image rollout supply authenticated persistent state-format
+contracts in this surface. Image rollout binds its durable execution journal,
+retained EFI payloads, and authenticated image identities to a versioned format,
+then proves adoption across a fresh terminal-provider incarnation for all nine
+methods. The other 36 non-rollout methods have instance lifetime because they
+own processes, manager sessions, temporary credentials, API transactions, or
+host-configuration transactions whose identity ends with the selected provider.
+Their compatible-adoption cells remain explicitly inapplicable. The surface
+projects each checked resource lifetime and
 authenticated provider state-format descriptor into its canonical digest. The
-matrix retains all 1,400 Cartesian cells and derives the 45 exact exclusions
+matrix retains all 1,400 Cartesian cells and derives the 36 exact exclusions
 and reasons from that metadata. Nix, Rust, and the production evidence builder
-reject stale partitions after either contract field changes, leaving 1,355
-mandatory production cells and 5,780 postconditions. Unsupported-transfer
+reject stale partitions after either contract field changes, leaving 1,364
+mandatory production cells and 5,834 postconditions. Unsupported-transfer
 siblings remain mandatory and prove the rejection side of the replacement
 invariant before provider effects.
 

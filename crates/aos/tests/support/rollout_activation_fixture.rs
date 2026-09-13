@@ -18,16 +18,19 @@ use aos_ability_model::document::{
     DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory, ProviderState,
 };
 use aos_ability_model::{
-    AbilityValue, AccessMode, AuthorityGrant, DesiredStateDocument, EnvironmentDocument,
+    AbilityValue, AccessMode, AuthorityGrant, BindingId, DesiredStateDocument, EnvironmentDocument,
     EnvironmentId, ExecutionStage, ImplementationKind, InstanceId, InterfaceDescriptor,
     InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, OutputDescriptor,
-    PackageDocument, ProviderImplementation, ProviderImplementationReference, RequiredFeature,
-    ResourceId, ResourceLifetime, ResourcePermission, RevisionId, ValuePhase, ValueSchema,
+    PackageDocument, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint,
+    ProviderImplementation, ProviderImplementationReference, RequiredFeature, ResourceId,
+    ResourceLifetime, ResourcePermission, RevisionId, TeardownBindingAuthorization,
+    TeardownProviderAuthorization, TransitionAuthorizationDocument, ValuePhase, ValueSchema,
     ValueVisibility, VersionedDocument,
 };
 use aos_ability_plan::{
     AbRolloutRequest, BindingCandidate, CandidateSelection, CompositionError,
-    EnabledProviderSelection, RecursiveComposer, ResolutionPolicyDocument,
+    EnabledProviderSelection, PlanningReplayInputs, PlanningSnapshot, RecursiveComposer,
+    ResolutionPolicyDocument, VerifiedPlanningSnapshot,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -48,7 +51,8 @@ use aos_package::types::ProfileScope;
 
 use super::ability_activation_fixture::{retain_sidecar, write_operator_authority};
 
-const PACKAGE_NAME: &str = "ability-reference-image-rollout";
+const COMPATIBLE_PACKAGE: &str = "ability-reference-image-rollout";
+const INCOMPATIBLE_PACKAGE: &str = "ability-reference-image-rollout-incompatible";
 const HIGH_LEVEL_INTERFACE: &str = "aos.ab-image-rollout";
 const FOREIGN_MAP_AUDIT_SCHEMA: &str = "aos.qualification.rollout-foreign-map-audit/v1";
 
@@ -58,6 +62,7 @@ struct RolloutFixture {
     package: PackageDocument,
     package_digest: Sha256Digest,
     provider: InstanceId,
+    terminal_provider: InstanceId,
     high_interface: InterfaceKey,
     high_implementation: ProviderImplementationReference,
     effects_interface: InterfaceKey,
@@ -72,6 +77,9 @@ struct ComposedRollout {
     desired_state: DesiredStateDocument,
     policies: Vec<ResolutionPolicyDocument>,
     bindings: Vec<aos_ability_model::Binding>,
+    package: PackageDocument,
+    provider: InstanceId,
+    planning: VerifiedPlanningSnapshot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,7 +123,12 @@ impl ActivationMode {
 /// or exact-method qualification cell.
 ///
 /// Arguments are `OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR
-/// --mode MODE [--provider-incarnation-revision REVISION]`. `MODE` is
+/// --mode MODE [--provider-incarnation-revision REVISION]
+/// [--alternate-provider-incarnation-revision REVISION]
+/// [--provider-package compatible|incompatible]` with an optional paired
+/// `--provider-adoption-source-package compatible|incompatible
+/// --provider-adoption-from REVISION
+/// --provider-adoption-current-planning DIGEST`. `MODE` is
 /// `rollout`, `retire`, or `qualification-{method}`. The optional revision
 /// gives state-transition fixtures a fresh authenticated terminal identity.
 /// The request JSON carries one exact
@@ -127,13 +140,13 @@ impl ActivationMode {
 /// Returns an error when the request, authenticated package, recursive plan,
 /// native resource mapping, or retained sidecar is invalid.
 pub(super) fn generate(arguments: &[String]) -> Result<()> {
-    if !matches!(arguments.len(), 6 | 8)
+    if arguments.len() < 6
+        || !arguments.len().is_multiple_of(2)
         || arguments[2] != "--operator-authority-output"
         || arguments[4] != "--mode"
-        || (arguments.len() == 8 && arguments[6] != "--provider-incarnation-revision")
     {
         bail!(
-            "usage: aos-release-fleet-fixture rollout-activation OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR --mode rollout|retire|qualification-METHOD [--provider-incarnation-revision REVISION]"
+            "usage: aos-release-fleet-fixture rollout-activation OUTPUT REQUEST_JSON --operator-authority-output AUTHORITY_DIR --mode rollout|retire|qualification-METHOD [--provider-incarnation-revision REVISION] [--alternate-provider-incarnation-revision REVISION] [--provider-package compatible|incompatible] [--provider-adoption-source-package compatible|incompatible --provider-adoption-from REVISION --provider-adoption-current-planning DIGEST]"
         );
     }
 
@@ -141,17 +154,94 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let request_path = Path::new(&arguments[1]);
     let authority_output = Path::new(&arguments[3]);
     let mode = ActivationMode::parse(&arguments[5])?;
-    let provider_incarnation_revision = arguments.get(7).map(String::as_str);
-    if let Some(revision) = provider_incarnation_revision {
-        ensure!(
-            !revision.is_empty()
-                && revision.len() <= 128
-                && revision
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte)),
-            "provider incarnation revision is outside the safe fixture subset"
-        );
+    let mut provider_incarnation_revision = None;
+    let mut alternate_provider_incarnation_revision = None;
+    let mut provider_package = None;
+    let mut adoption_source_package = None;
+    let mut adoption_source_revision = None;
+    let mut adoption_current_planning = None;
+    let mut option_index = 6;
+    while option_index < arguments.len() {
+        let value = arguments
+            .get(option_index + 1)
+            .context("rollout fixture option has no value")?;
+        match arguments[option_index].as_str() {
+            "--provider-incarnation-revision" => {
+                ensure!(
+                    provider_incarnation_revision
+                        .replace(value.as_str())
+                        .is_none(),
+                    "provider incarnation revision is repeated"
+                );
+            }
+            "--alternate-provider-incarnation-revision" => {
+                ensure!(
+                    alternate_provider_incarnation_revision
+                        .replace(value.as_str())
+                        .is_none(),
+                    "alternate provider incarnation revision is repeated"
+                );
+            }
+            "--provider-package" => {
+                ensure!(
+                    provider_package.replace(value.as_str()).is_none(),
+                    "provider package is repeated"
+                );
+            }
+            "--provider-adoption-source-package" => {
+                ensure!(
+                    adoption_source_package.replace(value.as_str()).is_none(),
+                    "provider adoption source package is repeated"
+                );
+            }
+            "--provider-adoption-from" => {
+                ensure!(
+                    adoption_source_revision.replace(value.as_str()).is_none(),
+                    "provider adoption source revision is repeated"
+                );
+            }
+            "--provider-adoption-current-planning" => {
+                ensure!(
+                    adoption_current_planning
+                        .replace(
+                            Sha256Digest::parse(value)
+                                .context("parsing retained rollout planning digest")?,
+                        )
+                        .is_none(),
+                    "provider adoption current planning is repeated"
+                );
+            }
+            option => bail!("unknown rollout fixture option {option:?}"),
+        }
+        option_index += 2;
     }
+    for revision in [
+        provider_incarnation_revision,
+        alternate_provider_incarnation_revision,
+        adoption_source_revision,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_provider_revision(revision)?;
+    }
+    ensure!(
+        adoption_source_revision.is_some() == adoption_current_planning.is_some(),
+        "rollout provider adoption source and current planning must appear together"
+    );
+    ensure!(
+        adoption_source_package.is_none() || adoption_source_revision.is_some(),
+        "rollout provider adoption source package requires an adoption source"
+    );
+    let selected_package = rollout_package_name(provider_package.unwrap_or("compatible"))?;
+    let source_package = adoption_source_package
+        .map(rollout_package_name)
+        .transpose()?
+        .unwrap_or(COMPATIBLE_PACKAGE);
+    ensure!(
+        alternate_provider_incarnation_revision.is_none() || adoption_source_revision.is_none(),
+        "rollout fixture cannot combine an alternate provider and an adoption source"
+    );
     ensure!(
         output != authority_output,
         "operator authority output must be separate from the activation descriptor output"
@@ -169,9 +259,35 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
 
     fs::create_dir_all(output)
         .with_context(|| format!("creating rollout fixture output {}", output.display()))?;
-    let packages = load_verified_package()?;
-    let fixture = RolloutFixture::new(&packages, &mode, provider_incarnation_revision)?;
+    let packages = load_verified_packages(selected_package, Some(source_package))?;
+    let fixture = RolloutFixture::new(
+        &packages,
+        selected_package,
+        &mode,
+        provider_incarnation_revision,
+        alternate_provider_incarnation_revision.or(adoption_source_revision),
+    )?;
     let composed = fixture.compose(&request, &mode)?;
+    let transition_authority = if let Some(source_revision) = adoption_source_revision {
+        let current_mode = ActivationMode::Rollout;
+        let current = RolloutFixture::new(
+            &packages,
+            source_package,
+            &current_mode,
+            Some(source_revision),
+            provider_incarnation_revision,
+        )?
+        .compose(&request, &current_mode)?;
+        Some(provider_adoption_authority(
+            &composed,
+            &current,
+            adoption_current_planning
+                .context("rollout provider adoption lacks current planning")?,
+            &mode,
+        )?)
+    } else {
+        None
+    };
     let native_resource_map = rollout_resource_map(&composed, &request, &mode)?;
     let platform_policy = platform_policy(&composed)?;
     let desired_document = ActivationDesiredInputDocument {
@@ -182,7 +298,7 @@ pub(super) fn generate(arguments: &[String]) -> Result<()> {
     let mut policy_document = AuthenticatedPolicySetDocument::new(
         &desired_document,
         composed.policies,
-        None,
+        transition_authority,
         native_resource_map,
     )?;
     policy_document.schema = AuthenticatedPolicySetDocument::SCHEMA_V3.to_string();
@@ -243,9 +359,9 @@ pub(super) fn audit_foreign_map(arguments: &[String]) -> Result<()> {
         "rollout request is not exact canonical JSON"
     );
 
-    let packages = load_verified_package()?;
+    let packages = load_verified_packages(COMPATIBLE_PACKAGE, None)?;
     let mode = ActivationMode::Rollout;
-    let fixture = RolloutFixture::new(&packages, &mode, None)?;
+    let fixture = RolloutFixture::new(&packages, COMPATIBLE_PACKAGE, &mode, None, None)?;
     let composed = fixture.compose(&request, &mode)?;
     let valid = rollout_resource_map(&composed, &request, &mode)?;
     let [real] = valid.entries.as_slice() else {
@@ -296,7 +412,18 @@ pub(super) fn audit_foreign_map(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn load_verified_package() -> Result<VerifiedAbilityPackageSet> {
+fn rollout_package_name(selection: &str) -> Result<&'static str> {
+    match selection {
+        "compatible" => Ok(COMPATIBLE_PACKAGE),
+        "incompatible" => Ok(INCOMPATIBLE_PACKAGE),
+        value => bail!("unknown rollout provider package {value:?}"),
+    }
+}
+
+fn load_verified_packages(
+    selected_package: &str,
+    source_package: Option<&str>,
+) -> Result<VerifiedAbilityPackageSet> {
     let config = ApmConfig::load(ProfileScope::System)?;
     let enabled = config.enabled_registries();
     let registries = RegistrySet::load_for_config_evaluation(
@@ -304,25 +431,228 @@ fn load_verified_package() -> Result<VerifiedAbilityPackageSet> {
         &enabled,
         &native_platform(),
     )?;
-    let runtime = resolve_runtime(&registries, &[PACKAGE_NAME.to_string()])?;
+    let mut names = vec![selected_package.to_string()];
+    if let Some(source_package) = source_package {
+        names.push(source_package.to_string());
+    }
+    names.sort();
+    names.dedup();
+    let runtime = resolve_runtime(&registries, &names)?;
     aos_package::config_eval::ability_activation::verify_runtime_packages(&config, &runtime)
+}
+
+fn provider_adoption_authority(
+    desired: &ComposedRollout,
+    current: &ComposedRollout,
+    expected_current_planning: Sha256Digest,
+    mode: &ActivationMode,
+) -> Result<TransitionAuthorizationDocument> {
+    let ActivationMode::Qualification(method) = mode else {
+        bail!("rollout provider adoption requires an exact qualification method");
+    };
+    let method = key(method)?;
+    ensure!(
+        current.planning.snapshot_digest() == expected_current_planning,
+        "synthesized rollout source planning {} differs from retained planning {}",
+        current.planning.snapshot_digest(),
+        expected_current_planning,
+    );
+    let resources = desired
+        .desired_state
+        .resources
+        .iter()
+        .filter(|revision| revision.resource.key.as_str() == "machine")
+        .map(|revision| revision.resource.clone())
+        .collect::<Vec<_>>();
+    let [resource] = resources.as_slice() else {
+        bail!("rollout provider adoption requires one retained machine resource");
+    };
+    ensure!(
+        current
+            .desired_state
+            .resources
+            .iter()
+            .any(|revision| revision.resource == *resource),
+        "rollout provider adoption source lacks the retained machine resource"
+    );
+
+    let candidate = adoption_endpoint(desired, resource, &method)?;
+    let source = adoption_endpoint(current, resource, &method)?;
+    ensure!(
+        source.handler_provider != candidate.handler_provider,
+        "rollout provider adoption must change the terminal provider instance"
+    );
+
+    let source_plan = current.planning.checked_binding();
+    let source_binding = source_plan
+        .binding(&source.handler_binding)
+        .context("rollout adoption source binding disappeared")?;
+    let source_request = source_plan
+        .document()
+        .requests
+        .iter()
+        .find(|request| request.id == source_binding.request)
+        .context("rollout adoption source request disappeared")?;
+    let mut request = source_request.clone();
+    request.id.key = key(&format!("adopt-request-{}", source_binding.id.0.as_str()))?;
+    request.methods = vec![method.clone()];
+    let mut binding = source_binding.clone();
+    binding.id = BindingId(key(&format!(
+        "adopt-binding-{}",
+        source_binding.id.0.as_str()
+    ))?);
+    binding.request = request.id.clone();
+    binding.policy_revision = desired
+        .planning
+        .checked_binding()
+        .document()
+        .policy_revision;
+    binding.caller_grant.methods = vec![method.clone()];
+    binding.caller_grant.contributions.clear();
+    binding.caller_grant.resources.retain(|permission| {
+        permission.resource == *resource && permission.operations.contains(&method)
+    });
+    ensure!(
+        binding.caller_grant.resources.len() == 1,
+        "rollout adoption source lacks one exact machine grant"
+    );
+    binding.caller_grant.resources[0].operations = vec![method];
+    binding.provider_grant.methods.clear();
+    binding.provider_grant.contributions.clear();
+    binding.provider_grant.resources.clear();
+
+    let desired_policy_revision = desired
+        .planning
+        .checked_binding()
+        .document()
+        .policy_revision;
+    Ok(TransitionAuthorizationDocument {
+        schema: TransitionAuthorizationDocument::SCHEMA.to_string(),
+        required_features: vec![RequiredFeature::new(
+            aos_ability_model::PROVIDER_STATE_ADOPTION_V1,
+        )?],
+        desired_planning: desired.planning.snapshot_digest(),
+        current_planning: current.planning.snapshot_digest(),
+        desired_policy_revision,
+        prior_policy_revision: current
+            .planning
+            .checked_binding()
+            .document()
+            .policy_revision,
+        authorization_policy_revision: desired_policy_revision,
+        teardown_bindings: vec![TeardownBindingAuthorization {
+            source_binding: source_binding.id.clone(),
+            request,
+            binding,
+        }],
+        teardown_providers: Vec::<TeardownProviderAuthorization>::new(),
+        provider_adoptions: vec![ProviderAdoptionAuthorization {
+            resource: resource.clone(),
+            resource_interface: candidate.handler_interface.clone(),
+            source,
+            candidate,
+        }],
+    })
+}
+
+fn adoption_endpoint(
+    composed: &ComposedRollout,
+    resource: &ResourceId,
+    method: &LocalKey,
+) -> Result<ProviderAdoptionEndpoint> {
+    let plan = composed.planning.checked_binding();
+    let owner = composed
+        .package
+        .implementation
+        .providers
+        .iter()
+        .find(|implementation| {
+            implementation.interface.name.as_str() == HIGH_LEVEL_INTERFACE
+                && matches!(
+                    implementation.implementation,
+                    ImplementationKind::PureComposition { .. }
+                )
+                && implementation.state_format.is_some()
+                && implementation
+                    .owns_resource_kinds
+                    .iter()
+                    .any(|kind| kind.as_str() == "aos.ab-image-rollout-effects")
+        })
+        .context("rollout package lacks its stateful machine owner")?;
+    let bindings = plan
+        .bindings()
+        .iter()
+        .filter(|binding| {
+            binding.request.consumer == composed.provider
+                && binding.interface.name.as_str() == "aos.ab-image-rollout-effects"
+                && binding.caller_grant.methods.contains(method)
+                && binding.caller_grant.resources.iter().any(|permission| {
+                    permission.resource == *resource && permission.operations.contains(method)
+                })
+        })
+        .collect::<Vec<_>>();
+    let [binding] = bindings.as_slice() else {
+        bail!(
+            "rollout provider adoption lacks one exact {:?} binding",
+            method.as_str()
+        );
+    };
+    let handler_package = binding
+        .provider_package
+        .context("rollout adoption handler lacks its package")?;
+    let assignments = plan
+        .environment()
+        .providers
+        .iter()
+        .filter(|provider| {
+            provider.provider == binding.provider
+                && provider.interface == binding.interface
+                && provider.implementation == binding.implementation
+                && provider.state == ProviderState::Available
+        })
+        .collect::<Vec<_>>();
+    let [assignment] = assignments.as_slice() else {
+        bail!("rollout adoption handler lacks one live assignment");
+    };
+
+    Ok(ProviderAdoptionEndpoint {
+        provider: composed.provider.clone(),
+        package: composed.package.content_digest()?,
+        interface: owner.interface.clone(),
+        implementation: provider_reference(owner)?,
+        state_format: owner
+            .state_format
+            .clone()
+            .context("rollout adoption owner lost its state format")?,
+        handler_binding: binding.id.clone(),
+        handler_method: method.clone(),
+        handler_provider: binding.provider.clone(),
+        handler_incarnation: assignment
+            .incarnation
+            .clone()
+            .context("rollout adoption assignment has no incarnation")?,
+        handler_interface: binding.interface.clone(),
+        handler_implementation: binding.implementation.clone(),
+        handler_package,
+    })
 }
 
 impl RolloutFixture {
     fn new(
         verified: &VerifiedAbilityPackageSet,
+        selected_package: &str,
         mode: &ActivationMode,
         provider_incarnation_revision: Option<&str>,
+        alternate_incarnation_revision: Option<&str>,
     ) -> Result<Self> {
-        let packages = verified.iter().collect::<Vec<_>>();
-        let [verified_package] = packages.as_slice() else {
-            bail!(
-                "rollout fixture requires exactly one authenticated package, found {}",
-                packages.len()
-            );
-        };
+        let verified_package = verified
+            .iter()
+            .find(|package| package.package().package.name.as_str() == selected_package)
+            .with_context(|| {
+                format!("authenticated rollout package {selected_package:?} is absent")
+            })?;
         ensure!(
-            verified_package.package().package.name.as_str() == PACKAGE_NAME,
+            verified_package.package().package.name.as_str() == selected_package,
             "rollout fixture authenticated an unexpected package"
         );
         let package = verified_package.package().clone();
@@ -335,6 +665,8 @@ impl RolloutFixture {
         let supported_features = BTreeSet::from([
             RequiredFeature::new("abilities-v1")?,
             RequiredFeature::new(AB_IMAGE_ROLLOUT_FEATURE)?,
+            RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)?,
+            RequiredFeature::new(aos_ability_model::PROVIDER_STATE_ADOPTION_V1)?,
         ]);
         let context = ValidationContext::new(supported_features, [high_document, effects_document])
             .context("validating rollout fixture interface catalog")?;
@@ -379,29 +711,42 @@ impl RolloutFixture {
             stage: ExecutionStage::Host,
         };
         let provider = instance(&environment_id, "image-rollout")?;
+        let selected_terminal_provider =
+            terminal_provider(&environment_id, provider_incarnation_revision)?;
         let policy_revision = RevisionId(digest(40));
-        let mut providers = vec![
-            ProviderInventory {
-                provider: provider.clone(),
-                interface: high_interface.clone(),
-                implementation: high_implementation.clone(),
-                state: ProviderState::Declared,
-                incarnation: None,
-                guarantees: Vec::new(),
-            },
-            ProviderInventory {
-                provider: provider.clone(),
+        let mut providers = vec![ProviderInventory {
+            provider: provider.clone(),
+            interface: high_interface.clone(),
+            implementation: high_implementation.clone(),
+            state: ProviderState::Declared,
+            incarnation: None,
+            guarantees: Vec::new(),
+        }];
+        for revision in [
+            provider_incarnation_revision,
+            alternate_incarnation_revision,
+        ] {
+            let assignment_provider = terminal_provider(&environment_id, revision)?;
+            if providers
+                .iter()
+                .any(|assignment| assignment.provider == assignment_provider)
+            {
+                continue;
+            }
+            providers.push(ProviderInventory {
+                provider: assignment_provider,
                 interface: effects_interface.clone(),
                 implementation: effects_implementation.clone(),
                 state: ProviderState::Available,
-                incarnation: Some(provider_incarnation(
-                    "rollout-terminal-v1",
-                    provider_incarnation_revision,
-                )?),
+                incarnation: Some(provider_incarnation("rollout-terminal-v1", revision)?),
                 guarantees: Vec::new(),
-            },
-        ];
-        providers.sort_by(|left, right| left.interface.cmp(&right.interface));
+            });
+        }
+        providers.sort_by(|left, right| {
+            left.interface
+                .cmp(&right.interface)
+                .then_with(|| left.provider.cmp(&right.provider))
+        });
         let environment = EnvironmentDocument {
             schema: EnvironmentDocument::SCHEMA.to_string(),
             required_features: vec![RequiredFeature::new(AB_IMAGE_ROLLOUT_FEATURE)?],
@@ -433,6 +778,7 @@ impl RolloutFixture {
             package,
             package_digest,
             provider,
+            terminal_provider: selected_terminal_provider,
             high_interface,
             high_implementation,
             effects_interface,
@@ -458,12 +804,31 @@ impl RolloutFixture {
                 &mut self.evaluator,
             ) {
                 Ok(outcome) => {
+                    let snapshot = PlanningSnapshot::from_outcome(&outcome)
+                        .context("constructing rollout planning snapshot")?;
+                    let mut authenticated_policies = policies.clone();
+                    authenticated_policies.sort_by_key(|policy| policy.desired_state);
+                    let planning = snapshot
+                        .verify_structure(
+                            &RecursiveComposer::new(&self.context),
+                            PlanningReplayInputs {
+                                expected_digest: snapshot.digest()?,
+                                authenticated_policies: &authenticated_policies,
+                                seed: seed.clone(),
+                                environment: self.environment.clone(),
+                                packages: vec![self.package.clone()],
+                            },
+                        )
+                        .context("verifying rollout planning snapshot")?;
                     return Ok(ComposedRollout {
                         seed,
                         environment: self.environment,
                         desired_state: outcome.desired_state,
                         policies,
                         bindings: outcome.resolution.checked.bindings().to_vec(),
+                        package: self.package,
+                        provider: self.provider,
+                        planning,
                     });
                 }
                 Err(CompositionError::PolicyRequired { desired_state, .. }) => {
@@ -558,7 +923,7 @@ impl RolloutFixture {
                     key: binding_key(&request.id)?,
                     request: request.id.clone(),
                     interface: self.effects_interface.clone(),
-                    provider: self.provider.clone(),
+                    provider: self.terminal_provider.clone(),
                     provider_package: self.package_digest,
                     implementation: self.effects_implementation.clone(),
                     caller_grant: AuthorityGrant {
@@ -568,7 +933,7 @@ impl RolloutFixture {
                         resources: resources.clone(),
                     },
                     provider_grant: AuthorityGrant {
-                        principal: self.provider.clone(),
+                        principal: self.terminal_provider.clone(),
                         methods: Vec::new(),
                         contributions: Vec::new(),
                         resources,
@@ -746,6 +1111,25 @@ fn instance(environment: &EnvironmentId, name: &str) -> Result<InstanceId> {
         environment: environment.clone(),
         key: key(name)?,
     })
+}
+
+fn terminal_provider(environment: &EnvironmentId, revision: Option<&str>) -> Result<InstanceId> {
+    let name = revision
+        .map(|revision| format!("image-rollout-terminal-{revision}"))
+        .unwrap_or_else(|| "image-rollout-terminal".to_string());
+    instance(environment, &name)
+}
+
+fn validate_provider_revision(revision: &str) -> Result<()> {
+    ensure!(
+        !revision.is_empty()
+            && revision.len() <= 96
+            && revision
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte)),
+        "provider incarnation revision is outside the safe fixture subset"
+    );
+    Ok(())
 }
 
 fn provider_incarnation(

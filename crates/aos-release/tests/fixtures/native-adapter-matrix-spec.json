@@ -50,42 +50,6 @@
         "reason": "non-persistent-lifetime"
       },
       {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/drain/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/hold/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/observe-boot/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/observe-health/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/prepare/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/retain/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/retire/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/select/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
-        "cell_id": "image-rollout/aos.ab-image-rollout-effects/abi-1/withdraw/adopt-compatible-state",
-        "reason": "missing-authenticated-state-format"
-      },
-      {
         "cell_id": "kubernetes-object/aos.kubernetes-object-effects/abi-1/apply/adopt-compatible-state",
         "reason": "non-persistent-lifetime"
       },
@@ -182,7 +146,7 @@
         "reason": "non-persistent-lifetime"
       }
     ],
-    "required_production_vm_cells": 1355,
+    "required_production_vm_cells": 1364,
     "schema": "aos.qualification.native-adapter-matrix-applicability/v1"
   },
   "cells": [
@@ -46911,7 +46875,7 @@
     "method_count": 50,
     "scenario_count": 28,
     "schema": "aos.qualification.native-adapter-subject/v1",
-    "surface_digest": "sha256:aa02914f3ebc3a5f38ee125ef469865860bf00ea96ce23d2155b9b9030068f58"
+    "surface_digest": "sha256:53cc3bf65b65ecf3def74d0d9955c4a8812b8bd85aba4dd1055c307e2fb28ffb"
   },
   "surface": {
     "adapters": [
@@ -47102,7 +47066,7 @@
         ],
         "provider_contract": {
           "resource_lifetime": "persistent",
-          "state_format": null
+          "state_format": "sha256:ab3d033a412b9b81a99491c719eb8ff6d564080701f45a20ccd723c1133fb8e8"
         },
         "scope": "host-machine"
       },

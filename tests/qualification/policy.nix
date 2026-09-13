@@ -394,9 +394,9 @@ in
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
   assert nativeAdapterMatrix.cell_count == 1400;
-  assert nativeAdapterMatrix.required_production_vm_cells == 1355;
-  assert builtins.length nativeAdapterMatrix.applicable_cells == 1355;
-  assert builtins.length nativeAdapterMatrix.inapplicable_cells == 45;
+  assert nativeAdapterMatrix.required_production_vm_cells == 1364;
+  assert builtins.length nativeAdapterMatrix.applicable_cells == 1364;
+  assert builtins.length nativeAdapterMatrix.inapplicable_cells == 36;
   assert builtins.length applicableNativeIds
   == builtins.length (lib.unique applicableNativeIds);
   assert builtins.length inapplicableNativeIds
@@ -406,9 +406,9 @@ in
   assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") nativeAdapterMatrix.inapplicable_cells)
   == 36;
   assert builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") nativeAdapterMatrix.inapplicable_cells)
-  == 9;
+  == 0;
   assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
-  assert nativeAdapterMatrix.applicability_digest == "sha256:12615a636200a1b6fc6b001333631b858e1c6fd81a5178f11ce9dbd9947fc517";
+  assert nativeAdapterMatrix.applicability_digest == "sha256:283bd3c53cba28d8d119199129f251799d0f0545b96c68256a84e9d6c2f19b23";
   assert (providerContract "postgresql")
   == {
     resource_lifetime = "persistent";
@@ -419,10 +419,11 @@ in
   assert (providerContract "image-rollout")
   == {
     resource_lifetime = "persistent";
-    state_format = null;
+    state_format = rolloutPackageContract.abilityPackage.exports.rollout.export.state_format;
   };
   assert rolloutPackageContract.abilityPackage.exports.rollout.export.outputs.machine.lifetime == "persistent";
-  assert (rolloutPackageContract.abilityPackage.exports.rollout.export.state_format or null) == null;
+  assert rolloutPackageContract.abilityPackage.exports.rollout.export.state_format
+  == "sha256:ab3d033a412b9b81a99491c719eb8ff6d564080701f45a20ccd723c1133fb8e8";
   assert builtins.length nativeRoleRevocationCells == 600;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
   assert builtins.length nativeFailureControlCells == 156;
@@ -474,15 +475,16 @@ in
     surface =
       nativeAdapterSurface
       // {
-        adapters = [
-          ((builtins.head nativeAdapterSurface.adapters)
-            // {
-              provider_contract =
-                (builtins.head nativeAdapterSurface.adapters).provider_contract
-                // {resource_lifetime = "persistent";};
-            })
-        ]
-        ++ builtins.tail nativeAdapterSurface.adapters;
+        adapters =
+          [
+            ((builtins.head nativeAdapterSurface.adapters)
+              // {
+                provider_contract =
+                  (builtins.head nativeAdapterSurface.adapters).provider_contract
+                  // {resource_lifetime = "persistent";};
+              })
+          ]
+          ++ builtins.tail nativeAdapterSurface.adapters;
       };
   };
   assert rejectsNativeMatrix {

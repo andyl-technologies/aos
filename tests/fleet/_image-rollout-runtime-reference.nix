@@ -13,13 +13,30 @@
     inherit transitionTransform;
     inherit qualificationCell;
   };
+  incompatiblePackage = import ../abilities/reference-image-rollout/package.nix {
+    inherit lib;
+    inherit (pkgs) mkDerivation;
+    rolloutRuntime = pkgs.aos.packageRuntime;
+    inherit transitionTransform qualificationCell;
+    packageName = "ability-reference-image-rollout-incompatible";
+    stateFormatOverride = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+  };
   orderedPackages = [
     {
       name = "ability-reference-image-rollout";
       inherit package;
     }
+    {
+      name = "ability-reference-image-rollout-incompatible";
+      package = incompatiblePackage;
+    }
   ];
-  packageRoots = [package package.abilities];
+  packageRoots = [
+    package
+    package.abilities
+    incompatiblePackage
+    incompatiblePackage.abilities
+  ];
   drainHook = pkgs.writeShellScriptBin "aos-qualified-rollout-drain-hook" ''
     set -eu
 
@@ -56,6 +73,12 @@
       abilities = package.abilities;
       originalRuntime = pkgs.aos.packageRuntime;
     }
+    {
+      name = "ability-reference-image-rollout-incompatible";
+      primary = incompatiblePackage;
+      abilities = incompatiblePackage.abilities;
+      originalRuntime = pkgs.aos.packageRuntime;
+    }
   ];
   extraClosures =
     packageRoots
@@ -76,6 +99,7 @@ in {
     healthHook
     orderedPackages
     package
+    incompatiblePackage
     packageRoots
     qualificationCandidateRuntimeCompanions
     qualificationSetupBody
@@ -186,7 +210,15 @@ in {
 
 
       def generate_rollout_activation(
-          request, mode, label, provider_incarnation_revision=None
+          request,
+          mode,
+          label,
+          provider_incarnation_revision=None,
+          alternate_provider_incarnation_revision=None,
+          provider_package="compatible",
+          provider_adoption_source_package=None,
+          provider_adoption_from=None,
+          provider_adoption_current_planning=None,
       ):
           root = f"/var/lib/aos-test/rollout-activation-{label}"
           output = f"{root}/output"
@@ -201,6 +233,27 @@ in {
               revision_option = (
                   " --provider-incarnation-revision "
                   + shlex.quote(provider_incarnation_revision)
+              )
+          alternate_option = ""
+          if alternate_provider_incarnation_revision is not None:
+              alternate_option = (
+                  " --alternate-provider-incarnation-revision "
+                  + shlex.quote(alternate_provider_incarnation_revision)
+              )
+          adoption_options = ""
+          if provider_adoption_from is not None:
+              assert provider_adoption_current_planning is not None
+              adoption_options = (
+                  " --provider-adoption-from "
+                  + shlex.quote(provider_adoption_from)
+                  + " --provider-adoption-current-planning "
+                  + shlex.quote(provider_adoption_current_planning)
+              )
+          package_options = " --provider-package " + shlex.quote(provider_package)
+          if provider_adoption_source_package is not None:
+              package_options += (
+                  " --provider-adoption-source-package "
+                  + shlex.quote(provider_adoption_source_package)
               )
           target.succeed(
               f"{COREUTILS}/rm -rf {shlex.quote(root)}; "
@@ -217,7 +270,7 @@ in {
               f"{FIXTURE} rollout-activation {shlex.quote(output)} "
               f"{shlex.quote(request_path)} --operator-authority-output "
               f"{shlex.quote(authority)} --mode {shlex.quote(mode)}"
-              f"{revision_option}",
+              f"{revision_option}{alternate_option}{package_options}{adoption_options}",
               timeout=1200,
           )
           activation = json.loads(target.succeed(
@@ -237,11 +290,16 @@ in {
           return activation
 
 
-      def write_rollout_host(path, activation, extra_module):
+      def write_rollout_host(path, activation, extra_module, selected_packages=None):
+          if selected_packages is None:
+              selected_packages = ["ability-reference-image-rollout"]
           activation_json = json.dumps(activation, separators=(",", ":"))
+          packages_json = " ".join(json.dumps(name) for name in selected_packages)
           module = (
               "{ lib, ... }: {\n"
-              "  aos.apm.desiredPackages = [ \"aos-test-agent\" \"ability-reference-image-rollout\" ];\n"
+              "  aos.apm.desiredPackages = [ \"aos-test-agent\" "
+              + packages_json
+              + " ];\n"
               "  aos.abilities.activationInput = builtins.fromJSON "
               + json.dumps(activation_json)
               + ";\n"

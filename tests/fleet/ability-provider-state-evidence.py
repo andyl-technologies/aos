@@ -19,6 +19,7 @@ EVIDENCE_SCHEMA = "aos.qualification.native-adapter-provider-state-evidence/v1"
 TRANSFER_CONTRACT_SCHEMA = "aos.ability.provider-state-transfer-contract/v1"
 RETAINED_SCENARIO = "activate-retained-target"
 UNSUPPORTED_SCENARIO = "reject-unsupported-transfer"
+COMPATIBLE_SCENARIO = "adopt-compatible-state"
 MAX_DOCUMENT_BYTES = 64 * 1024 * 1024
 MAX_RETAINED_ENTRIES = 65_536
 
@@ -87,6 +88,52 @@ class UnsupportedTransferObservation:
     foreign_after: Any
     dependent_operation: dict[str, Any]
     dependent_timeline: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class CompatibleAdoptionObservation:
+    """Carries facts from one completed compatible provider adoption."""
+
+    source_generation: int
+    candidate_generation: int
+    transaction: str
+    operation_key: dict[str, Any]
+    journal_before_loss: str
+    timeline: list[dict[str, Any]]
+    boundary_timeline: list[dict[str, Any]]
+    source_authority: dict[str, Any]
+    candidate_authority: dict[str, Any]
+    ledger_before: dict[str, Any]
+    ledger_unsettled: dict[str, Any]
+    ledger_after: dict[str, Any]
+    live_before: Any
+    live_unsettled: Any
+    live_after: Any
+    foreign_before: Any
+    foreign_unsettled: Any
+    foreign_after: Any
+    dependent_operation: dict[str, Any]
+    dependent_after: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class IncompatibleTransferObservation:
+    """Carries facts from one rejected incompatible provider replacement."""
+
+    source_generation: int
+    generation_after: int
+    transaction: str
+    operation_key: dict[str, Any]
+    activation_error: str
+    source_authority: dict[str, Any]
+    candidate_policy: dict[str, Any]
+    ledger_before: dict[str, Any]
+    ledger_after: dict[str, Any]
+    live_before: Any
+    live_after: Any
+    foreign_before: Any
+    foreign_after: Any
+    dependent_operation: dict[str, Any]
 
 
 class ProviderStateEvidence:
@@ -350,6 +397,219 @@ class ProviderStateEvidence:
             },
         )
 
+    def retain_compatible_adoption(
+        self,
+        cell_id: str,
+        plan_bundle: bytes,
+        transfer_contract: bytes,
+        observation: CompatibleAdoptionObservation,
+    ) -> None:
+        """Retains one completed transfer between format-compatible providers."""
+
+        cell, bundle, operation, operation_identity = self._route(
+            cell_id, plan_bundle, observation.operation_key, COMPATIBLE_SCENARIO
+        )
+        contract = _canonical_document(transfer_contract, "transfer contract")
+        owner = contract.get("disposition", {}).get("owner")
+        if (
+            contract.get("schema") != TRANSFER_CONTRACT_SCHEMA
+            or contract.get("plan") != bundle["plan"]
+            or contract.get("operation") != operation
+            or contract.get("disposition", {}).get("status") != "supported"
+            or not isinstance(owner, dict)
+        ):
+            raise RuntimeError("production transfer contract does not support the candidate route")
+        provider_contract = self._contracts[cell["adapter"]]
+        if (
+            provider_contract["resource_lifetime"] != "persistent"
+            or provider_contract["state_format"] is None
+            or owner.get("state_format", {}).get("descriptor")
+            != provider_contract["state_format"]
+        ):
+            raise RuntimeError("supported transfer differs from the matrix provider contract")
+
+        _ordered_generations(
+            observation.source_generation, observation.candidate_generation
+        )
+        if observation.foreign_before != observation.foreign_unsettled:
+            raise RuntimeError("compatible adoption changed a foreign resource while unsettled")
+        if observation.foreign_before != observation.foreign_after:
+            raise RuntimeError("compatible adoption changed a foreign resource")
+        timeline_kinds = [event.get("kind") for event in observation.timeline]
+        if "effect-started" not in timeline_kinds or "effect-completed" not in timeline_kinds:
+            raise RuntimeError("compatible adoption did not complete its exact method")
+        if "effect-completed" not in [
+            event.get("kind") for event in observation.dependent_after
+        ]:
+            raise RuntimeError("compatible adoption did not settle its successor")
+
+        source_authority = _current_authority(
+            observation.source_authority, expected_plan=None, expected_transaction=None
+        )
+        candidate_authority = _current_authority(
+            observation.candidate_authority, bundle["plan"], observation.transaction
+        )
+        _fresh_receiving_authority(source_authority, candidate_authority)
+        source_binding, source_assignment = _unique_authorized_route(
+            source_authority, operation
+        )
+        candidate_binding, candidate_assignment = _exact_authorized_route(
+            candidate_authority, operation
+        )
+        if source_assignment["incarnation"] == candidate_assignment["incarnation"]:
+            raise RuntimeError("compatible adoption reused the source incarnation")
+        dependency_edge = _exact_dependent(
+            bundle, operation_identity, observation.dependent_operation
+        )
+
+        adoptions = bundle.get("transition_authority", {}).get(
+            "provider_adoptions", []
+        )
+        resource = operation["target"]["resource"]
+        matching_adoptions = [
+            adoption for adoption in adoptions if adoption.get("resource") == resource
+        ]
+        if len(matching_adoptions) != 1:
+            raise RuntimeError("compatible transfer lacks one exact adoption authorization")
+        adoption = matching_adoptions[0]
+        source_format = adoption.get("source", {}).get("state_format")
+        candidate_format = adoption.get("candidate", {}).get("state_format")
+        if (
+            source_format != owner.get("state_format")
+            or candidate_format != owner.get("state_format")
+            or source_format.get("descriptor") != provider_contract["state_format"]
+        ):
+            raise RuntimeError("compatible adoption endpoints do not share the declared format")
+
+        owner_before = _exact_ledger_claim(observation.ledger_before, resource)
+        owner_unsettled = _exact_ledger_claim(observation.ledger_unsettled, resource)
+        owner_after = _exact_ledger_claim(observation.ledger_after, resource)
+        _ledger_claim_matches_route(owner_before, source_binding, source_assignment)
+        _ledger_claim_matches_route(
+            owner_unsettled, candidate_binding, candidate_assignment
+        )
+        _ledger_claim_matches_route(owner_after, candidate_binding, candidate_assignment)
+        if observation.live_before is None or observation.live_after is None:
+            raise RuntimeError("compatible adoption lacks provider state observations")
+
+        subject = _subject(
+            cell,
+            bundle,
+            plan_bundle,
+            operation_identity,
+            observation.dependent_operation,
+            dependency_edge,
+            candidate_binding["implementation"],
+            observation.transaction,
+            {
+                "source": observation.source_generation,
+                "candidate": observation.candidate_generation,
+            },
+            transfer_contract_digest=sha256_bytes(transfer_contract),
+        )
+        evidence = {
+            "schema": EVIDENCE_SCHEMA,
+            "scenario": COMPATIBLE_SCENARIO,
+            "plan-bundle": bundle,
+            "transfer-contract": contract,
+            "journal-before-loss": observation.journal_before_loss,
+            "timeline": observation.timeline,
+            "boundary-timeline": observation.boundary_timeline,
+            "source-authority": source_authority,
+            "candidate-authority": candidate_authority,
+            "ledger-before": observation.ledger_before,
+            "ledger-unsettled": observation.ledger_unsettled,
+            "ledger-after": observation.ledger_after,
+            "live-before": observation.live_before,
+            "live-unsettled": observation.live_unsettled,
+            "live-after": observation.live_after,
+            "foreign-before": observation.foreign_before,
+            "foreign-unsettled": observation.foreign_unsettled,
+            "foreign-after": observation.foreign_after,
+            "dependent-operation": observation.dependent_operation,
+            "dependent-after": observation.dependent_after,
+        }
+        disposition = "compatible-state-adopted"
+        self._store(
+            cell_id,
+            subject,
+            evidence,
+            {
+                "durable-attempt-state-classified": _probe(
+                    "journal-timeline",
+                    disposition,
+                    {
+                        "transaction": observation.transaction,
+                        "plan": bundle["plan"],
+                        "operation": operation_identity,
+                        "journal-before-loss": observation.journal_before_loss,
+                        "timeline": observation.timeline,
+                        "boundary-timeline": observation.boundary_timeline,
+                        "terminal": "complete",
+                    },
+                ),
+                "at-most-one-resource-owner": _probe(
+                    "ownership-inventory",
+                    disposition,
+                    {
+                        "resource": resource,
+                        "ledger-before": observation.ledger_before,
+                        "ledger-unsettled": observation.ledger_unsettled,
+                        "ledger-after": observation.ledger_after,
+                    },
+                ),
+                "foreign-resources-unchanged": _probe(
+                    "foreign-resource-snapshot",
+                    disposition,
+                    {
+                        "resource": resource,
+                        "snapshot-before": observation.foreign_before,
+                        "snapshot-unsettled": observation.foreign_unsettled,
+                        "snapshot-after": observation.foreign_after,
+                        "unchanged": True,
+                    },
+                ),
+                "fresh-receiving-authority": _probe(
+                    "authority-incarnation",
+                    disposition,
+                    {
+                        "source-authority": sha256_bytes(canonical(source_authority)),
+                        "candidate-authority": sha256_bytes(
+                            canonical(candidate_authority)
+                        ),
+                        "predecessor-incarnation": source_assignment["incarnation"],
+                        "candidate-incarnation": candidate_assignment["incarnation"],
+                        "authority-sequence-before": source_authority["sequence"],
+                        "authority-sequence-after": candidate_authority["sequence"],
+                        "fresh": True,
+                    },
+                ),
+                "compatible-state-adopted": _probe(
+                    "state-adoption",
+                    disposition,
+                    {
+                        "resource": resource,
+                        "contract": contract,
+                        "source-state-format": source_format,
+                        "candidate-state-format": candidate_format,
+                        "live-before": observation.live_before,
+                        "live-after": observation.live_after,
+                        "adopted": True,
+                    },
+                ),
+                "exactly-one-resource-owner": _probe(
+                    "exact-ownership-inventory",
+                    disposition,
+                    {
+                        "resource": resource,
+                        "candidate-owner": owner_after,
+                        "owners": [owner_after],
+                        "authorized-route-count": 1,
+                    },
+                ),
+            },
+        )
+
     def retain_unsupported_transfer(
         self,
         cell_id: str,
@@ -581,6 +841,200 @@ class ProviderStateEvidence:
                         "owners": [predecessor_owner],
                         "ledger-owners-before": ledger_owners_before,
                         "ledger-owners-after": ledger_owners_after,
+                        "behavior-before": observation.live_before,
+                        "behavior-after": observation.live_after,
+                    },
+                ),
+            },
+        )
+
+    def retain_incompatible_transfer(
+        self,
+        cell_id: str,
+        plan_bundle: bytes,
+        observation: IncompatibleTransferObservation,
+    ) -> None:
+        """Retains an authenticated format mismatch rejected before effects."""
+
+        cell, bundle, operation, operation_identity = self._route(
+            cell_id, plan_bundle, observation.operation_key, UNSUPPORTED_SCENARIO
+        )
+        if observation.generation_after != observation.source_generation:
+            raise RuntimeError("incompatible transfer changed the active generation")
+        if "state-format descriptors are incompatible" not in observation.activation_error:
+            raise RuntimeError("incompatible transfer failed for another reason")
+        _same_foreign_observation(
+            observation.foreign_before,
+            observation.foreign_before,
+            observation.foreign_after,
+        )
+        if observation.live_before != observation.live_after:
+            raise RuntimeError("incompatible transfer changed live provider state")
+
+        source_authority = _current_authority(
+            observation.source_authority, bundle["plan"], observation.transaction
+        )
+        source_binding, source_assignment = _exact_authorized_route(
+            source_authority, operation
+        )
+        source_owner = _exact_ledger_claim(
+            observation.ledger_before, operation["target"]["resource"]
+        )
+        owner_after = _exact_ledger_claim(
+            observation.ledger_after, operation["target"]["resource"]
+        )
+        _ledger_claim_matches_route(source_owner, source_binding, source_assignment)
+        if owner_after != source_owner:
+            raise RuntimeError("incompatible transfer changed the sole owner")
+
+        policy = observation.candidate_policy
+        authority = policy.get("transition_authority")
+        if (
+            policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+            or not isinstance(authority, dict)
+            or authority.get("current_planning")
+            != bundle.get("desired", {}).get("snapshot_digest")
+        ):
+            raise RuntimeError("incompatible transfer lacks transition authority")
+        adoptions = authority.get("provider_adoptions", [])
+        resource = operation["target"]["resource"]
+        matches = [
+            adoption for adoption in adoptions if adoption.get("resource") == resource
+        ]
+        if len(matches) != 1:
+            raise RuntimeError("incompatible transfer lacks one exact adoption")
+        adoption = matches[0]
+        source = adoption.get("source", {})
+        candidate = adoption.get("candidate", {})
+        source_format = source.get("state_format")
+        candidate_format = candidate.get("state_format")
+        if (
+            source_format is None
+            or candidate_format is None
+            or source_format.get("descriptor") == candidate_format.get("descriptor")
+            or source.get("handler_method") != operation["method"]
+            or candidate.get("handler_method") != operation["method"]
+            or source.get("handler_incarnation")
+            == candidate.get("handler_incarnation")
+        ):
+            raise RuntimeError("incompatible transfer endpoints are not exact")
+
+        dependency_edge = _exact_dependent(
+            bundle, operation_identity, observation.dependent_operation
+        )
+        authority_digest = sha256_bytes(canonical(authority))
+        subject = _subject(
+            cell,
+            bundle,
+            plan_bundle,
+            operation_identity,
+            observation.dependent_operation,
+            dependency_edge,
+            source_binding["implementation"],
+            observation.transaction,
+            {
+                "source": observation.source_generation,
+                "candidate": observation.generation_after,
+            },
+            transfer_contract_digest=authority_digest,
+        )
+        evidence = {
+            "schema": EVIDENCE_SCHEMA,
+            "scenario": UNSUPPORTED_SCENARIO,
+            "rejection-kind": "incompatible-authenticated-state-format",
+            "plan-bundle": bundle,
+            "candidate-policy": policy,
+            "activation-error": observation.activation_error,
+            "source-authority": source_authority,
+            "ledger-before": observation.ledger_before,
+            "ledger-after": observation.ledger_after,
+            "live-before": observation.live_before,
+            "live-after": observation.live_after,
+            "foreign-before": observation.foreign_before,
+            "foreign-after": observation.foreign_after,
+            "boundary-timeline": [],
+            "dependent-operation": observation.dependent_operation,
+            "dependent-timeline": [],
+        }
+        disposition = "transfer-rejected-before-effect"
+        rejection_facts = {
+            "candidate-operation": operation_identity,
+            "source-state-format": source_format,
+            "candidate-state-format": candidate_format,
+            "candidate-effect-boundaries": [],
+            "candidate-effect-count": 0,
+            "rejected-before-effect": True,
+        }
+        self._store(
+            cell_id,
+            subject,
+            evidence,
+            {
+                "durable-attempt-state-classified": _probe(
+                    "journal-timeline",
+                    disposition,
+                    {
+                        "transaction": observation.transaction,
+                        "plan": bundle["plan"],
+                        "operation": operation_identity,
+                        "activation-error": sha256_bytes(
+                            observation.activation_error.encode()
+                        ),
+                        "terminal": "rejected-before-effect",
+                    },
+                ),
+                "at-most-one-resource-owner": _probe(
+                    "ownership-inventory",
+                    disposition,
+                    {
+                        "resource": resource,
+                        "ledger-before": observation.ledger_before,
+                        "ledger-after": observation.ledger_after,
+                    },
+                ),
+                "foreign-resources-unchanged": _probe(
+                    "foreign-resource-snapshot",
+                    disposition,
+                    {
+                        "resource": resource,
+                        "snapshot-before": observation.foreign_before,
+                        "snapshot-after": observation.foreign_after,
+                        "unchanged": True,
+                    },
+                ),
+                "dependent-effects-not-executed": _probe(
+                    "dependency-barrier",
+                    disposition,
+                    {
+                        "operation": operation_identity,
+                        "dependent-operation": observation.dependent_operation,
+                        "dependent-timeline": [],
+                        "blocked": True,
+                    },
+                ),
+                "fresh-receiving-authority": _probe(
+                    "authority-incarnation",
+                    disposition,
+                    {
+                        "source-authority": sha256_bytes(canonical(source_authority)),
+                        "candidate-authority": authority_digest,
+                        "predecessor-incarnation": source["handler_incarnation"],
+                        "candidate-incarnation": candidate["handler_incarnation"],
+                        "fresh": True,
+                    },
+                ),
+                "transfer-rejected-before-candidate-effect": _probe(
+                    "transfer-rejection", disposition, rejection_facts
+                ),
+                "predecessor-remains-sole-owner": _probe(
+                    "predecessor-ownership",
+                    disposition,
+                    {
+                        "resource": resource,
+                        "predecessor-owner": source_owner,
+                        "owners": [source_owner],
+                        "ledger-owners-before": [source_owner],
+                        "ledger-owners-after": [owner_after],
                         "behavior-before": observation.live_before,
                         "behavior-after": observation.live_after,
                     },

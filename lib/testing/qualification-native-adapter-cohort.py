@@ -673,6 +673,12 @@ def build_cells(
         if _cell_scenario(cell) == "cancel-unsettled-attempt"
         and cell.get("recovery", {}).get("cancel") is not None
     ]
+    rollout_compatible_state_cells = [
+        cell["id"]
+        for cell in spec["cells"]
+        if cell["adapter"] == "image-rollout"
+        and _cell_scenario(cell) == "adopt-compatible-state"
+    ]
     if has_runtime_audit:
         runtime_failure_cells = [
             cell["id"]
@@ -698,12 +704,14 @@ def build_cells(
             *POSTGRESQL_CELL_IDS,
             *effect_boundary_cells,
             *supported_cancellation_cells,
+            *rollout_compatible_state_cells,
         ]
     else:
         allowed_cells = [
             *allowed_cells,
             *effect_boundary_cells,
             *supported_cancellation_cells,
+            *rollout_compatible_state_cells,
         ]
     if has_interruption_audit:
         before_acquisition_cells = [
@@ -3587,6 +3595,10 @@ def _validate_provider_state_subject(
 
     evidence = _canonical_evidence(evidence_bytes, "provider-state flight")
     scenario = _cell_scenario(cell)
+    incompatible_rejection = (
+        evidence.get("rejection-kind")
+        == "incompatible-authenticated-state-format"
+    )
     common_evidence_fields = {
         "schema",
         "scenario",
@@ -3630,14 +3642,49 @@ def _validate_provider_state_subject(
             "provider-implementation",
             "generations",
         }
-    elif scenario == "reject-unsupported-transfer":
+    elif scenario == "adopt-compatible-state":
         expected_evidence_fields = common_evidence_fields | {
             "transfer-contract",
-            "journal-at-rejection",
-            "timeline-at-rejection",
+            "journal-before-loss",
+            "timeline",
             "candidate-authority",
-            "dependent-timeline",
+            "ledger-unsettled",
+            "live-unsettled",
+            "foreign-unsettled",
+            "dependent-after",
         }
+        expected_subject_fields = {
+            "schema",
+            "cell-id",
+            "cell-digest",
+            "plan",
+            "plan-bundle-digest",
+            "evidence-digest",
+            "transaction",
+            "adapter",
+            "operation",
+            "dependent-operation",
+            "dependency-edge",
+            "provider-implementation",
+            "generations",
+            "transfer-contract-digest",
+        }
+    elif scenario == "reject-unsupported-transfer":
+        if incompatible_rejection:
+            expected_evidence_fields = common_evidence_fields | {
+                "rejection-kind",
+                "candidate-policy",
+                "activation-error",
+                "dependent-timeline",
+            }
+        else:
+            expected_evidence_fields = common_evidence_fields | {
+                "transfer-contract",
+                "journal-at-rejection",
+                "timeline-at-rejection",
+                "candidate-authority",
+                "dependent-timeline",
+            }
         expected_subject_fields = {
             "schema",
             "cell-id",
@@ -3787,6 +3834,111 @@ def _validate_provider_state_subject(
             or evidence["foreign-before"] != evidence["foreign-after"]
         ):
             raise RuntimeError("retained-target authority or ownership is not monotonic")
+    elif scenario == "adopt-compatible-state":
+        candidate = _provider_state_authority(evidence["candidate-authority"])
+        candidate_assignment = _provider_state_assignment(
+            candidate, operation_document
+        )
+        contract = evidence["transfer-contract"]
+        owner = contract.get("disposition", {}).get("owner", {})
+        state_format = provider_contract.get("state_format")
+        adoptions = bundle.get("transition_authority", {}).get(
+            "provider_adoptions", []
+        )
+        matching_adoptions = [
+            adoption
+            for adoption in adoptions
+            if adoption.get("resource") == operation["target"]["resource"]
+        ]
+        if len(matching_adoptions) != 1:
+            raise RuntimeError("compatible adoption lacks one exact authorization")
+        adoption = matching_adoptions[0]
+        source_format = adoption.get("source", {}).get("state_format")
+        candidate_format = adoption.get("candidate", {}).get("state_format")
+        owner_before = _provider_state_ledger_claim(
+            evidence["ledger-before"], operation["target"]["resource"]
+        )
+        owner_unsettled = _provider_state_ledger_claim(
+            evidence["ledger-unsettled"], operation["target"]["resource"]
+        )
+        owner_after = _provider_state_ledger_claim(
+            evidence["ledger-after"], operation["target"]["resource"]
+        )
+        if (
+            set(generations) != {"source", "candidate"}
+            or generations["source"] <= 0
+            or generations["candidate"] <= generations["source"]
+            or source["sequence"] >= candidate["sequence"]
+            or source_assignment["incarnation"]
+            == candidate_assignment["incarnation"]
+            or expected_lifetime != "persistent"
+            or state_format is None
+            or contract.get("schema")
+            != PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA
+            or contract.get("plan") != bundle.get("plan")
+            or contract.get("operation") != operation_document
+            or contract.get("disposition", {}).get("status") != "supported"
+            or owner.get("state_format", {}).get("descriptor") != state_format
+            or source_format != owner.get("state_format")
+            or candidate_format != owner.get("state_format")
+            or subject["transfer-contract-digest"] != sha256(contract)
+            or _provider_state_claim_core(owner_before)
+            == _provider_state_claim_core(owner_after)
+            or _provider_state_claim_core(owner_unsettled)
+            != _provider_state_claim_core(owner_after)
+            or evidence["foreign-before"] != evidence["foreign-unsettled"]
+            or evidence["foreign-before"] != evidence["foreign-after"]
+            or "effect-completed"
+            not in [event.get("kind") for event in evidence["timeline"]]
+            or "effect-completed"
+            not in [event.get("kind") for event in evidence["dependent-after"]]
+        ):
+            raise RuntimeError("compatible transfer lacks a real adopted owner")
+    elif incompatible_rejection:
+        policy = evidence["candidate-policy"]
+        authority = policy.get("transition_authority", {})
+        adoptions = authority.get("provider_adoptions", [])
+        resource = operation["target"]["resource"]
+        matching_adoptions = [
+            adoption
+            for adoption in adoptions
+            if adoption.get("resource") == resource
+        ]
+        if len(matching_adoptions) != 1:
+            raise RuntimeError("incompatible transfer lacks one exact adoption")
+        adoption = matching_adoptions[0]
+        source_endpoint = adoption.get("source", {})
+        candidate_endpoint = adoption.get("candidate", {})
+        source_format = source_endpoint.get("state_format", {})
+        candidate_format = candidate_endpoint.get("state_format", {})
+        if (
+            policy.get("schema") != "aos.ability.authenticated-policy-set/v3"
+            or authority.get("current_planning")
+            != bundle.get("desired", {}).get("snapshot_digest")
+            or
+            set(generations) != {"source", "candidate"}
+            or generations["source"] <= 0
+            or generations["candidate"] != generations["source"]
+            or expected_lifetime != "persistent"
+            or provider_contract.get("state_format")
+            != source_format.get("descriptor")
+            or source_format.get("descriptor")
+            == candidate_format.get("descriptor")
+            or source_endpoint.get("handler_method") != operation["method"]
+            or candidate_endpoint.get("handler_method") != operation["method"]
+            or source_endpoint.get("handler_incarnation")
+            == candidate_endpoint.get("handler_incarnation")
+            or "state-format descriptors are incompatible"
+            not in evidence["activation-error"]
+            or subject["transfer-contract-digest"] != sha256(authority)
+            or _provider_state_ledger_claim(evidence["ledger-before"], resource)
+            != _provider_state_ledger_claim(evidence["ledger-after"], resource)
+            or evidence["live-before"] != evidence["live-after"]
+            or evidence["foreign-before"] != evidence["foreign-after"]
+            or evidence["boundary-timeline"] != []
+            or evidence["dependent-timeline"] != []
+        ):
+            raise RuntimeError("incompatible transfer lacks a real pre-effect rejection")
     else:
         expected_reason = (
             "non-persistent-lifetime"
@@ -4223,7 +4375,7 @@ def _validate_provider_state_probe_facts(
     operation = subject["operation"]
     resource = operation["target"]["resource"]
     if postcondition == "durable-attempt-state-classified":
-        if scenario == "activate-retained-target":
+        if scenario in {"activate-retained-target", "adopt-compatible-state"}:
             expected = {
                 "transaction",
                 "plan",
@@ -4248,6 +4400,22 @@ def _validate_provider_state_probe_facts(
                     and event.get("purpose") == "effect"
                     for event in observations.get("boundary-timeline", [])
                 )
+            )
+        elif "activation-error" in observations:
+            expected = {
+                "transaction",
+                "plan",
+                "operation",
+                "activation-error",
+                "terminal",
+            }
+            valid = (
+                set(observations) == expected
+                and observations.get("transaction") == subject["transaction"]
+                and observations.get("plan") == subject["plan"]
+                and observations.get("operation") == operation
+                and _matches(DIGEST, observations.get("activation-error"))
+                and observations.get("terminal") == "rejected-before-effect"
             )
         else:
             expected = {
@@ -4292,7 +4460,17 @@ def _validate_provider_state_probe_facts(
         ):
             raise RuntimeError("provider-state ownership inventory is malformed")
         claims = [_provider_state_ledger_claim(ledger, resource) for ledger in ledgers]
-        if any(claim != claims[0] for claim in claims[1:]):
+        if scenario == "adopt-compatible-state":
+            valid_claims = (
+                len(claims) == 3
+                and _provider_state_claim_core(claims[0])
+                != _provider_state_claim_core(claims[-1])
+                and _provider_state_claim_core(claims[1])
+                == _provider_state_claim_core(claims[-1])
+            )
+        else:
+            valid_claims = all(claim == claims[0] for claim in claims[1:])
+        if not valid_claims:
             raise RuntimeError("provider-state ownership changed during the flight")
     elif postcondition == "foreign-resources-unchanged":
         snapshots = [
@@ -4321,9 +4499,25 @@ def _validate_provider_state_probe_facts(
         ):
             raise RuntimeError("provider-state dependent was not blocked")
     elif postcondition == "fresh-receiving-authority":
-        if (
-            set(observations)
-            != {
+        common_valid = (
+            not _matches(DIGEST, observations.get("source-authority"))
+            or not _matches(DIGEST, observations.get("candidate-authority"))
+            or not _distinct_nonempty_strings(
+                observations.get("predecessor-incarnation"),
+                observations.get("candidate-incarnation"),
+            )
+            or observations.get("fresh") is not True
+        )
+        if "authority-sequence-before" not in observations:
+            valid = set(observations) == {
+                "source-authority",
+                "candidate-authority",
+                "predecessor-incarnation",
+                "candidate-incarnation",
+                "fresh",
+            }
+        else:
+            valid = set(observations) == {
                 "source-authority",
                 "candidate-authority",
                 "predecessor-incarnation",
@@ -4331,44 +4525,88 @@ def _validate_provider_state_probe_facts(
                 "authority-sequence-before",
                 "authority-sequence-after",
                 "fresh",
-            }
-            or not _matches(DIGEST, observations.get("source-authority"))
-            or not _matches(DIGEST, observations.get("candidate-authority"))
-            or not _distinct_nonempty_strings(
-                observations.get("predecessor-incarnation"),
-                observations.get("candidate-incarnation"),
-            )
-            or not _strictly_increasing_nonnegative(
+            } and _strictly_increasing_nonnegative(
                 observations.get("authority-sequence-before"),
                 observations.get("authority-sequence-after"),
             )
-            or observations.get("fresh") is not True
-        ):
+        if common_valid or not valid:
             raise RuntimeError("provider-state receiving authority is not fresh")
-    elif postcondition == "transfer-rejected-before-candidate-effect":
+    elif postcondition == "compatible-state-adopted":
         contract = observations.get("contract")
+        source_format = observations.get("source-state-format")
+        candidate_format = observations.get("candidate-state-format")
         if (
             set(observations)
             != {
-                "candidate-operation",
+                "resource",
                 "contract",
-                "candidate-effect-boundaries",
-                "candidate-effect-count",
-                "rejected-before-effect",
+                "source-state-format",
+                "candidate-state-format",
+                "live-before",
+                "live-after",
+                "adopted",
             }
-            or observations.get("candidate-operation") != operation
+            or observations.get("resource") != resource
             or not isinstance(contract, dict)
             or contract.get("schema") != PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA
-            or contract.get("disposition", {}).get("status") != "unsupported"
-            or observations.get("candidate-effect-count") != 0
-            or observations.get("rejected-before-effect") is not True
-            or [
-                event.get("boundary")
-                for event in observations.get("candidate-effect-boundaries", [])
-                if event.get("purpose") == "effect"
-            ]
-            != ["resources-acquired"]
+            or contract.get("disposition", {}).get("status") != "supported"
+            or source_format != candidate_format
+            or source_format
+            != contract.get("disposition", {}).get("owner", {}).get("state_format")
+            or not _provider_state_oracle_snapshot(
+                cell["adapter"], observations.get("live-before")
+            )
+            or not _provider_state_oracle_snapshot(
+                cell["adapter"], observations.get("live-after")
+            )
+            or observations.get("adopted") is not True
         ):
+            raise RuntimeError("provider-state adoption is not compatible and live")
+    elif postcondition == "transfer-rejected-before-candidate-effect":
+        contract = observations.get("contract")
+        if "source-state-format" in observations:
+            valid = (
+                set(observations)
+                == {
+                    "candidate-operation",
+                    "source-state-format",
+                    "candidate-state-format",
+                    "candidate-effect-boundaries",
+                    "candidate-effect-count",
+                    "rejected-before-effect",
+                }
+                and observations.get("candidate-operation") == operation
+                and observations.get("source-state-format")
+                != observations.get("candidate-state-format")
+                and observations.get("candidate-effect-boundaries") == []
+                and observations.get("candidate-effect-count") == 0
+                and observations.get("rejected-before-effect") is True
+            )
+        else:
+            valid = (
+                set(observations)
+                == {
+                    "candidate-operation",
+                    "contract",
+                    "candidate-effect-boundaries",
+                    "candidate-effect-count",
+                    "rejected-before-effect",
+                }
+                and observations.get("candidate-operation") == operation
+                and isinstance(contract, dict)
+                and contract.get("schema")
+                == PROVIDER_STATE_TRANSFER_CONTRACT_SCHEMA
+                and contract.get("disposition", {}).get("status") == "unsupported"
+                and observations.get("candidate-effect-count") == 0
+                and observations.get("rejected-before-effect") is True
+                and [
+                    event.get("boundary")
+                    for event in observations.get("candidate-effect-boundaries", [])
+                    if event.get("purpose") == "effect"
+                ]
+                == ["resources-acquired"]
+            )
+        if not valid:
             raise RuntimeError("provider-state transfer rejection is not pre-effect")
     elif postcondition == "predecessor-remains-sole-owner":
         if (
@@ -4468,13 +4706,27 @@ def _validate_provider_state_probe_facts(
                 == _provider_state_claim_core(owners[0])
                 for owner in owners[1:]
             )
+        elif scenario == "adopt-compatible-state":
+            expected = {
+                "resource",
+                "candidate-owner",
+                "owners",
+                "authorized-route-count",
+            }
+            candidate_owner = observations.get("candidate-owner")
+            valid = (
+                candidate_owner is not None
+                and observations.get("owners") == [candidate_owner]
+            )
         else:
             expected = set()
             valid = False
+        same_owner = observations.get("same-owner-core")
         if (
             set(observations) != expected
             or observations.get("resource") != resource
-            or observations.get("same-owner-core") is not True
+            or scenario == "activate-retained-target"
+            and same_owner is not True
             or observations.get("authorized-route-count") != 1
             or not valid
         ):

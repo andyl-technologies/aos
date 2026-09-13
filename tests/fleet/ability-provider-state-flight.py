@@ -124,6 +124,92 @@ class RetainedTargetBridge:
         )
 
 
+@dataclass
+class CompatibleAdoptionBridge:
+    """Converts one recovered replacement flight into adoption evidence."""
+
+    state_builder: Any
+    state_cell_id: str
+    flight_cell_id: str
+    source_generation: int
+    source_authority: dict[str, Any]
+    ledger_before: dict[str, Any]
+    observe: Callable[[dict[str, Any]], dict[str, Any]]
+    transfer_fixture: str
+    acquisition: tuple[
+        dict[str, Any], bytes, dict[str, Any], dict[str, Any]
+    ] | None = None
+
+    def on_acquisition(
+        self, state: dict[str, Any], baseline: dict[str, Any]
+    ) -> None:
+        """Inspects the production transfer contract before the exact method."""
+
+        if state["source-generation"] != self.source_generation:
+            raise RuntimeError("adoption flight started from another source generation")
+
+        operation_path = (
+            f"{EFFECT_FLIGHT.BOUNDARY_ROOT}/{state['transaction']}-adoption-operation.json"
+        )
+        contract_path = state["root"] + "/provider-state-transfer-contract.json"
+        EFFECT_FLIGHT.write_canonical(operation_path, state["operation-document"])
+        contract_digest = runtime.succeed(
+            f"{shlex.quote(self.transfer_fixture)} provider-state-transfer-contract "
+            f"{shlex.quote(state['root'] + '/plan-bundle.json')} "
+            f"{shlex.quote(operation_path)} {shlex.quote(contract_path)}"
+        ).strip()
+        contract = runtime.succeed(
+            f"{COREUTILS}/cat {shlex.quote(contract_path)}"
+        ).encode()
+        if not contract_digest.startswith("sha256:"):
+            raise RuntimeError("production transfer inspector returned no contract digest")
+
+        ledger_unsettled = EFFECT_ORACLES.native_resource_ledger()
+        self.acquisition = (state, contract, ledger_unsettled, baseline)
+
+    def retain(
+        self,
+        cell_id: str,
+        plan_bundle: bytes,
+        _source_generation_authority: dict[str, Any],
+        _candidate_generation_authority: dict[str, Any],
+        effect_observation: Any,
+    ) -> None:
+        """Retains the adopted owner, state, and completed exact method."""
+
+        if cell_id != self.flight_cell_id or self.acquisition is None:
+            raise RuntimeError("compatible-adoption bridge received another flight")
+        state, contract, ledger_unsettled, baseline = self.acquisition
+        if plan_bundle != state["bundle-bytes"]:
+            raise RuntimeError("compatible-adoption flight changed its plan bundle")
+
+        observation = PROVIDER_STATE_EVIDENCE.CompatibleAdoptionObservation(
+            source_generation=self.source_generation,
+            candidate_generation=EFFECT_FLIGHT.current_generation(),
+            transaction=state["transaction"],
+            operation_key=state["operation"]["key"],
+            journal_before_loss=effect_observation.journal_before_loss,
+            timeline=effect_observation.timeline,
+            boundary_timeline=effect_observation.boundary_timeline,
+            source_authority=self.source_authority,
+            candidate_authority=state["runtime-authority-after"]["document"],
+            ledger_before=self.ledger_before,
+            ledger_unsettled=ledger_unsettled,
+            ledger_after=EFFECT_ORACLES.native_resource_ledger(),
+            live_before=baseline["live"],
+            live_unsettled=effect_observation.live_unsettled,
+            live_after=effect_observation.live_after,
+            foreign_before=baseline["foreign"],
+            foreign_unsettled=effect_observation.foreign_unsettled,
+            foreign_after=effect_observation.foreign_after,
+            dependent_operation=effect_observation.dependent_operation,
+            dependent_after=effect_observation.dependent_after,
+        )
+        self.state_builder.retain_compatible_adoption(
+            self.state_cell_id, plan_bundle, contract, observation
+        )
+
+
 def run_unsupported_transfer_flight(
     flight: Any,
     state_cell_id: str,
