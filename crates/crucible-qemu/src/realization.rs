@@ -1,9 +1,8 @@
 //! QEMU VM realization branch coordination.
 //!
-//! This module owns the RFC-0010 T-QEMU-6 lifecycle rule that `start`,
-//! `resume`, and `fork` are all calls to one `instantiate` path. It selects
-//! between exact-snapshot `loadvm`, ancestor replay, and baked-genesis load in
-//! the required priority order while keeping the true cold boot inside `bake`.
+//! This module owns the RFC-0010 T-QEMU-6 `instantiate` path. It selects between
+//! exact-snapshot `loadvm`, ancestor replay, and baked-genesis load in the
+//! required priority order while keeping the true cold boot inside `bake`.
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, EngineError,
@@ -17,8 +16,6 @@ use crate::{
     QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission, QemuReplayOracleValidation,
 };
 
-mod backend_executor;
-pub use backend_executor::QemuBackendRealizationExecutor;
 mod snapshot_codec;
 pub use snapshot_codec::{MAX_QEMU_VM_SNAPSHOT_CANONICAL_BYTES, QemuVmSnapshotCodecError};
 #[cfg(target_os = "linux")]
@@ -458,15 +455,8 @@ pub struct QemuCachedAncestor {
 /// The operation that requested QEMU VM realization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum QemuVmRealizationOperation {
-    /// Realize the genesis configuration for a scenario.
-    Start,
     /// Realize the current tip configuration.
     Resume,
-    /// Realize a schedule prefix.
-    Fork {
-        /// Number of decisions retained in the forked prefix.
-        prefix_len: usize,
-    },
     /// Directly realize an already-built configuration.
     Instantiate,
 }
@@ -664,98 +654,6 @@ pub trait QemuVmBakeExecutor {
     ) -> Result<QemuBakedGenesisSnapshot, QemuVmRealizationError>;
 }
 
-/// Realizes the genesis configuration for `def`.
-///
-/// This is a convenience wrapper over [`instantiate_qemu_vm`]. It exists to make
-/// the public lifecycle API explicit while sharing the single realization path.
-///
-/// # Errors
-///
-/// Returns [`QemuVmRealizationError`] when realization fails.
-pub fn start_qemu_vm(
-    world: &World,
-    def: &ScenarioDef,
-    store: &mut impl QemuVmRealizationStore,
-    executor: &mut impl QemuVmRealizationExecutor,
-    policy: impl QemuVmLoadvmAdmissionPolicy + Copy,
-) -> Result<QemuVmRealization, QemuVmRealizationError> {
-    instantiate_qemu_vm_for_operation(
-        QemuVmRealizationOperation::Start,
-        world,
-        Configuration::genesis(def.clone()),
-        store,
-        executor,
-        policy,
-    )
-}
-
-/// Realizes the current tip configuration.
-///
-/// This is a convenience wrapper over [`instantiate_qemu_vm`]. It exists to make
-/// the public lifecycle API explicit while sharing the single realization path.
-///
-/// # Errors
-///
-/// Returns [`QemuVmRealizationError`] when realization fails.
-pub fn resume_qemu_vm(
-    world: &World,
-    config: &Configuration,
-    store: &mut impl QemuVmRealizationStore,
-    executor: &mut impl QemuVmRealizationExecutor,
-    policy: impl QemuVmLoadvmAdmissionPolicy + Copy,
-) -> Result<QemuVmRealization, QemuVmRealizationError> {
-    instantiate_qemu_vm_for_operation(
-        QemuVmRealizationOperation::Resume,
-        world,
-        config.clone(),
-        store,
-        executor,
-        policy,
-    )
-}
-
-/// Realizes a fork prefix of `config`.
-///
-/// This is a convenience wrapper over [`instantiate_qemu_vm`]. It exists to make
-/// the public lifecycle API explicit while sharing the single realization path.
-///
-/// # Errors
-///
-/// Returns [`QemuVmRealizationError`] when `prefix_len` is longer than the
-/// source schedule or when realization fails.
-pub fn fork_qemu_vm(
-    world: &World,
-    config: &Configuration,
-    prefix_len: usize,
-    store: &mut impl QemuVmRealizationStore,
-    executor: &mut impl QemuVmRealizationExecutor,
-    policy: impl QemuVmLoadvmAdmissionPolicy + Copy,
-) -> Result<QemuVmRealization, QemuVmRealizationError> {
-    if prefix_len > config.schedule.len() {
-        return Err(QemuVmRealizationError::ForkPrefixOutOfRange {
-            prefix_len,
-            schedule_len: config.schedule.len(),
-        });
-    }
-
-    let schedule = config
-        .schedule
-        .prefix(prefix_len)
-        .map_err(QemuVmRealizationError::ForkPrefix)?;
-    let fork_config = Configuration {
-        def: config.def.clone(),
-        schedule,
-    };
-    instantiate_qemu_vm_for_operation(
-        QemuVmRealizationOperation::Fork { prefix_len },
-        world,
-        fork_config,
-        store,
-        executor,
-        policy,
-    )
-}
-
 /// Realizes `config` through the single QEMU instantiate path.
 ///
 /// Branch priority is exact fat snapshot, nearest cached ancestor replay, then
@@ -773,21 +671,14 @@ pub fn instantiate_qemu_vm(
     executor: &mut impl QemuVmRealizationExecutor,
     policy: impl QemuVmLoadvmAdmissionPolicy + Copy,
 ) -> Result<QemuVmRealization, QemuVmRealizationError> {
-    instantiate_qemu_vm_for_operation(
-        QemuVmRealizationOperation::Instantiate,
-        world,
-        config.clone(),
-        store,
-        executor,
-        policy,
-    )
+    instantiate_qemu_vm_inner(world, config.clone(), store, executor, policy)
 }
 
 /// Bakes a world by cold-booting once to the deterministic ready point.
 ///
 /// This is the only public QEMU realization function that exposes a cold-boot
-/// operation. Hot-loop `start`, `resume`, `fork`, and [`instantiate_qemu_vm`]
-/// load baked genesis instead of cold-booting.
+/// operation. [`instantiate_qemu_vm`] loads baked genesis instead of
+/// cold-booting.
 ///
 /// # Errors
 ///
@@ -908,21 +799,6 @@ pub fn check_qemu_snapshot_replay_oracle_bound(
     Ok(QemuReplayOracleCheck {
         source_snapshot: snapshot.id(),
         validation,
-    })
-}
-
-fn instantiate_qemu_vm_for_operation(
-    operation: QemuVmRealizationOperation,
-    world: &World,
-    config: Configuration,
-    store: &mut impl QemuVmRealizationStore,
-    executor: &mut impl QemuVmRealizationExecutor,
-    policy: impl QemuVmLoadvmAdmissionPolicy + Copy,
-) -> Result<QemuVmRealization, QemuVmRealizationError> {
-    let realized = instantiate_qemu_vm_inner(world, config, store, executor, policy)?;
-    Ok(QemuVmRealization {
-        operation,
-        ..realized
     })
 }
 
@@ -1395,17 +1271,6 @@ pub enum QemuVmRealizationError {
         /// Deterministic failure detail.
         message: String,
     },
-    /// A fork prefix was longer than the source configuration schedule.
-    #[error("invalid fork prefix: {0}")]
-    ForkPrefix(ScheduleError),
-    /// A fork prefix was longer than the source configuration schedule.
-    #[error("fork prefix length {prefix_len} exceeds schedule length {schedule_len}")]
-    ForkPrefixOutOfRange {
-        /// Requested fork prefix length.
-        prefix_len: usize,
-        /// Source configuration schedule length.
-        schedule_len: usize,
-    },
     /// An ancestor prefix computation failed.
     #[error("invalid ancestor prefix: {0}")]
     AncestorPrefix(ScheduleError),
@@ -1759,117 +1624,6 @@ mod tests {
                 ),
             })
         }
-    }
-
-    #[test]
-    fn qemu_start_resume_and_fork_share_instantiate_path() -> Result<(), QemuVmRealizationError> {
-        let world = world("shared-instantiate");
-        let def = scenario("shared-instantiate");
-        let tip = config_with_decisions(def.clone(), 2);
-        let log = shared_log();
-        let mut store = scripted_store(Rc::clone(&log), &world, &def);
-        let mut executor = scripted_executor(Rc::clone(&log));
-
-        let start = start_qemu_vm(
-            &world,
-            &def,
-            &mut store,
-            &mut executor,
-            QemuExactSnapshotPolicy,
-        )?;
-        let resume = resume_qemu_vm(
-            &world,
-            &tip,
-            &mut store,
-            &mut executor,
-            QemuExactSnapshotPolicy,
-        )?;
-        let fork = fork_qemu_vm(
-            &world,
-            &tip,
-            1,
-            &mut store,
-            &mut executor,
-            QemuExactSnapshotPolicy,
-        )?;
-
-        assert_eq!(start.operation, QemuVmRealizationOperation::Start);
-        assert_eq!(resume.operation, QemuVmRealizationOperation::Resume);
-        assert_eq!(
-            fork.operation,
-            QemuVmRealizationOperation::Fork { prefix_len: 1 }
-        );
-        assert_eq!(start.configuration, Configuration::genesis(def.clone()));
-        assert_eq!(resume.configuration, tip);
-        assert_eq!(fork.configuration, config_with_decisions(def, 1));
-        assert_eq!(
-            logged(&log)
-                .iter()
-                .filter(|call| matches!(call, RealizationCall::ColdBootBake(_)))
-                .count(),
-            0
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn qemu_lifecycle_wrappers_match_direct_instantiate() -> Result<(), QemuVmRealizationError> {
-        let world = world("direct-lifecycle");
-        let def = scenario("direct-lifecycle");
-        let tip = config_with_decisions(def.clone(), 3);
-        let fork_prefix = Configuration {
-            def: def.clone(),
-            schedule: tip
-                .schedule
-                .prefix(1)
-                .map_err(QemuVmRealizationError::ForkPrefix)?,
-        };
-        let mut start_store = scripted_store(shared_log(), &world, &def);
-        let mut start_executor = scripted_executor(shared_log());
-        let mut resume_store = scripted_store(shared_log(), &world, &def);
-        let mut resume_executor = scripted_executor(shared_log());
-        let mut fork_store = scripted_store(shared_log(), &world, &def);
-        let mut fork_executor = scripted_executor(shared_log());
-
-        let start = start_qemu_vm(
-            &world,
-            &def,
-            &mut start_store,
-            &mut start_executor,
-            QemuExactSnapshotPolicy,
-        )?;
-        let direct_start =
-            direct_instantiate_for_test(&world, &def, &Configuration::genesis(def.clone()))?;
-        let resume = resume_qemu_vm(
-            &world,
-            &tip,
-            &mut resume_store,
-            &mut resume_executor,
-            QemuExactSnapshotPolicy,
-        )?;
-        let direct_resume = direct_instantiate_for_test(&world, &def, &tip)?;
-        let fork = fork_qemu_vm(
-            &world,
-            &tip,
-            1,
-            &mut fork_store,
-            &mut fork_executor,
-            QemuExactSnapshotPolicy,
-        )?;
-        let direct_fork = direct_instantiate_for_test(&world, &def, &fork_prefix)?;
-
-        assert_same_realization(&start, &direct_start);
-        assert_same_realization(&resume, &direct_resume);
-        assert_same_realization(&fork, &direct_fork);
-        assert_eq!(start.operation, QemuVmRealizationOperation::Start);
-        assert_eq!(resume.operation, QemuVmRealizationOperation::Resume);
-        assert_eq!(
-            fork.operation,
-            QemuVmRealizationOperation::Fork { prefix_len: 1 }
-        );
-
-        Ok(())
     }
 
     #[test]
@@ -2745,51 +2499,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn qemu_fork_accepts_tip_and_rejects_out_of_range_prefixes() {
-        let world = world("fork-prefix-bounds");
-        let def = scenario("fork-prefix-bounds");
-        let tip = config_with_decisions(def.clone(), 2);
-        let tip_log = shared_log();
-        let mut tip_store = scripted_store(Rc::clone(&tip_log), &world, &def);
-        let mut tip_executor = scripted_executor(tip_log);
-
-        let tip_fork = fork_qemu_vm(
-            &world,
-            &tip,
-            2,
-            &mut tip_store,
-            &mut tip_executor,
-            QemuExactSnapshotPolicy,
-        );
-        let out_of_range = fork_qemu_vm(
-            &world,
-            &tip,
-            3,
-            &mut scripted_store(shared_log(), &world, &def),
-            &mut scripted_executor(shared_log()),
-            QemuExactSnapshotPolicy,
-        );
-
-        match tip_fork {
-            Ok(realized) => {
-                assert_eq!(realized.configuration, tip);
-                assert_eq!(
-                    realized.operation,
-                    QemuVmRealizationOperation::Fork { prefix_len: 2 }
-                );
-            }
-            Err(error) => panic!("tip fork should instantiate the tip configuration: {error}"),
-        }
-        assert!(matches!(
-            out_of_range,
-            Err(QemuVmRealizationError::ForkPrefixOutOfRange {
-                prefix_len: 3,
-                schedule_len: 2,
-            })
-        ));
-    }
-
     fn scripted_store(log: SharedLog, world: &World, def: &ScenarioDef) -> ScriptedStore {
         let genesis = Configuration::genesis(def.clone());
         ScriptedStore {
@@ -2821,29 +2530,6 @@ mod tests {
 
     fn logged(log: &SharedLog) -> Vec<RealizationCall> {
         log.borrow().clone()
-    }
-
-    fn direct_instantiate_for_test(
-        world: &World,
-        def: &ScenarioDef,
-        config: &Configuration,
-    ) -> Result<QemuVmRealization, QemuVmRealizationError> {
-        let log = shared_log();
-        let mut store = scripted_store(Rc::clone(&log), world, def);
-        let mut executor = scripted_executor(log);
-        instantiate_qemu_vm(
-            world,
-            config,
-            &mut store,
-            &mut executor,
-            QemuExactSnapshotPolicy,
-        )
-    }
-
-    fn assert_same_realization(actual: &QemuVmRealization, expected: &QemuVmRealization) {
-        assert_eq!(actual.configuration, expected.configuration);
-        assert_eq!(actual.runtime, expected.runtime);
-        assert_eq!(actual.branch, expected.branch);
     }
 
     fn world(_name: &str) -> World {

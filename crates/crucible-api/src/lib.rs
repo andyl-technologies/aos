@@ -16,8 +16,7 @@
 //! `Control` and `Watch`+`Send` attach-and-command facade; [`server`] owns the
 //! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
 //! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
-//! loop construction; [`vm_resume`] owns the process-local VM resume realization
-//! bridge used by thin CLI callers; [`debug_gateway`] owns the Apache-side Unix
+//! loop construction; [`debug_gateway`] owns the Apache-side Unix
 //! control client for the separate GPL debugger gateway process;
 //! [`transport_security`] owns remote mutual-TLS authentication.
 
@@ -34,14 +33,13 @@ pub mod debug_relay;
 pub mod event_log_stream;
 pub mod lifecycle;
 pub mod open_set;
+mod production_backend;
 pub mod rpc_abi;
 pub mod server;
 pub mod session_mapping;
 pub mod streaming;
 pub mod transport_security;
 pub mod vm_lifecycle;
-#[path = "vm_resume.rs"]
-pub mod vm_resume;
 
 pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
@@ -161,6 +159,11 @@ pub use crucible_protocol::guest_introspection::{
 // Re-exported with backend-neutral names so process-local control clients can
 // launch and attest the production backend without depending on its
 // implementation crate directly.
+pub use production_backend::{
+    ProductionGuestArchitecture, ProductionPluginInstallConfig, ProductionPluginInstallError,
+    ProductionPluginInstallReport, ProductionPluginSwitch, ProductionRootImageFormat,
+    run_production_plugin_install_gate,
+};
 pub use server::{
     LifecycleServerMode, serve_lifecycle_http2,
     serve_lifecycle_http2_mtls_with_mode_until_shutdown,
@@ -183,13 +186,4 @@ pub use streaming::{
 };
 pub use transport_security::{
     DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
-};
-pub use vm_resume::{
-    ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,
-    realize_model_checkpoint_vm_resume_from_savepoint,
-};
-pub use vm_resume::{
-    ProductionGuestArchitecture, ProductionPluginInstallConfig, ProductionPluginInstallError,
-    ProductionPluginInstallReport, ProductionPluginSwitch, ProductionRootImageFormat,
-    run_production_plugin_install_gate,
 };

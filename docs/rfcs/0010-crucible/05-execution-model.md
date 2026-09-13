@@ -884,14 +884,11 @@ information that cannot be recomputed.
 - [x] **T-EXEC-7** Wire `start`, `resume`, and `fork` as call sites of
   `instantiate` (genesis / tip / prefix) and delete any separate
   boot/resume/fork realization paths. — satisfies [EXEC-14], [G-4]; spec §5, §6.
-  - Completed by `crates/crucible-qemu/src/realization.rs`: `start_qemu_vm`,
-    `resume_qemu_vm`, and `fork_qemu_vm` are lifecycle wrappers over the shared
-    `instantiate_qemu_vm` coordinator, differing only in the configuration they
-    pass (genesis, tip, or schedule prefix). `crates/crucible-qemu/src/lib.rs`
-    exports that API, `crates/crucible-qemu/src/realization.rs` tests wrapper
-    equivalence against direct instantiate calls and rejects out-of-range fork
-    prefixes, and `checks.crucible.phase1.executionStartResumeFork` gates the
-    surface.
+  - Completed by the single `crucible_qemu::instantiate_qemu_vm` coordinator.
+    Lifecycle owners select the genesis, tip, or schedule-prefix configuration
+    before realization; `crates/crucible-daemon/src/crucible_qemu_runner.rs`
+    passes that exact configuration to the coordinator. There are no separate
+    QEMU boot, resume, or fork realization entry points.
 - [x] **T-EXEC-8** Implement `bake`: cold-boot each node once to its ready point,
   snapshot, content-address as the shared genesis checkpoint; assert it is the
   only cold-boot in the codebase (lint). — satisfies [EXEC-18], [EXEC-19];

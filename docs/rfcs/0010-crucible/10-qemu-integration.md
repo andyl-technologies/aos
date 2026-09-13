@@ -858,12 +858,13 @@ determinism contract (04).
   only in the configuration. — satisfies [QEMU-23], [QEMU-24], [QEMU-25],
   [QEMU-26], [QEMU-27]; spec §10.5.
   Completed as the `crucible-qemu` QEMU VM realization coordinator: it exposes
-  `instantiate_qemu_vm` plus `start`, `resume`, and `fork` wrappers that all
-  delegate to the same instantiate path, selects exact-snapshot `loadvm`,
-  nearest-ancestor replay, or baked-genesis load in priority order, keeps runtime
+  only `instantiate_qemu_vm` for normal realization. Lifecycle owners pass the
+  selected genesis, tip, or schedule-prefix configuration to that entry point,
+  which selects exact-snapshot `loadvm`, nearest-ancestor replay, or
+  baked-genesis load in priority order and keeps runtime
   `loadvm` gated by replay-oracle admission through the exact-snapshot
-  policy, validates checkpoint/configuration and baked-World identity, rejects
-  invalid ancestors and out-of-range fork prefixes, dispatches replay one recorded
+  policy. It validates checkpoint/configuration and baked-World identity,
+  rejects invalid ancestors, dispatches replay one recorded
   decision at a time to the quantum executor, and exposes `bake_qemu_genesis_vm`
   as the only cold-boot-to-ready-point entry. The concrete shmem/QEMU quantum
   machinery remains tracked by [T-QEMU-12] and frame/device replay details remain

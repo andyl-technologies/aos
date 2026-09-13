@@ -145,7 +145,7 @@ shape-review|crates/crucible-daemon/src/qemu_hot_fork_reconciliation/linux.rs|sh
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs|sha256:35f7f48d47f3a88cf02f4e4ea0f85a65312b5d3eb9dc9573e687d6103add9881|implementation|1748|Whole-world retained-source selection, launch, execution, terminal-fingerprint preparation, and recovery.|Source selection, multi-node launch, adoption, rollback, and recovery form one atomic world-owner transition.
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs|sha256:3e9eccc9552f0157151a854bca61117f490c240ffa3e4a8a9f88ec563f9aaa22|tests|3081|Scripted production whole-world composition and terminal-preparation regressions.|Source checkout, multi-node launch, typed no-child recovery, terminal-fingerprint ordering, cleanup quarantine, execution, and publication cases share one scripted world owner.
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_resource.rs|sha256:0e79eb6bc684776502a47cd166d010ce353df8a8e7bdd08e00536ec3a2fb7405|implementation|1287|Aggregate CPU, memory, storage, process, and endpoint ownership for one hot-fork child world.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/qemu_resource_guard.rs|sha256:bf148bde0026dd804b5b168ca7af78b64d3fd85a310586be5bf7dc87dad7d439|implementation|1124|Exact host-resource composition for one local QEMU attempt.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/qemu_resource_guard.rs|sha256:5609827256c7232d48d39a5ecd4159c7a7c48fe2ecd5b09a4e153cf8ec859d20|implementation|1123|Exact host-resource composition for one local QEMU attempt.|threshold-not-reached
 shape-review|crates/crucible-daemon/tests/gate_campaign_component_contract.rs|sha256:b365e25bc44b307df3bfe443280a52096c0ae60e6f9b323f3248ff9421b259ba|tests|1208|Same-campaign direct and split-process service component contract acceptance coverage.|threshold-not-reached
 shape-review|crates/crucible-harness/src/phase_plan.rs|sha256:701e0a8f9e84114cc4e065c715de8097d352d629cf49ae46302e559bcab08bab|implementation|1440|Phase-gate ordering for RFC-0010.|threshold-not-reached
 shape-review|crates/crucible-harness/tests/engineering_hygiene.rs|sha256:b50d60eb83d04b47e8e6bf94499ce760cbebe5cfc8602f4d127ed02666436cfa|tests|1043|Checks source-role reviews, module headers, QEMU boundary confinement, and commit-hygiene policy wiring.|threshold-not-reached
@@ -166,8 +166,8 @@ shape-review|crates/crucible-qemu/src/node/tests/hot_fork.rs|sha256:a0fecb1ff140
 shape-review|crates/crucible-qemu/src/node_factory.rs|sha256:4570792dfc2c3e0e3a92e89b7b51469e39d55ef1e7d181726b02034b13e39f27|implementation|1531|Linux factory for already-spawned QEMU nodes.|QMP negotiation, channel assembly, and scheduler-node admission must preserve one rollback-safe ownership order.
 shape-review|crates/crucible-qemu/src/node_set.rs|sha256:86e6f761015fcf9e7b660ba7d57c950087c548ed6d228d83dcc4d1c37817bf9c|implementation|1756|Node-addressed production QEMU backend set.|Node-addressed routing and whole-world hot-fork transfer depend on the same live NodeId ownership map.
 shape-review|crates/crucible-qemu/src/qmp/vmstate_control.rs|sha256:55ae6e2920026e23e53a0dd33851efea223c7e2c866b404ac8ee863a969655f1|implementation|1203|Checkpoint-tagged VMState control over typed QMP commands.|threshold-not-reached
-shape-review|crates/crucible-qemu/src/realization.rs|sha256:8110c2a29bdb18035915d6b0775832087e09f0cefaee22e1e1b701f22b302595|implementation|1456|QEMU VM realization branch coordination.|threshold-not-reached
-shape-review|crates/crucible-qemu/src/realization.rs|sha256:8110c2a29bdb18035915d6b0775832087e09f0cefaee22e1e1b701f22b302595|tests|1466|Tests realization mode selection, exact restore, promotion, authenticated replay, and failure recovery.|threshold-not-reached
+shape-review|crates/crucible-qemu/src/realization.rs|sha256:6c2078ba1e761bd6f3fda19559d8d210cc72335e6e6896606588f16bea467002|implementation|1328|QEMU VM realization branch coordination.|threshold-not-reached
+shape-review|crates/crucible-qemu/src/realization.rs|sha256:6c2078ba1e761bd6f3fda19559d8d210cc72335e6e6896606588f16bea467002|tests|1287|Tests branch selection, exact restore, promotion, authenticated replay, and failure recovery.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/realization/node_executor.rs|sha256:fb890ad12bc240dc6b0bc9a56a320d8312a4b857e187aff9cc008df865d22020|implementation|2225|Real-node executor for QEMU VM realization.|Launch, exact restore, replay, snapshot capture, and shutdown remain coupled by one live-node lifecycle authority.
 shape-review|crates/crucible-qemu/src/realization/node_executor/tests.rs|sha256:6713f2165ff8e99298c72833e8d480d8adbae7f6cb88faf94fe6bad8694f5d0d|tests|1282|Tests for QEMU real-node realization execution.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/spawn.rs|sha256:066ee37834aba7a495067aaac7e25455253fb2e8d9ff6c1dcee319b3a597646d|implementation|2554|Linux QEMU process spawning with fixed inherited descriptors.|Descriptor creation, guarded pre-exec setup, cgroup attachment, and run-directory cleanup are one fail-closed exec boundary.
@@ -790,9 +790,9 @@ qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|Q
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|crucible_qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/storage_faults/evidence.rs|Qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_resume.rs|Qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_resume.rs|crucible_qemu
-qemu-token|crucible-api|crates/crucible-api/src/vm_resume.rs|qemu
+qemu-token|crucible-api|crates/crucible-api/src/production_backend.rs|Qemu
+qemu-token|crucible-api|crates/crucible-api/src/production_backend.rs|crucible_qemu
+qemu-token|crucible-api|crates/crucible-api/src/production_backend.rs|qemu
 qemu-token|crucible-campaign|crates/crucible-campaign/src/execution.rs|qemu
 qemu-token|crucible-campaign|crates/crucible-campaign/src/executor_capability.rs|QEMU
 qemu-token|crucible-campaign|crates/crucible-campaign/src/executor_capability.rs|qemu

@@ -532,27 +532,9 @@ long-held locks.
   remote interactive finalization through stopped snapshot query, actor-owned
   terminal savepoint validation, replay-oracle proof, and stopped-session
   cleanup, plus explicitly selected local-QEMU resumes that run the same resumed
-  session workflow, invoke the `crucible-qemu` resume coordinator through an
-  API-owned adapter backed by a `SimBackend`-seeded
-  `QemuBackendRealizationExecutor`, and derive
-  branch/runtime proof fields from that coordinator result. The API bridge now
-  also accepts a caller-owned `QemuVmRealizationExecutor`, giving the CLI/API
-  boundary an explicit hook for selecting the Linux real-node executor once
-  launch artifacts are resolvable.
-  The `crucible-qemu` realization coordinator owns baked-genesis,
-  source-ancestor, and savevm policy branches, and now exposes a `Backend`-backed
-  realization executor that restores exact/baked snapshots through the
-  QMP-backed backend boundary and replays suffixes through backend horizon
-  advances, plus a Linux real-node realization executor that launches a
-  policy-authorized restored `QemuNode`, replays through shared memory, samples
-  live fingerprints and icounts, and keeps generic QMP snapshot/restore closed
-  after node assembly, while the CLI emits
-  `materialization=qemu-vm-realization`, `operation=resume`,
-  `executor=model-checkpoint`, branch, replay count, runtime/configuration
-  hashes, and resolved QEMU/plugin identity in stdout and the canonical log.
-  process-level `resume --backend qemu` JSONL output checks those
-  coordinator-derived proof fields from that model-checkpoint executor plus
-  replay-oracle validation through marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
+  session workflow through the production local-VM lifecycle. Process-level
+  `resume --backend qemu` JSONL output checks replay-oracle validation through
+  marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
   `running` after `cont`. The selected local-QEMU path now also requires a
   successful live packaged-QEMU/plugin boot before the replay-oracle-admitted

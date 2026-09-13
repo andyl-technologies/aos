@@ -245,8 +245,6 @@ fn classify_realization_failure(error: &QemuVmRealizationError) -> PromotionFail
         QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
         | QemuVmRealizationError::Executor { .. }
-        | QemuVmRealizationError::ForkPrefix(_)
-        | QemuVmRealizationError::ForkPrefixOutOfRange { .. }
         | QemuVmRealizationError::AncestorPrefix(_)
         | QemuVmRealizationError::InvalidCheckpoint { .. }
         | QemuVmRealizationError::InvalidAncestor { .. }

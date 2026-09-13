@@ -4,7 +4,7 @@
 //! [`SingleScheduler`], one live QEMU node per World VM, and the node-addressed
 //! backend loop consumed by [`LifecycleControlPlane`](crate::LifecycleControlPlane).
 
-use crate::vm_resume::{
+use crate::production_backend::{
     PRODUCTION_ROOT_OVERLAY_FILE_NAME, PRODUCTION_VMSTATE_FILE_NAME, ProductionAppRandomConfig,
     ProductionGdbstubChannelConfig, ProductionGuestArchitecture, ProductionLiveNodeStepGateConfig,
     ProductionNodeSet, ProductionPluginSwitch, ProductionRootImageFormat,

@@ -13,14 +13,7 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
-  apiVmResume = builtins.readFile ../../crates/crucible-api/src/vm_resume.rs;
-  simBackend = import ./_crucible-local-and-test-backends-source.nix;
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
-  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
-  qemuBackendExecutor = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible-qemu/src/realization/backend_executor.rs
-    ../../crates/crucible-qemu/src/realization/backend_executor_test.rs
-  ]);
   qemuNodeExecutor = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/realization/node_executor.rs;
@@ -70,24 +63,12 @@
         needle = "replay-oracle-validating";
       }
       {
-        label = "T-CLI-10 local-QEMU realization coordinator progress";
-        needle = "`crucible-qemu` owns the typed realization coordinator";
-      }
-      {
-        label = "T-CLI-10 local-QEMU real node executor progress";
-        needle = "Linux real-node realization executor";
-      }
-      {
-        label = "T-CLI-10 local-QEMU realization proof progress";
-        needle = "`materialization=qemu-vm-realization`, `operation=resume`,\n  `executor=model-checkpoint`, branch";
-      }
-      {
-        label = "T-CLI-10 local-QEMU coordinator invocation progress";
-        needle = "invoke the `crucible-qemu` resume coordinator through a";
+        label = "T-CLI-10 local-QEMU production lifecycle progress";
+        needle = "production local-VM lifecycle";
       }
       {
         label = "T-CLI-10 process qemu resume progress";
-        needle = "Process-tests cover real-binary\n  `resume --backend qemu` JSONL";
+        needle = "Process tests cover\n  real-binary `resume --backend qemu` JSONL";
       }
       {
         label = "T-CLI-10 QMP snapshot-load smoke progress";
@@ -100,24 +81,12 @@
         needle = "`T-CLI-10` is completed through `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
-        label = "phase5 CLI resume local-QEMU coordinator progress";
-        needle = "`crucible-qemu` realization coordinator owns";
-      }
-      {
-        label = "phase5 CLI resume local-QEMU real node executor progress";
-        needle = "Linux real-node realization executor";
-      }
-      {
-        label = "phase5 CLI resume local-QEMU realization proof progress";
-        needle = "`materialization=qemu-vm-realization`, `operation=resume`,\n  `executor=model-checkpoint`, branch";
-      }
-      {
-        label = "phase5 CLI resume local-QEMU coordinator invocation progress";
-        needle = "invoke the `crucible-qemu` resume coordinator through a";
+        label = "phase5 CLI resume local-QEMU production lifecycle progress";
+        needle = "production local-VM lifecycle";
       }
       {
         label = "phase5 CLI process qemu resume progress";
-        needle = "process-level `resume --backend qemu` JSONL output checks those\n  coordinator-derived proof fields from that model-checkpoint executor plus";
+        needle = "Process-level\n  `resume --backend qemu` JSONL output checks replay-oracle validation";
       }
       {
         label = "phase5 CLI QMP snapshot-load smoke progress";
@@ -350,76 +319,6 @@
         needle = "savevm";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_resume.rs" apiVmResume [
-      {
-        label = "resume API VM realization proof";
-        needle = "struct ModelCheckpointVmResumeRealizationProof";
-      }
-      {
-        label = "resume API VM realization derivation";
-        needle = "realize_model_checkpoint_vm_resume_from_savepoint";
-      }
-      {
-        label = "resume API injectable QEMU executor hook";
-        needle = "realize_qemu_vm_resume_from_savepoint_with_executor";
-      }
-      {
-        label = "resume API-owned QEMU coordinator invocation";
-        needle = "resume_qemu_vm(";
-      }
-      {
-        label = "resume API-owned QEMU backend executor";
-        needle = "QemuBackendRealizationExecutor::new";
-      }
-      {
-        label = "resume API-owned QEMU model backend";
-        needle = "SimBackend::from_restorable_checkpoints";
-      }
-      {
-        label = "resume API-owned exact snapshot policy";
-        needle = "QemuExactSnapshotPolicy,";
-      }
-      {
-        label = "resume API-owned QEMU model executor marker";
-        needle = "model-checkpoint";
-      }
-      {
-        label = "resume API-owned QEMU ancestor replay branch";
-        needle = "ancestor-replay";
-      }
-    ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
-      {
-        label = "resume QEMU realization coordinator";
-        needle = "pub fn resume_qemu_vm";
-      }
-      {
-        label = "resume QEMU ancestor replay branch";
-        needle = "QemuVmRealizationKind::AncestorReplay";
-      }
-      {
-        label = "resume QEMU exact snapshot policy";
-        needle = "QemuExactSnapshotPolicy,";
-      }
-    ]
-    ++ failuresFor "crates/crucible-qemu/src/realization/backend_executor.rs" qemuBackendExecutor [
-      {
-        label = "resume QEMU backend realization executor";
-        needle = "struct QemuBackendRealizationExecutor";
-      }
-      {
-        label = "resume QEMU backend exact snapshot test";
-        needle = "qemu_backend_realization_executor_restores_exact_snapshot";
-      }
-      {
-        label = "resume QEMU backend ancestor replay test";
-        needle = "qemu_backend_realization_executor_replays_from_cached_ancestor";
-      }
-      {
-        label = "resume QEMU baked genesis config mismatch regression";
-        needle = "load_baked_genesis(&genesis, baked_admission)";
-      }
-    ]
     ++ failuresFor "crates/crucible-qemu/src/realization/node_executor.rs" qemuNodeExecutor [
       {
         label = "resume QEMU real node executor";
@@ -441,31 +340,15 @@
         label = "resume QEMU real node baked load";
         needle = "QemuNodeRestorePlan::baked_genesis(admission)";
       }
-    ]
-    ++ failuresFor "crates/crucible-qemu/src/realization/backend_executor.rs" qemuBackendExecutor [
       {
         label = "resume QEMU real node replay shared memory";
-        needle = ".advance_to_horizon(horizon)";
+        needle = "QemuRealizedNodeBackend::advance_live_to_horizon(node, horizon";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization/node_executor/tests.rs" qemuNodeExecutorTests [
       {
         label = "resume QEMU real node no generic snapshot regression";
         needle = "qemu_node_realization_executor_replays_without_generic_snapshot_or_restore";
-      }
-    ]
-    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [
-      {
-        label = "resume model backend restorable checkpoint constructor";
-        needle = "pub fn from_restorable_checkpoint";
-      }
-      {
-        label = "resume model backend restorable checkpoints constructor";
-        needle = "pub fn from_restorable_checkpoints";
-      }
-      {
-        label = "resume model backend checkpoint state derivation";
-        needle = "fn from_checkpoint(checkpoint: &Checkpoint) -> Self";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [

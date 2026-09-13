@@ -9,6 +9,12 @@
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   realizationLib = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  realizationProduction = builtins.head (
+    lib.splitString "@@CFGTEST@@" (
+      builtins.replaceStrings ["\n#[cfg(test)]"] ["@@CFGTEST@@"] realizationLib
+    )
+  );
+  daemonRunner = builtins.readFile ../../crates/crucible-daemon/src/crucible_qemu_runner.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,8 +29,8 @@
         needle = "QEMU VM realization coordinator";
       }
       {
-        label = "completion note names start/resume/fork unification";
-        needle = "`start`, `resume`, and `fork`";
+        label = "completion note names sole instantiate entry point";
+        needle = "only `instantiate_qemu_vm` for normal realization";
       }
       {
         label = "completion note preserves replay follow-up";
@@ -43,18 +49,6 @@
       {
         label = "instantiate export";
         needle = "instantiate_qemu_vm";
-      }
-      {
-        label = "start export";
-        needle = "start_qemu_vm";
-      }
-      {
-        label = "resume export";
-        needle = "resume_qemu_vm";
-      }
-      {
-        label = "fork export";
-        needle = "fork_qemu_vm";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" realizationLib [
@@ -95,32 +89,8 @@
         needle = "pub fn instantiate_qemu_vm";
       }
       {
-        label = "start wrapper";
-        needle = "pub fn start_qemu_vm";
-      }
-      {
-        label = "resume wrapper";
-        needle = "pub fn resume_qemu_vm";
-      }
-      {
-        label = "fork wrapper";
-        needle = "pub fn fork_qemu_vm";
-      }
-      {
         label = "bake cold boot API";
         needle = "pub fn bake_qemu_genesis_vm";
-      }
-      {
-        label = "start delegates to instantiate path";
-        needle = "QemuVmRealizationOperation::Start";
-      }
-      {
-        label = "resume delegates to instantiate path";
-        needle = "QemuVmRealizationOperation::Resume";
-      }
-      {
-        label = "fork computes prefix";
-        needle = ".prefix(prefix_len)";
       }
       {
         label = "loadvm policy gate";
@@ -151,10 +121,6 @@
         needle = "validate_baked_genesis_snapshot";
       }
       {
-        label = "fork out-of-range guard";
-        needle = "ForkPrefixOutOfRange";
-      }
-      {
         label = "nearest ancestor replay";
         needle = "store.nearest_cached_ancestor(&config)?";
       }
@@ -169,10 +135,6 @@
       {
         label = "only bake exposes cold boot";
         needle = "cold_boot_to_ready_and_savevm(world)";
-      }
-      {
-        label = "shared instantiate test";
-        needle = "qemu_start_resume_and_fork_share_instantiate_path";
       }
       {
         label = "ancestor replay test";
@@ -223,10 +185,6 @@
         needle = "qemu_baked_genesis_snapshot_is_shared_across_same_world_scenarios";
       }
       {
-        label = "fork prefix bounds test";
-        needle = "qemu_fork_accepts_tip_and_rejects_out_of_range_prefixes";
-      }
-      {
         label = "bake cold boot test";
         needle = "qemu_bake_is_the_only_cold_boot_entry_point";
       }
@@ -235,7 +193,23 @@
         needle = "qemu_instantiate_rejects_non_prefix_cached_ancestor";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/realization.rs" realizationLib [
+    ++ forbiddenFor "crates/crucible-qemu/src/realization.rs" realizationProduction [
+      {
+        label = "retired start wrapper";
+        needle = "start_qemu_vm";
+      }
+      {
+        label = "retired resume wrapper";
+        needle = "resume_qemu_vm";
+      }
+      {
+        label = "retired fork wrapper";
+        needle = "fork_qemu_vm";
+      }
+      {
+        label = "retired backend adapter";
+        needle = "QemuBackendRealizationExecutor";
+      }
       {
         label = "production unwrap";
         needle = ".unwrap()";
@@ -247,6 +221,12 @@
       {
         label = "hard-coded host shell";
         needle = "/bin/sh";
+      }
+    ]
+    ++ failuresFor "crates/crucible-daemon/src/crucible_qemu_runner.rs" daemonRunner [
+      {
+        label = "production caller uses canonical instantiate";
+        needle = "let realization = instantiate_qemu_vm(";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
