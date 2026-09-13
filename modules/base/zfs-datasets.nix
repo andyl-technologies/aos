@@ -494,15 +494,22 @@ in {
         {
           name = "zfs-records-bounded";
           description = "No dataset writes records larger than the fragmentation-safe size";
-          script = ''
-            sizes = vm.succeed("zfs get -H -o value -r recordsize ${pool}").split()
-            oversized = [s for s in sizes if s not in ${builtins.toJSON smallRecordSizes}]
-            assert oversized == ${
-              if cfg.allowLargeRecords
-              then "oversized"
-              else "[]"
-            }, f"oversized record sizes: {oversized}"
-          '';
+          # Restricted to filesystems: zvols carry a volume block size and
+          # report "-" for recordsize, which is not an oversized record.
+          script =
+            if cfg.allowLargeRecords
+            then ''
+              # This host opted into large records, so the size is a deliberate
+              # choice rather than something to assert against.
+              vm.succeed("zfs get -H -o value -r -t filesystem recordsize ${pool}")
+            ''
+            else ''
+              sizes = vm.succeed(
+                  "zfs get -H -o value -r -t filesystem recordsize ${pool}"
+              ).split()
+              oversized = [s for s in sizes if s not in ${builtins.toJSON smallRecordSizes}]
+              assert not oversized, f"oversized record sizes: {oversized}"
+            '';
         }
         {
           name = "zfs-reserved-space";
