@@ -152,6 +152,19 @@ in
         script = ''
           make install
           "$out/bin/autogen" --version
+
+          # AutoGen's timeout watcher can briefly retain the installed
+          # executable after the generator exits. Wait until it releases the
+          # file so the following reference scrub can safely rewrite it.
+          attempts=0
+          while ! : >> "$out/bin/autogen"; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge 30 ]; then
+              echo "installed autogen executable remained busy" >&2
+              exit 1
+            fi
+            sleep 1
+          done
         '';
       }
     ];
