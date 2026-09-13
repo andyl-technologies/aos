@@ -17,13 +17,15 @@ use aos_sandbox_broker_session_protocol::{
     BrokerSessionSignerReferenceV1, BrokerSessionTrafficStateV1, BrokerSessionTranscriptError,
     BrokerSessionTranscriptPhaseV1, ProtectedBrokerSessionKeyV1,
     ProtectedBrokerSessionVerificationContextV1, SignedBrokerClientHelloV1, SignedBrokerHelloV1,
-    SignedBrokerOutcomeV1, SignedBrokerRequestV1, client_hello_fields_digest_v1,
-    complete_signed_client_hello_digest_v1, complete_signed_request_digest_v1,
-    decode_canonical_client_hello_v1, decode_canonical_request_v1, decode_canonical_response_v1,
-    decode_canonical_server_hello_v1, outcome_fields_digest_v1, request_fields_digest_v1,
-    server_hello_fields_digest_v1, sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1,
-    sign_request_v1, signer_set_digest_v1, verify_broker_session_transcript_v1,
-    verify_client_hello_context_v1, verify_client_hello_signature_v1,
+    SignedBrokerOutcomeV1, SignedBrokerRequestV1, authenticated_response_cleared_budget_v1,
+    client_hello_fields_digest_v1, complete_signed_client_hello_digest_v1,
+    complete_signed_request_digest_v1, decode_canonical_client_hello_v1,
+    decode_canonical_request_v1, decode_canonical_response_v1, decode_canonical_server_hello_v1,
+    encode_signed_request_packet_v1, encode_signed_response_packet_v1, outcome_fields_digest_v1,
+    request_fields_digest_v1, server_hello_fields_digest_v1, sign_broker_hello_v1,
+    sign_client_hello_v1, sign_outcome_v1, sign_request_v1, signer_set_digest_v1,
+    verify_broker_session_transcript_v1, verify_client_hello_context_v1,
+    verify_client_hello_signature_v1,
 };
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
@@ -810,6 +812,14 @@ fn provisional_transcript_requires_first_request_and_signed_error_outcome() {
         .unwrap_or_else(|error| panic!("traffic state failed: {error}"));
     let (signed_request, request_packet) =
         signed_request(&handshake, state.transcript().session_binding());
+    let mut cleared_request = BrokerRequestEnvelope::decode_from_slice(&request_packet)
+        .unwrap_or_else(|error| panic!("test request decode failed: {error}"));
+    cleared_request.signed_session_request.clear();
+    assert_eq!(
+        encode_signed_request_packet_v1(cleared_request, &signed_request)
+            .unwrap_or_else(|error| panic!("request attachment failed: {error}")),
+        request_packet
+    );
 
     let request = decode_canonical_request_v1(&request_packet)
         .unwrap_or_else(|error| panic!("request decode failed: {error}"));
@@ -880,6 +890,18 @@ fn provisional_transcript_requires_first_request_and_signed_error_outcome() {
         &handshake,
         pending.transcript().session_binding(),
         &signed_request,
+    );
+    let signed_outcome = decode_canonical_response_v1(&outcome_packet)
+        .unwrap_or_else(|error| panic!("outcome decode failed: {error}"))
+        .signed_artifact()
+        .clone();
+    let mut cleared_outcome = BrokerResponseEnvelope::decode_from_slice(&outcome_packet)
+        .unwrap_or_else(|error| panic!("test outcome decode failed: {error}"));
+    cleared_outcome.signed_session_outcome.clear();
+    assert_eq!(
+        encode_signed_response_packet_v1(cleared_outcome, &signed_outcome)
+            .unwrap_or_else(|error| panic!("outcome attachment failed: {error}")),
+        outcome_packet
     );
     let outcome = decode_canonical_response_v1(&outcome_packet)
         .unwrap_or_else(|error| panic!("outcome decode failed: {error}"));
@@ -1151,6 +1173,60 @@ fn request_and_outcome_projections_commit_nested_body_authority_error_and_tables
             .unwrap_or_else(|error| panic!("changed outcome was not canonical: {error}"));
         assert!(pending.admit_outcome(&changed, &handshake.context).is_err());
     }
+}
+
+#[test]
+fn signed_packet_attachment_rejects_nonempty_carriers_and_changed_commitments() {
+    let handshake = handshake(BrokerSessionProtocolV1::Host, 1);
+    let transcript = transcript(&handshake);
+    let state = BrokerSessionTrafficStateV1::from_provisional_transcript(transcript)
+        .unwrap_or_else(|error| panic!("traffic state failed: {error}"));
+    let (signed_request, request_packet) =
+        signed_request(&handshake, state.transcript().session_binding());
+
+    let mut request = BrokerRequestEnvelope::decode_from_slice(&request_packet)
+        .unwrap_or_else(|error| panic!("request decode failed: {error}"));
+    assert!(encode_signed_request_packet_v1(request.clone(), &signed_request).is_err());
+    request.signed_session_request.clear();
+    let mut changed_method = request.clone();
+    changed_method.method = BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME.into();
+    assert!(encode_signed_request_packet_v1(changed_method, &signed_request).is_err());
+    let mut changed_body = request.clone();
+    changed_body.body.push(0);
+    assert!(encode_signed_request_packet_v1(changed_body, &signed_request).is_err());
+    let mut noncanonical_roles = request.clone();
+    noncanonical_roles.descriptors.push(BrokerDescriptorEntry {
+        index: 0,
+        role: BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER.into(),
+        ..Default::default()
+    });
+    assert!(encode_signed_request_packet_v1(noncanonical_roles, &signed_request).is_err());
+
+    let pending = match state
+        .decode_and_admit_request(&request_packet, REQUEST_ID, 4_096, &handshake.context)
+        .unwrap_or_else(|error| panic!("request admission failed: {error}"))
+    {
+        BrokerRequestAdmissionV1::New { next_state, .. } => next_state,
+        BrokerRequestAdmissionV1::ExactReplay(_) => panic!("first request became replay"),
+    };
+    let (signed_outcome, outcome_packet) = signed_outcome(
+        &handshake,
+        pending.transcript().session_binding(),
+        &signed_request,
+    );
+    let mut response = BrokerResponseEnvelope::decode_from_slice(&outcome_packet)
+        .unwrap_or_else(|error| panic!("response decode failed: {error}"));
+    assert!(encode_signed_response_packet_v1(response.clone(), &signed_outcome).is_err());
+    response.signed_session_outcome.clear();
+    let mut changed_request_id = response.clone();
+    changed_request_id.request_id[0] ^= 1;
+    assert!(encode_signed_response_packet_v1(changed_request_id, &signed_outcome).is_err());
+    let mut changed_response_body = response.clone();
+    changed_response_body.body.push(0);
+    assert!(encode_signed_response_packet_v1(changed_response_body, &signed_outcome).is_err());
+    let mut changed_response_method = response;
+    changed_response_method.method = BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME.into();
+    assert!(encode_signed_response_packet_v1(changed_response_method, &signed_outcome).is_err());
 }
 
 #[test]
@@ -1644,6 +1720,22 @@ fn response_budget_is_exactly_fifteen_mebibytes() {
             AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
         )
         .is_err()
+    );
+    assert_eq!(
+        authenticated_response_cleared_budget_v1(4_096)
+            .unwrap_or_else(|error| panic!("minimum total budget failed: {error}")),
+        4_096 - 343
+    );
+    assert_eq!(
+        authenticated_response_cleared_budget_v1(4_097)
+            .unwrap_or_else(|error| panic!("near-minimum total budget failed: {error}")),
+        4_097 - 343
+    );
+    assert!(authenticated_response_cleared_budget_v1(4_095).is_err());
+    assert_eq!(
+        authenticated_response_cleared_budget_v1(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32)
+            .unwrap_or_else(|error| panic!("maximum total budget failed: {error}")),
+        AUTHENTICATED_RESPONSE_CLEARED_MAXIMUM_BYTES as u32
     );
 }
 

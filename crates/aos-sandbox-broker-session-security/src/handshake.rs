@@ -40,6 +40,8 @@ struct HandshakeCarrier {
     scripted_send_errors: std::collections::VecDeque<SeqpacketError>,
     #[cfg(test)]
     scripted_receive_errors: std::collections::VecDeque<SeqpacketError>,
+    #[cfg(test)]
+    corrupt_peer_after_next_send: bool,
 }
 
 enum HandshakeTransport {
@@ -67,6 +69,8 @@ impl HandshakeCarrier {
             scripted_send_errors: std::collections::VecDeque::new(),
             #[cfg(test)]
             scripted_receive_errors: std::collections::VecDeque::new(),
+            #[cfg(test)]
+            corrupt_peer_after_next_send: false,
         })
     }
 
@@ -81,6 +85,8 @@ impl HandshakeCarrier {
             scripted_send_errors: std::collections::VecDeque::new(),
             #[cfg(test)]
             scripted_receive_errors: std::collections::VecDeque::new(),
+            #[cfg(test)]
+            corrupt_peer_after_next_send: false,
         })
     }
 
@@ -94,10 +100,16 @@ impl HandshakeCarrier {
                 return Err(error);
             }
         }
-        match &mut self.transport {
+        let result = match &mut self.transport {
             HandshakeTransport::Ordinary(socket) => socket.send(bytes),
             HandshakeTransport::Descriptor(socket) => socket.send(bytes),
+        };
+        #[cfg(test)]
+        if self.corrupt_peer_after_next_send {
+            self.corrupt_peer_after_next_send = false;
+            self.peer.process_id ^= 1;
         }
+        result
     }
 
     fn receive(&mut self, maximum: usize) -> Result<BoundFlight, HandshakeError> {
@@ -178,9 +190,26 @@ impl HandshakeCarrier {
     }
 
     #[cfg(test)]
+    fn would_block_next_send(&mut self) {
+        self.scripted_send_errors
+            .push_back(SeqpacketError::WouldBlock);
+    }
+
+    #[cfg(test)]
     fn interrupt_next_receive(&mut self) {
         self.scripted_receive_errors
             .push_back(SeqpacketError::Interrupted);
+    }
+
+    #[cfg(test)]
+    fn would_block_next_receive(&mut self) {
+        self.scripted_receive_errors
+            .push_back(SeqpacketError::WouldBlock);
+    }
+
+    #[cfg(test)]
+    fn corrupt_peer_after_next_send(&mut self) {
+        self.corrupt_peer_after_next_send = true;
     }
 }
 
@@ -880,6 +909,12 @@ struct InertProvisionalClientSession {
     _broker_subject: RetainedSubject,
     _transcript: VerifiedBrokerSessionTranscriptV1,
 }
+
+#[allow(
+    dead_code,
+    reason = "P0-10 keeps the sealed traffic proof production-unreachable"
+)]
+mod traffic;
 
 #[cfg(test)]
 mod tests;

@@ -11,15 +11,16 @@ kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 [dependencies]
 aos-sandbox-broker-session-protocol.workspace = true
 aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
-rustix = { workspace = true, features = ["fs", "process", "rand"] }
+rustix = { workspace = true, features = ["fs", "process", "rand", "time"] }
 sha2.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
-rustix = { workspace = true, features = ["net"] }
+rustix = { workspace = true, features = ["net", "pipe"] }
 tempfile = "3"
 
 [lints]

@@ -74,9 +74,11 @@ pub use projection::{
     BrokerSessionProjectionError, CLIENT_HELLO_CLEARED_MAXIMUM_BYTES, CLIENT_HELLO_MAXIMUM_BYTES,
     CanonicalBrokerClientHelloV1, CanonicalBrokerRequestEnvelopeV1,
     CanonicalBrokerResponseEnvelopeV1, CanonicalBrokerServerHelloV1,
-    SERVER_HELLO_CLEARED_MAXIMUM_BYTES, SERVER_HELLO_MAXIMUM_BYTES, client_hello_fields_digest_v1,
+    SERVER_HELLO_CLEARED_MAXIMUM_BYTES, SERVER_HELLO_MAXIMUM_BYTES,
+    authenticated_response_cleared_budget_v1, client_hello_fields_digest_v1,
     decode_canonical_client_hello_v1, decode_canonical_request_v1, decode_canonical_response_v1,
     decode_canonical_server_hello_v1, encode_signed_client_hello_packet_v1,
+    encode_signed_request_packet_v1, encode_signed_response_packet_v1,
     encode_signed_server_hello_packet_v1, outcome_fields_digest_v1, request_fields_digest_v1,
     server_hello_fields_digest_v1,
 };

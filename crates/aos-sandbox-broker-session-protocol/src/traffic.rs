@@ -279,6 +279,22 @@ impl BrokerSessionTrafficStateV1 {
         self.outstanding.is_some()
     }
 
+    /// Verifies that the supplied protected context is still the retained one.
+    ///
+    /// This pure check is intended for pre-I/O currentness sandwiches. Normal
+    /// request and outcome admission repeats it before cryptographic use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSequenceError`] after any protected-context or
+    /// key-currentness change.
+    pub fn require_current_context(
+        &self,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<(), BrokerSessionSequenceError> {
+        verify_current_context(&self.transcript, context)
+    }
+
     /// Verifies one canonical signed ClientRecord against local context and state.
     ///
     /// `request_id` and `request_maximum_response_bytes` must come from the

@@ -14,15 +14,22 @@
 //! packet digest, the signed ClientRecord bytes and digest, request/session/
 //! sequence/response-bound links, and the exact empty descriptor-role table.
 
-use aos_proto::aos::sandbox::local::v1::{Audience, BrokerDescriptorRole, BrokerMethod};
-use aos_sandbox_broker_session_protocol::{
-    AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, BrokerOutcomeAdmissionV1, BrokerRequestAdmissionV1,
-    BrokerSessionProjectionError, BrokerSessionProtocolV1, BrokerSessionReplayEvidenceV1,
-    BrokerSessionSequenceError, BrokerSessionTrafficStateV1, BrokerSessionTranscriptError,
-    ProtectedBrokerSessionVerificationContextV1, decode_canonical_client_hello_v1,
-    decode_canonical_request_v1, decode_canonical_response_v1, decode_canonical_server_hello_v1,
-    verify_broker_session_transcript_v1,
+use aos_proto::aos::sandbox::local::v1::{
+    Audience, BrokerDescriptorRole, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
+    BrokerResponseEnvelope, InventoryNetworksRequest, RequestHeader,
 };
+use aos_sandbox_broker_session_protocol::{
+    AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, BrokerOutcomeAdmissionV1, BrokerOutcomeSubjectV1,
+    BrokerRequestAdmissionV1, BrokerRequestSubjectV1, BrokerSessionProjectionError,
+    BrokerSessionProtocolV1, BrokerSessionReplayEvidenceV1, BrokerSessionSequenceError,
+    BrokerSessionTrafficStateV1, BrokerSessionTranscriptError,
+    ProtectedBrokerSessionVerificationContextV1, SignedBrokerOutcomeV1, SignedBrokerRequestV1,
+    authenticated_response_cleared_budget_v1, decode_canonical_client_hello_v1,
+    decode_canonical_request_v1, decode_canonical_response_v1, decode_canonical_server_hello_v1,
+    encode_signed_request_packet_v1, encode_signed_response_packet_v1, outcome_fields_digest_v1,
+    request_fields_digest_v1, verify_broker_session_transcript_v1,
+};
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::network_inventory::{
@@ -30,7 +37,9 @@ use crate::network_inventory::{
     decode_network_resource_inventory_response,
 };
 use crate::session::{
-    ValidatedBrokerError, validate_decoded_request_envelope, validate_decoded_response_envelope,
+    ValidatedBrokerError, ValidatedBrokerRequestEnvelope,
+    encode_authenticated_error_response_envelope, encode_authenticated_success_response_envelope,
+    validate_decoded_request_envelope, validate_decoded_response_envelope,
 };
 use crate::{PeerCredentials, PeerPolicy, ProtocolValidationError, validate_request_deadline};
 
@@ -83,6 +92,9 @@ pub struct AuthenticatedNetworkInventoryRequestV1 {
     client_sequence: u64,
     signed_request_bytes: Vec<u8>,
     signed_request_digest: [u8; 32],
+    first_traffic_key_proof: bool,
+    expired_on_first_admission: bool,
+    validated_envelope: ValidatedBrokerRequestEnvelope,
 }
 
 impl AuthenticatedNetworkInventoryRequestV1 {
@@ -153,6 +165,18 @@ impl AuthenticatedNetworkInventoryRequestV1 {
     #[must_use]
     pub const fn signed_request_digest(&self) -> [u8; 32] {
         self.signed_request_digest
+    }
+
+    /// Reports whether this request is the mandatory sequence-one traffic-key proof.
+    #[must_use]
+    pub const fn first_traffic_key_proof(&self) -> bool {
+        self.first_traffic_key_proof
+    }
+
+    /// Reports whether first admission found the authenticated deadline expired.
+    #[must_use]
+    pub const fn expired_on_first_admission(&self) -> bool {
+        self.expired_on_first_admission
     }
 
     /// Returns the exact signed descriptor-role table, which is empty here.
@@ -255,6 +279,236 @@ pub enum AuthenticatedNetworkInventoryRequestAdmissionV1 {
     },
 }
 
+/// Carries the sealed sequence-one traffic proof's deadline classification.
+///
+/// This doc-hidden integration result exists solely for the production-inert
+/// broker-session security composition. Its evidence remains non-authorizing,
+/// and it exposes no signing key, verification context, socket, or descriptor.
+#[doc(hidden)]
+pub enum SealedInitialNetworkInventoryTrafficProofAdmissionV1 {
+    /// The authenticated sequence-one request is fresh enough for work.
+    Fresh {
+        /// Complete non-authorizing semantic request evidence.
+        request: AuthenticatedNetworkInventoryRequestV1,
+        /// Candidate outstanding state retained before any outcome is planned.
+        next_state: Box<AuthenticatedBrokerSessionStateV1>,
+    },
+    /// The authenticated sequence-one request was expired on first admission.
+    AuthenticatedExpired {
+        /// Complete non-authorizing semantic request evidence.
+        request: AuthenticatedNetworkInventoryRequestV1,
+        /// Candidate outstanding state that permits only fixed DeadlineExpired.
+        next_state: Box<AuthenticatedBrokerSessionStateV1>,
+    },
+}
+
+/// Selects one closed terminal result that may be signed without dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthenticatedNetworkInventoryTerminalErrorV1 {
+    /// The completely authenticated request was already past its deadline.
+    DeadlineExpired,
+    /// A valid authoritative inventory exceeded the admitted response ceiling.
+    ResourceExhausted,
+    /// The authoritative Network inventory is unavailable or lacks integrity.
+    IntegrityFailure,
+}
+
+/// Holds one unsigned, non-authorizing sequence-one ClientRecord plan.
+///
+/// The plan owns the provisional state and can only be completed with an exact
+/// purpose-specific signed artifact. It is deliberately non-cloneable.
+pub struct AuthenticatedNetworkInventoryRequestSigningPlanV1 {
+    state: AuthenticatedBrokerSessionStateV1,
+    message: BrokerRequestEnvelope,
+    subject: BrokerRequestSubjectV1,
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+}
+
+impl AuthenticatedNetworkInventoryRequestSigningPlanV1 {
+    /// Returns the exact ClientRecord subject to sign with the dedicated key.
+    #[must_use]
+    pub const fn signing_subject(&self) -> &BrokerRequestSubjectV1 {
+        &self.subject
+    }
+
+    /// Attaches and locally admits the exact purpose-specific signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] unless the signature and
+    /// complete packet match this plan and yield a fresh new admission.
+    pub fn finalize(
+        self,
+        signed: &SignedBrokerRequestV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<PreparedAuthenticatedNetworkInventoryRequestV1, AuthenticatedBrokerSessionError>
+    {
+        let packet = encode_signed_request_packet_v1(self.message, signed)?;
+        let admission = self.state.admit_network_inventory_request(
+            &packet,
+            0,
+            self.peer,
+            self.policy,
+            self.now_boottime_nanoseconds,
+            context,
+        )?;
+        match admission {
+            AuthenticatedNetworkInventoryRequestAdmissionV1::New {
+                request,
+                next_state,
+            } => Ok(PreparedAuthenticatedNetworkInventoryRequestV1 {
+                packet,
+                expired: request.expired_on_first_admission(),
+                request,
+                next_state,
+            }),
+            AuthenticatedNetworkInventoryRequestAdmissionV1::ExactReplay { .. } => {
+                Err(AuthenticatedBrokerSessionError::InconsistentState)
+            }
+        }
+    }
+}
+
+/// Retains an exact locally admitted request and its candidate next state.
+pub struct PreparedAuthenticatedNetworkInventoryRequestV1 {
+    packet: Vec<u8>,
+    request: AuthenticatedNetworkInventoryRequestV1,
+    next_state: Box<AuthenticatedBrokerSessionStateV1>,
+    expired: bool,
+}
+
+impl PreparedAuthenticatedNetworkInventoryRequestV1 {
+    /// Returns the exact packet that must be retained across transport retry.
+    #[must_use]
+    pub fn packet(&self) -> &[u8] {
+        &self.packet
+    }
+
+    /// Reports whether only the fixed deadline-expired outcome is permitted.
+    #[must_use]
+    pub const fn is_expired(&self) -> bool {
+        self.expired
+    }
+
+    /// Rechecks the retained candidate state's protected context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] after any context change.
+    pub fn require_current_context(
+        &self,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<(), AuthenticatedBrokerSessionError> {
+        self.next_state.require_current_context(context)
+    }
+
+    /// Consumes the plan into its request evidence and candidate state.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<u8>,
+        AuthenticatedNetworkInventoryRequestV1,
+        Box<AuthenticatedBrokerSessionStateV1>,
+    ) {
+        (self.packet, self.request, self.next_state)
+    }
+}
+
+/// Holds one unsigned, closed BrokerOutcome plan for the outstanding request.
+pub struct AuthenticatedNetworkInventoryOutcomeSigningPlanV1 {
+    state: AuthenticatedBrokerSessionStateV1,
+    message: BrokerResponseEnvelope,
+    subject: BrokerOutcomeSubjectV1,
+    maximum_total_bytes: u32,
+}
+
+impl AuthenticatedNetworkInventoryOutcomeSigningPlanV1 {
+    /// Returns the exact BrokerOutcome subject to sign with the dedicated key.
+    #[must_use]
+    pub const fn signing_subject(&self) -> &BrokerOutcomeSubjectV1 {
+        &self.subject
+    }
+
+    /// Attaches and locally admits the exact purpose-specific signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] unless the signature and
+    /// complete response match this plan and complete the outstanding request.
+    pub fn finalize(
+        self,
+        signed: &SignedBrokerOutcomeV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<PreparedAuthenticatedNetworkInventoryOutcomeV1, AuthenticatedBrokerSessionError>
+    {
+        let packet = encode_signed_response_packet_v1(self.message, signed)?;
+        if packet.len()
+            > usize::try_from(self.maximum_total_bytes)
+                .map_err(|_| AuthenticatedBrokerSessionError::InconsistentState)?
+        {
+            return Err(ProtocolValidationError::ResponseTooLarge.into());
+        }
+        let admission = self
+            .state
+            .admit_network_inventory_outcome(&packet, 0, context)?;
+        match admission {
+            AuthenticatedNetworkInventoryOutcomeAdmissionV1::New {
+                outcome,
+                next_state,
+            } => Ok(PreparedAuthenticatedNetworkInventoryOutcomeV1 {
+                packet,
+                outcome,
+                next_state,
+            }),
+            AuthenticatedNetworkInventoryOutcomeAdmissionV1::ExactReplay { .. } => {
+                Err(AuthenticatedBrokerSessionError::InconsistentState)
+            }
+        }
+    }
+}
+
+/// Retains an exact locally admitted outcome and its traffic-proved state.
+pub struct PreparedAuthenticatedNetworkInventoryOutcomeV1 {
+    packet: Vec<u8>,
+    outcome: AuthenticatedNetworkInventoryOutcomeV1,
+    next_state: Box<AuthenticatedBrokerSessionStateV1>,
+}
+
+impl PreparedAuthenticatedNetworkInventoryOutcomeV1 {
+    /// Returns the exact packet that must be retained across transport retry.
+    #[must_use]
+    pub fn packet(&self) -> &[u8] {
+        &self.packet
+    }
+
+    /// Rechecks the completed candidate state's protected context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] after any context change.
+    pub fn require_current_context(
+        &self,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<(), AuthenticatedBrokerSessionError> {
+        self.next_state.require_current_context(context)
+    }
+
+    /// Consumes the prepared outcome into evidence and completed state.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<u8>,
+        AuthenticatedNetworkInventoryOutcomeV1,
+        Box<AuthenticatedBrokerSessionStateV1>,
+    ) {
+        (self.packet, self.outcome, self.next_state)
+    }
+}
+
 /// Classifies a new semantic outcome or byte-identical retained replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthenticatedNetworkInventoryOutcomeAdmissionV1 {
@@ -348,6 +602,219 @@ impl AuthenticatedBrokerSessionStateV1 {
         usize::try_from(bound).ok()
     }
 
+    /// Rechecks the exact retained protected context before transport I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] after any context, key, or
+    /// currentness substitution. Admission performs the same check again.
+    pub fn require_current_context(
+        &self,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<(), AuthenticatedBrokerSessionError> {
+        self.traffic.require_current_context(context)?;
+        Ok(())
+    }
+
+    /// Reports whether exactly the mandatory first request/outcome pair completed.
+    #[must_use]
+    pub fn has_initial_traffic_proof(&self) -> bool {
+        self.traffic.next_client_sequence() == 2
+            && self.traffic.next_broker_sequence() == 2
+            && !self.traffic.has_outstanding_request()
+            && self.outstanding_network_inventory.is_none()
+            && self.completed_network_inventory.is_some()
+    }
+
+    /// Consumes a provisional state into the mandatory sequence-one request plan.
+    ///
+    /// The request ID must come from protected kernel entropy in the composing
+    /// custody layer. This pure method neither signs nor sends the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] unless every static Network
+    /// Inventory semantic, negotiated bound, context, and sequence invariant holds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn into_initial_network_inventory_request_plan(
+        self,
+        request_id: [u8; 16],
+        deadline_boottime_nanoseconds: u64,
+        maximum_response_bytes: u32,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        now_boottime_nanoseconds: u64,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<AuthenticatedNetworkInventoryRequestSigningPlanV1, AuthenticatedBrokerSessionError>
+    {
+        self.require_network_inventory_profile()?;
+        self.require_current_context(context)?;
+        self.require_initial_traffic_state()?;
+
+        let body = InventoryNetworksRequest {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                protocol_minor: 0,
+                request_id: request_id.to_vec(),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds,
+                maximum_response_bytes,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let message = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES.into(),
+            body,
+            ..Default::default()
+        };
+        let envelope = validate_decoded_request_envelope(
+            message.clone(),
+            aos_sandbox_core::ProtocolId::NetworkBroker,
+            0,
+        )?;
+        let header =
+            decode_network_resource_inventory_request_static(envelope.body(), peer, policy)?;
+        if *header.request_id() != request_id
+            || header.maximum_response_bytes() != maximum_response_bytes
+            || header.deadline_boottime_nanoseconds() != deadline_boottime_nanoseconds
+        {
+            return Err(AuthenticatedBrokerSessionError::InconsistentState);
+        }
+        let fields = request_fields_digest_v1(&message)?;
+        let subject = BrokerRequestSubjectV1::new(
+            self.traffic.transcript().session_binding(),
+            self.traffic.transcript().client_process(),
+            1,
+            request_id,
+            fields,
+        )
+        .map_err(|_| AuthenticatedBrokerSessionError::InconsistentState)?;
+
+        Ok(AuthenticatedNetworkInventoryRequestSigningPlanV1 {
+            state: self,
+            message,
+            subject,
+            peer,
+            policy,
+            now_boottime_nanoseconds,
+        })
+    }
+
+    /// Consumes an outstanding state into a validated success outcome plan.
+    ///
+    /// An otherwise-valid inventory that cannot fit its effective signed packet
+    /// ceiling is deterministically converted to the fixed ResourceExhausted error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] for malformed inventory,
+    /// identity mismatch, absent sequence-one request, or context change.
+    pub fn into_network_inventory_success_outcome_plan(
+        self,
+        body: Vec<u8>,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<AuthenticatedNetworkInventoryOutcomeSigningPlanV1, AuthenticatedBrokerSessionError>
+    {
+        self.require_current_context(context)?;
+        let inventory = decode_network_resource_inventory_response(
+            &body,
+            u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES).unwrap_or(u32::MAX),
+        )?;
+        if inventory.kernel_boot_id() != &context.boot_id()
+            || inventory.broker_instance_id() != &context.broker_process()
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "authenticated Network inventory identity",
+            )
+            .into());
+        }
+        let request = self.initial_outstanding_request()?;
+        if request.expired_on_first_admission() {
+            return Err(AuthenticatedBrokerSessionError::InconsistentState);
+        }
+        let cleared_budget =
+            authenticated_response_cleared_budget_v1(request.maximum_response_bytes())?;
+        let cleared_minimum = authenticated_response_cleared_budget_v1(4_096)?;
+        match encode_authenticated_success_response_envelope(
+            &request.request_id(),
+            &request.validated_envelope,
+            body,
+            &[],
+            &[],
+            cleared_minimum,
+            cleared_budget,
+        ) {
+            Ok(bytes) => self.outcome_plan_from_cleared_packet(bytes, context),
+            Err(ProtocolValidationError::ResponseTooLarge) => self
+                .into_network_inventory_terminal_outcome_plan(
+                    AuthenticatedNetworkInventoryTerminalErrorV1::ResourceExhausted,
+                    context,
+                ),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Consumes an outstanding state into one fixed signed terminal-error plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] unless the error is permitted
+    /// for the retained request and all context/sequence invariants remain current.
+    pub fn into_network_inventory_terminal_outcome_plan(
+        self,
+        error: AuthenticatedNetworkInventoryTerminalErrorV1,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<AuthenticatedNetworkInventoryOutcomeSigningPlanV1, AuthenticatedBrokerSessionError>
+    {
+        self.require_current_context(context)?;
+        let request = self.initial_outstanding_request()?;
+        let cleared_budget =
+            authenticated_response_cleared_budget_v1(request.maximum_response_bytes())?;
+        let cleared_minimum = authenticated_response_cleared_budget_v1(4_096)?;
+        let (code, message, retryable) = match error {
+            AuthenticatedNetworkInventoryTerminalErrorV1::DeadlineExpired => {
+                if !request.expired_on_first_admission() {
+                    return Err(AuthenticatedBrokerSessionError::InconsistentState);
+                }
+                (
+                    BrokerErrorCode::BROKER_ERROR_CODE_DEADLINE_EXPIRED,
+                    "request deadline expired",
+                    true,
+                )
+            }
+            AuthenticatedNetworkInventoryTerminalErrorV1::ResourceExhausted => (
+                BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED,
+                "authoritative Network inventory exceeds response bound",
+                true,
+            ),
+            AuthenticatedNetworkInventoryTerminalErrorV1::IntegrityFailure => (
+                BrokerErrorCode::BROKER_ERROR_CODE_INTEGRITY_FAILURE,
+                "authoritative Network inventory is unavailable",
+                false,
+            ),
+        };
+        if request.expired_on_first_admission()
+            && error != AuthenticatedNetworkInventoryTerminalErrorV1::DeadlineExpired
+        {
+            return Err(AuthenticatedBrokerSessionError::InconsistentState);
+        }
+        let bytes = encode_authenticated_error_response_envelope(
+            &request.request_id(),
+            &request.validated_envelope,
+            code,
+            message,
+            retryable,
+            None,
+            &[],
+            cleared_minimum,
+            cleared_budget,
+        )?;
+        self.outcome_plan_from_cleared_packet(bytes, context)
+    }
+
     /// Admits a complete authenticated Network Inventory request.
     ///
     /// `peer`, `policy`, and `now_boottime_nanoseconds` are observations from
@@ -363,8 +830,95 @@ impl AuthenticatedBrokerSessionStateV1 {
     ///
     /// Returns [`AuthenticatedBrokerSessionError`] for an unsupported
     /// transcript, nonzero actual descriptors, malformed or invalid method
-    /// semantics, failed cryptography/currentness, or traffic-state failure.
+    /// semantics, first-seen expiry, failed cryptography/currentness, or
+    /// traffic-state failure.
     pub fn admit_network_inventory_request(
+        &self,
+        bytes: &[u8],
+        actual_descriptor_count: usize,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        now_boottime_nanoseconds: u64,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<AuthenticatedNetworkInventoryRequestAdmissionV1, AuthenticatedBrokerSessionError>
+    {
+        let admission = self.admit_network_inventory_request_preserving_expiry(
+            bytes,
+            actual_descriptor_count,
+            peer,
+            policy,
+            now_boottime_nanoseconds,
+            context,
+        )?;
+        match admission {
+            AuthenticatedNetworkInventoryRequestAdmissionV1::New { request, .. }
+                if request.expired_on_first_admission() =>
+            {
+                Err(ProtocolValidationError::DeadlineExpired.into())
+            }
+            admission => Ok(admission),
+        }
+    }
+
+    /// Admits the mandatory sequence-one traffic proof, retaining signed expiry.
+    ///
+    /// This integration seam is solely for the sealed, production-inert
+    /// broker-session security typestate. Ordinary callers must use
+    /// [`Self::admit_network_inventory_request`], which rejects first-seen
+    /// expiry. The returned evidence grants no dispatch or authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthenticatedBrokerSessionError`] unless the state is exactly
+    /// provisional and the request passes every static, cryptographic, context,
+    /// sequence, peer-policy, and descriptor check.
+    #[doc(hidden)]
+    pub fn admit_initial_network_inventory_traffic_proof_request(
+        &self,
+        bytes: &[u8],
+        actual_descriptor_count: usize,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        now_boottime_nanoseconds: u64,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<SealedInitialNetworkInventoryTrafficProofAdmissionV1, AuthenticatedBrokerSessionError>
+    {
+        self.require_initial_traffic_state()?;
+        let admission = self.admit_network_inventory_request_preserving_expiry(
+            bytes,
+            actual_descriptor_count,
+            peer,
+            policy,
+            now_boottime_nanoseconds,
+            context,
+        )?;
+        match admission {
+            AuthenticatedNetworkInventoryRequestAdmissionV1::New {
+                request,
+                next_state,
+            } if request.expired_on_first_admission() => Ok(
+                SealedInitialNetworkInventoryTrafficProofAdmissionV1::AuthenticatedExpired {
+                    request,
+                    next_state,
+                },
+            ),
+            AuthenticatedNetworkInventoryRequestAdmissionV1::New {
+                request,
+                next_state,
+            } => Ok(
+                SealedInitialNetworkInventoryTrafficProofAdmissionV1::Fresh {
+                    request,
+                    next_state,
+                },
+            ),
+            AuthenticatedNetworkInventoryRequestAdmissionV1::ExactReplay { .. } => {
+                Err(AuthenticatedBrokerSessionError::InconsistentState)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_network_inventory_request_preserving_expiry(
         &self,
         bytes: &[u8],
         actual_descriptor_count: usize,
@@ -413,7 +967,11 @@ impl AuthenticatedBrokerSessionStateV1 {
                 request,
                 next_state,
             } => {
-                validate_request_deadline(&header, now_boottime_nanoseconds)?;
+                let expired = match validate_request_deadline(&header, now_boottime_nanoseconds) {
+                    Ok(()) => false,
+                    Err(ProtocolValidationError::DeadlineExpired) => true,
+                    Err(error) => return Err(error.into()),
+                };
                 let evidence = AuthenticatedNetworkInventoryRequestV1 {
                     canonical_packet_bytes: bytes.to_vec(),
                     canonical_packet_digest: packet_digest(
@@ -428,6 +986,9 @@ impl AuthenticatedBrokerSessionStateV1 {
                     client_sequence: request.sequence(),
                     signed_request_bytes: canonical.signed_artifact().to_canonical_bytes(),
                     signed_request_digest: request.signed_request_digest(),
+                    first_traffic_key_proof: request.is_first_traffic_key_proof(),
+                    expired_on_first_admission: expired,
+                    validated_envelope: envelope,
                 };
                 let mut state = self.clone();
                 state.traffic = *next_state;
@@ -548,6 +1109,69 @@ impl AuthenticatedBrokerSessionStateV1 {
             return Err(AuthenticatedBrokerSessionError::UnsupportedProfile);
         }
         Ok(())
+    }
+
+    fn require_initial_traffic_state(&self) -> Result<(), AuthenticatedBrokerSessionError> {
+        if self.traffic.next_client_sequence() != 1
+            || self.traffic.next_broker_sequence() != 1
+            || self.traffic.has_outstanding_request()
+            || self.outstanding_network_inventory.is_some()
+            || self.completed_network_inventory.is_some()
+        {
+            return Err(AuthenticatedBrokerSessionError::InconsistentState);
+        }
+        Ok(())
+    }
+
+    fn initial_outstanding_request(
+        &self,
+    ) -> Result<&AuthenticatedNetworkInventoryRequestV1, AuthenticatedBrokerSessionError> {
+        let request = self
+            .outstanding_network_inventory
+            .as_ref()
+            .ok_or(AuthenticatedBrokerSessionError::InconsistentState)?;
+        if request.client_sequence() != 1
+            || !request.first_traffic_key_proof()
+            || self.traffic.next_client_sequence() != 1
+            || self.traffic.next_broker_sequence() != 1
+            || !self.traffic.has_outstanding_request()
+        {
+            return Err(AuthenticatedBrokerSessionError::InconsistentState);
+        }
+        Ok(request)
+    }
+
+    fn outcome_plan_from_cleared_packet(
+        self,
+        bytes: Vec<u8>,
+        context: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<AuthenticatedNetworkInventoryOutcomeSigningPlanV1, AuthenticatedBrokerSessionError>
+    {
+        self.require_current_context(context)?;
+        let request = self.initial_outstanding_request()?;
+        let maximum_total_bytes = request.maximum_response_bytes();
+        let message = BrokerResponseEnvelope::decode_from_slice(&bytes)
+            .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
+        if !message.signed_session_outcome.is_empty() {
+            return Err(AuthenticatedBrokerSessionError::InconsistentState);
+        }
+        let fields = outcome_fields_digest_v1(&message)?;
+        let subject = BrokerOutcomeSubjectV1::new(
+            self.traffic.transcript().session_binding(),
+            self.traffic.transcript().broker_process(),
+            1,
+            request.request_id(),
+            request.signed_request_digest(),
+            fields,
+        )
+        .map_err(|_| AuthenticatedBrokerSessionError::InconsistentState)?;
+
+        Ok(AuthenticatedNetworkInventoryOutcomeSigningPlanV1 {
+            state: self,
+            message,
+            subject,
+            maximum_total_bytes,
+        })
     }
 
     fn retained_request(

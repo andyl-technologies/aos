@@ -839,6 +839,7 @@ version = "0.1.0"
 dependencies = [
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-linux",
+ "aos-sandbox-protocol",
  "ed25519-dalek",
  "hex",
  "rustix 1.1.4",

@@ -8013,3 +8013,40 @@ changes. Protected deployment and rollback floors, delegated-writer policy,
 traffic proof, request/outcome finalizers, receive allocation, atomic effect
 companions, every integration, MAC qualification, and VM coverage remain open;
 `SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10` remain unchecked.
+
+### Sealed Network sequence-one traffic proof (source-only, inert)
+
+The authenticated semantic composite now has consuming, non-authorizing plans
+for the exact Network 1.0 `InventoryResources` ClientRecord and BrokerOutcome.
+The request plan commits a kernel-generated request ID, exclusive boot-time
+deadline, response bound, empty authorization/descriptor shape, and sequence
+1; it is locally admitted before send. First-seen authenticated expiry retains
+the outstanding candidate only in the purpose-specific sealed traffic-proof
+admission and permits only a fixed signed retryable `DeadlineExpired` result.
+The ordinary public authenticated Network admission still rejects first-seen
+expiry. Success accepts only a complete validated inventory; an otherwise-valid
+oversized inventory becomes fixed `ResourceExhausted`, and the sole other
+construction is the fixed authoritative-inventory-unavailable integrity error.
+Malformed semantic success is never converted into a signed error. The
+request's response ceiling is a total authenticated-packet bound;
+the cleared encoder reserves the frozen 343-byte BrokerOutcome contribution
+and attachment rechecks the complete result. Exact request and response packet
+attachment reuses the frozen AOSBSA01 projection and changes no protobuf or
+artifact bytes.
+
+The security crate privately extends its retained hello socket through this
+mandatory pair on both ordinary and zero-descriptor carriers. Purpose-specific
+finalizers use only ClientRecord pin 2 and BrokerOutcome pin 3, sandwich local
+custody/currentness, self-admit each outbound packet, and retain exact bytes
+across retry. Incoming records are socket-bound and checked against the
+retained ClientHello or BrokerHello subject before semantic admission. A valid
+success or closed signed error yields only an inert private state with both
+sequence heads at 2, no outstanding request, and the completed pair retained.
+
+This source-only composition has no production constructor or caller. It does
+not query the Network catalog, install a snapshot, dispatch, journal,
+advertise, or affect readiness. Protected peer/MAC policy, delegated-writer
+confinement, production resend/allocation, atomic request/result companions,
+Host/Mount receive allocation, all service/controller integrations, readiness,
+Nix, VM, and end-to-end authority remain open. `SBX-BPROTO-04`,
+`SBX-BPROTO-05`, and `SBX-P0-10` remain unchecked.

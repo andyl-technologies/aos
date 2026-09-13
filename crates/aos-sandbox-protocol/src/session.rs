@@ -1378,6 +1378,34 @@ pub fn encode_success_response_envelope(
         None,
         response_descriptor_roles,
         request_descriptor_dispositions,
+        MINIMUM_RESPONSE_BYTES,
+        maximum_bytes,
+    )
+}
+
+/// Encodes a successful cleared response under an authenticated packet budget.
+///
+/// The caller has already reserved the fixed authentication-field contribution,
+/// so this internal path accepts a smaller cleared-packet minimum without
+/// changing the public legacy encoder's historical bounds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_authenticated_success_response_envelope(
+    request_id: &[u8; 16],
+    request: &ValidatedBrokerRequestEnvelope,
+    body: Vec<u8>,
+    response_descriptor_roles: &[BrokerDescriptorRole],
+    request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    minimum_bytes: u32,
+    maximum_bytes: u32,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    encode_response_envelope(
+        request_id,
+        request,
+        body,
+        None,
+        response_descriptor_roles,
+        request_descriptor_dispositions,
+        minimum_bytes,
         maximum_bytes,
     )
 }
@@ -1414,6 +1442,43 @@ pub fn encode_error_response_envelope(
         Some(error),
         &[],
         request_descriptor_dispositions,
+        MINIMUM_RESPONSE_BYTES,
+        maximum_bytes,
+    )
+}
+
+/// Encodes a cleared error response under an authenticated packet budget.
+///
+/// The smaller minimum belongs only to the authenticated projection after its
+/// fixed carrier contribution has been reserved.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_authenticated_error_response_envelope(
+    request_id: &[u8; 16],
+    request: &ValidatedBrokerRequestEnvelope,
+    code: BrokerErrorCode,
+    safe_message: &str,
+    retryable: bool,
+    missing_feature: Option<&FeatureRef>,
+    request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    minimum_bytes: u32,
+    maximum_bytes: u32,
+) -> Result<Vec<u8>, ProtocolValidationError> {
+    let error = BrokerError {
+        code: code.into(),
+        safe_message: safe_message.to_owned(),
+        retryable,
+        missing_feature: missing_feature.map(proto_feature).into(),
+        ..Default::default()
+    };
+    validate_broker_error(&error)?;
+    encode_response_envelope(
+        request_id,
+        request,
+        Vec::new(),
+        Some(error),
+        &[],
+        request_descriptor_dispositions,
+        minimum_bytes,
         maximum_bytes,
     )
 }
@@ -1452,10 +1517,11 @@ fn encode_response_envelope(
     error: Option<BrokerError>,
     response_descriptor_roles: &[BrokerDescriptorRole],
     request_descriptor_dispositions: &[BrokerDescriptorDisposition],
+    minimum_bytes: u32,
     maximum_bytes: u32,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
     exact_nonzero::<16>(request_id, "envelope.request_id")?;
-    if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&maximum_bytes) {
+    if minimum_bytes > maximum_bytes || maximum_bytes > MAXIMUM_RESPONSE_BYTES {
         return Err(ProtocolValidationError::InvalidResponseBound);
     }
     if !valid_response_body_shape(request.method, body.is_empty(), error.is_some()) {
@@ -1491,15 +1557,25 @@ fn encode_response_envelope(
         ..Default::default()
     };
     let bytes = envelope.encode_to_vec();
+    let authenticated_cleared_budget = minimum_bytes < MINIMUM_RESPONSE_BYTES;
+    if authenticated_cleared_budget
+        && bytes.len() > usize::try_from(maximum_bytes).unwrap_or(usize::MAX)
+    {
+        return Err(ProtocolValidationError::ResponseTooLarge);
+    }
+    let semantic_response_bound = maximum_bytes.max(MINIMUM_RESPONSE_BYTES);
     decode_response_envelope(
         &bytes,
         request_id,
         request.method,
         &request.descriptors,
         response_descriptor_roles.len(),
-        maximum_bytes,
-        maximum_bytes,
+        semantic_response_bound,
+        semantic_response_bound,
     )?;
+    if bytes.len() > usize::try_from(maximum_bytes).unwrap_or(usize::MAX) {
+        return Err(ProtocolValidationError::ResponseTooLarge);
+    }
     Ok(bytes)
 }
 

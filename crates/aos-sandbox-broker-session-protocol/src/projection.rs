@@ -78,6 +78,30 @@ const _: [(); AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES] =
 const _: [(); AUTHENTICATED_RESPONSE_MAXIMUM_BYTES] =
     [(); AUTHENTICATED_RESPONSE_CLEARED_MAXIMUM_BYTES + RESPONSE_FIELD_CONTRIBUTION];
 
+/// Converts an authenticated total response ceiling to its cleared packet budget.
+///
+/// The returned budget reserves the exact 343-byte BrokerOutcome protobuf
+/// contribution owned by this projection layer.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionProjectionError::TooLarge`] unless `total_bytes` is
+/// within the authenticated response profile and can reserve the full carrier.
+pub fn authenticated_response_cleared_budget_v1(
+    total_bytes: u32,
+) -> Result<u32, BrokerSessionProjectionError> {
+    let total = usize::try_from(total_bytes).map_err(|_| BrokerSessionProjectionError::TooLarge)?;
+    if !(usize::try_from(AUTHENTICATED_RESPONSE_MINIMUM_BYTES).unwrap_or(usize::MAX)
+        ..=AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
+        .contains(&total)
+    {
+        return Err(BrokerSessionProjectionError::TooLarge);
+    }
+    total_bytes
+        .checked_sub(u32::try_from(RESPONSE_FIELD_CONTRIBUTION).unwrap_or(u32::MAX))
+        .ok_or(BrokerSessionProjectionError::TooLarge)
+}
+
 const CLIENT_HELLO_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-client-hello-fields-v1\0";
 const SERVER_HELLO_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-server-hello-fields-v1\0";
 const REQUEST_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-request-fields-v1\0";
@@ -303,6 +327,72 @@ pub fn encode_signed_server_hello_packet_v1(
     message.signed_session_hello = signed.to_canonical_bytes();
     let encoded = message.encode_to_vec();
     decode_canonical_server_hello_v1(&encoded)?;
+    Ok(encoded)
+}
+
+/// Attaches one signed ClientRecord artifact and canonically encodes its packet.
+///
+/// This projection-only helper performs no signing or method authorization. It
+/// requires the artifact to commit the exact cleared message and method.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionProjectionError`] unless the cleared message has an
+/// empty authentication field, exactly matches the signed subject, and the
+/// resulting packet passes the canonical authenticated request decoder.
+pub fn encode_signed_request_packet_v1(
+    mut message: BrokerRequestEnvelope,
+    signed: &SignedBrokerRequestV1,
+) -> Result<Vec<u8>, BrokerSessionProjectionError> {
+    if !message.signed_session_request.is_empty() {
+        return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
+    }
+    if message.method.as_known() != Some(signed.method())
+        || request_fields_digest_v1(&message)? != signed.subject().cleared_fields_digest()
+    {
+        return Err(BrokerSessionProjectionError::InvalidSemantics);
+    }
+
+    message.signed_session_request = signed.to_canonical_bytes();
+    let encoded = message.encode_to_vec();
+    let canonical = decode_canonical_request_v1(&encoded)?;
+    if canonical.cleared_fields_digest() != signed.subject().cleared_fields_digest() {
+        return Err(BrokerSessionProjectionError::InvalidSemantics);
+    }
+    Ok(encoded)
+}
+
+/// Attaches one signed BrokerOutcome artifact and canonically encodes its packet.
+///
+/// This projection-only helper performs no signing or method authorization. It
+/// requires the artifact to commit the exact cleared message, request ID, and method.
+/// The signed-request cross-link is validated later by the traffic state.
+///
+/// # Errors
+///
+/// Returns [`BrokerSessionProjectionError`] unless the cleared message has an
+/// empty authentication field, exactly matches the signed subject, and the
+/// resulting packet passes the canonical authenticated response decoder.
+pub fn encode_signed_response_packet_v1(
+    mut message: BrokerResponseEnvelope,
+    signed: &SignedBrokerOutcomeV1,
+) -> Result<Vec<u8>, BrokerSessionProjectionError> {
+    if !message.signed_session_outcome.is_empty() {
+        return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
+    }
+    if message.method.as_known() != Some(signed.method())
+        || message.request_id.as_slice() != signed.subject().request_id()
+        || outcome_fields_digest_v1(&message)? != signed.subject().cleared_fields_digest()
+    {
+        return Err(BrokerSessionProjectionError::InvalidSemantics);
+    }
+
+    message.signed_session_outcome = signed.to_canonical_bytes();
+    let encoded = message.encode_to_vec();
+    let canonical = decode_canonical_response_v1(&encoded)?;
+    if canonical.cleared_fields_digest() != signed.subject().cleared_fields_digest() {
+        return Err(BrokerSessionProjectionError::InvalidSemantics);
+    }
     Ok(encoded)
 }
 

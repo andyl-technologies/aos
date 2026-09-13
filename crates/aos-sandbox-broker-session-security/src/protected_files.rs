@@ -205,6 +205,28 @@ impl ProtectedEndpointFiles {
         self.secrets[0].seed()
     }
 
+    pub(crate) fn client_record_seed(
+        &self,
+    ) -> Result<&[u8; SECRET_SEED_BYTES], BrokerSessionSecurityError> {
+        if !matches!(self.role, EndpointRole::Client) {
+            return Err(BrokerSessionSecurityError::KeyMaterial {
+                object: "client record key",
+            });
+        }
+        self.secrets[1].seed()
+    }
+
+    pub(crate) fn broker_outcome_seed(
+        &self,
+    ) -> Result<&[u8; SECRET_SEED_BYTES], BrokerSessionSecurityError> {
+        if !matches!(self.role, EndpointRole::Broker) {
+            return Err(BrokerSessionSecurityError::KeyMaterial {
+                object: "broker outcome key",
+            });
+        }
+        self.secrets[1].seed()
+    }
+
     pub(crate) fn revalidate(&self) -> Result<(), BrokerSessionSecurityError> {
         if rustix::process::geteuid().as_raw() != self.owner {
             return Err(BrokerSessionSecurityError::Currentness);

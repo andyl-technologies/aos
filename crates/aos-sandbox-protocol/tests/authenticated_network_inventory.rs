@@ -558,12 +558,24 @@ fn request_rejects_body_crosslinks_profile_deadline_budget_authority_and_descrip
     for (index, body) in cases.into_iter().enumerate() {
         let (_, packet) =
             signed_request(&handshake, binding, 1, REQUEST_ID, body, Vec::new(), None);
-        assert!(
-            initial
-                .admit_network_inventory_request(&packet, 0, PEER, POLICY, 1, &handshake.context)
-                .is_err(),
-            "invalid body case {index} passed"
+        let result = initial.admit_network_inventory_request(
+            &packet,
+            0,
+            PEER,
+            POLICY,
+            1,
+            &handshake.context,
         );
+        if index == 3 {
+            assert_eq!(
+                result,
+                Err(AuthenticatedBrokerSessionError::Semantics(
+                    ProtocolValidationError::DeadlineExpired,
+                ))
+            );
+        } else {
+            assert!(result.is_err(), "invalid body case {index} passed");
+        }
     }
 
     let (_, authority_packet) = signed_request(
@@ -781,6 +793,38 @@ fn valid_success_inventory_advances_only_after_complete_semantics() {
     assert_eq!(inventory.networks().len(), 1);
     assert!(outcome.descriptor_roles().is_empty());
     assert_eq!(next_state.maximum_outcome_receive_bytes(), Some(8_192));
+}
+
+#[test]
+fn otherwise_valid_success_over_cleared_budget_becomes_bounded_signed_error() {
+    let handshake = handshake();
+    let (pending, _, _, _) = pending(&handshake, 4_096);
+    let plan = pending
+        .into_network_inventory_success_outcome_plan(
+            inventory_body_with_records(40),
+            &handshake.context,
+        )
+        .unwrap();
+    let signed = sign_outcome_v1(
+        BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+        plan.signing_subject().clone(),
+        handshake.keys.signers[3].clone(),
+        &handshake.keys.signing[3],
+    )
+    .unwrap();
+    let prepared = plan.finalize(&signed, &handshake.context).unwrap();
+    let (packet, outcome, completed) = prepared.into_parts();
+
+    assert!(packet.len() <= 4_096);
+    assert!(matches!(
+        outcome.result(),
+        AuthenticatedNetworkInventoryResultV1::Error(error)
+            if error.code() == BrokerErrorCode::BROKER_ERROR_CODE_RESOURCE_EXHAUSTED
+                && error.safe_message()
+                    == "authoritative Network inventory exceeds response bound"
+                && error.retryable()
+    ));
+    assert!(completed.has_initial_traffic_proof());
 }
 
 #[test]

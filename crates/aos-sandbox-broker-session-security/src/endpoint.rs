@@ -1,8 +1,8 @@
 //! Role-local protected custody and narrow safe outputs.
 //!
 //! Client and broker endpoint types own only their two local signing seeds.
-//! The seeds and purpose-specific hello finalizers remain crate-private; the
-//! public custody surface exposes no signing operation.
+//! The seeds and purpose-specific hello and traffic finalizers remain
+//! crate-private; the public custody surface exposes no signing operation.
 //! Every output is surrounded by protected-file and process-incarnation
 //! currentness checks; any failure permanently poisons the object.
 
@@ -13,9 +13,15 @@ use aos_sandbox_broker_session_protocol::{
     ProtectedBrokerSessionVerificationContextV1, UntrustedBrokerSessionEndpointPublicationV1,
     client_hello_fields_digest_v1, complete_signed_client_hello_digest_v1,
     encode_signed_client_hello_packet_v1, encode_signed_server_hello_packet_v1,
-    hello_message::{BrokerClientHello, BrokerServerHello},
-    server_hello_fields_digest_v1, sign_broker_hello_v1, sign_client_hello_v1,
+    hello_message::{BrokerClientHello, BrokerMethod, BrokerServerHello},
+    server_hello_fields_digest_v1, sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1,
+    sign_request_v1,
 };
+use aos_sandbox_protocol::authenticated_session::{
+    AuthenticatedBrokerSessionStateV1, AuthenticatedNetworkInventoryOutcomeSigningPlanV1,
+    PreparedAuthenticatedNetworkInventoryOutcomeV1, PreparedAuthenticatedNetworkInventoryRequestV1,
+};
+use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use ed25519_dalek::SigningKey;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -432,6 +438,57 @@ impl ProtectedBrokerSessionClientV1 {
         }
         Ok(packet)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finalize_initial_client_record(
+        &mut self,
+        state: AuthenticatedBrokerSessionStateV1,
+        broker_process: [u8; 16],
+        deadline_boottime_nanoseconds: u64,
+        maximum_response_bytes: u32,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<PreparedAuthenticatedNetworkInventoryRequestV1, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let result = (|| {
+            let request_id = nonzero_random::<16, _>(&mut KernelEntropy)?;
+            let context = self
+                .inner
+                .context(self.inner.process_execution_id, broker_process)?;
+            let plan = state
+                .into_initial_network_inventory_request_plan(
+                    request_id,
+                    deadline_boottime_nanoseconds,
+                    maximum_response_bytes,
+                    peer,
+                    policy,
+                    now_boottime_nanoseconds,
+                    &context,
+                )
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let subject = plan.signing_subject().clone();
+            let pin = &self.inner.files.manifest().key_pins()[2];
+            let key = SigningKey::from_bytes(self.inner.files.client_record_seed()?);
+            let signed = sign_request_v1(
+                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+                subject,
+                pin.signer().clone(),
+                &key,
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            plan.finalize(&signed, &context)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)
+        })();
+        let prepared = match result {
+            Ok(prepared) => prepared,
+            Err(error) => return self.inner.poison(error),
+        };
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(prepared)
+    }
 }
 
 /// Retains a broker endpoint's protected manifest and two broker signing seeds.
@@ -617,6 +674,39 @@ impl ProtectedBrokerSessionBrokerV1 {
             return self.inner.poison(error);
         }
         Ok(packet)
+    }
+
+    pub(crate) fn finalize_initial_broker_outcome(
+        &mut self,
+        plan: AuthenticatedNetworkInventoryOutcomeSigningPlanV1,
+        client_process: [u8; 16],
+    ) -> Result<PreparedAuthenticatedNetworkInventoryOutcomeV1, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let result = (|| {
+            let context = self
+                .inner
+                .context(client_process, self.inner.process_execution_id)?;
+            let subject = plan.signing_subject().clone();
+            let pin = &self.inner.files.manifest().key_pins()[3];
+            let key = SigningKey::from_bytes(self.inner.files.broker_outcome_seed()?);
+            let signed = sign_outcome_v1(
+                BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+                subject,
+                pin.signer().clone(),
+                &key,
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            plan.finalize(&signed, &context)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)
+        })();
+        let prepared = match result {
+            Ok(prepared) => prepared,
+            Err(error) => return self.inner.poison(error),
+        };
+        if let Err(error) = self.inner.revalidate_after() {
+            return self.inner.poison(error);
+        }
+        Ok(prepared)
     }
 }
 

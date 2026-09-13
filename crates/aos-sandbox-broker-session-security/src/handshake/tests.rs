@@ -1,7 +1,7 @@
 //! End-to-end tests for the private same-channel hello composition.
 
 use std::fs;
-use std::os::fd::AsFd as _;
+use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +15,7 @@ use ed25519_dalek::SigningKey;
 use rustix::net::{AddressFamily, SocketFlags, SocketType};
 use tempfile::TempDir;
 
+use super::traffic::{RemotePeerExpectation, TrafficTransition};
 use super::*;
 use crate::endpoint::{
     load_broker_for_handshake_scripted_test, load_broker_for_handshake_test,
@@ -23,6 +24,8 @@ use crate::endpoint::{
 use crate::manifest::{
     BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1, BrokerSessionSecurityManifestV1,
 };
+use aos_sandbox_protocol::authenticated_session::AuthenticatedNetworkInventoryTerminalErrorV1;
+use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 
 const MANIFEST: &str = "broker-session-manifest";
 const CLIENT_NAMES: [&str; 2] = ["client-hello-signing-key", "client-record-signing-key"];
@@ -124,6 +127,17 @@ fn write_protected(path: &Path, bytes: &[u8]) {
         .unwrap_or_else(|error| panic!("protected permissions failed: {error}"));
 }
 
+fn mutate_protected(path: &Path) {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .unwrap_or_else(|error| panic!("mutation permission failed: {error}"));
+    let mut bytes = fs::read(path).unwrap_or_else(|error| panic!("mutation read failed: {error}"));
+    let final_index = bytes.len() - 1;
+    bytes[final_index] ^= 1;
+    fs::write(path, bytes).unwrap_or_else(|error| panic!("mutation write failed: {error}"));
+    fs::set_permissions(path, fs::Permissions::from_mode(0o400))
+        .unwrap_or_else(|error| panic!("mutation permission restore failed: {error}"));
+}
+
 fn authentication_feature() -> Feature {
     Feature {
         namespace: "aos.sandbox.authentication.broker-session".to_owned(),
@@ -192,6 +206,346 @@ fn finish_handshake(
         other => panic_transition("broker hello receive", other),
     };
     (client, broker)
+}
+
+fn local_peer_expectation() -> RemotePeerExpectation {
+    let uid = rustix::process::geteuid().as_raw();
+    let gid = rustix::process::getegid().as_raw();
+    RemotePeerExpectation::for_test(
+        PeerCredentials {
+            uid,
+            gid,
+            pid: Some(
+                u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
+                    .unwrap_or_else(|error| panic!("pid conversion failed: {error}")),
+            ),
+        },
+        PeerPolicy {
+            uid,
+            gid: Some(gid),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+    )
+}
+
+#[test]
+fn mandatory_sequence_one_error_proves_both_traffic_keys() {
+    for descriptor in [false, true] {
+        let fixture = Fixture::new();
+        let (client_carrier, broker_carrier) = carrier_pair(descriptor);
+        let (client, broker) = finish_handshake(&fixture, client_carrier, broker_carrier);
+
+        let client = client
+            .prepare_traffic_proof(local_peer_expectation())
+            .unwrap_or_else(|error| panic!("client traffic plan failed: {error:?}"));
+        let broker = broker
+            .await_traffic_proof(local_peer_expectation())
+            .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+        let client = match client.send() {
+            TrafficTransition::Complete(client) => client,
+            _ => panic!("ClientRecord did not send"),
+        };
+        let broker = match broker.receive() {
+            TrafficTransition::Complete(broker) => broker,
+            _ => panic!("ClientRecord did not authenticate"),
+        };
+        let broker = broker
+            .prepare_terminal_error(AuthenticatedNetworkInventoryTerminalErrorV1::IntegrityFailure)
+            .unwrap_or_else(|error| panic!("outcome plan failed: {error:?}"));
+        let broker = match broker.send() {
+            TrafficTransition::Complete(broker) => broker,
+            _ => panic!("BrokerOutcome did not send"),
+        };
+        let client = match client.receive() {
+            TrafficTransition::Complete(client) => client,
+            _ => panic!("BrokerOutcome did not authenticate"),
+        };
+        assert!(broker.has_exact_initial_proof());
+        assert!(client.has_exact_initial_proof());
+        assert!(broker.outcome_packet_len_for_test() <= 4_096);
+        assert!(client.outcome_packet_len_for_test() <= 4_096);
+    }
+}
+
+#[test]
+fn mandatory_sequence_one_success_proves_both_traffic_keys() {
+    let fixture = Fixture::new();
+    let (client_socket, broker_fd) = SeqpacketSocket::pair_with_record_subjects()
+        .unwrap_or_else(|error| panic!("ordinary pair failed: {error}"));
+    let broker_socket = SeqpacketSocket::from_owned(broker_fd)
+        .unwrap_or_else(|error| panic!("broker adoption failed: {error}"));
+    let client_carrier = HandshakeCarrier::ordinary(client_socket)
+        .unwrap_or_else(|error| panic!("client carrier failed: {error:?}"));
+    let broker_carrier = HandshakeCarrier::ordinary(broker_socket)
+        .unwrap_or_else(|error| panic!("broker carrier failed: {error:?}"));
+    let (client, broker) = finish_handshake(&fixture, client_carrier, broker_carrier);
+    let broker_process = broker._transcript.broker_process();
+    let boot_id = broker
+        ._custody
+        .context_for_handshake(broker._transcript.client_process())
+        .unwrap_or_else(|error| panic!("broker context failed: {error}"))
+        .boot_id();
+
+    let client = client
+        .prepare_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("client traffic plan failed: {error:?}"));
+    let broker = broker
+        .await_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+    let client = match client.send() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("ClientRecord did not send"),
+    };
+    let broker = match broker.receive() {
+        TrafficTransition::Complete(broker) => broker,
+        _ => panic!("ClientRecord did not authenticate"),
+    };
+    let mut inventory = Vec::with_capacity(40);
+    inventory.extend_from_slice(&[0x0a, 16]);
+    inventory.extend_from_slice(&boot_id);
+    inventory.extend_from_slice(&[0x10, 1, 0x18, 1, 0x2a, 16]);
+    inventory.extend_from_slice(&broker_process);
+    let broker = broker
+        .prepare_success(inventory)
+        .unwrap_or_else(|error| panic!("success plan failed: {error:?}"));
+    let broker = match broker.send() {
+        TrafficTransition::Complete(broker) => broker,
+        _ => panic!("BrokerOutcome did not send"),
+    };
+    let client = match client.receive() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("BrokerOutcome did not authenticate"),
+    };
+    assert!(broker.has_exact_initial_proof());
+    assert!(client.has_exact_initial_proof());
+    assert!(broker.outcome_packet_len_for_test() <= 4_096);
+    assert!(client.outcome_packet_len_for_test() <= 4_096);
+}
+
+#[test]
+fn expired_authenticated_request_receives_a_signed_traffic_proving_outcome() {
+    let fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, broker) = finish_handshake(&fixture, client_carrier, broker_carrier);
+    let client = client
+        .prepare_expiring_traffic_proof_for_test(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("client expiring plan failed: {error:?}"));
+    let broker = broker
+        .await_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+    let client = match client.send() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("expiring ClientRecord did not send"),
+    };
+    let broker = match broker.receive() {
+        TrafficTransition::Complete(broker) => broker,
+        _ => panic!("expired ClientRecord did not authenticate"),
+    };
+    assert!(broker.is_expired_for_test());
+    let broker = broker
+        .prepare_terminal_error(AuthenticatedNetworkInventoryTerminalErrorV1::DeadlineExpired)
+        .unwrap_or_else(|error| panic!("deadline outcome plan failed: {error:?}"));
+    let broker = match broker.send() {
+        TrafficTransition::Complete(broker) => broker,
+        _ => panic!("deadline BrokerOutcome did not send"),
+    };
+    let client = match client.receive() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("deadline BrokerOutcome did not authenticate"),
+    };
+    assert!(broker.has_exact_initial_proof());
+    assert!(client.has_exact_initial_proof());
+    assert!(broker.outcome_packet_len_for_test() <= 4_096);
+    assert!(client.outcome_packet_len_for_test() <= 4_096);
+}
+
+#[test]
+fn traffic_packets_and_states_survive_interrupted_io_exactly() {
+    let fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, broker) = finish_handshake(&fixture, client_carrier, broker_carrier);
+    let mut client = client
+        .prepare_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("client traffic plan failed: {error:?}"));
+    let request_packet = client.packet_for_test().to_vec();
+    client.would_block_next_send();
+    let client = match client.send() {
+        TrafficTransition::Retry(client) => client,
+        _ => panic!("would-block ClientRecord send did not retry"),
+    };
+    assert_eq!(client.packet_for_test(), request_packet);
+
+    let mut broker = broker
+        .await_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+    broker.interrupt_next_receive();
+    let broker = match broker.receive() {
+        TrafficTransition::Retry(broker) => broker,
+        _ => panic!("interrupted ClientRecord receive did not retry"),
+    };
+    let mut client = match client.send() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("ClientRecord retry did not complete"),
+    };
+    let broker = match broker.receive() {
+        TrafficTransition::Complete(broker) => broker,
+        _ => panic!("ClientRecord receive retry did not complete"),
+    };
+    client.would_block_next_receive();
+    let client = match client.receive() {
+        TrafficTransition::Retry(client) => client,
+        _ => panic!("would-block BrokerOutcome receive did not retry"),
+    };
+
+    let mut broker = broker
+        .prepare_terminal_error(AuthenticatedNetworkInventoryTerminalErrorV1::IntegrityFailure)
+        .unwrap_or_else(|error| panic!("outcome plan failed: {error:?}"));
+    let outcome_packet = broker.packet_for_test().to_vec();
+    broker.interrupt_next_send();
+    let broker = match broker.send() {
+        TrafficTransition::Retry(broker) => broker,
+        _ => panic!("interrupted BrokerOutcome send did not retry"),
+    };
+    assert_eq!(broker.packet_for_test(), outcome_packet);
+    let _broker = match broker.send() {
+        TrafficTransition::Complete(broker) => broker,
+        _ => panic!("BrokerOutcome retry did not complete"),
+    };
+    let _client = match client.receive() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("BrokerOutcome receive retry did not complete"),
+    };
+}
+
+#[test]
+fn traffic_proof_rejects_a_peer_expectation_not_bound_to_the_socket() {
+    let fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, broker) = finish_handshake(&fixture, client_carrier, broker_carrier);
+    drop(broker);
+
+    let uid = rustix::process::geteuid().as_raw().wrapping_add(1);
+    let gid = rustix::process::getegid().as_raw();
+    let expectation = RemotePeerExpectation::for_test(
+        PeerCredentials {
+            uid,
+            gid,
+            pid: None,
+        },
+        PeerPolicy {
+            uid,
+            gid: Some(gid),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        },
+    );
+    assert!(client.prepare_traffic_proof(expectation).is_err());
+}
+
+#[test]
+fn traffic_finalizers_reject_role_local_second_key_mutation() {
+    let client_fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, broker) = finish_handshake(&client_fixture, client_carrier, broker_carrier);
+    drop(broker);
+    mutate_protected(&client_fixture.client.join(CLIENT_NAMES[1]));
+    assert!(matches!(
+        client.prepare_traffic_proof(local_peer_expectation()),
+        Err(super::traffic::TrafficProofError::Local)
+    ));
+
+    let broker_fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, broker) = finish_handshake(&broker_fixture, client_carrier, broker_carrier);
+    let client = client
+        .prepare_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("client traffic plan failed: {error:?}"));
+    let broker = broker
+        .await_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+    let _client = match client.send() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("ClientRecord did not send"),
+    };
+    let broker = match broker.receive() {
+        TrafficTransition::Complete(broker) => broker,
+        _ => panic!("ClientRecord did not authenticate"),
+    };
+    mutate_protected(&broker_fixture.broker.join(BROKER_NAMES[1]));
+    assert!(matches!(
+        broker
+            .prepare_terminal_error(AuthenticatedNetworkInventoryTerminalErrorV1::IntegrityFailure),
+        Err(super::traffic::TrafficProofError::Local)
+    ));
+}
+
+#[test]
+fn traffic_subject_and_post_send_currentness_fail_closed() {
+    let subject_fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, broker) = finish_handshake(&subject_fixture, client_carrier, broker_carrier);
+    let client = client
+        .prepare_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("client traffic plan failed: {error:?}"));
+    let mut broker = broker
+        .await_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+    let _client = match client.send() {
+        TrafficTransition::Complete(client) => client,
+        _ => panic!("ClientRecord did not send"),
+    };
+    broker.corrupt_client_subject_for_test();
+    assert!(matches!(
+        broker.receive(),
+        TrafficTransition::Failed(super::traffic::TrafficProofError::RemoteInvalid)
+    ));
+
+    let post_fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, broker) = finish_handshake(&post_fixture, client_carrier, broker_carrier);
+    let mut client = client
+        .prepare_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("client traffic plan failed: {error:?}"));
+    let _broker = broker
+        .await_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+    client.corrupt_peer_after_next_send();
+    assert!(matches!(
+        client.send(),
+        TrafficTransition::Failed(super::traffic::TrafficProofError::RemoteInvalid)
+    ));
+}
+
+#[test]
+fn descriptor_traffic_rejects_and_drops_an_unexpected_fd() {
+    let fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(true);
+    let (client, broker) = finish_handshake(&fixture, client_carrier, broker_carrier);
+    let mut client = client
+        .prepare_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("client traffic plan failed: {error:?}"));
+    let broker = broker
+        .await_traffic_proof(local_peer_expectation())
+        .unwrap_or_else(|error| panic!("broker traffic wait failed: {error:?}"));
+    let (descriptor, retained_writer) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
+        .unwrap_or_else(|error| panic!("descriptor fixture failed: {error}"));
+    let descriptor_link = fs::read_link(format!("/proc/self/fd/{}", descriptor.as_raw_fd()))
+        .unwrap_or_else(|error| panic!("descriptor identity failed: {error}"));
+    client
+        .send_with_unexpected_descriptor(descriptor.as_fd())
+        .unwrap_or_else(|error| panic!("descriptor traffic send failed: {error:?}"));
+    drop(descriptor);
+    assert!(matches!(
+        broker.receive(),
+        TrafficTransition::Failed(super::traffic::TrafficProofError::RemoteInvalid)
+    ));
+    let matching_descriptors = fs::read_dir("/proc/self/fd")
+        .unwrap_or_else(|error| panic!("post-failure fd inventory failed: {error}"))
+        .filter_map(Result::ok)
+        .filter_map(|entry| fs::read_link(entry.path()).ok())
+        .filter(|target| target == &descriptor_link)
+        .count();
+    assert_eq!(matching_descriptors, 1);
+    drop(retained_writer);
 }
 
 fn start_client_hello_flight(fixture: &Fixture) -> (ClientHelloFlight, SeqpacketSocket) {

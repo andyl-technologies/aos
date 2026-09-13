@@ -15,7 +15,8 @@
 //! private self-execution module pins and revalidates the loading process, the
 //! private entropy module implements bounded kernel acquisition, the endpoint
 //! module exposes deliberately narrow client and broker custody APIs, and the
-//! private handshake module owns the unreachable same-channel hello typestate.
+//! private handshake module owns the unreachable same-channel hello and
+//! mandatory Network sequence-one traffic-proof typestates.
 
 #![cfg(target_os = "linux")]
 

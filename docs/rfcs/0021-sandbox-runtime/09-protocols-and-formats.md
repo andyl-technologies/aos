@@ -1317,14 +1317,41 @@ Prepared exact packets remain state-owned across nonblocking retry and are not
 re-signed or re-nonced. Invalid, duplicate, reordered, cross-channel, partial,
 or descriptor-bearing flights close the private handshake; local custody
 failure poisons custody. Completion exposes only a private non-authorizing
-Provisional transcript and performs no traffic-key proof.
+Provisional transcript.
+
+A subsequent source-only sealed stage requires the first traffic exchange to
+be Network 1.0 `InventoryResources`, NodeController, ClientRecord sequence 1,
+with no authorization quartet or descriptors. The protected client creates the
+request ID from blocking kernel entropy, selects an exclusive `CLOCK_BOOTTIME`
+deadline, signs only with the ClientRecord key, and locally admits the exact
+packet before its first send. The broker authenticates and semantically admits
+the same socket-bound record before any outcome exists. A first-seen expired
+request is retained only by the purpose-specific sealed traffic-proof seam and
+can produce only the fixed retryable `DeadlineExpired` outcome. The ordinary
+public authenticated Network admission remains fail-closed with
+`DeadlineExpired`; malformed or unauthenticated input produces no signed
+oracle. Fresh work may produce a fully validated inventory, fixed
+`ResourceExhausted`, or fixed unavailable-integrity outcome. Each outcome is
+signed only with the BrokerOutcome key and locally admitted before send.
+The request's response ceiling covers the complete authenticated packet; the
+cleared response encoder reserves the exact 343-byte BrokerOutcome field, and
+packet attachment rechecks that the resulting total does not exceed the
+retained ceiling. An otherwise-valid success that exceeds this cleared budget
+deterministically becomes the fixed bounded `ResourceExhausted` outcome.
+Either a valid success or closed signed error completes the private traffic
+proof with both sequence heads at 2, no outstanding request, and the latest
+complete pair retained. Retry keeps the exact packet, signature, request ID,
+deadline, and candidate state. Exact replay does not re-expire, while changed
+equal sequence or request ID remains equivocation.
 
 There is deliberately no public constructor, carrier trait, socket extractor,
 raw process/nonce/context/session accessor, generic signer, or production
-entrypoint. Protected peer/MAC policy, delegated-writer confinement, traffic
-proof and request/outcome signing, receive allocation, durable atomic
-companions, all service/controller wiring, readiness, Nix, and VM qualification
-remain open. `SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10` stay unchecked.
+entrypoint. The private peer expectation has only a test constructor and never
+derives policy from received credentials. Protected peer/MAC policy,
+delegated-writer confinement, production receive allocation and resend, durable
+atomic companions, all service/controller wiring, readiness, Nix, and VM
+qualification remain open. `SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10`
+stay unchecked.
 
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and
