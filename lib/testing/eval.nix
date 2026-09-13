@@ -1186,10 +1186,20 @@
   # The value of these gates is that they refuse a configuration rather than
   # letting a host discover the consequence months into an uptime, so each one
   # asserts the refusal as well as the accepted shape.
+  # The production shape: a bare-metal host whose image slots and system state
+  # both live in the pool. /var on the pool requires the zvol boot backend, so
+  # this is the configuration the dataset and mount assertions describe.
   zfsSystem = mkSystem [
-    ../../systems/server.nix
-    {aos.filesystems.zfs.enable = true;}
+    ../../systems/server-verity.nix
+    {aos.profiles.bareMetalZfs.enable = true;}
   ];
+
+  # Rejection fixtures only need ZFS enabled; each asserts that its own
+  # policy violation is reported, not that the whole configuration is valid.
+  zfsRejectionBase = {
+    aos.filesystems.zfs.enable = true;
+    aos.filesystems.zfs.systemState = false;
+  };
 
   # `assertions` are evaluated by the module system but only reported when a
   # consumer forces them, so a rejection test has to read them directly.
@@ -1211,32 +1221,28 @@
 
   zfsLargeRecordsSystem = mkSystem [
     ../../systems/server.nix
+    zfsRejectionBase
     {
-      aos.filesystems.zfs.enable = true;
-      aos.filesystems.zfs.datasets."var/bulk" = {
-        mountPoint = "/var/bulk";
+      aos.filesystems.zfs.datasets."srv/bulk" = {
+        mountPoint = "/srv/bulk";
         recordSize = "1M";
       };
     }
   ];
   zfsDeduplicationSystem = mkSystem [
     ../../systems/server.nix
-    {
-      aos.filesystems.zfs.enable = true;
-      aos.filesystems.zfs.datasets."var/lib".deduplicate = true;
-    }
+    zfsRejectionBase
+    {aos.filesystems.zfs.datasets."srv/vault".deduplicate = true;}
   ];
   zfsUnboundedDeduplicationSystem = mkSystem [
     ../../systems/server.nix
-    {
-      aos.filesystems.zfs.enable = true;
-      aos.filesystems.zfs.allowDeduplication = true;
-    }
+    zfsRejectionBase
+    {aos.filesystems.zfs.allowDeduplication = true;}
   ];
   zfsOverCommittedSystem = mkSystem [
     ../../systems/server.nix
+    zfsRejectionBase
     {
-      aos.filesystems.zfs.enable = true;
       aos.filesystems.zfs.memory = {
         arcPercent = 80;
         scrubPercent = 30;
@@ -1244,6 +1250,47 @@
       };
     }
   ];
+
+  # A pool that exists is not the same as a pool that carries system state.
+  # With systemState off, /var must be provisioned exactly as it is without
+  # ZFS: repart carves it and the initrd mounts the image's partition. Keying
+  # that off the pool's mere existence leaves the initrd unable to assemble
+  # /etc, and the guest then fails to switch root. Compare against a system
+  # with no pool at all rather than asserting absolutes, since the shape of
+  # that path depends on other options.
+  zfsDataOnlySystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.filesystems.zfs.enable = true;
+      aos.filesystems.zfs.systemState = false;
+    }
+  ];
+  varProvisioningShape = configuration: let
+    initrdServices = configuration.config.boot.initrd.systemd.services;
+    mountVar = initrdServices."mount-var";
+  in {
+    repart = initrdServices."aos-repart".enable or true;
+    condition = mountVar.unitConfig.ConditionPathExists or null;
+    unlockDependency = builtins.elem "aos-zfs-unlock.service" mountVar.requires;
+    fstabHasVar = containsStr "partlabel/var" configuration.config.environment.etc."fstab".text;
+    units = builtins.attrNames initrdServices;
+  };
+  zfsDataOnlyKeepsImageVarPath = let
+    withoutPool = varProvisioningShape system;
+    withDataPool = varProvisioningShape zfsDataOnlySystem;
+  in
+    if withDataPool != withoutPool
+    then
+      throw (
+        "a data-only pool changed how /var is provisioned: "
+        + builtins.toJSON {
+          expected = builtins.removeAttrs withoutPool ["units"];
+          actual = builtins.removeAttrs withDataPool ["units"];
+        }
+      )
+    else if withDataPool.unlockDependency
+    then throw "a data-only pool must not make /var depend on the zvol unlock unit"
+    else "image-provisioned";
 
   zfsKernelParameters = zfsSystem.config.aos.boot.kernelParams;
   hasKernelParameter = parameter: builtins.elem parameter zfsKernelParameters;
@@ -1628,6 +1675,7 @@ in
         echo "sysctl merge:   base performance tunables ${sysctlDefinitionsMerge} with module additions"
         echo "zfs memory:     ZFS kernel memory is ${zfsMemoryPolicy} by an absolute budget"
         echo "zfs datasets:   declared datasets are ${zfsDatasetRealization} with generated mounts"
+        echo "zfs data pool:  a pool without system state leaves /var ${zfsDataOnlyKeepsImageVarPath}"
         echo "zfs policy:     unsafe geometry is ${zfsPolicyRejections}"
 
         # Force the build attributes to ensure they evaluate
