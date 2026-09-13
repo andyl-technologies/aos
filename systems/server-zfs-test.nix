@@ -55,6 +55,9 @@ in {
         mountPoint = "/srv/data/records";
         recordSize = "16K";
         compression = "zstd-1";
+        # Small enough that a check can fill it quickly and observe the quota
+        # stop the write rather than the pool filling up.
+        quota = "32M";
       };
       # A container dataset with no mount point: it must be created, must not
       # acquire a mount point from its parent, and must not gain a mount unit.

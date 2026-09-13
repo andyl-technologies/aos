@@ -630,6 +630,47 @@ in {
           '';
         }
         {
+          name = "zfs-arc-follows-installed-memory";
+          description = "The boot policy lowers the ARC to the host's proportional budget";
+          # The absolute ceiling is what the kernel command line carries. On a
+          # guest this small the percentage cap binds first, so seeing the ARC
+          # below the ceiling proves the policy service resolved the budget
+          # against real memory rather than leaving the static value in place.
+          script = ''
+            vm.wait_for_unit("aos-zfs-memory-policy.service")
+
+            mem_total = int(vm.succeed("grep MemTotal /proc/meminfo").split()[1]) * 1024
+            budget = min(${toString memory.maxBytes}, mem_total // 100 * ${toString memory.maxPercent})
+            expected = budget // 100 * ${toString memory.arcPercent}
+
+            arc_max = int(vm.succeed("cat /sys/module/zfs/parameters/zfs_arc_max").strip())
+            assert arc_max == expected, f"zfs_arc_max is {arc_max}, expected {expected}"
+          '';
+        }
+        {
+          name = "zfs-verification-rejects-drift";
+          description = "The verification service fails when a live parameter leaves its budget";
+          # The guard is only worth having if it actually refuses. Move a
+          # runtime-writable parameter out of bounds, confirm the service
+          # fails and says so, then restore it.
+          script = ''
+            vm.succeed("systemctl restart aos-zfs-verify-parameters.service")
+
+            original = vm.succeed("cat /sys/module/zfs/parameters/zfs_arc_max").strip()
+            vm.succeed(
+                "echo ${toString (ceilingArcMax * 4)} > /sys/module/zfs/parameters/zfs_arc_max"
+            )
+            vm.fail("systemctl restart aos-zfs-verify-parameters.service")
+            journal = vm.succeed(
+                "journalctl -u aos-zfs-verify-parameters.service --no-pager | tail -20"
+            )
+            assert "above the configured ceiling" in journal, journal
+
+            vm.succeed(f"echo {original} > /sys/module/zfs/parameters/zfs_arc_max")
+            vm.succeed("systemctl restart aos-zfs-verify-parameters.service")
+          '';
+        }
+        {
           name = "zfs-panics-on-oops";
           description = "A kernel oops reboots instead of wedging the storage stack";
           script = ''

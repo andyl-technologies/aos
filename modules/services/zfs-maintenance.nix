@@ -542,6 +542,44 @@ in {
           script = ''
             vm.succeed("systemctl is-active aos-zfs-scrub.timer")
           '';
+        }
+        ++ lib.optional cfg.scrub.enable {
+          name = "zfs-scrub-completes";
+          description = "A scrub runs to completion and repairs nothing on a healthy pool";
+          # Exercises the scan path with the bounded sort queue in force, which
+          # is the parameter most likely to make a scrub misbehave.
+          script = ''
+            vm.succeed("systemctl start aos-zfs-scrub.service")
+            vm.wait_until_succeeds(
+                "zpool status ${pool} | grep -q 'scan: scrub repaired'", timeout=120
+            )
+
+            status = vm.succeed("zpool status ${pool}")
+            assert "with 0 errors" in status, status
+            assert "repaired 0B" in status, status
+          '';
+        }
+        ++ lib.optional cfg.metrics.enable {
+          name = "zfs-metrics-track-arc";
+          description = "Published ARC figures match what the kernel reports";
+          script = ''
+            vm.succeed("systemctl start aos-zfs-metrics.service")
+            metrics = vm.succeed("cat ${cfg.metrics.path}")
+
+            published = {
+                line.split()[0]: int(line.split()[1])
+                for line in metrics.splitlines()
+                if line and not line.startswith("#") and " " in line
+            }
+            target = int(
+                vm.succeed("awk '$1 == \"c\" { print $3 }' /proc/spl/kstat/zfs/arcstats").strip()
+            )
+            assert published["aos_zfs_arc_target_bytes"] == target, (
+                f"published target {published['aos_zfs_arc_target_bytes']} != kernel {target}"
+            )
+            assert published["aos_zfs_arc_bytes"] > 0
+            assert published['aos_zfs_pool_health{pool="${pool}",state="ONLINE"}'] == 1
+          '';
         };
     };
   };
