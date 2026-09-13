@@ -9,8 +9,10 @@ default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 
 [dependencies]
+aos-sandbox.workspace = true
 aos-sandbox-broker-session-protocol.workspace = true
 aos-sandbox-linux.workspace = true
+aos-sandbox-network.workspace = true
 aos-sandbox-protocol.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 rustix = { workspace = true, features = ["fs", "process", "rand", "time"] }

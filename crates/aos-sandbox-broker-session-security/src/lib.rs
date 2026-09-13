@@ -6,9 +6,11 @@
 //! self pidfd, and obtains process identifiers and hello nonces directly from
 //! the Linux kernel. A sealed private composition finalizes the two hello
 //! signatures and carries their three bootstrap flights over one socket, but
-//! it has no production entry point. This crate does not expose signing,
-//! verification-context, or session-binding APIs, advertise the authentication
-//! feature, authorize peers, dispatch effects, or persist state.
+//! it has no production entry point. A further private typestate composes the
+//! protected controller and Network catalog journals around the mandatory
+//! sequence-one exchange. This crate does not expose signing,
+//! verification-context, session-binding, journal-owner, or channel APIs,
+//! advertise the authentication feature, authorize peers, or dispatch effects.
 //!
 //! [`manifest`] owns the fixed `AOSBSC01` format. The private protected-files
 //! module pins the endpoint directory and its three role-local files. The

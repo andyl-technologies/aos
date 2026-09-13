@@ -837,8 +837,10 @@ dependencies = [
 name = "aos-sandbox-broker-session-security"
 version = "0.1.0"
 dependencies = [
+ "aos-sandbox",
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-linux",
+ "aos-sandbox-network",
  "aos-sandbox-protocol",
  "ed25519-dalek",
  "hex",

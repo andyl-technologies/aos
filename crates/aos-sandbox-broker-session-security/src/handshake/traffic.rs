@@ -1,9 +1,11 @@
 //! Sealed sequence-one Network Inventory traffic-key proof.
 //!
 //! This private typestate retains the hello socket and kernel evidence while a
-//! mandatory ClientRecord and BrokerOutcome prove the two traffic keys. It
-//! authorizes no peer, observes no catalog, dispatches no work, and has no
-//! production constructor until protected peer and MAC policy exists.
+//! mandatory ClientRecord and BrokerOutcome prove the two traffic keys. Its
+//! durable branch additionally retains protected journal owners while it
+//! reserves, observes, commits, and rechecks that sequence-one exchange. It
+//! authorizes no peer, dispatches no work, and has no production constructor
+//! until protected peer and MAC policy exists.
 
 use super::*;
 use aos_sandbox_broker_session_protocol::ProtectedBrokerSessionVerificationContextV1;
@@ -18,6 +20,10 @@ use aos_sandbox_protocol::authenticated_session::{
     },
 };
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+
+mod broker_owner;
+mod channel;
+mod client_owner;
 
 const FIRST_RESPONSE_BOUND: u32 = 4_096;
 const FIRST_REQUEST_LIFETIME_NANOSECONDS: u64 = 5_000_000_000;
