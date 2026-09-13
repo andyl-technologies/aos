@@ -283,12 +283,9 @@ fn prepare(arguments: &[String]) -> Result<()> {
             finished_at: TIME.into(),
         }],
     };
-    let predecessor_digest =
+    let predecessor =
         prepare_predecessor(output, predecessor, &plan, &manifest, gate_report_digest)?;
-    plan.qualification_predecessor
-        .as_mut()
-        .context("release fixture lacks its planned predecessor")?
-        .manifest_digest = predecessor_digest;
+    plan.qualification_predecessor = Some(predecessor);
     plan.validate()?;
     plan_bytes = canonical::to_vec(&plan)?;
     fs::write(output.join("release-plan.json"), &plan_bytes)?;
@@ -332,7 +329,7 @@ fn prepare_predecessor(
     release_plan: &ReleasePlanV1,
     release_manifest: &ReleaseManifestV1,
     gate_report_digest: Sha256Digest,
-) -> Result<Sha256Digest> {
+) -> Result<aos_release::qualification_evidence::QualificationPredecessor> {
     let mut plan = release_plan.clone();
     plan.qualification_predecessor = None;
     plan.release_id = format!(
@@ -380,7 +377,13 @@ fn prepare_predecessor(
         output.join("release-manifest.json"),
         &canonical::to_vec(&envelope)?,
     )?;
-    Ok(manifest_digest)
+    Ok(
+        aos_release::qualification_evidence::QualificationPredecessor {
+            registry: plan.registry,
+            release_id: plan.release_id,
+            manifest_digest,
+        },
+    )
 }
 
 fn bind_plan_artifact(manifest: &mut ReleaseManifestV1, plan_bytes: &[u8]) -> Result<()> {
