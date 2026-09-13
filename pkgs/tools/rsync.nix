@@ -54,6 +54,11 @@ in
       );
     propagatedDeps = [];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "rsync";
+    };
+
     expose = {
       units."rsyncd.service" = {
         description = "Rsync file-transfer daemon";

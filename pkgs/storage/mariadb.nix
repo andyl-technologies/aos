@@ -460,6 +460,11 @@ in
     propagatedDeps = [];
     inherit expose configModule;
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "mariadb";
+    };
+
     phases = [
       {
         name = "unpack";

@@ -749,6 +749,11 @@ in
       };
     };
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "envoy";
+    };
+
     expose = {
       units."envoy.service" = {
         description = "Envoy proxy";

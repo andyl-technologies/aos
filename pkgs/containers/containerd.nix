@@ -80,6 +80,11 @@ in
     runtimeDeps = [payload runc kmod bash];
     propagatedDeps = [];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "containerd";
+    };
+
     passthru.evidenceSources = [
       ./containerd.nix
       payload.src

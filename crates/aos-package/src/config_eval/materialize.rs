@@ -670,8 +670,7 @@ impl ConfigManifest {
             .package_outputs
             .iter()
             .filter_map(|(package, pin)| {
-                (!pin.uses_structured_effects() && pin.config_projection.is_some())
-                    .then_some(package.as_str())
+                pin.config_projection.is_some().then_some(package.as_str())
             })
             .collect::<BTreeSet<_>>();
         let actual = self
@@ -738,7 +737,10 @@ impl ConfigManifest {
                     bail!("config projection artifact bytes are tampered for {package:?}");
                 }
             }
-            let expected_actions = projected_unit_actions(&pin.config.artifacts);
+            let expected_actions = projected_unit_actions_for_package(
+                &self.package_outputs[package],
+                &pin.config.artifacts,
+            );
             if projection.units != expected_actions {
                 bail!("config projection unit actions disagree with signed policy for {package:?}");
             }
@@ -883,6 +885,18 @@ pub(crate) fn projected_unit_actions(
         }
     }
     units
+}
+
+/// Derives unit actions while preserving structured activation as sole lifecycle owner.
+pub(crate) fn projected_unit_actions_for_package(
+    package: &RuntimePackagePin,
+    artifacts: &[crate::types::ConfigArtifactMeta],
+) -> BTreeMap<String, UnitReconcileAction> {
+    if package.uses_structured_effects() {
+        BTreeMap::new()
+    } else {
+        projected_unit_actions(artifacts)
+    }
 }
 
 /// Hashes the fully normalized schema bytes emitted by the Nix expose

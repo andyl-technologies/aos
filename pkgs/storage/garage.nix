@@ -87,6 +87,11 @@ in
       test -x "$out/bin/garage-control"
     '';
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "garage";
+    };
+
     expose = {
       units = {
         "garage-prepare.service" = {

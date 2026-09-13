@@ -654,14 +654,31 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
 }
 
 #[test]
-fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
+fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
     use super::runtime::{
         RuntimeClosurePin, RuntimeExposeConfigPin, RuntimePackageOrigin, RuntimePackagePin,
         RuntimeRealisationPin, RuntimeResolution,
     };
-    use crate::types::{AbilityPackageMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
+    use crate::types::{
+        AbilityPackageMeta, ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy,
+        ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta,
+    };
+
+    let config_for = |unit: &str| ExposeConfigMeta {
+        artifacts: vec![ConfigArtifactMeta {
+            name: "runtime".to_string(),
+            path: "/etc/aos/packages/service/runtime.env".to_string(),
+            format: ConfigArtifactFormat::Env,
+            required: vec!["ENABLED".to_string()],
+            optional: Vec::new(),
+            units: vec![unit.to_string()],
+            reload: ConfigReloadPolicy::Restart,
+        }],
+        credentials: Vec::new(),
+    };
 
     let structured_package = |name: &str, version: &str, units: &[&str], store_ids: [char; 4]| {
+        let config = config_for(units.last().unwrap());
         let [runtime_id, expose_id, ability_id, config_id] = store_ids;
         let runtime_hash = runtime_id.to_string().repeat(32);
         let expose_hash = expose_id.to_string().repeat(32);
@@ -703,7 +720,7 @@ fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
                 units: units.iter().map(|unit| (*unit).to_string()).collect(),
                 images: Vec::new(),
                 requires: Vec::new(),
-                config: ExposeConfigMeta::default(),
+                config: config.clone(),
                 provides: Vec::new(),
                 uses: Vec::new(),
             }),
@@ -715,7 +732,7 @@ fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
             config_projection: Some(RuntimeExposeConfigPin {
                 config_output: format!("/nix/store/{config_hash}-{name}-config"),
                 config_nar_hash: format!("sha256:{}", "8".repeat(52)),
-                config: ExposeConfigMeta::default(),
+                config: config.clone(),
             }),
             ability: Some(AbilityPackageMeta {
                 store_path: format!("/nix/store/{ability_hash}-{name}-abilities"),
@@ -762,18 +779,26 @@ fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
             ("postgresql".to_string(), Vec::new()),
         ]),
     };
+    let nginx_projection_hash =
+        super::materialize::expose_config_schema_hash(&config_for("nginx.service")).unwrap();
+    let postgresql_projection_hash =
+        super::materialize::expose_config_schema_hash(&config_for("postgresql.service")).unwrap();
     let mut manifest = serde_json::json!({
         "etc": {},
         "presets": [],
         "storePaths": [],
+        "config": {
+            "nginx": {"runtime": {"ENABLED": true}},
+            "postgresql": {"runtime": {"ENABLED": true}}
+        },
         "configProjectionBindings": {
             "nginx": {
                 "schema": "aos.expose-config-binding/v1",
-                "schema_hash": format!("sha256:{}", "9".repeat(64))
+                "schema_hash": nginx_projection_hash
             },
             "postgresql": {
                 "schema": "aos.expose-config-binding/v1",
-                "schema_hash": format!("sha256:{}", "9".repeat(64))
+                "schema_hash": postgresql_projection_hash
             }
         },
         "ownership": {
@@ -809,7 +834,17 @@ fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
             .all(|path| !path.contains("multi-user.target.wants"))
     );
     assert_eq!(manifest["presets"], serde_json::json!([]));
-    assert_eq!(manifest["configProjections"], serde_json::json!({}));
+    for package in ["nginx", "postgresql"] {
+        let artifacts = manifest["configProjections"][package]["artifacts"]
+            .as_array()
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0]["text"], "ENABLED=true\n");
+        assert_eq!(
+            manifest["configProjections"][package]["units"],
+            serde_json::json!({})
+        );
+    }
     for package in ["nginx", "postgresql"] {
         let output = &manifest["packageOutputs"][package];
         assert!(output.get("expose").is_some());
@@ -852,6 +887,25 @@ fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
 
     super::retain_ability_sidecar_roots(manifest.as_object_mut().unwrap(), &activation).unwrap();
     let content_hash = format!("sha256:{}", "a".repeat(64));
+    let config_paths = runtime
+        .packages
+        .values()
+        .map(|package| package.config_projection.as_ref().unwrap().config_output.clone())
+        .collect::<Vec<_>>();
+    let config_nar_hashes = runtime
+        .packages
+        .values()
+        .map(|package| {
+            package
+                .config_projection
+                .as_ref()
+                .unwrap()
+                .config_nar_hash
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let config_closure_hash =
+        super::config_module_closure_hash(&config_paths, &config_nar_hashes).unwrap();
     manifest
         .as_object_mut()
         .unwrap()
@@ -877,12 +931,15 @@ fn structured_runtime_suppresses_legacy_projection_before_dispatch() {
                         "store_hash": format!("sha256:{}", "b".repeat(40))
                     },
                     "config_modules": {
-                        "closure_hash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-                        "count": 0,
-                        "store_paths": [],
-                        "nar_hashes": [],
-                        "package_names": [],
-                        "module_abi_compat": []
+                        "closure_hash": config_closure_hash,
+                        "count": 2,
+                        "store_paths": config_paths,
+                        "nar_hashes": config_nar_hashes,
+                        "package_names": ["nginx", "postgresql"],
+                        "module_abi_compat": [
+                            {"min": 1, "max": 1},
+                            {"min": 1, "max": 1}
+                        ]
                     },
                     "host_nix": {
                         "content_hash": content_hash,

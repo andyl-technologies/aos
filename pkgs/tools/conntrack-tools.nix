@@ -54,6 +54,11 @@ in
     ];
     propagatedDeps = [];
 
+    abilityPackage = import ../../lib/abilities/service-package.nix {
+      inherit lib;
+      packageName = "conntrack-tools";
+    };
+
     expose = {
       units."conntrackd.service" = {
         description = "Connection tracking state daemon";
