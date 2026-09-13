@@ -27,6 +27,15 @@
 in {
   imports = [./server-test.nix];
 
+  # Single-VM checks boot a writable ext4 test disk that the harness assembles,
+  # not the signed, dm-verity-authenticated image. The production root contract
+  # cannot be satisfied there: the boot identity guard finds no validated
+  # identity, isolates to its failure target, and the guest never switches
+  # root. Match the root contract the harness provides, exactly as the
+  # `server-vm` system does for the same reason.
+  aos.filesystems.rootFsType = lib.mkForce "ext4";
+  aos.security.verity.enable = lib.mkForce false;
+
   aos.filesystems.zfs = {
     enable = true;
     poolName = "aostest";
