@@ -60,7 +60,7 @@ PROVIDER_ORACLES = {
         "roots": ["/etc/aos/ability-revisions"],
         "live": "systemd",
     },
-    "systemd-service-legacy": {
+    "service-management": {
         "roots": ["/etc/aos/ability-revisions"],
         "live": "systemd",
     },

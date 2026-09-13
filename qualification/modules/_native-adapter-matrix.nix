@@ -29,8 +29,8 @@
     "checks.fleet.ability-native-postgresql"
     "checks.fleet.ability-native-power-loss"
   ];
-  expectedSurfaceDigest = "53cc3bf65b65ecf3def74d0d9955c4a8812b8bd85aba4dd1055c307e2fb28ffb";
-  expectedApplicabilityDigest = "283bd3c53cba28d8d119199129f251799d0f0545b96c68256a84e9d6c2f19b23";
+  expectedSurfaceDigest = "e82843e065b80ed8920c784f27e7a19959489af817996e324f85257dc3c64eee";
+  expectedApplicabilityDigest = "3e0e6fff4942f23a8b13fd07d6fd3d11640fe12b6bf2d239b732d8b7cde992e1";
   token = value:
     builtins.isString value
     && builtins.stringLength value > 0
@@ -46,7 +46,7 @@
     matrix_schema = "aos.qualification.native-adapter-matrix/v1";
     surface_digest = "sha256:${surfaceDigest}";
     adapter_count = 13;
-    method_count = 50;
+    method_count = 51;
     scenario_count = 28;
     interfaces = builtins.sort (left: right: builtins.lessThan left.name right.name) (
       map (adapter: {
@@ -249,11 +249,11 @@
     && surface.limits
     == {
       max_adapters = 13;
-      max_methods = 50;
+      max_methods = 51;
       max_scenarios = 28;
     }
     && builtins.length surface.adapters == 13
-    && builtins.length adapterMethods == 50
+    && builtins.length adapterMethods == 51
     && builtins.length surface.scenarios == 28
     && unique (map (adapter: adapter.adapter) surface.adapters)
     && unique (map (adapter: "${adapter.interface_name}/abi-${toString adapter.interface_abi}/${adapter.interface_descriptor}") surface.adapters)
@@ -269,16 +269,16 @@ in
   assert exactCells;
   assert selectedApplicability == canonicalApplicability;
   assert applicabilityDigest == expectedApplicabilityDigest;
-  assert builtins.length applicableCells == 1364;
-  assert builtins.length inapplicableCells == 36;
+  assert builtins.length applicableCells == 1391;
+  assert builtins.length inapplicableCells == 37;
   assert builtins.length inapplicableCellIds
   == builtins.length (lib.unique inapplicableCellIds);
   assert builtins.all (cell: !builtins.elem cell.id inapplicableCellIds) applicableCells;
   assert builtins.sort builtins.lessThan (applicableCellIds ++ inapplicableCellIds)
   == map (cell: cell.id) expectedCells;
-  assert builtins.length (lib.unique (applicableCellIds ++ inapplicableCellIds)) == 1400;
+  assert builtins.length (lib.unique (applicableCellIds ++ inapplicableCellIds)) == 1428;
   assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") inapplicableCells)
-  == 36;
+  == 37;
   assert builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") inapplicableCells)
   == 0; {
     schema = surface.matrix_schema;

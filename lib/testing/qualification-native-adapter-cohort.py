@@ -46,7 +46,7 @@ PRIMARY_COHORT_CELL_IDS = [
         "publish/reject-foreign-resource-mutation"
     ),
     (
-        "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+        "service-management/aos.service-management/abi-1/"
         "reload/block-dependent-effect"
     ),
 ]
@@ -252,7 +252,7 @@ EFFECT_BOUNDARY_ADAPTER_GROUPS = [
         "managed-configuration",
         "network-endpoint",
         "nginx-validation",
-        "systemd-service-legacy",
+        "service-management",
     },
     {"systemd-manager"},
     {"postgresql"},
@@ -296,7 +296,7 @@ PROVIDER_ORACLE_KINDS = {
     "postgresql": "postgresql-cluster",
     "systemd-bootstrap": "systemd-unit",
     "systemd-manager": "systemd-unit",
-    "systemd-service-legacy": "systemd-unit",
+    "service-management": "systemd-unit",
 }
 PROVIDER_ADAPTER_BY_INTERFACE = {
     "aos.credential-delivery-effects": "credential-delivery",
@@ -311,7 +311,7 @@ PROVIDER_ADAPTER_BY_INTERFACE = {
     "aos.postgresql-effects": "postgresql",
     "aos.systemd-provider-bootstrap": "systemd-bootstrap",
     "aos.systemd-manager": "systemd-manager",
-    "aos.systemd-service-effects": "systemd-service-legacy",
+    "aos.service-management": "service-management",
 }
 PROVIDER_ENTRY_POINTS = {
     "credential-delivery": "libexec/aos-credential-delivery-handler-v1",
@@ -326,7 +326,7 @@ PROVIDER_ENTRY_POINTS = {
     "postgresql": "libexec/aos-postgresql-handler-v1",
     "systemd-bootstrap": "bin/.aos-package-runtime-unwrapped",
     "systemd-manager": "libexec/aos-systemd-manager-handler-v1",
-    "systemd-service-legacy": "bin/.aos-package-runtime-unwrapped",
+    "service-management": "bin/.aos-package-runtime-unwrapped",
 }
 COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
 POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
@@ -408,8 +408,8 @@ CANCELLATION_HANDLER_ENTRY_POINTS = {
         "native-systemd-manager-v1",
         "libexec/aos-systemd-manager-handler-v1",
     ),
-    "aos.systemd-service-effects": (
-        "systemd-terminal",
+    "aos.service-management": (
+        "service-management-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.ab-image-rollout-effects": (
@@ -429,7 +429,7 @@ CANCELLATION_ORACLE_KINDS = {
     "kubernetes-object": "kubernetes",
     "systemd-bootstrap": "systemd",
     "systemd-manager": "systemd",
-    "systemd-service-legacy": "systemd",
+    "service-management": "systemd",
     "image-rollout": "image-rollout",
 }
 POSTGRESQL_REJECTION_EVIDENCE_SCHEMA = (
@@ -451,9 +451,9 @@ MANAGED_CONFIGURATION_INTERFACE = {
     "descriptor": "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab",
 }
 SYSTEMD_SERVICE_INTERFACE = {
-    "name": "aos.systemd-service-effects",
+    "name": "aos.service-management",
     "abi": 1,
-    "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+    "descriptor": "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
 }
 PUBLISH_TARGET = {
     "interface": MANAGED_CONFIGURATION_INTERFACE,
@@ -729,7 +729,7 @@ def build_cells(
         already_qualified_provider_negative = {
             "managed-configuration/aos.managed-configuration-effects/abi-1/"
             "publish/reject-foreign-resource-mutation",
-            "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+            "service-management/aos.service-management/abi-1/"
             "reload/block-dependent-effect",
         }
         allowed_cells = [
@@ -1104,7 +1104,7 @@ def _provider_negative_cell_ids(
             "publish/reject-foreign-resource-mutation"
         ),
         (
-            "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+            "service-management/aos.service-management/abi-1/"
             "reload/block-dependent-effect"
         ),
     }

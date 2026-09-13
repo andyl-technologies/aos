@@ -103,7 +103,7 @@ in
               target_provider = "matrix-systemd"
               target_resource = "aos-matrix-primary-service"
           else:
-              assert adapter == "systemd-service-legacy", adapter
+              assert adapter == "service-management", adapter
               if method == "stop":
                   settle_reference(baseline_label, "full")
                   candidate = reference_activation(label, "disable-main")

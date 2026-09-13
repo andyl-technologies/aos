@@ -3,10 +3,10 @@
   lib,
   mkDerivation,
   credentialRuntime ? ./providers/credential,
-  hostResourceRuntime ? systemdRuntime,
+  hostResourceRuntime ? serviceRuntime,
   managedConfigurationRuntime ? ./providers/managed-configuration,
   nginxRuntime ? ../../../pkgs/networking/_nginx-ability-provider,
-  systemdRuntime ? ./providers/systemd,
+  serviceRuntime ? ./providers/service,
   effectQualification ? false,
   providerStateQualification ? false,
   transitionTransform ? transition: transition,
@@ -18,7 +18,12 @@
   managedConfigurationArtifact = ./providers/managed-configuration;
   httpBackendRegistryArtifact = ./providers/http-backend-registry;
   credentialArtifact = ./providers/credential;
-  systemdArtifact = ./providers/systemd;
+  serviceArtifact = ./providers/service;
+  serviceProvider = import serviceArtifact;
+  serviceManagementContract = import ../../../lib/abilities/service-management.nix {
+    inherit schemas;
+    inherit (lib.abilities) guarantee;
+  };
 
   interface = name: descriptor: {
     inherit name descriptor;
@@ -28,7 +33,7 @@
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:f2f4174c1b63997d056df99fe7eeb1d07c37a52f88588e03163bc8bf536ea802";
+    "sha256:fce7ea027ff0640e13116a3501b96fd356ac96d47d82d26aff193d6d2bc8780e";
   credentialDelivery =
     interface
     "aos.credential-delivery"
@@ -37,10 +42,10 @@
     interface
     "aos.credential-delivery-effects"
     "sha256:bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb";
-  systemdService =
+  serviceDefinition =
     interface
-    "aos.systemd-service"
-    "sha256:c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d";
+    "aos.service-definition"
+    "sha256:71b6dad75359531ccfc92bfbb5824fb3555afb097e697d994ee6f9f862ae46af";
   nginxValidation =
     interface
     "aos.nginx-validation"
@@ -61,10 +66,7 @@
     interface
     "aos.managed-configuration-effects"
     "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab";
-  systemdServiceEffects =
-    interface
-    "aos.systemd-service-effects"
-    "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
+  serviceManagement = serviceManagementContract.interface;
   foregroundProcess =
     interface
     "aos.foreground-process"
@@ -72,18 +74,8 @@
   nginxInterface =
     interface
     "aos.nginx"
-    "sha256:dd3a483912cab00425d3a9af94af01503986f486412166e64b76ab5d79cdde57";
+    "sha256:5eb5252567f450038b4bc34cf004852d81427b745662fbdd3cf8175f5d2da7a6";
 
-  localSystemdManagerGuarantee = {
-    name = "aos.local-systemd-manager";
-    version = 1;
-    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
-  };
-  systemContainerManagerDelegationGuarantee = {
-    name = "aos.system-container-manager-delegation";
-    version = 1;
-    descriptor = "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda";
-  };
   foregroundProcessSupervisionGuarantee = {
     name = "aos.foreground-process-supervision";
     version = 1;
@@ -358,7 +350,7 @@
         maxLength = 15;
         syntax = null;
       };
-      execution_strategy = schemas.enum ["foreground-process" "systemd-manager"];
+      execution_strategy = schemas.enum ["foreground-process" "managed-service"];
       port = schemas.integer {
         minimum = 1024;
         maximum = 65535;
@@ -426,7 +418,7 @@
     optional = ["backend_endpoint" "credential_version" "proxy_backend"];
   };
 
-  recoverableMethods = ["acquire" "deliver" "observe" "prepare" "publish" "record" "release" "stop" "validate"];
+  recoverableMethods = ["acquire" "deliver" "observe" "prepare" "publish" "record" "release" "reload" "restart" "start" "stop" "validate"];
 
   method = targetResource: operationFamily: name: {
     inherit operationFamily targetResource;
@@ -533,7 +525,6 @@
 
   managedConfigurationProvider = import ./providers/managed-configuration/default.nix;
   credentialProvider = import ./providers/credential/default.nix;
-  systemdProvider = import ./providers/systemd/default.nix;
   httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
   baseNginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
     inherit effectQualification providerStateQualification lib hostResourceRuntime;
@@ -768,11 +759,11 @@ in {
       };
     });
 
-  systemd = mkPackage "ability-reference-systemd" systemdArtifact (common
+  service = mkPackage "ability-reference-service" serviceArtifact (common
     // {
       exports = {
         foreground-process = {
-          artifact = systemdRuntime;
+          artifact = serviceRuntime;
           export = terminalExport {
             name = foregroundProcess.name;
             group = "foreground-process";
@@ -793,16 +784,16 @@ in {
             };
           };
         };
-        systemd-service = {
-          artifact = systemdArtifact;
+        service-definition = {
+          artifact = serviceArtifact;
           export = lib.abilities.define {
-            interface = systemdService.name;
-            abi = systemdService.abi;
+            interface = serviceDefinition.name;
+            abi = serviceDefinition.abi;
             requestSchema = schemas.record {
               fields = {
                 configuration_revision = string;
                 consumer_endpoint = string;
-                unit = string;
+                service = string;
                 virtual_host_count = schemas.integer {
                   minimum = 0;
                   maximum = 1024;
@@ -819,29 +810,34 @@ in {
             requires = {};
             composeEntry = "compose";
             transitionEntry = "transition";
-            ownsResourceKinds = [systemdService.name];
-            compose = systemdProvider.compose;
-            transition = transitionTransform systemdProvider.transition;
+            ownsResourceKinds = [serviceDefinition.name];
+            compose = serviceProvider.compose;
+            transition = transitionTransform serviceProvider.transition;
           };
         };
-        systemd-service-effects = {
-          artifact = systemdRuntime;
+        service-management = {
+          artifact = serviceRuntime;
           export = terminalExport {
-            name = systemdServiceEffects.name;
-            group = "systemd-service-effects";
-            handler = "systemd-terminal";
-            guarantees = [localSystemdManagerGuarantee systemContainerManagerDelegationGuarantee];
+            name = serviceManagement.name;
+            group = "service-management";
+            handler = "service-management-terminal";
+            guarantees = builtins.attrValues serviceManagementContract.features;
+            selectedLifecycle = serviceManagementContract.lifecycle;
             methods = {
-              observe = method systemdServiceEffects.name {kind = "observe-readiness";} "observe";
-              reload = method systemdServiceEffects.name {
+              observe = method serviceManagement.name {kind = "observe-readiness";} "observe";
+              reload = method serviceManagement.name {
                 kind = "service-lifecycle";
                 action = "reload";
               } "reload";
-              start = method systemdServiceEffects.name {
+              restart = method serviceManagement.name {
+                kind = "service-lifecycle";
+                action = "restart";
+              } "restart";
+              start = method serviceManagement.name {
                 kind = "service-lifecycle";
                 action = "start";
               } "start";
-              stop = method systemdServiceEffects.name {
+              stop = method serviceManagement.name {
                 kind = "service-lifecycle";
                 action = "stop";
               } "stop";
@@ -850,13 +846,13 @@ in {
         };
       };
       handlers.native-foreground-process-v1 = {
-        artifact = systemdRuntime;
+        artifact = serviceRuntime;
         entryPoint = "libexec/aos-foreground-process-handler-v1";
         arguments = foregroundProcessRequest;
         result = foregroundProcessObservation;
       };
-      handlers.systemd-terminal = {
-        artifact = systemdRuntime;
+      handlers.service-management-terminal = {
+        artifact = serviceRuntime;
         entryPoint = "bin/.aos-package-runtime-unwrapped";
         arguments = schemas.boolean;
         result = schemas.boolean;

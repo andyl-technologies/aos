@@ -13,11 +13,11 @@ const SURFACE_SCHEMA: &str = "aos.qualification.native-adapter-surface/v1";
 const MATRIX_SCHEMA: &str = "aos.qualification.native-adapter-matrix/v1";
 const SUBJECT_SCHEMA: &str = "aos.qualification.native-adapter-subject/v1";
 const EXPECTED_ADAPTERS: usize = 13;
-const EXPECTED_METHODS: usize = 50;
+const EXPECTED_METHODS: usize = 51;
 const EXPECTED_SCENARIOS: usize = 28;
 const MAX_SURFACE_BYTES: u64 = 64 * 1024;
 const EXPECTED_SURFACE_DIGEST: &str =
-    "53cc3bf65b65ecf3def74d0d9955c4a8812b8bd85aba4dd1055c307e2fb28ffb";
+    "e82843e065b80ed8920c784f27e7a19959489af817996e324f85257dc3c64eee";
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -232,11 +232,11 @@ fn validate(document: &SurfaceDocument) -> BuildResult<()> {
             ),
         ),
         (
-            "systemd-service-legacy",
+            "service-management",
             (
-                "aos.systemd-service-effects",
+                "aos.service-management",
                 "host-manager",
-                &["observe", "reload", "start", "stop"],
+                &["observe", "reload", "restart", "start", "stop"],
             ),
         ),
     ]);
@@ -464,7 +464,7 @@ fn variant(adapter: &str) -> BuildResult<&'static str> {
         "postgresql" => "Postgresql",
         "systemd-bootstrap" => "SystemdBootstrap",
         "systemd-manager" => "SystemdManager",
-        "systemd-service-legacy" => "SystemdServiceLegacy",
+        "service-management" => "ServiceManagement",
         _ => return Err(format!("unknown native adapter {adapter}").into()),
     })
 }

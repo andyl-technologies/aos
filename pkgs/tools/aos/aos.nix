@@ -186,9 +186,9 @@
     path = ../../../tests/abilities/reference-nginx/providers/credential;
     name = "aos-ability-reference-credential";
   };
-  abilityReferenceSystemdFixture = builtins.path {
-    path = ../../../tests/abilities/reference-nginx/providers/systemd;
-    name = "aos-ability-reference-systemd";
+  abilityReferenceServiceFixture = builtins.path {
+    path = ../../../tests/abilities/reference-nginx/providers/service;
+    name = "aos-ability-reference-service";
   };
   abilityReferenceRegistryPackages = import ../../../tests/abilities/reference-nginx/package.nix {
     inherit lib;
@@ -462,8 +462,8 @@ in
       export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceManagedConfigurationFixture})"
       export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL="${abilityReferenceCredentialFixture}"
       export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceCredentialFixture})"
-      export AOS_TEST_ABILITY_REFERENCE_SYSTEMD="${abilityReferenceSystemdFixture}"
-      export AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceSystemdFixture})"
+      export AOS_TEST_ABILITY_REFERENCE_SERVICE="${abilityReferenceServiceFixture}"
+      export AOS_TEST_ABILITY_REFERENCE_SERVICE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceServiceFixture})"
       export AOS_TEST_ABILITY_REFERENCE_PACKAGES="${
         lib.concatStringsSep ":" (
           builtins.map (package: "${package.abilities}") (builtins.attrValues abilityReferenceRegistryPackages)

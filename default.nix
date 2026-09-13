@@ -441,7 +441,7 @@
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/lose-external-result"
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/interrupt-after-durable-outcome"
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
-    "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/block-dependent-effect"
+    "service-management/aos.service-management/abi-1/reload/block-dependent-effect"
   ];
   nativePostgresqlReplacementCohort = import ./tests/fleet/ability-native-postgresql.nix {
     inherit lib mkSystem pkgs;
@@ -699,9 +699,9 @@
       0
       selected;
   in
-    assert builtins.length selected == 1364;
-    assert builtins.length (lib.unique selected) == 1364;
-    assert postconditions == 5834; selected;
+    assert builtins.length selected == 1391;
+    assert builtins.length (lib.unique selected) == 1391;
+    assert postconditions == 5949; selected;
 
   nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
     ability-crucible-baseline =

@@ -14,7 +14,7 @@
     credentialRuntime = pkgs.aos.packageRuntime;
     managedConfigurationRuntime = pkgs.aos.packageRuntime;
     nginxRuntime = pkgs.nginx;
-    systemdRuntime = pkgs.aos.packageRuntime;
+    serviceRuntime = pkgs.aos.packageRuntime;
     inherit effectQualification providerStateQualification transitionTransform;
   };
   systemdManagerPackage = import ../abilities/reference-systemd-manager/package.nix {

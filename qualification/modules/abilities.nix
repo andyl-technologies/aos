@@ -183,9 +183,9 @@ in {
       {
         assertion =
           nativeAdapterMatrix.cell_count
-          == 1400
-          && nativeAdapterMatrix.required_production_vm_cells == 1364
-          && builtins.length nativeAdapterMatrix.inapplicable_cells == 36;
+          == 1428
+          && nativeAdapterMatrix.required_production_vm_cells == 1391
+          && builtins.length nativeAdapterMatrix.inapplicable_cells == 37;
         message = "The native adapter matrix must retain every surface cell and its exact fail-closed production applicability partition.";
       }
       {

@@ -91,11 +91,11 @@ const FOREGROUND_ENTRY_POINT_MAX_BYTES: u64 = 4_096;
 const FOREGROUND_ARGUMENT_MAX_BYTES: u64 = 4_096;
 const FOREGROUND_ARGUMENT_MAX_ITEMS: u64 = 128;
 
-/// Selects a lifecycle strategy without treating one manager form as another.
+/// Selects a lifecycle strategy independently from its concrete manager.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutionStrategy {
-    /// Uses the systemd manager local to the selected execution environment.
-    SystemdManager,
+    /// Uses a provider that manages a service through the requested features.
+    ManagedService,
     /// Supervises an application container's declared foreground process.
     ForegroundProcess,
 }
@@ -169,6 +169,9 @@ pub fn execution_strategy_compatibility(
     if interface == &systemd_manager_interface_key()? {
         return systemd_execution_compatibility(interface.clone()).map(Some);
     }
+    if interface == &service_management_interface_key()? {
+        return service_management_execution_compatibility(interface.clone()).map(Some);
+    }
     if interface == &foreground_process_interface_key()? {
         return foreground_execution_compatibility(interface.clone()).map(Some);
     }
@@ -189,17 +192,36 @@ pub fn declared_execution_strategy_compatibility(
     interface: &InterfaceDocument,
 ) -> Result<Option<ExecutionStrategyCompatibility>> {
     let local_systemd = local_systemd_manager_guarantee()?;
+    let service_supervision = service_feature_guarantees()?
+        .into_iter()
+        .find(|guarantee| guarantee.name.as_str() == SERVICE_SUPERVISION_GUARANTEE_NAME)
+        .ok_or_else(|| anyhow::anyhow!("service supervision guarantee is absent"))?;
     let foreground = foreground_process_supervision_guarantee()?;
     let declares_systemd = interface.interface.guarantees.contains(&local_systemd);
+    let declares_service_management = interface
+        .interface
+        .guarantees
+        .contains(&service_supervision);
     let declares_foreground = interface.interface.guarantees.contains(&foreground);
 
     anyhow::ensure!(
-        !(declares_systemd && declares_foreground),
+        [
+            declares_systemd,
+            declares_service_management,
+            declares_foreground
+        ]
+        .into_iter()
+        .filter(|declared| *declared)
+        .count()
+            <= 1,
         "interface declares conflicting execution strategies"
     );
     let key = interface.interface_key()?;
     if declares_systemd {
         return systemd_execution_compatibility(key).map(Some);
+    }
+    if declares_service_management {
+        return service_management_execution_compatibility(key).map(Some);
     }
     if declares_foreground {
         return foreground_execution_compatibility(key).map(Some);
@@ -212,7 +234,7 @@ fn systemd_execution_compatibility(
 ) -> Result<ExecutionStrategyCompatibility> {
     Ok(ExecutionStrategyCompatibility {
         interface,
-        strategy: ExecutionStrategy::SystemdManager,
+        strategy: ExecutionStrategy::ManagedService,
         stages: BTreeMap::from([
             (
                 ExecutionStage::Host,
@@ -225,6 +247,24 @@ fn systemd_execution_compatibility(
                     system_container_manager_delegation_guarantee()?,
                 ],
             ),
+        ]),
+    })
+}
+
+fn service_management_execution_compatibility(
+    interface: InterfaceKey,
+) -> Result<ExecutionStrategyCompatibility> {
+    let supervision = service_feature_guarantees()?
+        .into_iter()
+        .find(|guarantee| guarantee.name.as_str() == SERVICE_SUPERVISION_GUARANTEE_NAME)
+        .ok_or_else(|| anyhow::anyhow!("service supervision guarantee is absent"))?;
+
+    Ok(ExecutionStrategyCompatibility {
+        interface,
+        strategy: ExecutionStrategy::ManagedService,
+        stages: BTreeMap::from([
+            (ExecutionStage::Host, vec![supervision.clone()]),
+            (ExecutionStage::SystemContainer, vec![supervision]),
         ]),
     })
 }
@@ -942,8 +982,12 @@ mod tests {
             execution_strategy_compatibility(&foreground_process_interface_key().unwrap())
                 .unwrap()
                 .expect("foreground process must declare execution compatibility");
+        let managed =
+            execution_strategy_compatibility(&service_management_interface_key().unwrap())
+                .unwrap()
+                .expect("service management must declare execution compatibility");
 
-        assert_eq!(systemd.strategy, ExecutionStrategy::SystemdManager);
+        assert_eq!(systemd.strategy, ExecutionStrategy::ManagedService);
         assert_eq!(
             systemd.required_guarantees(ExecutionStage::Host),
             Some([local_systemd_manager_guarantee().unwrap()].as_slice())
@@ -959,6 +1003,22 @@ mod tests {
             systemd
                 .required_guarantees(ExecutionStage::ApplicationContainer)
                 .is_none()
+        );
+        assert_eq!(managed.strategy, ExecutionStrategy::ManagedService);
+        assert_eq!(
+            managed
+                .required_guarantees(ExecutionStage::Host)
+                .expect("host service management is supported"),
+            [service_feature_guarantees()
+                .unwrap()
+                .into_iter()
+                .find(|guarantee| guarantee.name.as_str() == SERVICE_SUPERVISION_GUARANTEE_NAME)
+                .expect("service supervision guarantee")]
+        );
+        assert!(
+            managed
+                .required_guarantees(ExecutionStage::SystemContainer)
+                .is_some()
         );
         assert_eq!(foreground.strategy, ExecutionStrategy::ForegroundProcess);
         assert!(

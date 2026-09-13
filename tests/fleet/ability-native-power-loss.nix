@@ -175,9 +175,9 @@ in {
           "descriptor": "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab",
       }
       SYSTEMD_SERVICE_INTERFACE = {
-          "name": "aos.systemd-service-effects",
+          "name": "aos.service-management",
           "abi": 1,
-          "descriptor": "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98",
+          "descriptor": "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
       }
       REFERENCE_ATTEMPT_TIMEOUT_MILLIS = 300_000
       REFERENCE_TOTAL_RECOVERY_MILLIS = 1_200_000
@@ -436,7 +436,7 @@ in {
               ): assignment
               for assignment in authority["provider_assignments"]
               if assignment["interface"]["name"]
-              == "aos.systemd-service-effects"
+              == "aos.service-management"
           }
 
 
@@ -1899,7 +1899,7 @@ in {
       )
       foreign_resource_cell = matrix_cell_prefix + "reject-foreign-resource-mutation"
       blocked_dependent_cell = (
-          "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+          "service-management/aos.service-management/abi-1/"
           "reload/block-dependent-effect"
       )
       NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS = {

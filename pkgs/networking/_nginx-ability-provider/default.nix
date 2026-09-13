@@ -8,15 +8,15 @@ let
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:f2f4174c1b63997d056df99fe7eeb1d07c37a52f88588e03163bc8bf536ea802";
+    "sha256:fce7ea027ff0640e13116a3501b96fd356ac96d47d82d26aff193d6d2bc8780e";
   credentialDelivery =
     interface
     "aos.credential-delivery"
     "sha256:e8c5924bd71f8c018958430a91907c662e09af55221d2c94a758dc4a1377d44f";
-  systemdService =
+  serviceDefinition =
     interface
-    "aos.systemd-service"
-    "sha256:c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d";
+    "aos.service-definition"
+    "sha256:71b6dad75359531ccfc92bfbb5824fb3555afb097e697d994ee6f9f862ae46af";
   nginxValidation =
     interface
     "aos.nginx-validation"
@@ -37,25 +37,57 @@ let
     interface
     "aos.host-storage-effects"
     "sha256:5e0c90d7b65c40e72245dd1350bdae2c9f5c176ceb6caa9cb8789dc5448755c8";
-  systemdEffects =
+  serviceManagement =
     interface
-    "aos.systemd-service-effects"
-    "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
+    "aos.service-management"
+    "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff";
   foregroundProcess =
     interface
     "aos.foreground-process"
     "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb";
 
-  localSystemdManagerGuarantee = {
-    name = "aos.local-systemd-manager";
-    version = 1;
-    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
-  };
-  systemContainerManagerDelegationGuarantee = {
-    name = "aos.system-container-manager-delegation";
-    version = 1;
-    descriptor = "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda";
-  };
+  serviceFeatures = [
+    {
+      name = "aos.service.feature.configuration";
+      version = 1;
+      descriptor = "sha256:795691e4da6ad4983fdcdee83ce3241f00b880a7a75e9f8c8c1292ed10d02728";
+    }
+    {
+      name = "aos.service.feature.credentials";
+      version = 1;
+      descriptor = "sha256:9b691f3825a27d582ab9d68848ef6733c8daff6591af5d5aefb1ed1b33ca5731";
+    }
+    {
+      name = "aos.service.feature.identity";
+      version = 1;
+      descriptor = "sha256:428c991097b18a0e43ee19bc799ce735986567f7934f5c148d39c485efd1406c";
+    }
+    {
+      name = "aos.service.feature.isolation";
+      version = 1;
+      descriptor = "sha256:4890b6ca323060f281a98fd49f290ac081d9acefc9fc23e02c8981759ef3f86d";
+    }
+    {
+      name = "aos.service.feature.readiness";
+      version = 1;
+      descriptor = "sha256:8db2fc4868b442bf71a5658db9ccb181fa928029d26411d7aafa6d1cac77e3de";
+    }
+    {
+      name = "aos.service.feature.reload";
+      version = 1;
+      descriptor = "sha256:1af6c5b5bef1339644a7ce8b02524728c6ed266fc634c3d62b5ebd1e695172a8";
+    }
+    {
+      name = "aos.service.feature.storage";
+      version = 1;
+      descriptor = "sha256:b35dbbe867ce562df3efdaa7a17b7a61169df4fa0ef4dd19c76203b48b697704";
+    }
+    {
+      name = "aos.service.feature.supervision";
+      version = 1;
+      descriptor = "sha256:634cf62951642871683e93d7fc1df90b378610563955d13781d26b7a5fd91b9f";
+    }
+  ];
   foregroundProcessSupervisionGuarantee = {
     name = "aos.foreground-process-supervision";
     version = 1;
@@ -224,7 +256,7 @@ let
   validateExecutionStrategy = stage: strategy:
     if
       strategy
-      == "systemd-manager"
+      == "managed-service"
       && builtins.elem stage ["host" "system-container"]
     then strategy
     else if strategy == "foreground-process" && stage == "application-container"
@@ -346,23 +378,19 @@ let
 
     executionStage = context.provider.environment.stage;
     executionStrategy = validateExecutionStrategy executionStage consumerProbe.execution_strategy;
-    usesSystemd = executionStrategy == "systemd-manager";
+    usesManagedService = executionStrategy == "managed-service";
     configurationRequest = childRequest context scope "configuration" managedConfiguration [];
     credentialRequest = childRequest context scope "credential" credentialDelivery [];
     serviceRequest =
-      if usesSystemd
-      then childRequest context scope "service" systemdService []
+      if usesManagedService
+      then childRequest context scope "service" serviceDefinition []
       else null;
     validationRequest = childRequest context scope "validation-terminal" nginxValidation [];
     serviceTerminalRequest =
       if executionStage == "host"
-      then childRequest context scope "service-terminal" systemdEffects [localSystemdManagerGuarantee]
+      then childRequest context scope "service-terminal" serviceManagement serviceFeatures
       else if executionStage == "system-container"
-      then
-        childRequest context scope "service-terminal-system-container" systemdEffects [
-          localSystemdManagerGuarantee
-          systemContainerManagerDelegationGuarantee
-        ]
+      then childRequest context scope "service-terminal-system-container" serviceManagement serviceFeatures
       else
         childRequest context scope "service-terminal-foreground" foregroundProcess [
           foregroundProcessSupervisionGuarantee
@@ -425,8 +453,8 @@ let
       serviceTerminalRequest
       // {
         methods =
-          if usesSystemd
-          then ["observe" "reload" "start" "stop"]
+          if usesManagedService
+          then ["observe" "reload" "restart" "start" "stop"]
           else ["observe" "start" "stop"];
       };
 
@@ -440,7 +468,7 @@ let
     serviceValue = {
       configuration_revision = configurationRevision;
       consumer_endpoint = "${consumerProbe.address}:${builtins.toString consumerProbe.port}";
-      unit = "nginx-${context.provider.key}.service";
+      service = context.provider.key;
       virtual_host_count = builtins.length virtualHosts;
       storage_paths = storagePaths;
     };
@@ -593,7 +621,7 @@ let
     outputs =
       projectMapEntry context configurationBinding managedConfiguration "configuration" "published-configurations" nginx "configuration"
       ++ projectMapEntry context credentialBinding credentialDelivery "credentials" "credential-views" nginx "credential-view"
-      ++ projectMapEntry context serviceBinding systemdService "services" "managers" nginx "manager"
+      ++ projectMapEntry context serviceBinding serviceDefinition "services" "managers" nginx "manager"
       ++ projectMapEntry context configurationBinding managedConfiguration "configuration" "rendered-configurations" nginx "rendered-configuration"
       ++ [
         {
@@ -681,12 +709,12 @@ in rec {
     service =
       if usesForeground
       then null
-      else desiredBinding "service" systemdService [];
+      else desiredBinding "service" serviceDefinition [];
     serviceTerminal =
       if executionStage == "host"
-      then desiredBinding "service-terminal" systemdEffects ["observe" "reload" "start" "stop"]
+      then desiredBinding "service-terminal" serviceManagement ["observe" "reload" "restart" "start" "stop"]
       else if executionStage == "system-container"
-      then desiredBinding "service-terminal-system-container" systemdEffects ["observe" "reload" "start" "stop"]
+      then desiredBinding "service-terminal-system-container" serviceManagement ["observe" "reload" "restart" "start" "stop"]
       else desiredBinding "service-terminal-foreground" foregroundProcess ["observe" "start" "stop"];
     resourcesGrantedBy = binding:
       builtins.map (permission: permission.resource) binding.caller_grant.resources;
@@ -1780,7 +1808,7 @@ in rec {
           action = "apply";
         };
       }
-      else if operation.interface.name == "aos.systemd-service-effects" && operation.method == "reload"
+      else if operation.interface.name == "aos.service-management" && operation.method == "reload"
       then {
         method = "start";
         family = {

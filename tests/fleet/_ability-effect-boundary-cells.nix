@@ -29,7 +29,7 @@
       "managed-configuration"
       "network-endpoint"
       "nginx-validation"
-      "systemd-service-legacy"
+      "service-management"
     ];
     postgresql = byAdapters ["postgresql"];
     systemdManager = byAdapters ["systemd-manager"];
@@ -45,10 +45,10 @@
     ++ groups.rollout
     ++ groups.foreground;
 in
-  assert builtins.length matrix.cells == 1400;
-  assert builtins.length all == 196;
-  assert builtins.length (lib.unique all) == 196;
-  assert builtins.length groups.reference == 85;
+  assert builtins.length matrix.cells == 1428;
+  assert builtins.length all == 200;
+  assert builtins.length (lib.unique all) == 200;
+  assert builtins.length groups.reference == 89;
   assert builtins.length groups.postgresql == 19;
   assert builtins.length groups.systemdManager == 20;
   assert builtins.length groups.kubernetes == 24;

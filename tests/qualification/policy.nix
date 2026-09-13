@@ -393,10 +393,10 @@ in
     "checks.fleet.ability-native-power-loss"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
-  assert nativeAdapterMatrix.cell_count == 1400;
-  assert nativeAdapterMatrix.required_production_vm_cells == 1364;
-  assert builtins.length nativeAdapterMatrix.applicable_cells == 1364;
-  assert builtins.length nativeAdapterMatrix.inapplicable_cells == 36;
+  assert nativeAdapterMatrix.cell_count == 1428;
+  assert nativeAdapterMatrix.required_production_vm_cells == 1391;
+  assert builtins.length nativeAdapterMatrix.applicable_cells == 1391;
+  assert builtins.length nativeAdapterMatrix.inapplicable_cells == 37;
   assert builtins.length applicableNativeIds
   == builtins.length (lib.unique applicableNativeIds);
   assert builtins.length inapplicableNativeIds
@@ -404,11 +404,11 @@ in
   assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
   assert partitionedNativeIds == map (cell: cell.id) nativeCells;
   assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") nativeAdapterMatrix.inapplicable_cells)
-  == 36;
+  == 37;
   assert builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") nativeAdapterMatrix.inapplicable_cells)
   == 0;
   assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
-  assert nativeAdapterMatrix.applicability_digest == "sha256:283bd3c53cba28d8d119199129f251799d0f0545b96c68256a84e9d6c2f19b23";
+  assert nativeAdapterMatrix.applicability_digest == "sha256:3e0e6fff4942f23a8b13fd07d6fd3d11640fe12b6bf2d239b732d8b7cde992e1";
   assert (providerContract "postgresql")
   == {
     resource_lifetime = "persistent";

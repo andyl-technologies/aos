@@ -13,7 +13,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::builtin::{
     credential_delivery_effects_interface, foreground_process_supervision_guarantee,
     host_network_policy_interface, host_network_policy_loopback_tcp_egress_guarantee,
@@ -56,7 +56,7 @@ use aos_package::config_eval::native_resource_map::{
     HostStorageLifetime, HostStorageOwner, NativeHttpConsumerObservation, NativeOutputLocator,
     NativeResourceMap, NativeResourceMapping, NativeResourceQualification,
 };
-use aos_package::config_eval::runtime::{resolve_runtime, RuntimeResolution};
+use aos_package::config_eval::runtime::{RuntimeResolution, resolve_runtime};
 use aos_package::platform::native_platform;
 use aos_package::registry::RegistrySet;
 use aos_package::types::ProfileScope;
@@ -70,7 +70,7 @@ const PACKAGE_NAMES: [&str; 6] = [
     "ability-reference-nginx",
     "ability-reference-managed-configuration",
     "ability-reference-credential",
-    "ability-reference-systemd",
+    "ability-reference-service",
     "ability-reference-systemd-manager",
 ];
 
@@ -806,7 +806,7 @@ impl ReferenceFixture {
                 "execution_strategy": if self.environment.environment.stage == ExecutionStage::ApplicationContainer {
                     "foreground-process"
                 } else {
-                    "systemd-manager"
+                    "managed-service"
                 },
                 "port": port,
             });
@@ -1340,7 +1340,7 @@ fn reference_native_resource_map(composed: &ComposedReference) -> Result<NativeR
                 resource_reference: output_locator(
                     &service_provider,
                     "services",
-                    fixture_interface(composed, "aos.systemd-service")?,
+                    fixture_interface(composed, "aos.service-definition")?,
                     "managers",
                     &[name],
                 )?,
@@ -1827,7 +1827,7 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
                 ValueSchema::StringEnum {
                     values: vec![
                         "foreground-process".to_string(),
-                        "systemd-manager".to_string(),
+                        "managed-service".to_string(),
                     ],
                 },
             ),
@@ -2057,12 +2057,12 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
         )?,
         credential_delivery_effects_interface()?,
         interface_document(
-            "aos.systemd-service",
+            "aos.service-definition",
             ValueSchema::Record {
                 fields: BTreeMap::from([
                     (key("configuration_revision")?, string_schema()),
                     (key("consumer_endpoint")?, string_schema()),
-                    (key("unit")?, string_schema()),
+                    (key("service")?, string_schema()),
                     (
                         key("virtual_host_count")?,
                         ValueSchema::Integer {
@@ -2088,22 +2088,8 @@ fn interface_documents() -> Result<Vec<InterfaceDocument>> {
             None,
             Vec::new(),
         )?,
-        interface_document(
-            "aos.systemd-service-effects",
-            ValueSchema::Boolean,
-            None,
-            Vec::new(),
-        )?,
+        aos_ability_model::builtin::service_management_interface()?,
         aos_ability_model::builtin::foreground_process_interface()?,
-    ];
-    documents
-        .iter_mut()
-        .find(|document| document.interface.name.as_str() == "aos.systemd-service-effects")
-        .context("missing systemd effects interface")?
-        .interface
-        .guarantees = vec![
-        aos_ability_model::builtin::local_systemd_manager_guarantee()?,
-        aos_ability_model::builtin::system_container_manager_delegation_guarantee()?,
     ];
     documents.sort_by(|left, right| left.interface.name.cmp(&right.interface.name));
     Ok(documents)
@@ -2253,12 +2239,18 @@ fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)>
             ("publish", OperationFamily::PublishConfiguration),
             ("release", OperationFamily::ReleaseResource),
         ],
-        "aos.systemd-service-effects" => vec![
+        "aos.service-management" => vec![
             ("observe", OperationFamily::ObserveReadiness),
             (
                 "reload",
                 OperationFamily::ServiceLifecycle {
                     action: ServiceAction::Reload,
+                },
+            ),
+            (
+                "restart",
+                OperationFamily::ServiceLifecycle {
+                    action: ServiceAction::Restart,
                 },
             ),
             (
@@ -2323,7 +2315,7 @@ fn lower_interface_name(suffix: &str) -> Result<&'static str> {
     match suffix {
         "configuration" => Ok("aos.managed-configuration"),
         "credential" => Ok("aos.credential-delivery"),
-        "service" => Ok("aos.systemd-service"),
+        "service" => Ok("aos.service-definition"),
         _ => bail!("unknown lower-interface suffix {suffix:?}"),
     }
 }
@@ -2332,7 +2324,7 @@ fn terminal_interface_name(interface: &str) -> &'static str {
     match interface {
         "aos.credential-delivery" => "aos.credential-delivery-effects",
         "aos.managed-configuration" => "aos.managed-configuration-effects",
-        "aos.systemd-service" => "aos.systemd-service-effects",
+        "aos.service-definition" => "aos.service-management",
         _ => "",
     }
 }
@@ -2345,7 +2337,11 @@ fn lower_authority(suffix: &str) -> Result<(&'static str, Vec<&'static str>, &'s
             "configuration",
         )),
         "credential" => Ok(("credentials", vec!["deliver"], "credential-view")),
-        "service" => Ok(("services", vec!["observe", "reload", "start"], "service")),
+        "service" => Ok((
+            "services",
+            vec!["observe", "reload", "restart", "start"],
+            "service",
+        )),
         _ => bail!("unknown lower authority {suffix:?}"),
     }
 }

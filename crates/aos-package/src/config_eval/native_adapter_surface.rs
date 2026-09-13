@@ -73,7 +73,7 @@ pub(crate) fn adapter_id(kind: NativeAdapterKind, interface_name: &str) -> Optio
         NativeAdapterKind::Systemd => match interface_name {
             "aos.systemd-manager" => Some(NativeAdapterId::SystemdManager),
             "aos.systemd-provider-bootstrap" => Some(NativeAdapterId::SystemdBootstrap),
-            "aos.systemd-service-effects" => Some(NativeAdapterId::SystemdServiceLegacy),
+            "aos.service-management" => Some(NativeAdapterId::ServiceManagement),
             _ => None,
         },
         NativeAdapterKind::HostResource(kind) => {
@@ -210,8 +210,8 @@ const fn runtime_adapter_is_implemented(adapter: NativeAdapterId) -> bool {
         | NativeAdapterId::NginxValidation
         | NativeAdapterId::Postgresql
         | NativeAdapterId::SystemdBootstrap
-        | NativeAdapterId::SystemdManager
-        | NativeAdapterId::SystemdServiceLegacy => true,
+        | NativeAdapterId::ServiceManagement
+        | NativeAdapterId::SystemdManager => true,
     }
 }
 
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_route_preserves_declared_recovery_and_unsupported_cancellation() {
+    fn exact_route_preserves_declared_recovery_and_cancellation() {
         assert!(supports_exact_route(
             NativeAdapterId::SystemdManager,
             "aos.systemd-manager",
@@ -345,11 +345,11 @@ mod tests {
             "observe",
             InvocationPurpose::Reconcile,
         ));
-        assert!(!supports_exact_route(
-            NativeAdapterId::SystemdServiceLegacy,
-            "aos.systemd-service-effects",
+        assert!(supports_exact_route(
+            NativeAdapterId::ServiceManagement,
+            "aos.service-management",
             1,
-            actual_descriptor(NativeAdapterId::SystemdServiceLegacy),
+            actual_descriptor(NativeAdapterId::ServiceManagement),
             "start",
             "observe",
             InvocationPurpose::Cancel,
@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_systemd_routes_are_an_exact_closed_set() {
+    fn unsupported_manager_routes_are_an_exact_closed_set() {
         let cancellation = NATIVE_METHODS
             .iter()
             .filter(|contract| contract.cancel.is_none())
@@ -397,8 +397,6 @@ mod tests {
                 (NativeAdapterId::SystemdManager, "reload"),
                 (NativeAdapterId::SystemdManager, "restart"),
                 (NativeAdapterId::SystemdManager, "start"),
-                (NativeAdapterId::SystemdServiceLegacy, "reload"),
-                (NativeAdapterId::SystemdServiceLegacy, "start"),
             ]
         );
 
@@ -407,13 +405,7 @@ mod tests {
             .filter(|contract| contract.reconcile.is_none())
             .map(|contract| (contract.adapter, contract.method))
             .collect::<Vec<_>>();
-        assert_eq!(
-            reconciliation,
-            [
-                (NativeAdapterId::SystemdServiceLegacy, "reload"),
-                (NativeAdapterId::SystemdServiceLegacy, "start"),
-            ]
-        );
+        assert!(reconciliation.is_empty());
     }
 
     #[test]
@@ -516,9 +508,10 @@ mod tests {
                     .expect("built-in systemd manager interface")
                     .descriptor
             }
-            NativeAdapterId::SystemdServiceLegacy => {
-                Sha256Digest::parse(super::super::systemd_ability::REFERENCE_SYSTEMD_DESCRIPTOR)
-                    .expect("reference systemd-service interface")
+            NativeAdapterId::ServiceManagement => {
+                aos_ability_model::builtin::service_management_interface_key()
+                    .expect("built-in service-management interface")
+                    .descriptor
             }
         }
     }

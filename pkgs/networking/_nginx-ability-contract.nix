@@ -9,6 +9,11 @@
 }: let
   inherit (lib.abilities) schemas;
 
+  serviceManagementContract = import ../../lib/abilities/service-management.nix {
+    inherit schemas;
+    inherit (lib.abilities) guarantee;
+  };
+
   interface = name: descriptor: {
     inherit name descriptor;
     abi = 1;
@@ -17,15 +22,15 @@
   managedConfiguration =
     interface
     "aos.managed-configuration"
-    "sha256:f2f4174c1b63997d056df99fe7eeb1d07c37a52f88588e03163bc8bf536ea802";
+    "sha256:fce7ea027ff0640e13116a3501b96fd356ac96d47d82d26aff193d6d2bc8780e";
   credentialDelivery =
     interface
     "aos.credential-delivery"
     "sha256:e8c5924bd71f8c018958430a91907c662e09af55221d2c94a758dc4a1377d44f";
-  systemdService =
+  serviceDefinition =
     interface
-    "aos.systemd-service"
-    "sha256:c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d";
+    "aos.service-definition"
+    "sha256:71b6dad75359531ccfc92bfbb5824fb3555afb097e697d994ee6f9f862ae46af";
   nginxValidation =
     interface
     "aos.nginx-validation"
@@ -34,10 +39,7 @@
     interface
     "aos.http-backend"
     "sha256:289893585ef1b59314c8adfb77c26e698d6db1333178e3b3d1e1e0c0b54754c0";
-  systemdServiceEffects =
-    interface
-    "aos.systemd-service-effects"
-    "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
+  serviceManagement = serviceManagementContract.interface;
   endpointEffects =
     interface
     "aos.network-endpoint-effects"
@@ -55,16 +57,6 @@
     "aos.foreground-process"
     "sha256:6f692b67b0670968fb335b4ebe93951cd40bdedf925f98f025b93024b30b17cb";
 
-  localSystemdManagerGuarantee = {
-    name = "aos.local-systemd-manager";
-    version = 1;
-    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
-  };
-  systemContainerManagerDelegationGuarantee = {
-    name = "aos.system-container-manager-delegation";
-    version = 1;
-    descriptor = "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda";
-  };
   foregroundProcessSupervisionGuarantee = {
     name = "aos.foreground-process-supervision";
     version = 1;
@@ -291,7 +283,7 @@
         maxLength = 15;
         syntax = null;
       };
-      execution_strategy = schemas.enum ["foreground-process" "systemd-manager"];
+      execution_strategy = schemas.enum ["foreground-process" "managed-service"];
       port = schemas.integer {
         minimum = 1024;
         maximum = 65535;
@@ -467,26 +459,26 @@ in {
                 ["apply" "observe" "remove"]
                 [loopbackEgressGuarantee loopbackIngressGuarantee];
               storage = methodRequirement storageEffects ["ensure" "observe" "release"];
-              service = required systemdService;
+              service = required serviceDefinition;
               validation-terminal = methodRequirement nginxValidation ["record" "release" "validate"];
             }
             // (
               if hostResourceRuntime != null
               then {
                 service-terminal =
-                  requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
-                  // {guarantees = [localSystemdManagerGuarantee];};
+                  requirement serviceManagement ["observe" "reload" "restart" "start" "stop"] "required" null
+                  // {guarantees = builtins.attrValues serviceManagementContract.features;};
               }
               else {
                 service-terminal =
-                  requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
-                  // {guarantees = [localSystemdManagerGuarantee];};
+                  requirement serviceManagement ["observe" "reload" "restart" "start" "stop"] "required" null
+                  // {guarantees = builtins.attrValues serviceManagementContract.features;};
                 service-terminal-foreground =
                   requirement foregroundProcess ["observe" "start" "stop"] "required" null
                   // {guarantees = [foregroundProcessSupervisionGuarantee];};
                 service-terminal-system-container =
-                  requirement systemdServiceEffects ["observe" "reload" "start" "stop"] "required" null
-                  // {guarantees = [localSystemdManagerGuarantee systemContainerManagerDelegationGuarantee];};
+                  requirement serviceManagement ["observe" "reload" "restart" "start" "stop"] "required" null
+                  // {guarantees = builtins.attrValues serviceManagementContract.features;};
               }
             );
           composeEntry = "compose";

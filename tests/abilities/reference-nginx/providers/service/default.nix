@@ -1,7 +1,7 @@
-##! Pure systemd-service provider for the checked source fixture.
+##! Pure logical service-definition provider for the checked source fixture.
 let
   compose = context: let
-    systemdService = context.interface;
+    serviceDefinition = context.interface;
     contributions = builtins.sort (left: right: left.slot < right.slot) context.contributions;
     resourceFor = contribution: {
       provider = context.provider;
@@ -14,9 +14,9 @@ let
         value = {
           source = "resource-reference";
           reference = {
-            interface = systemdService;
+            interface = serviceDefinition;
             resource = resourceFor contribution;
-            operations = ["observe" "reload" "start"];
+            operations = ["observe" "reload" "restart" "start" "stop"];
             lifetime = "instance";
           };
         };
@@ -40,7 +40,7 @@ let
           provider = context.provider;
           group = "services";
         };
-        interface = systemdService;
+        interface = serviceDefinition;
         port = "managers";
         value = {
           source = "object";

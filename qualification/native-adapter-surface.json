@@ -359,6 +359,49 @@
       "scope": "host-resource"
     },
     {
+      "adapter": "service-management",
+      "interface_abi": 1,
+      "interface_descriptor": "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
+      "interface_name": "aos.service-management",
+      "methods": [
+        {
+          "cancel": "observe",
+          "effect_class": "observation",
+          "method": "observe",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "reload",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "restart",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "start",
+          "reconcile": "observe"
+        },
+        {
+          "cancel": "observe",
+          "effect_class": "mutation",
+          "method": "stop",
+          "reconcile": "observe"
+        }
+      ],
+      "provider_contract": {
+        "resource_lifetime": "instance",
+        "state_format": null
+      },
+      "scope": "host-manager"
+    },
+    {
       "adapter": "systemd-bootstrap",
       "interface_abi": 1,
       "interface_descriptor": "sha256:833e92258892d87a1f1cb16f66bfd1629c47a97386a9853cd93ffa30037b82f1",
@@ -431,48 +474,11 @@
         "state_format": null
       },
       "scope": "host-manager"
-    },
-    {
-      "adapter": "systemd-service-legacy",
-      "interface_abi": 1,
-      "interface_descriptor": "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50",
-      "interface_name": "aos.systemd-service-effects",
-      "methods": [
-        {
-          "cancel": "observe",
-          "effect_class": "observation",
-          "method": "observe",
-          "reconcile": "observe"
-        },
-        {
-          "cancel": null,
-          "effect_class": "mutation",
-          "method": "reload",
-          "reconcile": null
-        },
-        {
-          "cancel": null,
-          "effect_class": "mutation",
-          "method": "start",
-          "reconcile": null
-        },
-        {
-          "cancel": "observe",
-          "effect_class": "mutation",
-          "method": "stop",
-          "reconcile": "observe"
-        }
-      ],
-      "provider_contract": {
-        "resource_lifetime": "instance",
-        "state_format": null
-      },
-      "scope": "host-manager"
     }
   ],
   "limits": {
     "max_adapters": 13,
-    "max_methods": 50,
+    "max_methods": 51,
     "max_scenarios": 28
   },
   "matrix_schema": "aos.qualification.native-adapter-matrix/v1",
