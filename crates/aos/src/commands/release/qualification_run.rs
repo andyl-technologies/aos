@@ -7,23 +7,23 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_core::output::Printer;
 use aos_release::artifact::ArtifactRecord;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
-    GateResult, QUALIFICATION_EXECUTOR_REQUEST_V1, QUALIFICATION_EXECUTOR_REQUEST_V3,
-    QUALIFICATION_EXECUTOR_RESPONSE_V1, QUALIFICATION_REPORT_V1, QualificationExecutorRequestV1,
-    QualificationExecutorResponseV1, QualificationObjectV1, QualificationReportV1,
-    QualificationRetainedBundleV1, QualificationRetainedObjectV1, QualificationTrustedKeyV1,
+    GateResult, QualificationExecutorRequestV1, QualificationExecutorResponseV1,
+    QualificationObjectV1, QualificationReportV1, QualificationRetainedBundleV1,
+    QualificationRetainedObjectV1, QualificationTrustedKeyV1, QUALIFICATION_EXECUTOR_REQUEST_V1,
+    QUALIFICATION_EXECUTOR_REQUEST_V3, QUALIFICATION_EXECUTOR_RESPONSE_V1, QUALIFICATION_REPORT_V1,
 };
 use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::platform::{MatrixCell, Platform};
 use aos_release::qualification_evidence::QualificationPredecessor;
 use aos_release::receipt::{
-    HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, RECEIPT_SIGNATURE_DOMAIN,
-    SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1, verify_signed_receipt_with_key,
+    verify_signed_receipt_with_key, HubEnvironment, PublicationReceiptV1, QualificationReceiptV1,
+    SignedReceiptEnvelopeV1, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1,
 };
 use aos_release::signing::{
     SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
@@ -180,61 +180,63 @@ async fn run_attempt(
         None
     };
     let mut requests = Vec::new();
-    if plan.qualification.is_some() {
-        for case in cases.into_iter().flatten() {
-            let platform = case.platform.unwrap_or(Platform::X86_64Linux);
-            requests.push(QualificationExecutorRequestV1 {
-                schema_version: QUALIFICATION_EXECUTOR_REQUEST_V3.to_owned(),
-                registry: plan.registry.clone(),
-                release_id: plan.release_id.clone(),
-                staging_receipt_digest: staging_digest,
-                manifest_digest: summary.manifest_digest,
-                policy_id: case.requirement_id.clone(),
-                policy_digest: case.policy_digest,
-                platform,
-                subjects: case.subjects.clone(),
-                objects: public_objects(
-                    public_origin,
-                    &plan.registry,
-                    &manifest,
-                    &captured.manifest_bytes,
-                    &case.subjects,
-                )?,
-                retained_predecessor: predecessor_bundle(predecessor.as_ref(), &case)?,
-                nonce: executor_nonce(&args.executor_nonce, &case.id, platform),
-                qualification_case: Some(case),
-            });
-        }
-    } else {
-        for gate in &plan.gates {
-            for (platform, subjects) in &platform_subjects {
+    if args.report_input.is_none() {
+        if plan.qualification.is_some() {
+            for case in cases.into_iter().flatten() {
+                let platform = case.platform.unwrap_or(Platform::X86_64Linux);
                 requests.push(QualificationExecutorRequestV1 {
-                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
-                    qualification_case: None,
+                    schema_version: QUALIFICATION_EXECUTOR_REQUEST_V3.to_owned(),
                     registry: plan.registry.clone(),
                     release_id: plan.release_id.clone(),
                     staging_receipt_digest: staging_digest,
                     manifest_digest: summary.manifest_digest,
-                    policy_id: gate.policy_id.clone(),
-                    policy_digest: gate.policy_digest,
-                    platform: *platform,
-                    subjects: subjects.clone(),
+                    policy_id: case.requirement_id.clone(),
+                    policy_digest: case.policy_digest,
+                    platform,
+                    subjects: case.subjects.clone(),
                     objects: public_objects(
                         public_origin,
                         &plan.registry,
                         &manifest,
                         &captured.manifest_bytes,
-                        subjects,
+                        &case.subjects,
                     )?,
-                    retained_predecessor: None,
-                    nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
+                    retained_predecessor: predecessor_bundle(predecessor.as_ref(), &case)?,
+                    nonce: executor_nonce(&args.executor_nonce, &case.id, platform),
+                    qualification_case: Some(case),
                 });
+            }
+        } else {
+            for gate in &plan.gates {
+                for (platform, subjects) in &platform_subjects {
+                    requests.push(QualificationExecutorRequestV1 {
+                        schema_version: QUALIFICATION_EXECUTOR_REQUEST_V1.to_owned(),
+                        qualification_case: None,
+                        registry: plan.registry.clone(),
+                        release_id: plan.release_id.clone(),
+                        staging_receipt_digest: staging_digest,
+                        manifest_digest: summary.manifest_digest,
+                        policy_id: gate.policy_id.clone(),
+                        policy_digest: gate.policy_digest,
+                        platform: *platform,
+                        subjects: subjects.clone(),
+                        objects: public_objects(
+                            public_origin,
+                            &plan.registry,
+                            &manifest,
+                            &captured.manifest_bytes,
+                            subjects,
+                        )?,
+                        retained_predecessor: None,
+                        nonce: executor_nonce(&args.executor_nonce, &gate.policy_id, *platform),
+                    });
+                }
             }
         }
     }
     let mut evidence = Vec::new();
     let mut reports = BTreeMap::new();
-    for request in requests.into_iter().filter(|_| args.report_input.is_none()) {
+    for request in requests {
         request.validate()?;
         let executable = executors
             .get(&request.platform)
