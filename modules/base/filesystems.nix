@@ -181,6 +181,23 @@ in {
   };
 
   config = {
+    assertions = [
+      {
+        # /var on the pool is mounted in the initrd, which needs the pool
+        # imported and its key loaded before switch-root. Only the zvol boot
+        # backend provides that unlock unit, so any other backend leaves the
+        # initrd unable to assemble /etc and the guest fails to switch root
+        # with nothing pointing at the cause.
+        assertion =
+          !(cfg.zfs.enable && cfg.zfs.systemState)
+          || config.aos.boot.storage.backend == "zfs-zvol";
+        message =
+          "aos.filesystems.zfs.systemState puts /var on the pool, which the initrd must unlock"
+          + " before switch-root; that requires aos.boot.storage.backend = \"zfs-zvol\"."
+          + " Set systemState = false for a pool that carries data only.";
+      }
+    ];
+
     system.checks.filesystem = {
       description = "Filesystem layout checks";
       checks = [
