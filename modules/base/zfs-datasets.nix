@@ -583,14 +583,19 @@ in {
           {
             name = "zfs-datasets-carry-data";
             description = "A declared dataset stores and returns file contents";
+            # Compared by digest rather than with cmp(1): diffutils is not part
+            # of a production image, and the claim is that the bytes survive a
+            # round trip through the filesystem, not which tool reports it.
             script = ''
               probe = "${driftProbeMountPoint}/checksum-probe"
-              vm.succeed(
-                  f"head -c 1048576 /dev/urandom > {probe}",
-                  f"cp {probe} {probe}.copy",
-                  f"cmp {probe} {probe}.copy",
-                  f"rm -f {probe} {probe}.copy",
-              )
+              vm.succeed(f"head -c 1048576 /dev/urandom > {probe}")
+              vm.succeed(f"cp {probe} {probe}.copy")
+
+              written = vm.succeed(f"sha256sum < {probe}").split()[0]
+              read_back = vm.succeed(f"sha256sum < {probe}.copy").split()[0]
+              assert written == read_back, f"{written} != {read_back}"
+
+              vm.succeed(f"rm -f {probe} {probe}.copy")
             '';
           }
           {
