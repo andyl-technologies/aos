@@ -1329,31 +1329,11 @@ branch on the verdict without parsing output:
   that terminal materialization. Terminal remote interactive command sequences
   now query the stopped snapshot, validate the actor-materialized terminal
   savepoint, emit the same replay-oracle proof, and clean up the stopped remote
-  session. Explicitly selected local-QEMU resumes now run the same resumed
-  session workflow, invoke the `crucible-qemu` resume coordinator through an
-  API-owned adapter backed by a `SimBackend`-seeded
-  `QemuBackendRealizationExecutor`, and derive the emitted branch/runtime proof
-  from that coordinator result. The API bridge now also accepts a caller-owned
-  `QemuVmRealizationExecutor`, so the CLI/API boundary has an explicit hook for
-  selecting the Linux real-node executor once launch artifacts are resolvable;
-  `crucible-qemu` owns the typed realization coordinator with
-  baked-genesis/source-ancestor evidence, the default savevm policy, and a
-  `Backend`-backed realization executor that restores exact/baked snapshots
-  through the QMP-backed backend boundary and replays suffixes through backend
-  horizon advances, plus a Linux real-node realization executor that launches a
-  policy-authorized restored `QemuNode`, replays through shared memory, samples
-  live fingerprints and icounts, and keeps generic QMP snapshot/restore closed
-  after node assembly.
-  Stdout and the canonical log record
-  `materialization=qemu-vm-realization`, `operation=resume`,
-  `executor=model-checkpoint`, branch, replay count, runtime/configuration
-  hashes, and resolved QEMU/plugin identity.
-  Process-tests cover real-binary
-  `resume --backend qemu` JSONL output, coordinator-derived branch/runtime
-  fields from that model-checkpoint executor, and replay-oracle validation
-  through marker-resolved QEMU/plugin identity. The selected local-QEMU path now
-  requires a successful live packaged-QEMU/plugin boot before admitting the
-  coordinator result. The gate also runs a direct patched-QEMU
+  session. Explicitly selected local-QEMU resumes run the same resumed session
+  workflow through the production local-VM lifecycle. Process tests cover
+  real-binary `resume --backend qemu` JSONL output and replay-oracle validation
+  through marker-resolved QEMU/plugin identity. That route requires a successful
+  live packaged-QEMU/plugin boot. The gate also runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
   `running` after `cont`; exact restore is admitted only after the replay oracle
   validates the materialized configuration under the savevm policy.

@@ -1163,16 +1163,14 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
   `bake`. — satisfies [PAT-11], [PAT-12]; realized by **T-EXEC-6**,
   **T-EXEC-7**, **T-EXEC-8**, **T-EXEC-17** (spec 05 §§5–6, §11).
   - Completed by `crucible::instantiate`, `TemporalGraph::with_baked_genesis`,
-    `crucible::bake`, `crucible_qemu::instantiate_qemu_vm`,
-    `crucible_qemu::start_qemu_vm`, `crucible_qemu::resume_qemu_vm`,
-    `crucible_qemu::fork_qemu_vm`, and the same-configuration-twice
-    fingerprint gate: the model resolves exact snapshot, ancestor replay, then
-    baked genesis; QEMU lifecycle wrappers share one instantiate coordinator
-    and leave cold boot inside `bake_qemu_genesis_vm`; and the fingerprint gate
-    validates start/resume/fork/snapshot-completeness through one equality.
+    `crucible::bake`, `crucible_qemu::instantiate_qemu_vm`, and the
+    same-configuration-twice fingerprint gate: the model resolves exact
+    snapshot, ancestor replay, then baked genesis; QEMU lifecycle owners pass
+    their selected configuration to one instantiate coordinator and leave cold
+    boot inside `bake_qemu_genesis_vm`; and the fingerprint gate validates
+    start/resume/fork/snapshot-completeness through one equality.
     `checks.crucible.phase1.executionInstantiate`,
     `checks.crucible.phase1.executionBake`,
-    `checks.crucible.phase1.executionStartResumeFork`, and
     `checks.crucible.phase1.gates.singleVmFingerprint` gate the pattern.
 - [x] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex/eventfd wakes follow the
   §29.3 shape and carry the `loom`/property concurrency tests. — satisfies

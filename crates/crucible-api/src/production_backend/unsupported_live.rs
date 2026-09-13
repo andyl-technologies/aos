@@ -1,8 +1,8 @@
-//! Non-Linux production-QEMU API compatibility surface.
+//! Non-Linux production-QEMU API surface.
 //!
 //! Production QEMU launch depends on Linux inherited-descriptor and
-//! shared-memory setup primitives. These types preserve the
-//! platform-neutral control-plane API while every operation that would
+//! shared-memory setup primitives. These types keep the platform-neutral
+//! control-plane API available while every operation that would
 //! launch the local backend fails explicitly before starting a child
 //! process.
 
