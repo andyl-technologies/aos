@@ -541,7 +541,7 @@ in {
           )
           for label, path, required in (
               ("base-lib", base_lib, "default.nix"),
-              ("evaluator", evaluator, "bin/apm"),
+              ("evaluator", evaluator, "bin/aos-package-runtime"),
           ):
               assert path.startswith("/nix/store/"), f"unsafe {label} path: {path!r}"
               lower = "/nix.lower/store/" + path.removeprefix("/nix/store/")
