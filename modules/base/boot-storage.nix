@@ -117,6 +117,21 @@ in {
         default = "aos/zfs-key.cred";
         description = "ESP-relative TPM-sealed native ZFS key path.";
       };
+
+      compatibility = lib.mkOption {
+        type = lib.types.strMatching "[A-Za-z0-9_.,-]+";
+        default = "openzfs-2.3";
+        description = ''
+          Pool feature set the installer creates, named after a file in
+          OpenZFS's `compatibility.d`. A pool created with every feature its
+          creating release supports can stop being importable by an older
+          release, which for an A/B image means the rollback slot may be unable
+          to read the pool holding the system's state. Pinning the feature set
+          one release behind the shipped OpenZFS keeps rollback viable; raise
+          it deliberately, after every slot that could be rolled back to can
+          read it.
+        '';
+      };
     };
   };
 
@@ -216,7 +231,8 @@ in {
       };
     }
     (lib.mkIf (cfg.backend == "zfs-zvol") {
-      aos.kernel.modulePackages = [zfsPackage];
+      # The stage-2 module package follows aos.filesystems.zfs.package, which
+      # the definition below pins to this exact build.
       aos.boot.initrd.modulePackages = [zfsPackage];
       aos.boot.initrd.extraPackages = [zfsPackage];
       aos.boot.initrd.loadModules = ["zfs"];

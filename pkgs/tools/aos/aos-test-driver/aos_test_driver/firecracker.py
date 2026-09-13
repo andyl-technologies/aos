@@ -52,6 +52,7 @@ class FirecrackerMachine(Machine):
         memory_mib: int,
         vcpu_count: int,
         tmpdir: str,
+        extra_disks: list[dict[str, object]] | None = None,
     ) -> None:
         self.kernel_pkg = kernel
         self.initrd_path = initrd
@@ -60,6 +61,8 @@ class FirecrackerMachine(Machine):
         self.memory_mib = memory_mib
         self.vcpu_count = vcpu_count
         self.tmpdir = Path(tmpdir)
+        self.extra_disks = extra_disks or []
+        self.extra_disk_copies: list[str] = []
 
         # Firecracker creates the vsock UDS at `uds_path`; the client
         # CONNECTs to it. From the host's perspective the vsock UDS *is*
@@ -80,6 +83,10 @@ class FirecrackerMachine(Machine):
 
         self.fc_proc = None
         self.stdin_proc = None
+        self.extra_disk_copies = [
+            str(self.tmpdir / f"{name}-extra-{index}.img")
+            for index in range(len(self.extra_disks))
+        ]
         self._fc_stdin_fd: IO[bytes] | None = None
         self._serial_fd: IO[bytes] | None = None
         self._fc_err_fd: IO[bytes] | None = None
@@ -125,6 +132,18 @@ class FirecrackerMachine(Machine):
             if self.metadata_copy is not None and self.metadata_src is not None:
                 shutil.copyfile(self.metadata_src, self.metadata_copy)
                 os.chmod(self.metadata_copy, 0o644)
+            for index, (disk, path) in enumerate(
+                zip(self.extra_disks, self.extra_disk_copies, strict=True)
+            ):
+                size_mib = disk.get("sizeMiB")
+                if not isinstance(size_mib, int) or size_mib <= 0:
+                    raise RuntimeError(
+                        f"[{self.name}] extra disk {index} has invalid sizeMiB"
+                    )
+                # Sparse: the file costs only the blocks the guest writes.
+                with open(path, "wb") as extra:
+                    extra.truncate(size_mib * 1024 * 1024)
+                os.chmod(path, 0o644)
         else:
             copy_method = "reused"
         for stale in (self.agent.socket_path, self.fc_stdin_fifo):
@@ -160,6 +179,21 @@ class FirecrackerMachine(Machine):
                     "path_on_host": self.metadata_copy,
                     "is_root_device": False,
                     "is_read_only": True,
+                    "cache_type": "Unsafe",
+                    "io_engine": "Sync",
+                }
+            )
+
+        # Additional blank virtio-blk devices, presented to the guest as
+        # /dev/vdb onward. Storage tests need real block devices to build a
+        # pool or array on; the root disk cannot serve that role.
+        for index, path in enumerate(self.extra_disk_copies):
+            drives.append(
+                {
+                    "drive_id": f"extra{index}",
+                    "path_on_host": path,
+                    "is_root_device": False,
+                    "is_read_only": False,
                     "cache_type": "Unsafe",
                     "io_engine": "Sync",
                 }

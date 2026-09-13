@@ -253,6 +253,19 @@
 
     ${lib.concatMapStringsSep "\n" (parameter: "${parameter.comparison} ${lib.escapeShellArg parameter.name} ${lib.escapeShellArg parameter.path} ${lib.escapeShellArg parameter.expected}") verifiedParameters}
 
+    # Swapping onto a zvol deadlocks: writing a swap page asks ZFS to allocate
+    # the memory that the write exists to reclaim. The pool is never a valid
+    # swap backing store, however the host was provisioned.
+    while read -r device _; do
+      case "$device" in
+        /dev/zvol/*|/dev/zd[0-9]*)
+          echo "aos-zfs-verify-parameters: $device is swap backed by a zvol," \
+            "which deadlocks under memory pressure; use zram or a separate device" >&2
+          status=1
+          ;;
+      esac
+    done < <(tail -n +2 /proc/swaps)
+
     # ZFS and compressed swap both consume RAM. Letting each claim a large
     # share leaves reclaim pushing ARC pressure into swap that is itself
     # memory, which deepens fragmentation while free-memory accounting still
@@ -502,6 +515,14 @@ in {
     # possible. The hardware watchdog is the backstop for the case where the
     # panic path itself cannot complete.
     aos.monitoring.hardware.enable = lib.mkDefault true;
+
+    # A ZFS host runs no systemd-repart pass, so the encrypted swap partition
+    # that pass creates never exists and the host would otherwise have no swap
+    # at all: reclaim would have nowhere to place anonymous pages and would
+    # take every page from the ARC instead. Compressed swap in RAM fills that
+    # role without the deadlock a zvol would introduce, where writing a swap
+    # page requires ZFS to allocate the memory the write is trying to free.
+    aos.zram.enable = lib.mkDefault true;
 
     systemd.services."aos-zfs-memory-policy" = {
       description = "Apply the bounded ZFS memory policy";

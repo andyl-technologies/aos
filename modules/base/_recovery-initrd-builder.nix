@@ -9,6 +9,8 @@
   pkgs,
   lib,
   kernel,
+  kernelModulePackages ? [],
+  recoveryExtraPackages ? [],
   loadModules,
   dbCert,
   authorizedDbCerts,
@@ -36,19 +38,24 @@
     zstd
     ;
 
-  recoveryPackages = [
-    aos-recovery
-    bash
-    binutils
-    coreutils
-    cryptsetup
-    jq
-    kmod
-    openssl
-    sbsigntools
-    systemd
-    util-linux
-  ];
+  recoveryPackages =
+    [
+      aos-recovery
+      bash
+      binutils
+      coreutils
+      cryptsetup
+      jq
+      kmod
+      openssl
+      sbsigntools
+      systemd
+      util-linux
+    ]
+    # Filesystem userland for the storage backends the image can boot from.
+    # A recovery environment that cannot import the pool holding a host's
+    # state cannot recover that host.
+    ++ recoveryExtraPackages;
 
   modulesLoadConf = lib.concatStringsSep "\n" loadModules;
   copy =
@@ -153,6 +160,25 @@ in
             exit 1
           fi
           cp -a ${kernel}/lib/modules/. root/lib/modules/
+          chmod -R u+w root/lib/modules
+          ${lib.concatMapStringsSep "\n" (package: ''
+              if [ ! -d ${package}/lib/modules ]; then
+                echo "recovery-initrd: external module package ${package} has no module tree" >&2
+                exit 1
+              fi
+              chmod -R u+w root/lib/modules
+              cp -a ${package}/lib/modules/. root/lib/modules/
+            '')
+            kernelModulePackages}
+          for module_dir in root/lib/modules/*; do
+            # External module packages restore the store's read-only mode on
+            # the release directory. Only the parent needs write access to
+            # unlink the build/source symlinks, and a recursive chmod does not
+            # follow them.
+            chmod u+w root/lib/modules "$module_dir"
+            rm -f "$module_dir/build" "$module_dir/source"
+            ${kmod}/sbin/depmod -b root "$(basename "$module_dir")"
+          done
 
           for rules_dir in root/nix/store/*/lib/udev/rules.d; do
             [ -d "$rules_dir" ] || continue

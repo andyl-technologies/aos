@@ -336,6 +336,12 @@
     import ../base/_recovery-initrd-builder.nix {
       inherit pkgs lib;
       kernel = system.config.system.build.kernel;
+      # Recovery loads the same early-boot modules as the normal initrd, so it
+      # needs the same external module packages behind them. Without the ZFS
+      # module and userland, a recovery environment cannot import the pool that
+      # holds the host's state, which is exactly when it is needed.
+      kernelModulePackages = system.config.aos.boot.initrd.modulePackages;
+      recoveryExtraPackages = system.config.aos.boot.recovery.extraPackages;
       loadModules = system.config.aos.boot.initrd.loadModules;
       dbCert = dbCertificate;
       authorizedDbCerts = "${activeImageDbCerts}/active-db-certs.pem";

@@ -1,4 +1,9 @@
 ##! ZFS — OpenZFS filesystem and volume manager
+# OpenZFS is an out-of-tree module, so each release builds only against a
+# bounded range of kernel versions (its META file's Linux-Minimum and
+# Linux-Maximum). A release older than the pinned kernel fails deep in the
+# kernel probe with a configure error rather than at evaluation, so the pin
+# here has to move with pkgs/kernel/_source.nix.
 {
   lib,
   mkDerivation,
@@ -17,7 +22,7 @@
   dwarves,
   kernel ? null,
 }: let
-  version = "2.4.0";
+  version = "2.4.4";
 in
   mkDerivation {
     pname = "zfs";
@@ -27,7 +32,7 @@ in
       urls = [
         "https://github.com/openzfs/zfs/releases/download/zfs-${version}/zfs-${version}.tar.gz"
       ];
-      hash = "sha256-e98T3gpx2VVUwOPkfV6PUHhsMNT0tjt8WTsdEa91ye4=";
+      hash = "sha256-Kjxw1Vo3zHFhipWmDoGtZlMCAesRjTd0Hcku/PhIyLE=";
     };
 
     buildDeps =
