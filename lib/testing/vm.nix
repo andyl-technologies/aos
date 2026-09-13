@@ -657,7 +657,9 @@
     testScript ? null,
     extraDisks ? [],
     kernelParams ? [],
-    timeout ? 120,
+    # Null means "harness default", so a caller threading an unset option
+    # through does not have to restate the number.
+    timeout ? null,
     memory ? null,
     seedSELinuxDisabledConfig ? true,
   }:
@@ -701,12 +703,18 @@
         then memory
         else 2048;
 
+      effectiveTimeout =
+        if timeout != null
+        then timeout
+        else 120;
+
       # Driver manifest. The aos-test-driver consumes this JSON to
       # build one FirecrackerMachine; the testScript runs as a
       # Python module via runpy with `vm` exposed as a global. See
       # the v1 spec ("Manifest schema") for the full field list.
       manifest = {
-        inherit name timeout;
+        inherit name;
+        timeout = effectiveTimeout;
         machines = [
           {
             name = "vm";

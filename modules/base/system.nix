@@ -91,6 +91,16 @@
           than relying on the image's own command line.
         '';
       };
+      timeoutSeconds = lib.mkOption {
+        type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+        default = null;
+        description = ''
+          Wall-clock budget for the whole check group, covering guest boot as
+          well as the checks themselves. Null takes the harness default. Raise
+          it for a subject that adds boot-time work, such as storage that has
+          to be imported and mounted before the system is usable.
+        '';
+      };
       memoryMiB = lib.mkOption {
         type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
         default = null;
