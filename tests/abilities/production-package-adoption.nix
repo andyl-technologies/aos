@@ -1,4 +1,4 @@
-##! Checks production structured packages retain their legacy catalog surface.
+##! Checks production packages use manager-neutral logical service contracts.
 {
   lib,
   pkgs,
@@ -19,6 +19,10 @@
     inherit pkgs lib;
   };
   serviceCatalog = import ../../lib/abilities/providers/service-package/catalog.nix;
+  systemdCatalog = import ../../lib/abilities/providers/service-package/systemd-catalog.nix;
+  serviceManagement = import ../../lib/abilities/service-management.nix {
+    inherit (lib.abilities) schemas guarantee;
+  };
   migratedServices = [
     "cloudcore"
     "conntrack-tools"
@@ -39,7 +43,10 @@
     contract = packageContract package;
     provider = builtins.head contract.ability.implementation.providers;
     requirement = builtins.head provider.requirements;
-    workloadUnits = builtins.filter (lib.hasSuffix ".service") contract.exposure.expose.units;
+    requiredGuarantees = builtins.sort (
+      left: right: left.name < right.name
+    ) (serviceManagement.featureGuarantees serviceCatalog.${name}.features);
+    mappedUnits = builtins.attrValues systemdCatalog.${name};
   in
     contract.ability.activation_mode
     == "structured-effects"
@@ -49,29 +56,16 @@
     && (builtins.head contract.ability.exports).interface.name == serviceCatalog.${name}.interface
     && (builtins.head contract.ability.exports).interface.abi == 1
     && provider.implementation.kind == "pure-composition"
-    && provider.owns_resource_kinds == ["aos.systemd-service-effects"]
-    && requirement.accepted_interfaces
-    == [
-      {
-        name = "aos.systemd-service-effects";
-        abi = 1;
-        descriptor = "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
-      }
-    ]
-    && requirement.methods == ["start" "stop"]
-    && requirement.guarantees
-    == [
-      {
-        name = "aos.local-systemd-manager";
-        version = 1;
-        descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
-      }
-    ]
+    && provider.owns_resource_kinds == [serviceManagement.interface.name]
+    && requirement.accepted_interfaces == [serviceManagement.interface]
+    && requirement.methods == serviceCatalog.${name}.methods
+    && requirement.guarantees == requiredGuarantees
+    && builtins.attrNames systemdCatalog.${name}
+    == builtins.sort builtins.lessThan (builtins.map (service: service.key) serviceCatalog.${name}.services)
     && builtins.all (
       unit: builtins.elem unit contract.exposure.expose.units
     )
-    serviceCatalog.${name}.units
-    && builtins.length workloadUnits == builtins.length serviceCatalog.${name}.units
+    mappedUnits
     && contract.exposure.expose.units != [];
 
   serviceProvider = import ../../lib/abilities/providers/service-package;
@@ -129,13 +123,9 @@
       scope = [providerId.key];
       key = "service-terminal";
     };
-    interface = {
-      name = "aos.systemd-service-effects";
-      abi = 1;
-      descriptor = "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
-    };
+    interface = serviceManagement.interface;
     caller_grant = {
-      methods = ["start" "stop"];
+      methods = ["observe" "restart" "start" "stop"];
       resources = [];
     };
   };
@@ -197,6 +187,53 @@
       }
     ];
   };
+  garageInterface = rsyncInterface // {name = "aos.service.garage";};
+  garageComposition = serviceProvider.compose {
+    provider = providerId;
+    interface = garageInterface;
+    package = providerId.package;
+    activation_revision = activationRevision;
+    configuration.enabled = true;
+  };
+  garageStartTransition = serviceProvider.transition {
+    provider = providerId;
+    interface = garageInterface;
+    operation_scope = ["service" "garage"];
+    authorized_bindings = [
+      {
+        authority.role = "desired";
+        inherit binding;
+      }
+    ];
+    controllers = garageComposition.controllers;
+    changes =
+      builtins.map (entry: {
+        kind = "create";
+        inherit (entry) resource;
+      })
+      garageComposition.resources;
+  };
+  garageStopTransition = serviceProvider.transition {
+    provider = providerId;
+    interface = garageInterface;
+    operation_scope = ["service" "garage"];
+    authorized_bindings = [
+      {
+        authority = {
+          role = "teardown";
+          source_request = binding.request;
+        };
+        inherit binding;
+      }
+    ];
+    controllers = garageComposition.controllers;
+    changes =
+      builtins.map (entry: {
+        kind = "remove";
+        inherit (entry) resource;
+      })
+      garageComposition.resources;
+  };
   disabledComposition = serviceProvider.compose {
     provider = providerId;
     interface = rsyncInterface;
@@ -255,11 +292,51 @@ in
   assert (builtins.head customizedComposition.resources).revision != activationRevision;
   assert builtins.match "sha256:[0-9a-f]{64}" (builtins.head customizedComposition.resources).revision != null;
   assert start.method == "start";
-  assert start.inputs.value.unit == "rsyncd.service";
+  assert start.inputs.value;
   assert start.controller == (builtins.head composition.controllers).controller;
-  assert builtins.map (operation: operation.method) restartTransition.operations == ["stop" "start"];
-  assert builtins.length restartTransition.edges == 1;
+  assert builtins.map (operation: operation.method) restartTransition.operations == ["restart"];
+  assert restartTransition.edges == [];
   assert builtins.map (operation: operation.method) removalTransition.operations == ["stop"];
+  assert garageStartTransition.edges
+  == [
+    {
+      from = {
+        kind = "operation";
+        key = {
+          scope = ["service" "garage"];
+          key = "start-prepare";
+        };
+      };
+      to = {
+        kind = "operation";
+        key = {
+          scope = ["service" "garage"];
+          key = "start-main";
+        };
+      };
+      kind = "required-success";
+    }
+  ];
+  assert garageStopTransition.edges
+  == [
+    {
+      from = {
+        kind = "operation";
+        key = {
+          scope = ["service" "garage"];
+          key = "stop-main";
+        };
+      };
+      to = {
+        kind = "operation";
+        key = {
+          scope = ["service" "garage"];
+          key = "stop-prepare";
+        };
+      };
+      kind = "required-success";
+    }
+  ];
   assert disabledComposition.resources == [];
   assert disabledComposition.controllers == [];
   assert !invalidRevision.success;

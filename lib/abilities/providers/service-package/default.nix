@@ -1,15 +1,47 @@
-##! Pure lifecycle provider for package-owned systemd targets.
+##! Pure lifecycle provider for package-owned logical services.
 let
   catalog = import ./catalog.nix;
-  systemdEffects = {
-    name = "aos.systemd-service-effects";
+  serviceManagement = {
+    name = "aos.service-management";
     abi = 1;
-    descriptor = "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
+    descriptor = "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff";
   };
-  localSystemdManager = {
-    name = "aos.local-systemd-manager";
-    version = 1;
-    descriptor = "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4";
+  serviceFeatures = {
+    configuration = {
+      name = "aos.service.feature.configuration";
+      version = 1;
+      descriptor = "sha256:795691e4da6ad4983fdcdee83ce3241f00b880a7a75e9f8c8c1292ed10d02728";
+    };
+    dependencies = {
+      name = "aos.service.feature.dependencies";
+      version = 1;
+      descriptor = "sha256:d41d1c135639c9c64f9c2c3fd14f5155e27e69f815a50cc36070c46972ab5791";
+    };
+    identity = {
+      name = "aos.service.feature.identity";
+      version = 1;
+      descriptor = "sha256:428c991097b18a0e43ee19bc799ce735986567f7934f5c148d39c485efd1406c";
+    };
+    isolation = {
+      name = "aos.service.feature.isolation";
+      version = 1;
+      descriptor = "sha256:4890b6ca323060f281a98fd49f290ac081d9acefc9fc23e02c8981759ef3f86d";
+    };
+    readiness = {
+      name = "aos.service.feature.readiness";
+      version = 1;
+      descriptor = "sha256:8db2fc4868b442bf71a5658db9ccb181fa928029d26411d7aafa6d1cac77e3de";
+    };
+    storage = {
+      name = "aos.service.feature.storage";
+      version = 1;
+      descriptor = "sha256:b35dbbe867ce562df3efdaa7a17b7a61169df4fa0ef4dd19c76203b48b697704";
+    };
+    supervision = {
+      name = "aos.service.feature.supervision";
+      version = 1;
+      descriptor = "sha256:634cf62951642871683e93d7fc1df90b378610563955d13781d26b7a5fd91b9f";
+    };
   };
   operationDeadline = {
     attempt_timeout_millis = 300000;
@@ -62,9 +94,9 @@ let
     then throw "service ability activation revision must be a canonical SHA-256 digest"
     else configuration // {inherit revision;};
 
-  resourceFor = provider: unit: {
+  resourceFor = provider: service: {
     inherit provider;
-    key = builtins.replaceStrings ["." "_"] ["-" "-"] unit;
+    key = service.key;
   };
 
   emptyTransition = {
@@ -85,11 +117,11 @@ in {
     spec = specFor context.interface;
     configuration = requireConfiguration context;
     resources =
-      builtins.map (unit: {
-        resource = resourceFor context.provider unit;
-        inherit unit;
+      builtins.map (service: {
+        resource = resourceFor context.provider service;
+        inherit service;
       })
-      spec.units;
+      spec.services;
   in {
     schema = "aos.ability.composition-fragment/v1";
     requests = [
@@ -99,9 +131,9 @@ in {
           scope = [context.provider.key];
           key = "service-terminal";
         };
-        accepted_interfaces = [systemdEffects];
-        methods = ["start" "stop"];
-        guarantees = [localSystemdManager];
+        accepted_interfaces = [serviceManagement];
+        inherit (spec) methods;
+        guarantees = builtins.map (name: serviceFeatures.${name}) spec.features;
         lifetime = "instance";
       }
     ];
@@ -137,7 +169,7 @@ in {
         entry:
           entry.binding.request.consumer
           == context.provider
-          && entry.binding.interface == systemdEffects
+          && entry.binding.interface == serviceManagement
           && (
             entry.binding.request.key
             == "service-terminal"
@@ -162,7 +194,7 @@ in {
     in
       if builtins.length matches == 1
       then (builtins.head matches).binding
-      else throw "service ability transition requires one ${role} systemd binding for ${method}";
+      else throw "service ability transition requires one ${role} manager binding for ${method}";
     scopedKey = key: {
       scope = context.operation_scope;
       inherit key;
@@ -173,16 +205,6 @@ in {
       if builtins.length matches == 1
       then (builtins.head matches).controller
       else null;
-    unitFor = resource: let
-      matches =
-        builtins.filter (
-          unit: resource == resourceFor context.provider unit
-        )
-        spec.units;
-    in
-      if builtins.length matches == 1
-      then builtins.head matches
-      else throw "service ability transition contains an unknown package unit resource";
     routesFor = change:
       if change.kind == "create" || change.kind == "reconcile-stopped"
       then [
@@ -195,11 +217,7 @@ in {
       then [
         {
           role = "desired";
-          method = "stop";
-        }
-        {
-          role = "desired";
-          method = "start";
+          method = "restart";
         }
       ]
       else if change.kind == "remove"
@@ -233,7 +251,7 @@ in {
       };
       inputs = {
         source = "literal";
-        value = {unit = unitFor change.resource;};
+        value = true;
       };
       preconditions = [];
       accesses = [
@@ -252,11 +270,11 @@ in {
         };
         reconcile = {
           interface = binding.interface;
-          method = route.method;
+          method = "observe";
         };
         cancel = {
           interface = binding.interface;
-          method = route.method;
+          method = "observe";
         };
         compensate = null;
       };
@@ -266,24 +284,72 @@ in {
         change: builtins.map (operationFor change) (routesFor change)
       )
       context.changes;
-    restartChanges =
-      builtins.filter (
-        change: change.kind == "update" || change.kind == "reconcile-divergent"
-      )
-      context.changes;
-    edges =
-      builtins.map (change: {
-        from = {
-          kind = "operation";
-          key = scopedKey "stop-${change.resource.key}";
-        };
-        to = {
-          kind = "operation";
-          key = scopedKey "start-${change.resource.key}";
-        };
-        kind = "required-success";
-      })
-      restartChanges;
+    operationForService = service: let
+      resource = resourceFor context.provider service;
+      matches = builtins.filter (change: change.resource == resource) context.changes;
+      change =
+        if builtins.length matches == 1
+        then builtins.head matches
+        else null;
+      routes =
+        if change == null
+        then []
+        else routesFor change;
+    in
+      if builtins.length routes == 1
+      then {
+        inherit resource;
+        method = (builtins.head routes).method;
+      }
+      else null;
+    dependencyEdgesFor = service: let
+      serviceOperation = operationForService service;
+    in
+      builtins.concatMap (dependency: let
+        matches = builtins.filter (candidate: candidate.key == dependency) spec.services;
+        dependencyService =
+          if builtins.length matches == 1
+          then builtins.head matches
+          else throw "logical service '${service.key}' has unknown dependency '${dependency}'";
+        dependencyOperation = operationForService dependencyService;
+        bothStopping =
+          serviceOperation
+          != null
+          && dependencyOperation != null
+          && serviceOperation.method == "stop"
+          && dependencyOperation.method == "stop";
+        bothConverging =
+          serviceOperation
+          != null
+          && dependencyOperation != null
+          && serviceOperation.method != "stop"
+          && dependencyOperation.method != "stop";
+        from =
+          if bothStopping
+          then serviceOperation
+          else dependencyOperation;
+        to =
+          if bothStopping
+          then dependencyOperation
+          else serviceOperation;
+      in
+        if bothStopping || bothConverging
+        then [
+          {
+            from = {
+              kind = "operation";
+              key = scopedKey "${from.method}-${from.resource.key}";
+            };
+            to = {
+              kind = "operation";
+              key = scopedKey "${to.method}-${to.resource.key}";
+            };
+            kind = "required-success";
+          }
+        ]
+        else [])
+      service.dependencies;
+    edges = builtins.concatMap dependencyEdgesFor spec.services;
   in
     emptyTransition // {inherit operations edges;};
 }
