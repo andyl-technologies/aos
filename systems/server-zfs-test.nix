@@ -23,6 +23,7 @@
   # The harness attaches blank devices in declaration order after the root
   # disk, so the pool's single vdev is the first of them.
   poolDevice = "/dev/vdb";
+  poolTools = [config.aos.filesystems.zfs.package pkgs.coreutils];
   poolDiskSizeMiB = 2048;
 in {
   imports = [./server-test.nix];
@@ -96,7 +97,11 @@ in {
     };
     script = ''
       set -euo pipefail
-      PATH=${lib.makeBinPath [config.aos.filesystems.zfs.package pkgs.coreutils]}''${PATH:+:$PATH}
+      # zpool lives in sbin, so a bin-only path would find nothing.
+      PATH=${lib.concatStringsSep ":" [
+        (lib.makeBinPath poolTools)
+        (lib.makeSearchPath "sbin" poolTools)
+      ]}''${PATH:+:$PATH}
 
       if zpool list -H aostest >/dev/null 2>&1; then
         exit 0

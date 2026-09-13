@@ -117,7 +117,13 @@
     })
     effectiveParameters;
 
-  scriptPath = lib.makeBinPath [cfg.package pkgs.coreutils pkgs.grep pkgs.sed];
+  # OpenZFS installs its commands into sbin rather than bin, so both go on
+  # the search path or `zfs version` is simply not found.
+  scriptTools = [cfg.package pkgs.coreutils pkgs.grep pkgs.sed];
+  scriptPath = lib.concatStringsSep ":" [
+    (lib.makeBinPath scriptTools)
+    (lib.makeSearchPath "sbin" scriptTools)
+  ];
 
   # Recompute the budget against installed RAM and apply the parameters
   # OpenZFS expresses as divisors of physical memory, which cannot be derived
