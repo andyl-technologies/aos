@@ -564,7 +564,11 @@ in {
       description = "Apply the bounded ZFS memory policy";
       wantedBy = ["local-fs.target"];
       before = ["local-fs.target" "aos-zfs-datasets.service"];
-      after = ["zfs-import.service"];
+      # The parameters live under /sys/module/zfs, so the module has to be
+      # inserted first or the condition below skips the unit and the host
+      # silently runs on defaults.
+      after = ["systemd-modules-load.service" "zfs-import.service"];
+      wants = ["systemd-modules-load.service"];
       unitConfig.ConditionPathIsDirectory = "/sys/module/zfs/parameters";
       serviceConfig = {
         Type = "oneshot";
