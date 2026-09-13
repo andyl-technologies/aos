@@ -539,7 +539,7 @@ in {
       # Later boots: unlock via the TPM2 token, no passphrase. Ordered
       # after aos-repart (which creates the partition) and before
       # mount-var (which mounts /dev/mapper/var).
-      boot.initrd.systemd.services."aos-var-crypt" = lib.mkIf (!config.aos.filesystems.zfs.enable) {
+      boot.initrd.systemd.services."aos-var-crypt" = lib.mkIf (!(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState)) {
         description = "Encrypt and TPM2-seal /var (measured boot)";
         requiredBy = ["initrd-fs.target"];
         requires =

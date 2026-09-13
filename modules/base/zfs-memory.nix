@@ -117,7 +117,7 @@
     })
     effectiveParameters;
 
-  scriptPath = lib.makeBinPath [pkgs.coreutils pkgs.grep];
+  scriptPath = lib.makeBinPath [cfg.package pkgs.coreutils pkgs.grep pkgs.sed];
 
   # Recompute the budget against installed RAM and apply the parameters
   # OpenZFS expresses as divisors of physical memory, which cannot be derived
@@ -252,6 +252,21 @@
     }
 
     ${lib.concatMapStringsSep "\n" (parameter: "${parameter.comparison} ${lib.escapeShellArg parameter.name} ${lib.escapeShellArg parameter.path} ${lib.escapeShellArg parameter.expected}") verifiedParameters}
+
+    # A live in-place upgrade replaces the userland while the previously
+    # loaded module stays resident. The two halves of OpenZFS are not a
+    # supported mix, and the symptom is arbitrary rather than a clean refusal,
+    # so report the mismatch as the reboot signal it is.
+    if command -v zfs >/dev/null 2>&1; then
+      versions=$(zfs version 2>/dev/null || true)
+      userland=$(printf '%s\n' "$versions" | sed -n '1s/^zfs-//p')
+      kmod=$(printf '%s\n' "$versions" | sed -n '2s/^zfs-kmod-//p')
+      if [ -n "$userland" ] && [ -n "$kmod" ] && [ "$userland" != "$kmod" ]; then
+        echo "aos-zfs-verify-parameters: userland is $userland but the loaded module is $kmod;" \
+          "reboot so the running module matches the image" >&2
+        status=1
+      fi
+    fi
 
     # Swapping onto a zvol deadlocks: writing a swap page asks ZFS to allocate
     # the memory that the write exists to reclaim. The pool is never a valid

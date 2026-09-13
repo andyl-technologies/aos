@@ -61,7 +61,7 @@
     "${cfg.espDevice}  /boot  vfat  noauto,nofail,ro,noatime,fmask=0077,dmask=0077  0  0"
     ""
     (
-      if cfg.zfs.enable
+      if cfg.zfs.enable && cfg.zfs.systemState
       then ''
         # /var is a declared ZFS dataset; modules/base/zfs-datasets.nix
         # generates the systemd mount unit that mounts it.
@@ -133,6 +133,19 @@ in {
           Enabling this also enables the bounded memory policy in
           `modules/base/zfs-memory.nix`, which is what keeps OpenZFS's
           RAM-scaled defaults from growing without regard to pool size.
+        '';
+      };
+
+      ## Place the system's mutable state (/var) on the pool.
+      systemState = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Put `/var` and its children on the pool. When false the pool carries
+          only the datasets a configuration declares explicitly, and `/var`
+          stays on the partition the image provides. That suits a host with a
+          pool for bulk data whose system state should keep the image's own
+          provisioning and recovery path.
         '';
       };
 

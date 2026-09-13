@@ -39,6 +39,8 @@ in {
           system = systemProxy;
           groupName = name;
           checks = spec.checks;
+          inherit (spec) extraDisks;
+          memory = spec.memoryMiB;
         }
     )
     config.system.checks;

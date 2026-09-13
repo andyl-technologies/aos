@@ -523,12 +523,10 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if
-      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if
-      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if
@@ -1166,6 +1164,138 @@
     then throw "meta.execute must not be checked against the Nix scheduling system"
     else "ok";
 
+  # ------------------------------------------------------------------------
+  # ZFS memory and geometry policy
+  #
+  # The value of these gates is that they refuse a configuration rather than
+  # letting a host discover the consequence months into an uptime, so each one
+  # asserts the refusal as well as the accepted shape.
+  zfsSystem = mkSystem [
+    ../../systems/server.nix
+    {aos.filesystems.zfs.enable = true;}
+  ];
+
+  # `assertions` are evaluated by the module system but only reported when a
+  # consumer forces them, so a rejection test has to read them directly.
+  failedAssertions = configuration:
+    builtins.map (entry: entry.message) (
+      builtins.filter (entry: !entry.assertion) configuration.config.assertions
+    );
+  rejects = {
+    configuration,
+    fragment,
+    subject,
+  }: let
+    messages = failedAssertions configuration;
+    matching = builtins.filter (message: containsStr fragment message) messages;
+  in
+    if matching == []
+    then throw "ZFS policy must reject ${subject}; assertions were: ${builtins.toJSON messages}"
+    else "rejected";
+
+  zfsLargeRecordsSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.filesystems.zfs.enable = true;
+      aos.filesystems.zfs.datasets."var/bulk" = {
+        mountPoint = "/var/bulk";
+        recordSize = "1M";
+      };
+    }
+  ];
+  zfsDeduplicationSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.filesystems.zfs.enable = true;
+      aos.filesystems.zfs.datasets."var/lib".deduplicate = true;
+    }
+  ];
+  zfsUnboundedDeduplicationSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.filesystems.zfs.enable = true;
+      aos.filesystems.zfs.allowDeduplication = true;
+    }
+  ];
+  zfsOverCommittedSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.filesystems.zfs.enable = true;
+      aos.filesystems.zfs.memory = {
+        arcPercent = 80;
+        scrubPercent = 30;
+        dirtyDataPercent = 20;
+      };
+    }
+  ];
+
+  zfsKernelParameters = zfsSystem.config.aos.boot.kernelParams;
+  hasKernelParameter = parameter: builtins.elem parameter zfsKernelParameters;
+  zfsMemoryPolicy = let
+    memory = zfsSystem.config.aos.filesystems.zfs.memory;
+    arcCeiling = memory.maxBytes * memory.arcPercent / 100;
+  in
+    if !(hasKernelParameter "spl.spl_kmem_cache_obj_per_slab=1")
+    then throw "ZFS hosts must allocate one object per SPL slab"
+    else if !(hasKernelParameter "zfs.zfs_arc_max=${toString arcCeiling}")
+    then throw "the ARC ceiling must be derived from the configured budget"
+    else if !(hasKernelParameter "zfs.zfs_abd_scatter_max_order=0")
+    then throw "ARC scatter chunks must stay within a single page"
+    else if zfsSystem.config.aos.kernel.sysctl."kernel.panic_on_oops" or "0" != "1"
+    then throw "a ZFS host must reboot on a kernel oops rather than wedge"
+    else if zfsSystem.config.aos.kernel.sysctl."vm.defrag_mode" or "0" != "1"
+    then throw "a ZFS host must keep the kernel fragmentation defenses enabled"
+    else if !zfsSystem.config.aos.zram.enable
+    then throw "a ZFS host runs no repart pass and must still have swap"
+    else if failedAssertions zfsSystem != []
+    then throw "the default ZFS configuration must satisfy its own policy"
+    else "bounded";
+
+  zfsDatasetRealization = let
+    mounts = zfsSystem.config.systemd.mounts;
+    mountFor = where: builtins.filter (mount: mount.where == where) mounts;
+    varMount = mountFor "/var";
+    services = zfsSystem.config.systemd.services;
+  in
+    if builtins.length varMount != 1
+    then throw "each declared dataset must get exactly one generated mount unit"
+    else if (builtins.head varMount).type != "zfs"
+    then throw "declared dataset mounts must be ZFS mounts"
+    else if (builtins.head varMount).what != "rpool/var"
+    then throw "a generated mount must name the dataset it mounts"
+    else if !(builtins.hasAttr "aos-zfs-datasets" services)
+    then throw "declared datasets must be created and converged at boot"
+    else if !(builtins.hasAttr "aos-zfs-verify-parameters" services)
+    then throw "a ZFS host must verify the running kernel carries its parameters"
+    else if !(builtins.hasAttr "zfs-zed" services)
+    then throw "a ZFS host must run the event daemon that acts on device faults"
+    else if builtins.length zfsSystem.config.aos.boot.recovery.extraPackages != 1
+    then throw "recovery must carry the pool tooling it needs to import the pool"
+    else "realized";
+
+  zfsPolicyRejections = builtins.concatStringsSep ", " [
+    (rejects {
+      configuration = zfsLargeRecordsSystem;
+      fragment = "record sizes above 128 KiB";
+      subject = "large records without an explicit opt-in";
+    })
+    (rejects {
+      configuration = zfsDeduplicationSystem;
+      fragment = "enable deduplication";
+      subject = "deduplication without an explicit opt-in";
+    })
+    (rejects {
+      configuration = zfsUnboundedDeduplicationSystem;
+      fragment = "requires deduplicationTableQuota";
+      subject = "deduplication without a table quota";
+    })
+    (rejects {
+      configuration = zfsOverCommittedSystem;
+      fragment = "must sum to at most 100";
+      subject = "budget shares that exceed the budget";
+    })
+  ];
+
   bareMetalStorageSystem = mkSystem [
     ../../systems/server-verity.nix
     {
@@ -1479,6 +1609,9 @@ in
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
         echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
+        echo "zfs memory:     ZFS kernel memory is ${zfsMemoryPolicy} by an absolute budget"
+        echo "zfs datasets:   declared datasets are ${zfsDatasetRealization} with generated mounts"
+        echo "zfs policy:     unsafe geometry is ${zfsPolicyRejections}"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"

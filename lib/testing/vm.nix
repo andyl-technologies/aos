@@ -644,6 +644,7 @@
     rootfsDeps ? null,
     # Shared:
     testScript ? null,
+    extraDisks ? [],
     timeout ? 120,
     memory ? null,
     seedSELinuxDisabledConfig ? true,
@@ -710,6 +711,8 @@
             metadata = null;
             memory_mib = effectiveMemory;
             vcpu_count = 2;
+            # Blank devices for storage checks, presented as /dev/vdb onward.
+            extra_disks = map (disk: {inherit (disk) sizeMiB;}) extraDisks;
           }
         ];
       };
