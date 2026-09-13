@@ -987,6 +987,7 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-source-provider-protocol",
  "buffa",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2 0.10.9",

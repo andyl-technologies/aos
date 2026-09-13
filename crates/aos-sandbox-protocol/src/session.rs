@@ -614,19 +614,22 @@ pub fn decode_request_envelope(
     }
     reject_legacy_authentication_field(&envelope.signed_session_request)?;
     let method = validate_method(envelope.method.as_known(), protocol)?;
-    let maximum = match method {
-        BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => MAXIMUM_HOST_QUERY_PACKET_BYTES,
-        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
-            MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
-        }
-        BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
-            MAXIMUM_HOST_CATALOG_PUBLICATION_PACKET_BYTES
-        }
-        _ => MAXIMUM_REQUEST_BYTES,
-    };
+    let maximum = request_packet_maximum(method);
     if bytes.len() > maximum {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
+    validate_decoded_request_envelope(envelope, protocol, ancillary_descriptor_count)
+}
+
+pub(crate) fn validate_decoded_request_envelope(
+    envelope: BrokerRequestEnvelope,
+    protocol: ProtocolId,
+    ancillary_descriptor_count: usize,
+) -> Result<ValidatedBrokerRequestEnvelope, ProtocolValidationError> {
+    if !envelope.__buffa_unknown_fields.is_empty() || !envelope.signed_session_request.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let method = validate_method(envelope.method.as_known(), protocol)?;
     if envelope.body.is_empty() {
         return Err(ProtocolValidationError::InvalidField("envelope.body"));
     }
@@ -655,6 +658,19 @@ pub fn decode_request_envelope(
         descriptors,
         authorization,
     })
+}
+
+const fn request_packet_maximum(method: BrokerMethod) -> usize {
+    match method {
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => MAXIMUM_HOST_QUERY_PACKET_BYTES,
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
+            MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
+            MAXIMUM_HOST_CATALOG_PUBLICATION_PACKET_BYTES
+        }
+        _ => MAXIMUM_REQUEST_BYTES,
+    }
 }
 
 /// Encodes one authority-bearing effect request under the fixed packet bounds.
@@ -1538,6 +1554,25 @@ pub fn decode_response_envelope(
         return Err(ProtocolValidationError::UnknownFields);
     }
     reject_legacy_authentication_field(&envelope.signed_session_outcome)?;
+    validate_decoded_response_envelope(
+        envelope,
+        expected_request_id,
+        expected_method,
+        request_descriptors,
+        ancillary_descriptor_count,
+    )
+}
+
+pub(crate) fn validate_decoded_response_envelope(
+    envelope: BrokerResponseEnvelope,
+    expected_request_id: &[u8; 16],
+    expected_method: BrokerMethod,
+    request_descriptors: &[ValidatedDescriptorEntry],
+    ancillary_descriptor_count: usize,
+) -> Result<ValidatedBrokerResponseEnvelope, ProtocolValidationError> {
+    if !envelope.__buffa_unknown_fields.is_empty() || !envelope.signed_session_outcome.is_empty() {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
     let request_id = exact_nonzero::<16>(&envelope.request_id, "envelope.request_id")?;
     if &request_id != expected_request_id || envelope.method.as_known() != Some(expected_method) {
         return Err(ProtocolValidationError::MethodMismatch);

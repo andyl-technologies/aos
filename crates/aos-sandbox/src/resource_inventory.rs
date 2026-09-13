@@ -31,8 +31,9 @@ use aos_sandbox_linux::seqpacket::descriptor_subject::{
 };
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
 use aos_sandbox_protocol::{
-    PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader,
-    ValidatedNetworkInventory, ValidatedStorageInventory,
+    AuthenticatedBrokerSessionStateV1, AuthenticatedNetworkInventoryOutcomeAdmissionV1,
+    PeerCredentials, PeerPolicy, ProtectedBrokerSessionVerificationContextV1,
+    ProtocolValidationError, ValidatedHeader, ValidatedNetworkInventory, ValidatedStorageInventory,
     decode_network_resource_inventory_request, decode_network_resource_inventory_response,
     decode_response_envelope, decode_server_hello, decode_storage_resource_inventory_request,
     decode_storage_resource_inventory_response, encode_unauthed_request_envelope,
@@ -1077,6 +1078,62 @@ struct ServiceExecution {
     info: PidFdInfo,
 }
 
+/// Exercises the future authenticated controller receive ordering while inert.
+///
+/// The real descriptor-subject record is checked against the retained service
+/// execution before descriptor rejection or semantic admission, then rechecked
+/// immediately before snapshot observation. The existing
+/// [`ResourceInventoryClient::query`] path never calls this helper.
+#[allow(dead_code)]
+fn staged_authenticated_network_inventory_snapshot<T>(
+    execution: &ServiceExecution,
+    expected: &ResourceInventoryServiceIdentity,
+    record: &ReceivedDescriptorRecord,
+    session: &AuthenticatedBrokerSessionStateV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+    observe_snapshot: impl FnOnce(&AuthenticatedNetworkInventoryOutcomeAdmissionV1) -> Result<T, ()>,
+) -> Result<T, ()> {
+    ordered_staged_response(
+        record.descriptors().len(),
+        || {
+            execution
+                .validate_response(expected, record.subject())
+                .map_err(|_| ())
+        },
+        || {
+            session
+                .admit_network_inventory_outcome(
+                    record.payload(),
+                    record.descriptors().len(),
+                    context,
+                )
+                .map_err(|_| ())
+        },
+        || {
+            execution
+                .validate_response(expected, record.subject())
+                .map_err(|_| ())
+        },
+        observe_snapshot,
+    )
+}
+
+fn ordered_staged_response<A, T>(
+    actual_descriptor_count: usize,
+    validate_subject: impl FnOnce() -> Result<(), ()>,
+    admit_semantics: impl FnOnce() -> Result<A, ()>,
+    recheck_subject: impl FnOnce() -> Result<(), ()>,
+    observe: impl FnOnce(&A) -> Result<T, ()>,
+) -> Result<T, ()> {
+    validate_subject()?;
+    if actual_descriptor_count != 0 {
+        return Err(());
+    }
+    let admission = admit_semantics()?;
+    recheck_subject()?;
+    observe(&admission)
+}
+
 impl ServiceExecution {
     fn new(
         expected: &ResourceInventoryServiceIdentity,
@@ -1252,6 +1309,81 @@ mod tests {
         .0;
 
         (directory, journal)
+    }
+
+    #[test]
+    fn staged_service_subject_and_zero_descriptors_precede_snapshot_observation() {
+        use std::cell::Cell;
+
+        let admitted = Cell::new(false);
+        let observed = Cell::new(false);
+        assert_eq!(
+            ordered_staged_response(
+                0,
+                || Err(()),
+                || {
+                    admitted.set(true);
+                    Ok(())
+                },
+                || Ok(()),
+                |_| {
+                    observed.set(true);
+                    Ok(())
+                },
+            ),
+            Err(())
+        );
+        assert!(!admitted.get());
+        assert!(!observed.get());
+
+        assert_eq!(
+            ordered_staged_response(
+                1,
+                || Ok(()),
+                || {
+                    admitted.set(true);
+                    Ok(())
+                },
+                || Ok(()),
+                |_| {
+                    observed.set(true);
+                    Ok(())
+                },
+            ),
+            Err(())
+        );
+        assert!(!admitted.get());
+        assert!(!observed.get());
+
+        assert_eq!(
+            ordered_staged_response(
+                0,
+                || Ok(()),
+                || Err::<(), _>(()),
+                || Ok(()),
+                |_| {
+                    observed.set(true);
+                    Ok(())
+                },
+            ),
+            Err(())
+        );
+        assert!(!observed.get());
+
+        assert_eq!(
+            ordered_staged_response(
+                0,
+                || Ok(()),
+                || Ok(()),
+                || Err(()),
+                |_| {
+                    observed.set(true);
+                    Ok(())
+                },
+            ),
+            Err(())
+        );
+        assert!(!observed.get());
     }
 
     fn fence(handle: u8) -> AssignmentFence {

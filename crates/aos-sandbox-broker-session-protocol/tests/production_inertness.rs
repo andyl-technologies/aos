@@ -27,6 +27,7 @@ fn production_brokers_and_controller_do_not_activate_the_feature() {
             concat!(
                 include_str!("../../aos-sandbox/src/controller.rs"),
                 include_str!("../../aos-sandbox/src/dispatch.rs"),
+                include_str!("../../aos-sandbox/src/resource_inventory.rs"),
                 include_str!("../../aos-sandbox/src/mount_preparation.rs"),
                 include_str!("../../aos-sandbox/src/mount_attempt/completion.rs"),
             ),
@@ -43,4 +44,37 @@ fn production_brokers_and_controller_do_not_activate_the_feature() {
             "{name} references the inert feature constant"
         );
     }
+}
+
+#[test]
+fn staged_network_seams_are_defined_but_unreachable() {
+    let service = include_str!("../../aos-sandbox-network/src/service.rs");
+    let controller = include_str!("../../aos-sandbox/src/resource_inventory.rs");
+
+    assert_eq!(
+        service
+            .matches("staged_authenticated_network_inventory_observation<")
+            .count(),
+        1
+    );
+    assert_eq!(
+        service
+            .matches("staged_authenticated_network_inventory_observation(")
+            .count(),
+        0,
+        "Network production service reached the staged authenticated seam"
+    );
+    assert_eq!(
+        controller
+            .matches("staged_authenticated_network_inventory_snapshot<")
+            .count(),
+        1
+    );
+    assert_eq!(
+        controller
+            .matches("staged_authenticated_network_inventory_snapshot(")
+            .count(),
+        0,
+        "controller production query reached the staged authenticated seam"
+    );
 }

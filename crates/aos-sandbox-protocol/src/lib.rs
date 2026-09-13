@@ -7,8 +7,10 @@
 //! descriptors through the closed role registry before privileged code sees a
 //! request. [`semantics`] contains pure portable authority compilers;
 //! [`fencing`], [`inventory`], and [`session`] own their respective validated
-//! protocol state and envelopes.
+//! protocol state and envelopes. [`authenticated_session`] composes the
+//! production-inert authenticated traffic model with complete method semantics.
 
+pub mod authenticated_session;
 pub mod fencing;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
@@ -26,6 +28,12 @@ mod source_binding;
 mod source_realization;
 pub mod storage_inventory;
 
+pub use authenticated_session::{
+    AuthenticatedBrokerSessionError, AuthenticatedBrokerSessionStateV1,
+    AuthenticatedNetworkInventoryOutcomeAdmissionV1, AuthenticatedNetworkInventoryOutcomeV1,
+    AuthenticatedNetworkInventoryRequestAdmissionV1, AuthenticatedNetworkInventoryRequestV1,
+    AuthenticatedNetworkInventoryResultV1,
+};
 pub use host_catalog_snapshot::{
     ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
     CatalogIdentityAllocation, HostCatalogHandle, HostCatalogSnapshot, HostCatalogSnapshotError,
@@ -1038,18 +1046,39 @@ pub fn validate_request_header(
     protocol: ProtocolId,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedHeader, ProtocolValidationError> {
+    let validated = validate_request_header_shape(header, peer, policy, protocol)?;
+    validate_request_deadline(&validated, now_boottime_nanoseconds)?;
+    validate_request_response_bound(&validated)?;
+    Ok(validated)
+}
+
+/// Validates every time-independent common-header field.
+///
+/// Authenticated traffic needs these checks before it can classify an exact
+/// no-write replay, whose original deadline is no longer a fresh-work gate.
+pub(crate) fn validate_request_header_static(
+    header: &RequestHeader,
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    protocol: ProtocolId,
+) -> Result<ValidatedHeader, ProtocolValidationError> {
+    let validated = validate_request_header_shape(header, peer, policy, protocol)?;
+    validate_request_response_bound(&validated)?;
+    Ok(validated)
+}
+
+fn validate_request_header_shape(
+    header: &RequestHeader,
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    protocol: ProtocolId,
+) -> Result<ValidatedHeader, ProtocolValidationError> {
     if !header.__buffa_unknown_fields.is_empty() {
         return Err(ProtocolValidationError::UnknownFields);
     }
     validate_peer_audience(peer, policy, header.audience.as_known())?;
     let protocol_version = validate_header_protocol(header, protocol)?;
     let request_id = exact_nonzero::<16>(&header.request_id, "header.request_id")?;
-    if header.deadline_boottime_nanoseconds <= now_boottime_nanoseconds {
-        return Err(ProtocolValidationError::DeadlineExpired);
-    }
-    if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&header.maximum_response_bytes) {
-        return Err(ProtocolValidationError::InvalidResponseBound);
-    }
     Ok(ValidatedHeader {
         protocol_version,
         audience: policy.audience,
@@ -1057,6 +1086,26 @@ pub fn validate_request_header(
         deadline_boottime_nanoseconds: header.deadline_boottime_nanoseconds,
         maximum_response_bytes: header.maximum_response_bytes,
     })
+}
+
+pub(crate) fn validate_request_deadline(
+    header: &ValidatedHeader,
+    now_boottime_nanoseconds: u64,
+) -> Result<(), ProtocolValidationError> {
+    if header.deadline_boottime_nanoseconds() <= now_boottime_nanoseconds {
+        return Err(ProtocolValidationError::DeadlineExpired);
+    }
+    Ok(())
+}
+
+fn validate_request_response_bound(
+    header: &ValidatedHeader,
+) -> Result<(), ProtocolValidationError> {
+    if !(MINIMUM_RESPONSE_BYTES..=MAXIMUM_RESPONSE_BYTES).contains(&header.maximum_response_bytes())
+    {
+        return Err(ProtocolValidationError::InvalidResponseBound);
+    }
+    Ok(())
 }
 
 fn validate_header_protocol(

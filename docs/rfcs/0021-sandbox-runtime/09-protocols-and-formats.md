@@ -1111,6 +1111,49 @@ outcome head advances. Method semantics and every required signed-plan or
 feature condition are inseparable from traffic admission and must pass before
 reservation or dispatch.
 
+The next source-only layer composes this cryptographic state with the complete
+existing Network 1.0 `InventoryResources` semantics in
+`aos-sandbox-protocol::authenticated_session`. Its opaque state can be created
+only from canonical mutual hellos and exact provisional transcript
+verification. Raw receive bounds come from that state. Request admission
+requires the exact body-derived request ID, deadline, response ceiling,
+Network version/audience, empty authorization quartet, empty signed descriptor
+table, and zero actual descriptors before a candidate state exists. Outcome
+admission correlates the retained request and validates the complete success
+inventory or closed BrokerError plus exact empty descriptor/disposition
+contract before exposing a candidate next state. A signed but semantically
+invalid outcome therefore cannot consume its sequence; a corrected outcome at
+the same sequence remains admissible. Exact latest-record replay and the
+retained N/N+1 bound behavior remain those of the pure cryptographic state.
+Static request semantics precede authenticated traffic classification, but the
+deadline freshness check applies only to `New`: an exact outstanding or latest
+completed no-write replay remains valid at and after its original deadline,
+subject to fresh protected-context, peer-policy, and kernel-execution rechecks.
+Inventory need only be in the broker's signed advertised/negotiated method set;
+it is not required to be in the client's required-method subset.
+
+The retained Network request evidence is deliberately non-authorizing. It
+contains the exact canonical envelope packet, exact signed and semantically
+validated nested body bytes, independently domain-separated packet digest,
+session binding, request ID, response bound, deadline, sequence, complete
+signed ClientRecord bytes/digest, and the exact empty role table. The nested
+Network protobuf is not independently canonical-reencoded. The
+correlated outcome retains that complete request evidence, its own canonical
+packet/digest, complete signed BrokerOutcome bytes, sequence, and either the
+fully validated inventory or error. The Network inventory request defines no
+portable semantic, catalog, effect, or durable-owner digest, so none is
+fabricated. These records neither open/commit a journal nor install a catalog.
+Private staged Network service/controller seams use the real kernel record
+subject carriers and existing execution rechecks both before semantic admission
+and immediately before catalog/snapshot observation, but are unreachable from
+`serve_once` and `ResourceInventoryClient::query`.
+
+This remains production-inert. Host and Mount authenticated receive/allocation,
+protected key loaders and CSPRNG integration, Linux authority/provenance,
+caller-owned atomic companions, every service/controller production branch,
+MAC policy, readiness, Nix, and VM qualification remain open under
+`SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10`.
+
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and
 the byte-exact original protocol 1.0 `ApplyRuntimeRequest`; its outer request

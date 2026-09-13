@@ -18,7 +18,9 @@ use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, RecordSubjectListener, SeqpacketError, SeqpacketSocket,
 };
 use aos_sandbox_protocol::{
-    MAXIMUM_HANDSHAKE_BYTES, PeerCredentials, PeerPolicy, ProtocolValidationError,
+    AuthenticatedBrokerSessionStateV1, AuthenticatedNetworkInventoryRequestAdmissionV1,
+    MAXIMUM_HANDSHAKE_BYTES, PeerCredentials, PeerPolicy,
+    ProtectedBrokerSessionVerificationContextV1, ProtocolValidationError,
     decode_network_resource_inventory_request, encode_error_response_envelope,
     encode_success_response_envelope, failed_server_hello, negotiate_client_hello,
     validate_request_descriptor_roles,
@@ -324,6 +326,56 @@ struct ControllerExecution {
     credentials: PeerCredentials,
 }
 
+/// Exercises the future authenticated receive ordering without activating it.
+///
+/// `ReceivedRecord` has no descriptor carrier, so this staged seam expresses
+/// the real Network service's exact zero-ancillary request contract by type.
+/// It rechecks the retained kernel subject after semantic admission and
+/// immediately before observing the catalog.
+/// The existing production [`NetworkInventoryService::serve_once`] never calls
+/// this helper.
+#[allow(dead_code, clippy::too_many_arguments)]
+fn staged_authenticated_network_inventory_observation<T>(
+    execution: &ControllerExecution,
+    cgroup: &RetainedCgroupAnchor,
+    policy: PeerPolicy,
+    record: &aos_sandbox_linux::seqpacket::ReceivedRecord,
+    session: &AuthenticatedBrokerSessionStateV1,
+    context: &ProtectedBrokerSessionVerificationContextV1,
+    now_boottime_nanoseconds: u64,
+    observe_catalog: impl FnOnce(&AuthenticatedNetworkInventoryRequestAdmissionV1) -> Result<T, ()>,
+) -> Result<T, ()> {
+    ordered_staged_admission(
+        || execution.validate_record(cgroup, policy, record.subject()),
+        || {
+            session
+                .admit_network_inventory_request(
+                    record.payload(),
+                    0,
+                    execution.credentials(),
+                    policy,
+                    now_boottime_nanoseconds,
+                    context,
+                )
+                .map_err(|_| ())
+        },
+        || execution.validate_record(cgroup, policy, record.subject()),
+        observe_catalog,
+    )
+}
+
+fn ordered_staged_admission<A, T>(
+    validate_subject: impl FnOnce() -> Result<(), ()>,
+    admit_semantics: impl FnOnce() -> Result<A, ()>,
+    recheck_subject: impl FnOnce() -> Result<(), ()>,
+    observe: impl FnOnce(&A) -> Result<T, ()>,
+) -> Result<T, ()> {
+    validate_subject()?;
+    let admission = admit_semantics()?;
+    recheck_subject()?;
+    observe(&admission)
+}
+
 impl ControllerExecution {
     fn new(
         cgroup: &RetainedCgroupAnchor,
@@ -557,6 +609,59 @@ mod tests {
             "authoritative Network inventory is unavailable"
         );
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn staged_subject_and_semantics_precede_catalog_observation() {
+        use std::cell::Cell;
+
+        let admitted = Cell::new(false);
+        let observed = Cell::new(false);
+        assert_eq!(
+            ordered_staged_admission(
+                || Err(()),
+                || {
+                    admitted.set(true);
+                    Ok(())
+                },
+                || Ok(()),
+                |_| {
+                    observed.set(true);
+                    Ok(())
+                },
+            ),
+            Err(())
+        );
+        assert!(!admitted.get());
+        assert!(!observed.get());
+
+        assert_eq!(
+            ordered_staged_admission(
+                || Ok(()),
+                || Err::<(), _>(()),
+                || Ok(()),
+                |_| {
+                    observed.set(true);
+                    Ok(())
+                },
+            ),
+            Err(())
+        );
+        assert!(!observed.get());
+
+        assert_eq!(
+            ordered_staged_admission(
+                || Ok(()),
+                || Ok(()),
+                || Err(()),
+                |_| {
+                    observed.set(true);
+                    Ok(())
+                },
+            ),
+            Err(())
+        );
+        assert!(!observed.get());
     }
 }
 

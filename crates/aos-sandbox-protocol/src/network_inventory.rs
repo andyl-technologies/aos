@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 
 use aos_proto::aos::sandbox::local::v1::{
     InventoryNetworkResourcesResponse, InventoryNetworksRequest, NetworkNamespaceInventoryRecord,
-    NetworkState,
+    NetworkState, RequestHeader,
 };
 use aos_sandbox_core::{ProtocolId, ProtocolVersion};
 use buffa::Message as _;
@@ -25,6 +25,7 @@ use crate::{
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RESPONSE_BYTES, MINIMUM_RESPONSE_BYTES, NETWORK_PIN_PREFIX,
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedAssignmentFence,
     ValidatedHeader, exact_nonzero, validate_fence, validate_request_header,
+    validate_request_header_static,
 };
 
 /// Maximum current namespaces accepted in one complete Network snapshot.
@@ -172,27 +173,57 @@ pub fn decode_network_resource_inventory_request(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedHeader, ProtocolValidationError> {
+    let request_header = decode_network_resource_inventory_header(bytes)?;
+    let header = validate_request_header(
+        &request_header,
+        peer,
+        policy,
+        ProtocolId::NetworkBroker,
+        now_boottime_nanoseconds,
+    )?;
+    validate_network_inventory_version(&header)?;
+    Ok(header)
+}
+
+/// Validates the complete time-independent Network Inventory request shape.
+///
+/// Authenticated replay classification must occur before the fresh-work
+/// deadline check, while every other body/header field remains fail-closed.
+pub(crate) fn decode_network_resource_inventory_request_static(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+) -> Result<ValidatedHeader, ProtocolValidationError> {
+    let request_header = decode_network_resource_inventory_header(bytes)?;
+    let header =
+        validate_request_header_static(&request_header, peer, policy, ProtocolId::NetworkBroker)?;
+    validate_network_inventory_version(&header)?;
+    Ok(header)
+}
+
+fn decode_network_resource_inventory_header(
+    bytes: &[u8],
+) -> Result<RequestHeader, ProtocolValidationError> {
     if bytes.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     let request = InventoryNetworksRequest::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     reject_unknown(&request.__buffa_unknown_fields)?;
-    let header = validate_request_header(
-        request
-            .header
-            .as_option()
-            .ok_or(ProtocolValidationError::MissingField("header"))?,
-        peer,
-        policy,
-        ProtocolId::NetworkBroker,
-        now_boottime_nanoseconds,
-    )?;
+    request
+        .header
+        .as_option()
+        .cloned()
+        .ok_or(ProtocolValidationError::MissingField("header"))
+}
+
+fn validate_network_inventory_version(
+    header: &ValidatedHeader,
+) -> Result<(), ProtocolValidationError> {
     if header.protocol_version() != NETWORK_RESOURCE_INVENTORY_VERSION {
         return Err(ProtocolValidationError::MethodMismatch);
     }
-
-    Ok(header)
+    Ok(())
 }
 
 /// Decodes and validates one complete Network namespace snapshot.
@@ -440,9 +471,31 @@ mod tests {
             decode_network_resource_inventory_request(&request.encode_to_vec(), peer, policy, 1,)
                 .is_ok()
         );
+        assert_eq!(
+            decode_network_resource_inventory_request(&request.encode_to_vec(), peer, policy, 2),
+            Err(ProtocolValidationError::DeadlineExpired)
+        );
+        request
+            .header
+            .get_or_insert_default()
+            .maximum_response_bytes = MINIMUM_RESPONSE_BYTES - 1;
+        assert_eq!(
+            decode_network_resource_inventory_request(&request.encode_to_vec(), peer, policy, 2),
+            Err(ProtocolValidationError::DeadlineExpired)
+        );
+        request
+            .header
+            .get_or_insert_default()
+            .maximum_response_bytes = MINIMUM_RESPONSE_BYTES;
         request.header.get_or_insert_default().protocol_minor = 1;
+        // Network negotiation is already exact 1.0, so its common protocol
+        // check rejects 1.1 before either the deadline or redundant local check.
         assert!(matches!(
             decode_network_resource_inventory_request(&request.encode_to_vec(), peer, policy, 1),
+            Err(ProtocolValidationError::Protocol(_))
+        ));
+        assert!(matches!(
+            decode_network_resource_inventory_request(&request.encode_to_vec(), peer, policy, 2),
             Err(ProtocolValidationError::Protocol(_))
         ));
     }

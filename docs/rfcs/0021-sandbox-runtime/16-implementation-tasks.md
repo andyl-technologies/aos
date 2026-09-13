@@ -7850,3 +7850,42 @@ Storage, Mount, Network, controller, deployment, and qualification dependencies.
 The production composite also remains responsible for method-body/header
 request-ID and budget agreement, ancillary count, exact descriptor roles,
 error/body shape, and disposition validation before effects or descriptor use.
+
+### Authenticated Network Inventory semantic composite (source-only, inert)
+
+The transport-neutral `aos-sandbox-protocol::authenticated_session` module now
+owns the first complete semantic composition over Broker Session
+Authentication 1.0. Its opaque state begins only from canonical mutual hello
+decode, exact transcript verification, and provisional traffic state. For
+Network 1.0 `InventoryResources`, it derives request ID/deadline/response bound
+only from the completely validated request body; requires exact version,
+audience, method, empty authorization quartet, and zero signed/actual
+descriptors; and withholds candidate traffic state until these checks finish.
+Static body/header validation runs before authenticated traffic classification,
+while deadline freshness gates only new work. Exact outstanding and latest
+completed no-write replays remain admissible at or after the original deadline
+after fresh protected-context, peer-policy, and kernel-execution checks.
+Inventory must be broker-advertised/negotiated but need not be client-required.
+Outcome admission uses a state-derived predecode bound, correlates the retained
+request, then validates the full success inventory or every closed BrokerError
+and the exact empty descriptor/disposition contract before exposing candidate
+state. Semantically invalid signed outcomes cannot advance the sequence, while
+exact replay, equivocation, and retained N/N+1 bounds remain fail-closed.
+
+Non-authorizing evidence retains the exact canonical envelope packets, exact
+signed and semantically validated nested request body bytes without claiming a
+second canonical encoding, packet digests, both complete signed artifacts,
+session/sequence/request/response cross-links, and the exact empty role table.
+It invents no semantic, catalog,
+effect, or durable-owner digest absent from the current Network inventory
+request. Private unreachable Network service/controller seams prove that real
+kernel record-subject rechecks and zero-descriptor rejection precede composite
+admission, that execution currentness is checked again after complete semantics,
+and that catalog/snapshot observation follows that second check.
+Neither production `serve_once` nor `ResourceInventoryClient::query` calls the
+seams, and the feature remains unadvertised and unrequired.
+
+This does not close `SBX-BPROTO-04`, `SBX-BPROTO-05`, or `SBX-P0-10`. Host and
+Mount authenticated receive allocation, protected loaders/CSPRNG, Linux
+authority/provenance, atomic owner companions, every production integration,
+MAC/readiness, Nix, and VM qualification all remain open.
