@@ -126,6 +126,17 @@
       # /opt/aos-test/bin holds the test agent scripts.
       mkdir -p rootfs/opt/aos-test/bin
 
+      # Mount points for declared ZFS datasets. systemd creates a missing
+      # Where= directory itself but cannot do so on the read-only root, so a
+      # dataset mounting directly onto the image needs its directory here.
+      ${lib.concatMapStringsSep "\n" (mountPoint: ''
+          mkdir -p ${lib.escapeShellArg "rootfs${mountPoint}"}
+        '') (
+          builtins.filter (point: point != null && point != "/")
+          (map (dataset: dataset.mountPoint)
+            (builtins.attrValues system.config.aos.filesystems.zfs.datasets))
+        )}
+
       # ── Guest agent handler: one framed request from stdin → framed
       # response to stdout. Wire format (v2):
       #   Frame:        <ascii-decimal body_len>\n<body bytes>

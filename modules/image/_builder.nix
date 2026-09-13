@@ -206,6 +206,20 @@
           cp ${activeImageDbCerts}/active-db-certs.pem \
             rootfs/usr/lib/aos/image-trust/active-db-certs.pem
         ''}
+        # Mount points for declared ZFS datasets. systemd creates a missing
+        # Where= directory itself, but it cannot do so on the read-only root,
+        # so any dataset whose mount point sits directly on the image needs
+        # that directory to exist in the image. Points nested inside another
+        # dataset are shadowed once their parent mounts and are created there
+        # at runtime; making them here too is harmless and keeps the rule
+        # simple.
+        ${lib.concatMapStringsSep "\n" (mountPoint: ''
+            mkdir -p ${lib.escapeShellArg "rootfs${mountPoint}"}
+          '') (
+            builtins.filter (point: point != null && point != "/")
+            (map (dataset: dataset.mountPoint)
+              (builtins.attrValues system.config.aos.filesystems.zfs.datasets))
+          )}
         ${lib.optionalString (system.config.aos.apm.drainScript != null) ''
           # Draining belongs to the system that is currently serving
           # workloads, not the image selected as the next boot. Keep the hook
