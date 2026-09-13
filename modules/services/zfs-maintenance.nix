@@ -23,7 +23,13 @@
   zfs = config.aos.filesystems.zfs;
   pool = zfs.poolName;
 
-  toolPath = lib.makeBinPath [zfs.package pkgs.coreutils pkgs.gawk pkgs.grep];
+  # OpenZFS installs zpool and zfs into sbin rather than bin; both paths are
+  # needed or the health and metric scripts find no ZFS commands at all.
+  tools = [zfs.package pkgs.coreutils pkgs.gawk pkgs.grep];
+  toolPath = lib.concatStringsSep ":" [
+    (lib.makeBinPath tools)
+    (lib.makeSearchPath "sbin" tools)
+  ];
 
   # `zpool status -x` prints a single healthy line and exits zero even when a
   # vdev is degraded, so health is read from the pool's own state property.

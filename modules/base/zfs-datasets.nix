@@ -272,7 +272,13 @@
   datasetsWithDeduplication =
     builtins.filter (name: cfg.datasets.${name}.deduplicate) datasetNames;
 
-  zfsBin = lib.makeBinPath [cfg.package pkgs.coreutils pkgs.grep];
+  # OpenZFS installs zfs, zpool and mount.zfs into sbin rather than bin, so a
+  # bin-only search path leaves every one of them unfound.
+  zfsTools = [cfg.package pkgs.coreutils pkgs.grep];
+  zfsBin = lib.concatStringsSep ":" [
+    (lib.makeBinPath zfsTools)
+    (lib.makeSearchPath "sbin" zfsTools)
+  ];
 
   realizeDatasets = pkgs.writeShellScriptBin "aos-zfs-datasets" ''
     set -euo pipefail
