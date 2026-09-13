@@ -22,6 +22,11 @@
 }: let
   cfg = config.aos.filesystems;
 
+  # OpenZFS is an out-of-tree module, so its build is bound to one exact
+  # kernel. `aos.boot.storage` overrides this when the immutable image slots
+  # live on zvols and the same build has to be in the initrd.
+  zfsForRunningKernel = pkgs.zfsForKernel config.system.build.kernel;
+
   # Build fstab entries from the filesystem configuration.
   #
   # The overlay on /etc is NOT listed here: the initrd service
@@ -146,7 +151,12 @@ in {
         type = lib.types.package;
         default = pkgs.zfs;
         internal = true;
-        description = "OpenZFS userland and optional exact-kernel module package.";
+        description = ''
+          OpenZFS userland and kernel module. Defaults to the userland-only
+          build so systems with ZFS disabled never build the module; the
+          configuration below binds it to the running kernel whenever ZFS is
+          actually enabled.
+        '';
       };
     };
 
@@ -227,6 +237,13 @@ in {
         d /run 0755 root root -
       '';
     };
+
+    # A host whose state lives on ZFS needs the module loadable in stage 2 and
+    # the userland present in recovery. Recovery without pool access cannot
+    # repair the one thing it exists to repair.
+    aos.filesystems.zfs.package = lib.mkIf cfg.zfs.enable (lib.mkDefault zfsForRunningKernel);
+    aos.kernel.modulePackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
+    aos.boot.recovery.extraPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
 
     systemd.services = lib.mkMerge [
       # Pool import. Declared datasets are created and mounted by
