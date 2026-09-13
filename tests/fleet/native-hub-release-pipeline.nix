@@ -428,7 +428,7 @@ in {
       publisher.succeed(
           " ".join([
               FIXTURE, "prepare", "/var/tmp/base-surface", "/var/tmp/release-surface",
-              "/var/tmp/release-trust", base_commit,
+              "/var/tmp/release-predecessor", "/var/tmp/release-trust", base_commit,
               *map(shlex.quote, nar_paths),
           ]),
           timeout=300,
@@ -483,7 +483,8 @@ in {
                                    "first_partition": 0, "last_partition": 255}, sort_keys=True, separators=(",", ":"))
               publisher.succeed("printf %s " + shlex.quote(intent) + " > /var/tmp/qualification-rollout-intent.json")
               command += " --rollout-intent /var/tmp/qualification-rollout-intent.json"
-          publisher.succeed(command + f" --prepare-only --output {output}-prepared", timeout=600)
+          publisher.succeed(command + " --predecessor-bundle /var/tmp/release-predecessor" +
+                            f" --prepare-only --output {output}-prepared", timeout=600)
           publisher.succeed(f"{FIXTURE} review /var/tmp/release-surface/release-plan.json "
                             f"{output}-prepared/qualification-report.json {output}-review.json")
           publisher.succeed(command + f" --report-input {output}-prepared/qualification-report.json "
