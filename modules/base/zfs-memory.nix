@@ -651,22 +651,24 @@ in {
           name = "zfs-verification-rejects-drift";
           description = "The verification service fails when a live parameter leaves its budget";
           # The guard is only worth having if it actually refuses. Move a
-          # runtime-writable parameter out of bounds, confirm the service
-          # fails and says so, then restore it.
+          # runtime-writable parameter off its configured value, confirm the
+          # service fails and says so, then restore it. The scatter order is
+          # the right lever: it is a plain module parameter with no setter that
+          # could clamp the write and hide the drift being staged.
           script = ''
             vm.succeed("systemctl restart aos-zfs-verify-parameters.service")
 
-            original = vm.succeed("cat /sys/module/zfs/parameters/zfs_arc_max").strip()
-            vm.succeed(
-                "echo ${toString (ceilingArcMax * 4)} > /sys/module/zfs/parameters/zfs_arc_max"
-            )
+            parameter = "/sys/module/zfs/parameters/zfs_abd_scatter_max_order"
+            original = vm.succeed(f"cat {parameter}").strip()
+            vm.succeed(f"echo 5 > {parameter}")
+
             vm.fail("systemctl restart aos-zfs-verify-parameters.service")
             journal = vm.succeed(
                 "journalctl -u aos-zfs-verify-parameters.service --no-pager | tail -20"
             )
-            assert "above the configured ceiling" in journal, journal
+            assert "zfs_abd_scatter_max_order is 5" in journal, journal
 
-            vm.succeed(f"echo {original} > /sys/module/zfs/parameters/zfs_arc_max")
+            vm.succeed(f"echo {original} > {parameter}")
             vm.succeed("systemctl restart aos-zfs-verify-parameters.service")
           '';
         }
