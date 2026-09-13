@@ -46,6 +46,11 @@ use sha2::{Digest as _, Sha256};
 use crate::mount_attempt::{MountAttemptError, mount_controller_state_digest};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+#[allow(
+    dead_code,
+    reason = "authenticated controller checkpoint wiring remains intentionally absent"
+)]
+mod checkpoint;
 mod format;
 
 const RESPONSE_BYTES: u32 = 15 * 1024 * 1024;
@@ -733,6 +738,7 @@ impl SnapshotRecord {
 
 struct SnapshotHistory {
     record: Option<(SnapshotRecord, ValidatedResourceInventory)>,
+    network_checkpoint: Option<checkpoint::RecoveredCheckpoint>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -748,6 +754,13 @@ impl SnapshotHistory {
         domain: InventoryDomain,
     ) -> Result<Self, ResourceInventoryError> {
         journal.ensure_healthy()?;
+        if domain == InventoryDomain::Network {
+            let recovered = checkpoint::load_history(journal)?;
+            return Ok(Self {
+                record: recovered.legacy_record,
+                network_checkpoint: recovered.checkpoint,
+            });
+        }
         let mut record = None;
 
         for (key, value) in journal.records(domain.namespace()) {
@@ -762,7 +775,10 @@ impl SnapshotHistory {
             record = Some((decoded, inventory));
         }
 
-        Ok(Self { record })
+        Ok(Self {
+            record,
+            network_checkpoint: None,
+        })
     }
 
     fn outcome(
@@ -773,32 +789,50 @@ impl SnapshotHistory {
         if candidate.domain != inventory.domain() {
             return Err(ResourceInventoryError::CorruptState);
         }
+        if self.network_checkpoint.is_some() {
+            return Err(ResourceInventoryError::Conflict);
+        }
         let Some((current, current_inventory)) = &self.record else {
             return Ok(SnapshotDecision::Record);
         };
         if current == candidate {
             return Ok(SnapshotDecision::Replay);
         }
-        if current.request_id == candidate.request_id
-            || inventory.journal_sequence() < current_inventory.journal_sequence()
-            || inventory.catalog_generation() < current_inventory.catalog_generation()
-            || (inventory.journal_sequence() == current_inventory.journal_sequence()
-                && (inventory.catalog_generation() != current_inventory.catalog_generation()
-                    || !inventory.resources_equal(current_inventory)))
-            || (inventory.catalog_generation() == current_inventory.catalog_generation()
-                && !inventory.resources_equal(current_inventory))
-            || (inventory.broker_instance_id() == current_inventory.broker_instance_id()
-                && inventory.kernel_boot_id() != current_inventory.kernel_boot_id())
-        {
+        if current.request_id == candidate.request_id {
             return Err(ResourceInventoryError::Conflict);
         }
-
-        if current.controller_state_digest == candidate.controller_state_digest
-            && current_inventory == inventory
-        {
-            return Ok(SnapshotDecision::Unchanged);
+        match classify_inventory_continuity(current_inventory, inventory)? {
+            SnapshotDecision::Unchanged
+                if current.controller_state_digest == candidate.controller_state_digest =>
+            {
+                Ok(SnapshotDecision::Unchanged)
+            }
+            SnapshotDecision::Replay => Err(ResourceInventoryError::CorruptState),
+            _ => Ok(SnapshotDecision::Record),
         }
+    }
+}
 
+fn classify_inventory_continuity(
+    current: &ValidatedResourceInventory,
+    candidate: &ValidatedResourceInventory,
+) -> Result<SnapshotDecision, ResourceInventoryError> {
+    if candidate.domain() != current.domain()
+        || candidate.journal_sequence() < current.journal_sequence()
+        || candidate.catalog_generation() < current.catalog_generation()
+        || (candidate.journal_sequence() == current.journal_sequence()
+            && (candidate.catalog_generation() != current.catalog_generation()
+                || !candidate.resources_equal(current)))
+        || (candidate.catalog_generation() == current.catalog_generation()
+            && !candidate.resources_equal(current))
+        || (candidate.broker_instance_id() == current.broker_instance_id()
+            && candidate.kernel_boot_id() != current.kernel_boot_id())
+    {
+        return Err(ResourceInventoryError::Conflict);
+    }
+    if candidate == current {
+        Ok(SnapshotDecision::Unchanged)
+    } else {
         Ok(SnapshotDecision::Record)
     }
 }
@@ -841,6 +875,9 @@ fn record_snapshot(
 ) -> Result<RecordedSnapshot, ResourceInventoryError> {
     let domain = client.domain;
     let history = SnapshotHistory::load(journal, domain)?;
+    if history.network_checkpoint.is_some() {
+        return Err(ResourceInventoryError::Conflict);
+    }
     let observed_controller_state = controller_state_digest(journal)?;
     let success = client.query()?;
     if success.domain != domain || controller_state_digest(journal)? != observed_controller_state {
@@ -976,6 +1013,10 @@ fn recheck_snapshot(
 ) -> Result<(), ResourceInventoryError> {
     let history = SnapshotHistory::load(journal, snapshot.domain)?;
     if history.record.as_ref().map(|value| &value.0) != Some(snapshot)
+        || history
+            .network_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| !checkpoint.current_authority_matches(snapshot.digest))
         || controller_state_digest(journal)? != snapshot.controller_state_digest
     {
         return Err(ResourceInventoryError::Conflict);

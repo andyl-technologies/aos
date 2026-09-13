@@ -8,9 +8,10 @@
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_OUTCOME_COMPANION_BYTES, BROKER_SESSION_REQUEST_COMPANION_BYTES,
     BrokerSessionCheckpointError, BrokerSessionOutcomeCompanionV1, BrokerSessionProjectionError,
-    BrokerSessionProtocolV1, BrokerSessionRequestCompanionV1, SignedBrokerOutcomeV1,
-    SignedBrokerRequestV1, authenticated_response_cleared_budget_v1,
-    complete_signed_request_digest_v1, decode_canonical_request_v1, decode_canonical_response_v1,
+    BrokerSessionProtocolV1, BrokerSessionRequestCompanionV1, SIGNED_BROKER_OUTCOME_BYTES,
+    SIGNED_BROKER_REQUEST_BYTES, SignedBrokerOutcomeV1, SignedBrokerRequestV1,
+    authenticated_response_cleared_budget_v1, complete_signed_request_digest_v1,
+    decode_canonical_request_v1, decode_canonical_response_v1,
 };
 use aos_sandbox_core::ProtocolId;
 use buffa::Message as _;
@@ -28,7 +29,18 @@ use super::{
 pub const NETWORK_INVENTORY_REQUEST_RECORD_MAXIMUM_BYTES: usize = 1_048_912;
 /// Maximum exact outcome owner value: companion plus canonical outcome packet.
 pub const NETWORK_INVENTORY_OUTCOME_RECORD_MAXIMUM_BYTES: usize = 15_729_056;
+/// Exact maximum canonical packet bytes for the fixed Inventory request shape.
+pub const NETWORK_INVENTORY_CHECKPOINT_REQUEST_PACKET_MAXIMUM_BYTES: usize = 355;
+/// Exact maximum owner-value bytes for the fixed Inventory request shape.
+pub const NETWORK_INVENTORY_CHECKPOINT_REQUEST_VALUE_MAXIMUM_BYTES: usize = 691;
+/// Exact maximum canonical packet bytes for a fixed terminal Inventory outcome.
+pub const NETWORK_INVENTORY_CHECKPOINT_TERMINAL_PACKET_MAXIMUM_BYTES: usize = 425;
+/// Exact maximum owner-value bytes for a fixed terminal Inventory outcome.
+pub const NETWORK_INVENTORY_CHECKPOINT_TERMINAL_VALUE_MAXIMUM_BYTES: usize = 841;
 
+const PROTOBUF_AUTHENTICATION_FIELD_PREFIX_BYTES: usize = 3;
+const NETWORK_INVENTORY_REQUEST_CLEARED_PACKET_MAXIMUM_BYTES: usize = 44;
+const NETWORK_INVENTORY_TERMINAL_CLEARED_PACKET_MAXIMUM_BYTES: usize = 82;
 const NETWORK_INVENTORY_REQUEST_PACKET_MAXIMUM_BYTES: usize =
     NETWORK_INVENTORY_REQUEST_RECORD_MAXIMUM_BYTES - BROKER_SESSION_REQUEST_COMPANION_BYTES;
 const NETWORK_INVENTORY_OUTCOME_PACKET_MAXIMUM_BYTES: usize =
@@ -38,6 +50,28 @@ const _: () = assert!(BROKER_SESSION_REQUEST_COMPANION_BYTES == 336);
 const _: () = assert!(BROKER_SESSION_OUTCOME_COMPANION_BYTES == 416);
 const _: () = assert!(NETWORK_INVENTORY_REQUEST_PACKET_MAXIMUM_BYTES == 1_048_576);
 const _: () = assert!(NETWORK_INVENTORY_OUTCOME_PACKET_MAXIMUM_BYTES == 15_728_640);
+const _: () = assert!(
+    NETWORK_INVENTORY_CHECKPOINT_REQUEST_PACKET_MAXIMUM_BYTES
+        == NETWORK_INVENTORY_REQUEST_CLEARED_PACKET_MAXIMUM_BYTES
+            + PROTOBUF_AUTHENTICATION_FIELD_PREFIX_BYTES
+            + SIGNED_BROKER_REQUEST_BYTES
+);
+const _: () = assert!(
+    NETWORK_INVENTORY_CHECKPOINT_TERMINAL_PACKET_MAXIMUM_BYTES
+        == NETWORK_INVENTORY_TERMINAL_CLEARED_PACKET_MAXIMUM_BYTES
+            + PROTOBUF_AUTHENTICATION_FIELD_PREFIX_BYTES
+            + SIGNED_BROKER_OUTCOME_BYTES
+);
+const _: () = assert!(
+    NETWORK_INVENTORY_CHECKPOINT_REQUEST_VALUE_MAXIMUM_BYTES
+        == BROKER_SESSION_REQUEST_COMPANION_BYTES
+            + NETWORK_INVENTORY_CHECKPOINT_REQUEST_PACKET_MAXIMUM_BYTES
+);
+const _: () = assert!(
+    NETWORK_INVENTORY_CHECKPOINT_TERMINAL_VALUE_MAXIMUM_BYTES
+        == BROKER_SESSION_OUTCOME_COMPANION_BYTES
+            + NETWORK_INVENTORY_CHECKPOINT_TERMINAL_PACKET_MAXIMUM_BYTES
+);
 
 /// Reports an inconsistency while deriving or decoding a Network checkpoint value.
 #[doc(hidden)]
@@ -327,6 +361,124 @@ impl RecoveredNetworkInventoryCheckpointViewV1 {
     }
 }
 
+/// Holds one hostile-byte decoded request owner value without live authority.
+#[doc(hidden)]
+pub struct RecoveredNetworkInventoryRequestCheckpointViewV1 {
+    session_binding: [u8; 32],
+    request_id: [u8; 16],
+    client_sequence: u64,
+    deadline_boottime_nanoseconds: u64,
+    maximum_response_bytes: u32,
+    signed_request_digest: [u8; 32],
+}
+
+impl RecoveredNetworkInventoryRequestCheckpointViewV1 {
+    /// Returns the structurally cross-checked session binding.
+    #[must_use]
+    pub const fn session_binding(&self) -> [u8; 32] {
+        self.session_binding
+    }
+
+    /// Returns the structurally cross-checked request ID.
+    #[must_use]
+    pub const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    /// Returns the structurally cross-checked client sequence.
+    #[must_use]
+    pub const fn client_sequence(&self) -> u64 {
+        self.client_sequence
+    }
+
+    /// Returns the structurally cross-checked request deadline.
+    #[must_use]
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.deadline_boottime_nanoseconds
+    }
+
+    /// Returns the structurally cross-checked total response ceiling.
+    #[must_use]
+    pub const fn maximum_response_bytes(&self) -> u32 {
+        self.maximum_response_bytes
+    }
+
+    /// Returns the complete signed ClientRecord digest.
+    #[must_use]
+    pub const fn signed_request_digest(&self) -> [u8; 32] {
+        self.signed_request_digest
+    }
+}
+
+/// Decodes one request owner value without recreating authentication authority.
+///
+/// # Errors
+///
+/// Returns [`NetworkInventoryCheckpointDraftError`] for any bound, canonicality,
+/// semantic, companion, or signed-artifact cross-link failure.
+#[doc(hidden)]
+pub fn decode_recovered_network_inventory_request_checkpoint_value_v1(
+    request_value: &[u8],
+) -> Result<RecoveredNetworkInventoryRequestCheckpointViewV1, NetworkInventoryCheckpointDraftError>
+{
+    if request_value.len() <= BROKER_SESSION_REQUEST_COMPANION_BYTES
+        || request_value.len() > NETWORK_INVENTORY_CHECKPOINT_REQUEST_VALUE_MAXIMUM_BYTES
+    {
+        return Err(NetworkInventoryCheckpointDraftError::CrossLink);
+    }
+    let (companion_bytes, request_packet) =
+        request_value.split_at(BROKER_SESSION_REQUEST_COMPANION_BYTES);
+    if request_packet.len() > NETWORK_INVENTORY_CHECKPOINT_REQUEST_PACKET_MAXIMUM_BYTES {
+        return Err(NetworkInventoryCheckpointDraftError::CrossLink);
+    }
+    let companion = BrokerSessionRequestCompanionV1::decode(companion_bytes)?;
+    require_network_inventory_pair(companion.protocol(), companion.method())?;
+    let canonical = decode_canonical_request_v1(request_packet)?;
+    let envelope = validate_decoded_request_envelope(
+        canonical.message().clone(),
+        ProtocolId::NetworkBroker,
+        0,
+    )
+    .map_err(map_semantics)?;
+    let body = InventoryNetworksRequest::decode_from_slice(envelope.body())
+        .map_err(|_| NetworkInventoryCheckpointDraftError::CrossLink)?;
+    let header = body
+        .header
+        .as_option()
+        .ok_or(NetworkInventoryCheckpointDraftError::CrossLink)?;
+    let signed = companion.signed_request();
+    let subject = signed.subject();
+    if !body.__buffa_unknown_fields.is_empty()
+        || !header.__buffa_unknown_fields.is_empty()
+        || envelope.method() != BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
+        || !envelope.descriptors().is_empty()
+        || envelope.authorization().is_some()
+        || header.protocol_major != 1
+        || header.protocol_minor != 0
+        || header.audience.as_known() != Some(Audience::AUDIENCE_NODE_CONTROLLER)
+        || header.request_id.as_slice() != subject.request_id().as_slice()
+        || header.maximum_response_bytes < crate::MINIMUM_RESPONSE_BYTES
+        || header.deadline_boottime_nanoseconds != companion.deadline_boottime_nanoseconds()
+        || header.maximum_response_bytes != companion.maximum_response_bytes()
+        || canonical.signed_artifact().to_canonical_bytes() != signed.to_canonical_bytes()
+        || signed.method() != companion.method()
+        || subject.sequence() == 0
+        || subject.sequence() == u64::MAX
+        || subject.cleared_fields_digest() != canonical.cleared_fields_digest()
+    {
+        return Err(NetworkInventoryCheckpointDraftError::CrossLink);
+    }
+
+    Ok(RecoveredNetworkInventoryRequestCheckpointViewV1 {
+        session_binding: subject.session_binding(),
+        request_id: subject.request_id(),
+        client_sequence: subject.sequence(),
+        deadline_boottime_nanoseconds: companion.deadline_boottime_nanoseconds(),
+        maximum_response_bytes: companion.maximum_response_bytes(),
+        signed_request_digest: complete_signed_request_digest_v1(signed),
+    })
+}
+
 /// Decodes paired durable owner values into a non-authorizing hostile-byte view.
 ///
 /// This function validates structure, canonical packets, all signed-artifact
@@ -343,55 +495,19 @@ pub fn decode_recovered_network_inventory_checkpoint_values_v1(
     request_value: &[u8],
     outcome_value: &[u8],
 ) -> Result<RecoveredNetworkInventoryCheckpointViewV1, NetworkInventoryCheckpointDraftError> {
-    if request_value.len() <= BROKER_SESSION_REQUEST_COMPANION_BYTES
-        || request_value.len() > NETWORK_INVENTORY_REQUEST_RECORD_MAXIMUM_BYTES
+    if request_value.len() > NETWORK_INVENTORY_REQUEST_RECORD_MAXIMUM_BYTES
         || outcome_value.len() <= BROKER_SESSION_OUTCOME_COMPANION_BYTES
         || outcome_value.len() > NETWORK_INVENTORY_OUTCOME_RECORD_MAXIMUM_BYTES
     {
         return Err(NetworkInventoryCheckpointDraftError::CrossLink);
     }
 
-    let (request_companion_bytes, request_packet) =
-        request_value.split_at(BROKER_SESSION_REQUEST_COMPANION_BYTES);
-    let request_companion = BrokerSessionRequestCompanionV1::decode(request_companion_bytes)?;
-    require_network_inventory_pair(request_companion.protocol(), request_companion.method())?;
-    let canonical_request = decode_canonical_request_v1(request_packet)?;
-    let request_message = canonical_request.message();
-    let request_envelope =
-        validate_decoded_request_envelope(request_message.clone(), ProtocolId::NetworkBroker, 0)
-            .map_err(map_semantics)?;
-    let request_body = InventoryNetworksRequest::decode_from_slice(request_envelope.body())
-        .map_err(|_| NetworkInventoryCheckpointDraftError::CrossLink)?;
-    let header = request_body
-        .header
-        .as_option()
-        .ok_or(NetworkInventoryCheckpointDraftError::CrossLink)?;
-    let signed_request = request_companion.signed_request();
-    let request_subject = signed_request.subject();
-    if !request_body.__buffa_unknown_fields.is_empty()
-        || !header.__buffa_unknown_fields.is_empty()
-        || request_envelope.method() != BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
-        || !request_envelope.descriptors().is_empty()
-        || request_envelope.authorization().is_some()
-        || header.protocol_major != 1
-        || header.protocol_minor != 0
-        || header.audience.as_known() != Some(Audience::AUDIENCE_NODE_CONTROLLER)
-        || header.request_id.as_slice() != request_subject.request_id().as_slice()
-        || header.deadline_boottime_nanoseconds != request_companion.deadline_boottime_nanoseconds()
-        || header.maximum_response_bytes != request_companion.maximum_response_bytes()
-        || canonical_request.signed_artifact().to_canonical_bytes()
-            != signed_request.to_canonical_bytes()
-        || signed_request.method() != request_companion.method()
-        || request_subject.sequence() == 0
-        || request_subject.sequence() == u64::MAX
-        || request_subject.cleared_fields_digest() != canonical_request.cleared_fields_digest()
-    {
-        return Err(NetworkInventoryCheckpointDraftError::CrossLink);
-    }
-    let request_id = request_subject.request_id();
-    let session_binding = request_subject.session_binding();
-    let client_sequence = request_subject.sequence();
-    let signed_request_digest = complete_signed_request_digest_v1(signed_request);
+    let request = decode_recovered_network_inventory_request_checkpoint_value_v1(request_value)?;
+    let request_id = request.request_id();
+    let session_binding = request.session_binding();
+    let client_sequence = request.client_sequence();
+    let maximum_response_bytes = request.maximum_response_bytes();
+    let signed_request_digest = request.signed_request_digest();
 
     let (outcome_companion_bytes, outcome_packet) =
         outcome_value.split_at(BROKER_SESSION_OUTCOME_COMPANION_BYTES);
@@ -410,7 +526,7 @@ pub fn decode_recovered_network_inventory_checkpoint_values_v1(
     let signed_outcome = outcome_companion.signed_outcome();
     let outcome_subject = signed_outcome.subject();
     if outcome_packet.len()
-        > usize::try_from(request_companion.maximum_response_bytes())
+        > usize::try_from(maximum_response_bytes)
             .map_err(|_| NetworkInventoryCheckpointDraftError::CrossLink)?
         || !outcome_envelope.descriptors().is_empty()
         || !outcome_envelope
@@ -418,12 +534,12 @@ pub fn decode_recovered_network_inventory_checkpoint_values_v1(
             .is_empty()
         || outcome_companion.request_id() != request_id
         || outcome_companion.client_sequence() != client_sequence
-        || outcome_companion.maximum_response_bytes() != request_companion.maximum_response_bytes()
+        || outcome_companion.maximum_response_bytes() != maximum_response_bytes
         || outcome_companion.signed_request_digest() != signed_request_digest
         || canonical_outcome.signed_artifact().to_canonical_bytes()
             != signed_outcome.to_canonical_bytes()
         || outcome_message.request_id.as_slice() != request_id.as_slice()
-        || signed_outcome.method() != request_companion.method()
+        || signed_outcome.method() != BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
         || outcome_subject.request_id() != request_id
         || outcome_subject.sequence() != client_sequence
         || outcome_subject.session_binding() != session_binding
@@ -442,7 +558,7 @@ pub fn decode_recovered_network_inventory_checkpoint_values_v1(
         None => AuthenticatedNetworkInventoryResultV1::Success(
             decode_network_resource_inventory_response(
                 outcome_envelope.body(),
-                request_companion.maximum_response_bytes(),
+                maximum_response_bytes,
             )
             .map_err(map_semantics)?,
         ),
@@ -452,7 +568,7 @@ pub fn decode_recovered_network_inventory_checkpoint_values_v1(
         session_binding,
         request_id,
         client_sequence,
-        maximum_response_bytes: request_companion.maximum_response_bytes(),
+        maximum_response_bytes,
         exact_outcome_packet: outcome_packet.to_vec(),
         exact_outcome_body,
         result,
