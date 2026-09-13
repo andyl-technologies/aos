@@ -218,6 +218,7 @@ in {
       CMP = "${pkgs.diffutils}/bin/cmp"
       MEASURE = "${pkgs.systemd}/lib/systemd/systemd-measure"
       APM = "${pkgs.aos.apm}/bin/apm"
+      PACKAGE_RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
       TPM2_PCREXTEND = "${pkgs.tpm2-tools}/bin/tpm2_pcrextend"
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
@@ -752,7 +753,7 @@ in {
           target.succeed(f"""
               rm -rf /run/runtime-config-attestation-rederive
               mkdir -p /run/runtime-config-attestation-rederive
-              {APM} __eval \
+              {PACKAGE_RUNTIME} __eval \
                 --host-nix /run/runtime-config-attested-host.nix \
                 --base-lib {inputs['base_lib']['store_path']} \
                 --facts /run/aos-metadata/facts.json \
@@ -1194,7 +1195,7 @@ in {
           f"{JQ} -er '.current' /var/lib/profiles/system/state.json"
       ).strip()
       target.fail(f"""
-          {APM} attest __verify-boot-commit \
+          {PACKAGE_RUNTIME} attest __verify-boot-commit \
             --generation-attestation /var/lib/profiles/system/gen-{current_generation}/gen-attestation.json \
             --quote-dir /var/lib/profiles/system/gen-{current_generation}/gen-attestation-quote \
             --expected-pcr11 sha256:{expected_pcr11}
