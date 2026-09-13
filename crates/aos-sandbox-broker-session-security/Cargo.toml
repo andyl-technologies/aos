@@ -1,0 +1,21 @@
+[package]
+name = "aos-sandbox-broker-session-security"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-sandbox-broker-session-protocol.workspace = true
+aos-sandbox-linux.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+rustix = { workspace = true, features = ["fs", "process", "rand"] }
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

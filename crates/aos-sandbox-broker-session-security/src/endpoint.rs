@@ -1,0 +1,1246 @@
+//! Role-local protected custody and narrow safe outputs.
+//!
+//! Client and broker endpoint types own only their two local signing seeds.
+//! The seeds remain private and this tranche exposes no signing operation.
+//! Every output is surrounded by protected-file and process-incarnation
+//! currentness checks; any failure permanently poisons the object.
+
+use std::path::Path;
+
+use aos_sandbox_linux::boot::KernelBootId;
+use zeroize::{Zeroize, Zeroizing};
+
+use crate::BrokerSessionSecurityError;
+use crate::entropy::{EntropySource, KernelEntropy, nonzero_random};
+use crate::manifest::BrokerSessionManifestBindingV1;
+use crate::protected_files::{EndpointRole, ProtectedEndpointFiles};
+
+/// Identifies one protected endpoint process execution without granting authority.
+///
+/// The identifier is intentionally opaque and non-cloneable:
+///
+/// ```compile_fail
+/// use aos_sandbox_broker_session_security::BrokerSessionProcessExecutionIdV1;
+///
+/// fn duplicate(value: BrokerSessionProcessExecutionIdV1) {
+///     let _copy = value.clone();
+/// }
+/// ```
+#[derive(Eq, PartialEq)]
+pub struct BrokerSessionProcessExecutionIdV1([u8; 16]);
+
+impl core::fmt::Debug for BrokerSessionProcessExecutionIdV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("BrokerSessionProcessExecutionIdV1([redacted])")
+    }
+}
+
+/// Holds one fresh client-hello nonce and its private issuance context.
+///
+/// The nonce has no public byte accessor or constructor:
+///
+/// ```compile_fail
+/// use aos_sandbox_broker_session_security::FreshClientHelloNonceV1;
+///
+/// fn expose(value: &FreshClientHelloNonceV1) {
+///     let _bytes = value.as_bytes();
+/// }
+/// ```
+pub struct FreshClientHelloNonceV1(FreshNonce);
+
+impl Drop for FreshClientHelloNonceV1 {
+    fn drop(&mut self) {
+        self.0.clear_private_context();
+    }
+}
+
+impl core::fmt::Debug for FreshClientHelloNonceV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("FreshClientHelloNonceV1([redacted])")
+    }
+}
+
+/// Holds one fresh broker-hello nonce and its private issuance context.
+///
+/// The nonce is intentionally non-cloneable:
+///
+/// ```compile_fail
+/// use aos_sandbox_broker_session_security::FreshBrokerHelloNonceV1;
+///
+/// fn duplicate(value: FreshBrokerHelloNonceV1) {
+///     let _copy = value.clone();
+/// }
+/// ```
+pub struct FreshBrokerHelloNonceV1(FreshNonce);
+
+impl Drop for FreshBrokerHelloNonceV1 {
+    fn drop(&mut self) {
+        self.0.clear_private_context();
+    }
+}
+
+impl core::fmt::Debug for FreshBrokerHelloNonceV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("FreshBrokerHelloNonceV1([redacted])")
+    }
+}
+
+struct FreshNonce {
+    bytes: Zeroizing<[u8; 32]>,
+    process_execution_id: [u8; 16],
+    manifest_binding: [u8; 32],
+    counter: u64,
+}
+
+impl FreshNonce {
+    fn clear_private_context(&mut self) {
+        self.bytes.zeroize();
+        self.process_execution_id.zeroize();
+        self.manifest_binding.zeroize();
+        self.counter.zeroize();
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct ExecutionSnapshot {
+    process_id: i32,
+    boot_id: [u8; 16],
+}
+
+trait ExecutionObserver {
+    fn current(&mut self) -> Result<ExecutionSnapshot, BrokerSessionSecurityError>;
+}
+
+struct KernelExecutionObserver;
+
+impl ExecutionObserver for KernelExecutionObserver {
+    fn current(&mut self) -> Result<ExecutionSnapshot, BrokerSessionSecurityError> {
+        Ok(ExecutionSnapshot {
+            process_id: rustix::process::getpid().as_raw_nonzero().get(),
+            boot_id: KernelBootId::current()
+                .map_err(|_| BrokerSessionSecurityError::ExecutionChanged)?
+                .into_bytes(),
+        })
+    }
+}
+
+struct ProtectedEndpointV1 {
+    files: ProtectedEndpointFiles,
+    execution: ExecutionSnapshot,
+    process_execution_id: [u8; 16],
+    next_nonce_counter: Option<u64>,
+    poisoned: bool,
+}
+
+impl ProtectedEndpointV1 {
+    fn load(path: &Path, role: EndpointRole) -> Result<Self, BrokerSessionSecurityError> {
+        Self::load_with(path, role, &mut KernelEntropy, &mut KernelExecutionObserver)
+    }
+
+    fn load_with<Entropy: EntropySource, Execution: ExecutionObserver>(
+        path: &Path,
+        role: EndpointRole,
+        entropy: &mut Entropy,
+        execution_observer: &mut Execution,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        let execution = execution_observer.current()?;
+        let files = ProtectedEndpointFiles::load(path, role)?;
+        let process_execution_id = nonzero_random(entropy)?;
+        files.revalidate()?;
+        if execution_observer.current()? != execution {
+            return Err(BrokerSessionSecurityError::ExecutionChanged);
+        }
+
+        Ok(Self {
+            files,
+            execution,
+            process_execution_id,
+            next_nonce_counter: Some(1),
+            poisoned: false,
+        })
+    }
+
+    fn manifest_binding(
+        &mut self,
+    ) -> Result<BrokerSessionManifestBindingV1, BrokerSessionSecurityError> {
+        self.revalidate_before()?;
+        let output = self.files.manifest().binding();
+        self.revalidate_after()?;
+        Ok(output)
+    }
+
+    fn process_execution_id(
+        &mut self,
+    ) -> Result<BrokerSessionProcessExecutionIdV1, BrokerSessionSecurityError> {
+        self.revalidate_before()?;
+        let output = BrokerSessionProcessExecutionIdV1(self.process_execution_id);
+        self.revalidate_after()?;
+        Ok(output)
+    }
+
+    fn fresh_nonce<Entropy: EntropySource, Execution: ExecutionObserver>(
+        &mut self,
+        entropy: &mut Entropy,
+        execution_observer: &mut Execution,
+    ) -> Result<FreshNonce, BrokerSessionSecurityError> {
+        self.revalidate_before_with(execution_observer)?;
+        let counter = match self.next_nonce_counter {
+            Some(counter) => counter,
+            None => {
+                self.poisoned = true;
+                return Err(BrokerSessionSecurityError::NonceExhausted);
+            }
+        };
+        let bytes = match nonzero_random(entropy) {
+            Ok(bytes) => Zeroizing::new(bytes),
+            Err(error) => {
+                self.poisoned = true;
+                return Err(error);
+            }
+        };
+        let binding = self.files.manifest().binding();
+        let output = FreshNonce {
+            bytes,
+            process_execution_id: self.process_execution_id,
+            manifest_binding: *binding.as_bytes(),
+            counter,
+        };
+        self.revalidate_after_with(execution_observer)?;
+        self.next_nonce_counter = counter.checked_add(1);
+        Ok(output)
+    }
+
+    fn revalidate_before(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_before_with(&mut KernelExecutionObserver)
+    }
+
+    fn revalidate_after(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_after_with(&mut KernelExecutionObserver)
+    }
+
+    fn revalidate_before_with<Execution: ExecutionObserver>(
+        &mut self,
+        observer: &mut Execution,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.poisoned {
+            return Err(BrokerSessionSecurityError::Poisoned);
+        }
+        if let Err(error) = self.check_current(observer) {
+            self.poisoned = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn revalidate_after_with<Execution: ExecutionObserver>(
+        &mut self,
+        observer: &mut Execution,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if let Err(error) = self.check_current(observer) {
+            self.poisoned = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn check_current<Execution: ExecutionObserver>(
+        &self,
+        observer: &mut Execution,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.files.revalidate()?;
+        if observer.current()? != self.execution {
+            return Err(BrokerSessionSecurityError::ExecutionChanged);
+        }
+        Ok(())
+    }
+}
+
+/// Retains a client endpoint's protected manifest and two client signing seeds.
+///
+/// The type is intentionally non-cloneable and non-authorizing. It exposes no
+/// key material and no signing operation.
+pub struct ProtectedBrokerSessionClientV1 {
+    inner: ProtectedEndpointV1,
+}
+
+impl core::fmt::Debug for ProtectedBrokerSessionClientV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProtectedBrokerSessionClientV1([redacted])")
+    }
+}
+
+impl ProtectedBrokerSessionClientV1 {
+    /// Loads and exclusively pins one protected client endpoint directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] unless the path, manifest, both
+    /// client secrets, current process/kernel incarnation, and initial kernel
+    /// entropy sample satisfy the complete protected profile.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, BrokerSessionSecurityError> {
+        Ok(Self {
+            inner: ProtectedEndpointV1::load(path.as_ref(), EndpointRole::Client)?,
+        })
+    }
+
+    /// Returns the currently revalidated protected manifest binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] after any protected state or
+    /// execution-incarnation change. A failure permanently poisons the object.
+    pub fn manifest_binding(
+        &mut self,
+    ) -> Result<BrokerSessionManifestBindingV1, BrokerSessionSecurityError> {
+        self.inner.manifest_binding()
+    }
+
+    /// Returns the opaque, currently revalidated process-execution identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] after any protected state or
+    /// execution-incarnation change. A failure permanently poisons the object.
+    pub fn process_execution_id(
+        &mut self,
+    ) -> Result<BrokerSessionProcessExecutionIdV1, BrokerSessionSecurityError> {
+        self.inner.process_execution_id()
+    }
+
+    /// Obtains one fresh, role-specific client-hello nonce from the kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] for entropy failure, nonce-space
+    /// exhaustion, or any pre/post currentness failure. Any failure permanently
+    /// poisons the object.
+    pub fn fresh_client_hello_nonce(
+        &mut self,
+    ) -> Result<FreshClientHelloNonceV1, BrokerSessionSecurityError> {
+        self.inner
+            .fresh_nonce(&mut KernelEntropy, &mut KernelExecutionObserver)
+            .map(FreshClientHelloNonceV1)
+    }
+}
+
+/// Retains a broker endpoint's protected manifest and two broker signing seeds.
+///
+/// The type is intentionally non-cloneable and non-authorizing. It exposes no
+/// key material and no signing operation.
+pub struct ProtectedBrokerSessionBrokerV1 {
+    inner: ProtectedEndpointV1,
+}
+
+impl core::fmt::Debug for ProtectedBrokerSessionBrokerV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProtectedBrokerSessionBrokerV1([redacted])")
+    }
+}
+
+impl ProtectedBrokerSessionBrokerV1 {
+    /// Loads and exclusively pins one protected broker endpoint directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] unless the path, manifest, both
+    /// broker secrets, current process/kernel incarnation, and initial kernel
+    /// entropy sample satisfy the complete protected profile.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, BrokerSessionSecurityError> {
+        Ok(Self {
+            inner: ProtectedEndpointV1::load(path.as_ref(), EndpointRole::Broker)?,
+        })
+    }
+
+    /// Returns the currently revalidated protected manifest binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] after any protected state or
+    /// execution-incarnation change. A failure permanently poisons the object.
+    pub fn manifest_binding(
+        &mut self,
+    ) -> Result<BrokerSessionManifestBindingV1, BrokerSessionSecurityError> {
+        self.inner.manifest_binding()
+    }
+
+    /// Returns the opaque, currently revalidated process-execution identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] after any protected state or
+    /// execution-incarnation change. A failure permanently poisons the object.
+    pub fn process_execution_id(
+        &mut self,
+    ) -> Result<BrokerSessionProcessExecutionIdV1, BrokerSessionSecurityError> {
+        self.inner.process_execution_id()
+    }
+
+    /// Obtains one fresh, role-specific broker-hello nonce from the kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerSessionSecurityError`] for entropy failure, nonce-space
+    /// exhaustion, or any pre/post currentness failure. Any failure permanently
+    /// poisons the object.
+    pub fn fresh_broker_hello_nonce(
+        &mut self,
+    ) -> Result<FreshBrokerHelloNonceV1, BrokerSessionSecurityError> {
+        self.inner
+            .fresh_nonce(&mut KernelEntropy, &mut KernelExecutionObserver)
+            .map(FreshBrokerHelloNonceV1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::net::UnixListener;
+    use std::path::{Path, PathBuf};
+
+    use aos_sandbox_broker_session_protocol::{
+        BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSignerReferenceV1,
+    };
+    use ed25519_dalek::SigningKey;
+    use rustix::io::Errno;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::manifest::{
+        BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1,
+        BrokerSessionSecurityManifestV1,
+    };
+    use crate::protected_files::MANIFEST_NAME;
+
+    const CLIENT_KEY_NAMES: [&str; 2] = ["client-hello-signing-key", "client-record-signing-key"];
+    const BROKER_KEY_NAMES: [&str; 2] = ["broker-hello-signing-key", "broker-outcome-signing-key"];
+
+    struct Fixture {
+        _temporary: TempDir,
+        endpoint: PathBuf,
+        manifest: BrokerSessionSecurityManifestV1,
+        secrets: [[u8; 48]; 4],
+    }
+
+    impl Fixture {
+        fn new(role: EndpointRole) -> Self {
+            let temporary = tempfile::tempdir()
+                .unwrap_or_else(|error| panic!("temporary directory failed: {error}"));
+            let endpoint = temporary.path().join("endpoint");
+            fs::create_dir(&endpoint)
+                .unwrap_or_else(|error| panic!("endpoint directory failed: {error}"));
+            let (manifest, secrets) = test_manifest();
+            write_protected(&endpoint.join(MANIFEST_NAME), &manifest.encode());
+            let (names, indices) = match role {
+                EndpointRole::Client => (CLIENT_KEY_NAMES, [0, 2]),
+                EndpointRole::Broker => (BROKER_KEY_NAMES, [1, 3]),
+            };
+            for (name, index) in names.into_iter().zip(indices) {
+                write_protected(&endpoint.join(name), &secrets[index]);
+            }
+            fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o500))
+                .unwrap_or_else(|error| panic!("endpoint permissions failed: {error}"));
+            Self {
+                _temporary: temporary,
+                endpoint,
+                manifest,
+                secrets,
+            }
+        }
+
+        fn rewrite_manifest(&self, manifest: &BrokerSessionSecurityManifestV1) {
+            rewrite_protected(&self.endpoint.join(MANIFEST_NAME), &manifest.encode());
+        }
+    }
+
+    struct RepeatingEntropy {
+        byte: u8,
+    }
+
+    impl EntropySource for RepeatingEntropy {
+        fn fill_once(&mut self, output: &mut [u8]) -> Result<usize, Errno> {
+            output.fill(self.byte);
+            self.byte = self.byte.wrapping_add(1).max(1);
+            Ok(output.len())
+        }
+    }
+
+    struct ScriptedExecution {
+        values: VecDeque<ExecutionSnapshot>,
+    }
+
+    struct MutatingEntropy {
+        path: PathBuf,
+        replacement: [u8; 48],
+        byte: u8,
+    }
+
+    impl EntropySource for MutatingEntropy {
+        fn fill_once(&mut self, output: &mut [u8]) -> Result<usize, Errno> {
+            rewrite_protected(&self.path, &self.replacement);
+            output.fill(self.byte);
+            Ok(output.len())
+        }
+    }
+
+    struct FailingEntropy;
+
+    impl EntropySource for FailingEntropy {
+        fn fill_once(&mut self, _output: &mut [u8]) -> Result<usize, Errno> {
+            Err(Errno::IO)
+        }
+    }
+
+    impl ExecutionObserver for ScriptedExecution {
+        fn current(&mut self) -> Result<ExecutionSnapshot, BrokerSessionSecurityError> {
+            self.values
+                .pop_front()
+                .ok_or(BrokerSessionSecurityError::ExecutionChanged)
+        }
+    }
+
+    fn execution(byte: u8) -> ExecutionSnapshot {
+        ExecutionSnapshot {
+            process_id: i32::from(byte),
+            boot_id: [byte; 16],
+        }
+    }
+
+    fn test_manifest() -> (BrokerSessionSecurityManifestV1, [[u8; 48]; 4]) {
+        let usages = [
+            BrokerSessionKeyUsageV1::ClientHello,
+            BrokerSessionKeyUsageV1::BrokerHello,
+            BrokerSessionKeyUsageV1::ClientRecord,
+            BrokerSessionKeyUsageV1::BrokerOutcome,
+        ];
+        let mut secrets = [[0_u8; 48]; 4];
+        let pins = core::array::from_fn(|index| {
+            let seed = [u8::try_from(index + 1).unwrap_or(1); 32];
+            let key_id = [0x50 + u8::try_from(index).unwrap_or(0); 16];
+            secrets[index][..16].copy_from_slice(&key_id);
+            secrets[index][16..].copy_from_slice(&seed);
+            let signing_key = SigningKey::from_bytes(&seed);
+            let signer = BrokerSessionSignerReferenceV1::for_signing_key(
+                [0x30 + u8::try_from(index).unwrap_or(0); 16],
+                10 + u64::try_from(index).unwrap_or(0),
+                [0x40 + u8::try_from(index).unwrap_or(0); 32],
+                key_id,
+                20 + u64::try_from(index).unwrap_or(0),
+                usages[index],
+                &signing_key,
+            )
+            .unwrap_or_else(|error| panic!("signer failed: {error}"));
+            BrokerSessionSecurityKeyPinV1::new(
+                signer,
+                signing_key.verifying_key().to_bytes(),
+                1,
+                1,
+                false,
+                None,
+            )
+            .unwrap_or_else(|error| panic!("pin failed: {error}"))
+        });
+        let manifest = BrokerSessionSecurityManifestV1::new(
+            BrokerSessionProtocolV1::Network,
+            BrokerSessionSecurityAudienceV1::NodeController,
+            1,
+            0,
+            [1; 16],
+            [2; 16],
+            1,
+            [3; 32],
+            1,
+            [4; 32],
+            1,
+            [5; 32],
+            [6; 16],
+            pins,
+        )
+        .unwrap_or_else(|error| panic!("manifest failed: {error}"));
+        (manifest, secrets)
+    }
+
+    fn write_protected(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap_or_else(|error| panic!("protected write failed: {error}"));
+        fs::set_permissions(path, fs::Permissions::from_mode(0o400))
+            .unwrap_or_else(|error| panic!("protected permissions failed: {error}"));
+    }
+
+    fn rewrite_protected(path: &Path, bytes: &[u8]) {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .unwrap_or_else(|error| panic!("temporary write permission failed: {error}"));
+        fs::write(path, bytes).unwrap_or_else(|error| panic!("protected rewrite failed: {error}"));
+        fs::set_permissions(path, fs::Permissions::from_mode(0o400))
+            .unwrap_or_else(|error| panic!("protected permissions failed: {error}"));
+    }
+
+    fn make_directory_mutable(path: &Path) {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|error| panic!("temporary directory permission failed: {error}"));
+    }
+
+    fn restore_directory_mode(path: &Path) {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o500))
+            .unwrap_or_else(|error| panic!("protected directory permission failed: {error}"));
+    }
+
+    fn with_raw_suffix(path: &Path, suffix: &[u8]) -> PathBuf {
+        let mut bytes = path.as_os_str().as_bytes().to_vec();
+        bytes.extend_from_slice(suffix);
+        PathBuf::from(OsString::from_vec(bytes))
+    }
+
+    fn assert_directory_path_rejected(path: &Path) {
+        assert_eq!(
+            ProtectedEndpointFiles::load(path, EndpointRole::Client).err(),
+            Some(BrokerSessionSecurityError::DirectoryPath)
+        );
+    }
+
+    fn load_deterministic(fixture: &Fixture, role: EndpointRole) -> ProtectedEndpointV1 {
+        ProtectedEndpointV1::load_with(
+            &fixture.endpoint,
+            role,
+            &mut RepeatingEntropy { byte: 9 },
+            &mut ScriptedExecution {
+                values: [execution(7), execution(7)].into(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("deterministic load failed: {error}"))
+    }
+
+    #[test]
+    fn role_endpoints_issue_only_opaque_nonzero_distinct_outputs() {
+        let client_fixture = Fixture::new(EndpointRole::Client);
+        let mut client = load_deterministic(&client_fixture, EndpointRole::Client);
+        assert_eq!(client.process_execution_id, [9; 16]);
+        let first = client
+            .fresh_nonce(
+                &mut RepeatingEntropy { byte: 10 },
+                &mut ScriptedExecution {
+                    values: [execution(7), execution(7)].into(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("first nonce failed: {error}"));
+        let second = client
+            .fresh_nonce(
+                &mut RepeatingEntropy { byte: 11 },
+                &mut ScriptedExecution {
+                    values: [execution(7), execution(7)].into(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("second nonce failed: {error}"));
+        assert_eq!(*first.bytes, [10; 32]);
+        assert_eq!(*second.bytes, [11; 32]);
+        assert_ne!(*first.bytes, *second.bytes);
+        assert_eq!(first.counter, 1);
+        assert_eq!(second.counter, 2);
+        assert_eq!(first.process_execution_id, [9; 16]);
+        assert_eq!(
+            first.manifest_binding,
+            *client_fixture.manifest.binding().as_bytes()
+        );
+
+        let broker_fixture = Fixture::new(EndpointRole::Broker);
+        let mut broker = load_deterministic(&broker_fixture, EndpointRole::Broker);
+        assert!(
+            broker
+                .fresh_nonce(
+                    &mut RepeatingEntropy { byte: 12 },
+                    &mut ScriptedExecution {
+                        values: [execution(7), execution(7)].into(),
+                    },
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn public_role_apis_load_and_revalidate_real_process_state() {
+        let client_fixture = Fixture::new(EndpointRole::Client);
+        let mut client = ProtectedBrokerSessionClientV1::load(&client_fixture.endpoint)
+            .unwrap_or_else(|error| panic!("public client load failed: {error}"));
+        assert_eq!(
+            client
+                .manifest_binding()
+                .unwrap_or_else(|error| panic!("client binding failed: {error}")),
+            client_fixture.manifest.binding()
+        );
+        assert!(client.process_execution_id().is_ok());
+        assert!(client.fresh_client_hello_nonce().is_ok());
+
+        let broker_fixture = Fixture::new(EndpointRole::Broker);
+        let mut broker = ProtectedBrokerSessionBrokerV1::load(&broker_fixture.endpoint)
+            .unwrap_or_else(|error| panic!("public broker load failed: {error}"));
+        assert_eq!(
+            broker
+                .manifest_binding()
+                .unwrap_or_else(|error| panic!("broker binding failed: {error}")),
+            broker_fixture.manifest.binding()
+        );
+        assert!(broker.process_execution_id().is_ok());
+        assert!(broker.fresh_broker_hello_nonce().is_ok());
+    }
+
+    #[test]
+    fn manifest_lock_is_exclusive_for_conforming_loaders() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let first = load_deterministic(&fixture, EndpointRole::Client);
+        assert!(matches!(
+            ProtectedEndpointV1::load_with(
+                &fixture.endpoint,
+                EndpointRole::Client,
+                &mut RepeatingEntropy { byte: 8 },
+                &mut ScriptedExecution {
+                    values: [execution(7), execution(7)].into(),
+                },
+            ),
+            Err(BrokerSessionSecurityError::AlreadyInUse)
+        ));
+        drop(first);
+        assert!(
+            ProtectedEndpointV1::load_with(
+                &fixture.endpoint,
+                EndpointRole::Client,
+                &mut RepeatingEntropy { byte: 8 },
+                &mut ScriptedExecution {
+                    values: [execution(7), execution(7)].into(),
+                },
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn secret_length_seed_id_public_key_and_role_set_fail_closed() {
+        for length in [47, 49] {
+            let fixture = Fixture::new(EndpointRole::Client);
+            rewrite_protected(
+                &fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+                &vec![1; length],
+            );
+            assert!(ProtectedEndpointFiles::load(&fixture.endpoint, EndpointRole::Client).is_err());
+        }
+
+        let zero_seed = Fixture::new(EndpointRole::Client);
+        let mut bytes = zero_seed.secrets[0];
+        bytes[16..].fill(0);
+        rewrite_protected(&zero_seed.endpoint.join(CLIENT_KEY_NAMES[0]), &bytes);
+        assert!(ProtectedEndpointFiles::load(&zero_seed.endpoint, EndpointRole::Client).is_err());
+
+        let wrong_id = Fixture::new(EndpointRole::Client);
+        let mut bytes = wrong_id.secrets[0];
+        bytes[0] ^= 1;
+        rewrite_protected(&wrong_id.endpoint.join(CLIENT_KEY_NAMES[0]), &bytes);
+        assert!(ProtectedEndpointFiles::load(&wrong_id.endpoint, EndpointRole::Client).is_err());
+
+        let wrong_public_key = Fixture::new(EndpointRole::Client);
+        let mut bytes = wrong_public_key.secrets[0];
+        bytes[16..].fill(9);
+        rewrite_protected(&wrong_public_key.endpoint.join(CLIENT_KEY_NAMES[0]), &bytes);
+        assert!(
+            ProtectedEndpointFiles::load(&wrong_public_key.endpoint, EndpointRole::Client).is_err()
+        );
+
+        let swapped = Fixture::new(EndpointRole::Client);
+        rewrite_protected(
+            &swapped.endpoint.join(CLIENT_KEY_NAMES[0]),
+            &swapped.secrets[2],
+        );
+        assert!(ProtectedEndpointFiles::load(&swapped.endpoint, EndpointRole::Client).is_err());
+
+        let missing = Fixture::new(EndpointRole::Client);
+        make_directory_mutable(&missing.endpoint);
+        fs::remove_file(missing.endpoint.join(CLIENT_KEY_NAMES[1]))
+            .unwrap_or_else(|error| panic!("remove secret failed: {error}"));
+        restore_directory_mode(&missing.endpoint);
+        assert!(ProtectedEndpointFiles::load(&missing.endpoint, EndpointRole::Client).is_err());
+
+        let opposite = Fixture::new(EndpointRole::Client);
+        make_directory_mutable(&opposite.endpoint);
+        write_protected(
+            &opposite.endpoint.join(BROKER_KEY_NAMES[0]),
+            &opposite.secrets[1],
+        );
+        restore_directory_mode(&opposite.endpoint);
+        assert_eq!(
+            ProtectedEndpointFiles::load(&opposite.endpoint, EndpointRole::Client).err(),
+            Some(BrokerSessionSecurityError::OppositeRoleSecret)
+        );
+    }
+
+    #[test]
+    fn inactive_peer_pin_prevents_role_local_load() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let mut encoded = fixture.manifest.encode();
+        encoded[184 + 184 + 168] = 1;
+        let revoked = BrokerSessionSecurityManifestV1::decode(&encoded)
+            .unwrap_or_else(|error| panic!("revoked manifest decode failed: {error}"));
+        fixture.rewrite_manifest(&revoked);
+        assert!(ProtectedEndpointFiles::load(&fixture.endpoint, EndpointRole::Client).is_err());
+    }
+
+    #[test]
+    fn path_and_retained_file_changes_poison_permanently() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        let path = fixture.endpoint.join(CLIENT_KEY_NAMES[0]);
+        let original = fixture.secrets[0];
+        let mut changed = original;
+        changed[20] ^= 1;
+        rewrite_protected(&path, &changed);
+        assert!(
+            endpoint
+                .fresh_nonce(
+                    &mut RepeatingEntropy { byte: 10 },
+                    &mut ScriptedExecution {
+                        values: [execution(7)].into(),
+                    },
+                )
+                .is_err()
+        );
+        rewrite_protected(&path, &original);
+        assert_eq!(
+            endpoint
+                .fresh_nonce(
+                    &mut RepeatingEntropy { byte: 10 },
+                    &mut ScriptedExecution {
+                        values: [execution(7)].into(),
+                    },
+                )
+                .err(),
+            Some(BrokerSessionSecurityError::Poisoned)
+        );
+    }
+
+    #[test]
+    fn rename_replacement_and_whole_directory_rebinding_are_detected() {
+        let replacement = Fixture::new(EndpointRole::Client);
+        let mut endpoint = load_deterministic(&replacement, EndpointRole::Client);
+        let secret = replacement.endpoint.join(CLIENT_KEY_NAMES[0]);
+        let saved = replacement.endpoint.join("saved-secret");
+        make_directory_mutable(&replacement.endpoint);
+        fs::rename(&secret, &saved).unwrap_or_else(|error| panic!("save secret failed: {error}"));
+        write_protected(&secret, &replacement.secrets[0]);
+        restore_directory_mode(&replacement.endpoint);
+        assert!(endpoint.manifest_binding().is_err());
+
+        let rebinding = Fixture::new(EndpointRole::Client);
+        let mut endpoint = load_deterministic(&rebinding, EndpointRole::Client);
+        let old = rebinding._temporary.path().join("old-endpoint");
+        fs::rename(&rebinding.endpoint, &old)
+            .unwrap_or_else(|error| panic!("rename endpoint failed: {error}"));
+        fs::create_dir(&rebinding.endpoint)
+            .unwrap_or_else(|error| panic!("replacement endpoint failed: {error}"));
+        fs::set_permissions(&rebinding.endpoint, fs::Permissions::from_mode(0o500))
+            .unwrap_or_else(|error| panic!("replacement mode failed: {error}"));
+        assert!(endpoint.manifest_binding().is_err());
+    }
+
+    #[test]
+    fn file_type_symlink_mode_and_link_count_are_rejected() {
+        assert_eq!(
+            ProtectedEndpointFiles::load(Path::new("relative"), EndpointRole::Client).err(),
+            Some(BrokerSessionSecurityError::DirectoryPath)
+        );
+        let temporary = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("temporary directory failed: {error}"));
+        let ordinary_file = temporary.path().join("not-directory");
+        fs::write(&ordinary_file, b"x")
+            .unwrap_or_else(|error| panic!("ordinary file failed: {error}"));
+        assert!(ProtectedEndpointFiles::load(&ordinary_file, EndpointRole::Client).is_err());
+
+        let directory_mode = Fixture::new(EndpointRole::Client);
+        fs::set_permissions(&directory_mode.endpoint, fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|error| panic!("directory mode failed: {error}"));
+        assert!(
+            ProtectedEndpointFiles::load(&directory_mode.endpoint, EndpointRole::Client).is_err()
+        );
+
+        let file_mode = Fixture::new(EndpointRole::Client);
+        fs::set_permissions(
+            file_mode.endpoint.join(MANIFEST_NAME),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap_or_else(|error| panic!("file mode failed: {error}"));
+        assert!(ProtectedEndpointFiles::load(&file_mode.endpoint, EndpointRole::Client).is_err());
+
+        let linked = Fixture::new(EndpointRole::Client);
+        fs::hard_link(
+            linked.endpoint.join(CLIENT_KEY_NAMES[0]),
+            linked._temporary.path().join("hard-link"),
+        )
+        .unwrap_or_else(|error| panic!("hard link failed: {error}"));
+        assert!(ProtectedEndpointFiles::load(&linked.endpoint, EndpointRole::Client).is_err());
+
+        let symlinked = Fixture::new(EndpointRole::Client);
+        let key = symlinked.endpoint.join(CLIENT_KEY_NAMES[0]);
+        make_directory_mutable(&symlinked.endpoint);
+        fs::rename(&key, symlinked._temporary.path().join("real-key"))
+            .unwrap_or_else(|error| panic!("move key failed: {error}"));
+        std::os::unix::fs::symlink(symlinked._temporary.path().join("real-key"), &key)
+            .unwrap_or_else(|error| panic!("key symlink failed: {error}"));
+        restore_directory_mode(&symlinked.endpoint);
+        assert!(ProtectedEndpointFiles::load(&symlinked.endpoint, EndpointRole::Client).is_err());
+
+        let target = Fixture::new(EndpointRole::Client);
+        let nonfixed = target.endpoint.join("..").join("endpoint");
+        assert_eq!(
+            ProtectedEndpointFiles::load(&nonfixed, EndpointRole::Client).err(),
+            Some(BrokerSessionSecurityError::DirectoryPath)
+        );
+        let final_symlink = target._temporary.path().join("endpoint-link");
+        std::os::unix::fs::symlink(&target.endpoint, &final_symlink)
+            .unwrap_or_else(|error| panic!("endpoint symlink failed: {error}"));
+        assert!(ProtectedEndpointFiles::load(&final_symlink, EndpointRole::Client).is_err());
+    }
+
+    #[test]
+    fn endpoint_path_spelling_is_lexically_closed_before_open() {
+        assert_directory_path_rejected(Path::new("/"));
+
+        let fixture = Fixture::new(EndpointRole::Client);
+        let endpoint_bytes = fixture.endpoint.as_os_str().as_bytes();
+        let separator = endpoint_bytes
+            .iter()
+            .rposition(|byte| *byte == b'/')
+            .unwrap_or_else(|| panic!("absolute fixture path lacks separator"));
+        let parent = &endpoint_bytes[..separator];
+        let name = &endpoint_bytes[separator + 1..];
+
+        assert_directory_path_rejected(&with_raw_suffix(&fixture.endpoint, b"/"));
+        assert_directory_path_rejected(&PathBuf::from(OsString::from_vec(
+            [parent, b"//", name].concat(),
+        )));
+        assert_directory_path_rejected(&PathBuf::from(OsString::from_vec(
+            [parent, b"/./", name].concat(),
+        )));
+        assert_directory_path_rejected(&with_raw_suffix(&fixture.endpoint, b"/../endpoint"));
+        assert_directory_path_rejected(&with_raw_suffix(&fixture.endpoint, b"\0suffix"));
+
+        let link = fixture._temporary.path().join("endpoint-link");
+        std::os::unix::fs::symlink(&fixture.endpoint, &link)
+            .unwrap_or_else(|error| panic!("endpoint symlink failed: {error}"));
+        assert_directory_path_rejected(&with_raw_suffix(&link, b"/"));
+        assert_directory_path_rejected(&with_raw_suffix(&link, b"/."));
+    }
+
+    #[test]
+    fn nonregular_child_types_are_rejected() {
+        let directory_child = Fixture::new(EndpointRole::Client);
+        let key_path = directory_child.endpoint.join(CLIENT_KEY_NAMES[0]);
+        make_directory_mutable(&directory_child.endpoint);
+        fs::remove_file(&key_path).unwrap_or_else(|error| panic!("remove key failed: {error}"));
+        fs::create_dir(&key_path).unwrap_or_else(|error| panic!("child directory failed: {error}"));
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o400))
+            .unwrap_or_else(|error| panic!("child directory mode failed: {error}"));
+        restore_directory_mode(&directory_child.endpoint);
+        assert!(
+            ProtectedEndpointFiles::load(&directory_child.endpoint, EndpointRole::Client).is_err()
+        );
+
+        let fifo_child = Fixture::new(EndpointRole::Client);
+        let key_path = fifo_child.endpoint.join(CLIENT_KEY_NAMES[0]);
+        make_directory_mutable(&fifo_child.endpoint);
+        fs::remove_file(&key_path).unwrap_or_else(|error| panic!("remove key failed: {error}"));
+        let directory = rustix::fs::open(
+            &fifo_child.endpoint,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap_or_else(|error| panic!("directory open failed: {error}"));
+        rustix::fs::mkfifoat(
+            &directory,
+            CLIENT_KEY_NAMES[0],
+            rustix::fs::Mode::from_raw_mode(0o400),
+        )
+        .unwrap_or_else(|error| panic!("fifo creation failed: {error}"));
+        restore_directory_mode(&fifo_child.endpoint);
+        assert!(ProtectedEndpointFiles::load(&fifo_child.endpoint, EndpointRole::Client).is_err());
+
+        let socket_child = Fixture::new(EndpointRole::Client);
+        let key_path = socket_child.endpoint.join(CLIENT_KEY_NAMES[0]);
+        make_directory_mutable(&socket_child.endpoint);
+        fs::remove_file(&key_path).unwrap_or_else(|error| panic!("remove key failed: {error}"));
+        let listener = UnixListener::bind(&key_path)
+            .unwrap_or_else(|error| panic!("socket creation failed: {error}"));
+        restore_directory_mode(&socket_child.endpoint);
+        assert!(
+            ProtectedEndpointFiles::load(&socket_child.endpoint, EndpointRole::Client).is_err()
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn all_group_other_and_executable_mode_variants_are_rejected() {
+        for mode in [0o500, 0o440, 0o404] {
+            let fixture = Fixture::new(EndpointRole::Client);
+            fs::set_permissions(
+                fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+                fs::Permissions::from_mode(mode),
+            )
+            .unwrap_or_else(|error| panic!("child mode failed: {error}"));
+            assert!(ProtectedEndpointFiles::load(&fixture.endpoint, EndpointRole::Client).is_err());
+        }
+
+        for mode in [0o510, 0o501, 0o700] {
+            let fixture = Fixture::new(EndpointRole::Client);
+            fs::set_permissions(&fixture.endpoint, fs::Permissions::from_mode(mode))
+                .unwrap_or_else(|error| panic!("directory mode failed: {error}"));
+            assert!(ProtectedEndpointFiles::load(&fixture.endpoint, EndpointRole::Client).is_err());
+        }
+    }
+
+    #[test]
+    fn retained_directory_and_manifest_mutations_are_detected() {
+        let directory_mode = Fixture::new(EndpointRole::Client);
+        let files = ProtectedEndpointFiles::load(&directory_mode.endpoint, EndpointRole::Client)
+            .unwrap_or_else(|error| panic!("protected load failed: {error}"));
+        fs::set_permissions(&directory_mode.endpoint, fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|error| panic!("directory chmod failed: {error}"));
+        assert!(files.revalidate().is_err());
+
+        let in_place = Fixture::new(EndpointRole::Client);
+        let files = ProtectedEndpointFiles::load(&in_place.endpoint, EndpointRole::Client)
+            .unwrap_or_else(|error| panic!("protected load failed: {error}"));
+        let mut changed = in_place.manifest.encode();
+        changed[56] ^= 1;
+        rewrite_protected(&in_place.endpoint.join(MANIFEST_NAME), &changed);
+        assert!(files.revalidate().is_err());
+
+        let replacement = Fixture::new(EndpointRole::Client);
+        let files = ProtectedEndpointFiles::load(&replacement.endpoint, EndpointRole::Client)
+            .unwrap_or_else(|error| panic!("protected load failed: {error}"));
+        let manifest_path = replacement.endpoint.join(MANIFEST_NAME);
+        make_directory_mutable(&replacement.endpoint);
+        fs::rename(&manifest_path, replacement.endpoint.join("saved-manifest"))
+            .unwrap_or_else(|error| panic!("save manifest failed: {error}"));
+        write_protected(&manifest_path, &replacement.manifest.encode());
+        restore_directory_mode(&replacement.endpoint);
+        assert!(files.revalidate().is_err());
+    }
+
+    #[test]
+    fn retained_chmod_truncate_link_and_opposite_name_are_detected() {
+        let chmod_fixture = Fixture::new(EndpointRole::Client);
+        let files = ProtectedEndpointFiles::load(&chmod_fixture.endpoint, EndpointRole::Client)
+            .unwrap_or_else(|error| panic!("protected load failed: {error}"));
+        fs::set_permissions(
+            chmod_fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap_or_else(|error| panic!("chmod failed: {error}"));
+        assert!(files.revalidate().is_err());
+
+        let truncate_fixture = Fixture::new(EndpointRole::Client);
+        let files = ProtectedEndpointFiles::load(&truncate_fixture.endpoint, EndpointRole::Client)
+            .unwrap_or_else(|error| panic!("protected load failed: {error}"));
+        rewrite_protected(
+            &truncate_fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+            &[1; 47],
+        );
+        assert!(files.revalidate().is_err());
+
+        let link_fixture = Fixture::new(EndpointRole::Client);
+        let files = ProtectedEndpointFiles::load(&link_fixture.endpoint, EndpointRole::Client)
+            .unwrap_or_else(|error| panic!("protected load failed: {error}"));
+        fs::hard_link(
+            link_fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+            link_fixture._temporary.path().join("late-hard-link"),
+        )
+        .unwrap_or_else(|error| panic!("hard link failed: {error}"));
+        assert!(files.revalidate().is_err());
+
+        let opposite_fixture = Fixture::new(EndpointRole::Client);
+        let files = ProtectedEndpointFiles::load(&opposite_fixture.endpoint, EndpointRole::Client)
+            .unwrap_or_else(|error| panic!("protected load failed: {error}"));
+        make_directory_mutable(&opposite_fixture.endpoint);
+        write_protected(
+            &opposite_fixture.endpoint.join(BROKER_KEY_NAMES[0]),
+            &opposite_fixture.secrets[1],
+        );
+        restore_directory_mode(&opposite_fixture.endpoint);
+        assert!(files.revalidate().is_err());
+    }
+
+    #[test]
+    fn manifest_file_length_is_checked_before_decode() {
+        for length in [919, 921] {
+            let fixture = Fixture::new(EndpointRole::Client);
+            rewrite_protected(&fixture.endpoint.join(MANIFEST_NAME), &vec![1; length]);
+            assert!(ProtectedEndpointFiles::load(&fixture.endpoint, EndpointRole::Client).is_err());
+        }
+    }
+
+    #[test]
+    fn configuration_and_entropy_failures_during_issuance_poison() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        let mut replacement = fixture.secrets[0];
+        replacement[20] ^= 1;
+        assert!(
+            endpoint
+                .fresh_nonce(
+                    &mut MutatingEntropy {
+                        path: fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+                        replacement,
+                        byte: 10,
+                    },
+                    &mut ScriptedExecution {
+                        values: [execution(7), execution(7)].into(),
+                    },
+                )
+                .is_err()
+        );
+        assert!(endpoint.poisoned);
+
+        rewrite_protected(
+            &fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+            &fixture.secrets[0],
+        );
+        drop(endpoint);
+        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        assert_eq!(
+            endpoint
+                .fresh_nonce(
+                    &mut FailingEntropy,
+                    &mut ScriptedExecution {
+                        values: [execution(7)].into(),
+                    },
+                )
+                .err(),
+            Some(BrokerSessionSecurityError::Entropy)
+        );
+        assert!(endpoint.poisoned);
+    }
+
+    #[test]
+    fn configuration_change_during_process_id_generation_aborts_load() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let mut replacement = fixture.secrets[0];
+        replacement[20] ^= 1;
+        let result = ProtectedEndpointV1::load_with(
+            &fixture.endpoint,
+            EndpointRole::Client,
+            &mut MutatingEntropy {
+                path: fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+                replacement,
+                byte: 9,
+            },
+            &mut ScriptedExecution {
+                values: [execution(7), execution(7)].into(),
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn execution_sandwich_and_counter_exhaustion_poison() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        assert!(
+            ProtectedEndpointV1::load_with(
+                &fixture.endpoint,
+                EndpointRole::Client,
+                &mut RepeatingEntropy { byte: 9 },
+                &mut ScriptedExecution {
+                    values: [execution(7), execution(8)].into(),
+                },
+            )
+            .is_err()
+        );
+
+        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        assert!(
+            endpoint
+                .fresh_nonce(
+                    &mut RepeatingEntropy { byte: 10 },
+                    &mut ScriptedExecution {
+                        values: [execution(7), execution(8)].into(),
+                    },
+                )
+                .is_err()
+        );
+        assert!(endpoint.poisoned);
+
+        drop(endpoint);
+        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        let captured = execution(7);
+        let changed_boot = ExecutionSnapshot {
+            process_id: captured.process_id,
+            boot_id: [8; 16],
+        };
+        assert!(
+            endpoint
+                .fresh_nonce(
+                    &mut RepeatingEntropy { byte: 10 },
+                    &mut ScriptedExecution {
+                        values: [captured, changed_boot].into(),
+                    },
+                )
+                .is_err()
+        );
+
+        drop(endpoint);
+        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
+        endpoint.next_nonce_counter = Some(u64::MAX);
+        let last = endpoint
+            .fresh_nonce(
+                &mut RepeatingEntropy { byte: 10 },
+                &mut ScriptedExecution {
+                    values: [execution(7), execution(7)].into(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("terminal nonce failed: {error}"));
+        assert_eq!(last.counter, u64::MAX);
+        assert_eq!(
+            endpoint
+                .fresh_nonce(
+                    &mut RepeatingEntropy { byte: 11 },
+                    &mut ScriptedExecution {
+                        values: [execution(7)].into(),
+                    },
+                )
+                .err(),
+            Some(BrokerSessionSecurityError::NonceExhausted)
+        );
+        assert!(endpoint.poisoned);
+    }
+
+    #[test]
+    fn public_debug_and_errors_are_redacted() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let path_text = fixture.endpoint.to_string_lossy();
+        for rendered in [
+            format!(
+                "{:?}",
+                ProtectedBrokerSessionClientV1 {
+                    inner: load_deterministic(&fixture, EndpointRole::Client)
+                }
+            ),
+            format!("{:?}", BrokerSessionProcessExecutionIdV1([9; 16])),
+            format!("{:?}", fixture.manifest),
+            format!("{:?}", fixture.manifest.key_pins()[0]),
+            format!("{:?}", fixture.manifest.binding()),
+            format!(
+                "{:?}",
+                FreshClientHelloNonceV1(FreshNonce {
+                    bytes: Zeroizing::new([10; 32]),
+                    process_execution_id: [9; 16],
+                    manifest_binding: [8; 32],
+                    counter: 1,
+                })
+            ),
+            BrokerSessionSecurityError::filesystem("manifest", "read").to_string(),
+        ] {
+            assert!(!rendered.contains(path_text.as_ref()));
+            assert!(!rendered.contains("09090909"));
+            assert!(!rendered.contains("0a0a0a0a"));
+            assert!(!rendered.contains("08080808"));
+        }
+    }
+}

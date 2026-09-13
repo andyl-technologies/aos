@@ -1154,6 +1154,71 @@ caller-owned atomic companions, every service/controller production branch,
 MAC policy, readiness, Nix, and VM qualification remain open under
 `SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10`.
 
+### Broker-session protected manifest, custody, and entropy foundation (inert)
+
+The source-only `aos-sandbox-broker-session-security` crate defines one exact
+protected configuration format without activating Broker Session
+Authentication. `AOSBSC01` is exactly 920 bytes: its fixed 184-byte prefix
+contains version 1, closed broker protocol and protobuf audience codes, the
+exact Host/Storage/Network 1.0 or Mount 2.0 version, domain and route IDs,
+route/trust/revocation generations and digests, and node ID. Four ordered
+184-byte pins then name ClientHello, BrokerHello, ClientRecord, and
+BrokerOutcome. Each pin contains the exact 120-byte signer reference, raw
+Ed25519 public key, nonzero authority/key generation floors, closed revoked
+and superseded-presence bytes, six zero reserved bytes, and the optional
+strictly advancing superseding key generation. The decoder rejects wrong
+lengths, trailing bytes, sentinels, unknown codes, weak or mismatched keys,
+role reordering, repeated signer/key/physical-key identities, inconsistent
+floors, and noncanonical currentness. The non-authorizing manifest binding is
+`SHA-256("aos-sandbox-broker-session-manifest-v1\0" || u32be(920) || exact
+manifest)`.
+
+A client directory has fixed `broker-session-manifest`,
+`client-hello-signing-key`, and `client-record-signing-key` names; a broker
+directory analogously has broker-hello and broker-outcome keys. Secret files
+are exactly `stable-key-id[16] || Ed25519-seed[32]`. The loader captures its
+effective UID, PID, and current kernel boot ID rather than accepting identity
+scalars. It retains no-follow descriptors for the exact-mode owner-only
+directory and three exact-mode, single-link regular files; reads them
+positionally between metadata snapshots; holds a nonblocking exclusive flock
+on the manifest; and rejects either known opposite-role secret name by
+metadata lookup without opening its contents. Local seeds must reproduce the
+matching manifest IDs, raw public keys, and fingerprints, and all four pins
+must be active when either role loads.
+
+Every protected custody-object output revalidates both the retained descriptors
+and a fresh opening of the captured absolute path before and after producing the
+value. Path-bound device/inode/security metadata, complete file contents, the
+manifest digest, opposite-role absence, effective UID, PID, and boot ID must
+remain exact. Any
+in-place edit, chmod/chown/link/truncation, child or directory replacement,
+execution change, entropy failure, or nonce exhaustion permanently poisons
+the endpoint; restoring bytes does not revive it. Rotation is whole-directory
+publication followed by process restart. Errors and Debug output expose only
+stable redacted labels.
+
+Role-specific, non-cloneable custody objects expose only a revalidated
+manifest binding, an opaque random nonzero process-execution ID, and an opaque
+role-specific fresh hello nonce. They expose no seed, signing key, descriptor,
+generic signer, raw-sign callback, caller-selected UID/RNG, peer process
+scalar, full verification context, or session binding. Process IDs and nonces
+come directly from blocking `getrandom(2)` with empty flags, exact partial-fill
+handling, at most eight interrupted-call retries, a hard zero-progress rule,
+and at most eight complete all-zero retries. Each nonce privately retains the
+process ID, manifest binding, and checked nonzero issuance counter for a
+future signing finalizer, but this increment exposes no finalizer or outbound
+signature API.
+
+This foundation remains unused by Host, Storage, Mount, Network, and controller
+production code. Linux peer publication and transcript/context binding,
+external anti-rollback floors, protected deployment, signing finalizers,
+sealed plans, authenticated transport, receive allocation, caller-owned atomic
+request/result companions, every service/controller integration, MAC policy,
+readiness, and Nix remain open. Cross-process flock contention, post-fork
+continuation rejection, and cross-UID ownership validation remain VM gates. It
+introduces no journal, descriptor-use permit, or effect authority and does not
+close `SBX-BPROTO-04`, `SBX-BPROTO-05`, or `SBX-P0-10`.
+
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and
 the byte-exact original protocol 1.0 `ApplyRuntimeRequest`; its outer request

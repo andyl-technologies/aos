@@ -37,6 +37,7 @@ members = [
     "aos-sandbox-ownership-protocol",
     "aos-sandbox-source-provider-protocol",
     "aos-sandbox-broker-session-protocol",
+    "aos-sandbox-broker-session-security",
     "aos-sandbox-protocol",
     "aos-sandbox",
     "aos-sandbox/tests/fixtures/service-journal",
@@ -251,6 +252,7 @@ aos-sandbox-guardian = { path = "aos-sandbox-guardian" }
 aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
 aos-sandbox-source-provider-protocol = { path = "aos-sandbox-source-provider-protocol" }
 aos-sandbox-broker-session-protocol = { path = "aos-sandbox-broker-session-protocol" }
+aos-sandbox-broker-session-security = { path = "aos-sandbox-broker-session-security" }
 aos-sandbox-protocol = { path = "aos-sandbox-protocol" }
 aos-sandbox = { path = "aos-sandbox" }
 aos-sandbox-broker = { path = "aos-sandbox-broker" }

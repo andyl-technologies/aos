@@ -7889,3 +7889,41 @@ This does not close `SBX-BPROTO-04`, `SBX-BPROTO-05`, or `SBX-P0-10`. Host and
 Mount authenticated receive allocation, protected loaders/CSPRNG, Linux
 authority/provenance, atomic owner companions, every production integration,
 MAC/readiness, Nix, and VM qualification all remain open.
+
+### Protected broker-session configuration and entropy foundation (in progress)
+
+The current source-only increment adds the production-inert
+`aos-sandbox-broker-session-security` crate. Its exact 920-byte `AOSBSC01`
+manifest closes protocol/version/audience codes and pins domain, route,
+trust/revocation, node, and four ordered role keys with strict Ed25519
+fingerprints and canonical generation/revocation/supersession state. An
+independent terminal-NUL manifest domain binds the exact bytes. This is a pure
+non-authorizing model, not a verification-context or session-binding loader.
+
+Separate client and broker custody objects load only their two role-local
+48-byte key files. They capture effective UID, PID, and `KernelBootId`; retain
+the directory, manifest, and secret FDs; enforce exact owner/mode/type/link/
+size/content metadata; reject opposite-role names without opening them; and
+hold an exclusive manifest flock. Both retained objects and fresh absolute-
+path reopenings are rechecked around every custody-object output. Replacement,
+mutation, execution change, entropy failure, or checked-counter exhaustion
+permanently poisons the object. Secret state is zeroizing and Debug/errors
+redact paths, seeds, contents, and digests.
+
+The only public outputs are a current manifest binding, opaque random nonzero
+process-execution ID, and opaque role-specific fresh hello nonce. Blocking
+Rustix `getrandom(2)` acquisition handles partial fills, bounded `EINTR`, zero
+progress, and bounded all-zero retries. There is deliberately no public seed,
+signing key, raw signer, descriptor, RNG injection, context/session-binding
+constructor, or signing/finalization method.
+
+This advances only the protected source foundation. No production crate calls
+or depends on it, and no feature advertisement, readiness, journal, descriptor
+permit, or effect path changes. Linux peer publication and binding, external
+rollback floors, protected deployment, signing finalizers and sealed plans,
+authenticated transport and allocation, atomic request/result companions, all
+Host/Storage/Mount/Network/controller integrations, MAC, readiness, Nix, and VM
+qualification remain open. Cross-process flock contention, post-fork
+continuation rejection, and cross-UID ownership validation specifically remain
+VM gates. Accordingly `SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10` remain
+unchecked.
