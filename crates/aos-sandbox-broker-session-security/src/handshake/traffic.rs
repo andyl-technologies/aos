@@ -9,9 +9,13 @@ use super::*;
 use aos_sandbox_broker_session_protocol::ProtectedBrokerSessionVerificationContextV1;
 use aos_sandbox_protocol::authenticated_session::{
     AuthenticatedBrokerSessionStateV1, AuthenticatedNetworkInventoryOutcomeAdmissionV1,
-    AuthenticatedNetworkInventoryRequestV1, AuthenticatedNetworkInventoryTerminalErrorV1,
-    PreparedAuthenticatedNetworkInventoryOutcomeV1, PreparedAuthenticatedNetworkInventoryRequestV1,
+    AuthenticatedNetworkInventoryOutcomeV1, AuthenticatedNetworkInventoryRequestV1,
+    AuthenticatedNetworkInventoryTerminalErrorV1, PreparedAuthenticatedNetworkInventoryOutcomeV1,
+    PreparedAuthenticatedNetworkInventoryRequestV1,
     SealedInitialNetworkInventoryTrafficProofAdmissionV1,
+    checkpoint::{
+        NetworkInventoryOutcomeCheckpointDraftV1, NetworkInventoryRequestCheckpointDraftV1,
+    },
 };
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 
@@ -120,8 +124,10 @@ pub(super) struct BrokerAdmittedRequest {
     publication: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
     client_packet: Vec<u8>,
     client_subject: RetainedSubject,
+    request_subject: RetainedSubject,
     broker_packet: Vec<u8>,
     client_process: [u8; 16],
+    expectation: RemotePeerExpectation,
     request_packet: Vec<u8>,
     request: AuthenticatedNetworkInventoryRequestV1,
     state: AuthenticatedBrokerSessionStateV1,
@@ -135,33 +141,58 @@ pub(super) struct BrokerPreparedOutcome {
     publication: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
     client_packet: Vec<u8>,
     client_subject: RetainedSubject,
+    request_subject: RetainedSubject,
     broker_packet: Vec<u8>,
     client_process: [u8; 16],
+    expectation: RemotePeerExpectation,
     request_packet: Vec<u8>,
     request: AuthenticatedNetworkInventoryRequestV1,
     prepared: PreparedAuthenticatedNetworkInventoryOutcomeV1,
 }
 
-/// Retains the completed pair without exposing authority or further traffic.
-pub(super) struct InertMutuallyProvedClientSession {
+/// Retains client-side checkpoint inputs without exposing authority or further I/O.
+pub(super) struct ClientNetworkInventoryCheckpointPending {
     _custody: ProtectedBrokerSessionClientV1,
     _carrier: HandshakeCarrier,
+    _publication_packet: Vec<u8>,
+    _client_packet: Vec<u8>,
+    _broker_packet: Vec<u8>,
+    _publication_subject: RetainedSubject,
+    _broker_subject: RetainedSubject,
+    _outcome_subject: RetainedSubject,
+    _broker_process: [u8; 16],
+    _expectation: RemotePeerExpectation,
     _request_packet: Vec<u8>,
     _outcome_packet: Vec<u8>,
     _state: AuthenticatedBrokerSessionStateV1,
+    _request: AuthenticatedNetworkInventoryRequestV1,
+    _outcome: AuthenticatedNetworkInventoryOutcomeV1,
+    _request_draft: NetworkInventoryRequestCheckpointDraftV1,
+    _outcome_draft: NetworkInventoryOutcomeCheckpointDraftV1,
 }
 
-/// Retains the completed pair without exposing authority or further traffic.
-pub(super) struct InertMutuallyProvedBrokerSession {
+/// Retains broker-side checkpoint inputs without exposing authority or further I/O.
+pub(super) struct BrokerNetworkInventoryCheckpointPending {
     _custody: ProtectedBrokerSessionBrokerV1,
     _carrier: HandshakeCarrier,
+    _publication_packet: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
+    _client_packet: Vec<u8>,
+    _broker_packet: Vec<u8>,
+    _client_subject: RetainedSubject,
+    _request_subject: RetainedSubject,
+    _client_process: [u8; 16],
+    _expectation: RemotePeerExpectation,
     _request_packet: Vec<u8>,
     _outcome_packet: Vec<u8>,
     _state: AuthenticatedBrokerSessionStateV1,
+    _request: AuthenticatedNetworkInventoryRequestV1,
+    _outcome: AuthenticatedNetworkInventoryOutcomeV1,
+    _request_draft: NetworkInventoryRequestCheckpointDraftV1,
+    _outcome_draft: NetworkInventoryOutcomeCheckpointDraftV1,
 }
 
 #[cfg(test)]
-impl InertMutuallyProvedClientSession {
+impl ClientNetworkInventoryCheckpointPending {
     pub(super) fn has_exact_initial_proof(&self) -> bool {
         self._state.has_initial_traffic_proof()
     }
@@ -172,7 +203,7 @@ impl InertMutuallyProvedClientSession {
 }
 
 #[cfg(test)]
-impl InertMutuallyProvedBrokerSession {
+impl BrokerNetworkInventoryCheckpointPending {
     pub(super) fn has_exact_initial_proof(&self) -> bool {
         self._state.has_initial_traffic_proof()
     }
@@ -382,7 +413,9 @@ impl ClientPreparedRequest {
 }
 
 impl ClientAwaitOutcome {
-    pub(super) fn receive(mut self) -> TrafficTransition<InertMutuallyProvedClientSession, Self> {
+    pub(super) fn receive(
+        mut self,
+    ) -> TrafficTransition<ClientNetworkInventoryCheckpointPending, Self> {
         if let Err(error) = self.precheck() {
             self.carrier.close();
             return TrafficTransition::Failed(error);
@@ -423,12 +456,11 @@ impl ClientAwaitOutcome {
         let admission = self
             .state
             .admit_network_inventory_outcome(&flight.payload, 0, &context);
-        let state = match admission {
-            Ok(AuthenticatedNetworkInventoryOutcomeAdmissionV1::New { next_state, .. })
-                if next_state.has_initial_traffic_proof() =>
-            {
-                *next_state
-            }
+        let (outcome, state) = match admission {
+            Ok(AuthenticatedNetworkInventoryOutcomeAdmissionV1::New {
+                outcome,
+                next_state,
+            }) if next_state.has_initial_traffic_proof() => (outcome, *next_state),
             _ => {
                 self.carrier.close();
                 return TrafficTransition::Failed(TrafficProofError::RemoteInvalid);
@@ -438,12 +470,39 @@ impl ClientAwaitOutcome {
             self.carrier.close();
             return TrafficTransition::Failed(TrafficProofError::Local);
         }
-        TrafficTransition::Complete(InertMutuallyProvedClientSession {
+        let request_draft = match NetworkInventoryRequestCheckpointDraftV1::derive(&self.request) {
+            Ok(draft) => draft,
+            Err(_) => {
+                self.carrier.close();
+                return TrafficTransition::Failed(TrafficProofError::Local);
+            }
+        };
+        let outcome_draft = match NetworkInventoryOutcomeCheckpointDraftV1::derive(&outcome) {
+            Ok(draft) => draft,
+            Err(_) => {
+                self.carrier.close();
+                return TrafficTransition::Failed(TrafficProofError::Local);
+            }
+        };
+
+        TrafficTransition::Complete(ClientNetworkInventoryCheckpointPending {
             _custody: self.custody,
             _carrier: self.carrier,
+            _publication_packet: self.publication_packet,
+            _client_packet: self.client_packet,
+            _broker_packet: self.broker_packet,
+            _publication_subject: self.publication_subject,
+            _broker_subject: self.broker_subject,
+            _outcome_subject: flight.subject,
+            _broker_process: self.broker_process,
+            _expectation: self.expectation,
             _request_packet: self.request_packet,
             _outcome_packet: flight.payload,
             _state: state,
+            _request: self.request,
+            _outcome: outcome,
+            _request_draft: request_draft,
+            _outcome_draft: outcome_draft,
         })
     }
 
@@ -602,8 +661,10 @@ impl BrokerAwaitRequest {
             publication: self.publication,
             client_packet: self.client_packet,
             client_subject: self.client_subject,
+            request_subject: flight.subject,
             broker_packet: self.broker_packet,
             client_process: self.client_process,
+            expectation: self.expectation,
             request_packet: flight.payload,
             request,
             state,
@@ -688,9 +749,16 @@ impl BrokerAdmittedRequest {
         self.carrier
             .validate_peer()
             .map_err(|_| TrafficProofError::RemoteInvalid)?;
+        self.carrier.validate_remote_expectation(self.expectation)?;
         self.client_subject
             .validate()
             .map_err(|_| TrafficProofError::RemoteInvalid)?;
+        self.request_subject
+            .validate()
+            .map_err(|_| TrafficProofError::RemoteInvalid)?;
+        if !self.client_subject.same_execution(&self.request_subject) {
+            return Err(TrafficProofError::RemoteInvalid);
+        }
         let context = self
             .custody
             .context_for_handshake(self.client_process)
@@ -709,8 +777,10 @@ impl BrokerAdmittedRequest {
             publication: self.publication,
             client_packet: self.client_packet,
             client_subject: self.client_subject,
+            request_subject: self.request_subject,
             broker_packet: self.broker_packet,
             client_process: self.client_process,
+            expectation: self.expectation,
             request_packet: self.request_packet,
             request: self.request,
             prepared,
@@ -719,7 +789,9 @@ impl BrokerAdmittedRequest {
 }
 
 impl BrokerPreparedOutcome {
-    pub(super) fn send(mut self) -> TrafficTransition<InertMutuallyProvedBrokerSession, Self> {
+    pub(super) fn send(
+        mut self,
+    ) -> TrafficTransition<BrokerNetworkInventoryCheckpointPending, Self> {
         if let Err(error) = self.precheck() {
             self.carrier.close();
             return TrafficTransition::Failed(error);
@@ -739,17 +811,43 @@ impl BrokerPreparedOutcome {
                 return TrafficTransition::Failed(TrafficProofError::Transport);
             }
         }
-        let (outcome_packet, _, state) = self.prepared.into_parts();
+        let (outcome_packet, outcome, state) = self.prepared.into_parts();
         if !state.has_initial_traffic_proof() {
             self.carrier.close();
             return TrafficTransition::Failed(TrafficProofError::Local);
         }
-        TrafficTransition::Complete(InertMutuallyProvedBrokerSession {
+        let request_draft = match NetworkInventoryRequestCheckpointDraftV1::derive(&self.request) {
+            Ok(draft) => draft,
+            Err(_) => {
+                self.carrier.close();
+                return TrafficTransition::Failed(TrafficProofError::Local);
+            }
+        };
+        let outcome_draft = match NetworkInventoryOutcomeCheckpointDraftV1::derive(&outcome) {
+            Ok(draft) => draft,
+            Err(_) => {
+                self.carrier.close();
+                return TrafficTransition::Failed(TrafficProofError::Local);
+            }
+        };
+
+        TrafficTransition::Complete(BrokerNetworkInventoryCheckpointPending {
             _custody: self.custody,
             _carrier: self.carrier,
+            _publication_packet: self.publication,
+            _client_packet: self.client_packet,
+            _broker_packet: self.broker_packet,
+            _client_subject: self.client_subject,
+            _request_subject: self.request_subject,
+            _client_process: self.client_process,
+            _expectation: self.expectation,
             _request_packet: self.request_packet,
             _outcome_packet: outcome_packet,
             _state: *state,
+            _request: self.request,
+            _outcome: outcome,
+            _request_draft: request_draft,
+            _outcome_draft: outcome_draft,
         })
     }
 
@@ -760,9 +858,16 @@ impl BrokerPreparedOutcome {
         self.carrier
             .validate_peer()
             .map_err(|_| TrafficProofError::RemoteInvalid)?;
+        self.carrier.validate_remote_expectation(self.expectation)?;
         self.client_subject
             .validate()
             .map_err(|_| TrafficProofError::RemoteInvalid)?;
+        self.request_subject
+            .validate()
+            .map_err(|_| TrafficProofError::RemoteInvalid)?;
+        if !self.client_subject.same_execution(&self.request_subject) {
+            return Err(TrafficProofError::RemoteInvalid);
+        }
         let context = self
             .custody
             .context_for_handshake(self.client_process)

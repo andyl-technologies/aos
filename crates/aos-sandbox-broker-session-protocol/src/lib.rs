@@ -17,12 +17,14 @@
 //!
 //! [`artifact`] owns the four typed signed records. [`projection`] commits
 //! canonical protobuf with only its containing authentication field cleared.
+//! [`checkpoint`] owns fixed non-authorizing durability companion records,
 //! [`endpoint_publication`] owns the untrusted broker bootstrap record,
 //! [`context`] models caller-supplied protected configuration, and
 //! [`transcript`] and [`traffic`] perform pure cryptographic checks. None of
 //! those types proves that configuration came from a protected source.
 
 pub mod artifact;
+pub mod checkpoint;
 pub mod context;
 pub mod endpoint_publication;
 pub mod model;
@@ -44,6 +46,10 @@ pub use artifact::{
     complete_signed_client_hello_digest_v1, complete_signed_request_digest_v1,
     sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1, sign_request_v1,
     signer_set_digest_v1,
+};
+pub use checkpoint::{
+    BROKER_SESSION_OUTCOME_COMPANION_BYTES, BROKER_SESSION_REQUEST_COMPANION_BYTES,
+    BrokerSessionCheckpointError, BrokerSessionOutcomeCompanionV1, BrokerSessionRequestCompanionV1,
 };
 pub use context::{ProtectedBrokerSessionKeyV1, ProtectedBrokerSessionVerificationContextV1};
 pub use endpoint_publication::{

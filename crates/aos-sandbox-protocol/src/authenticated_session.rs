@@ -14,6 +14,10 @@
 //! packet digest, the signed ClientRecord bytes and digest, request/session/
 //! sequence/response-bound links, and the exact empty descriptor-role table.
 
+/// Holds production-inert checkpoint companion drafts for sealed composition.
+#[doc(hidden)]
+pub mod checkpoint;
+
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerDescriptorRole, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
     BrokerResponseEnvelope, InventoryNetworksRequest, RequestHeader,
