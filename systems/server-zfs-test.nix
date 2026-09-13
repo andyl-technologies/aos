@@ -102,9 +102,6 @@ in {
     '';
   };
 
-  # The module has to be resident before anything touches the pool.
-  aos.kernel.modules = ["zfs"];
-
   # Enabling ZFS turns on hardware monitoring, which a storage host wants on
   # real disks. This guest's devices are virtio-blk and report no SMART data,
   # so smartd would fail and restart for the life of the test. The watchdog

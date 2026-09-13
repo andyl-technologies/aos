@@ -256,6 +256,7 @@ in {
     # repair the one thing it exists to repair.
     aos.filesystems.zfs.package = lib.mkIf cfg.zfs.enable (lib.mkDefault zfsForRunningKernel);
     aos.kernel.modulePackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
+    aos.kernel.modules = lib.mkIf cfg.zfs.enable ["zfs"];
     aos.boot.recovery.extraPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
 
     systemd.services = lib.mkMerge [
@@ -266,7 +267,11 @@ in {
           description = "Import ZFS pool ${cfg.zfs.poolName}";
           wantedBy = ["local-fs.target"];
           before = ["local-fs.target"];
-          after = ["systemd-udev-settle.service"];
+          # Importing a pool needs /dev/zfs, which appears only once the
+          # module is inserted. Without this the import can run first and
+          # fail on a host that is otherwise configured correctly.
+          after = ["systemd-udev-settle.service" "systemd-modules-load.service"];
+          wants = ["systemd-modules-load.service"];
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
