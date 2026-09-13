@@ -69,10 +69,11 @@ const REVISION_RECEIPT_ROOT: &str = "/etc/aos/ability-revisions";
 const MAX_REVISION_RECEIPT_BYTES: u64 = 16 * 1024;
 const CATALOG_QUALIFICATION_MILLIS: u64 = 30_000;
 const NATIVE_EXECUTOR_SUFFIX: &str = "bin/.aos-package-runtime-unwrapped";
-const REFERENCE_SYSTEMD_INTERFACE: &str = "aos.systemd-service-effects";
-pub(super) const REFERENCE_SYSTEMD_DESCRIPTOR: &str =
-    "sha256:383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50";
-const REFERENCE_SYSTEMD_HANDLER: &str = "systemd-terminal";
+const SERVICE_MANAGEMENT_INTERFACE: &str =
+    aos_ability_model::builtin::SERVICE_MANAGEMENT_INTERFACE_NAME;
+const SERVICE_MANAGEMENT_DESCRIPTOR: &str =
+    aos_ability_model::builtin::SERVICE_MANAGEMENT_INTERFACE_DESCRIPTOR;
+const SERVICE_MANAGEMENT_HANDLER: &str = "service-management-terminal";
 const SYSTEMD_PROVIDER_BOOTSTRAP_HANDLER: &str = "systemd-bootstrap-terminal";
 
 /// Binds one checked logical resource to the only unit it may control.
@@ -816,32 +817,32 @@ fn authenticate_builtin_systemd(
     Ok(())
 }
 
-fn authenticate_reference_systemd(
+fn authenticate_service_management(
     package: &VerifiedAbilityPackage,
     assignment: &ProviderAssignment,
 ) -> Result<(), io::Error> {
     if package.activation_mode() != AbilityActivationMode::StructuredEffects {
         return Err(invalid_data(
-            "reference systemd adapter requires a structured-effects package",
+            "service-management adapter requires a structured-effects package",
         ));
     }
 
     let expected_interface = InterfaceKey {
-        name: InterfaceName::new(REFERENCE_SYSTEMD_INTERFACE).map_err(|error| {
-            invalid_data(format!("invalid reference systemd interface: {error}"))
+        name: InterfaceName::new(SERVICE_MANAGEMENT_INTERFACE).map_err(|error| {
+            invalid_data(format!("invalid service-management interface: {error}"))
         })?,
-        abi: NonZeroU32::new(1).ok_or_else(|| invalid_data("invalid reference systemd ABI"))?,
-        descriptor: Sha256Digest::parse(REFERENCE_SYSTEMD_DESCRIPTOR).map_err(|error| {
-            invalid_data(format!("invalid reference systemd descriptor: {error}"))
+        abi: NonZeroU32::new(1).ok_or_else(|| invalid_data("invalid service-management ABI"))?,
+        descriptor: Sha256Digest::parse(SERVICE_MANAGEMENT_DESCRIPTOR).map_err(|error| {
+            invalid_data(format!("invalid service-management descriptor: {error}"))
         })?,
     };
-    let handler_key = LocalKey::new(REFERENCE_SYSTEMD_HANDLER)
-        .map_err(|error| invalid_data(format!("invalid reference systemd handler: {error}")))?;
+    let handler_key = LocalKey::new(SERVICE_MANAGEMENT_HANDLER)
+        .map_err(|error| invalid_data(format!("invalid service-management handler: {error}")))?;
     if assignment.interface != expected_interface
         || assignment.implementation.handler.as_ref() != Some(&handler_key)
     {
         return Err(invalid_data(
-            "assignment does not select the exact reference systemd contract",
+            "assignment does not select the exact service-management contract",
         ));
     }
 
@@ -849,7 +850,7 @@ fn authenticate_reference_systemd(
         .resolve_terminal_handler(assignment.implementation.descriptor, &handler_key)
         .ok_or_else(|| {
             invalid_data(
-                "authenticated package does not resolve the assigned reference systemd handler",
+                "authenticated package does not resolve the assigned service-management handler",
             )
         })?;
     if verified.provider().interface != expected_interface
@@ -862,7 +863,7 @@ fn authenticate_reference_systemd(
         || verified.handler().result != ValueSchema::Boolean
     {
         return Err(invalid_data(
-            "authenticated provider or handler differs from the exact reference systemd contract",
+            "authenticated provider or handler differs from the exact service-management contract",
         ));
     }
     Ok(())
@@ -927,7 +928,7 @@ pub(crate) fn preflight_native_systemd(
         aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME => {
             authenticate_builtin_systemd(package, assignment)
         }
-        REFERENCE_SYSTEMD_INTERFACE => authenticate_reference_systemd(package, assignment),
+        SERVICE_MANAGEMENT_INTERFACE => authenticate_service_management(package, assignment),
         aos_ability_model::builtin::SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME => {
             authenticate_systemd_provider_bootstrap(package, assignment)
         }
@@ -1216,7 +1217,7 @@ impl AdapterCompletion for ReferenceSystemdRecord {
     }
 }
 
-/// Executes the explicit `aos.systemd-service-effects` terminal contract.
+/// Executes the manager-neutral service-management terminal contract.
 ///
 /// This adapter is authenticated independently from the built-in
 /// `aos.systemd-manager` path. Its Boolean input is only a checked trigger;
@@ -1235,19 +1236,19 @@ impl NativeSystemdServiceAdapter {
     ///
     /// # Errors
     ///
-    /// Returns an error unless the package resolves the fixed reference
-    /// interface descriptor and `systemd-terminal` handler to the running AOS
+    /// Returns an error unless the package resolves the fixed service-management
+    /// interface descriptor and terminal handler to the running AOS
     /// package runtime at `bin/.aos-package-runtime-unwrapped`, or no supported
     /// Tokio runtime is active.
     pub fn new(
         package: &VerifiedAbilityPackage,
         assignment: ProviderAssignment,
     ) -> Result<Self, io::Error> {
-        authenticate_reference_systemd(package, &assignment)?;
+        authenticate_service_management(package, &assignment)?;
         authenticate_native_executor(
             &assignment.implementation.artifact,
             NATIVE_EXECUTOR_SUFFIX,
-            "reference systemd",
+            "service management",
         )?;
         Self::initialize(assignment, Vec::new())
     }
@@ -1466,7 +1467,7 @@ impl NativeSystemdServiceAdapter {
             ));
         }
         let native = resource.native();
-        require_authorized_action(action, native.authorized_action, false)?;
+        require_authorized_action(action, native.authorized_action, true)?;
         let request = SystemdDurableRequest {
             schema: REQUEST_SCHEMA.to_string(),
             action,
@@ -1504,7 +1505,7 @@ impl NativeSystemdServiceAdapter {
                 "durable reference systemd request disagrees with fresh acquisition",
             ));
         }
-        require_authorized_action(request.action, native.authorized_action, false)?;
+        require_authorized_action(request.action, native.authorized_action, true)?;
         Ok(SystemdAbilityRequest {
             durable: request,
             manager: Arc::clone(&native.manager),
@@ -1540,7 +1541,7 @@ impl TrustedAdapter for NativeSystemdServiceAdapter {
             }
             InvocationPurpose::Effect => matches!(
                 method.method.as_str(),
-                "observe" | "reload" | "start" | "stop"
+                "observe" | "reload" | "restart" | "start" | "stop"
             ),
             InvocationPurpose::Reconcile | InvocationPurpose::Cancel
                 if self.assignment.interface.name.as_str()
@@ -2226,11 +2227,11 @@ mod tests {
         let binding = &checked.binding_plan().bindings()[0];
         let artifact = binding.implementation.artifact.clone();
         let interface = InterfaceKey {
-            name: InterfaceName::new(REFERENCE_SYSTEMD_INTERFACE)?,
+            name: InterfaceName::new(SERVICE_MANAGEMENT_INTERFACE)?,
             abi: NonZeroU32::new(1).unwrap(),
-            descriptor: Sha256Digest::parse(REFERENCE_SYSTEMD_DESCRIPTOR)?,
+            descriptor: Sha256Digest::parse(SERVICE_MANAGEMENT_DESCRIPTOR)?,
         };
-        let handler_key = LocalKey::new(REFERENCE_SYSTEMD_HANDLER)?;
+        let handler_key = LocalKey::new(SERVICE_MANAGEMENT_HANDLER)?;
         let provider = aos_ability_model::ProviderImplementation {
             interface: interface.clone(),
             artifact: artifact.clone(),
@@ -2281,14 +2282,14 @@ mod tests {
         };
 
         let verified = seal_test_package(package_document(provider.clone(), handler.clone()))?;
-        authenticate_reference_systemd(&verified, &assignment)?;
+        authenticate_service_management(&verified, &assignment)?;
         assert!(NativeSystemdServiceAdapter::initialize(assignment.clone(), Vec::new()).is_ok());
         assert!(authenticate_builtin_systemd(&verified, &assignment).is_err());
 
         let mut forged_entry = handler.clone();
         forged_entry.entry_point = "libexec/forged-systemd-handler".to_string();
         assert!(
-            authenticate_reference_systemd(
+            authenticate_service_management(
                 &seal_test_package(package_document(provider.clone(), forged_entry))?,
                 &assignment,
             )
@@ -2297,12 +2298,12 @@ mod tests {
 
         let mut forged_interface = assignment.clone();
         forged_interface.interface = systemd_manager_interface_key()?;
-        assert!(authenticate_reference_systemd(&verified, &forged_interface).is_err());
+        assert!(authenticate_service_management(&verified, &forged_interface).is_err());
 
         let mut forged_artifact = assignment;
         forged_artifact.implementation.artifact.store_path =
             "/nix/store/00000000000000000000000000000000-forged".to_string();
-        assert!(authenticate_reference_systemd(&verified, &forged_artifact).is_err());
+        assert!(authenticate_service_management(&verified, &forged_artifact).is_err());
         Ok(())
     }
 
@@ -2341,6 +2342,14 @@ mod tests {
                 true,
             )
             .is_err()
+        );
+        assert!(
+            require_authorized_action(
+                SystemdAbilityAction::Restart,
+                SystemdAbilityAction::Restart,
+                true,
+            )
+            .is_ok()
         );
         assert!(
             require_authorized_action(

@@ -9,7 +9,7 @@
   ];
   alreadyQualified = [
     "managed-configuration/aos.managed-configuration-effects/abi-1/publish/reject-foreign-resource-mutation"
-    "systemd-service-legacy/aos.systemd-service-effects/abi-1/reload/block-dependent-effect"
+    "service-management/aos.service-management/abi-1/reload/block-dependent-effect"
   ];
   selected = builtins.filter (cell:
     builtins.elem (builtins.elemAt (lib.splitString "/" cell.id) 4) scenarios
@@ -25,7 +25,7 @@
       "managed-configuration"
       "network-endpoint"
       "nginx-validation"
-      "systemd-service-legacy"
+      "service-management"
     ];
     postgresql = byAdapters ["postgresql"];
     foreground-process = byAdapters ["foreground-process"];
@@ -43,10 +43,10 @@
     ++ groups.kubernetes
     ++ groups.rollout;
 in
-  assert builtins.length matrix.cells == 1400;
-  assert builtins.length all == 98;
-  assert builtins.length (lib.unique all) == 98;
-  assert builtins.length groups.reference == 42;
+  assert builtins.length matrix.cells == 1428;
+  assert builtins.length all == 100;
+  assert builtins.length (lib.unique all) == 100;
+  assert builtins.length groups.reference == 44;
   assert builtins.length groups.postgresql == 10;
   assert builtins.length groups.foreground-process == 6;
   assert builtins.length groups.systemd-manager == 10;

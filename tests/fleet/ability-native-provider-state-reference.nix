@@ -88,7 +88,7 @@ in
               return "shared-credential", "nginx-main-credential-view"
           if adapter == "managed-configuration":
               return "shared-configuration", "nginx-main-configuration"
-          if adapter == "systemd-service-legacy":
+          if adapter == "service-management":
               return "shared-service", "nginx-main-service"
           if adapter == "nginx-validation":
               return "nginx-main", "virtual-hosts"

@@ -4745,11 +4745,11 @@ mod tests {
             "observe",
             InvocationPurpose::Cancel,
         ));
-        assert!(!native_method_is_supported(
+        assert!(native_method_is_supported(
             NativeAdapterKind::Systemd,
-            "aos.systemd-service-effects",
+            aos_ability_model::builtin::SERVICE_MANAGEMENT_INTERFACE_NAME,
             1,
-            advertised_descriptor(NativeAdapterId::SystemdServiceLegacy),
+            advertised_descriptor(NativeAdapterId::ServiceManagement),
             "reload",
             "observe",
             InvocationPurpose::Reconcile,
@@ -4860,9 +4860,9 @@ mod tests {
             NativeAdapterId::Postgresql => {
                 NativeAdapterKind::HostResource(NativeHostResourceKind::Postgresql)
             }
-            NativeAdapterId::SystemdBootstrap
-            | NativeAdapterId::SystemdManager
-            | NativeAdapterId::SystemdServiceLegacy => NativeAdapterKind::Systemd,
+            NativeAdapterId::ServiceManagement
+            | NativeAdapterId::SystemdBootstrap
+            | NativeAdapterId::SystemdManager => NativeAdapterKind::Systemd,
         }
     }
 

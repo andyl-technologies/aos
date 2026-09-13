@@ -1610,9 +1610,10 @@ fn checked_plan(
     fixture.binding_plan.bindings[0].caller_grant.resources[0].access = access;
     let guarantees = match interface.interface.name.as_str() {
         "aos.foreground-process" => Some(interface.interface.guarantees.clone()),
-        "aos.systemd-manager" | "aos.systemd-service-effects" => Some(vec![
+        "aos.systemd-manager" => Some(vec![
             aos_ability_model::builtin::local_systemd_manager_guarantee()?,
         ]),
+        "aos.service-management" => Some(aos_ability_model::builtin::service_feature_guarantees()?),
         _ => None,
     };
     if let Some(guarantees) = guarantees {

@@ -39,7 +39,7 @@
       "network-endpoint"
       "nginx-validation"
       "systemd-manager"
-      "systemd-service-legacy"
+      "service-management"
     ];
     kubernetes = byAdapters ["kubernetes-object" "systemd-bootstrap"];
     rollout = byAdapters ["image-rollout"];
@@ -61,17 +61,17 @@
     builtins.filter (entry: entry.reason == "missing-authenticated-state-format") matrix.inapplicable_cells
   );
 in
-  assert builtins.length all == 99;
-  assert builtins.length (lib.unique all) == 99;
-  assert builtins.length groups.reference == 54;
+  assert builtins.length all == 101;
+  assert builtins.length (lib.unique all) == 101;
+  assert builtins.length groups.reference == 56;
   assert builtins.length groups.kubernetes == 12;
   assert builtins.length groups.rollout == 27;
   assert builtins.length groups.foreground == 6;
-  assert builtins.length retained == 45;
-  assert builtins.length unsupported == 45;
+  assert builtins.length retained == 46;
+  assert builtins.length unsupported == 46;
   assert builtins.length compatible == 9;
-  assert builtins.length blockedCompatible == 36;
-  assert builtins.length instanceLifetimeBlocked == 36;
+  assert builtins.length blockedCompatible == 37;
+  assert builtins.length instanceLifetimeBlocked == 37;
   assert builtins.length missingStateFormatBlocked == 0;
   assert builtins.all (cell:
     builtins.length cell.postconditions

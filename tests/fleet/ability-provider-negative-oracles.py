@@ -61,7 +61,7 @@ PROVIDER_ORACLES = {
         "roots": ["/etc/aos/ability-revisions"],
         "live": "systemd",
     },
-    "systemd-service-legacy": {
+    "service-management": {
         "roots": ["/etc/aos/ability-revisions"],
         "live": "systemd",
     },
@@ -115,7 +115,7 @@ def observe_exact(
     if injected is not None and adapter not in {
         "systemd-bootstrap",
         "systemd-manager",
-        "systemd-service-legacy",
+        "service-management",
     }:
         path = injected["path"]
         payload = runtime.succeed(f"{COREUTILS}/cat {shlex.quote(path)}")
@@ -127,7 +127,7 @@ def observe_exact(
         owner_count = int(live["api-document"] is not None)
     if adapter == "image-rollout":
         owner_count = 1
-    if adapter in {"systemd-bootstrap", "systemd-manager", "systemd-service-legacy"}:
+    if adapter in {"systemd-bootstrap", "systemd-manager", "service-management"}:
         owner_count = int(bool(live["units"]))
     return {
         "resource": resource,
@@ -193,7 +193,7 @@ INTERFACES = {
     "postgresql": "aos.postgresql-effects",
     "systemd-bootstrap": "aos.systemd-provider-bootstrap",
     "systemd-manager": "aos.systemd-manager",
-    "systemd-service-legacy": "aos.systemd-service-effects",
+    "service-management": "aos.service-management",
 }
 
 
@@ -215,7 +215,7 @@ def inject_foreign_owner(
     mapping = exact_mapping(resource_map, resource)
     if mapping.get("resource") != resource:
         raise RuntimeError("provider mapping does not bind the interrupted resource")
-    if adapter in {"systemd-bootstrap", "systemd-manager", "systemd-service-legacy"}:
+    if adapter in {"systemd-bootstrap", "systemd-manager", "service-management"}:
         install_foreign_systemd_authority(operation, mapping)
         return
     documents = resource_documents(adapter, resource)

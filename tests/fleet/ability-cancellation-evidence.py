@@ -71,8 +71,8 @@ HANDLER_ROUTES = {
         "native-systemd-manager-v1",
         "libexec/aos-systemd-manager-handler-v1",
     ),
-    "aos.systemd-service-effects": (
-        "systemd-terminal",
+    "aos.service-management": (
+        "service-management-terminal",
         "bin/.aos-package-runtime-unwrapped",
     ),
     "aos.ab-image-rollout-effects": (

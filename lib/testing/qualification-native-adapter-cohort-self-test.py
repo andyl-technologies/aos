@@ -742,7 +742,7 @@ def assert_negative_semantic_validators(module, subject, base_cell):
 
     blocked_cell = copy.deepcopy(base_cell)
     blocked_cell["id"] = (
-        "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+        "service-management/aos.service-management/abi-1/"
         "reload/block-dependent-effect"
     )
     blocked_cell["interface"] = dependent["interface"]
@@ -1279,10 +1279,10 @@ def main() -> None:
         "lifetime": "instance",
     }
     dependent_interface = {
-        "name": "aos.systemd-service-effects",
+        "name": "aos.service-management",
         "abi": 1,
         "descriptor": (
-            "sha256:e02cd9535b3f97fbaf41066fd4b6ac8c2aa315f38188fb669815dccd291b4f98"
+            "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff"
         ),
     }
     dependent_target = {

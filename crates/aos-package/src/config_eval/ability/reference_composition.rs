@@ -45,8 +45,8 @@ const REFERENCE_ENVIRONMENT: [&str; 14] = [
     "AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION_NAR_HASH",
     "AOS_TEST_ABILITY_REFERENCE_CREDENTIAL",
     "AOS_TEST_ABILITY_REFERENCE_CREDENTIAL_NAR_HASH",
-    "AOS_TEST_ABILITY_REFERENCE_SYSTEMD",
-    "AOS_TEST_ABILITY_REFERENCE_SYSTEMD_NAR_HASH",
+    "AOS_TEST_ABILITY_REFERENCE_SERVICE",
+    "AOS_TEST_ABILITY_REFERENCE_SERVICE_NAR_HASH",
     "AOS_TEST_ABILITY_REFERENCE_PACKAGES",
 ];
 const REFERENCE_ATTEMPT_TIMEOUT_MILLIS: u64 = 300_000;
@@ -2479,7 +2479,7 @@ fn interface_documents() -> Vec<InterfaceDocument> {
                 ValueSchema::StringEnum {
                     values: vec![
                         "foreground-process".to_string(),
-                        "systemd-manager".to_string(),
+                        "managed-service".to_string(),
                     ],
                 },
             ),
@@ -2727,12 +2727,12 @@ fn interface_documents() -> Vec<InterfaceDocument> {
         ),
         credential_delivery_effects_interface().unwrap(),
         interface_document(
-            "aos.systemd-service",
+            "aos.service-definition",
             ValueSchema::Record {
                 fields: BTreeMap::from([
                     (key("configuration_revision"), string_schema()),
                     (key("consumer_endpoint"), string_schema()),
-                    (key("unit"), string_schema()),
+                    (key("service"), string_schema()),
                     (key("storage_paths"), storage_paths.clone()),
                     (
                         key("virtual_host_count"),
@@ -2756,21 +2756,8 @@ fn interface_documents() -> Vec<InterfaceDocument> {
             ValueSchema::Boolean,
             Vec::new(),
         ),
-        interface_document(
-            "aos.systemd-service-effects",
-            ValueSchema::Boolean,
-            Vec::new(),
-        ),
+        aos_ability_model::builtin::service_management_interface().unwrap(),
         aos_ability_model::builtin::foreground_process_interface().unwrap(),
-    ];
-    documents
-        .iter_mut()
-        .find(|document| document.interface.name.as_str() == "aos.systemd-service-effects")
-        .unwrap()
-        .interface
-        .guarantees = vec![
-        aos_ability_model::builtin::local_systemd_manager_guarantee().unwrap(),
-        aos_ability_model::builtin::system_container_manager_delegation_guarantee().unwrap(),
     ];
     documents
         .iter_mut()
@@ -2898,12 +2885,18 @@ fn reference_method_families(name: &str) -> Vec<(&'static str, OperationFamily)>
             ("publish", OperationFamily::PublishConfiguration),
             ("release", OperationFamily::ReleaseResource),
         ],
-        "aos.systemd-service-effects" => vec![
+        "aos.service-management" => vec![
             ("observe", OperationFamily::ObserveReadiness),
             (
                 "reload",
                 OperationFamily::ServiceLifecycle {
                     action: ServiceAction::Reload,
+                },
+            ),
+            (
+                "restart",
+                OperationFamily::ServiceLifecycle {
+                    action: ServiceAction::Restart,
                 },
             ),
             (
@@ -3092,7 +3085,7 @@ fn static_route_composes_without_a_backend_request() {
 fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     assert_eq!(
         interfaces["aos.nginx"].descriptor,
-        digest_from_hex("dd3a483912cab00425d3a9af94af01503986f486412166e64b76ab5d79cdde57")
+        digest_from_hex("5eb5252567f450038b4bc34cf004852d81427b745662fbdd3cf8175f5d2da7a6")
     );
     assert_eq!(
         interfaces["aos.http-backend"].descriptor,
@@ -3100,7 +3093,7 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
     );
     assert_eq!(
         interfaces["aos.managed-configuration"].descriptor,
-        digest_from_hex("f2f4174c1b63997d056df99fe7eeb1d07c37a52f88588e03163bc8bf536ea802")
+        digest_from_hex("fce7ea027ff0640e13116a3501b96fd356ac96d47d82d26aff193d6d2bc8780e")
     );
     assert_eq!(
         interfaces["aos.credential-delivery"].descriptor,
@@ -3111,8 +3104,8 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
         digest_from_hex("bc251c0837c1d453a6c5840d9146d9e27a95ad82032d9b4c60baf40d293cf1eb")
     );
     assert_eq!(
-        interfaces["aos.systemd-service"].descriptor,
-        digest_from_hex("c74a42b33fc3b7455be4d0cc7e57f7cb1f5f71886b61e6dd359456bf65b2368d")
+        interfaces["aos.service-definition"].descriptor,
+        digest_from_hex("71b6dad75359531ccfc92bfbb5824fb3555afb097e697d994ee6f9f862ae46af")
     );
     assert_eq!(
         interfaces["aos.nginx-validation"].descriptor,
@@ -3131,8 +3124,8 @@ fn assert_interface_hashes(interfaces: &BTreeMap<String, InterfaceKey>) {
         digest_from_hex("682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab")
     );
     assert_eq!(
-        interfaces["aos.systemd-service-effects"].descriptor,
-        digest_from_hex("383803bfd7eb105968a80a796fc4726b5663890e88220d26b20dbd2b33349b50")
+        interfaces["aos.service-management"].descriptor,
+        digest_from_hex("a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff")
     );
     assert_eq!(
         interfaces["aos.foreground-process"].descriptor,
@@ -3264,7 +3257,7 @@ fn lower_interface_name(suffix: &str) -> &'static str {
     match suffix {
         "configuration" => "aos.managed-configuration",
         "credential" => "aos.credential-delivery",
-        "service" => "aos.systemd-service",
+        "service" => "aos.service-definition",
         _ => panic!("unknown lower-interface suffix"),
     }
 }
@@ -3273,7 +3266,7 @@ fn terminal_interface_name(interface: &str) -> &'static str {
     match interface {
         "aos.credential-delivery" => "aos.credential-delivery-effects",
         "aos.managed-configuration" => "aos.managed-configuration-effects",
-        "aos.systemd-service" => "aos.systemd-service-effects",
+        "aos.service-definition" => "aos.service-management",
         _ => "",
     }
 }
@@ -3351,7 +3344,7 @@ fn nginx_consumer_probe(nginx: &InstanceId) -> AbilityValue {
     };
     value(serde_json::json!({
         "address": "127.0.0.1",
-        "execution_strategy": "systemd-manager",
+        "execution_strategy": "managed-service",
         "port": port,
         "tls_credential_path": reference_tls_path(nginx),
         "tls_port": tls_port,

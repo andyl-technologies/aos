@@ -25,7 +25,7 @@ EXCLUDED_CELLS = {
         "publish/reject-foreign-resource-mutation"
     ),
     (
-        "systemd-service-legacy/aos.systemd-service-effects/abi-1/"
+        "service-management/aos.service-management/abi-1/"
         "reload/block-dependent-effect"
     ),
 }
@@ -42,7 +42,7 @@ ORACLE_KINDS = {
     "postgresql": "postgresql-cluster",
     "systemd-bootstrap": "systemd-unit",
     "systemd-manager": "systemd-unit",
-    "systemd-service-legacy": "systemd-unit",
+    "service-management": "systemd-unit",
 }
 ENTRY_POINTS = {
     "credential-delivery": "libexec/aos-credential-delivery-handler-v1",
@@ -57,7 +57,7 @@ ENTRY_POINTS = {
     "postgresql": "libexec/aos-postgresql-handler-v1",
     "systemd-bootstrap": "bin/.aos-package-runtime-unwrapped",
     "systemd-manager": "libexec/aos-systemd-manager-handler-v1",
-    "systemd-service-legacy": "bin/.aos-package-runtime-unwrapped",
+    "service-management": "bin/.aos-package-runtime-unwrapped",
 }
 
 

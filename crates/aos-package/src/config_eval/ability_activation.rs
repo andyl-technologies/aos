@@ -1631,7 +1631,7 @@ fn is_native_interface(interface: &str) -> bool {
     matches!(
         interface,
         "aos.managed-configuration-effects"
-            | "aos.systemd-service-effects"
+            | aos_ability_model::builtin::SERVICE_MANAGEMENT_INTERFACE_NAME
             | aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME
             | aos_ability_model::builtin::KUBERNETES_OBJECT_INTERFACE_NAME
             | aos_ability_model::builtin::CREDENTIAL_DELIVERY_EFFECTS_INTERFACE_NAME
@@ -1662,7 +1662,7 @@ fn qualification_supports_interface(
             "aos.managed-configuration-effects"
         ) | (
             NativeResourceQualification::SystemdService { .. },
-            "aos.systemd-service-effects"
+            aos_ability_model::builtin::SERVICE_MANAGEMENT_INTERFACE_NAME
                 | aos_ability_model::builtin::SYSTEMD_MANAGER_INTERFACE_NAME
         ) | (
             NativeResourceQualification::NginxValidation { .. },
