@@ -147,11 +147,8 @@ Guest introspection messages also use the shared control protocol version and
 typed failure codes/output streams. Availability depends on guest agent and
 backend capability. See [Debugging](debugging.md) before exposing a gateway.
 
-## Checkpoint realization
+## Production QEMU API
 
-`realize_model_checkpoint_vm_resume_from_savepoint` validates a model
-checkpoint and returns a realization proof for production VM resume. It does
-not weaken the build/protocol/scenario checks performed by ordinary `resume`.
 Production plugin install types are re-exported under backend-neutral names so
 control-plane clients do not depend directly on the implementation crate.
 

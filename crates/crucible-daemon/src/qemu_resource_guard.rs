@@ -1034,8 +1034,6 @@ fn attempt_operational_error(
         QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
         | QemuVmRealizationError::Executor { .. }
-        | QemuVmRealizationError::ForkPrefix(_)
-        | QemuVmRealizationError::ForkPrefixOutOfRange { .. }
         | QemuVmRealizationError::AncestorPrefix(_)
         | QemuVmRealizationError::InvalidCheckpoint { .. }
         | QemuVmRealizationError::InvalidAncestor { .. }
