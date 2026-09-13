@@ -1,13 +1,18 @@
 ##! modules/base/filesystems.nix — Immutable filesystem layout module
 ##!
-##! Defines the AOS filesystem hierarchy: read-only root (ext4), FAT32 ESP,
-##! ZFS datasets for persistent state, overlay /etc, and tmpfs for /tmp and
-##! /run. This is the core of the immutable OS design — the root filesystem
-##! is mounted read-only and all mutable state lives on ZFS or tmpfs.
+##! Defines the AOS filesystem hierarchy: read-only root (ext4 or EROFS),
+##! FAT32 ESP, overlay /etc, encrypted swap, and tmpfs for /tmp and /run.
+##! This is the core of the immutable OS design — the root filesystem is
+##! mounted read-only and all mutable state lives elsewhere.
+##!
+##! This module owns the pool's existence: whether the host uses ZFS, which
+##! pool carries its state, and importing that pool at boot. The datasets in
+##! it and the memory ZFS may hold are owned by modules/base/zfs-datasets.nix
+##! and modules/base/zfs-memory.nix.
 ##!
 ##! Absorbed TOML config values:
 ##!   [filesystems] root_read_only, root_device, root_fstype, esp_device
-##!   [filesystems.zfs] enable, pool_name, datasets
+##!   [filesystems.zfs] enable, pool_name
 ##!   [filesystems.overlay] etc_overlay
 {
   config,
@@ -53,7 +58,8 @@
     (
       if cfg.zfs.enable
       then ''
-        # /var is a native ZFS dataset mounted by zfs-mount.service.
+        # /var is a declared ZFS dataset; modules/base/zfs-datasets.nix
+        # generates the systemd mount unit that mounts it.
       ''
       else ''
         # /var — persistent mutable state (partition created by systemd-repart)
@@ -65,21 +71,6 @@
     "tmpfs  /tmp  tmpfs  nosuid,nodev,noexec,mode=1777,size=50%  0  0"
     "tmpfs  /run  tmpfs  nosuid,nodev,noexec,mode=755,size=25%  0  0"
   ];
-
-  # Build ZFS mount unit names from dataset definitions.
-  # systemd mount units use dashes for path separators.
-  zfsDatasets =
-    lib.mapAttrsToList (
-      name: attrs: let
-        mountpoint = attrs.mountpoint or "/${builtins.replaceStrings ["/"] ["/"] name}";
-        # Convert mountpoint to systemd unit name: /var/log -> var-log.mount
-        unitName = lib.removePrefix "-" (builtins.replaceStrings ["/"] ["-"] mountpoint);
-      in {
-        inherit name mountpoint unitName;
-        properties = builtins.removeAttrs attrs ["mountpoint"];
-      }
-    )
-    cfg.zfs.datasets;
 in {
   options.aos.filesystems = {
     ## Mount the root filesystem read-only (immutable OS foundation).
@@ -129,18 +120,26 @@ in {
         type = lib.types.bool;
         default = false;
         description = ''
-          Use ZFS for persistent mutable state under /var. ZFS provides
-          snapshots, compression, checksumming, and dataset-level quotas.
-          Opt-in for the tier-ii initrd iteration — until the ZFS story
-          lands, `/var` lives on the ext4 root partition.
+          Use ZFS for persistent mutable state under /var, providing
+          snapshots, compression, checksumming, and per-dataset quotas. When
+          disabled, `/var` is an ext4 partition that systemd-repart creates at
+          first boot.
+
+          Enabling this also enables the bounded memory policy in
+          `modules/base/zfs-memory.nix`, which is what keeps OpenZFS's
+          RAM-scaled defaults from growing without regard to pool size.
         '';
       };
 
       ## Name of the ZFS pool for persistent data.
       poolName = lib.mkOption {
-        type = lib.types.str;
-        default = "aos-pool";
-        description = "Name of the ZFS pool for persistent data.";
+        type = lib.types.strMatching "[A-Za-z][A-Za-z0-9_.:-]*";
+        default = "rpool";
+        description = ''
+          Name of the ZFS pool holding persistent data. Matches the default of
+          `aos.boot.storage.zfs.poolName`, which sets this option when the
+          immutable image slots live on zvols in the same pool.
+        '';
       };
 
       package = lib.mkOption {
@@ -148,21 +147,6 @@ in {
         default = pkgs.zfs;
         internal = true;
         description = "OpenZFS userland and optional exact-kernel module package.";
-      };
-
-      ## ZFS datasets to create and mount.
-      ##
-      ## Modules add entries here; host activation creates them at first boot.
-      datasets = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
-        default = {};
-        description = ''
-          ZFS datasets to create and mount. Modules add entries; host activation
-          creates them at first boot, filesystems mounts them at runtime.
-          Each key is the dataset name (relative to the pool), and the value
-          is an attrset of ZFS properties. The "mountpoint" property
-          determines where the dataset is mounted.
-        '';
       };
     };
 
@@ -229,26 +213,6 @@ in {
       ];
     };
 
-    # Base ZFS datasets — other modules add entries via the same option.
-    aos.filesystems.zfs.datasets = {
-      "var" = {
-        mountpoint = "/var";
-        compression = "zstd-3";
-        atime = "off";
-      };
-      "var/log" = {
-        mountpoint = "/var/log";
-        compression = "zstd-3";
-        atime = "off";
-        logbias = "throughput";
-      };
-      "var/lib" = {
-        mountpoint = "/var/lib";
-        compression = "zstd-3";
-        atime = "off";
-      };
-    };
-
     # /etc/fstab — filesystem table read by mount(8) and systemd generators.
     environment.etc."fstab" = {
       text = fstabEntries + "\n";
@@ -265,7 +229,8 @@ in {
     };
 
     systemd.services = lib.mkMerge [
-      # ZFS import and mount services — only when zfs.enable is true.
+      # Pool import. Declared datasets are created and mounted by
+      # modules/base/zfs-datasets.nix, which orders itself after this.
       (lib.mkIf cfg.zfs.enable {
         "zfs-import" = {
           description = "Import ZFS pool ${cfg.zfs.poolName}";
@@ -277,19 +242,6 @@ in {
             RemainAfterExit = true;
             ExecStart = "${pkgs.bash}/bin/bash -c '${cfg.zfs.package}/sbin/zpool list -H ${cfg.zfs.poolName} >/dev/null 2>&1 || ${cfg.zfs.package}/sbin/zpool import -N -f ${cfg.zfs.poolName}'";
             ExecStop = "${cfg.zfs.package}/sbin/zpool export ${cfg.zfs.poolName}";
-          };
-        };
-
-        "zfs-mount" = {
-          description = "Mount ZFS datasets from ${cfg.zfs.poolName}";
-          wantedBy = ["local-fs.target"];
-          before = ["local-fs.target"];
-          after = ["zfs-import.service"];
-          requires = ["zfs-import.service"];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart = "${cfg.zfs.package}/sbin/zfs mount -a -l";
           };
         };
       })
