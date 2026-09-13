@@ -118,6 +118,10 @@ in {
     ] (_: {
       extraDisks = [{sizeMiB = poolDiskSizeMiB;}];
       memoryMiB = 2048;
+      # A ZFS guest creates a pool, realizes datasets, and mounts them before
+      # the system is usable, all after the image's own boot. Give the group
+      # room for that rather than measuring against a stock boot.
+      timeoutSeconds = 300;
       # The harness boots the guest with its own command line, so the module
       # parameters these checks verify have to be named here. They come from
       # the same derivation the image's UKI would carry.
