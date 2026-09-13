@@ -131,6 +131,19 @@ Resilver rebuilds only the replaced device. A scrub afterwards is what confirms
 the rest of the pool survived whatever took it out, and
 `scrubAfterResilver` starts one automatically.
 
+### Expanding a pool
+
+Add redundancy groups rather than single devices; a striped addition makes the
+whole pool depend on the new device.
+
+```sh
+zpool add rpool mirror /dev/disk/by-id/<new-a> /dev/disk/by-id/<new-b>
+zpool list -v rpool
+```
+
+A vdev cannot be removed from a pool that contains a RAIDZ vdev, so treat
+`zpool add` as permanent and check the layout before running it.
+
 ### Pool features and rollback
 
 The installer creates the pool with a pinned feature set

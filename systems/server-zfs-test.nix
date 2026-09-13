@@ -15,6 +15,7 @@
 ##!
 ##! Auto-registers as systems.server-zfs-test.
 {
+  config,
   lib,
   pkgs,
   ...
@@ -83,7 +84,7 @@ in {
     };
     script = ''
       set -euo pipefail
-      PATH=${lib.makeBinPath [pkgs.zfs pkgs.coreutils]}''${PATH:+:$PATH}
+      PATH=${lib.makeBinPath [config.aos.filesystems.zfs.package pkgs.coreutils]}''${PATH:+:$PATH}
 
       if zpool list -H aostest >/dev/null 2>&1; then
         exit 0
@@ -103,6 +104,12 @@ in {
 
   # The module has to be resident before anything touches the pool.
   aos.kernel.modules = ["zfs"];
+
+  # Enabling ZFS turns on hardware monitoring, which a storage host wants on
+  # real disks. This guest's devices are virtio-blk and report no SMART data,
+  # so smartd would fail and restart for the life of the test. The watchdog
+  # half of that module is what ZFS actually depends on and stays enabled.
+  aos.monitoring.hardware.smartd = false;
 
   # Every ZFS check group runs against a machine with the pool device attached
   # and enough memory for the proportional budget to be meaningful.
