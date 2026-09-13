@@ -59,6 +59,19 @@ a percentage of a large machine is not.
 It is checked against the running host, because `aos.zram.size` is an
 arithmetic expression the module system cannot evaluate.
 
+## Swap
+
+A ZFS host runs no first-boot repart pass, so the encrypted swap partition that
+pass creates does not exist. Enabling ZFS therefore enables compressed swap in
+RAM, sized at a small share of memory rather than the stock half: reclaim needs
+somewhere to put anonymous pages, not a swap device sized like a disk, and
+zram's capacity is memory the host can still end up spending.
+
+Never place swap on a zvol. Writing a swap page asks ZFS to allocate the memory
+the write exists to reclaim, which deadlocks under exactly the pressure swap is
+meant to relieve. The boot-time verification refuses a host configured that
+way.
+
 ## Declaring datasets
 
 Datasets are declared, then created and converged at boot. A dataset that
