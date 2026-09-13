@@ -572,6 +572,7 @@ impl NetworkNamespaceCatalogV1 {
         &mut self,
         transition: NetworkNamespaceLifecycleTransitionV1,
     ) -> Result<NetworkNamespaceLifecycleOutcomeV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
         let observation = transition.observation;
         let identity = observation.namespace;
         let current = self

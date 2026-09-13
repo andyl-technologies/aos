@@ -41,6 +41,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{CommittedNetworkResultV1, NetworkCatalogBindingV1, ResolvedNetworkPreparationV1};
 
+mod checkpoint;
 mod lifecycle;
 pub(crate) use lifecycle::NetworkNamespaceLifecycleAuthorityV1;
 pub use lifecycle::{
@@ -59,6 +60,10 @@ const RECORD_FORMAT_VERSION: u16 = 1;
 const RESOURCE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.network.namespace-resource.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.network.namespace-transaction.v1\0";
 const MAXIMUM_RECORD_BYTES: usize = 16 * 1024;
+const MAXIMUM_JOURNAL_RECORD_BYTES: usize = 15_729_100;
+const MAXIMUM_JOURNAL_TRANSACTION_BYTES: usize = 16_778_233;
+const MAXIMUM_MATERIALIZED_BYTES: usize = 286_163_970;
+const MAXIMUM_MATERIALIZED_RECORDS: usize = 16_388;
 
 /// Reports protected namespace-catalog validation or publication failure.
 #[derive(Debug, thiserror::Error)]
@@ -152,6 +157,7 @@ pub struct NetworkNamespaceCatalogV1 {
     broker_instance_id: [u8; 16],
     generation: u64,
     records: BTreeMap<[u8; 32], NamespaceRecordV1>,
+    checkpoint_head: Option<checkpoint::InventoryBsaCheckpointHeadV1>,
 }
 
 impl NetworkNamespaceCatalogV1 {
@@ -219,6 +225,9 @@ impl NetworkNamespaceCatalogV1 {
                 }
                 continue;
             }
+            if checkpoint::is_key(key) {
+                continue;
+            }
 
             let handle = decode_record_key(key)?;
             let record = decode_record(value)?;
@@ -227,6 +236,8 @@ impl NetworkNamespaceCatalogV1 {
             }
         }
 
+        let checkpoint_head = checkpoint::recover(&journal)
+            .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
         let generation = match head {
             Some(head) => {
                 let expected = records
@@ -239,7 +250,9 @@ impl NetworkNamespaceCatalogV1 {
                 }
                 head.generation
             }
-            None if records.is_empty() => initialize_head(&mut journal)?,
+            None if records.is_empty() && checkpoint_head.is_none() => {
+                initialize_head(&mut journal)?
+            }
             None => return Err(NetworkNamespaceCatalogError::CorruptRecord),
         };
 
@@ -259,13 +272,29 @@ impl NetworkNamespaceCatalogV1 {
             broker_instance_id,
             generation,
             records,
+            checkpoint_head,
         })
     }
 
-    /// Returns the current protected namespace-catalog generation.
+    /// Returns the cached namespace-catalog generation for diagnostics.
+    ///
+    /// This compatibility accessor does not establish authority after an
+    /// ambiguous journal failure. Authority consumers use
+    /// [`Self::checked_generation`] or another fallible catalog projection.
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Returns the current generation only while the journal remains healthy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkNamespaceCatalogError`] after an ambiguous durable
+    /// mutation has poisoned the catalog journal.
+    pub fn checked_generation(&self) -> Result<u64, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
+        Ok(self.generation)
     }
 
     /// Returns one physically revalidated current namespace identity.
@@ -284,6 +313,7 @@ impl NetworkNamespaceCatalogV1 {
         &self,
         network_handle: [u8; 32],
     ) -> Result<NetworkNamespaceIdentityV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
         let record = self
             .records
             .get(&network_handle)
@@ -322,6 +352,7 @@ impl NetworkNamespaceCatalogV1 {
         &self,
         network_handle: [u8; 32],
     ) -> Result<NetworkNamespaceObservedStateV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
         self.current_namespace_identity(network_handle)?;
         let record = self
             .records
@@ -344,6 +375,7 @@ impl NetworkNamespaceCatalogV1 {
         (NetworkNamespaceIdentityV1, NetworkNamespaceObservedStateV1),
         NetworkNamespaceCatalogError,
     > {
+        self.journal.ensure_healthy()?;
         let identity = self.current_namespace_identity(network_handle)?;
         let record = self
             .records
@@ -372,6 +404,7 @@ impl NetworkNamespaceCatalogV1 {
         assignment: BrokerAssignment,
         preparation: NetworkCatalogBindingV1,
     ) -> Result<NetworkNamespaceLifecycleAuthorityV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
         let identity = self.current_namespace_identity(network_handle)?;
         let record = self
             .records
@@ -408,6 +441,7 @@ impl NetworkNamespaceCatalogV1 {
         &mut self,
         publication: NetworkNamespacePublicationV1,
     ) -> Result<NetworkNamespaceCatalogOutcomeV1, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
         if publication.kernel_boot_id != self.kernel_boot_id {
             return Err(NetworkNamespaceCatalogError::InvalidCandidate);
         }
@@ -475,6 +509,7 @@ impl NetworkNamespaceCatalogV1 {
     /// a current pin changed or is no longer a Network namespace, or the
     /// encoded protobuf violates the bounded authoritative-inventory contract.
     pub fn inventory_resources(&self) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
         validate_record_set(&self.records)?;
         for record in self
             .records
@@ -508,6 +543,7 @@ impl NetworkNamespaceCatalogV1 {
     }
 
     fn commit(&mut self, record: NamespaceRecordV1) -> Result<(), NetworkNamespaceCatalogError> {
+        self.journal.ensure_healthy()?;
         let head = CatalogHeadV1 {
             generation: record.catalog_generation,
         };
@@ -1101,16 +1137,27 @@ fn encode_hex(bytes: &[u8]) -> String {
 const fn namespace_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 512 * 1024 * 1024,
-        maximum_record_bytes: MAXIMUM_RECORD_BYTES,
+        // The largest operation is the 37-byte outcome key, its 15,729,056-byte
+        // value, and the journal record codec's seven bytes of framing.
+        maximum_record_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
         maximum_key_bytes: 128,
-        maximum_records_per_transaction: 2,
-        maximum_transaction_bytes: MAXIMUM_RECORD_BYTES * 2,
+        maximum_records_per_transaction: 3,
+        // Exact encoded sizes of request, outcome, and AOSNIH01 head puts.
+        maximum_transaction_bytes: MAXIMUM_JOURNAL_TRANSACTION_BYTES,
         maximum_transactions: 65_536,
-        maximum_materialized_bytes: MAXIMUM_RECORD_BYTES
-            * (MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS + 1),
-        maximum_materialized_records: MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS + 1,
+        // 16,384 bounded catalog rows, its head, and three owner records,
+        // including every materialized key byte but excluding frame overhead.
+        maximum_materialized_bytes: MAXIMUM_MATERIALIZED_BYTES,
+        maximum_materialized_records: MAXIMUM_MATERIALIZED_RECORDS,
     }
 }
+
+const _: () = assert!(MAXIMUM_RECORD_BYTES == 16_384);
+const _: () = assert!(MAXIMUM_JOURNAL_RECORD_BYTES == 15_729_100);
+const _: () = assert!(MAXIMUM_JOURNAL_TRANSACTION_BYTES == 16_778_233);
+const _: () = assert!(MAXIMUM_MATERIALIZED_BYTES == 286_163_970);
+const _: () =
+    assert!(MAXIMUM_MATERIALIZED_RECORDS == MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS + 4);
 
 #[cfg(test)]
 mod tests {
