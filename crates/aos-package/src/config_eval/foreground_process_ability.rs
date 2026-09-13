@@ -6,6 +6,10 @@
 //! identity after the spawn. Recovery may adopt one matching process in the
 //! same user, namespace, and cgroup confinement; zero matches are safe to
 //! retry, while multiple or foreign matches require intervention.
+//! The initial argument vector is qualified before the durable identity is
+//! recorded. Later observations permit that exact process to rewrite its
+//! display title while retaining its boot, PID, start time, executable,
+//! ownership token, and confinement.
 //!
 //! ```json
 //! {"schema":"aos.ability.foreground-process-request/v1","action":"start","resource":{"provider":"example","key":"service"},"revision":"sha256:<digest>","artifact":{"content":"sha256:<digest>","store_path":"/nix/store/<artifact>","nar_hash":"sha256:<digest>","closure":"sha256:<digest>"},"entry_point":"bin/nginx","arguments":["-g","daemon off;"]}
@@ -268,7 +272,8 @@ impl ForegroundProcessSupervisor {
         // that PID for another group while the leader exists. The pidfd pins
         // the exact leader identity; the post-open read proves it is still the
         // authenticated live leader immediately before the group signal.
-        if ProcessIdentity::read(identity.pid, &command, &confinement, &token)? != identity {
+        if ProcessIdentity::read_retained(identity.pid, &command, &confinement, &token)? != identity
+        {
             return Err(invalid(
                 "foreground process identity changed before termination",
             ));
@@ -934,25 +939,46 @@ struct ProcessIdentity {
 }
 
 impl ProcessIdentity {
+    fn read_qualified(
+        pid: u32,
+        command: &QualifiedCommand,
+        confinement: &Confinement,
+        token: &str,
+    ) -> Result<Self, io::Error> {
+        Self::read(pid, command, confinement, token, true)
+    }
+
+    fn read_retained(
+        pid: u32,
+        command: &QualifiedCommand,
+        confinement: &Confinement,
+        token: &str,
+    ) -> Result<Self, io::Error> {
+        Self::read(pid, command, confinement, token, false)
+    }
+
     fn read(
         pid: u32,
         command: &QualifiedCommand,
         confinement: &Confinement,
         token: &str,
+        verify_arguments: bool,
     ) -> Result<Self, io::Error> {
         let prefix = PathBuf::from("/proc").join(pid.to_string());
         let actual_executable = fs::canonicalize(prefix.join("exe"))?;
         if actual_executable != command.observed_executable {
             return Err(invalid("foreground executable differs after spawn"));
         }
-        let cmdline = read_nul_fields(&prefix.join("cmdline"), 512 * 1024)?;
-        let expected = std::iter::once(command.executable.to_string_lossy().into_owned())
-            .chain(command.arguments.iter().cloned())
-            .collect::<Vec<_>>();
-        if cmdline != expected {
-            return Err(invalid(format!(
-                "foreground argument vector differs after spawn: expected {expected:?}, observed {cmdline:?}"
-            )));
+        if verify_arguments {
+            let cmdline = read_nul_fields(&prefix.join("cmdline"), 512 * 1024)?;
+            let expected = std::iter::once(command.executable.to_string_lossy().into_owned())
+                .chain(command.arguments.iter().cloned())
+                .collect::<Vec<_>>();
+            if cmdline != expected {
+                return Err(invalid(format!(
+                    "foreground argument vector differs after spawn: expected {expected:?}, observed {cmdline:?}"
+                )));
+            }
         }
         if Confinement::for_process(pid)? != *confinement {
             return Err(invalid("foreground process escaped executor confinement"));
@@ -1031,6 +1057,11 @@ enum LocatedProcess {
     Many,
 }
 
+fn process_disappeared(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound
+        || error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error())
+}
+
 fn locate_owned_process(
     command: &QualifiedCommand,
     confinement: &Confinement,
@@ -1042,12 +1073,22 @@ fn locate_owned_process(
     let retained_pid = if let Some(identity) = retained
         && identity.still_exists()
     {
-        let observed = ProcessIdentity::read(identity.pid, command, confinement, token)?;
-        claimed_groups.insert(observed.process_group);
-        if observed.pid == observed.process_group {
-            groups.insert(observed.process_group, observed);
+        // The exact PID was qualified before it was persisted. Programs such
+        // as nginx may subsequently rewrite argv to expose a process title.
+        match ProcessIdentity::read_retained(identity.pid, command, confinement, token) {
+            Ok(observed) => {
+                if observed != *identity {
+                    return Err(invalid("retained foreground process identity changed"));
+                }
+                claimed_groups.insert(observed.process_group);
+                if observed.pid == observed.process_group {
+                    groups.insert(observed.process_group, observed);
+                }
+                Some(identity.pid)
+            }
+            Err(error) if process_disappeared(&error) => None,
+            Err(error) => return Err(error),
         }
-        Some(identity.pid)
     } else {
         None
     };
@@ -1078,7 +1119,7 @@ fn locate_owned_process(
             }
             Err(error) => return Err(error),
         }
-        match ProcessIdentity::read(pid, command, confinement, token) {
+        match ProcessIdentity::read_qualified(pid, command, confinement, token) {
             Ok(identity) if identity.pid == identity.process_group => {
                 groups.insert(identity.process_group, identity);
             }
@@ -1140,7 +1181,7 @@ fn qualify_spawned_child(
         .checked_add(Duration::from_millis(250))
         .ok_or_else(|| invalid("foreground qualification deadline overflowed"))?;
     loop {
-        match ProcessIdentity::read(child.id(), command, confinement, token) {
+        match ProcessIdentity::read_qualified(child.id(), command, confinement, token) {
             Ok(identity) => return Ok(identity),
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                 if child.try_wait()?.is_some() || Instant::now() >= deadline {
@@ -1696,6 +1737,40 @@ mod tests {
             .supervisor
             .stop(&spec, &TestControl)
             .expect("foreground process stops during cleanup");
+    }
+
+    #[test]
+    fn retained_identity_allows_an_owned_process_title() {
+        let spec = sleep_spec("retained-process-title");
+        let command = QualifiedCommand::new(&spec).expect("command is qualified");
+        let confinement = Confinement::current().expect("current confinement is readable");
+        let token = ownership_token(&spec, &confinement).expect("ownership token is encodable");
+        let mut child = Command::new(&command.executable)
+            .arg0("sleep: retained foreground process")
+            .args(&command.arguments)
+            .env_clear()
+            .env(OWNERSHIP_ENVIRONMENT, &token)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("titled process starts");
+        let identity = ProcessIdentity::read_retained(child.id(), &command, &confinement, &token)
+            .expect("retained identity ignores the display title");
+        let error = ProcessIdentity::read_qualified(child.id(), &command, &confinement, &token)
+            .expect_err("initial qualification still requires the exact argument vector");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let LocatedProcess::One(observed) =
+            locate_owned_process(&command, &confinement, &token, Some(&identity))
+                .expect("retained titled process remains observable")
+        else {
+            panic!("retained titled process must remain uniquely owned")
+        };
+        assert_eq!(observed, identity);
+
+        terminate_child(&mut child);
     }
 
     #[test]
