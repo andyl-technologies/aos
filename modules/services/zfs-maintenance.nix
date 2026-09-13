@@ -60,6 +60,20 @@
       echo "$errors" >&2
       exit 1
     fi
+
+    # An unpinned pool enables every feature of whichever release last touched
+    # it. On an A/B image that silently removes the rollback slot's ability to
+    # import the pool, which is the one thing rollback exists to preserve.
+    # Nothing here ever runs `zpool upgrade`; enabling a feature is an operator
+    # decision made once every slot can read it.
+    compatibility=$(zpool get -H -o value compatibility ${lib.escapeShellArg pool} 2>/dev/null || echo off)
+    case "$compatibility" in
+      off|"-"|"")
+        echo "aos-zfs-health: pool ${pool} pins no feature set (compatibility=$compatibility);" \
+          "an older image slot may be unable to import it after a rollback" >&2
+        exit 1
+        ;;
+    esac
   '';
 
   # Prometheus textfile format. Every series here is a leading indicator: they
@@ -491,6 +505,20 @@ in {
                 assert series in metrics, f"{series} missing from ${cfg.metrics.path}"
           '';
         }
+        ++ [
+          {
+            name = "zfs-pool-features-pinned";
+            description = "The pool pins a feature set so an older slot can still import it";
+            script = ''
+              compatibility = vm.succeed(
+                  "zpool get -H -o value compatibility ${pool}"
+              ).strip()
+              assert compatibility not in ("off", "-", ""), (
+                  f"pool feature set is unpinned: {compatibility}"
+              )
+            '';
+          }
+        ]
         ++ lib.optional cfg.scrub.enable {
           name = "zfs-scrub-scheduled";
           description = "Scrubs are scheduled so latent corruption is found by ZFS";

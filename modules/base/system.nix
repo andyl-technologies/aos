@@ -66,6 +66,30 @@
         type = lib.types.listOf checkType;
         description = "Flat list of checks run inside one VM.";
       };
+      extraDisks = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule {
+          options.sizeMiB = lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            description = "Size of the blank device presented to the guest.";
+          };
+        });
+        default = [];
+        description = ''
+          Additional blank block devices attached to the VM, appearing as
+          /dev/vdb onward in declaration order. Storage checks need real
+          devices to build a pool or array on, which the root disk cannot
+          provide.
+        '';
+      };
+      memoryMiB = lib.mkOption {
+        type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+        default = null;
+        description = ''
+          Guest memory for this check group. Null takes the harness default.
+          Checks that exercise memory policy need enough RAM for the
+          proportional caps to leave a usable budget.
+        '';
+      };
     };
   });
 in {

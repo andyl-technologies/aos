@@ -396,14 +396,16 @@ in {
     # system package's sbin entries.
     environment.systemPackages = [cfg.package];
 
-    aos.filesystems.zfs.datasets = {
+    # The system-state datasets exist only when the pool is what carries
+    # /var; a pool declared purely for data leaves the image's own /var alone.
+    aos.filesystems.zfs.datasets = lib.mkIf cfg.systemState {
       "var" = {
         mountPoint = "/var";
       };
       "var/log" = {
         mountPoint = "/var/log";
         # Logs are append-heavy and latency-tolerant, and a runaway logger must
-        # not be able to consume the pool that the rest of the system needs.
+        # not be able to consume the pool the rest of the system needs.
         extraProperties.logbias = "throughput";
         quota = lib.mkDefault "8G";
       };
