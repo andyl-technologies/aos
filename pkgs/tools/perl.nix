@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  binutils,
   # Explicit toolchain inputs needed for the postInstall Config scrub.
   # `cc` is the wrapped cc (aos-cc-wrapper); `gcc` is the wrapped
   # gcc-16.2.0-wrapped; `gccUnwrapped` is the bare gcc-16.2.0-stage2
@@ -26,6 +27,7 @@
     if stdenv.hostPlatform.isAarch64
     then "8"
     else "16";
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   # Native Perl records the public GCC package set, while Darwin Perl is
   # compiled by the bootstrap cross wrapper in stdenv. Referencing public
   # pkgs.gcc/cc from a cross output check would add the final Canadian-cross
@@ -47,7 +49,7 @@
   # completed with target Perl later, so recording that public package here
   # would introduce an interpreter/libc dependency cycle.
   recordedLibc =
-    if stdenv.isCross && stdenv.hostPlatform.isLinux
+    if isLinuxCross
     then stdenv.glibc
     else glibc;
   perlCrossVersion = "1.6.4";
@@ -322,6 +324,26 @@ in
             # .packlist records build-time install paths — drop it.
             rm -f "$out"/lib/perl5/*/*/.packlist
           ''
+          + (
+            if isLinuxCross
+            then ''
+              # Hosted development metadata must name the exported target GCC.
+              # Retaining the scheduler-native construction compiler would
+              # cross the toolchain boundary and make the closure unusable on
+              # its target host.
+              sed -i \
+                -e "s|${stdenv.gcc}|${recordedGccUnwrapped}|g" \
+                -e "s|${stdenv.cc}|${recordedCc}|g" \
+                -e "s|${stdenv.binutils}|${binutils}|g" \
+                "$dev"/lib/perl5/*/*/Config.pm \
+                "$dev"/lib/perl5/*/*/Config_heavy.pl
+
+              sed -i "s|${stdenv.gcc}|/no-such-path|g" \
+                "$out"/lib/perl5/*/*/Config.pm \
+                "$out"/lib/perl5/*/*/Config_heavy.pl
+            ''
+            else ""
+          )
           + (
             if isDarwin
             then ''
