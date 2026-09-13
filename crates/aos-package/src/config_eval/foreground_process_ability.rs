@@ -6,10 +6,10 @@
 //! identity after the spawn. Recovery may adopt one matching process in the
 //! same user, namespace, and cgroup confinement; zero matches are safe to
 //! retry, while multiple or foreign matches require intervention.
-//! The initial argument vector is qualified before the durable identity is
-//! recorded. Later observations permit that exact process to rewrite its
-//! display title while retaining its boot, PID, start time, executable,
-//! ownership token, and confinement.
+//! The initial argument vector and ownership token are qualified before the
+//! durable identity is recorded. Later observations permit that exact process
+//! to rewrite its display title or environment while retaining its boot, PID,
+//! start time, executable, process group, session, and confinement.
 //!
 //! ```json
 //! {"schema":"aos.ability.foreground-process-request/v1","action":"start","resource":{"provider":"example","key":"service"},"revision":"sha256:<digest>","artifact":{"content":"sha256:<digest>","store_path":"/nix/store/<artifact>","nar_hash":"sha256:<digest>","closure":"sha256:<digest>"},"entry_point":"bin/nginx","arguments":["-g","daemon off;"]}
@@ -272,8 +272,7 @@ impl ForegroundProcessSupervisor {
         // that PID for another group while the leader exists. The pidfd pins
         // the exact leader identity; the post-open read proves it is still the
         // authenticated live leader immediately before the group signal.
-        if ProcessIdentity::read_retained(identity.pid, &command, &confinement, &token)? != identity
-        {
+        if ProcessIdentity::read_retained(identity.pid, &command, &confinement)? != identity {
             return Err(invalid(
                 "foreground process identity changed before termination",
             ));
@@ -945,23 +944,22 @@ impl ProcessIdentity {
         confinement: &Confinement,
         token: &str,
     ) -> Result<Self, io::Error> {
-        Self::read(pid, command, confinement, token, true)
+        Self::read(pid, command, confinement, Some(token), true)
     }
 
     fn read_retained(
         pid: u32,
         command: &QualifiedCommand,
         confinement: &Confinement,
-        token: &str,
     ) -> Result<Self, io::Error> {
-        Self::read(pid, command, confinement, token, false)
+        Self::read(pid, command, confinement, None, false)
     }
 
     fn read(
         pid: u32,
         command: &QualifiedCommand,
         confinement: &Confinement,
-        token: &str,
+        required_token: Option<&str>,
         verify_arguments: bool,
     ) -> Result<Self, io::Error> {
         let prefix = PathBuf::from("/proc").join(pid.to_string());
@@ -983,12 +981,14 @@ impl ProcessIdentity {
         if Confinement::for_process(pid)? != *confinement {
             return Err(invalid("foreground process escaped executor confinement"));
         }
-        let environment = read_nul_fields(&prefix.join("environ"), 512 * 1024)?;
-        if !environment
-            .iter()
-            .any(|entry| entry == &format!("{OWNERSHIP_ENVIRONMENT}={token}"))
-        {
-            return Err(invalid("foreground process lacks its ownership token"));
+        if let Some(token) = required_token {
+            let environment = read_nul_fields(&prefix.join("environ"), 512 * 1024)?;
+            if !environment
+                .iter()
+                .any(|entry| entry == &format!("{OWNERSHIP_ENVIRONMENT}={token}"))
+            {
+                return Err(invalid("foreground process lacks its ownership token"));
+            }
         }
         let stat = read_bounded(prefix.join("stat"), 16 * 1024)?;
         let (_, process_group, session, start_time) = parse_stat(&stat)?;
@@ -1073,9 +1073,10 @@ fn locate_owned_process(
     let retained_pid = if let Some(identity) = retained
         && identity.still_exists()
     {
-        // The exact PID was qualified before it was persisted. Programs such
-        // as nginx may subsequently rewrite argv to expose a process title.
-        match ProcessIdentity::read_retained(identity.pid, command, confinement, token) {
+        // The exact PID and token were qualified before this identity was
+        // persisted. Programs such as nginx may subsequently replace argv and
+        // their inherited environment while retaining the stable identity.
+        match ProcessIdentity::read_retained(identity.pid, command, confinement) {
             Ok(observed) => {
                 if observed != *identity {
                     return Err(invalid("retained foreground process identity changed"));
@@ -1740,21 +1741,27 @@ mod tests {
     }
 
     #[test]
-    fn retained_identity_allows_an_owned_process_title() {
+    fn retained_identity_allows_owned_process_metadata_changes() {
         let sleep = find_executable("sleep");
+        let bash = find_executable("bash");
         let spec = executable_spec(
-            "retained-process-title",
+            "retained-process-metadata",
             "bash",
             vec![
                 "-c".to_string(),
-                format!("{} 30; printf %s ''", sleep.display()),
+                format!(
+                    "{} 1; unset {}; exec -a 'nginx: master process' {} -c \"{} 30; printf %s ''\"",
+                    sleep.display(),
+                    OWNERSHIP_ENVIRONMENT,
+                    bash.display(),
+                    sleep.display()
+                ),
             ],
         );
         let command = QualifiedCommand::new(&spec).expect("command is qualified");
         let confinement = Confinement::current().expect("current confinement is readable");
         let token = ownership_token(&spec, &confinement).expect("ownership token is encodable");
         let mut child = Command::new(&command.executable)
-            .arg0("sleep: retained foreground process")
             .args(&command.arguments)
             .env_clear()
             .env(OWNERSHIP_ENVIRONMENT, &token)
@@ -1763,18 +1770,24 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("titled process starts");
-        let identity = ProcessIdentity::read_retained(child.id(), &command, &confinement, &token)
-            .expect("retained identity ignores the display title");
+            .expect("mutable process starts");
+        let identity = qualify_spawned_child(&mut child, &command, &confinement, &token)
+            .expect("initial process metadata is qualified");
+
+        thread::sleep(Duration::from_millis(1_250));
+
+        let observed = ProcessIdentity::read_retained(child.id(), &command, &confinement)
+            .expect("retained identity ignores mutable process metadata");
+        assert_eq!(observed, identity);
         let error = ProcessIdentity::read_qualified(child.id(), &command, &confinement, &token)
-            .expect_err("initial qualification still requires the exact argument vector");
+            .expect_err("initial qualification still requires exact mutable metadata");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 
         let LocatedProcess::One(observed) =
             locate_owned_process(&command, &confinement, &token, Some(&identity))
-                .expect("retained titled process remains observable")
+                .expect("retained mutable process remains observable")
         else {
-            panic!("retained titled process must remain uniquely owned")
+            panic!("retained mutable process must remain uniquely owned")
         };
         assert_eq!(observed, identity);
 
