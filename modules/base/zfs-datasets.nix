@@ -205,6 +205,68 @@
 
   mountedDatasets = builtins.filter (name: cfg.datasets.${name}.mountPoint != null) orderedNames;
 
+  # Any mounted dataset serves to prove that realization corrects drift and
+  # that the filesystem stores what is written to it.
+  driftProbeName =
+    if mountedDatasets == []
+    then null
+    else builtins.head mountedDatasets;
+  driftProbeDataset =
+    lib.optionalString (driftProbeName != null) "${pool}/${driftProbeName}";
+  driftProbeMountPoint =
+    lib.optionalString (driftProbeName != null) cfg.datasets.${driftProbeName}.mountPoint;
+  driftProbeCompression =
+    lib.optionalString (driftProbeName != null) cfg.datasets.${driftProbeName}.compression;
+
+  # A quota is only testable if a check can fill the dataset quickly. Parse the
+  # declared sizes and use the smallest, and only when it is small enough that
+  # filling it is a few seconds of writing rather than gigabytes.
+  quotaSuffixMultipliers = {
+    K = 1024;
+    M = 1048576;
+    G = 1073741824;
+    T = 1099511627776;
+    P = 1125899906842624;
+  };
+  quotaBytes = quota: let
+    digits = builtins.head (builtins.match "([0-9]+)[KMGTP]?" quota);
+    suffix = builtins.match "[0-9]+([KMGTP])" quota;
+  in
+    lib.toInt digits
+    * (
+      if suffix == null
+      then 1
+      else quotaSuffixMultipliers.${builtins.head suffix}
+    );
+
+  quotaProbeLimit = 64 * 1048576;
+  quotaProbeCandidates =
+    builtins.filter (
+      name:
+        cfg.datasets.${name}.quota
+        != null
+        && quotaBytes cfg.datasets.${name}.quota <= quotaProbeLimit
+    )
+    mountedDatasets;
+  quotaProbeName =
+    if quotaProbeCandidates == []
+    then null
+    else
+      builtins.head (
+        lib.sort (
+          left: right:
+            quotaBytes cfg.datasets.${left}.quota < quotaBytes cfg.datasets.${right}.quota
+        )
+        quotaProbeCandidates
+      );
+
+  quotaProbeMountPoint =
+    lib.optionalString (quotaProbeName != null) cfg.datasets.${quotaProbeName}.mountPoint;
+  quotaProbeLimitBytes =
+    if quotaProbeName == null
+    then 0
+    else quotaBytes cfg.datasets.${quotaProbeName}.quota;
+
   datasetsWithLargeRecords =
     builtins.filter (name: lib.elem cfg.datasets.${name}.recordSize largeRecordSizes) datasetNames;
   datasetsWithDeduplication =
@@ -460,73 +522,147 @@ in {
 
     system.checks.zfs-datasets = {
       description = "Declared ZFS dataset checks";
-      checks = [
-        {
-          name = "zfs-datasets-realized";
-          description = "Every declared dataset exists with its declared properties";
-          script = ''
-            vm.wait_for_unit("aos-zfs-datasets.service")
-            ${lib.concatMapStringsSep "\n" (name: ''
-                vm.succeed("zfs list -H -o name ${pool}/${name}")
-                recordsize = vm.succeed(
-                    "zfs get -H -o value recordsize ${pool}/${name}"
-                ).strip()
-                assert recordsize == "${cfg.datasets.${name}.recordSize}", (
-                    f"${name} recordsize is {recordsize}"
-                )
-              '')
-              orderedNames}
-          '';
-        }
-        {
-          name = "zfs-datasets-mounted";
-          description = "Declared datasets are mounted at their declared mount points";
-          script = ''
-            mounts = vm.succeed("cat /proc/mounts")
-            ${lib.concatMapStringsSep "\n" (name: ''
-                assert "${pool}/${name} ${cfg.datasets.${name}.mountPoint} zfs" in mounts, (
-                    "${pool}/${name} is not mounted at ${cfg.datasets.${name}.mountPoint}"
-                )
-              '')
-              mountedDatasets}
-          '';
-        }
-        {
-          name = "zfs-records-bounded";
-          description = "No dataset writes records larger than the fragmentation-safe size";
-          # Restricted to filesystems: zvols carry a volume block size and
-          # report "-" for recordsize, which is not an oversized record.
-          script =
-            if cfg.allowLargeRecords
-            then ''
-              # This host opted into large records, so the size is a deliberate
-              # choice rather than something to assert against.
-              vm.succeed("zfs get -H -o value -r -t filesystem recordsize ${pool}")
-            ''
-            else ''
-              sizes = vm.succeed(
-                  "zfs get -H -o value -r -t filesystem recordsize ${pool}"
-              ).split()
-              oversized = [s for s in sizes if s not in ${builtins.toJSON smallRecordSizes}]
-              assert not oversized, f"oversized record sizes: {oversized}"
+      checks =
+        [
+          {
+            name = "zfs-datasets-realized";
+            description = "Every declared dataset exists with its declared properties";
+            script = ''
+              vm.wait_for_unit("aos-zfs-datasets.service")
+              ${lib.concatMapStringsSep "\n" (name: ''
+                  vm.succeed("zfs list -H -o name ${pool}/${name}")
+                  recordsize = vm.succeed(
+                      "zfs get -H -o value recordsize ${pool}/${name}"
+                  ).strip()
+                  assert recordsize == "${cfg.datasets.${name}.recordSize}", (
+                      f"${name} recordsize is {recordsize}"
+                  )
+                '')
+                orderedNames}
             '';
-        }
-        {
-          name = "zfs-reserved-space";
-          description = "The pool holds a reservation that keeps a full pool recoverable";
-          script =
-            if cfg.reservedSpace.enable
-            then ''
-              reservation = vm.succeed(
-                  "zfs get -H -o value refreservation ${pool}/${cfg.reservedSpace.dataset}"
+          }
+          {
+            name = "zfs-datasets-mounted";
+            description = "Declared datasets are mounted at their declared mount points";
+            script = ''
+              mounts = vm.succeed("cat /proc/mounts")
+              ${lib.concatMapStringsSep "\n" (name: ''
+                  assert "${pool}/${name} ${cfg.datasets.${name}.mountPoint} zfs" in mounts, (
+                      "${pool}/${name} is not mounted at ${cfg.datasets.${name}.mountPoint}"
+                  )
+                '')
+                mountedDatasets}
+            '';
+          }
+          {
+            name = "zfs-records-bounded";
+            description = "No dataset writes records larger than the fragmentation-safe size";
+            # Restricted to filesystems: zvols carry a volume block size and
+            # report "-" for recordsize, which is not an oversized record.
+            script =
+              if cfg.allowLargeRecords
+              then ''
+                # This host opted into large records, so the size is a deliberate
+                # choice rather than something to assert against.
+                vm.succeed("zfs get -H -o value -r -t filesystem recordsize ${pool}")
+              ''
+              else ''
+                sizes = vm.succeed(
+                    "zfs get -H -o value -r -t filesystem recordsize ${pool}"
+                ).split()
+                oversized = [s for s in sizes if s not in ${builtins.toJSON smallRecordSizes}]
+                assert not oversized, f"oversized record sizes: {oversized}"
+              '';
+          }
+          {
+            name = "zfs-datasets-carry-data";
+            description = "A declared dataset stores and returns file contents";
+            script = ''
+              probe = "${driftProbeMountPoint}/checksum-probe"
+              vm.succeed(
+                  f"head -c 1048576 /dev/urandom > {probe}",
+                  f"cp {probe} {probe}.copy",
+                  f"cmp {probe} {probe}.copy",
+                  f"rm -f {probe} {probe}.copy",
+              )
+            '';
+          }
+          {
+            name = "zfs-property-drift-corrected";
+            description = "Realization corrects a property changed outside configuration";
+            script = ''
+              vm.succeed("zfs set compression=off ${driftProbeDataset}")
+              assert vm.succeed(
+                  "zfs get -H -o value compression ${driftProbeDataset}"
+              ).strip() == "off"
+
+              vm.succeed("systemctl restart aos-zfs-datasets.service")
+
+              corrected = vm.succeed(
+                  "zfs get -H -o value compression ${driftProbeDataset}"
               ).strip()
-              assert reservation != "none", "reservation dataset holds no reservation"
-            ''
-            else ''
-              pass
+              assert corrected == "${driftProbeCompression}", (
+                  f"drifted property was not corrected: {corrected}"
+              )
             '';
+          }
+          {
+            name = "zfs-undeclared-dataset-reported";
+            description = "A dataset no configuration declares is reported as drift";
+            script = ''
+              vm.succeed("systemctl restart aos-zfs-report-undeclared.service")
+
+              vm.succeed("zfs create -o mountpoint=none ${pool}/undeclared")
+              vm.fail("systemctl restart aos-zfs-report-undeclared.service")
+              journal = vm.succeed(
+                  "journalctl -u aos-zfs-report-undeclared.service --no-pager | tail -20"
+              )
+              assert "${pool}/undeclared" in journal, journal
+
+              vm.succeed("zfs destroy ${pool}/undeclared")
+              vm.succeed("systemctl restart aos-zfs-report-undeclared.service")
+            '';
+          }
+        ]
+        ++ lib.optional (quotaProbeName != null) {
+          name = "zfs-quota-stops-writes";
+          description = "A dataset quota stops a runaway write instead of filling the pool";
+          # Incompressible input, so the quota rather than compression is what
+          # ends the write.
+          script = ''
+            target = "${quotaProbeMountPoint}/overflow"
+            vm.fail(f"head -c ${toString (2 * quotaProbeLimitBytes)} /dev/urandom > {target}")
+
+            used = int(vm.succeed(
+                "zfs get -H -p -o value used ${pool}/${quotaProbeName}"
+            ).strip())
+            assert used <= ${toString quotaProbeLimitBytes}, (
+                f"the quota let the dataset reach {used} bytes"
+            )
+
+            vm.succeed(f"rm -f {target}")
+            # A quota is a local limit; the rest of the pool stays writable.
+            vm.succeed("head -c 1024 /dev/urandom > ${driftProbeMountPoint}/after-quota")
+            vm.succeed("rm -f ${driftProbeMountPoint}/after-quota")
+          '';
         }
-      ];
+        ++ [
+          {
+            name = "zfs-reserved-space";
+            description = "The pool holds a reservation that keeps a full pool recoverable";
+            script =
+              if cfg.reservedSpace.enable
+              then ''
+                reservation = vm.succeed(
+                    "zfs get -H -o value refreservation ${pool}/${cfg.reservedSpace.dataset}"
+                ).strip()
+                assert reservation != "none", "reservation dataset holds no reservation"
+              ''
+              else ''
+                pass
+              '';
+          }
+        ];
     };
   };
 }
