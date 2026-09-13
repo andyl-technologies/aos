@@ -7910,6 +7910,17 @@ mutation, execution change, entropy failure, or checked-counter exhaustion
 permanently poisons the object. Secret state is zeroizing and Debug/errors
 redact paths, seeds, contents, and digests.
 
+The crate now privately retains one self pidfd. Capture and every custody-output
+recheck sandwich pidfd information and pidfd-bound process identity between
+current boot/PID/effective-credential observations, require liveness, a
+thread-group leader, nonzero cgroup-v2 identity, all eight credentials, and
+stable start time. After capture the guard never creates or replaces its
+retained pidfd from the numeric PID; numeric `/proc/PID/stat` is opened only by
+the pidfd-bound identity observation inside the retained-pidfd information and
+liveness sandwich. PPID is required stable inside an observation but is the
+sole field excluded from cross-call baseline comparison. The random
+process-execution ID remains a separate opaque value.
+
 The only public outputs are a current manifest binding, opaque random nonzero
 process-execution ID, and opaque role-specific fresh hello nonce. Blocking
 Rustix `getrandom(2)` acquisition handles partial fills, bounded `EINTR`, zero
@@ -7923,7 +7934,7 @@ permit, or effect path changes. Linux peer publication and binding, external
 rollback floors, protected deployment, signing finalizers and sealed plans,
 authenticated transport and allocation, atomic request/result companions, all
 Host/Storage/Mount/Network/controller integrations, MAC, readiness, Nix, and VM
-qualification remain open. Cross-process flock contention, post-fork
-continuation rejection, and cross-UID ownership validation specifically remain
-VM gates. Accordingly `SBX-BPROTO-04`, `SBX-BPROTO-05`, and `SBX-P0-10` remain
-unchecked.
+qualification remain open. Real fork continuation, cgroup/procfs mutation,
+cross-process flock contention, cross-UID ownership, and MAC policy validation
+specifically remain VM and `SBX-P0-10` gates. Accordingly `SBX-BPROTO-04`,
+`SBX-BPROTO-05`, and `SBX-P0-10` remain unchecked.

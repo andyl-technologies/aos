@@ -2,6 +2,7 @@
 
 const CRATE_MANIFEST: &str = include_str!("../Cargo.toml");
 const ENDPOINT_SOURCE: &str = include_str!("../src/endpoint.rs");
+const LIBRARY_SOURCE: &str = include_str!("../src/lib.rs");
 
 #[test]
 fn dependency_boundary_has_no_forbidden_convenience_layer() {
@@ -40,6 +41,9 @@ fn endpoint_surface_exposes_no_signer_or_scalar_escape_hatch() {
             "forbidden public API marker: {forbidden}"
         );
     }
+
+    assert!(!LIBRARY_SOURCE.contains("pub mod self_execution"));
+    assert!(!LIBRARY_SOURCE.contains("pub use self_execution"));
 }
 
 #[test]

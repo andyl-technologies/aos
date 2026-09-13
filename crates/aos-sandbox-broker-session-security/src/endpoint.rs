@@ -7,13 +7,13 @@
 
 use std::path::Path;
 
-use aos_sandbox_linux::boot::KernelBootId;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::BrokerSessionSecurityError;
 use crate::entropy::{EntropySource, KernelEntropy, nonzero_random};
 use crate::manifest::BrokerSessionManifestBindingV1;
 use crate::protected_files::{EndpointRole, ProtectedEndpointFiles};
+use crate::self_execution::{CurrentSelfExecutionGuard, RetainedSelfExecutionGuard};
 
 /// Identifies one protected endpoint process execution without granting authority.
 ///
@@ -101,32 +101,25 @@ impl FreshNonce {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct ExecutionSnapshot {
-    process_id: i32,
-    boot_id: [u8; 16],
+enum EndpointExecution {
+    Retained(RetainedSelfExecutionGuard),
+    #[cfg(test)]
+    Scripted(Box<dyn CurrentSelfExecutionGuard>),
 }
 
-trait ExecutionObserver {
-    fn current(&mut self) -> Result<ExecutionSnapshot, BrokerSessionSecurityError>;
-}
-
-struct KernelExecutionObserver;
-
-impl ExecutionObserver for KernelExecutionObserver {
-    fn current(&mut self) -> Result<ExecutionSnapshot, BrokerSessionSecurityError> {
-        Ok(ExecutionSnapshot {
-            process_id: rustix::process::getpid().as_raw_nonzero().get(),
-            boot_id: KernelBootId::current()
-                .map_err(|_| BrokerSessionSecurityError::ExecutionChanged)?
-                .into_bytes(),
-        })
+impl CurrentSelfExecutionGuard for EndpointExecution {
+    fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+        match self {
+            Self::Retained(guard) => guard.validate_current(),
+            #[cfg(test)]
+            Self::Scripted(guard) => guard.validate_current(),
+        }
     }
 }
 
 struct ProtectedEndpointV1 {
     files: ProtectedEndpointFiles,
-    execution: ExecutionSnapshot,
+    execution: EndpointExecution,
     process_execution_id: [u8; 16],
     next_nonce_counter: Option<u64>,
     poisoned: bool,
@@ -134,22 +127,20 @@ struct ProtectedEndpointV1 {
 
 impl ProtectedEndpointV1 {
     fn load(path: &Path, role: EndpointRole) -> Result<Self, BrokerSessionSecurityError> {
-        Self::load_with(path, role, &mut KernelEntropy, &mut KernelExecutionObserver)
+        let execution = EndpointExecution::Retained(RetainedSelfExecutionGuard::capture()?);
+        Self::load_with_execution(path, role, &mut KernelEntropy, execution)
     }
 
-    fn load_with<Entropy: EntropySource, Execution: ExecutionObserver>(
+    fn load_with_execution<Entropy: EntropySource>(
         path: &Path,
         role: EndpointRole,
         entropy: &mut Entropy,
-        execution_observer: &mut Execution,
+        execution: EndpointExecution,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        let execution = execution_observer.current()?;
         let files = ProtectedEndpointFiles::load(path, role)?;
         let process_execution_id = nonzero_random(entropy)?;
         files.revalidate()?;
-        if execution_observer.current()? != execution {
-            return Err(BrokerSessionSecurityError::ExecutionChanged);
-        }
+        execution.validate_current()?;
 
         Ok(Self {
             files,
@@ -158,6 +149,25 @@ impl ProtectedEndpointV1 {
             next_nonce_counter: Some(1),
             poisoned: false,
         })
+    }
+
+    #[cfg(test)]
+    fn load_with_guard<Entropy, Execution>(
+        path: &Path,
+        role: EndpointRole,
+        entropy: &mut Entropy,
+        execution: Execution,
+    ) -> Result<Self, BrokerSessionSecurityError>
+    where
+        Entropy: EntropySource,
+        Execution: CurrentSelfExecutionGuard + 'static,
+    {
+        Self::load_with_execution(
+            path,
+            role,
+            entropy,
+            EndpointExecution::Scripted(Box::new(execution)),
+        )
     }
 
     fn manifest_binding(
@@ -178,12 +188,11 @@ impl ProtectedEndpointV1 {
         Ok(output)
     }
 
-    fn fresh_nonce<Entropy: EntropySource, Execution: ExecutionObserver>(
+    fn fresh_nonce<Entropy: EntropySource>(
         &mut self,
         entropy: &mut Entropy,
-        execution_observer: &mut Execution,
     ) -> Result<FreshNonce, BrokerSessionSecurityError> {
-        self.revalidate_before_with(execution_observer)?;
+        self.revalidate_before()?;
         let counter = match self.next_nonce_counter {
             Some(counter) => counter,
             None => {
@@ -205,52 +214,34 @@ impl ProtectedEndpointV1 {
             manifest_binding: *binding.as_bytes(),
             counter,
         };
-        self.revalidate_after_with(execution_observer)?;
+        self.revalidate_after()?;
         self.next_nonce_counter = counter.checked_add(1);
         Ok(output)
     }
 
     fn revalidate_before(&mut self) -> Result<(), BrokerSessionSecurityError> {
-        self.revalidate_before_with(&mut KernelExecutionObserver)
-    }
-
-    fn revalidate_after(&mut self) -> Result<(), BrokerSessionSecurityError> {
-        self.revalidate_after_with(&mut KernelExecutionObserver)
-    }
-
-    fn revalidate_before_with<Execution: ExecutionObserver>(
-        &mut self,
-        observer: &mut Execution,
-    ) -> Result<(), BrokerSessionSecurityError> {
         if self.poisoned {
             return Err(BrokerSessionSecurityError::Poisoned);
         }
-        if let Err(error) = self.check_current(observer) {
+        if let Err(error) = self.check_current() {
             self.poisoned = true;
             return Err(error);
         }
         Ok(())
     }
 
-    fn revalidate_after_with<Execution: ExecutionObserver>(
-        &mut self,
-        observer: &mut Execution,
-    ) -> Result<(), BrokerSessionSecurityError> {
-        if let Err(error) = self.check_current(observer) {
+    fn revalidate_after(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        if let Err(error) = self.check_current() {
             self.poisoned = true;
             return Err(error);
         }
         Ok(())
     }
 
-    fn check_current<Execution: ExecutionObserver>(
-        &self,
-        observer: &mut Execution,
-    ) -> Result<(), BrokerSessionSecurityError> {
+    fn check_current(&self) -> Result<(), BrokerSessionSecurityError> {
+        self.execution.validate_current()?;
         self.files.revalidate()?;
-        if observer.current()? != self.execution {
-            return Err(BrokerSessionSecurityError::ExecutionChanged);
-        }
+        self.execution.validate_current()?;
         Ok(())
     }
 }
@@ -318,7 +309,7 @@ impl ProtectedBrokerSessionClientV1 {
         &mut self,
     ) -> Result<FreshClientHelloNonceV1, BrokerSessionSecurityError> {
         self.inner
-            .fresh_nonce(&mut KernelEntropy, &mut KernelExecutionObserver)
+            .fresh_nonce(&mut KernelEntropy)
             .map(FreshClientHelloNonceV1)
     }
 }
@@ -386,7 +377,7 @@ impl ProtectedBrokerSessionBrokerV1 {
         &mut self,
     ) -> Result<FreshBrokerHelloNonceV1, BrokerSessionSecurityError> {
         self.inner
-            .fresh_nonce(&mut KernelEntropy, &mut KernelExecutionObserver)
+            .fresh_nonce(&mut KernelEntropy)
             .map(FreshBrokerHelloNonceV1)
     }
 }
@@ -400,6 +391,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use aos_sandbox_broker_session_protocol::{
         BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSignerReferenceV1,
@@ -468,8 +461,45 @@ mod tests {
         }
     }
 
-    struct ScriptedExecution {
-        values: VecDeque<ExecutionSnapshot>,
+    struct AlwaysCurrentExecution;
+
+    impl CurrentSelfExecutionGuard for AlwaysCurrentExecution {
+        fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+            Ok(())
+        }
+    }
+
+    struct ScriptedCurrentExecution {
+        results: Mutex<VecDeque<Result<(), BrokerSessionSecurityError>>>,
+    }
+
+    impl ScriptedCurrentExecution {
+        fn new(results: impl IntoIterator<Item = Result<(), BrokerSessionSecurityError>>) -> Self {
+            Self {
+                results: Mutex::new(results.into_iter().collect()),
+            }
+        }
+    }
+
+    impl CurrentSelfExecutionGuard for ScriptedCurrentExecution {
+        fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+            self.results
+                .lock()
+                .map_err(|_| BrokerSessionSecurityError::ExecutionChanged)?
+                .pop_front()
+                .unwrap_or(Err(BrokerSessionSecurityError::ExecutionChanged))
+        }
+    }
+
+    struct CountingCurrentExecution {
+        validations: Arc<AtomicUsize>,
+    }
+
+    impl CurrentSelfExecutionGuard for CountingCurrentExecution {
+        fn validate_current(&self) -> Result<(), BrokerSessionSecurityError> {
+            self.validations.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
     }
 
     struct MutatingEntropy {
@@ -491,21 +521,6 @@ mod tests {
     impl EntropySource for FailingEntropy {
         fn fill_once(&mut self, _output: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::IO)
-        }
-    }
-
-    impl ExecutionObserver for ScriptedExecution {
-        fn current(&mut self) -> Result<ExecutionSnapshot, BrokerSessionSecurityError> {
-            self.values
-                .pop_front()
-                .ok_or(BrokerSessionSecurityError::ExecutionChanged)
-        }
-    }
-
-    fn execution(byte: u8) -> ExecutionSnapshot {
-        ExecutionSnapshot {
-            process_id: i32::from(byte),
-            boot_id: [byte; 16],
         }
     }
 
@@ -601,13 +616,11 @@ mod tests {
     }
 
     fn load_deterministic(fixture: &Fixture, role: EndpointRole) -> ProtectedEndpointV1 {
-        ProtectedEndpointV1::load_with(
+        ProtectedEndpointV1::load_with_guard(
             &fixture.endpoint,
             role,
             &mut RepeatingEntropy { byte: 9 },
-            &mut ScriptedExecution {
-                values: [execution(7), execution(7)].into(),
-            },
+            AlwaysCurrentExecution,
         )
         .unwrap_or_else(|error| panic!("deterministic load failed: {error}"))
     }
@@ -618,20 +631,10 @@ mod tests {
         let mut client = load_deterministic(&client_fixture, EndpointRole::Client);
         assert_eq!(client.process_execution_id, [9; 16]);
         let first = client
-            .fresh_nonce(
-                &mut RepeatingEntropy { byte: 10 },
-                &mut ScriptedExecution {
-                    values: [execution(7), execution(7)].into(),
-                },
-            )
+            .fresh_nonce(&mut RepeatingEntropy { byte: 10 })
             .unwrap_or_else(|error| panic!("first nonce failed: {error}"));
         let second = client
-            .fresh_nonce(
-                &mut RepeatingEntropy { byte: 11 },
-                &mut ScriptedExecution {
-                    values: [execution(7), execution(7)].into(),
-                },
-            )
+            .fresh_nonce(&mut RepeatingEntropy { byte: 11 })
             .unwrap_or_else(|error| panic!("second nonce failed: {error}"));
         assert_eq!(*first.bytes, [10; 32]);
         assert_eq!(*second.bytes, [11; 32]);
@@ -648,16 +651,12 @@ mod tests {
         let mut broker = load_deterministic(&broker_fixture, EndpointRole::Broker);
         assert!(
             broker
-                .fresh_nonce(
-                    &mut RepeatingEntropy { byte: 12 },
-                    &mut ScriptedExecution {
-                        values: [execution(7), execution(7)].into(),
-                    },
-                )
+                .fresh_nonce(&mut RepeatingEntropy { byte: 12 })
                 .is_ok()
         );
     }
 
+    #[cfg(feature = "kernel-tests")]
     #[test]
     fn public_role_apis_load_and_revalidate_real_process_state() {
         let client_fixture = Fixture::new(EndpointRole::Client);
@@ -690,25 +689,21 @@ mod tests {
         let fixture = Fixture::new(EndpointRole::Client);
         let first = load_deterministic(&fixture, EndpointRole::Client);
         assert!(matches!(
-            ProtectedEndpointV1::load_with(
+            ProtectedEndpointV1::load_with_guard(
                 &fixture.endpoint,
                 EndpointRole::Client,
                 &mut RepeatingEntropy { byte: 8 },
-                &mut ScriptedExecution {
-                    values: [execution(7), execution(7)].into(),
-                },
+                AlwaysCurrentExecution,
             ),
             Err(BrokerSessionSecurityError::AlreadyInUse)
         ));
         drop(first);
         assert!(
-            ProtectedEndpointV1::load_with(
+            ProtectedEndpointV1::load_with_guard(
                 &fixture.endpoint,
                 EndpointRole::Client,
                 &mut RepeatingEntropy { byte: 8 },
-                &mut ScriptedExecution {
-                    values: [execution(7), execution(7)].into(),
-                },
+                AlwaysCurrentExecution,
             )
             .is_ok()
         );
@@ -794,23 +789,13 @@ mod tests {
         rewrite_protected(&path, &changed);
         assert!(
             endpoint
-                .fresh_nonce(
-                    &mut RepeatingEntropy { byte: 10 },
-                    &mut ScriptedExecution {
-                        values: [execution(7)].into(),
-                    },
-                )
+                .fresh_nonce(&mut RepeatingEntropy { byte: 10 })
                 .is_err()
         );
         rewrite_protected(&path, &original);
         assert_eq!(
             endpoint
-                .fresh_nonce(
-                    &mut RepeatingEntropy { byte: 10 },
-                    &mut ScriptedExecution {
-                        values: [execution(7)].into(),
-                    },
-                )
+                .fresh_nonce(&mut RepeatingEntropy { byte: 10 })
                 .err(),
             Some(BrokerSessionSecurityError::Poisoned)
         );
@@ -1085,16 +1070,11 @@ mod tests {
         replacement[20] ^= 1;
         assert!(
             endpoint
-                .fresh_nonce(
-                    &mut MutatingEntropy {
-                        path: fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
-                        replacement,
-                        byte: 10,
-                    },
-                    &mut ScriptedExecution {
-                        values: [execution(7), execution(7)].into(),
-                    },
-                )
+                .fresh_nonce(&mut MutatingEntropy {
+                    path: fixture.endpoint.join(CLIENT_KEY_NAMES[0]),
+                    replacement,
+                    byte: 10,
+                })
                 .is_err()
         );
         assert!(endpoint.poisoned);
@@ -1106,14 +1086,7 @@ mod tests {
         drop(endpoint);
         let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
         assert_eq!(
-            endpoint
-                .fresh_nonce(
-                    &mut FailingEntropy,
-                    &mut ScriptedExecution {
-                        values: [execution(7)].into(),
-                    },
-                )
-                .err(),
+            endpoint.fresh_nonce(&mut FailingEntropy).err(),
             Some(BrokerSessionSecurityError::Entropy)
         );
         assert!(endpoint.poisoned);
@@ -1124,7 +1097,7 @@ mod tests {
         let fixture = Fixture::new(EndpointRole::Client);
         let mut replacement = fixture.secrets[0];
         replacement[20] ^= 1;
-        let result = ProtectedEndpointV1::load_with(
+        let result = ProtectedEndpointV1::load_with_guard(
             &fixture.endpoint,
             EndpointRole::Client,
             &mut MutatingEntropy {
@@ -1132,9 +1105,7 @@ mod tests {
                 replacement,
                 byte: 9,
             },
-            &mut ScriptedExecution {
-                values: [execution(7), execution(7)].into(),
-            },
+            AlwaysCurrentExecution,
         );
         assert!(result.is_err());
     }
@@ -1143,68 +1114,64 @@ mod tests {
     fn execution_sandwich_and_counter_exhaustion_poison() {
         let fixture = Fixture::new(EndpointRole::Client);
         assert!(
-            ProtectedEndpointV1::load_with(
+            ProtectedEndpointV1::load_with_guard(
                 &fixture.endpoint,
                 EndpointRole::Client,
                 &mut RepeatingEntropy { byte: 9 },
-                &mut ScriptedExecution {
-                    values: [execution(7), execution(8)].into(),
-                },
+                ScriptedCurrentExecution::new([Err(BrokerSessionSecurityError::ExecutionChanged,)]),
             )
             .is_err()
         );
 
-        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
-        assert!(
+        let mut endpoint = ProtectedEndpointV1::load_with_guard(
+            &fixture.endpoint,
+            EndpointRole::Client,
+            &mut RepeatingEntropy { byte: 9 },
+            ScriptedCurrentExecution::new([
+                Ok(()),
+                Err(BrokerSessionSecurityError::ExecutionChanged),
+            ]),
+        )
+        .unwrap_or_else(|error| panic!("scripted load failed: {error}"));
+        assert_eq!(
             endpoint
-                .fresh_nonce(
-                    &mut RepeatingEntropy { byte: 10 },
-                    &mut ScriptedExecution {
-                        values: [execution(7), execution(8)].into(),
-                    },
-                )
-                .is_err()
+                .fresh_nonce(&mut RepeatingEntropy { byte: 10 })
+                .err(),
+            Some(BrokerSessionSecurityError::ExecutionChanged)
+        );
+        assert!(endpoint.poisoned);
+
+        drop(endpoint);
+        let mut endpoint = ProtectedEndpointV1::load_with_guard(
+            &fixture.endpoint,
+            EndpointRole::Client,
+            &mut RepeatingEntropy { byte: 9 },
+            ScriptedCurrentExecution::new([
+                Ok(()),
+                Ok(()),
+                Ok(()),
+                Err(BrokerSessionSecurityError::ExecutionChanged),
+            ]),
+        )
+        .unwrap_or_else(|error| panic!("scripted load failed: {error}"));
+        assert_eq!(
+            endpoint
+                .fresh_nonce(&mut RepeatingEntropy { byte: 10 })
+                .err(),
+            Some(BrokerSessionSecurityError::ExecutionChanged)
         );
         assert!(endpoint.poisoned);
 
         drop(endpoint);
         let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
-        let captured = execution(7);
-        let changed_boot = ExecutionSnapshot {
-            process_id: captured.process_id,
-            boot_id: [8; 16],
-        };
-        assert!(
-            endpoint
-                .fresh_nonce(
-                    &mut RepeatingEntropy { byte: 10 },
-                    &mut ScriptedExecution {
-                        values: [captured, changed_boot].into(),
-                    },
-                )
-                .is_err()
-        );
-
-        drop(endpoint);
-        let mut endpoint = load_deterministic(&fixture, EndpointRole::Client);
         endpoint.next_nonce_counter = Some(u64::MAX);
         let last = endpoint
-            .fresh_nonce(
-                &mut RepeatingEntropy { byte: 10 },
-                &mut ScriptedExecution {
-                    values: [execution(7), execution(7)].into(),
-                },
-            )
+            .fresh_nonce(&mut RepeatingEntropy { byte: 10 })
             .unwrap_or_else(|error| panic!("terminal nonce failed: {error}"));
         assert_eq!(last.counter, u64::MAX);
         assert_eq!(
             endpoint
-                .fresh_nonce(
-                    &mut RepeatingEntropy { byte: 11 },
-                    &mut ScriptedExecution {
-                        values: [execution(7)].into(),
-                    },
-                )
+                .fresh_nonce(&mut RepeatingEntropy { byte: 11 })
                 .err(),
             Some(BrokerSessionSecurityError::NonceExhausted)
         );
@@ -1212,16 +1179,53 @@ mod tests {
     }
 
     #[test]
+    fn every_custody_output_has_complete_execution_sandwiches() {
+        let fixture = Fixture::new(EndpointRole::Client);
+        let validations = Arc::new(AtomicUsize::new(0));
+        let mut endpoint = ProtectedEndpointV1::load_with_guard(
+            &fixture.endpoint,
+            EndpointRole::Client,
+            &mut RepeatingEntropy { byte: 9 },
+            CountingCurrentExecution {
+                validations: Arc::clone(&validations),
+            },
+        )
+        .unwrap_or_else(|error| panic!("counted load failed: {error}"));
+        assert_eq!(validations.load(Ordering::Relaxed), 1);
+
+        assert!(endpoint.manifest_binding().is_ok());
+        assert_eq!(validations.load(Ordering::Relaxed), 5);
+
+        assert!(endpoint.process_execution_id().is_ok());
+        assert_eq!(validations.load(Ordering::Relaxed), 9);
+
+        assert!(
+            endpoint
+                .fresh_nonce(&mut RepeatingEntropy { byte: 10 })
+                .is_ok()
+        );
+        assert_eq!(validations.load(Ordering::Relaxed), 13);
+    }
+
+    #[test]
+    fn scripted_execution_guard_exhaustion_fails_closed() {
+        let guard = ScriptedCurrentExecution::new([Ok(())]);
+        assert!(guard.validate_current().is_ok());
+        assert_eq!(
+            guard.validate_current().err(),
+            Some(BrokerSessionSecurityError::ExecutionChanged)
+        );
+    }
+
+    #[test]
     fn public_debug_and_errors_are_redacted() {
         let fixture = Fixture::new(EndpointRole::Client);
         let path_text = fixture.endpoint.to_string_lossy();
+        let protected_client = ProtectedBrokerSessionClientV1 {
+            inner: load_deterministic(&fixture, EndpointRole::Client),
+        };
         for rendered in [
-            format!(
-                "{:?}",
-                ProtectedBrokerSessionClientV1 {
-                    inner: load_deterministic(&fixture, EndpointRole::Client)
-                }
-            ),
+            format!("{protected_client:?}"),
             format!("{:?}", BrokerSessionProcessExecutionIdV1([9; 16])),
             format!("{:?}", fixture.manifest),
             format!("{:?}", fixture.manifest.key_pins()[0]),

@@ -1186,14 +1186,27 @@ metadata lookup without opening its contents. Local seeds must reproduce the
 matching manifest IDs, raw public keys, and fingerprints, and all four pins
 must be active when either role loads.
 
+Before opening protected configuration, the custody loader opens one pidfd for
+itself and retains it for the object's lifetime. A capture sandwiches complete
+pidfd information and pidfd-bound procfs identity between boot ID, current PID,
+effective UID, and effective GID observations. It requires a live thread-group
+leader, nonzero cgroup-v2 ID, stable start-time ticks, all eight credential IDs,
+and exact agreement among the scalar, pidfd, and identity views. Revalidation
+repeats that observation through the retained pidfd and compares every baseline
+field except PPID; PPID may change between calls but must remain stable within
+each observation. After capture the guard never creates or replaces its retained
+pidfd from the numeric PID. The pidfd-bound identity helper opens numeric
+`/proc/PID/stat` only inside the retained-pidfd information and liveness
+sandwich.
+
 Every protected custody-object output revalidates both the retained descriptors
 and a fresh opening of the captured absolute path before and after producing the
-value. Path-bound device/inode/security metadata, complete file contents, the
-manifest digest, opposite-role absence, effective UID, PID, and boot ID must
-remain exact. Any
-in-place edit, chmod/chown/link/truncation, child or directory replacement,
-execution change, entropy failure, or nonce exhaustion permanently poisons
-the endpoint; restoring bytes does not revive it. Rotation is whole-directory
+value, with retained-self execution checks bracketing each file revalidation.
+Path-bound device/inode/security metadata, complete file contents, the manifest
+digest, opposite-role absence, and the retained execution baseline must remain
+exact. Any in-place edit, chmod/chown/link/truncation, child or directory
+replacement, execution change, entropy failure, or nonce exhaustion permanently
+poisons the endpoint; restoring bytes does not revive it. Rotation is whole-directory
 publication followed by process restart. Errors and Debug output expose only
 stable redacted labels.
 
@@ -1214,10 +1227,11 @@ production code. Linux peer publication and transcript/context binding,
 external anti-rollback floors, protected deployment, signing finalizers,
 sealed plans, authenticated transport, receive allocation, caller-owned atomic
 request/result companions, every service/controller integration, MAC policy,
-readiness, and Nix remain open. Cross-process flock contention, post-fork
-continuation rejection, and cross-UID ownership validation remain VM gates. It
-introduces no journal, descriptor-use permit, or effect authority and does not
-close `SBX-BPROTO-04`, `SBX-BPROTO-05`, or `SBX-P0-10`.
+readiness, and Nix remain open. Real fork continuation, cgroup/procfs mutation,
+cross-process flock contention, cross-UID ownership, and MAC policy qualification
+remain VM and `SBX-P0-10` activation gates. It introduces no journal,
+descriptor-use permit, or effect authority and does not close `SBX-BPROTO-04`,
+`SBX-BPROTO-05`, or `SBX-P0-10`.
 
 Host protocol 1.0 includes `QueryRuntimeEffect`. The query carries a fresh
 1.0 header, zero descriptors, the same exact signed authorization quartet, and
