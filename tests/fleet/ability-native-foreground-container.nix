@@ -96,12 +96,18 @@ in {
     runtime.succeed(textwrap.dedent(r"""
       install -d -m 0755 /var/lib/aos-foreground-nginx
       cat > /var/lib/aos-foreground-nginx/nginx.conf <<'EOF'
+      user root;
       worker_processes 1;
       pid /tmp/aos-foreground-nginx.pid;
       error_log stderr notice;
       events { worker_connections 64; }
       http {
         access_log off;
+        client_body_temp_path /tmp/nginx-client-body;
+        proxy_temp_path /tmp/nginx-proxy;
+        fastcgi_temp_path /tmp/nginx-fastcgi;
+        uwsgi_temp_path /tmp/nginx-uwsgi;
+        scgi_temp_path /tmp/nginx-scgi;
         server {
           listen 127.0.0.1:18082;
           location /health {
@@ -121,6 +127,17 @@ in {
         "--volume ${pkgs.aos.testSupport}:${pkgs.aos.testSupport}:ro "
         "aos:latest ${pkgs.coreutils}/bin/sleep infinity",
         timeout=120,
+    )
+    # This application container intentionally skips the system boot graph, so
+    # load the immutable image registration that nix-db.service normally owns.
+    runtime.succeed(
+        "${containerExec} ${pkgs.bash}/bin/bash -c "
+        + shlex.quote(
+            "set -eu; "
+            "${pkgs.nix}/bin/nix-store --init; "
+            "${pkgs.nix}/bin/nix-store --load-db < /aos-registration"
+        ),
+        timeout=360,
     )
 
     arguments = [
