@@ -1042,14 +1042,9 @@ in {
           "test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent"
       )
       # /var is now a LUKS2 device, mounted via the device-mapper node.
-      # isLuks confirms LUKS; the systemd-tpm2 token (a LUKS2-only feature)
-      # confirms it was sealed to the TPM. (luksDump prints "Version: 2",
-      # not the literal "LUKS2", and the agent capture tail-truncates to
-      # the Tokens section, so assert on the token, not a header string.)
+      # isLuks confirms LUKS; inspect the machine-readable metadata because
+      # the human dump's verbose TPM2 blob can exceed the agent capture limit.
       target.succeed(f"{CS} isLuks {VARDEV}")
-      dump = target.succeed(f"{CS} luksDump {VARDEV}")
-      assert "systemd-tpm2" in dump, f"/var has no TPM2 token:\n{dump}"
-      assert "systemd-recovery" in dump, f"/var has no recovery token:\n{dump}"
       legacy_metadata = json.loads(target.succeed(
           f"{CS} luksDump --dump-json-metadata {VARDEV}"
       ))
@@ -1059,6 +1054,11 @@ in {
       ]
       assert len(legacy_tpm_tokens) == 1, legacy_tpm_tokens
       assert sorted(legacy_tpm_tokens[0]["tpm2-pcrs"]) == [7], legacy_tpm_tokens
+      legacy_recovery_tokens = [
+          token for token in legacy_metadata["tokens"].values()
+          if token["type"] == "systemd-recovery"
+      ]
+      assert len(legacy_recovery_tokens) == 1, legacy_recovery_tokens
       recovery_key_encoded = base64.b64encode(
           target.succeed("cat /run/aos-var-recovery.key").encode()
       ).decode()
