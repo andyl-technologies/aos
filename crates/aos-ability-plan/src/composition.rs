@@ -10,7 +10,7 @@ use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, Binding, BindingRequest,
     ControllerAssignment, DesiredStateDocument, EnvironmentDocument, InstanceId, InterfaceKey,
     LocalKey, PackageDocument, ProviderImplementationReference, RequestId, ResourceRevision,
-    ScopePath, VersionedDocument,
+    RevisionId, ScopePath, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -38,7 +38,7 @@ use trace::TraceBudget;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompositionContext {
-    /// Carries `aos.ability.composition-context/v1`.
+    /// Carries `aos.ability.composition-context/v2`.
     pub schema: String,
     /// Identifies the provider aggregate evaluated exactly once in this pass.
     pub provider: InstanceId,
@@ -48,6 +48,9 @@ pub struct CompositionContext {
     pub implementation: ProviderImplementationReference,
     /// Pins the exact package manifest supplying the pure implementation.
     pub package: Sha256Digest,
+    /// Supplies the evaluated package content and configuration identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_revision: Option<RevisionId>,
     /// Carries the operator-owned configuration of this provider instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<AbilityValue>,
@@ -258,6 +261,8 @@ pub enum CompositionEvaluationResult {
 pub struct CompositionOutcome {
     /// Retains the original normalized desired-state input.
     pub seed: DesiredStateDocument,
+    /// Retains package-scoped activation revisions supplied during composition.
+    pub activation_revisions: BTreeMap<Sha256Digest, RevisionId>,
     /// Carries the normalized fixed-point desired state.
     pub desired_state: DesiredStateDocument,
     /// Retains the complete canonical authenticated policy set supplied to planning.
@@ -418,6 +423,30 @@ impl<'a> RecursiveComposer<'a> {
         seed: DesiredStateDocument,
         environment: EnvironmentDocument,
         packages: Vec<PackageDocument>,
+        evaluator: &mut impl CompositionEvaluator,
+    ) -> Result<CompositionOutcome, CompositionError> {
+        self.compose_with_activation_revisions(
+            policies,
+            seed,
+            environment,
+            packages,
+            BTreeMap::new(),
+            evaluator,
+        )
+    }
+
+    /// Produces a checked fixed point with package-scoped activation revisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::compose`].
+    pub fn compose_with_activation_revisions(
+        &self,
+        policies: &[ResolutionPolicyDocument],
+        seed: DesiredStateDocument,
+        environment: EnvironmentDocument,
+        packages: Vec<PackageDocument>,
+        activation_revisions: BTreeMap<Sha256Digest, RevisionId>,
         evaluator: &mut impl CompositionEvaluator,
     ) -> Result<CompositionOutcome, CompositionError> {
         let environment_digest = environment
@@ -588,6 +617,7 @@ impl<'a> RecursiveComposer<'a> {
                         enabled_providers: &policy.enabled_providers,
                         packages: &packages,
                         package_index: &package_index,
+                        activation_revisions: &activation_revisions,
                     },
                     EvaluationRecorder {
                         evaluator,
@@ -643,6 +673,7 @@ impl<'a> RecursiveComposer<'a> {
                     };
                     return Ok(CompositionOutcome {
                         seed,
+                        activation_revisions,
                         desired_state,
                         policies: retained_policies,
                         evaluations: evaluation_trace,

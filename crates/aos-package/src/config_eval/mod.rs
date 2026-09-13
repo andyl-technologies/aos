@@ -1707,7 +1707,15 @@ fn enrich_manifest(
         .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
-    let ability_activation = enrich_ability_activation(ability_activation, runtime)?;
+    let config_projections = serde_json::from_value(
+        object
+            .get("configProjections")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+    )
+    .context("decoding enriched package config projections")?;
+    let ability_activation =
+        enrich_ability_activation(ability_activation, runtime, &config_projections)?;
     if let Some(activation) = &ability_activation {
         retain_ability_sidecar_roots(object, activation)?;
     }
@@ -1903,6 +1911,7 @@ fn enrich_manifest(
 fn enrich_ability_activation(
     input: Option<serde_json::Value>,
     runtime: &runtime::RuntimeResolution,
+    config_projections: &BTreeMap<String, materialize::ProjectedPackageConfig>,
 ) -> Result<Option<serde_json::Value>> {
     let structured_packages = runtime
         .packages
@@ -1918,12 +1927,21 @@ fn enrich_ability_activation(
     let object = input
         .as_object_mut()
         .context("manifest inputs.ability_activation must be an object")?;
+    object.insert(
+        "schema".to_string(),
+        serde_json::Value::String(materialize::AbilityActivationInput::SCHEMA.to_string()),
+    );
     let packages = runtime
         .packages
         .iter()
         .filter_map(|(name, package)| {
-            package.ability.as_ref().map(|ability| {
-                serde_json::json!({
+            package.ability.as_ref().map(|ability| -> Result<_> {
+                let activation_revision = materialize::package_activation_revision(
+                    name,
+                    package,
+                    config_projections.get(name),
+                )?;
+                Ok(serde_json::json!({
                     "name": name,
                     "version": package.version,
                     "platform": package.platform,
@@ -1935,10 +1953,11 @@ fn enrich_ability_activation(
                     "ability_nar_hash": ability.nar_hash,
                     "manifest_sha256": ability.manifest_sha256,
                     "package_digest": ability.package_digest,
-                })
+                    "activation_revision": activation_revision,
+                }))
             })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     object.insert("packages".to_string(), serde_json::Value::Array(packages));
     Ok(Some(input))
 }

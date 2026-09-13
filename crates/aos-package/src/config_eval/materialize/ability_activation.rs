@@ -1,7 +1,7 @@
 //! Version-3 manifest inputs for native structured ability activation.
 //!
 //! The manifest embeds one descriptor with independently retained sidecars and
-//! exact package coordinates:
+//! exact package coordinates. The legacy v1 shape is:
 //!
 //! ```json
 //! {"authenticated_policy_set":{"document":"policy.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-policy"},"desired_state":{"document":"desired.json","document_sha256":"sha256:...","document_size":1,"nar_hash":"sha256:<52-nix-base32-chars>","nar_size":1,"store_path":"/nix/store/...-desired"},"packages":[{"ability_nar_hash":"sha256:...","ability_store_path":"/nix/store/...-ability","manifest_sha256":"sha256:...","name":"nginx","package_digest":"sha256:...","platform":"x86_64-linux","registry":"reference","runtime_nar_hash":"sha256:...","runtime_nar_size":1,"runtime_store_path":"/nix/store/...-nginx","version":"1.0.0"}],"required_features":["abilities-v1","ability-effects-v1","native-platform-policy-v1","native-resource-map-v2"],"schema":"aos.ability.activation-input/v1"}
@@ -13,14 +13,17 @@ use std::path::Path;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::{validate_canonical_store_path, validate_content_sha256};
+use super::{
+    ProjectedPackageConfig, package_activation_revision, validate_canonical_store_path,
+    validate_content_sha256,
+};
 use crate::config_eval::runtime::RuntimePackagePin;
 
 /// Pins all immutable inputs from which native ability activation is specialized.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AbilityActivationInput {
-    /// Carries `aos.ability.activation-input/v1`.
+    /// Carries a supported activation-input schema discriminator.
     pub schema: String,
     /// Requires the complete manifest and structured-effect semantics.
     pub required_features: Vec<String>,
@@ -33,16 +36,25 @@ pub struct AbilityActivationInput {
 }
 
 impl AbilityActivationInput {
+    /// Legacy activation input without derived package revisions.
+    pub const SCHEMA_V1: &'static str = "aos.ability.activation-input/v1";
     /// Current immutable activation-input descriptor schema.
-    pub const SCHEMA: &'static str = "aos.ability.activation-input/v1";
+    pub const SCHEMA: &'static str = "aos.ability.activation-input/v2";
 
-    pub(super) fn validate(
+    /// Validates immutable sidecars and package activation coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when schemas, features, sidecars, coordinates, or
+    /// derived activation revisions are invalid or inconsistent.
+    pub(crate) fn validate(
         &self,
         package_outputs: &BTreeMap<String, RuntimePackagePin>,
+        config_projections: &BTreeMap<String, ProjectedPackageConfig>,
     ) -> Result<()> {
         use crate::types::{FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1};
 
-        if self.schema != Self::SCHEMA {
+        if self.schema != Self::SCHEMA_V1 && self.schema != Self::SCHEMA {
             bail!(
                 "unsupported ability activation input schema {:?}",
                 self.schema
@@ -130,6 +142,22 @@ impl AbilityActivationInput {
             {
                 bail!(
                     "ability activation coordinate for {:?} differs from authenticated packageOutputs",
+                    coordinate.name
+                );
+            }
+            let expected_revision =
+                package_activation_revision(name, package, config_projections.get(name.as_str()))?;
+            if self.schema == Self::SCHEMA && coordinate.activation_revision.is_empty() {
+                bail!(
+                    "ability activation revision for {:?} is missing",
+                    coordinate.name
+                );
+            }
+            if !coordinate.activation_revision.is_empty()
+                && coordinate.activation_revision != expected_revision
+            {
+                bail!(
+                    "ability activation revision for {:?} differs from its authenticated package content and rendered configuration",
                     coordinate.name
                 );
             }
@@ -225,4 +253,7 @@ pub struct AbilityPackageCoordinate {
     pub manifest_sha256: String,
     /// Semantic package-document identity.
     pub package_digest: String,
+    /// Content-derived runtime, ability, unit, and configuration identity.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub activation_revision: String,
 }
