@@ -36,6 +36,15 @@
     )
     defaultDevices;
   zfsPackage = pkgs.zfsForKernel config.system.build.kernel;
+
+  # `zfs create -p aos/slots` creates `aos` as well as `aos/slots`, so both are
+  # datasets this system owns and has to account for.
+  containerDatasets = dataset: let
+    segments = lib.splitString "/" dataset;
+  in
+    lib.genList (
+      depth: lib.concatStringsSep "/" (lib.take (depth + 1) segments)
+    ) (builtins.length segments);
   espSync = config.aos.config.artifacts.esp-sync;
   espMount = config.aos.config.artifacts.esp-mount;
   deviceOption = name:
@@ -240,6 +249,16 @@ in {
         enable = true;
         poolName = cfg.zfs.poolName;
         package = zfsPackage;
+
+        # The datasets containing the image zvols are declared so they are
+        # managed rather than reported as drift, and so automatic snapshots
+        # never reach them. Snapshotting or cloning an active immutable slot is
+        # the image updater's exclusive business; a snapshot tool holding an
+        # old slot's blocks would also pin space the updater needs.
+        datasets = lib.genAttrs (containerDatasets cfg.zfs.dataset) (_: {
+          mountPoint = null;
+          snapshot = false;
+        });
       };
 
       boot.initrd.systemd.services."aos-zfs-unlock" = {
