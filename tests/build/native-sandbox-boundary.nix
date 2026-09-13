@@ -19,10 +19,11 @@ pkgs.mkDerivation {
           fi
         done
 
-        # Nix may inject a shell even when the host root is hidden. A foreign
-        # BusyBox is an undeclared executable dependency, not a sandbox escape.
-        if [ -e /bin/sh ] && ! cmp -s /bin/sh ${pkgs.bash}/bin/bash; then
-          echo "sandbox injects a shell other than the declared AOS bash" >&2
+        # Nix may mount its daemon-side /bin/sh into the sandbox. The derivation
+        # remains hermetic when its declared builder and CONFIG_SHELL are the
+        # AOS bash, so verify the shell that is actually executing this phase.
+        if [ "$CONFIG_SHELL" != ${pkgs.bash}/bin/bash ] || ! cmp -s /proc/$$/exe ${pkgs.bash}/bin/bash; then
+          echo "build phase is not running under the declared AOS bash" >&2
           failed=1
         fi
 
