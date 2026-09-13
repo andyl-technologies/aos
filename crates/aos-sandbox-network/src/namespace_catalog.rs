@@ -43,6 +43,13 @@ use crate::{CommittedNetworkResultV1, NetworkCatalogBindingV1, ResolvedNetworkPr
 
 mod checkpoint;
 mod lifecycle;
+#[doc(hidden)]
+pub use checkpoint::{
+    BrokerNetworkInventoryAvailableObservationV1, BrokerNetworkInventoryCheckpointErrorV1,
+    BrokerNetworkInventoryObservationDispositionV1, BrokerNetworkInventoryOutcomeCauseV1,
+    BrokerNetworkInventoryOutcomeReceiptV1, BrokerNetworkInventoryReservationDispositionV1,
+    BrokerNetworkInventoryReservationV1, BrokerNetworkInventoryUnavailableObservationV1,
+};
 pub(crate) use lifecycle::NetworkNamespaceLifecycleAuthorityV1;
 pub use lifecycle::{
     NetworkNamespaceIdentityV1, NetworkNamespaceLifecycleActionV1,
@@ -157,7 +164,7 @@ pub struct NetworkNamespaceCatalogV1 {
     broker_instance_id: [u8; 16],
     generation: u64,
     records: BTreeMap<[u8; 32], NamespaceRecordV1>,
-    checkpoint_head: Option<checkpoint::InventoryBsaCheckpointHeadV1>,
+    checkpoint_head: Option<checkpoint::InventoryBsaCheckpointHeadV2>,
 }
 
 impl NetworkNamespaceCatalogV1 {
@@ -1142,7 +1149,7 @@ const fn namespace_journal_limits() -> JournalLimits {
         maximum_record_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
         maximum_key_bytes: 128,
         maximum_records_per_transaction: 3,
-        // Exact encoded sizes of request, outcome, and AOSNIH01 head puts.
+        // Both exact AOSNIH02 reserve and completion transactions fit this cap.
         maximum_transaction_bytes: MAXIMUM_JOURNAL_TRANSACTION_BYTES,
         maximum_transactions: 65_536,
         // 16,384 bounded catalog rows, its head, and three owner records,
