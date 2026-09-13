@@ -53,6 +53,7 @@ class FirecrackerMachine(Machine):
         vcpu_count: int,
         tmpdir: str,
         extra_disks: list[dict[str, object]] | None = None,
+        kernel_params: list[str] | None = None,
     ) -> None:
         self.kernel_pkg = kernel
         self.initrd_path = initrd
@@ -63,6 +64,7 @@ class FirecrackerMachine(Machine):
         self.tmpdir = Path(tmpdir)
         self.extra_disks = extra_disks or []
         self.extra_disk_copies: list[str] = []
+        self.kernel_params = kernel_params or []
 
         # Firecracker creates the vsock UDS at `uds_path`; the client
         # CONNECTs to it. From the host's perspective the vsock UDS *is*
@@ -203,12 +205,18 @@ class FirecrackerMachine(Machine):
             "boot-source": {
                 "kernel_image_path": vmlinux,
                 "initrd_path": initrd,
-                "boot_args": (
-                    "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro "
-                    "systemd.unified_cgroup_hierarchy=1 "
-                    "systemd.gpt-auto=0 "
-                    "systemd.journald.forward_to_console=1 "
-                    "enforcing=0"
+                # The harness owns root and console selection; a check
+                # appends only what its subject needs, such as kernel module
+                # parameters that are read when the module loads.
+                "boot_args": " ".join(
+                    [
+                        "console=ttyS0 reboot=k panic=1 root=/dev/vda2 ro "
+                        "systemd.unified_cgroup_hierarchy=1 "
+                        "systemd.gpt-auto=0 "
+                        "systemd.journald.forward_to_console=1 "
+                        "enforcing=0",
+                        *self.kernel_params,
+                    ]
                 ),
             },
             "drives": drives,

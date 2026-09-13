@@ -81,6 +81,16 @@
           provide.
         '';
       };
+      kernelParams = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = ''
+          Extra kernel command-line arguments for the check VM. The harness
+          owns the boot arguments that select a root and console, so a check
+          that depends on kernel or module parameters names them here rather
+          than relying on the image's own command line.
+        '';
+      };
       memoryMiB = lib.mkOption {
         type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
         default = null;
