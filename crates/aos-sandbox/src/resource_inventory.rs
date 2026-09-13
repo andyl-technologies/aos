@@ -53,6 +53,12 @@ use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordName
 mod checkpoint;
 mod format;
 
+#[doc(hidden)]
+pub use checkpoint::{
+    ControllerNetworkInventoryCheckpointOwnerV1, ControllerNetworkInventoryCommittedResultKindV1,
+    ControllerNetworkInventoryCommittedResultV1, ControllerNetworkInventoryReservationV1,
+};
+
 const RESPONSE_BYTES: u32 = 15 * 1024 * 1024;
 const QUERY_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
 const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;

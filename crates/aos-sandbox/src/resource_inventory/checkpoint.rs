@@ -18,8 +18,9 @@ use aos_sandbox_protocol::authenticated_session::{
     AuthenticatedNetworkInventoryResultV1,
     checkpoint::{
         NETWORK_INVENTORY_CHECKPOINT_REQUEST_VALUE_MAXIMUM_BYTES,
-        NETWORK_INVENTORY_OUTCOME_RECORD_MAXIMUM_BYTES, NetworkInventoryOutcomeCheckpointDraftV1,
-        NetworkInventoryRequestCheckpointDraftV1, RecoveredNetworkInventoryCheckpointViewV1,
+        NETWORK_INVENTORY_OUTCOME_RECORD_MAXIMUM_BYTES, NetworkInventoryCheckpointTerminalErrorV1,
+        NetworkInventoryOutcomeCheckpointDraftV1, NetworkInventoryRequestCheckpointDraftV1,
+        RecoveredNetworkInventoryCheckpointViewV1,
         RecoveredNetworkInventoryRequestCheckpointViewV1,
         decode_recovered_network_inventory_checkpoint_values_v1,
         decode_recovered_network_inventory_request_checkpoint_value_v1,
@@ -28,8 +29,8 @@ use aos_sandbox_protocol::authenticated_session::{
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    KEY, ResourceInventoryError, SnapshotDecision, ValidatedResourceInventory,
-    classify_inventory_continuity, controller_state_digest,
+    KEY, ResourceInventoryError, SnapshotDecision, ValidatedNetworkInventory,
+    ValidatedResourceInventory, classify_inventory_continuity, controller_state_digest,
 };
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
@@ -123,10 +124,202 @@ mod state;
 use state::{CurrentSnapshot, RecoveredHistory};
 pub(super) use state::{RecoveredCheckpoint, load_history};
 
+/// Owns one protected, exclusively locked journal for live controller checkpoints.
+///
+/// This facade admits only process-local live drafts. Loading durable history
+/// validates its closed graph but never recreates reservation, completion, or
+/// replay authority from recovered bytes.
+#[doc(hidden)]
+pub struct ControllerNetworkInventoryCheckpointOwnerV1 {
+    journal: Journal,
+}
+
+impl ControllerNetworkInventoryCheckpointOwnerV1 {
+    /// Adopts one healthy protected journal with exclusive writer ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResourceInventoryError`] if the journal lacks protected
+    /// storage provenance, is poisoned, or contains invalid Network inventory
+    /// checkpoint history.
+    pub fn from_exclusive_journal(journal: Journal) -> Result<Self, ResourceInventoryError> {
+        journal.ensure_protected_authority()?;
+        load_history(&journal)?;
+
+        Ok(Self { journal })
+    }
+
+    /// Atomically reserves one fully authenticated live request draft.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResourceInventoryError`] if protected history is unhealthy or
+    /// inconsistent, the request conflicts with its high-water mark, capacity
+    /// is exhausted, or retained replay, outstanding, or unconsumed state must
+    /// first be resolved by a future recovery owner. Recovery-required states
+    /// use the existing [`ResourceInventoryError::Conflict`] category.
+    pub fn reserve_live_request(
+        &mut self,
+        request: NetworkInventoryRequestCheckpointDraftV1,
+    ) -> Result<ControllerNetworkInventoryReservationV1, ResourceInventoryError> {
+        match reserve_request(&mut self.journal, request)? {
+            ReservationDisposition::Reserved(receipt) => {
+                Ok(ControllerNetworkInventoryReservationV1 { receipt })
+            }
+            ReservationDisposition::ExactReplay { .. }
+            | ReservationDisposition::Pending
+            | ReservationDisposition::RecoveryRequired => Err(ResourceInventoryError::Conflict),
+        }
+    }
+
+    /// Completes one live reservation and resolves its durable owner state.
+    ///
+    /// Current success is rechecked before its validated inventory is released.
+    /// Every noncurrent result is durably consumed before its classification is
+    /// returned, so no unresolved completion receipt escapes this facade.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResourceInventoryError`] if the reservation and outcome do not
+    /// match, the protected journal or controller state changed, persistence is
+    /// ambiguous, or the committed result cannot be rechecked or consumed.
+    pub fn complete_live_outcome(
+        &mut self,
+        reservation: ControllerNetworkInventoryReservationV1,
+        outcome: NetworkInventoryOutcomeCheckpointDraftV1,
+    ) -> Result<ControllerNetworkInventoryCommittedResultV1, ResourceInventoryError> {
+        let terminal_error = outcome.terminal_error();
+        let completion = complete_outcome(&mut self.journal, reservation.receipt, outcome)?;
+
+        match completion {
+            CompletionDisposition::Current(receipt) => {
+                if terminal_error.is_some() {
+                    return Err(ResourceInventoryError::CorruptState);
+                }
+                recheck_current_success(&mut self.journal, &receipt)?;
+                let ValidatedResourceInventory::Network(inventory) = receipt.inventory else {
+                    return Err(ResourceInventoryError::CorruptState);
+                };
+                Ok(ControllerNetworkInventoryCommittedResultV1 {
+                    inner: ControllerNetworkInventoryCommittedResultInnerV1::Current(inventory),
+                })
+            }
+            CompletionDisposition::Stale(receipt) => {
+                if terminal_error.is_some() {
+                    return Err(ResourceInventoryError::CorruptState);
+                }
+                consume_completed(&mut self.journal, receipt.token)?;
+                Ok(ControllerNetworkInventoryCommittedResultV1 {
+                    inner: ControllerNetworkInventoryCommittedResultInnerV1::StaleSuccess,
+                })
+            }
+            CompletionDisposition::Integrity(receipt) => {
+                if terminal_error.is_some() {
+                    return Err(ResourceInventoryError::CorruptState);
+                }
+                consume_completed(&mut self.journal, receipt.token)?;
+                Ok(ControllerNetworkInventoryCommittedResultV1 {
+                    inner:
+                        ControllerNetworkInventoryCommittedResultInnerV1::IntegrityRejectedSuccess,
+                })
+            }
+            CompletionDisposition::Terminal(receipt) => {
+                let terminal_error = terminal_error.ok_or(ResourceInventoryError::CorruptState)?;
+                consume_completed(&mut self.journal, receipt.token)?;
+                Ok(ControllerNetworkInventoryCommittedResultV1 {
+                    inner: ControllerNetworkInventoryCommittedResultInnerV1::Terminal(
+                        terminal_error,
+                    ),
+                })
+            }
+        }
+    }
+}
+
+/// Retains one process-local reservation without exposing its durable identity.
+#[doc(hidden)]
+pub struct ControllerNetworkInventoryReservationV1 {
+    receipt: ReservationReceipt,
+}
+
+/// Retains one nonconstructible, fully persisted controller result.
+///
+/// Its inspection methods return data only. Future channel composition must
+/// retain this opaque value to preserve the owner-produced durable binding.
+#[doc(hidden)]
+pub struct ControllerNetworkInventoryCommittedResultV1 {
+    inner: ControllerNetworkInventoryCommittedResultInnerV1,
+}
+
+impl ControllerNetworkInventoryCommittedResultV1 {
+    /// Returns a nonauthorizing classification of the committed result.
+    #[must_use]
+    pub const fn kind(&self) -> ControllerNetworkInventoryCommittedResultKindV1 {
+        match &self.inner {
+            ControllerNetworkInventoryCommittedResultInnerV1::Current(_) => {
+                ControllerNetworkInventoryCommittedResultKindV1::Current
+            }
+            ControllerNetworkInventoryCommittedResultInnerV1::StaleSuccess => {
+                ControllerNetworkInventoryCommittedResultKindV1::StaleSuccess
+            }
+            ControllerNetworkInventoryCommittedResultInnerV1::IntegrityRejectedSuccess => {
+                ControllerNetworkInventoryCommittedResultKindV1::IntegrityRejectedSuccess
+            }
+            ControllerNetworkInventoryCommittedResultInnerV1::Terminal(_) => {
+                ControllerNetworkInventoryCommittedResultKindV1::Terminal
+            }
+        }
+    }
+
+    /// Borrows current inventory data without transferring durable authority.
+    #[must_use]
+    pub const fn current_inventory(&self) -> Option<&ValidatedNetworkInventory> {
+        match &self.inner {
+            ControllerNetworkInventoryCommittedResultInnerV1::Current(inventory) => Some(inventory),
+            ControllerNetworkInventoryCommittedResultInnerV1::StaleSuccess
+            | ControllerNetworkInventoryCommittedResultInnerV1::IntegrityRejectedSuccess
+            | ControllerNetworkInventoryCommittedResultInnerV1::Terminal(_) => None,
+        }
+    }
+
+    /// Borrows a terminal classification without transferring durable authority.
+    #[must_use]
+    pub const fn terminal_error(&self) -> Option<&NetworkInventoryCheckpointTerminalErrorV1> {
+        match &self.inner {
+            ControllerNetworkInventoryCommittedResultInnerV1::Terminal(error) => Some(error),
+            ControllerNetworkInventoryCommittedResultInnerV1::Current(_)
+            | ControllerNetworkInventoryCommittedResultInnerV1::StaleSuccess
+            | ControllerNetworkInventoryCommittedResultInnerV1::IntegrityRejectedSuccess => None,
+        }
+    }
+}
+
+/// Identifies a committed result without carrying owner-produced authority.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControllerNetworkInventoryCommittedResultKindV1 {
+    /// The outcome installed and rechecked a current Network inventory.
+    Current,
+    /// The successful outcome became stale during the live exchange.
+    StaleSuccess,
+    /// Inventory continuity rejected the successful outcome.
+    IntegrityRejectedSuccess,
+    /// The broker returned one closed signed terminal outcome.
+    Terminal,
+}
+
+enum ControllerNetworkInventoryCommittedResultInnerV1 {
+    Current(ValidatedNetworkInventory),
+    StaleSuccess,
+    IntegrityRejectedSuccess,
+    Terminal(NetworkInventoryCheckpointTerminalErrorV1),
+}
+
 /// Separates durable replay, an already-outstanding request, and a new receipt.
 enum ReservationDisposition {
     ExactReplay { canonical_outcome_packet: Vec<u8> },
     Pending,
+    RecoveryRequired,
     Reserved(ReservationReceipt),
 }
 
@@ -202,7 +395,7 @@ fn reserve_request(
             return Err(ResourceInventoryError::Conflict);
         }
         if checkpoint.head.state.is_unconsumed_noncurrent() {
-            return Err(ResourceInventoryError::Conflict);
+            return Ok(ReservationDisposition::RecoveryRequired);
         }
         require_next_request(checkpoint, &incoming)?;
     } else if history
