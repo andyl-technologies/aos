@@ -42,7 +42,8 @@
     else
       import ./_linux-hosted-llvm-script.nix {
         inherit llvm;
-        inherit (targetPackages) glibc gcc;
+        inherit (targetPackages) glibc;
+        gcc = targetPackages.gccUnwrapped;
       };
   targetKernel = targetPackages.linux;
   empty = targetPackages.writeTextFile {
@@ -73,7 +74,7 @@
       ++ (
         if llvm == null
         then []
-        else [llvm targetPackages.glibc.dev targetPackages.glibc.static]
+        else [llvm targetPackages.glibc targetPackages.glibc.dev targetPackages.glibc.static]
       )
       ++ (
         if rust == null
