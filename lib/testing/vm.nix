@@ -656,6 +656,7 @@
     # Shared:
     testScript ? null,
     extraDisks ? [],
+    kernelParams ? [],
     timeout ? 120,
     memory ? null,
     seedSELinuxDisabledConfig ? true,
@@ -724,6 +725,9 @@
             vcpu_count = 2;
             # Blank devices for storage checks, presented as /dev/vdb onward.
             extra_disks = map (disk: {inherit (disk) sizeMiB;}) extraDisks;
+            # Appended to the harness's own boot arguments, which own the root
+            # and console selection. Kernel module parameters live here.
+            kernel_params = kernelParams;
           }
         ];
       };

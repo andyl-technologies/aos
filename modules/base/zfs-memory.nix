@@ -464,6 +464,18 @@ in {
       '';
     };
 
+    ## The module parameters this host boots with, for consumers that have to
+    ## reproduce the boot environment rather than read it from the UKI.
+    moduleParameters = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      readOnly = true;
+      internal = true;
+      description = ''
+        Resolved `<module>.<parameter>=<value>` arguments derived from the
+        memory budget and the pinned release's known-issue workarounds.
+      '';
+    };
+
     ## Apply parameter workarounds for known defects in the pinned OpenZFS.
     knownIssueWorkarounds = lib.mkOption {
       type = lib.types.bool;
@@ -511,6 +523,7 @@ in {
     # budget change requires an image rebuild and a reboot, which is exactly
     # the condition the verification service reports on.
     aos.boot.kernelParams = parameterArguments;
+    aos.filesystems.zfs.moduleParameters = parameterArguments;
 
     aos.kernel.sysctl = lib.mkMerge [
       (lib.mkIf cfg.fragmentationDefenses {

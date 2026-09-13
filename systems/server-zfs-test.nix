@@ -121,5 +121,9 @@ in {
     ] (_: {
       extraDisks = [{sizeMiB = poolDiskSizeMiB;}];
       memoryMiB = 2048;
+      # The harness boots the guest with its own command line, so the module
+      # parameters these checks verify have to be named here. They come from
+      # the same derivation the image's UKI would carry.
+      kernelParams = config.aos.filesystems.zfs.moduleParameters;
     });
 }

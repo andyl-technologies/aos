@@ -39,7 +39,7 @@ in {
           system = systemProxy;
           groupName = name;
           checks = spec.checks;
-          inherit (spec) extraDisks;
+          inherit (spec) extraDisks kernelParams;
           memory = spec.memoryMiB;
         }
     )
