@@ -981,6 +981,42 @@ public scalar observations from activating, consuming, or releasing an
 acquisition. SourceProvider 1.0 and AOSMSP01 retain their exact wire and durable
 formats. Production Create therefore remains closed.
 
+### Linux connection-bound record origins (source-only)
+
+The sequence-packet carrier now privately retains each connected endpoint's
+nonzero Linux `SO_COOKIE` and stamps that already-retained binding into a record
+only after its payload, nominated credentials, pidfd, and optional descriptor
+table are completely received and validated. Legacy receive performs no new
+socket query and retains its existing error taxonomy and syscall behavior. A
+socket-owned binding operation then consumes the record, queries the live
+endpoint cookie, and requires both that observation and the private origin to
+name the exact retained socket object. A duplicate descriptor for the same
+socket is accepted; the opposite endpoint and an independent connection are
+rejected. Any binding error or mismatch closes the receiving socket and drops
+the complete record and every transferred descriptor.
+
+The public connection-bound wrappers have no arbitrary constructor or rebinding
+operation. They own the record while borrowing the exact retained connection
+peer, so mutable I/O through that socket owner cannot compete until the wrapper
+or its preserved peer borrow is released. Legacy receive, payload, subject,
+descriptor, and consuming `into_parts` APIs remain available and unchanged.
+Binding failures use a separate nonconstructible, non-exhaustive error whose
+closed/current-socket/origin categories and text disclose no cookie, descriptor,
+kernel error, or peer. The existing public socket-cookie observation also
+remains non-authorizing.
+Neither the private origin nor the wrapper proves the syscall writer,
+authenticates an application or channel, equates the nominated record subject
+with the connection establisher, or authorizes use of a transferred descriptor.
+
+This is an additive source foundation only. No Host, Storage, Mount, Network,
+controller, or service call site consumes the wrapper, and no protocol, wire,
+feature advertisement, readiness, journal, Nix, or deployment behavior changes.
+Production use still requires the authenticated broker-session composite,
+protected route/key custody, exact subject/peer/process/cgroup continuity,
+descriptor-role semantics, atomic owner transactions, and enforcing MAC and
+delegated-writer confinement. `SBX-BPROTO-04`, `SBX-BPROTO-05`, and
+`SBX-P0-10` remain open.
+
 ### Broker Session Authentication 1.0 source foundation (inert)
 
 The exact client-required feature is

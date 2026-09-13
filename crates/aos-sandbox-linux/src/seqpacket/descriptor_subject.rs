@@ -21,6 +21,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 
+use super::socket_binding::ReceivedSocketOrigin;
 use super::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error,
     validate_record_subject,
@@ -339,6 +340,37 @@ impl DescriptorSubjectSocket {
         result
     }
 
+    /// Binds an already received descriptor record to this exact socket endpoint.
+    ///
+    /// The record must have been consumed from this socket object or one of its
+    /// duplicate descriptors. The returned wrapper owns every transferred
+    /// descriptor and borrows this socket's exact retained peer, preventing
+    /// competing mutable I/O through this owner while the result remains
+    /// unresolved. The binding neither authenticates the writer or an
+    /// application role nor equates the record subject with the connection peer.
+    ///
+    /// # Errors
+    ///
+    /// Closes this socket and drops the complete record and descriptor table
+    /// when the socket is closed, its current kernel cookie cannot be read or
+    /// differs from the retained binding, or the record originated on another
+    /// socket object.
+    pub fn bind_received<'socket>(
+        &'socket mut self,
+        record: ReceivedDescriptorRecord,
+    ) -> Result<ConnectionBoundReceivedDescriptorRecord<'socket>, super::RecordBindingError> {
+        let result = self.require_record_origin(&record);
+        if let Err(error) = result {
+            self.fd.take();
+            return Err(error);
+        }
+
+        Ok(ConnectionBoundReceivedDescriptorRecord {
+            record,
+            peer: &self.peer,
+        })
+    }
+
     /// Receives a response with either no descriptors or exactly two descriptors.
     ///
     /// This closed alternative supports descriptor-free protocol errors. The
@@ -455,11 +487,26 @@ impl DescriptorSubjectSocket {
         }
         let (subject, descriptors) =
             validate_ancillary(received.ancillary, expected_descriptors, allow_empty)?;
+        let origin = self.peer.binding.received_origin();
         Ok(ReceivedDescriptorRecord {
             payload,
             subject,
             descriptors,
+            origin,
         })
+    }
+
+    fn require_record_origin(
+        &self,
+        record: &ReceivedDescriptorRecord,
+    ) -> Result<(), super::RecordBindingError> {
+        let fd = self
+            .fd
+            .as_ref()
+            .map(AsFd::as_fd)
+            .ok_or_else(super::RecordBindingError::closed)?;
+        self.peer.binding.require_current(fd)?;
+        record.origin.require_binding(self.peer.binding)
     }
 }
 
@@ -469,6 +516,86 @@ pub struct ReceivedDescriptorRecord {
     payload: Vec<u8>,
     subject: KernelAuthorizedRecordSubject,
     descriptors: Vec<OwnedFd>,
+    origin: ReceivedSocketOrigin,
+}
+
+/// Owns a descriptor record bound to the exact socket that consumed it.
+///
+/// This wrapper has no independent constructor. Its lifetime retains a borrow
+/// of the receiving socket's pinned peer and prevents mutable socket operations
+/// through that owner until the wrapper or the peer returned by
+/// [`Self::into_parts`] is released. It provides carrier continuity only, not
+/// writer authentication, descriptor authority, or subject/peer equivalence.
+///
+/// ```compile_fail
+/// use aos_sandbox_linux::seqpacket::descriptor_subject::{
+///     DescriptorSubjectSocket, ReceivedDescriptorRecord,
+/// };
+///
+/// fn compete(socket: &mut DescriptorSubjectSocket, record: ReceivedDescriptorRecord) {
+///     let (_, _, _, peer) = socket.bind_received(record).unwrap().into_parts();
+///     socket.send(b"competing I/O").unwrap();
+///     let _ = peer.credentials();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
+/// use aos_sandbox_linux::seqpacket::descriptor_subject::{
+///     ConnectionBoundReceivedDescriptorRecord, ReceivedDescriptorRecord,
+/// };
+///
+/// fn forge<'a>(
+///     record: ReceivedDescriptorRecord,
+///     peer: &'a ConnectionPeerIdentity,
+/// ) -> ConnectionBoundReceivedDescriptorRecord<'a> {
+///     ConnectionBoundReceivedDescriptorRecord { record, peer }
+/// }
+/// ```
+#[derive(Debug)]
+pub struct ConnectionBoundReceivedDescriptorRecord<'socket> {
+    record: ReceivedDescriptorRecord,
+    peer: &'socket ConnectionPeerIdentity,
+}
+
+impl<'socket> ConnectionBoundReceivedDescriptorRecord<'socket> {
+    /// Returns the exact received payload.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        self.record.payload()
+    }
+
+    /// Returns the kernel-authorized subject nominated for this record.
+    #[must_use]
+    pub const fn subject(&self) -> &KernelAuthorizedRecordSubject {
+        self.record.subject()
+    }
+
+    /// Returns transferred descriptors in their exact ancillary order.
+    #[must_use]
+    pub fn descriptors(&self) -> &[OwnedFd] {
+        self.record.descriptors()
+    }
+
+    /// Returns the peer pinned for the exact socket that consumed the record.
+    #[must_use]
+    pub const fn peer(&self) -> &ConnectionPeerIdentity {
+        self.peer
+    }
+
+    /// Splits the record while preserving the exact socket-peer borrow.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<u8>,
+        KernelAuthorizedRecordSubject,
+        Vec<OwnedFd>,
+        &'socket ConnectionPeerIdentity,
+    ) {
+        let (payload, subject, descriptors) = self.record.into_parts();
+        (payload, subject, descriptors, self.peer)
+    }
 }
 
 impl ReceivedDescriptorRecord {

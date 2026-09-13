@@ -7,8 +7,11 @@
 
 use super::*;
 use std::os::unix::fs::MetadataExt as _;
+use std::process::{Command, Stdio};
 
 use crate::seqpacket::process_tests::{finish_connector, spawn_connector};
+
+const ORIGIN_DESCRIPTOR_DROP_FIXTURE_ENV: &str = "AOS_DESCRIPTOR_SUBJECT_ORIGIN_DROP_FIXTURE_V1";
 
 fn pair() -> (DescriptorSubjectSocket, OwnedFd) {
     let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
@@ -66,6 +69,137 @@ fn exact_descriptor_replies_retain_subject_and_cloexec_ownership() {
     for fd in record.descriptors() {
         assert!(uapi::is_cloexec(fd.as_fd()).expect("transferred CLOEXEC"));
     }
+}
+
+#[test]
+fn received_descriptor_record_binds_only_to_its_exact_socket() {
+    let (mut receiver, sender) = pair();
+    uapi::send_seqpacket(sender.as_fd(), b"bound").expect("send bound record");
+    super::super::socket_binding::reset_current_query_count();
+    let record = receiver.receive(64, 0).expect("receive bound record");
+    let peer = receiver.peer() as *const ConnectionPeerIdentity;
+    assert_eq!(super::super::socket_binding::current_query_count(), 0);
+
+    let bound = receiver.bind_received(record).expect("bind exact socket");
+
+    assert_eq!(super::super::socket_binding::current_query_count(), 1);
+    assert_eq!(bound.payload(), b"bound");
+    assert!(bound.descriptors().is_empty());
+    assert_eq!(bound.subject().initial_info().pid(), std::process::id());
+    assert_eq!(bound.peer() as *const ConnectionPeerIdentity, peer);
+    let (payload, subject, descriptors, retained_peer) = bound.into_parts();
+    assert_eq!(payload, b"bound");
+    assert!(descriptors.is_empty());
+    assert_eq!(subject.initial_info().pid(), std::process::id());
+    assert_eq!(retained_peer as *const ConnectionPeerIdentity, peer);
+}
+
+#[test]
+fn same_socket_duplicate_accepts_descriptor_record_origin() {
+    let (mut receiver, sender) = pair();
+    let duplicate_fd = uapi::duplicate_at_least(receiver.as_fd().expect("receiver fd"), 0)
+        .expect("duplicate receiver");
+    let mut duplicate = DescriptorSubjectSocket::from_owned(duplicate_fd).expect("adopt duplicate");
+    uapi::send_seqpacket(sender.as_fd(), b"duplicate").expect("send duplicate record");
+    let record = receiver.receive(64, 0).expect("receive through source");
+    let duplicate_peer = duplicate.peer() as *const ConnectionPeerIdentity;
+
+    let bound = duplicate
+        .bind_received(record)
+        .expect("bind through same-socket duplicate");
+
+    assert_eq!(bound.payload(), b"duplicate");
+    assert_eq!(
+        bound.peer() as *const ConnectionPeerIdentity,
+        duplicate_peer
+    );
+}
+
+#[test]
+fn independent_descriptor_socket_rejects_origin_and_closes() {
+    let (mut first_receiver, first_sender) = pair();
+    let (mut second_receiver, _second_sender) = pair();
+    uapi::send_seqpacket(first_sender.as_fd(), b"foreign").expect("send foreign record");
+    let record = first_receiver
+        .receive(64, 0)
+        .expect("receive foreign record");
+
+    assert!(matches!(
+        second_receiver.bind_received(record),
+        Err(error)
+            if error.category() == crate::seqpacket::RecordBindingErrorCategory::OriginMismatch
+    ));
+    assert!(matches!(
+        second_receiver.as_fd(),
+        Err(SeqpacketError::Closed)
+    ));
+}
+
+#[test]
+fn opposite_descriptor_endpoint_rejects_origin_and_closes() {
+    let (mut receiver, sender_fd) = pair();
+    let duplicate_sender =
+        uapi::duplicate_at_least(sender_fd.as_fd(), 0).expect("duplicate sender");
+    let mut sender =
+        DescriptorSubjectSocket::from_owned(sender_fd).expect("adopt sending endpoint");
+    uapi::send_seqpacket(duplicate_sender.as_fd(), b"opposite").expect("send opposite record");
+    let record = receiver.receive(64, 0).expect("receive record");
+
+    assert!(matches!(
+        sender.bind_received(record),
+        Err(error)
+            if error.category() == crate::seqpacket::RecordBindingErrorCategory::OriginMismatch
+    ));
+    assert!(matches!(sender.as_fd(), Err(SeqpacketError::Closed)));
+}
+
+#[test]
+fn origin_mismatch_drops_transferred_descriptors_in_isolated_process() {
+    if std::env::var_os(ORIGIN_DESCRIPTOR_DROP_FIXTURE_ENV).as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        run_origin_descriptor_drop_fixture();
+        return;
+    }
+
+    let status = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "seqpacket::descriptor_subject::tests::origin_mismatch_drops_transferred_descriptors_in_isolated_process",
+            "--nocapture",
+        ])
+        .env(ORIGIN_DESCRIPTOR_DROP_FIXTURE_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run isolated descriptor-drop fixture");
+    assert!(status.success(), "descriptor-drop fixture failed: {status}");
+}
+
+fn run_origin_descriptor_drop_fixture() {
+    use std::os::fd::AsRawFd as _;
+
+    let (mut first_receiver, first_sender) = pair();
+    let (mut second_receiver, _second_sender) = pair();
+    let file = tempfile::tempfile().expect("transferred file");
+    uapi::send_seqpacket_rights(first_sender.as_fd(), b"foreign", &[file.as_fd()])
+        .expect("send foreign descriptor record");
+    let record = first_receiver
+        .receive(64, 1)
+        .expect("receive descriptor record");
+    let received_fd = record.descriptors()[0].as_raw_fd();
+
+    assert!(matches!(
+        second_receiver.bind_received(record),
+        Err(error)
+            if error.category() == crate::seqpacket::RecordBindingErrorCategory::OriginMismatch
+    ));
+    assert!(!uapi::raw_fd_is_open(received_fd));
+    assert!(matches!(
+        second_receiver.as_fd(),
+        Err(SeqpacketError::Closed)
+    ));
 }
 
 #[test]

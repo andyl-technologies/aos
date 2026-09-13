@@ -7938,3 +7938,36 @@ qualification remain open. Real fork continuation, cgroup/procfs mutation,
 cross-process flock contention, cross-UID ownership, and MAC policy validation
 specifically remain VM and `SBX-P0-10` gates. Accordingly `SBX-BPROTO-04`,
 `SBX-BPROTO-05`, and `SBX-P0-10` remain unchecked.
+
+### Linux connection-bound record-origin foundation (source-only, inert)
+
+The Linux sequence-packet carrier now retains a private nonzero `SO_COOKIE`
+binding for each connected socket and stamps that already-retained value as a
+private origin after each ordinary or descriptor-bearing record is fully
+validated. Legacy receive performs no additional cookie query and preserves its
+existing syscall and error behavior. A new socket-owned operation consumes that
+record, rechecks the endpoint's current cookie, and returns a
+nonconstructible wrapper that owns the record while borrowing the exact pinned
+connection peer. Duplicate descriptors for the same kernel socket remain valid;
+opposite endpoints and independent connections fail with a redacted dedicated
+binding error. The nonconstructible, non-exhaustive error exposes only stable
+closed/current-socket/origin categories and retains no underlying cookie,
+descriptor, peer, or kernel detail. Every mismatch or recheck error closes the
+binding socket, drops the record, and closes all received descriptors.
+
+The existing receive/accessor/`into_parts` APIs and the explicitly
+non-authorizing public `socket_cookie()` observation are unchanged. The wrapper
+does not claim the actual syscall writer, subject/peer equality, application or
+channel authentication, descriptor authority, or any broker-session fact.
+Tests cover both carriers, same-socket duplicates, opposite and independent
+connections, closed/error/zero observations, option/flag preservation,
+descriptor close ownership in an isolated process, redaction, construction and
+borrow failures, and legacy paths.
+
+This is source-only and has no production caller. Host, Storage, Mount, Network,
+controller, service, protocol, advertisement, readiness, journal, Nix, and
+deployment behavior remain unchanged. Authenticated session composition,
+protected custody, exact peer/subject/process/cgroup continuity, descriptor-role
+semantics, atomic owner companions, delegated-writer confinement, and enforcing
+MAC qualification remain required. `SBX-BPROTO-04`, `SBX-BPROTO-05`, and
+`SBX-P0-10` remain unchecked.

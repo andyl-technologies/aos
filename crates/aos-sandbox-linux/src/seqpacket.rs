@@ -14,7 +14,9 @@
 //! therefore remain separate types and neither claims application provenance.
 //! [`RecordSubjectListener`] checks inherited identity options before adopting
 //! accepted children; enabling them after an untrusted peer connects is not an
-//! equivalent record-provenance boundary.
+//! equivalent record-provenance boundary. A consumed record can additionally
+//! be bound to the exact retained socket object through a private `SO_COOKIE`
+//! origin stamp. That binding is carrier continuity, not writer identity.
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -26,6 +28,9 @@ use crate::uapi::{self, RawAncillary};
 
 mod listener;
 pub use listener::RecordSubjectListener;
+
+mod socket_binding;
+use socket_binding::{ConnectedSocketBinding, ReceivedSocketOrigin};
 
 pub mod descriptor_subject;
 
@@ -197,6 +202,36 @@ impl SeqpacketSocket {
         result
     }
 
+    /// Binds an already received record to this exact retained socket endpoint.
+    ///
+    /// The record must have been consumed from this socket object or one of its
+    /// duplicate descriptors. The returned wrapper owns the record and borrows
+    /// this socket's exact retained peer, preventing competing mutable I/O
+    /// through this owner while the result remains unresolved. This establishes
+    /// only carrier continuity; it does not prove the record writer, equate the
+    /// record subject with the connection peer, or authenticate a protocol role.
+    ///
+    /// # Errors
+    ///
+    /// Closes this socket and drops the record when the socket is closed, its
+    /// current kernel cookie cannot be read or differs from the retained
+    /// binding, or the record originated on another socket object.
+    pub fn bind_received<'socket>(
+        &'socket mut self,
+        record: ReceivedRecord,
+    ) -> Result<ConnectionBoundReceivedRecord<'socket>, RecordBindingError> {
+        let result = self.require_record_origin(&record);
+        if let Err(error) = result {
+            self.fd.take();
+            return Err(error);
+        }
+
+        Ok(ConnectionBoundReceivedRecord {
+            record,
+            peer: &self.peer,
+        })
+    }
+
     fn receive_inner(&self, maximum_bytes: usize) -> Result<ReceivedRecord, SeqpacketError> {
         let mut probe = [0_u8; 1];
         let preview = uapi::recv_seqpacket(
@@ -223,9 +258,9 @@ impl SeqpacketSocket {
     }
 
     fn consume_exact(&self, expected: usize) -> Result<ReceivedRecord, SeqpacketError> {
+        let fd = self.borrow_fd()?;
         let mut payload = vec![0_u8; expected];
-        let received =
-            uapi::recv_seqpacket(self.borrow_fd()?, &mut payload, 0).map_err(map_kernel_error)?;
+        let received = uapi::recv_seqpacket(fd, &mut payload, 0).map_err(map_kernel_error)?;
         if received.flags & libc::MSG_CTRUNC != 0 {
             return Err(SeqpacketError::ControlTruncated);
         }
@@ -239,7 +274,22 @@ impl SeqpacketSocket {
             });
         }
         let subject = validate_record_subject(received.ancillary)?;
-        Ok(ReceivedRecord { payload, subject })
+        let origin = self.peer.binding.received_origin();
+        Ok(ReceivedRecord {
+            payload,
+            subject,
+            origin,
+        })
+    }
+
+    fn require_record_origin(&self, record: &ReceivedRecord) -> Result<(), RecordBindingError> {
+        let fd = self
+            .fd
+            .as_ref()
+            .map(AsFd::as_fd)
+            .ok_or_else(RecordBindingError::closed)?;
+        self.peer.binding.require_current(fd)?;
+        record.origin.require_binding(self.peer.binding)
     }
 
     fn borrow_fd(&self) -> Result<BorrowedFd<'_>, SeqpacketError> {
@@ -255,6 +305,77 @@ impl SeqpacketSocket {
 pub struct ReceivedRecord {
     payload: Vec<u8>,
     subject: KernelAuthorizedRecordSubject,
+    origin: ReceivedSocketOrigin,
+}
+
+/// Owns a received record bound to the exact socket that consumed it.
+///
+/// This wrapper has no independent constructor. Its lifetime retains a borrow
+/// of the receiving socket's pinned peer and prevents mutable socket operations
+/// through that owner until the wrapper or the peer returned by
+/// [`Self::into_parts`] is released. The binding is transport continuity only,
+/// not writer authentication or an assertion that [`Self::peer`] equals
+/// [`Self::subject`].
+///
+/// ```compile_fail
+/// use aos_sandbox_linux::seqpacket::{ReceivedRecord, SeqpacketSocket};
+///
+/// fn compete(socket: &mut SeqpacketSocket, record: ReceivedRecord) {
+///     let (_, _, peer) = socket.bind_received(record).unwrap().into_parts();
+///     socket.send(b"competing I/O").unwrap();
+///     let _ = peer.credentials();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use aos_sandbox_linux::seqpacket::{
+///     ConnectionBoundReceivedRecord, ConnectionPeerIdentity, ReceivedRecord,
+/// };
+///
+/// fn forge<'a>(
+///     record: ReceivedRecord,
+///     peer: &'a ConnectionPeerIdentity,
+/// ) -> ConnectionBoundReceivedRecord<'a> {
+///     ConnectionBoundReceivedRecord { record, peer }
+/// }
+/// ```
+#[derive(Debug)]
+pub struct ConnectionBoundReceivedRecord<'socket> {
+    record: ReceivedRecord,
+    peer: &'socket ConnectionPeerIdentity,
+}
+
+impl<'socket> ConnectionBoundReceivedRecord<'socket> {
+    /// Returns the exact received payload.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        self.record.payload()
+    }
+
+    /// Returns the kernel-authorized subject nominated for this record.
+    #[must_use]
+    pub const fn subject(&self) -> &KernelAuthorizedRecordSubject {
+        self.record.subject()
+    }
+
+    /// Returns the peer pinned for the exact socket that consumed the record.
+    #[must_use]
+    pub const fn peer(&self) -> &ConnectionPeerIdentity {
+        self.peer
+    }
+
+    /// Splits the record while preserving the exact socket-peer borrow.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<u8>,
+        KernelAuthorizedRecordSubject,
+        &'socket ConnectionPeerIdentity,
+    ) {
+        let (payload, subject) = self.record.into_parts();
+        (payload, subject, self.peer)
+    }
 }
 
 impl ReceivedRecord {
@@ -286,7 +407,7 @@ pub struct ConnectionPeerIdentity {
     credentials: PeerCredentials,
     pidfd: PidFd,
     initial_info: PidFdInfo,
-    socket_cookie: NonZeroU64,
+    binding: ConnectedSocketBinding,
 }
 
 impl ConnectionPeerIdentity {
@@ -305,21 +426,17 @@ impl ConnectionPeerIdentity {
     /// unavailable peer pidfd, invalid credentials, or inconsistent pidfd info.
     pub fn from_socket(fd: BorrowedFd<'_>) -> Result<Self, SeqpacketError> {
         uapi::validate_connected_seqpacket(fd)?;
-        let socket_cookie = NonZeroU64::new(uapi::socket_cookie(fd)?).ok_or(
-            SeqpacketError::PeerIdentity("SO_COOKIE returned the reserved zero value"),
-        )?;
+        let binding = ConnectedSocketBinding::capture_peer(fd)?;
         let credentials = PeerCredentials::from_raw(uapi::peer_credentials(fd)?)?;
         let pidfd = PidFd::from_owned(uapi::peer_pidfd(fd)?)?;
         let initial_info = pidfd.info()?;
-        let final_cookie = NonZeroU64::new(uapi::socket_cookie(fd)?).ok_or(
-            SeqpacketError::PeerIdentity("SO_COOKIE returned the reserved zero value"),
-        )?;
+        let final_binding = ConnectedSocketBinding::capture_peer(fd)?;
         if initial_info.pid() != credentials.pid().get() {
             return Err(SeqpacketError::PeerIdentity(
                 "SO_PEERCRED and SO_PEERPIDFD identify different processes",
             ));
         }
-        if final_cookie != socket_cookie {
+        if final_binding != binding {
             return Err(SeqpacketError::PeerIdentity(
                 "SO_COOKIE changed during sequenced-packet peer capture",
             ));
@@ -328,7 +445,7 @@ impl ConnectionPeerIdentity {
             credentials,
             pidfd,
             initial_info,
-            socket_cookie,
+            binding,
         })
     }
 
@@ -351,9 +468,12 @@ impl ConnectionPeerIdentity {
     }
 
     /// Returns the nonzero kernel cookie of the connected socket endpoint.
+    ///
+    /// This observation is diagnostic carrier identity only. It does not
+    /// authorize the connection, its peer, or any record writer.
     #[must_use]
     pub const fn socket_cookie(&self) -> NonZeroU64 {
-        self.socket_cookie
+        self.binding.socket_cookie()
     }
 
     /// Tests whether the pinned connection-establisher process still exists.
@@ -482,6 +602,66 @@ impl RecordCredentials {
     #[must_use]
     pub const fn gid(self) -> u32 {
         self.gid
+    }
+}
+
+/// Classifies a redacted failure to bind a received record to one socket.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RecordBindingErrorCategory {
+    /// The target socket was already closed.
+    Closed,
+    /// The target socket's current kernel identity could not be confirmed.
+    CurrentSocket,
+    /// The record's private origin differs from the target socket.
+    OriginMismatch,
+}
+
+impl std::fmt::Display for RecordBindingErrorCategory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => formatter.write_str("socket closed"),
+            Self::CurrentSocket => formatter.write_str("socket currentness unavailable"),
+            Self::OriginMismatch => formatter.write_str("record origin mismatch"),
+        }
+    }
+}
+
+/// Reports a redacted failure to bind a record to its receiving socket.
+///
+/// This non-exhaustive type cannot be constructed by callers. It never exposes
+/// a socket cookie, descriptor number, peer identity, or underlying kernel
+/// error. [`Self::category`] provides the stable fail-closed classification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("received record socket binding failed: {category}")]
+#[non_exhaustive]
+pub struct RecordBindingError {
+    category: RecordBindingErrorCategory,
+}
+
+impl RecordBindingError {
+    /// Returns the stable redacted failure category.
+    #[must_use]
+    pub const fn category(&self) -> RecordBindingErrorCategory {
+        self.category
+    }
+
+    const fn closed() -> Self {
+        Self {
+            category: RecordBindingErrorCategory::Closed,
+        }
+    }
+
+    const fn current_socket() -> Self {
+        Self {
+            category: RecordBindingErrorCategory::CurrentSocket,
+        }
+    }
+
+    const fn origin_mismatch() -> Self {
+        Self {
+            category: RecordBindingErrorCategory::OriginMismatch,
+        }
     }
 }
 
@@ -716,6 +896,156 @@ mod tests {
         assert_eq!(record.subject().initial_info().pid(), std::process::id());
         assert!(record.subject().is_alive().expect("test subject liveness"));
         assert!(uapi::is_cloexec(record.subject().pidfd().as_fd()).expect("inspect pidfd flags"));
+    }
+
+    #[test]
+    fn legacy_received_record_parts_remain_available_without_binding() {
+        let (mut sender, mut receiver) = pair();
+        receiver
+            .enable_record_subjects()
+            .expect("enable record subjects");
+        sender.send(b"legacy").expect("send legacy record");
+
+        let record = receiver.receive(64).expect("receive legacy record");
+        let (payload, subject) = record.into_parts();
+
+        assert_eq!(payload, b"legacy");
+        assert_eq!(subject.initial_info().pid(), std::process::id());
+        assert!(receiver.as_fd().is_ok());
+    }
+
+    #[test]
+    fn received_record_binds_only_to_its_exact_socket() {
+        let (mut sender, mut receiver) = pair();
+        receiver
+            .enable_record_subjects()
+            .expect("enable record subjects");
+        sender.send(b"bound").expect("send bound record");
+        socket_binding::reset_current_query_count();
+        let record = receiver.receive(64).expect("receive bound record");
+        let peer = receiver.peer() as *const ConnectionPeerIdentity;
+        assert_eq!(socket_binding::current_query_count(), 0);
+
+        let bound = receiver.bind_received(record).expect("bind exact socket");
+
+        assert_eq!(socket_binding::current_query_count(), 1);
+        assert_eq!(bound.payload(), b"bound");
+        assert_eq!(bound.subject().initial_info().pid(), std::process::id());
+        assert_eq!(bound.peer() as *const ConnectionPeerIdentity, peer);
+        let (payload, subject, retained_peer) = bound.into_parts();
+        assert_eq!(payload, b"bound");
+        assert_eq!(subject.initial_info().pid(), std::process::id());
+        assert_eq!(retained_peer as *const ConnectionPeerIdentity, peer);
+    }
+
+    #[test]
+    fn same_socket_duplicate_accepts_the_received_origin() {
+        let (mut sender, mut receiver) = pair();
+        receiver
+            .enable_record_subjects()
+            .expect("enable record subjects");
+        let duplicate_fd = uapi::duplicate_at_least(receiver.as_fd().expect("receiver fd"), 0)
+            .expect("duplicate receiver");
+        let mut duplicate = SeqpacketSocket::from_owned(duplicate_fd).expect("adopt duplicate");
+        sender.send(b"duplicate").expect("send duplicate record");
+        let record = receiver.receive(64).expect("receive through source");
+        let duplicate_peer = duplicate.peer() as *const ConnectionPeerIdentity;
+
+        let bound = duplicate
+            .bind_received(record)
+            .expect("bind through same-socket duplicate");
+
+        assert_eq!(bound.payload(), b"duplicate");
+        assert_eq!(
+            bound.peer() as *const ConnectionPeerIdentity,
+            duplicate_peer
+        );
+    }
+
+    #[test]
+    fn foreign_record_origin_closes_the_binding_socket() {
+        let (mut first_sender, mut first_receiver) = pair();
+        let (_second_sender, mut second_receiver) = pair();
+        first_receiver
+            .enable_record_subjects()
+            .expect("enable first subjects");
+        first_sender.send(b"foreign").expect("send foreign record");
+        let record = first_receiver.receive(64).expect("receive foreign record");
+
+        assert!(matches!(
+            second_receiver.bind_received(record),
+            Err(error) if error.category() == RecordBindingErrorCategory::OriginMismatch
+        ));
+        assert!(matches!(
+            second_receiver.as_fd(),
+            Err(SeqpacketError::Closed)
+        ));
+        assert_eq!(
+            RecordBindingError::origin_mismatch().to_string(),
+            "received record socket binding failed: record origin mismatch"
+        );
+    }
+
+    #[test]
+    fn binding_errors_expose_only_stable_redacted_categories() {
+        let cases = [
+            (
+                RecordBindingError::closed(),
+                RecordBindingErrorCategory::Closed,
+                "received record socket binding failed: socket closed",
+            ),
+            (
+                RecordBindingError::current_socket(),
+                RecordBindingErrorCategory::CurrentSocket,
+                "received record socket binding failed: socket currentness unavailable",
+            ),
+            (
+                RecordBindingError::origin_mismatch(),
+                RecordBindingErrorCategory::OriginMismatch,
+                "received record socket binding failed: record origin mismatch",
+            ),
+        ];
+
+        for (error, category, text) in cases {
+            assert_eq!(error.category(), category);
+            assert_eq!(error.to_string(), text);
+            assert!(!format!("{error:?}").contains("SO_COOKIE"));
+        }
+    }
+
+    #[test]
+    fn opposite_endpoint_rejects_a_received_origin() {
+        let (mut left, mut right) = pair();
+        left.enable_record_subjects().expect("enable left subjects");
+        right.send(b"opposite").expect("send from opposite");
+        let record = left.receive(64).expect("receive on left");
+
+        assert!(matches!(
+            right.bind_received(record),
+            Err(error) if error.category() == RecordBindingErrorCategory::OriginMismatch
+        ));
+        assert!(matches!(right.as_fd(), Err(SeqpacketError::Closed)));
+    }
+
+    #[test]
+    fn closed_socket_rejects_and_drops_a_received_record() {
+        let (mut sender, mut receiver) = pair();
+        let (_binding_sender, mut binding_receiver) = pair();
+        receiver
+            .enable_record_subjects()
+            .expect("enable record subjects");
+        sender.send(b"closed").expect("send record");
+        let record = receiver.receive(64).expect("receive record");
+        binding_receiver.close();
+
+        assert!(matches!(
+            binding_receiver.bind_received(record),
+            Err(error) if error.category() == RecordBindingErrorCategory::Closed
+        ));
+        assert!(matches!(
+            binding_receiver.as_fd(),
+            Err(SeqpacketError::Closed)
+        ));
     }
 
     #[test]
