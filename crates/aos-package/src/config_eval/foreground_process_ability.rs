@@ -1111,10 +1111,8 @@ fn locate_owned_process(
             }
             Ok(None) => continue,
             Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                ) =>
+                if process_disappeared(&error)
+                    || error.kind() == io::ErrorKind::PermissionDenied =>
             {
                 continue;
             }
@@ -1126,12 +1124,11 @@ fn locate_owned_process(
             }
             Ok(_) => {}
             Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound
-                        | io::ErrorKind::PermissionDenied
-                        | io::ErrorKind::InvalidData
-                ) => {}
+                if process_disappeared(&error)
+                    || matches!(
+                        error.kind(),
+                        io::ErrorKind::PermissionDenied | io::ErrorKind::InvalidData
+                    ) => {}
             Err(error) => return Err(error),
         }
         if claimed_groups.len() > 1 {
@@ -1327,10 +1324,8 @@ fn process_group_exists(process_group: u32) -> Result<bool, io::Error> {
         let stat = match read_bounded(entry.path().join("stat"), 16 * 1024) {
             Ok(stat) => stat,
             Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                ) =>
+                if process_disappeared(&error)
+                    || error.kind() == io::ErrorKind::PermissionDenied =>
             {
                 continue;
             }
