@@ -1198,20 +1198,20 @@ impl TrustedAdapter for NativeSystemdAdapter {
     }
 }
 
-/// Boolean completion evidence for the reference systemd terminal contract.
+/// Boolean completion evidence for the service-management terminal contract.
 #[derive(Clone, Debug)]
-pub struct ReferenceSystemdRecord {
+pub struct ServiceManagementRecord {
     durable: AbilityValue,
     outputs: BTreeMap<LocalKey, AbilityValue>,
 }
 
-impl AdapterRecord for ReferenceSystemdRecord {
+impl AdapterRecord for ServiceManagementRecord {
     fn durable(&self) -> &AbilityValue {
         &self.durable
     }
 }
 
-impl AdapterCompletion for ReferenceSystemdRecord {
+impl AdapterCompletion for ServiceManagementRecord {
     fn outputs(&self) -> &BTreeMap<LocalKey, AbilityValue> {
         &self.outputs
     }
@@ -1227,8 +1227,8 @@ pub struct NativeSystemdServiceAdapter {
     runtime: tokio::runtime::Handle,
     assignment: ProviderAssignment,
     manager_readiness: Vec<NativeProviderReadinessOutput>,
-    completed: ReferenceSystemdRecord,
-    unsettled: ReferenceSystemdRecord,
+    completed: ServiceManagementRecord,
+    unsettled: ServiceManagementRecord,
 }
 
 impl NativeSystemdServiceAdapter {
@@ -1284,7 +1284,7 @@ impl NativeSystemdServiceAdapter {
         require_host_assignment(&assignment)?;
         let runtime = tokio::runtime::Handle::try_current().map_err(|error| {
             invalid_data(format!(
-                "reference systemd adapter requires a Tokio runtime: {error}"
+                "service-management adapter requires a Tokio runtime: {error}"
             ))
         })?;
         require_multi_thread_runtime(&runtime)?;
@@ -1292,8 +1292,8 @@ impl NativeSystemdServiceAdapter {
             runtime,
             assignment,
             manager_readiness,
-            completed: reference_record(true)?,
-            unsettled: reference_record(false)?,
+            completed: service_management_record(true)?,
+            unsettled: service_management_record(false)?,
         })
     }
 
@@ -1324,7 +1324,7 @@ impl NativeSystemdServiceAdapter {
     fn manager_readiness_completion(
         &self,
         control: &dyn RuntimeControl,
-    ) -> Result<ReferenceSystemdRecord, io::Error> {
+    ) -> Result<ServiceManagementRecord, io::Error> {
         let mut outputs = BTreeMap::new();
         for readiness in &self.manager_readiness {
             let (output, value) = readiness
@@ -1336,7 +1336,7 @@ impl NativeSystemdServiceAdapter {
                 ));
             }
         }
-        Ok(ReferenceSystemdRecord {
+        Ok(ServiceManagementRecord {
             durable: self.completed.durable.clone(),
             outputs,
         })
@@ -1389,7 +1389,7 @@ impl NativeSystemdServiceAdapter {
         active_state: UnitActiveState,
         control: &dyn RuntimeControl,
         regular_observation: impl FnOnce() -> ReferenceObservationDisposition,
-    ) -> EffectDisposition<ReferenceSystemdRecord, ReferenceSystemdRecord> {
+    ) -> EffectDisposition<ServiceManagementRecord, ServiceManagementRecord> {
         match self.observe_result(active_state, control, regular_observation) {
             ReferenceObservationResult::Completed(record) => EffectDisposition::Completed(record),
             ReferenceObservationResult::Rejected => {
@@ -1406,7 +1406,7 @@ impl NativeSystemdServiceAdapter {
         active_state: UnitActiveState,
         control: &dyn RuntimeControl,
         regular_observation: impl FnOnce() -> ReferenceObservationDisposition,
-    ) -> ReconcileDisposition<ReferenceSystemdRecord, ReferenceSystemdRecord> {
+    ) -> ReconcileDisposition<ServiceManagementRecord, ServiceManagementRecord> {
         match self.observe_result(active_state, control, regular_observation) {
             ReferenceObservationResult::Completed(record) => {
                 ReconcileDisposition::Completed(record)
@@ -1425,7 +1425,7 @@ impl NativeSystemdServiceAdapter {
         active_state: UnitActiveState,
         control: &dyn RuntimeControl,
         regular_observation: impl FnOnce() -> ReferenceObservationDisposition,
-    ) -> CancellationDisposition<ReferenceSystemdRecord, ReferenceSystemdRecord> {
+    ) -> CancellationDisposition<ServiceManagementRecord, ServiceManagementRecord> {
         match self.observe_result(active_state, control, regular_observation) {
             ReferenceObservationResult::Completed(record) => {
                 CancellationDisposition::Completed(record)
@@ -1448,22 +1448,22 @@ impl NativeSystemdServiceAdapter {
         let action = SystemdAbilityAction::from_operation(operation)?;
         if operation.interface != self.assignment.interface {
             return Err(invalid_data(
-                "reference systemd operation uses another interface",
+                "service-management operation uses another interface",
             ));
         }
         if inputs.as_json() != &serde_json::Value::Bool(true) {
             return Err(invalid_data(
-                "reference systemd operation requires the authenticated true trigger",
+                "service-management operation requires the authenticated true trigger",
             ));
         }
         let [resource] = resources else {
             return Err(invalid_data(
-                "reference systemd operation requires exactly one resource",
+                "service-management operation requires exactly one resource",
             ));
         };
         if resource.resource() != &operation.target.resource {
             return Err(invalid_data(
-                "reference systemd handle does not match the operation target",
+                "service-management handle does not match the operation target",
             ));
         }
         let native = resource.native();
@@ -1478,9 +1478,13 @@ impl NativeSystemdServiceAdapter {
             manager_owner: native.manager.incarnation().owner().to_string(),
         };
         AbilityValue::new(serde_json::to_value(request).map_err(|error| {
-            invalid_data(format!("encoding reference systemd request: {error}"))
+            invalid_data(format!("encoding service-management request: {error}"))
         })?)
-        .map_err(|error| invalid_data(format!("reference systemd request exceeds limits: {error}")))
+        .map_err(|error| {
+            invalid_data(format!(
+                "service-management request exceeds limits: {error}"
+            ))
+        })
     }
 
     fn recover_reference_request(
@@ -1488,10 +1492,10 @@ impl NativeSystemdServiceAdapter {
         durable: &AbilityValue,
         resources: &[ResourceHandle<SystemdResourceHandle>],
     ) -> Result<SystemdAbilityRequest, io::Error> {
-        let request = decode_durable_request(durable, "reference systemd request")?;
+        let request = decode_durable_request(durable, "service-management request")?;
         let [resource] = resources else {
             return Err(invalid_data(
-                "reference systemd recovery requires exactly one resource",
+                "service-management recovery requires exactly one resource",
             ));
         };
         let native = resource.native();
@@ -1502,7 +1506,7 @@ impl NativeSystemdServiceAdapter {
             || request.manager_owner != native.manager.incarnation().owner()
         {
             return Err(invalid_data(
-                "durable reference systemd request disagrees with fresh acquisition",
+                "durable service-management request disagrees with fresh acquisition",
             ));
         }
         require_authorized_action(request.action, native.authorized_action, true)?;
@@ -1516,8 +1520,8 @@ impl NativeSystemdServiceAdapter {
 
 impl TrustedAdapter for NativeSystemdServiceAdapter {
     type Request = SystemdAbilityRequest;
-    type Completion = ReferenceSystemdRecord;
-    type Observation = ReferenceSystemdRecord;
+    type Completion = ServiceManagementRecord;
+    type Observation = ServiceManagementRecord;
     type Handle = SystemdResourceHandle;
     type PrepareError = io::Error;
 
@@ -1673,7 +1677,7 @@ enum ReferenceObservationDisposition {
 }
 
 enum ReferenceObservationResult {
-    Completed(ReferenceSystemdRecord),
+    Completed(ServiceManagementRecord),
     Rejected,
     Indeterminate,
 }
@@ -1688,11 +1692,11 @@ fn classify_regular_observation(
     }
 }
 
-fn reference_record(success: bool) -> Result<ReferenceSystemdRecord, io::Error> {
-    Ok(ReferenceSystemdRecord {
+fn service_management_record(success: bool) -> Result<ServiceManagementRecord, io::Error> {
+    Ok(ServiceManagementRecord {
         durable: AbilityValue::new(serde_json::Value::Bool(success)).map_err(|error| {
             invalid_data(format!(
-                "reference systemd evidence exceeds limits: {error}"
+                "service-management evidence exceeds limits: {error}"
             ))
         })?,
         outputs: BTreeMap::new(),
@@ -1778,7 +1782,7 @@ fn require_authorized_action(
     }
     if requested == SystemdAbilityAction::Restart && !supports_restart {
         return Err(invalid_data(
-            "reference systemd contract does not expose restart",
+            "selected manager contract does not expose restart",
         ));
     }
     Ok(())

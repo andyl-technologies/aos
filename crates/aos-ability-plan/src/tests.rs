@@ -6,7 +6,7 @@ use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::{
     AbilityActivationMode, AbilityValue, AccessMode, AggregationContract, AggregationScope,
     AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
-    ImplementationKind, InstanceId, LocalKey, ObligationKind, PackageDocument,
+    HandlerDescriptor, ImplementationKind, InstanceId, LocalKey, ObligationKind, PackageDocument,
     PackageImplementation, ProviderImplementation, ProviderImplementationReference, RequestId,
     RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
     ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
@@ -639,6 +639,109 @@ fn failed_candidate_work_stops_at_the_search_bound() {
 }
 
 #[test]
+fn service_features_allow_interchangeable_manager_implementations() {
+    let guarantees = aos_ability_model::builtin::service_feature_guarantees()
+        .expect("service feature identities must construct");
+    let mut fixture = planner_fixture_with_guarantees(1, guarantees);
+    let request = fixture.desired.child_requests[0].id.clone();
+    let integrated_provider = sibling_instance(&fixture.provider, "integrated-manager");
+    add_provider_inventory(&mut fixture, &integrated_provider);
+    let integrated_resource = add_provider_resource(&mut fixture, &integrated_provider);
+    let (integrated_package, integrated_implementation) =
+        add_alternate_provider_implementation(&mut fixture, &integrated_provider);
+
+    let mut integrated = fixture.policy.candidates[0].clone();
+    integrated.key = key("integrated-manager");
+    integrated.provider = integrated_provider.clone();
+    integrated.provider_package = integrated_package;
+    integrated.implementation = integrated_implementation;
+    integrated.provider_grant.principal = integrated_provider;
+    for permission in &mut integrated.caller_grant.resources {
+        permission.resource = integrated_resource.clone();
+    }
+    let mut composed = fixture.policy.candidates[0].clone();
+    composed.key = key("composed-manager");
+    fixture.policy.candidates = vec![composed, integrated];
+    fixture
+        .policy
+        .candidates
+        .sort_by(|left, right| left.key.cmp(&right.key));
+    fixture.policy.explicit_bindings = vec![crate::CandidateSelection {
+        request: request.clone(),
+        candidate: key("integrated-manager"),
+    }];
+    fixture.refresh_policy();
+
+    let selected_integrated = Resolver::new(&fixture.context)
+        .resolve(
+            &fixture.policy,
+            fixture.desired.clone(),
+            fixture.environment.clone(),
+            fixture.packages.clone(),
+        )
+        .expect("either provider arrangement may satisfy the service contract");
+    assert_eq!(
+        selected_integrated.decisions[0].candidate,
+        key("integrated-manager")
+    );
+
+    fixture.policy.explicit_bindings[0].candidate = key("composed-manager");
+    let selected_composed = Resolver::new(&fixture.context)
+        .resolve(
+            &fixture.policy,
+            fixture.desired,
+            fixture.environment,
+            fixture.packages,
+        )
+        .expect("the same request may select the composed provider arrangement");
+    assert_eq!(
+        selected_composed.decisions[0].candidate,
+        key("composed-manager")
+    );
+}
+
+#[test]
+fn service_provider_missing_one_requested_feature_is_rejected() {
+    let guarantees = aos_ability_model::builtin::service_feature_guarantees()
+        .expect("service feature identities must construct");
+    let mut fixture = planner_fixture_with_guarantees(1, guarantees);
+    let supervision = fixture.desired.child_requests[0]
+        .guarantees
+        .iter()
+        .find(|guarantee| {
+            guarantee.name.as_str()
+                == aos_ability_model::builtin::SERVICE_SUPERVISION_GUARANTEE_NAME
+        })
+        .expect("service contract includes supervision")
+        .clone();
+
+    fixture.policy.candidates[0]
+        .guarantees
+        .retain(|guarantee| guarantee != &supervision);
+    fixture.environment.providers[0]
+        .guarantees
+        .retain(|guarantee| guarantee != &supervision);
+    fixture.policy.explicit_bindings = vec![crate::CandidateSelection {
+        request: fixture.desired.child_requests[0].id.clone(),
+        candidate: fixture.policy.candidates[0].key.clone(),
+    }];
+    fixture.refresh_policy();
+
+    let error = Resolver::new(&fixture.context)
+        .resolve(
+            &fixture.policy,
+            fixture.desired,
+            fixture.environment,
+            fixture.packages,
+        )
+        .expect_err("a provider missing supervision cannot satisfy the service request");
+    let ResolutionError::InvalidFixedSelection { constraint, .. } = error else {
+        panic!("missing service feature returned the wrong error: {error:?}");
+    };
+    assert!(constraint.contains("guarantee"));
+}
+
+#[test]
 fn recursive_failed_attempts_share_one_composer_search_bound() {
     let mut fixture = planner_fixture(2);
     let setup = configure_recursive_fallback(&mut fixture);
@@ -1078,6 +1181,57 @@ fn add_provider_inventory(fixture: &mut PlannerFixture, provider: &InstanceId) {
     });
 }
 
+fn add_alternate_provider_implementation(
+    fixture: &mut PlannerFixture,
+    provider: &InstanceId,
+) -> (Sha256Digest, ProviderImplementationReference) {
+    let mut package = fixture.packages[0].clone();
+    package.package.name = key("integrated-service-manager");
+    let handler = key("integrated-service-manager");
+    let provider_implementation = &mut package.implementation.providers[0];
+    provider_implementation.implementation = ImplementationKind::TerminalHandler {
+        handler: handler.clone(),
+    };
+    package.implementation.handlers.insert(
+        handler.clone(),
+        HandlerDescriptor {
+            artifact: provider_implementation.artifact.clone(),
+            entry_point: "bin/integrated-service-manager".to_string(),
+            arguments: ValueSchema::Boolean,
+            result: ValueSchema::Boolean,
+        },
+    );
+
+    let descriptor = provider_implementation
+        .descriptor_digest()
+        .expect("alternate service-manager implementation must have a digest");
+    package.exports[0].implementation = descriptor;
+    let implementation = ProviderImplementationReference {
+        descriptor,
+        artifact: provider_implementation.artifact.clone(),
+        handler: Some(handler),
+    };
+    let package_digest = package
+        .content_digest()
+        .expect("alternate service-manager package must have a digest");
+    fixture.packages.push(package);
+    fixture.packages.sort_by_key(|package| {
+        package
+            .content_digest()
+            .expect("service-manager test package must have a digest")
+    });
+    let inventory = fixture
+        .environment
+        .providers
+        .iter_mut()
+        .find(|inventory| inventory.provider == *provider)
+        .expect("alternate service-manager inventory must exist");
+    inventory.implementation = implementation.clone();
+    inventory.state = aos_ability_model::document::ProviderState::Planned;
+
+    (package_digest, implementation)
+}
+
 fn add_provider_resource(
     fixture: &mut PlannerFixture,
     provider: &InstanceId,
@@ -1100,8 +1254,24 @@ fn planner_fixture_with_configuration(
     request_count: usize,
     configuration: Option<ValueSchema>,
 ) -> PlannerFixture {
+    planner_fixture_with_contract(request_count, configuration, Vec::new())
+}
+
+fn planner_fixture_with_guarantees(
+    request_count: usize,
+    guarantees: Vec<aos_ability_model::GuaranteeKey>,
+) -> PlannerFixture {
+    planner_fixture_with_contract(request_count, None, guarantees)
+}
+
+fn planner_fixture_with_contract(
+    request_count: usize,
+    configuration: Option<ValueSchema>,
+    guarantees: Vec<aos_ability_model::GuaranteeKey>,
+) -> PlannerFixture {
     let mut source = aos_ability_validate::test_support::plan_fixture();
     source.interfaces[0].interface.configuration = configuration;
+    source.interfaces[0].interface.guarantees = guarantees.clone();
     source.refresh_interface();
     let context = source.context;
     let interface = source.binding_plan.bindings[0].interface.clone();
@@ -1172,6 +1342,7 @@ fn planner_fixture_with_configuration(
     let mut environment = source.binding_inputs.environment;
     environment.providers[0].interface = interface.clone();
     environment.providers[0].implementation = implementation.clone();
+    environment.providers[0].guarantees = guarantees.clone();
     let request_template = source.binding_plan.requests[0].clone();
     let mut requests = Vec::new();
     let mut candidates = Vec::new();
@@ -1193,7 +1364,7 @@ fn planner_fixture_with_configuration(
             },
             accepted_interfaces: vec![interface.clone()],
             methods: request_template.methods.clone(),
-            guarantees: Vec::new(),
+            guarantees: guarantees.clone(),
             lifetime: ResourceLifetime::Instance,
         };
         let candidate = BindingCandidate {
@@ -1214,7 +1385,7 @@ fn planner_fixture_with_configuration(
                 }],
             },
             provider_grant: empty_grant(provider.clone()),
-            guarantees: Vec::new(),
+            guarantees: guarantees.clone(),
             policy_revision: environment.policy_revision,
             lifetime: ResourceLifetime::Instance,
             mediation_allowed: false,

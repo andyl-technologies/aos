@@ -3145,7 +3145,7 @@ impl<'a> NativeDispatcher<'a> {
                         assignment,
                         readiness,
                     )
-                    .context("constructing reference systemd adapter")?;
+                    .context("constructing systemd bootstrap adapter")?;
                     drive_with_adapter(
                         session,
                         operation,
@@ -3158,7 +3158,7 @@ impl<'a> NativeDispatcher<'a> {
                     )
                 } else {
                     let mut adapter = NativeSystemdServiceAdapter::new(route.package, assignment)
-                        .context("constructing reference systemd adapter")?;
+                        .context("constructing service-management adapter")?;
                     drive_with_adapter(
                         session,
                         operation,

@@ -26,7 +26,7 @@ effects out of portable model/validation/inspection code.
 | Conditional execution | Shared graph validator and executor | Every branch validates before execution; selected branch is durable; skipped results cannot satisfy required dependencies |
 | Durable execution | Runtime, journal, and trusted method adapters | Every intent/effect/outcome boundary has qualified crash recovery; indeterminate effects reconcile; cancellation and deadlines cannot erase ownership |
 | Generations and GC | Existing profile/config/image backends plus runtime records | Partial commits remain accurately visible; active consumers and recovery artifacts survive GC; persistent deletion requires separate authority |
-| Systemd and containers | Scoped manager and launch adapters | Host and qualified system-container nginx behave as promised; user/initrd/container scopes cannot escape to host control; foreground support is explicit |
+| Service management and containers | Scoped manager and launch adapters | Packages use the same logical service contract across host and qualified system-container execution; required features and foreground support remain explicit |
 | Credentials, storage, and networking | Selected resource/enforcement providers | Exact workload views and lifetimes are enforced; renewal/revocation and stop requirements are tested; ingress and policy precede readiness |
 | Build and library consumption | Derivation metadata and artifact audits | Build/host/target uses remain distinct; actual ELF/plugin dependencies agree with declared consumption; exact closure retention is preserved |
 | Aggregate roles and Kubernetes | Role/package interfaces and Kubernetes adapter | k3s consumes its payloads without extra service starts; Cilium contribution is scoped; unauthorized objects reject and submitted revisions are observed |
@@ -122,9 +122,9 @@ equivalence for other runtimes.
 
 The candidate runtime audit qualifies the shared failure controls only where
 their semantics do not depend on a provider implementation. It exercises all
-50 method cells for trusted-clock deadline expiry, cleanup failure, and release
-failure, plus the six cancellation cells whose descriptors declare no
-cancellation route. Separate candidate-linked production cohorts cover the 44
+51 method cells for trusted-clock deadline expiry, cleanup failure, and release
+failure, plus the four cancellation cells whose descriptors declare no
+cancellation route. Separate candidate-linked production cohorts cover the 47
 cells with a declared route by executing each provider's cancellation handler
 and applying an exact provider-specific oracle. Routing a cancellation request
 to a generic callback does not complete these cells.
@@ -140,16 +140,16 @@ PostgreSQL and A/B image rollout supply authenticated persistent state-format
 contracts in this surface. Image rollout binds its durable execution journal,
 retained EFI payloads, and authenticated image identities to a versioned format,
 then proves adoption across a fresh terminal-provider incarnation for all nine
-methods. The other 36 non-rollout methods have instance lifetime because they
+methods. The other 37 non-rollout methods have instance lifetime because they
 own processes, manager sessions, temporary credentials, API transactions, or
 host-configuration transactions whose identity ends with the selected provider.
 Their compatible-adoption cells remain explicitly inapplicable. The surface
 projects each checked resource lifetime and
 authenticated provider state-format descriptor into its canonical digest. The
-matrix retains all 1,400 Cartesian cells and derives the 36 exact exclusions
+matrix retains all 1,428 Cartesian cells and derives the 37 exact exclusions
 and reasons from that metadata. Nix, Rust, and the production evidence builder
-reject stale partitions after either contract field changes, leaving 1,364
-mandatory production cells and 5,834 postconditions. Unsupported-transfer
+reject stale partitions after either contract field changes, leaving 1,391
+mandatory production cells and 5,949 postconditions. Unsupported-transfer
 siblings remain mandatory and prove the rejection side of the replacement
 invariant before provider effects.
 
@@ -170,7 +170,7 @@ state that establishes a safe cancellation result differs by provider:
 | `postgresql` | `materialize`, `observe`, `restart`, `start`, `stop` | The qualified cluster's service state, data identity, ownership markers, socket state, and foreign cluster are compared around cancellation. |
 | `systemd-bootstrap` | `observe-manager`, `stop` | The bootstrap provider result is bound to the exact manager boot identity, unit state, and an unrelated unit. |
 | `systemd-manager` | `observe`, `stop` | The exact unit active state, job result, ownership record, and an unrelated manager unit are observed. |
-| `systemd-service-legacy` | `observe`, `stop` | The exact legacy unit, its manager-readiness dependency, ownership record, and an unrelated unit are observed. |
+| `service-management` | `observe`, `reload`, `restart`, `start`, `stop` | The exact logical service mapping, manager-readiness dependency, ownership record, current backend state, and an unrelated service are observed. |
 
 Every flight enters the `cancel-unsettled-attempt` boundary through the checked
 production graph. It confirms the transient service's candidate executable

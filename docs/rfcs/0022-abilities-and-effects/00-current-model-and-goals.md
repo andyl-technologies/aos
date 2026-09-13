@@ -63,10 +63,12 @@ Its [configuration module](../../../pkgs/networking/_nginx-config/module.nix)
 owns `nginx.*`, validates virtual hosts, produces `nginx.conf`, and projects
 configuration and credential bindings.
 
-Several portable requirements are currently expressed through systemd fields.
-The configuration also names systemd credential paths. These are concrete
-integration points to adapt. They do not require replacing nginx's typed
-configuration interface or inventing an alternative generic service language.
+Portable lifecycle requirements use the manager-neutral service-management
+interface. Configuration publication, credentials, dependencies, identity,
+isolation, readiness, reload, storage, and supervision are separate exact
+feature guarantees. A selected provider can supply them in one manager or
+compose them through lower abilities while nginx retains its typed
+configuration interface.
 
 The package currently requests host networking and a low-port capability.
 An implementation MUST NOT silently reinterpret that signed request as an
@@ -80,7 +82,8 @@ an explicit metadata/interface migration.
 2. Allow any package to provide and consume interfaces, with recursive
    composition and explicit bootstrap requirements.
 3. Keep Nix as the authoring language and preserve package-owned configuration,
-   systemd vocabulary, hermetic construction, and exact registry provenance.
+   typed provider contracts, hermetic construction, and exact registry
+   provenance.
 4. Support both source-selected bindings and registry-driven late binding
    without diverging compatibility or authorization rules.
 5. Distinguish a prepared artifact from a running, healthy, authorized workload.
@@ -91,10 +94,10 @@ an explicit metadata/interface migration.
 
 ## Non-goals
 
-- Automatically translate arbitrary systemd units into arbitrary container
-  runtimes, or run all AOS host operations inside every container.
-- Replace systemd supervision, Kubernetes reconciliation, Nix realization, or
-  the sandbox runtime's resource brokers with a competing controller.
+- Automatically translate arbitrary manager definitions into arbitrary
+  container runtimes, or run all AOS host operations inside every container.
+- Replace selected supervision, Kubernetes reconciliation, Nix realization,
+  or the sandbox runtime's resource brokers with hidden central behavior.
 - Infer complete effects from arbitrary Nix, shell, ELF, or application code.
 - Make an in-process shared library an isolated security principal.
 - Introduce deployment-time replacement of already-linked libraries as part

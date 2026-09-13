@@ -4,7 +4,7 @@
 
 | Alternative | Decision and reason |
 | --- | --- |
-| A universal replacement workload schema | Retain native typed systemd and package schemas; a generic process interface covers explicitly portable cases |
+| A universal replacement workload schema | Use a typed service lifecycle with composable feature guarantees; keep backend-specific extensions behind selected providers |
 | Environment booleans and package-name dependencies | Useful discovery hints, insufficient for resource identity, consumption, authority, or compatibility |
 | Treat Nix option lowering as the complete ability implementation | Insufficient; providers must explicitly compose requests and transitions through lower abilities |
 | Execute the complete dependency graph on every activation | Derive a transition from current and desired state; unchanged relationships often need no effect |
@@ -47,7 +47,7 @@ Fuchsia separates component organization and capability routing from package
 distribution. Runners implement execution environments for components. This
 supports the distinction between an artifact, a component instance, and the
 provider that executes it. AOS can use that separation while preserving its
-own package/configuration and systemd interfaces.
+own package, configuration, service-management, and backend interfaces.
 
 Sources: [organizing components](https://fuchsia.dev/fuchsia-src/get-started/learn/components/organizing-components),
 [runner capabilities](https://fuchsia.dev/fuchsia-src/concepts/components/v2/capabilities/runner).
