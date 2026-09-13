@@ -358,6 +358,12 @@
       # pre-refactor behavior.
       shrinkToFit = false;
       minSizeMiB = 2048;
+      # Out-of-tree modules the system under test declares. Without these the
+      # guest's module tree holds only the in-tree set, and a subject built
+      # around an external module -- ZFS, the NVIDIA driver -- boots with that
+      # module simply absent, which reads as the feature being broken rather
+      # than missing from the test image.
+      kernelModulePackages = system.config.aos.kernel.modulePackages;
       # Over and above toplevel + kernel: systemd/coreutils/bash/socat
       # are depended on transitively by toplevel, but the agent scripts
       # reference socat at a runtime-only path (not via environment.
