@@ -274,6 +274,14 @@ recovery, and actual runtime provider path are qualified together. Keep legacy
 packages explicitly legacy; publication cannot claim a completed migration by
 merely generating manifests for their existing opaque scripts.
 
+Generic package-owned services derive their activation revision after
+configuration rendering. The canonical revision material includes the runtime
+NAR identity, ability package digest, exposed-unit artifact NAR identity, and
+the exact rendered configuration projection; raw Nix store paths are excluded.
+Operators may add content digests with `revision_inputs` or force a new
+revision with `restart_token`. An explicit `revision` remains a complete manual
+override and cannot be combined with those automatic customization fields.
+
 ## Details an implementor may choose
 
 Rust type names, private module boundaries, helper spelling, CLI layout, and
