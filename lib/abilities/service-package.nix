@@ -25,6 +25,14 @@
     maxLength = 71;
     syntax = null;
   };
+  restartToken = schemas.string {
+    maxLength = 1024;
+    syntax = null;
+  };
+  revisionInputs = schemas.list {
+    element = revision;
+    maxItems = 64;
+  };
   provider = import providerArtifact;
 in {
   activationMode = "structured-effects";
@@ -43,8 +51,10 @@ in {
         fields = {
           enabled = schemas.boolean;
           inherit revision;
+          restart_token = restartToken;
+          revision_inputs = revisionInputs;
         };
-        optional = [];
+        optional = ["restart_token" "revision" "revision_inputs"];
       };
       outputs = {};
       methods = {};

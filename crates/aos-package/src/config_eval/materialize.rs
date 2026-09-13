@@ -219,7 +219,7 @@ impl ConfigManifest {
                     .ability_activation
                     .as_ref()
                     .context("config-manifest/v3 requires ability_activation")?
-                    .validate(&self.package_outputs)?;
+                    .validate(&self.package_outputs, &self.config_projections)?;
             }
             _ => unreachable!(),
         }
@@ -856,6 +856,40 @@ pub struct ProjectedConfigArtifact {
     pub mode: String,
     /// SHA-256 binding of `text` bytes.
     pub sha256: String,
+}
+
+/// Computes the content-derived activation revision for one structured package.
+///
+/// The revision intentionally excludes store paths. Runtime, ability, and unit
+/// artifacts contribute their authenticated content identities, while the
+/// rendered projection contributes the exact configuration installed by this
+/// generation.
+///
+/// # Errors
+///
+/// Returns an error when the revision material cannot be encoded as canonical
+/// AOS JSON.
+pub(crate) fn package_activation_revision(
+    package: &str,
+    pin: &RuntimePackagePin,
+    projection: Option<&ProjectedPackageConfig>,
+) -> Result<String> {
+    const DOMAIN: &str = "aos.package-activation-revision/v1";
+
+    let ability = pin
+        .ability
+        .as_ref()
+        .context("structured package has no ability metadata")?;
+    let material = serde_json::json!({
+        "schema": DOMAIN,
+        "package": package,
+        "runtime_nar_hash": pin.nar_hash,
+        "ability_package_digest": ability.package_digest,
+        "expose_artifact_nar_hash": pin.expose_artifact.as_ref().map(|artifact| &artifact.nar_hash),
+        "configuration": projection,
+    });
+
+    Ok(aos_contract::Sha256Digest::of_canonical(DOMAIN, &material)?.to_string())
 }
 
 /// Derives deterministic unit actions from signed artifact policies.

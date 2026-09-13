@@ -25,12 +25,42 @@ let
     then catalog.${builtins.head matches}
     else throw "service ability provider does not recognize interface '${interface.name}'";
 
-  requireConfiguration = configuration:
+  isRevision = value:
+    builtins.isString value
+    && builtins.match "sha256:[0-9a-f]{64}" value != null;
+
+  requireConfiguration = context: let
+    configuration = context.configuration;
+    explicitRevision = configuration.revision or null;
+    revisionInputs = configuration.revision_inputs or [];
+    restartToken = configuration.restart_token or null;
+    automaticRevision = context.activation_revision or context.package;
+    customized = revisionInputs != [] || restartToken != null;
+    revision =
+      if explicitRevision != null
+      then explicitRevision
+      else if customized
+      then "sha256:${builtins.hashString "sha256" (builtins.toJSON {
+        schema = "aos.service-activation-customization/v1";
+        automatic_revision = automaticRevision;
+        revision_inputs = revisionInputs;
+        restart_token = restartToken;
+      })}"
+      else automaticRevision;
+  in
     if !builtins.isBool configuration.enabled
     then throw "service ability configuration enabled field must be Boolean"
-    else if builtins.match "sha256:[0-9a-f]{64}" configuration.revision == null
+    else if explicitRevision != null && !isRevision explicitRevision
     then throw "service ability configuration revision must be a canonical SHA-256 digest"
-    else configuration;
+    else if !builtins.isList revisionInputs || !(builtins.all isRevision revisionInputs)
+    then throw "service ability revision inputs must be canonical SHA-256 digests"
+    else if restartToken != null && !builtins.isString restartToken
+    then throw "service ability restart token must be a string"
+    else if explicitRevision != null && customized
+    then throw "service ability explicit revision cannot be combined with automatic revision customization"
+    else if explicitRevision == null && !isRevision automaticRevision
+    then throw "service ability activation revision must be a canonical SHA-256 digest"
+    else configuration // {inherit revision;};
 
   resourceFor = provider: unit: {
     inherit provider;
@@ -53,7 +83,7 @@ let
 in {
   compose = context: let
     spec = specFor context.interface;
-    configuration = requireConfiguration context.configuration;
+    configuration = requireConfiguration context;
     resources =
       builtins.map (unit: {
         resource = resourceFor context.provider unit;

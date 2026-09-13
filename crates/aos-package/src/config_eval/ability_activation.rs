@@ -1723,11 +1723,34 @@ fn specialize_planning(
     catalog: &crate::ability_package::VerifiedAbilityPlanningCatalog,
     evaluator: &mut RestrictedAbilityEvaluator,
 ) -> Result<VerifiedPlanningSnapshot> {
-    let outcome = catalog.composer().compose(
+    let activation_revisions = inputs
+        .packages
+        .iter()
+        .filter(|coordinate| !coordinate.activation_revision.is_empty())
+        .map(|coordinate| {
+            let package = Sha256Digest::parse(&coordinate.package_digest).with_context(|| {
+                format!(
+                    "decoding activation package identity for {:?}",
+                    coordinate.name
+                )
+            })?;
+            let revision =
+                Sha256Digest::parse(&coordinate.activation_revision).with_context(|| {
+                    format!(
+                        "decoding activation content revision for {:?}",
+                        coordinate.name
+                    )
+                })?;
+
+            Ok((package, aos_ability_model::RevisionId(revision)))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let outcome = catalog.composer().compose_with_activation_revisions(
         &inputs.policy_set.policies,
         inputs.desired.seed.clone(),
         inputs.desired.environment.clone(),
         catalog.packages().to_vec(),
+        activation_revisions,
         evaluator,
     )?;
     let snapshot = PlanningSnapshot::from_outcome(&outcome)?;
@@ -2976,6 +2999,7 @@ mod tests {
                     .to_string(),
                 manifest_sha256: package.manifest_sha256().to_string(),
                 package_digest: package.package_digest().to_string(),
+                activation_revision: String::new(),
             }],
         }
     }

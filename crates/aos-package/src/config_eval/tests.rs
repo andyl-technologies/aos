@@ -867,6 +867,7 @@ fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
             "document_size": 1
         })
     };
+    let config_projections = serde_json::from_value(manifest["configProjections"].clone()).unwrap();
     let activation = super::enrich_ability_activation(
         Some(serde_json::json!({
             "schema": "aos.ability.activation-input/v1",
@@ -875,22 +876,45 @@ fn structured_runtime_retains_config_bytes_without_legacy_unit_actions() {
             "authenticated_policy_set": sidecar("policy-set", 'k')
         })),
         &runtime,
+        &config_projections,
     )
     .unwrap()
     .unwrap();
+    assert_eq!(
+        activation["schema"],
+        super::materialize::AbilityActivationInput::SCHEMA
+    );
     assert_eq!(activation["packages"][0]["name"], "nginx");
     assert_eq!(
         activation["packages"][0]["ability_store_path"],
         "/nix/store/cccccccccccccccccccccccccccccccc-nginx-abilities"
     );
     assert_eq!(activation["packages"][1]["name"], "postgresql");
+    let activation_input: super::materialize::AbilityActivationInput =
+        serde_json::from_value(activation.clone()).unwrap();
+    activation_input
+        .validate(&runtime.packages, &config_projections)
+        .unwrap();
+    let mut missing_revision = activation_input;
+    missing_revision.packages[0].activation_revision.clear();
+    let error = missing_revision
+        .validate(&runtime.packages, &config_projections)
+        .expect_err("new activation inputs must retain the derived revision");
+    assert!(error.to_string().contains("activation revision"));
 
     super::retain_ability_sidecar_roots(manifest.as_object_mut().unwrap(), &activation).unwrap();
     let content_hash = format!("sha256:{}", "a".repeat(64));
     let config_paths = runtime
         .packages
         .values()
-        .map(|package| package.config_projection.as_ref().unwrap().config_output.clone())
+        .map(|package| {
+            package
+                .config_projection
+                .as_ref()
+                .unwrap()
+                .config_output
+                .clone()
+        })
         .collect::<Vec<_>>();
     let config_nar_hashes = runtime
         .packages
@@ -993,6 +1017,7 @@ fn ability_activation_input_survives_removal_of_the_last_structured_package() {
     let enriched = super::enrich_ability_activation(
         Some(input),
         &super::runtime::RuntimeResolution::default(),
+        &BTreeMap::new(),
     )
     .expect("retained activation input must authorize native teardown planning")
     .expect("activation input remains selected");
@@ -1040,7 +1065,7 @@ fn legacy_host_selection_cannot_activate_a_structured_package_without_owned_inpu
         edges: BTreeMap::new(),
     };
 
-    let error = super::enrich_ability_activation(None, &runtime)
+    let error = super::enrich_ability_activation(None, &runtime, &BTreeMap::new())
         .expect_err("a legacy host selection does not own structured activation input");
 
     assert_eq!(
@@ -1151,6 +1176,22 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
         )]),
         edges: BTreeMap::new(),
     };
+    let projection = |text: &str| {
+        BTreeMap::from([(
+            "web".to_string(),
+            super::materialize::ProjectedPackageConfig {
+                schema: super::materialize::ProjectedPackageConfig::SCHEMA.to_string(),
+                schema_hash: format!("sha256:{}", "9".repeat(64)),
+                artifacts: vec![super::materialize::ProjectedConfigArtifact {
+                    path: "/etc/web.conf".to_string(),
+                    text: text.to_string(),
+                    mode: "0644".to_string(),
+                    sha256: format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes()))),
+                }],
+                units: BTreeMap::new(),
+            },
+        )])
+    };
     let input = serde_json::json!({
         "schema": "aos.ability.activation-input/v1",
         "required_features": ["abilities-v1", "ability-effects-v1"],
@@ -1158,14 +1199,26 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
         "authenticated_policy_set": {}
     });
 
-    let activation_before = super::enrich_ability_activation(Some(input.clone()), &runtime('3'))
-        .unwrap()
-        .unwrap();
-    let activation_after = super::enrich_ability_activation(Some(input), &runtime('4'))
-        .unwrap()
-        .unwrap();
+    let projection_before = projection("enabled=true\n");
+    let activation_before =
+        super::enrich_ability_activation(Some(input.clone()), &runtime('3'), &projection_before)
+            .unwrap()
+            .unwrap();
+    let activation_after =
+        super::enrich_ability_activation(Some(input.clone()), &runtime('4'), &projection_before)
+            .unwrap()
+            .unwrap();
+    let changed_projection = projection("enabled=false\n");
+    let activation_changed =
+        super::enrich_ability_activation(Some(input), &runtime('4'), &changed_projection)
+            .unwrap()
+            .unwrap();
 
     assert_eq!(activation_before, activation_after);
+    assert_ne!(
+        activation_before["packages"][0]["activation_revision"],
+        activation_changed["packages"][0]["activation_revision"]
+    );
     assert_eq!(
         activation_before["packages"][0],
         serde_json::json!({
@@ -1180,6 +1233,7 @@ fn documentation_prose_changes_only_document_identity_not_activation_inputs() {
             "ability_nar_hash": ability.nar_hash,
             "manifest_sha256": ability.manifest_sha256,
             "package_digest": ability.package_digest,
+            "activation_revision": activation_before["packages"][0]["activation_revision"].clone(),
         })
     );
 }

@@ -91,12 +91,31 @@
     descriptor = "sha256:${lib.concatStrings (builtins.genList (_: "3") 64)}";
   };
   revision = "sha256:${lib.concatStrings (builtins.genList (_: "4") 64)}";
+  activationRevision = "sha256:${lib.concatStrings (builtins.genList (_: "6") 64)}";
   composition = serviceProvider.compose {
     provider = providerId;
     interface = rsyncInterface;
     configuration = {
       enabled = true;
       inherit revision;
+    };
+  };
+  automaticComposition = serviceProvider.compose {
+    provider = providerId;
+    interface = rsyncInterface;
+    package = providerId.package;
+    activation_revision = activationRevision;
+    configuration.enabled = true;
+  };
+  customizedComposition = serviceProvider.compose {
+    provider = providerId;
+    interface = rsyncInterface;
+    package = providerId.package;
+    activation_revision = activationRevision;
+    configuration = {
+      enabled = true;
+      restart_token = "restart-on-demand";
+      revision_inputs = [revision];
     };
   };
   resource = (builtins.head composition.resources).resource;
@@ -192,6 +211,18 @@
       };
     })
     true);
+  ambiguousRevision = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
+      provider = providerId;
+      interface = rsyncInterface;
+      package = providerId.package;
+      activation_revision = activationRevision;
+      configuration = {
+        enabled = true;
+        inherit revision;
+        restart_token = "force-restart";
+      };
+    })
+    true);
   unknownInterface = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
       provider = providerId;
       interface = rsyncInterface // {name = "aos.service.unknown";};
@@ -219,6 +250,9 @@ in
   assert inventory.legacyEffectful == [];
   assert composition.requests != [];
   assert (builtins.head composition.resources).revision == revision;
+  assert (builtins.head automaticComposition.resources).revision == activationRevision;
+  assert (builtins.head customizedComposition.resources).revision != activationRevision;
+  assert builtins.match "sha256:[0-9a-f]{64}" (builtins.head customizedComposition.resources).revision != null;
   assert start.method == "start";
   assert start.inputs.value.unit == "rsyncd.service";
   assert start.controller == (builtins.head composition.controllers).controller;
@@ -228,4 +262,5 @@ in
   assert disabledComposition.resources == [];
   assert disabledComposition.controllers == [];
   assert !invalidRevision.success;
+  assert !ambiguousRevision.success;
   assert !unknownInterface.success; true
