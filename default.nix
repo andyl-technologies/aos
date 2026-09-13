@@ -1325,7 +1325,7 @@ in {
   checks = rec {
     image-matrix = testing.mkImageMatrix {
       systems = discoverSystems;
-      sourceIdentity = toString ./.;
+      sourceIdentity = toString pkgs.aos.src;
     };
     qualification = import ./tests/qualification {
       inherit pkgs lib build fleet container;
