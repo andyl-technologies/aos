@@ -753,13 +753,13 @@ in {
           target.succeed(f"""
               rm -rf /run/runtime-config-attestation-rederive
               mkdir -p /run/runtime-config-attestation-rederive
-              {PACKAGE_RUNTIME} __eval \
-                --host-nix /run/runtime-config-attested-host.nix \
-                --base-lib {inputs['base_lib']['store_path']} \
+              rm -f /tmp/aos-switch-candidate-*.json
+              {APM} switch --dry-run \
+                --from /run/runtime-config-attested-host.nix \
                 --facts /run/aos-metadata/facts.json \
-                --module-abi {inputs['base_lib']['module_abi']} \
-                --out /run/runtime-config-attestation-rederive/manifest.json \
                 --eval-root /run/runtime-config-attestation-rederive
+              cp /tmp/aos-switch-candidate-*.json \
+                /run/runtime-config-attestation-rederive/manifest.json
           """, timeout=300)
           rederived_text = target.succeed(
               "cat /run/runtime-config-attestation-rederive/manifest.json"
