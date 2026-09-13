@@ -542,7 +542,7 @@ in {
     systemd.services."aos-zfs-memory-policy" = {
       description = "Apply the bounded ZFS memory policy";
       wantedBy = ["local-fs.target"];
-      before = ["local-fs.target" "zfs-mount.service"];
+      before = ["local-fs.target" "aos-zfs-datasets.service"];
       after = ["zfs-import.service"];
       unitConfig.ConditionPathIsDirectory = "/sys/module/zfs/parameters";
       serviceConfig = {
