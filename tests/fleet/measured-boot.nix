@@ -49,7 +49,9 @@
         # package activation across measured configuration generations.
         aos.image.testArtifactRoots = [pkgs.binutils pkgs.test-http-server.expose];
         aos.image.budgets.maxRootMiB = 768;
-        aos.image.budgets.maxEspMiB = 640;
+        # Retain both recovery UKIs, a complete inactive update transaction,
+        # and the boundary test's extra normal-UKI staging space.
+        aos.image.budgets.maxEspMiB = 704;
         # Guest-side UKI inspection and policy verification retain binutils,
         # jq, and diffutils in this fixture's measured runtime closure.
         aos.image.budgets.maxRuntimeClosureMiB = 912;
