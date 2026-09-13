@@ -8,9 +8,10 @@ lowering into configuration. This proposal requires no new syntax or evaluator
 fork. It extends AOS libraries and package construction.
 
 The existing option interfaces remain useful. A virtual-host request should
-reuse nginx's types within an explicitly authorized contribution surface.
-A systemd service request should reuse the typed systemd service vocabulary.
-There is no requirement to replace these with a lowest-common-denominator
+reuse nginx's types within an explicitly authorized contribution surface. A
+package service requests the typed `aos.service-management` lifecycle and the
+exact features it needs. Backend-specific definitions stay inside the selected
+provider, so the public contract remains rich without becoming a universal
 workload schema.
 
 The module fixed point composes already-admitted definitions. The outer APM

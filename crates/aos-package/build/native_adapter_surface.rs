@@ -395,11 +395,24 @@ fn validate_digest(value: &str) -> BuildResult<()> {
 }
 
 fn generate(document: &SurfaceDocument) -> BuildResult<String> {
-    let mut output = String::from(
-        "// Generated from qualification/native-adapter-surface.json.\n\
-         pub(crate) const NATIVE_ADAPTER_COUNT: usize = 13;\n\
-         pub(crate) const NATIVE_METHOD_COUNT: usize = 50;\n\n\
-         #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n\
+    let method_count = document
+        .adapters
+        .iter()
+        .map(|adapter| adapter.methods.len())
+        .sum::<usize>();
+
+    let mut output = String::from("// Generated from qualification/native-adapter-surface.json.\n");
+    writeln!(
+        output,
+        "pub(crate) const NATIVE_ADAPTER_COUNT: usize = {};",
+        document.adapters.len()
+    )?;
+    writeln!(
+        output,
+        "pub(crate) const NATIVE_METHOD_COUNT: usize = {method_count};\n"
+    )?;
+    output.push_str(
+        "#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n\
          pub(crate) enum NativeAdapterId {\n",
     );
     for adapter in &document.adapters {

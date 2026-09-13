@@ -51,7 +51,7 @@ pub(crate) struct NativeMethodContract {
 include!(concat!(env!("OUT_DIR"), "/native_adapter_surface.rs"));
 
 const _: [(); 13] = [(); NATIVE_ADAPTER_COUNT];
-const _: [(); 50] = [(); NATIVE_METHOD_COUNT];
+const _: [(); 51] = [(); NATIVE_METHOD_COUNT];
 
 /// Resolves the generated adapter ID for one exact runtime route.
 pub(crate) fn adapter_id(kind: NativeAdapterKind, interface_name: &str) -> Option<NativeAdapterId> {
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn generated_surface_is_exact_and_bounded() {
         assert_eq!(NATIVE_ADAPTER_COUNT, 13);
-        assert_eq!(NATIVE_METHOD_COUNT, 50);
+        assert_eq!(NATIVE_METHOD_COUNT, 51);
         assert_eq!(NATIVE_METHODS.len(), NATIVE_METHOD_COUNT);
 
         let adapters = NATIVE_METHODS
@@ -247,7 +247,7 @@ mod tests {
                 .iter()
                 .filter(|contract| contract.resource_lifetime == ResourceLifetime::Instance)
                 .count(),
-            36
+            37
         );
         assert_eq!(
             NATIVE_METHODS

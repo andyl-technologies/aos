@@ -199,9 +199,14 @@ aggregation/controller group and merge there before transition construction.
 A controller invokes methods of lower providers to realize its desired child
 resources. Those providers compose the requested method into suboperations;
 they do not also schedule an independent reconciliation of the same resource.
+Service packages target `aos.service-management` and request exact feature
+guarantees for configuration, credentials, dependencies, identity, isolation,
+readiness, reload, storage, and supervision. One provider may implement the
+features together; another may recursively bind lower providers. Both retain
+the same logical service identity, method families, and controller ownership.
 For nginx, the configuration provider does not independently publish while
 nginx's controller separately requests publication. Likewise the service
-provider does not autonomously start a unit and then receive another start
+provider does not autonomously start a service and then receive another start
 from the parent graph.
 
 If an independently managed provider supplies a shared resource, consumers

@@ -45,9 +45,10 @@ nested containers. Logical ancestry and physical placement may differ. In
 particular, the sandbox proposal's sibling host-managed runtimes remain valid.
 
 A provider can construct higher-level functionality from its inputs: a
-filesystem service can export immutable artifacts; systemd can expose service
-lifecycle operations; a database service can expose an application endpoint.
-Composition cannot manufacture authority absent from the outer grants.
+filesystem service can export immutable artifacts; a service manager can
+compose lifecycle features; a database service can expose an application
+endpoint. Composition cannot manufacture authority absent from the outer
+grants.
 
 Three operations remain separate:
 
@@ -81,7 +82,7 @@ Example edges include:
 | --- | --- | --- |
 | nginx build | OpenSSL development interface | Target headers and linker inputs |
 | nginx process | Exact OpenSSL library output | ELF loading inside the process |
-| nginx service | Local systemd manager | Service lifecycle |
+| nginx service | Service-management provider | Lifecycle plus requested service features |
 | nginx configuration | Credential provider | Named runtime TLS paths, without secret bytes in evaluation |
 | Application package | nginx virtual-host interface | Authorized named configuration contribution |
 | Application instance | Database instance | Authenticated protocol endpoint |

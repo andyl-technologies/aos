@@ -465,7 +465,7 @@ invalidates its observation.
 
 `qualification/native-adapter-surface.json` is the canonical version-1 source
 for the adapter matrix. The `aos-package` build validates its closed limits and
-compiles the same 13-adapter, 50-method table used by dispatcher and
+compiles the same 13-adapter, 51-method table used by dispatcher and
 host-resource preflight. Its exact canonical digest is pinned by both the Rust
 generator and Nix policy; changing the surface requires a deliberate schema and
 digest update. Each method records its full interface key (name, ABI, and
@@ -476,10 +476,10 @@ production contract. Those fields participate in the canonical surface digest;
 changing either invalidates the matrix identity.
 Qualification expands those methods over 28 durability, revocation, upgrade,
 adoption, retained-target, dependency, and foreign-resource scenarios.
-The resulting 1,400 Cartesian cells retain every dimension, full interface key,
-and exact surface digest. A schema-bound applicability partition enumerates 36
+The resulting 1,428 Cartesian cells retain every dimension, full interface key,
+and exact surface digest. A schema-bound applicability partition enumerates 37
 compatible-adoption cells that cannot exist under their current provider
-contracts. The remaining 1,364 production-VM cells carry 5,834 mandatory
+contracts. The remaining 1,391 production-VM cells carry 5,949 mandatory
 postconditions, including durable classification, one resource
 owner, dependent nonexecution after failure, and independent confirmation that
 foreign resources did not change. Adoption, unsupported transfer, and retained
@@ -489,19 +489,19 @@ Every applicable matrix cell requires a production VM observation. Source
 regressions exercise contract closure but remain marked separately and never
 satisfy those cells. The x86 release executor maps
 `ability-native-adapter-matrix` to independent published-image cohorts that
-exercise all 1,364 applicable cells and 5,834 postconditions. The primary
+exercise all 1,391 applicable cells and 5,949 postconditions. The primary
 cohort covers managed-configuration
 `publish` at three exact crash boundaries: after durable intent, after the
 external return, and after the durable outcome. It also covers rejection of an
 independently injected foreign resource and required-success blocking of the
-corresponding legacy systemd `reload`. A separate production PostgreSQL cohort
+corresponding service-management `reload`. A separate production PostgreSQL cohort
 covers compatible `materialize` adoption, incompatible `materialize` rejection
 before effects,
 interrupted `restart` reconciliation, and `restart` activation of the retained
-target under current authority. The candidate package runtime also runs all 600
+target under current authority. The candidate package runtime also runs all 612
 role-revocation timing cells through the real admission and dispatch fences,
 using the published interface descriptors and a no-dispatch sentinel adapter.
-It also covers all 50 executor-incarnation and all 50 provider-incarnation
+It also covers all 51 executor-incarnation and all 51 provider-incarnation
 replacement cells. Executor replacement presents an admitted predecessor token
 to the reopened transaction and requires the candidate runtime's session fence
 to reject it as stale. Provider replacement uses the catalog's independent live
@@ -511,17 +511,17 @@ required-success dependent, including the observation-only methods, and proves
 that the initial scheduler exposes only the primary operation.
 The same candidate runtime proves trusted-clock deadline expiry for every
 method, injected cleanup and release failures for every method, and durable
-unsupported-cancellation intervention for the six methods without a declared
-cancellation route. These 156 cells use runtime-owned controls and never infer
+unsupported-cancellation intervention for the four methods without a declared
+cancellation route. These 157 cells use runtime-owned controls and never infer
 provider behavior from a generic adapter. The evidence records each declared
 provider route separately from the type-compatible fixture route, which is
 never invoked for these controls. Each run retains an execution
 journal, reservation ledger, exact re-loadable plan bundle, and an independent
 foreign-resource sentinel. A second candidate-linked runtime audit covers all
-50 `interrupt-before-acquisition` cells. It durably records the exact admission
+51 `interrupt-before-acquisition` cells. It durably records the exact admission
 boundary, performs no resource acquisition or adapter dispatch, reopens the
 unchanged pending journal, and proves a real required-success dependent remains
-blocked. The 44 cancellation cells with a declared route
+blocked. The 47 cancellation cells with a declared route
 run in separate provider cohorts. Each flight pauses the candidate runtime
 after durable effect intent, confirms that the transient service executed that
 candidate, sends `SIGTERM`, releases the independent observer, and requires the
@@ -530,7 +530,7 @@ binds the handler and entry point, cancellation result, journal and boundary
 timelines, plan bundle, candidate and predecessor authority, owner and live
 state before, during, and after cancellation, an independent foreign-resource
 sentinel, and zero dependent effects. Reference host resources, PostgreSQL,
-Kubernetes and bootstrap systemd, manager and legacy systemd, foreground
+Kubernetes, bootstrap systemd, systemd manager, service management, foreground
 processes, and image rollout use distinct physical-state oracles. The verifier
 rejects missing, replayed, cross-cell, or provider-incompatible evidence.
 
@@ -547,7 +547,7 @@ cells already covered by the primary and PostgreSQL cohorts are not duplicated.
 The collector also compares every selected checked operation's target lifetime
 with the provider contract compiled from the matrix surface.
 
-The provider-negative cohorts account for the remaining 98 required-success
+The provider-negative cohorts account for the remaining 100 required-success
 dependency and foreign-resource rejection cells in that qualified total. They
 pause each selected real operation after durable intent, change
 authority in the provider's live substrate, and require rejection before the
@@ -556,10 +556,10 @@ unexecuted, and independent resource observations prove the foreign target,
 successor, and any behavioral witness remain unchanged. The one-machine rollout
 cohort separately proves production map rejection for a forged logical resource
 and same-machine dependency blocking. These cohorts exclude the managed
-configuration `publish` foreign-resource cell and legacy systemd `reload`
+configuration `publish` foreign-resource cell and service-management `reload`
 dependency cell already owned by the primary cohort.
 
-Provider-state cohorts cover all 50 retained-target routes, all 50
+Provider-state cohorts cover all 51 retained-target routes, all 51
 unsupported-transfer routes, and every compatible-adoption route backed by a
 persistent state-format contract. Each retained flight establishes a live owned
 resource, activates a later predecessor, then rolls back to the exact retained
@@ -578,12 +578,12 @@ machine's execution journal, retained EFI payloads, and authenticated image
 identities to the versioned A/B rollout state format. Their compatible flights
 replace the terminal provider incarnation, transfer the sole ledger claim,
 recover the exact method, and settle its required-success successor while the
-retained boot state stays live. The remaining 36 `adopt-compatible-state`
+retained boot state stays live. The remaining 37 `adopt-compatible-state`
 cells are exactly the reference, Kubernetes, systemd, and foreground methods
 whose process, manager-session, temporary-credential, API-transaction, or
 host-configuration resources have instance lifetime.
 
-The matrix specification records those 36 exact cell IDs and reasons as
+The matrix specification records those 37 exact cell IDs and reasons as
 inapplicable. Nix policy, the production evidence builder, and the Rust release
 verifier independently derive the ordered partition from each adapter's
 surface-bound provider contract, then reject missing, overlapping, reordered,
