@@ -361,7 +361,7 @@ in {
           line.split("=", 1) for line in fetch.splitlines() if "=" in line
       )
       assert fetch_properties["ActiveState"] == "failed", fetch_properties
-      assert fetch_properties["Result"] == "exit-code", fetch_properties
+      assert fetch_properties["Result"] == "start-limit-hit", fetch_properties
       assert fetch_properties["Restart"] == "on-failure", fetch_properties
       assert int(fetch_properties["NRestarts"]) >= 4, fetch_properties
       degraded.succeed("systemctl is-active --quiet aos-fetch.target")
