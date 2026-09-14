@@ -1031,6 +1031,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-source-provider-security"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-source-provider-protocol",
+ "ed25519-dalek",
+ "hmac 0.12.1",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "aos-sandbox-storage"
 version = "0.1.0"
 dependencies = [
