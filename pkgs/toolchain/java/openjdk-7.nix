@@ -2451,6 +2451,14 @@ in
                          "$f" 2>/dev/null || true
               fi
             done
+
+            # The JDK launch helper lives under lib rather than bin, so the
+            # general output scrub does not select it as an executable. Remove
+            # its build compiler reference without disturbing runtime paths.
+            for jexec in "$out/lib/jexec" "$out/jre/lib/jexec"; do
+              ${buildPackages.remove-references-to}/bin/remove-references-to \
+                -t ${stdenv.gcc} "$jexec"
+            done
           '';
       }
       {
