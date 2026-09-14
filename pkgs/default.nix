@@ -190,6 +190,17 @@
           config = exposeRenderer.normalizeConfig packageName (args.expose.config or {});
         })
       else null;
+    generatedExposeSchema =
+      if hasGeneratedExposeConfig
+      then {
+        package = packageName;
+        config = exposeRenderer.normalizeConfig packageName (args.expose.config or {});
+      }
+      else null;
+    generatedExposeModule =
+      if generatedExposeSchema == null
+      then null
+      else import ./build-support/_expose-config-projection-module.nix {schema = generatedExposeSchema;};
     generatedConfigSource =
       if hasGeneratedExposeConfig
       then
@@ -203,6 +214,7 @@
               script = ''
                 mkdir -p "$out"
                 cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
+                cp ${./build-support/_expose-config-projection-module.nix} "$out/expose-config-projection-module.nix"
                 cp ${generatedExposeConfigFile} "$out/expose-config.json"
               '';
             }
@@ -245,6 +257,48 @@
       if preparedAuthoredConfigModule != null
       then builtins.fromJSON preparedAuthoredConfigModule.metaJson
       else null;
+    packageModuleAuthorization = {
+      owns =
+        if authoredConfigMeta == null
+        then []
+        else builtins.map (owned: owned.root) authoredConfigMeta.owns_roots;
+      contributes =
+        (
+          if authoredConfigMeta == null
+          then {}
+          else
+            builtins.listToAttrs (builtins.map (contribution: {
+                name = contribution.root;
+                value = contribution.paths;
+              })
+              authoredConfigMeta.contributes)
+        )
+        // lib.optionalAttrs (authoredAbilities != null) {aos = ["abilities"];};
+      artifacts =
+        if authoredConfigMeta == null
+        then {
+          etc = [];
+          groups = [];
+          units = [];
+          users = [];
+        }
+        else
+          authoredConfigMeta.artifacts
+          or {
+            etc = [];
+            groups = [];
+            units = [];
+            users = [];
+          };
+    };
+    packageModule = {
+      imports =
+        lib.optional
+        (authoredConfigModule != null)
+        (authoredConfigModule.src + "/module.nix")
+        ++ lib.optional (generatedExposeModule != null) generatedExposeModule
+        ++ abilityModules;
+    };
     composedModuleFile = builtins.toFile "composed-config-module-${packageName}.nix" ''
       { ... }: {
         imports = [
@@ -561,7 +615,20 @@
       then {
         abilities = abilityProjection;
         abilityModule = authoredAbilities;
+        inherit packageModule packageModuleAuthorization;
+        packageModuleOutputs = {
+          self = builtins.toString drv;
+          dependencies = preparedConfigModule.dependencyOutputs or {};
+        };
         inherit abilityContract;
+      }
+      else if hasConfigModule
+      then {
+        inherit packageModule packageModuleAuthorization;
+        packageModuleOutputs = {
+          self = builtins.toString drv;
+          dependencies = preparedConfigModule.dependencyOutputs or {};
+        };
       }
       else {};
     exposeCheck =
