@@ -33,6 +33,10 @@
     interface = spec.interface;
     methods = spec.methods or ["observe" "restart" "start" "stop"];
     features = spec.features or (defaultFeatures ++ lib.optional hasDependencies "dependencies");
+    serviceManagement = {
+      inherit (serviceManagement) interface;
+      features = builtins.mapAttrs (_: value: value) serviceManagement.features;
+    };
   };
 
   providerSourcePath = ./_service-ability-provider/default.nix;

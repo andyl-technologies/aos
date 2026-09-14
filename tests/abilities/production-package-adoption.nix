@@ -96,6 +96,9 @@
     interface = "aos.service.${name}";
     methods = ["observe" "restart" "start" "stop"];
     features = commonFeatures ++ lib.optional hasDependencies "dependencies";
+    serviceManagement = {
+      inherit (serviceManagement) interface features;
+    };
   };
   systemdUnits = {
     cloudcore.main = "cloudcore.service";
