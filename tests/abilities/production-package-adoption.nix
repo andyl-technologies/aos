@@ -18,8 +18,6 @@
   inventory = import ../../qualification/package-activation-inventory.nix {
     inherit pkgs lib;
   };
-  serviceCatalog = import ../../lib/abilities/providers/service-package/catalog.nix;
-  systemdCatalog = import ../../lib/abilities/providers/service-package/systemd-catalog.nix;
   serviceManagement = import ../../lib/abilities/service-management.nix {
     inherit (lib.abilities) schemas guarantee;
   };
@@ -38,37 +36,126 @@
     "rsync"
   ];
 
+  commonFeatures = [
+    "configuration"
+    "identity"
+    "isolation"
+    "readiness"
+    "storage"
+    "supervision"
+  ];
+  specialServices = {
+    garage = [
+      {
+        key = "prepare";
+        dependencies = [];
+      }
+      {
+        key = "main";
+        dependencies = ["prepare"];
+      }
+    ];
+    krb5 = [
+      {
+        key = "initialize";
+        dependencies = [];
+      }
+      {
+        key = "kdc";
+        dependencies = ["initialize"];
+      }
+      {
+        key = "administration";
+        dependencies = ["initialize"];
+      }
+    ];
+    mariadb = [
+      {
+        key = "initialize";
+        dependencies = [];
+      }
+      {
+        key = "main";
+        dependencies = ["initialize"];
+      }
+    ];
+  };
+  serviceSpec = name: let
+    services = specialServices.${name} or [
+      {
+        key = "main";
+        dependencies = [];
+      }
+    ];
+    hasDependencies = builtins.any (service: service.dependencies != []) services;
+  in {
+    inherit services;
+    interface = "aos.service.${name}";
+    methods = ["observe" "restart" "start" "stop"];
+    features = commonFeatures ++ lib.optional hasDependencies "dependencies";
+  };
+  systemdUnits = {
+    cloudcore.main = "cloudcore.service";
+    conntrack-tools.main = "conntrackd.service";
+    containerd.main = "containerd.service";
+    edgecore.main = "edgecore.service";
+    envoy.main = "envoy.service";
+    etcd.main = "etcd.service";
+    garage = {
+      prepare = "garage-prepare.service";
+      main = "garage.service";
+    };
+    krb5 = {
+      initialize = "krb5-kdc-init.service";
+      kdc = "krb5-kdc.service";
+      administration = "kadmind.service";
+    };
+    kubelet.main = "kubelet.service";
+    mariadb = {
+      initialize = "mariadb-init.service";
+      main = "mariadb.service";
+    };
+    openldap.main = "openldap.service";
+    rsync.main = "rsyncd.service";
+  };
+
   migratedContract = name: let
     package = pkgs.${name};
     contract = packageContract package;
+    spec = serviceSpec name;
     provider = builtins.head contract.ability.implementation.providers;
     requirement = builtins.head provider.requirements;
     requiredGuarantees = builtins.sort (
       left: right: left.name < right.name
-    ) (serviceManagement.featureGuarantees serviceCatalog.${name}.features);
-    mappedUnits = builtins.attrValues systemdCatalog.${name};
+    ) (serviceManagement.featureGuarantees spec.features);
+    mappedUnits = builtins.attrValues systemdUnits.${name};
   in
     contract.ability.activation_mode
     == "structured-effects"
     && contract.ability.package.name == name
     && contract.ability.ownership == [[]]
     && builtins.length contract.ability.exports == 1
-    && (builtins.head contract.ability.exports).interface.name == serviceCatalog.${name}.interface
+    && (builtins.head contract.ability.exports).interface.name == spec.interface
     && (builtins.head contract.ability.exports).interface.abi == 1
     && provider.implementation.kind == "pure-composition"
     && provider.owns_resource_kinds == [serviceManagement.interface.name]
     && requirement.accepted_interfaces == [serviceManagement.interface]
-    && requirement.methods == serviceCatalog.${name}.methods
+    && requirement.methods == spec.methods
     && requirement.guarantees == requiredGuarantees
-    && builtins.attrNames systemdCatalog.${name}
-    == builtins.sort builtins.lessThan (builtins.map (service: service.key) serviceCatalog.${name}.services)
+    && builtins.attrNames systemdUnits.${name}
+    == builtins.sort builtins.lessThan (builtins.map (service: service.key) spec.services)
     && builtins.all (
       unit: builtins.elem unit contract.exposure.expose.units
     )
     mappedUnits
     && contract.exposure.expose.units != [];
 
-  serviceProvider = import ../../lib/abilities/providers/service-package;
+  serviceProvider = import ../../lib/abilities/providers/service-package {
+    spec = serviceSpec "rsync";
+  };
+  garageProvider = import ../../lib/abilities/providers/service-package {
+    spec = serviceSpec "garage";
+  };
   providerId = {
     environment = {
       authority = "deployment";
@@ -188,14 +275,14 @@
     ];
   };
   garageInterface = rsyncInterface // {name = "aos.service.garage";};
-  garageComposition = serviceProvider.compose {
+  garageComposition = garageProvider.compose {
     provider = providerId;
     interface = garageInterface;
     package = providerId.package;
     activation_revision = activationRevision;
     configuration.enabled = true;
   };
-  garageStartTransition = serviceProvider.transition {
+  garageStartTransition = garageProvider.transition {
     provider = providerId;
     interface = garageInterface;
     operation_scope = ["service" "garage"];
@@ -213,7 +300,7 @@
       })
       garageComposition.resources;
   };
-  garageStopTransition = serviceProvider.transition {
+  garageStopTransition = garageProvider.transition {
     provider = providerId;
     interface = garageInterface;
     operation_scope = ["service" "garage"];

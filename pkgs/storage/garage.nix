@@ -14,6 +14,7 @@
   bash,
   coreutils,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   version = "2.3.0";
   src = fetchurl {
@@ -88,8 +89,21 @@ in
     '';
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "garage";
+      spec = {
+        interface = "aos.service.garage";
+        services = [
+          {
+            key = "prepare";
+            dependencies = [];
+          }
+          {
+            key = "main";
+            dependencies = ["prepare"];
+          }
+        ];
+      };
     };
 
     expose = {

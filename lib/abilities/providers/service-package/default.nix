@@ -1,6 +1,5 @@
 ##! Pure lifecycle provider for package-owned logical services.
-let
-  catalog = import ./catalog.nix;
+{spec}: let
   serviceManagement = {
     name = "aos.service-management";
     abi = 1;
@@ -47,15 +46,6 @@ let
     attempt_timeout_millis = 300000;
     total_recovery_millis = 1200000;
   };
-
-  specFor = interface: let
-    matches = builtins.filter (
-      packageName: catalog.${packageName}.interface == interface.name
-    ) (builtins.attrNames catalog);
-  in
-    if builtins.length matches == 1
-    then catalog.${builtins.head matches}
-    else throw "service ability provider does not recognize interface '${interface.name}'";
 
   isRevision = value:
     builtins.isString value
@@ -114,7 +104,6 @@ let
   };
 in {
   compose = context: let
-    spec = specFor context.interface;
     configuration = requireConfiguration context;
     resources =
       builtins.map (service: {
@@ -122,48 +111,50 @@ in {
         inherit service;
       })
       spec.services;
-  in {
-    schema = "aos.ability.composition-fragment/v1";
-    requests = [
-      {
-        id = {
-          consumer = context.provider;
-          scope = [context.provider.key];
-          key = "service-terminal";
-        };
-        accepted_interfaces = [serviceManagement];
-        inherit (spec) methods;
-        guarantees = builtins.map (name: serviceFeatures.${name}) spec.features;
-        lifetime = "instance";
-      }
-    ];
-    contributions = [];
-    resources =
-      if configuration.enabled
-      then
-        builtins.map (entry: {
-          inherit (entry) resource;
-          inherit (configuration) revision;
-        })
-        resources
-      else [];
-    outputs = [];
-    controllers =
-      if configuration.enabled
-      then
-        builtins.map (entry: {
-          inherit (entry) resource;
-          controller = {
-            provider = context.provider;
-            group = "service";
+  in
+    if context.interface.name != spec.interface
+    then throw "service ability provider received interface '${context.interface.name}', expected '${spec.interface}'"
+    else {
+      schema = "aos.ability.composition-fragment/v1";
+      requests = [
+        {
+          id = {
+            consumer = context.provider;
+            scope = [context.provider.key];
+            key = "service-terminal";
           };
-        })
-        resources
-      else [];
-  };
+          accepted_interfaces = [serviceManagement];
+          inherit (spec) methods;
+          guarantees = builtins.map (name: serviceFeatures.${name}) spec.features;
+          lifetime = "instance";
+        }
+      ];
+      contributions = [];
+      resources =
+        if configuration.enabled
+        then
+          builtins.map (entry: {
+            inherit (entry) resource;
+            inherit (configuration) revision;
+          })
+          resources
+        else [];
+      outputs = [];
+      controllers =
+        if configuration.enabled
+        then
+          builtins.map (entry: {
+            inherit (entry) resource;
+            controller = {
+              provider = context.provider;
+              group = "service";
+            };
+          })
+          resources
+        else [];
+    };
 
   transition = context: let
-    spec = specFor context.interface;
     selectedBindings =
       builtins.filter (
         entry:
@@ -351,5 +342,7 @@ in {
       service.dependencies;
     edges = builtins.concatMap dependencyEdgesFor spec.services;
   in
-    emptyTransition // {inherit operations edges;};
+    if context.interface.name != spec.interface
+    then throw "service ability provider received interface '${context.interface.name}', expected '${spec.interface}'"
+    else emptyTransition // {inherit operations edges;};
 }

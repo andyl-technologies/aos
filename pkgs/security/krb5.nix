@@ -13,6 +13,7 @@
   buildPackages,
   coreutils,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   version = "1.22.2";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -199,8 +200,25 @@ in
     propagatedDeps = [];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "krb5";
+      spec = {
+        interface = "aos.service.krb5";
+        services = [
+          {
+            key = "initialize";
+            dependencies = [];
+          }
+          {
+            key = "kdc";
+            dependencies = ["initialize"];
+          }
+          {
+            key = "administration";
+            dependencies = ["initialize"];
+          }
+        ];
+      };
     };
 
     expose = {

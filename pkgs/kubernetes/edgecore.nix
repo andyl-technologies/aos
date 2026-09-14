@@ -6,6 +6,7 @@
   buildPackages,
   kubeedgeSource,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   inherit (kubeedgeSource) version src;
   control = writeShellScriptBin "edgecore-control" ''
@@ -25,8 +26,9 @@ in
     runtimeDeps = [control];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "edgecore";
+      spec.interface = "aos.service.edgecore";
     };
 
     expose = {

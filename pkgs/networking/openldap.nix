@@ -15,6 +15,7 @@
   bash,
   coreutils,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   version = "2.7.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -53,8 +54,9 @@ in
     propagatedDeps = [];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "openldap";
+      spec.interface = "aos.service.openldap";
     };
 
     expose = {
