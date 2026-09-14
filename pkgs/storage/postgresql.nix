@@ -46,6 +46,7 @@
   version = "18.6";
   isDarwin = stdenv.hostPlatform.isDarwin;
   isCross = stdenv.isCross;
+  abilityHostResources = import ./_postgresql-config/host-resources.nix {inherit lib;};
   abilityContract = import ./_postgresql-ability/contract.nix {inherit lib;};
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
@@ -741,13 +742,14 @@ in
         }
       ];
       artifacts = {
-        etc = [
-          "postgresql/pg_hba.conf"
-          "postgresql/postgresql.conf"
-        ];
+        etc =
+          [
+            "postgresql/pg_hba.conf"
+            "postgresql/postgresql.conf"
+          ]
+          ++ abilityHostResources.artifacts.etc;
         units = [];
-        users = [];
-        groups = [];
+        inherit (abilityHostResources.artifacts) users groups;
       };
       documentation = {
         summary = "PostgreSQL object-relational database server";
