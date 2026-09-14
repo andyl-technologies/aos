@@ -13,10 +13,10 @@ use std::os::unix::ffi::OsStringExt;
 
 use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
-    self, LISTMOUNT_REVERSE, LSMT_ROOT, MountIdRequest, STATMOUNT_FS_TYPE, STATMOUNT_MNT_BASIC,
-    STATMOUNT_MNT_GIDMAP, STATMOUNT_MNT_NS_ID, STATMOUNT_MNT_POINT, STATMOUNT_MNT_ROOT,
-    STATMOUNT_MNT_UIDMAP, STATMOUNT_SB_BASIC, STATMOUNT_SB_SOURCE, STATMOUNT_SUPPORTED_MASK,
-    StatMountBuffer,
+    self, LISTMOUNT_REVERSE, LSMT_ROOT, MOUNT_ATTR_RDONLY, MountIdRequest, STATMOUNT_FS_TYPE,
+    STATMOUNT_MNT_BASIC, STATMOUNT_MNT_GIDMAP, STATMOUNT_MNT_NS_ID, STATMOUNT_MNT_POINT,
+    STATMOUNT_MNT_ROOT, STATMOUNT_MNT_UIDMAP, STATMOUNT_SB_BASIC, STATMOUNT_SB_SOURCE,
+    STATMOUNT_SUPPORTED_MASK, StatMountBuffer,
 };
 use crate::{Error, Result};
 
@@ -146,6 +146,17 @@ pub struct MountObservation {
     pub uid_map: Option<Vec<String>>,
     /// GID idmap extents when supported by the running kernel.
     pub gid_map: Option<Vec<String>>,
+}
+
+impl MountObservation {
+    /// Reports whether the observed mount is read-only.
+    ///
+    /// This reflects the per-mount `MOUNT_ATTR_RDONLY` flag returned by
+    /// `statmount(2)`, independently of any superblock-level flags.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.mount_attributes & MOUNT_ATTR_RDONLY != 0
+    }
 }
 
 /// A mount-topology query bound to the current or a pinned mount namespace.
