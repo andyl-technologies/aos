@@ -85,6 +85,7 @@ impl From<WorkerError> for Failure {
             WorkerError::Stale => libc::ESTALE,
             WorkerError::NotDirectory => libc::ENOTDIR,
             WorkerError::NotSymlink => libc::EINVAL,
+            WorkerError::NotFile => libc::EISDIR,
             WorkerError::ResourceExhausted | WorkerError::AllocationRefused => libc::ENOMEM,
             WorkerError::Interrupted => libc::EINTR,
             WorkerError::TimedOut => libc::ETIMEDOUT,

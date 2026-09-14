@@ -38,9 +38,9 @@ pub use presentation::{
 };
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
 pub use worker::{
-    InitReply, InitRequest, LookupReply, MetadataConnection, OpenDirectoryReply,
-    PendingDirectoryReply, ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReadlinkReply,
-    RejectedOperation, ReplyScratch, RequestBudget, RequestCheckpoint, RequestControl,
-    RequestControlState, TeardownSummary, Uninterrupted, WorkerAttributes, WorkerError,
-    WorkerLimits,
+    FileAccessMode, FileContentAuthority, FileOpenRequest, InitReply, InitRequest, LookupReply,
+    MetadataConnection, OpenDirectoryReply, OpenFileReply, PendingDirectoryReply, PendingFileReply,
+    ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReadlinkReply, RejectedOperation, ReplyScratch,
+    RequestBudget, RequestCheckpoint, RequestControl, RequestControlState, TeardownSummary,
+    Uninterrupted, WorkerAttributes, WorkerError, WorkerLimits,
 };

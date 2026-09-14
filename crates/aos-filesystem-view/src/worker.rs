@@ -6,6 +6,7 @@
 //! directory output uses explicitly admitted caller-owned scratch storage.
 
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::presentation::MetadataTransportCheckpoint;
 use crate::{
@@ -15,8 +16,12 @@ use crate::{
     PreparedPresentation, PresentationError, PresentedInodeAttributes, ValidatedIndex,
 };
 
+mod file;
 mod scratch;
 
+pub use file::{
+    FileAccessMode, FileContentAuthority, FileOpenRequest, OpenFileReply, PendingFileReply,
+};
 pub use scratch::{ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReplyScratch};
 use scratch::{ReadDirRecord, usize_u64};
 
@@ -168,7 +173,10 @@ pub enum WorkerError {
     /// A symlink operation targeted a non-symlink.
     #[error("not a symbolic link")]
     NotSymlink,
-    /// A configured count, byte, or heap limit was exceeded.
+    /// A regular-file operation targeted another inode kind.
+    #[error("not a regular file")]
+    NotFile,
+    /// A configured ceiling or the process-local connection identity space was exhausted.
     #[error("request exceeds an admitted resource ceiling")]
     ResourceExhausted,
     /// Allocation inside explicitly admitted scratch storage was refused.
@@ -316,7 +324,10 @@ pub struct OpenDirectoryReply {
 pub enum RejectedOperation {
     /// Any namespace or metadata mutation.
     Mutation,
-    /// File open, read, write, flush, or synchronization.
+    /// A generic file data-plane callback not yet wired to the open lifecycle.
+    ///
+    /// The worker has an internal read-only OPEN state machine, but transport
+    /// open, read, write, flush, and synchronization dispatch remains unsupported.
     FileData,
     /// READDIRPLUS child interning.
     ReadDirPlus,
@@ -337,17 +348,27 @@ pub struct TeardownSummary {
     pub pending_directory_handles: u64,
 }
 
+/// Privately brands file tokens to one exact worker instance.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct ConnectionBrandId(u64);
+
+static NEXT_CONNECTION_BRAND_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Executes bounded immutable metadata operations for one logical connection.
 ///
 /// Dropping this value releases only its in-memory inode, reservation, and
 /// handle state. External transports remain responsible for their own kernel
 /// or libfuse resources and for aborting a pending reply when publication fails.
+/// An ambiguous externally visible transition faults the connection permanently;
+/// only diagnostics and teardown remain available afterward.
 pub struct MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
     presentation: &'prepared PreparedPresentation<'index, 'bytes, 'plan>,
     inodes: InodeTable<'index, 'bytes>,
+    connection_brand: ConnectionBrandId,
     limits: WorkerLimits,
     directory_enabled: bool,
     features: Option<InitReply>,
+    faulted: bool,
 }
 
 impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
@@ -355,7 +376,9 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// # Errors
     ///
-    /// Returns a closed worker error when inode-table construction or admission fails.
+    /// Returns a closed worker error when inode-table construction or admission
+    /// fails. Returns [`WorkerError::ResourceExhausted`] if the process-local
+    /// connection-brand space has been permanently exhausted.
     pub fn new(
         presentation: &'prepared PreparedPresentation<'index, 'bytes, 'plan>,
         connection_key: [u8; 32],
@@ -372,25 +395,41 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             directory_limits,
         )
         .map_err(map_inode)?;
+        let connection_brand = mint_connection_brand()?;
         Ok(Self {
             presentation,
             inodes,
+            connection_brand,
             limits,
             directory_enabled,
             features: None,
+            faulted: false,
         })
     }
 
     /// Returns the exact validated index shared by presentation and inode state.
+    ///
+    /// This diagnostic remains available after a terminal connection fault.
     #[must_use]
     pub const fn index(&self) -> &'index ValidatedIndex<'bytes> {
         self.presentation.index()
     }
 
     /// Returns the connection inode table for read-only diagnostics.
+    ///
+    /// This diagnostic remains available after a terminal connection fault.
     #[must_use]
     pub const fn inode_table(&self) -> &InodeTable<'index, 'bytes> {
         &self.inodes
+    }
+
+    /// Reports whether an ambiguous or inconsistent reply transition faulted the connection.
+    ///
+    /// A fault is terminal. The caller must stop dispatch and consume this
+    /// connection through [`Self::teardown`].
+    #[must_use]
+    pub const fn is_faulted(&self) -> bool {
+        self.faulted
     }
 
     /// Validates all immutable metadata against one transport profile.
@@ -399,6 +438,9 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     /// record, and after the final record. Connection-local node and handle
     /// identifiers are assigned dynamically and remain subject to independent
     /// runtime conversion checks.
+    ///
+    /// This nonmutating diagnostic remains available after a terminal connection
+    /// fault and does not make that connection dispatchable again.
     ///
     /// # Errors
     ///
@@ -431,13 +473,15 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// # Errors
     ///
-    /// Returns an invalid-request, budget, cancellation, or deadline error.
+    /// Returns a terminal-fault, invalid-request, budget, cancellation, or
+    /// deadline error.
     pub fn initialize(
         &mut self,
         request: InitRequest,
         budget: RequestBudget,
         control: &impl RequestControl,
     ) -> Result<InitReply, WorkerError> {
+        self.guard_terminal_fault()?;
         self.check_budget(budget)?;
         require_output(budget, INIT_REPLY_BYTES)?;
         check(control, RequestCheckpoint::BeforeWork)?;
@@ -679,11 +723,13 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// # Errors
     ///
-    /// Returns a closed error for a foreign, stale, or consumed reservation.
+    /// Returns a terminal-fault, initialization, foreign, stale, consumed, or
+    /// integrity error.
     pub fn publish_opendir(
         &mut self,
         pending: &mut PendingDirectoryReply,
     ) -> Result<OpenDirectoryReply, WorkerError> {
+        self.ready()?;
         self.activate_opendir(pending)
     }
 
@@ -706,16 +752,26 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// # Errors
     ///
-    /// Returns a closed error for a foreign, stale, consumed, or corrupted
-    /// reservation. Any error after a successful reply requires fatal connection
-    /// teardown before another request is dispatched. The adapter must not send
-    /// a second reply, retry activation, or expose this error as an ordinary
-    /// request failure.
+    /// Returns [`WorkerError::IntegrityFailure`] and permanently faults the
+    /// connection if it was not dispatchable or the published reservation cannot
+    /// be activated exactly. The adapter must stop dispatch, must not send a
+    /// second reply, and must consume the connection through [`Self::teardown`].
     pub fn commit_opendir_after_reply(
         &mut self,
         pending: &mut PendingDirectoryReply,
     ) -> Result<OpenDirectoryReply, WorkerError> {
-        self.activate_opendir(pending)
+        if self.ready().is_err() {
+            self.faulted = true;
+            return Err(WorkerError::IntegrityFailure);
+        }
+
+        match self.activate_opendir(pending) {
+            Ok(reply) => Ok(reply),
+            Err(_) => {
+                self.faulted = true;
+                Err(WorkerError::IntegrityFailure)
+            }
+        }
     }
 
     fn activate_opendir(
@@ -736,11 +792,13 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// # Errors
     ///
-    /// Returns a closed error for a foreign, stale, consumed, or corrupted reservation.
+    /// Returns a terminal-fault, initialization, foreign, stale, consumed, or
+    /// integrity error.
     pub fn abort_opendir(
         &mut self,
         pending: &mut PendingDirectoryReply,
     ) -> Result<(), WorkerError> {
+        self.ready()?;
         self.inodes
             .abort_directory(&mut pending.reservation)
             .map_err(map_inode)
@@ -750,8 +808,10 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// # Errors
     ///
-    /// Returns a closed stale, foreign, wrong-kind, or integrity error.
+    /// Returns a terminal-fault, initialization, stale, foreign, wrong-kind, or
+    /// integrity error.
     pub fn rollback_opendir(&mut self, reply: OpenDirectoryReply) -> Result<(), WorkerError> {
+        self.ready()?;
         self.inodes
             .release_directory(reply.handle)
             .map_err(map_inode)
@@ -928,7 +988,9 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     ///
     /// Before INIT, returns [`WorkerError::InvalidArgument`]. After INIT, always
     /// returns read-only-filesystem for mutation and operation-not-supported for
-    /// file data, READDIRPLUS, and xattr operations.
+    /// generic file data-plane callbacks, READDIRPLUS, and xattr operations. The
+    /// internal read-only OPEN lifecycle is invoked through its dedicated methods
+    /// and does not make this generic rejection surface transport-ready.
     pub fn reject(&self, operation: RejectedOperation) -> Result<(), WorkerError> {
         self.ready()?;
         match operation {
@@ -954,7 +1016,14 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     }
 
     fn ready(&self) -> Result<InitReply, WorkerError> {
+        self.guard_terminal_fault()?;
         self.features.ok_or(WorkerError::InvalidArgument)
+    }
+
+    fn guard_terminal_fault(&self) -> Result<(), WorkerError> {
+        (!self.faulted)
+            .then_some(())
+            .ok_or(WorkerError::IntegrityFailure)
     }
 
     fn ready_budget(&self, budget: RequestBudget) -> Result<(), WorkerError> {
@@ -972,6 +1041,17 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         }
         Ok(())
     }
+}
+
+fn mint_connection_brand() -> Result<ConnectionBrandId, WorkerError> {
+    // The brand carries no publication ordering; atomicity is needed only to
+    // prevent process-local reuse across concurrent connection construction.
+    let brand = NEXT_CONNECTION_BRAND_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| WorkerError::ResourceExhausted)?;
+    Ok(ConnectionBrandId(brand))
 }
 
 #[derive(Clone, Copy)]
@@ -1083,9 +1163,8 @@ fn map_inode(error: InodeError) -> WorkerError {
         | InodeError::ForgetUnderflow
         | InodeError::InvalidDirectoryCookie => WorkerError::InvalidArgument,
         InodeError::DirectoryHandlesDisabled => WorkerError::OperationNotSupported,
-        InodeError::OpenTargetNotFile | InodeError::InternalInvariant => {
-            WorkerError::IntegrityFailure
-        }
+        InodeError::OpenTargetNotFile => WorkerError::NotFile,
+        InodeError::InternalInvariant => WorkerError::IntegrityFailure,
     }
 }
 
