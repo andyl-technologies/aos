@@ -99,6 +99,10 @@
                   --host=${stdenv.hostPlatform.config} \
     ''
     else "";
+  hotspotTargetArch =
+    if stdenv.hostPlatform.isAarch64
+    then "aarch64"
+    else "amd64";
   # HotSpot's ADLC executes during the build even for a Darwin target. Keep its
   # Linux source configuration and GCC-only flags paired with the native CC.
   bootstrapCc =
@@ -2432,7 +2436,7 @@ in
             if [ -n "$STDCXX_FILE" ]; then
               STDCXX_DIR=$(dirname "$STDCXX_FILE")
             fi
-            RPATH="$out/lib:$out/lib/amd64:$out/lib/amd64/jli:$out/jre/lib/amd64:$out/jre/lib/amd64/jli:$out/jre/lib/amd64/server:$BT_LIB"
+            RPATH="$out/lib:$out/lib/${hotspotTargetArch}:$out/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}:$out/jre/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}/server:$BT_LIB"
             if [ -n "$STDCXX_DIR" ]; then
               RPATH="$RPATH:$STDCXX_DIR"
             fi
