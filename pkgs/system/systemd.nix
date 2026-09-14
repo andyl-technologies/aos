@@ -33,6 +33,7 @@
   tpm2-tss,
   coreutils,
   bash,
+  bzip2,
   python3-pefile,
   python3-pyelftools,
 }: let
@@ -45,6 +46,7 @@
 
   systemdRuntimeDeps = [
     bash
+    bzip2
     util-linux
     kmod
     zlib
