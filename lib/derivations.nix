@@ -53,7 +53,8 @@
         if builtins.elem value accumulated
         then accumulated
         else accumulated ++ [value]
-    ) [] values;
+    ) []
+    values;
 
   # Attach evaluation-only fixed-output identity without changing the
   # derivation's builder environment or store identity.
