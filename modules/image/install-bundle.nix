@@ -111,6 +111,7 @@ in {
               --replace-fail '@zfs@' '${zfs}' \
               --replace-fail '@pool@' '${cfg.zfs.poolName}' \
               --replace-fail '@dataset@' '${cfg.zfs.dataset}' \
+              --replace-fail '@compatibility@' '${cfg.zfs.compatibility}' \
               --replace-fail '@sealed_key_path@' '${cfg.zfs.sealedKeyPath}' \
               --replace-fail '@signed_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.signedPcrs}' \
               --replace-fail '@pinned_pcrs@' '${config.aos.boot.secureBoot.measuredBoot.pinnedPcrs}' \

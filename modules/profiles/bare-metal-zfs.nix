@@ -29,6 +29,15 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # OpenZFS is a storage stack, not a driver: the module, the userland the
+    # mount units and pool services call, and the libraries behind them put the
+    # runtime closure around 860 MiB, past the 768 MiB a variant contracts for.
+    # That is the cost of choosing this profile, so it carries its own contract
+    # rather than every image's budget being loosened to hide it. The priority
+    # sits below a variant's plain definition and above mkForce, so a host can
+    # still tighten it deliberately.
+    aos.image.budgets.maxRuntimeClosureMiB = lib.mkOverride 75 1024;
+
     aos.boot.storage = {
       backend = "zfs-zvol";
       espDevices = cfg.espDevices;

@@ -18,8 +18,8 @@
     name = unitName name;
     value = {
       description = "Create and expire ${name} ZFS snapshots";
-      after = ["zfs-mount.service"];
-      wants = ["zfs-mount.service"];
+      after = ["aos-zfs-datasets.service"];
+      wants = ["aos-zfs-datasets.service"];
       serviceConfig = {
         Type = "oneshot";
         ExecStart =
@@ -153,8 +153,8 @@ in {
         zfs-auto-snapshot-prepare = {
           description = "Select datasets for automatic ZFS snapshots";
           wantedBy = ["multi-user.target"];
-          after = ["zfs-mount.service"];
-          requires = ["zfs-mount.service"];
+          after = ["aos-zfs-datasets.service"];
+          requires = ["aos-zfs-datasets.service"];
           before = map (name: "${unitName name}.service") enabledIntervals;
           serviceConfig = {
             Type = "oneshot";

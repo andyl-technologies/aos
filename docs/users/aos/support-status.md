@@ -33,6 +33,9 @@ promise.
 | SELinux module | Present, not enabled by presets |
 | Audit, firewall, kernel hardening | Implemented in server baseline |
 | Encrypted ZFS bare-metal storage | Early-preview installer and boot path implemented |
+| [ZFS memory bounding and dataset policy](storage-zfs.md) | Implemented; budget, geometry gates, and boot-time verification |
+| ZFS pool lifecycle (event daemon, scrub, trim, health, metrics) | Implemented |
+| ZFS pool creation outside the installer | Not implemented; the installer is the only path that creates a pool |
 | NVIDIA GPU support | Open kernel modules and matching GSP firmware implemented |
 | In-band IPMI | Kernel interfaces and `ipmitool` module implemented |
 | Hardware watchdog and SMART monitoring | Opt-in |

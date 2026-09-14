@@ -28,6 +28,20 @@ in {
       default = 1;
       description = "Recovery interface and artifact compatibility ABI (currently version 1).";
     };
+
+    extraPackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [];
+      description = ''
+        Additional packages placed in the recovery initrd's closure. Storage
+        backends contribute their userland here: a recovery environment that
+        cannot import the pool holding a host's state cannot recover that host,
+        which is the situation it exists for.
+
+        Kernel modules those packages need are carried separately, by
+        `aos.boot.initrd.modulePackages`, which recovery reuses.
+      '';
+    };
   };
 
   options.system.build.recoveryInitrd = lib.mkOption {

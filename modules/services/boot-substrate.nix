@@ -50,7 +50,11 @@
   # /etc lower; subsequent generations are rendered by the stage-2 config-eval
   # fixpoint and switched in by `activate`.
   filesUnit = "aos-config-seed.service";
-  zfsState = config.aos.filesystems.zfs.enable;
+  # Whether the pool is what carries /var, rather than merely existing. A host
+  # can run a pool for data while leaving system state on the partition the
+  # image provisions, and then /var is mounted and provisioned exactly as it is
+  # without ZFS.
+  zfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
   zfsPackage = config.aos.filesystems.zfs.package;
   recoveryEnabledJson =
     if config.aos.boot.recovery.enable
