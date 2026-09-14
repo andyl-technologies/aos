@@ -38,6 +38,7 @@
   coreutils,
   sed,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   version = "12.3.3";
   isDarwin = stdenv.hostPlatform.isDarwin;
@@ -461,8 +462,21 @@ in
     inherit expose configModule;
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "mariadb";
+      spec = {
+        interface = "aos.service.mariadb";
+        services = [
+          {
+            key = "initialize";
+            dependencies = [];
+          }
+          {
+            key = "main";
+            dependencies = ["initialize"];
+          }
+        ];
+      };
     };
 
     phases = [

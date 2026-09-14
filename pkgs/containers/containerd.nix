@@ -8,6 +8,7 @@
   kmod,
   bash,
   lib,
+  writeTextFile,
 }: let
   version = "2.3.5";
   payload = mkDerivation {
@@ -81,8 +82,9 @@ in
     propagatedDeps = [];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "containerd";
+      spec.interface = "aos.service.containerd";
     };
 
     passthru.evidenceSources = [

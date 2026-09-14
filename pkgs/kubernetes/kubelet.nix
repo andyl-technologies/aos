@@ -5,6 +5,7 @@
   kubeSource,
   bash,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   launcher = writeShellScriptBin "kubelet-start" ''
     set -eu
@@ -30,8 +31,9 @@ in
     runtimeDeps = [bash launcher];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "kubelet";
+      spec.interface = "aos.service.kubelet";
     };
 
     expose = {

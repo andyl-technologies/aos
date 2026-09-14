@@ -9,6 +9,7 @@
   go,
   stdenv,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   version = "3.7.1";
   src = fetchurl {
@@ -74,8 +75,9 @@ in
     runtimeDeps = [control];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "etcd";
+      spec.interface = "aos.service.etcd";
     };
 
     expose = {

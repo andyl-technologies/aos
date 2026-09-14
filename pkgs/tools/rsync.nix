@@ -11,6 +11,7 @@
   bash,
   stdenv,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   version = "3.5.0";
   control = writeShellScriptBin "rsyncd-control" ''
@@ -55,8 +56,9 @@ in
     propagatedDeps = [];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "rsync";
+      spec.interface = "aos.service.rsync";
     };
 
     expose = {

@@ -2,6 +2,8 @@
 {
   lib,
   packageName,
+  spec,
+  writeTextFile,
 }: let
   inherit (lib.abilities) schemas;
 
@@ -10,11 +12,44 @@
     inherit (lib.abilities) guarantee;
   };
 
-  catalog = import ./providers/service-package/catalog.nix;
-  spec =
-    catalog.${packageName}
-    or (throw "service ability package has no catalog entry for '${packageName}'");
-  providerArtifact = ./providers/service-package;
+  defaultServices = [
+    {
+      key = "main";
+      dependencies = [];
+    }
+  ];
+  services = spec.services or defaultServices;
+  hasDependencies = builtins.any (service: service.dependencies != []) services;
+  defaultFeatures = [
+    "configuration"
+    "identity"
+    "isolation"
+    "readiness"
+    "storage"
+    "supervision"
+  ];
+  serviceSpec = {
+    inherit services;
+    interface = spec.interface;
+    methods = spec.methods or ["observe" "restart" "start" "stop"];
+    features = spec.features or (defaultFeatures ++ lib.optional hasDependencies "dependencies");
+  };
+
+  providerSourcePath = ./providers/service-package/default.nix;
+  providerSource = builtins.readFile providerSourcePath;
+  providerArtifact = writeTextFile {
+    name = "${packageName}-service-ability-provider";
+    destination = "/default.nix";
+    text = ''
+      let
+        makeProvider = (
+          ${providerSource}
+        );
+        spec = builtins.fromJSON ${builtins.toJSON (builtins.toJSON serviceSpec)};
+      in
+        makeProvider {inherit spec;}
+    '';
+  };
 
   revision = schemas.string {
     maxLength = 71;
@@ -28,7 +63,7 @@
     element = revision;
     maxItems = 64;
   };
-  provider = import providerArtifact;
+  provider = (import providerSourcePath) {spec = serviceSpec;};
 in {
   activationMode = "structured-effects";
   requiredFeatures = ["abilities-v1"];
@@ -39,7 +74,7 @@ in {
   exports.service = {
     artifact = providerArtifact;
     export = lib.abilities.define {
-      interface = spec.interface;
+      interface = serviceSpec.interface;
       abi = 1;
       requestSchema = schemas.boolean;
       configurationSchema = schemas.record {
@@ -65,8 +100,8 @@ in {
       requires.service-terminal = {
         inherit (serviceManagement.interface) abi descriptor;
         interface = serviceManagement.interface.name;
-        inherit (spec) methods;
-        guarantees = serviceManagement.featureGuarantees spec.features;
+        inherit (serviceSpec) methods;
+        guarantees = serviceManagement.featureGuarantees serviceSpec.features;
         strength = "required";
         fallback = null;
       };

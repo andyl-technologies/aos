@@ -15,6 +15,7 @@
   libnetfilter_queue,
   libtirpc,
   writeShellScriptBin,
+  writeTextFile,
 }: let
   version = "1.4.9";
   control = writeShellScriptBin "conntrackd-control" ''
@@ -55,8 +56,9 @@ in
     propagatedDeps = [];
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "conntrack-tools";
+      spec.interface = "aos.service.conntrack-tools";
     };
 
     expose = {

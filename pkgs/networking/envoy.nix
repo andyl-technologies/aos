@@ -43,6 +43,7 @@
   m4,
   patchelf,
   bootstrapTools,
+  writeTextFile,
 }: let
   version = "1.37.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -750,8 +751,9 @@ in
     };
 
     abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib;
+      inherit lib writeTextFile;
       packageName = "envoy";
+      spec.interface = "aos.service.envoy";
     };
 
     expose = {
