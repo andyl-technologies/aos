@@ -2,7 +2,7 @@
 {lib}: let
   inherit (lib.abilities) schemas;
 
-  providerSource = ./providers/postgresql;
+  providerSource = ./provider;
 
   interface = name: descriptor: {
     inherit name descriptor;
@@ -414,7 +414,7 @@
       ownsResourceKinds = [selected.name];
     };
 
-  postgresqlProvider = import ./providers/postgresql/default.nix;
+  postgresqlProvider = import ./provider;
 
   postgresqlExport = stateFormat:
     lib.abilities.define {

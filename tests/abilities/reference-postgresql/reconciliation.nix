@@ -1,6 +1,6 @@
 ##! Focused PostgreSQL transition checks for observation-driven repair kinds.
 let
-  providerModule = import ../../../lib/abilities/providers/postgresql/default.nix;
+  providerModule = import ../../../pkgs/storage/_postgresql-ability/provider;
 
   environment = {
     authority = "deployment";

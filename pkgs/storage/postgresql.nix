@@ -46,7 +46,7 @@
   version = "18.6";
   isDarwin = stdenv.hostPlatform.isDarwin;
   isCross = stdenv.isCross;
-  abilityContract = import ../../lib/abilities/postgresql.nix {inherit lib;};
+  abilityContract = import ./_postgresql-ability/contract.nix {inherit lib;};
   control = writeShellScriptBin "postgresql-control" ''
     set -euo pipefail
 
