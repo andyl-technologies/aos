@@ -23,6 +23,7 @@ pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
 pub mod authority;
+pub mod cache_residency;
 pub mod controller;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
