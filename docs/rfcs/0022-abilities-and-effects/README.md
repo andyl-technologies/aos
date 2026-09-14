@@ -1,11 +1,9 @@
 # RFC-0022: Package abilities, typed consumption, and structured effects
 
-- **Status:** Proposed; implementation in progress. The current tree implements
-  the versioned model, checked planning and execution, native activation and
-  selected host-resource paths, and shared inspection surfaces. Proposal text
-  still describes the complete target; the
-  [completion checklist](implementation-completeness.md) defines remaining
-  qualification rather than treating this document alone as implementation.
+- **Status:** Proposed; implementation requires remediation. The checked model,
+  planning, execution, and inspection work does not yet satisfy the package,
+  provider-discovery, cutover, derivation, and single-source-of-truth rules in
+  the normative [target state](13-target-state.md).
 - **Date:** 2026-09-08.
 - **Audience:** package authors; maintainers of APM, AOS, APR, the Nix module
   system, systemd integration, boot and image construction, sandbox runtimes,
@@ -51,11 +49,12 @@ acquires scoped handles and verifies the environment before performing effects.
 Neither an installed package, a Nix attribute, a path, nor a container marker
 proves that a resource is available or authorized.
 
-Systemd remains a rich execution interface. Packages continue to author typed
-systemd units. A host or a suitably provisioned system container may provide a
-local systemd manager. An application container may provide a narrower launch
-interface. Unsupported unit semantics or required security guarantees cannot
-be discarded to make a deployment appear compatible.
+The systemd package exposes a rich set of service-management abilities.
+Packages consume the lifecycle, dependency, reload, credential, socket,
+identity, and isolation features they require. Packages that intentionally use
+systemd-specific semantics request its specific interface. A host or a suitably
+provisioned system container may provide a manager instance; an application
+container may provide a narrower launch interface.
 
 Activation becomes a planned transition from observed and retained state to
 desired state. Provider authors explicitly compose lower abilities and their
@@ -79,8 +78,9 @@ transaction's ordering or failure semantics.
    transitions grounded in authorized operations and a valid bootstrap path.
 4. Retain the Nix language and extend AOS libraries/modules. Do not require an
    evaluator fork, language-level effect inference, or a new service DSL.
-5. Preserve systemd declarations and package configuration ownership. Translate
-   only an explicitly supported subset when using an alternative executor.
+5. Preserve rich service declarations and package configuration ownership.
+   Expose manager features from provider packages and translate only an
+   explicitly supported subset through an alternative provider.
 6. Use explicit matching for source-defined outputs and bounded resolution for
    registry inputs, with common validation and exact artifact identities.
 7. Separate environment discovery, policy authorization, and resource binding.
@@ -121,21 +121,24 @@ transaction's ordering or failure semantics.
 | [10 — Testing and qualification](10-testing-and-qualification.md) | Define production-path tests, independent observations, fault injection, and release evidence |
 | [11 — Crucible guest integration](11-crucible-integration.md) | Keep integration AOS-owned and identify pending PR #194 dependencies |
 | [12 — Alternatives and implementation decisions](12-alternatives-and-open-questions.md) | Record prior art, resolved questions, and extension boundaries |
+| [13 — Target state](13-target-state.md) | Fix component ownership, package integration, data flow, cutover, documentation, and qualification |
 
 Implementors should also read the detailed contracts before designing APIs:
 
+- [Normative component and data-ownership target](13-target-state.md).
 - [Data, composition, identity, binding, and compatibility](implementation-contract.md).
 - [Operation lifecycle, publication, scheduling, and recovery](execution-contract.md).
 - [Complete feature coverage and end-to-end acceptance fixture](implementation-completeness.md).
 
-These contracts fix semantics abbreviated by the examples. Internal code
-organization and frontend wording remain implementation choices; changes to
-the specified behavior require an explicit design revision.
+The target-state chapter governs component ownership and data flow. The other
+contracts fix semantics abbreviated by the examples. Internal code organization
+and frontend wording remain implementation choices only within those ownership
+and dependency boundaries.
 
 ## Architecture
 
 ```text
-Nix-authored package interfaces and recursive implementations
+Native package abilities and package-owned recursive implementations
   + desired configuration and target environment contract
   + explicit bindings or bounded APM provider resolution
   -> normalized desired resources and authorized consumption graph
@@ -177,6 +180,7 @@ having to understand the entire graph.
 Normative words describe requirements of the complete proposal. A requirement
 is implemented only where current code and the completion checklist name its
 enforcement and evidence. Nix examples and operation names outside those
-implemented surfaces remain illustrative. This RFC records the target
-architecture; implementation proceeds through explicit compatibility and
-qualification gates.
+implemented surfaces remain illustrative. Draft representations created while
+implementing the same unreleased change receive no compatibility path; the
+completed implementation cuts directly to the final model described in the
+[target-state chapter](13-target-state.md).

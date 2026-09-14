@@ -60,11 +60,11 @@ dispatches to authenticated, explicitly authorized handlers. Handler artifacts
 are pinned with the plan and run within declared resource/identity constraints.
 Installing a package does not register an unrestricted privileged plugin.
 
-Scripts may implement bounded operations during migration, with honest opaque
-effect declarations and qualified recovery behavior. A root script that can
-modify arbitrary host state is not made least-privileged merely by placing it
-behind a typed request. New privileged primitives require implementation and
-security review before being accepted by the execution contract.
+Scripts may implement bounded provider operations when their exact behavior and
+recovery contract are declared. A broad activation script does not become a
+typed implementation merely by being placed behind a request. New privileged
+primitives require implementation and review before being accepted by the
+execution contract.
 
 ## Persistent contracts and old clients
 
@@ -79,17 +79,18 @@ schema rule. Unknown required guarantees, operation kinds, authority fields,
 or execution features MUST fail closed. An old client must not activate a new
 contract by treating its unrecognized requirements as absent.
 
-Legacy packages keep their existing execution path until a qualified adapter
-exists. The adapter records what is known and what remains opaque; it cannot
-claim newly proven guarantees. New releases use the existing enforced
-`requires-features` package metadata with `abilities-v1` and, when needed,
-`ability-effects-v1`, as specified in the
-[compatibility contract](implementation-contract.md#required-compatibility-path).
+New releases use the existing enforced `requires-features` package metadata
+with `abilities-v1` and, when needed, `ability-effects-v1`, as specified in the
+[compatibility contract](implementation-contract.md#release-compatibility-boundary).
 Publication binds the new artifacts into provenance and rejects missing gates.
 Supported old clients reject unknown required features; clients predating that
-gate are outside the supported delivery path. Merely adding an unfamiliar
-manifest field is insufficient. The legacy adapter and structured executor
-must never both own activation of the same resource.
+gate are outside the supported delivery path.
+
+The implementation PR cuts migrated packages directly from their existing
+activation path to the final structured path. Draft adapters and schemas created
+on the branch are removed before merge. Compatibility readers or migrations are
+introduced only for formats that were present in a supported release or
+persisted state users can possess.
 
 Persisted plans never embed Nix closures, Rust-native enum layouts, raw handles,
 or secrets. Retain exact authenticated source/modules and artifacts where

@@ -4,8 +4,11 @@
 
 This RFC proposes an architecture. Acceptance does not make illustrative Nix
 helpers, persisted schemas, new CLI flags, or container activation available.
-The first implementation must prove a complete provider composition and its
-runtime behavior before generalizing the interface across the package set.
+Implementation work may use a vertical slice while developing the model, but
+the completed RFC-0022 change must cut the selected package set directly to the
+single-source package and provider model in the
+[target state](13-target-state.md). Development scaffolding, copied inventories,
+and compatibility between unreleased drafts are removed before merge.
 
 Use shared Rust contract and validation code across AOS/APM and source-build
 checks. Keep pure schema/graph validation separate from privileged resource
@@ -81,11 +84,12 @@ implementation of the semantic rules.
 
 ## Phase 2: Nix authorship and recursive composition
 
-Implement the module vocabulary for exports, imports, requirements, explicit
+Implement the native package `abilities.provides` and `abilities.consumes`
+vocabulary, plus provider-module exports, imports, requirements, explicit
 bindings, aggregation, typed results, and provider-owned composition. Reuse
 existing configuration ownership and restricted evaluation. Publish exact
-declarations with authenticated companion artifacts and generated reference
-schemas.
+declarations by projecting the selected package fixed point and resolving
+symbolic handler artifacts through the central release pipeline.
 
 Build one real nginx example with two application contributors. Its export
 must compose through independently authored managed-configuration and systemd
