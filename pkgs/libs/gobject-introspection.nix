@@ -19,6 +19,9 @@
   cairo,
   glib,
   libffi,
+  libselinux,
+  libsepol,
+  pcre2,
   util-linux,
   buildPackages,
 }: let
@@ -53,7 +56,12 @@ in
         glib.tools
         util-linux
       ]
-      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [buildPackages.gobject-introspection];
+      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [
+        buildPackages.gobject-introspection
+        libselinux
+        libsepol
+        pcre2
+      ];
     runtimeDeps = [bash coreutils python3 setuptools python3-mako python3-markdown cairo glib libffi];
     propagatedDeps = [cairo glib.dev libffi python3-mako];
 
@@ -112,7 +120,7 @@ in
             # Cross builds execute the native scanner and link target GLib's
             # development symlinks when producing introspection dumpers.
             export LDFLAGS="-L${glib.dev}/lib $NIX_LDFLAGS ''${LDFLAGS:-}"
-            export PKG_CONFIG_PATH=${glib.dev}/lib/pkgconfig:$PKG_CONFIG_PATH
+            export PKG_CONFIG_PATH=${lib.makeSearchPath "lib/pkgconfig" [glib.dev util-linux libselinux libsepol pcre2]}:$PKG_CONFIG_PATH
 
             # LD_TRACE_LOADED_OBJECTS on a binfmt executable traces QEMU,
             # not the target. Ask the target dynamic loader directly instead.
