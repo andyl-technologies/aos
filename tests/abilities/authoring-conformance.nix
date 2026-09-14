@@ -71,6 +71,35 @@
     }).config.testRecord
     true);
 
+  canonicalAbilityEvaluation = lib.evalModules {
+    modules = [
+      lib.abilities.module
+      {
+        config.aos.abilities.requirementTemplates.database = {
+          interface = "aos.test.database";
+          abi = 1;
+          descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          methods = ["start" "stop"];
+        };
+      }
+    ];
+  };
+  invalidCanonicalAbility = builtins.tryEval (builtins.deepSeq
+    (lib.evalModules {
+      modules = [
+        lib.abilities.module
+        {
+          config.aos.abilities.requirementTemplates.database = {
+            interface = "aos.test.database";
+            abi = 1;
+            descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            unknown = true;
+          };
+        }
+      ];
+    }).config.aos.abilities.requirementTemplates
+    true);
+
   recipeIsBounded = case: let
     arguments = case.arguments;
     depth = arguments.depth or 0;
@@ -145,8 +174,18 @@ in
   assert corpus.public_helpers.abilities == builtins.attrNames lib.abilities;
   assert corpus.public_helpers.schemas == builtins.attrNames lib.abilities.schemas;
   assert corpus.public_helpers.effects == builtins.attrNames lib.abilities.effects;
-  assert builtins.attrNames lib.abilities.declarationModule.options
-  == ["abilities" "abilityBindings"];
+  assert builtins.attrNames lib.abilities.module.options == ["aos"];
+  assert canonicalAbilityEvaluation.config.aos.abilities.requirementTemplates.database
+  == {
+    abi = 1;
+    descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    fallback = null;
+    guarantees = [];
+    interface = "aos.test.database";
+    methods = ["start" "stop"];
+    strength = "required";
+  };
+  assert !invalidCanonicalAbility.success;
   assert portableRecordEvaluation.config.testRecord
   == {
     enabled = true;
