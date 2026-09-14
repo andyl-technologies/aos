@@ -17,6 +17,8 @@ pub mod attachment_reconciliation;
 #[cfg(target_os = "linux")]
 pub mod attachment_slot_state;
 #[cfg(target_os = "linux")]
+pub mod attachment_source;
+#[cfg(target_os = "linux")]
 pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
@@ -85,6 +87,13 @@ pub use attachment_slot_state::{
     AttachmentSlotCommitOutcomeV1, AttachmentSlotMutationV1, AttachmentSlotPresenceV1,
     AttachmentSlotStateError, CommittedCurrentAssignmentAttachmentSlotV1,
     CommittedCurrentAttachmentSlotV1, DurableAttachmentSlotV1,
+};
+#[cfg(target_os = "linux")]
+pub use attachment_source::{
+    AttachmentSourceActionV1, AttachmentSourceAttemptKindV1, AttachmentSourceAttemptOutcomeV1,
+    AttachmentSourceBoundsV1, AttachmentSourceCompletionOutcomeV1, AttachmentSourceError,
+    CurrentAttachmentSourcePlanV1, DurableAttachmentSourceAttemptV1,
+    DurableAttachmentSourceCompletionV1,
 };
 #[cfg(target_os = "linux")]
 pub use attachment_state::{

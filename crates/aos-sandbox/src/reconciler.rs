@@ -580,6 +580,10 @@ pub enum ReconcilerError {
     #[cfg(target_os = "linux")]
     #[error("attachment verification failed: {0}")]
     AttachmentVerification(#[source] Box<crate::AttachmentVerificationError>),
+    /// Protected attachment-source custody history could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("attachment source custody failed: {0}")]
+    AttachmentSource(#[source] Box<crate::AttachmentSourceError>),
     /// Protected Mount-attempt history could not be validated.
     #[cfg(target_os = "linux")]
     #[error("mount attempt failed: {0}")]
@@ -1434,6 +1438,29 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "Mount source-acquisition inventory requires Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::AttachmentSourceAttempt)
+                .next()
+                .is_some()
+                || self
+                    .journal
+                    .records(RecordNamespace::AttachmentSourceCompletion)
+                    .next()
+                    .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                {
+                    crate::attachment_source::validate_attempt_namespace(&mut self.journal)
+                        .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
+                    crate::attachment_source::validate_completion_namespace(&mut self.journal)
+                        .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
+                }
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "attachment source custody requires Linux validation",
                 ));
             }
             if self

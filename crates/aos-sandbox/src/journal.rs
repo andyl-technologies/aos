@@ -166,6 +166,10 @@ pub enum RecordNamespace {
     SourceProviderAuthority = 41,
     /// Latest exact Mount source-acquisition inventory observation.
     MountSourceAcquisitionInventory = 42,
+    /// Controller attachment-source custody attempts.
+    AttachmentSourceAttempt = 43,
+    /// Exact completion evidence for attachment-source custody attempts.
+    AttachmentSourceCompletion = 44,
 }
 
 impl RecordNamespace {
@@ -213,6 +217,8 @@ impl RecordNamespace {
             40 => Ok(Self::MountSourceAcquisition),
             41 => Ok(Self::SourceProviderAuthority),
             42 => Ok(Self::MountSourceAcquisitionInventory),
+            43 => Ok(Self::AttachmentSourceAttempt),
+            44 => Ok(Self::AttachmentSourceCompletion),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

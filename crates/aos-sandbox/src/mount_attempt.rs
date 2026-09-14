@@ -70,7 +70,7 @@ pub use completion::{
     CompletedCurrentMountAttemptV1, MountCompletionOutcomeV1, MountDispatchClient,
 };
 pub(crate) use completion::{
-    dispatch_current, validate_namespace as validate_completion_namespace,
+    contains_completions, dispatch_current, validate_namespace as validate_completion_namespace,
 };
 pub(crate) use inventory::controller_state_digest as mount_controller_state_digest;
 #[cfg(test)]

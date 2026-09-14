@@ -1,0 +1,33 @@
+//! Protects controller custody of Mount source acquisitions used by attachments.
+//!
+//! This module adds a nonauthorizing planning layer over one exact joined Mount
+//! resource/source inventory and append-only controller records for three
+//! custody milestones: Acquire, consume the source during detached creation,
+//! and Release. A rowless Acquire can be closed by an exact cancellation
+//! completion before a superseding lineage begins. This module never carries a
+//! file descriptor, constructs provider authority, or dispatches a broker
+//! request.
+//!
+//! Namespace 43 stores `AOSASA01` attempt plans. Namespace 44 stores
+//! `AOSASC01` completions. Both are bounded, digest protected, and linked by an
+//! exact predecessor-completion digest per attachment.
+
+mod custody;
+mod format;
+mod planning;
+
+pub use custody::{
+    AttachmentSourceAttemptKindV1, AttachmentSourceAttemptOutcomeV1,
+    AttachmentSourceCompletionOutcomeV1, DurableAttachmentSourceAttemptV1,
+    DurableAttachmentSourceCompletionV1,
+};
+pub use planning::{
+    AttachmentSourceActionV1, AttachmentSourceBoundsV1, AttachmentSourceError,
+    CurrentAttachmentSourcePlanV1,
+};
+
+pub(crate) use custody::{
+    record_completion, record_current_attempt, recover_open_attempt, validate_attempt_namespace,
+    validate_completion_namespace,
+};
+pub(crate) use planning::plan_current;

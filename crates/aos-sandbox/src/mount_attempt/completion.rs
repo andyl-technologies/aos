@@ -398,6 +398,34 @@ impl CompletionHistory {
     }
 }
 
+/// Confirms that exact successful detached-create completions remain durable.
+pub(crate) fn contains_completions(
+    journal: &mut Journal,
+    references: &[([u8; 16], [u8; 32], [u8; 32], [u8; 32])],
+) -> Result<bool, MountAttemptError> {
+    let attempts = AttemptHistory::load(journal)?;
+    let history = CompletionHistory::load(journal)?;
+    for (request_id, record_digest, mount_handle, source_binding_digest) in references {
+        let Some(record) = history.records.get(request_id) else {
+            return Ok(false);
+        };
+        let Some(attempt) = attempts.records.get(request_id) else {
+            return Err(MountAttemptError::CorruptState);
+        };
+        let result = validate_receipt(attempt, &record.receipt)?;
+        if record.digest != *record_digest
+            || attempt.action()? != MountAction::MOUNT_ACTION_CREATE_DETACHED
+            || result.detached_mount_handle() != Some(mount_handle)
+            || result
+                .source_binding()
+                .is_none_or(|binding| binding.digest().as_bytes() != source_binding_digest)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(crate) fn dispatch_current<T>(
     journal: &mut Journal,
     attempt: DurableCurrentMountAttemptV1,

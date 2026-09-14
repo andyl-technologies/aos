@@ -1216,6 +1216,134 @@ where
         )
     }
 
+    /// Plans one attachment's source custody from an exact joined Mount snapshot.
+    ///
+    /// The plan binds current desired/view state, assignment and policy,
+    /// namespace allocation, lease, pre-catalog Create semantics, logical source
+    /// binding, and both Mount inventories. It contains no descriptor or effect
+    /// authority and does not contact Mount.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale desired, target, or inventory state; source/resource
+    /// substitution; faulted or abandoned custody; invalid bounds; and corrupt
+    /// protected history.
+    #[cfg(target_os = "linux")]
+    pub fn plan_current_attachment_source<T>(
+        &mut self,
+        desired: crate::DurableAttachmentDesiredStateV1,
+        inventory: crate::CurrentMountFilesystemInventoryV1,
+        target: crate::runtime_scope::CurrentNamespaceTarget,
+        bounds: crate::AttachmentSourceBoundsV1,
+        clock: &mut T,
+    ) -> Result<crate::CurrentAttachmentSourcePlanV1, crate::AttachmentSourceError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_source::plan_current(
+            self.reconciler.journal_mut(),
+            desired,
+            inventory,
+            target,
+            bounds,
+            clock,
+        )
+    }
+
+    /// Persists one exact attachment-source custody attempt without dispatching it.
+    ///
+    /// Acquire and Release retain their exact canonical Mount request body.
+    /// Consume retains an already durable successful detached-create completion.
+    /// The predecessor must equal the last exact completion for this attachment.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale planning evidence, action/body mismatches, request-ID reuse,
+    /// an open or substituted predecessor, and capacity or durability failure.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_current_attachment_source_attempt<T>(
+        &mut self,
+        plan: crate::CurrentAttachmentSourcePlanV1,
+        kind: crate::AttachmentSourceAttemptKindV1,
+        operation_id: OperationId,
+        request_digest: ObjectDigest,
+        exact_request_body: Vec<u8>,
+        mount_completion: Option<&crate::CompletedCurrentAttachmentMountAttemptV1>,
+        expected_predecessor: Option<ObjectDigest>,
+        clock: &mut T,
+    ) -> Result<crate::DurableAttachmentSourceAttemptV1, crate::AttachmentSourceError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_source::record_current_attempt(
+            self.reconciler.journal_mut(),
+            plan,
+            kind,
+            operation_id,
+            request_digest,
+            exact_request_body,
+            mount_completion,
+            expected_predecessor,
+            clock,
+        )
+    }
+
+    /// Commits exact current evidence that closes a source-custody attempt.
+    ///
+    /// Acquire requires the exact acquisition to become usable. Consume requires
+    /// the retained Mount completion plus an exact installed-and-verified or
+    /// safely released resource. Release requires authoritative terminal source
+    /// inventory with no live resource.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or substituted attempt, inventory, acquisition, resource,
+    /// verification, predecessor, or desired-state evidence.
+    #[cfg(target_os = "linux")]
+    pub fn record_current_attachment_source_completion<T>(
+        &mut self,
+        attempt: crate::DurableAttachmentSourceAttemptV1,
+        plan: crate::CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<crate::DurableAttachmentSourceCompletionV1, crate::AttachmentSourceError>
+    where
+        T: FnMut() -> Result<
+            RawPairedClockSample,
+            crate::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        crate::attachment_source::record_completion(
+            self.reconciler.journal_mut(),
+            attempt,
+            plan,
+            clock,
+        )
+    }
+
+    /// Recovers the exact open source-custody attempt for an attachment.
+    ///
+    /// The returned record is audit and idempotency evidence only. Its exact
+    /// request still requires fresh authorization, inventory, and transport
+    /// currentness before any future resume adapter may issue it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed protected attempt/completion history.
+    #[cfg(target_os = "linux")]
+    pub fn recover_open_attachment_source_attempt(
+        &mut self,
+        attachment_id: aos_sandbox_core::AttachmentId,
+    ) -> Result<Option<crate::DurableAttachmentSourceAttemptV1>, crate::AttachmentSourceError> {
+        crate::attachment_source::recover_open_attempt(self.reconciler.journal_mut(), attachment_id)
+    }
+
     /// Durably records exact post-attach kernel evidence for one generation.
     ///
     /// The input must be a current reconciliation whose closed action is
