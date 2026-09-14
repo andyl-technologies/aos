@@ -478,6 +478,7 @@
         abilities = [
           "artifactReference"
           "define"
+          "interfaces"
           "module"
           "normalizeExportDeclaration"
           "normalizeImplementation"

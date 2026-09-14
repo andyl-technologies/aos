@@ -8,11 +8,7 @@
   providerStateQualification ? false,
 }: let
   inherit (lib.abilities) schemas;
-
-  serviceManagementContract = import ../../lib/abilities/service-management.nix {
-    inherit schemas;
-    inherit (lib.abilities) guarantee;
-  };
+  serviceManagementContract = lib.abilities.interfaces.serviceManagement;
 
   interface = name: descriptor: {
     inherit name descriptor;

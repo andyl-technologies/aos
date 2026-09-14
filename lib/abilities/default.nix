@@ -1236,6 +1236,11 @@ in rec {
     transition
     ;
   types = abilityTypes;
+  interfaces = {
+    serviceManagement = import ./service-management.nix {
+      inherit schemas guarantee;
+    };
+  };
   module = import ./module.nix {
     inherit mkOption;
     moduleTypes = moduleOptionTypes;
@@ -1385,5 +1390,4 @@ in rec {
     required_features = uniqueSortedStrings "required features" requiredFeatures;
     interface = normalizeExport export;
   };
-
 }

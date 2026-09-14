@@ -6,11 +6,7 @@
   writeTextFile,
 }: let
   inherit (lib.abilities) schemas;
-
-  serviceManagement = import ../../lib/abilities/service-management.nix {
-    inherit schemas;
-    inherit (lib.abilities) guarantee;
-  };
+  inherit (lib.abilities.interfaces) serviceManagement;
 
   defaultServices = [
     {
