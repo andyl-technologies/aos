@@ -3511,6 +3511,7 @@
       "instance",
       "instanceId",
       "interfaceDocument",
+      "interfaces",
       "module",
       "normalizeExport",
       "normalizeExportDeclaration",
