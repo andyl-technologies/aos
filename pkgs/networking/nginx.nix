@@ -212,6 +212,7 @@ in
     abilities = import ./_nginx-ability-contract.nix {
       inherit lib;
       providerArtifact = ./_nginx-ability-provider;
+      runtimeArtifact = lib.abilities.packageOutput {};
     };
 
     expose = {

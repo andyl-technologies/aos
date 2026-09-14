@@ -28,7 +28,30 @@
       merge = moduleTypes.mergeEqualOption;
     };
 
-  localKeyType = moduleTypes.strMatching "[A-Za-z0-9._-]+";
+  isLocalKey = value:
+    builtins.isString value
+    && builtins.stringLength value > 0
+    && builtins.stringLength value <= 128
+    && builtins.match "[A-Za-z0-9._-]+" value != null;
+  localKeyType = moduleTypes.addCheck moduleTypes.str isLocalKey;
+  packageOutputType = moduleTypes.mkOptionType {
+    name = "package output selector";
+    description = "closed symbolic package output selector";
+    check = value:
+      builtins.isAttrs value
+      && builtins.attrNames value == ["_type" "output" "package"]
+      && value._type == "aos-package-output-selector"
+      && isLocalKey value.package
+      && isLocalKey value.output;
+    merge = moduleTypes.mergeEqualOption;
+  };
+  relativePathType = moduleTypes.addCheck moduleTypes.str (value: let
+    components = builtins.filter builtins.isString (builtins.split "/" value);
+  in
+    value
+    != ""
+    && builtins.substring 0 1 value != "/"
+    && builtins.all (component: component != "" && component != "." && component != "..") components);
   qualifiedNameType = moduleTypes.strMatching "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+";
   digestType = moduleTypes.strMatching "sha256:[0-9a-f]{64}";
   positiveU32Type =
@@ -53,12 +76,11 @@
 
   handlerType = strictSubmodule {
     artifact = mkOption {
-      type = moduleTypes.nullOr moduleTypes.anything;
-      default = null;
+      type = packageOutputType;
       description = "Symbolic package artifact containing the handler executable.";
     };
     entryPoint = mkOption {
-      type = moduleTypes.str;
+      type = relativePathType;
       description = "Relative executable path within the selected artifact.";
     };
     arguments = mkOption {
@@ -77,12 +99,12 @@
       description = "Provider-neutral interface and package-owned implementation definition.";
     };
     artifact = mkOption {
-      type = moduleTypes.nullOr moduleTypes.anything;
+      type = moduleTypes.nullOr packageOutputType;
       default = null;
       description = "Symbolic package output containing this implementation.";
     };
     artifacts = mkOption {
-      type = moduleTypes.listOf moduleTypes.anything;
+      type = moduleTypes.listOf packageOutputType;
       default = [];
       description = "Additional symbolic package artifacts retained by this implementation.";
     };

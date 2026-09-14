@@ -1260,6 +1260,14 @@ in rec {
     output = requireLocalKey "result output" output;
   };
 
+  packageOutput = args: let
+    checked = requireAttrs "package output selector" ["package" "output"] args;
+  in {
+    _type = "aos-package-output-selector";
+    package = requireLocalKey "package output package" (checked.package or "self");
+    output = requireLocalKey "package output output" (checked.output or "out");
+  };
+
   pinInterface = args: let
     checked = requireAttrs "interface pin" ["export" "descriptor"] args;
     export = requireMarker "interface pin export" "aos-ability-export" checked.export;

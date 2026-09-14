@@ -186,7 +186,6 @@ in rec {
   payloadPackage = {};
 
   k3sPackage = {
-    providerArtifact,
     payloadArtifacts ? [],
     effectQualification ? false,
     providerStateQualification ? false,
@@ -194,7 +193,6 @@ in rec {
     bootstrapMatrix ? false,
   }: {
     config.aos.abilities.implementations.k3s = {
-      artifact = providerArtifact;
       artifacts = payloadArtifacts;
       definition = lib.abilities.define {
         interface = k3sInterface.name;
@@ -229,9 +227,9 @@ in rec {
     };
   };
 
-  systemdPackage = runtimeArtifact: {
+  systemdPackage = runtimeSelector: {
     config.aos.abilities.implementations.systemd-bootstrap = {
-      artifact = runtimeArtifact;
+      artifact = runtimeSelector;
       definition = terminalExport {
         selected = systemdBootstrap;
         group = "systemd-bootstrap";
@@ -240,7 +238,7 @@ in rec {
         methods = bootstrapMethods;
       };
       handler = {
-        artifact = runtimeArtifact;
+        artifact = runtimeSelector;
         entryPoint = "bin/.aos-package-runtime-unwrapped";
         arguments = schemas.boolean;
         result = schemas.boolean;
@@ -248,9 +246,9 @@ in rec {
     };
   };
 
-  kubernetesPackage = runtimeArtifact: {
+  kubernetesPackage = runtimeSelector: {
     config.aos.abilities.implementations.kubernetes = {
-      artifact = runtimeArtifact;
+      artifact = runtimeSelector;
       definition = terminalExport {
         selected = kubernetesEffects;
         group = "kubernetes";
@@ -260,7 +258,7 @@ in rec {
         deleteMethod = "delete";
       };
       handler = {
-        artifact = runtimeArtifact;
+        artifact = runtimeSelector;
         entryPoint = "libexec/aos-kubernetes-object-handler-v1";
         arguments = schemas.boolean;
         result = kubernetesObservation;

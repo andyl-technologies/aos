@@ -110,8 +110,10 @@ in
       # containerd packages remain payloads in this relationship and therefore
       # do not acquire independent service operations.
       abilities = abilityContracts.k3sPackage {
-        providerArtifact = ./_k3s-ability-provider;
-        payloadArtifacts = [k3s containerd];
+        payloadArtifacts = [
+          (lib.abilities.packageOutput {package = "k3s";})
+          (lib.abilities.packageOutput {package = "containerd";})
+        ];
       };
 
       phases = [

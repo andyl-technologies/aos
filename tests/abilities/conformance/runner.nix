@@ -257,11 +257,12 @@
       version = "1.0.0";
       payload = fixturePath;
       source = fixturePath;
+      resolveArtifact = _: fixturePath;
       declaration = {
         activationMode = "structured-effects";
         requiredFeatures = arguments.required_features;
         exports.stateful = {
-          artifact = fixturePath;
+          artifact = abilities.packageOutput {};
           export = stateFormatExport arguments;
           requiredFeatures = [];
         };
@@ -269,7 +270,7 @@
           if arguments.implementation == "terminal-handler"
           then {
             stateful-handler = {
-              artifact = fixturePath;
+              artifact = abilities.packageOutput {};
               entryPoint = "bin/stateful-handler";
               arguments = schemas.boolean;
               result = schemas.boolean;
@@ -344,26 +345,27 @@
       };
     }
     else if helper == "requests-and-references"
-    then {
-      import = abilities.request {
-        interface = interfaceKey.name;
-        inherit (interfaceKey) abi descriptor;
-        request = {enabled = true;};
-      };
-      inherit binding resource artifact;
-      contribution = abilities.contribution {
-        request = requestIdentity;
-        slot = "consumer.request";
-        grant = "corpus.binding";
-        value = {enabled = true;};
-      };
-      guarantee = abilities.guarantee {
-        name = "aos.test.guarantee";
-        version = 1;
-        descriptor = digest "4";
-      };
-      result = abilities.resultOf "child" "endpoint";
-    }
+    then
+      builtins.deepSeq (abilities.packageOutput {}) {
+        import = abilities.request {
+          interface = interfaceKey.name;
+          inherit (interfaceKey) abi descriptor;
+          request = {enabled = true;};
+        };
+        inherit binding resource artifact;
+        contribution = abilities.contribution {
+          request = requestIdentity;
+          slot = "consumer.request";
+          grant = "corpus.binding";
+          value = {enabled = true;};
+        };
+        guarantee = abilities.guarantee {
+          name = "aos.test.guarantee";
+          version = 1;
+          descriptor = digest "4";
+        };
+        result = abilities.resultOf "child" "endpoint";
+      }
     else throw "unknown conformance authoring helper '${helper}'";
 
   evaluateEffects = helper:
@@ -459,6 +461,7 @@
           "environmentId"
           "guarantee"
           "instanceId"
+          "packageOutput"
           "request"
           "requestId"
           "resourceReference"

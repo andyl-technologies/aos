@@ -151,7 +151,6 @@
       args
       // {
         inherit lib;
-        writeTextFile = self.writeTextFile;
       }
     );
 
@@ -549,6 +548,33 @@
         implementationValues);
         requirements = abilityProjection.requirementTemplates;
       };
+    abilityArtifactDependencies = lib.unique (
+      (args.buildDeps or [])
+      ++ (args.runtimeDeps or [])
+      ++ (args.propagatedDeps or [])
+    );
+    resolveAbilityArtifact = selector: let
+      matches = lib.unique (builtins.filter (
+          dependency:
+            builtins.isAttrs dependency
+            && (dependency.pname or null) == selector.package
+        )
+        abilityArtifactDependencies);
+      package =
+        if selector.package == "self"
+        then drv
+        else if builtins.length matches == 0
+        then throw "mkDerivation abilities for package '${packageName}' select undeclared artifact package '${selector.package}'"
+        else if builtins.length matches > 1
+        then throw "mkDerivation abilities for package '${packageName}' select ambiguous artifact package '${selector.package}'"
+        else builtins.head matches;
+      outputs = package.outputs or ["out"];
+    in
+      if !(builtins.elem selector.output outputs)
+      then throw "mkDerivation abilities for package '${packageName}' select missing output '${selector.output}' from artifact package '${selector.package}'"
+      else if selector.output == "out"
+      then package.out or package
+      else builtins.getAttr selector.output package;
     preparedAbilityContract =
       if authoredAbilityContract != null
       then
@@ -561,6 +587,7 @@
             then args.src
             else drv.drvPath;
           declaration = authoredAbilityContract;
+          resolveArtifact = resolveAbilityArtifact;
         }
       else null;
     abilityContract =

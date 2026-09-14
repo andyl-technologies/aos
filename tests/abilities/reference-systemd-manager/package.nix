@@ -100,10 +100,13 @@
     guarantees = [localManager];
   };
   provider = import ./provider/default.nix;
+  packageRuntimeSelector = lib.abilities.packageOutput {
+    package = "aos";
+    output = "packageRuntime";
+  };
   abilities = {
     config.aos.abilities.implementations = {
       driver = {
-        artifact = providerArtifact;
         definition = lib.abilities.define {
           interface = "aos.test.systemd-manager-matrix";
           abi = 1;
@@ -134,7 +137,7 @@
         };
       };
       systemd-manager = {
-        artifact = packageRuntime;
+        artifact = packageRuntimeSelector;
         definition = lib.abilities.define {
           interface = systemdManager.name;
           inherit (systemdManager) abi;
@@ -153,7 +156,7 @@
           handler = "native-systemd-manager-v1";
         };
         handler = {
-          artifact = packageRuntime;
+          artifact = packageRuntimeSelector;
           entryPoint = "libexec/aos-systemd-manager-handler-v1";
           arguments = request;
           result = observation;
@@ -166,6 +169,7 @@ in
     pname = "ability-reference-systemd-manager";
     version = "1.0.0";
     src = providerArtifact;
+    runtimeDeps = [packageRuntime];
     inherit abilities;
     phases = [
       {
