@@ -350,7 +350,7 @@ impl SourceReleaseReceiptV1 {
 
     /// Returns the stable provider authority.
     #[must_use]
-    pub const fn provider(&self) -> &crate::model::ProviderAuthorityV1 {
+    pub const fn provider(&self) -> &crate::model::SourceProviderAuthorityV1 {
         &self.provider
     }
 
@@ -456,7 +456,7 @@ impl SourceProviderInventoryV1 {
 
     /// Returns the stable provider authority.
     #[must_use]
-    pub const fn provider(&self) -> &crate::model::ProviderAuthorityV1 {
+    pub const fn provider(&self) -> &crate::model::SourceProviderAuthorityV1 {
         &self.provider
     }
 

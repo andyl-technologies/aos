@@ -32,13 +32,12 @@ use crate::codec::{
     encode_response_status,
 };
 use crate::model::{
-    AcquireSourceRequestV1, InventorySourceRequestV1, ProviderAuthorityV1, ReleaseSourceRequestV1,
-    SourceExportLeaseV1, SourceProviderHelloV1, SourceProviderInventoryV1, SourceProviderMethod,
-    SourceProviderPeerRole, SourceProviderReceiptV1, SourceProviderResponseStatusV1,
-    SourceProviderValidationError, SourceReleaseReceiptV1,
+    AcquireSourceRequestV1, InventorySourceRequestV1, ReleaseSourceRequestV1, SourceExportLeaseV1,
+    SourceProviderAuthorityV1, SourceProviderHelloV1, SourceProviderInventoryV1,
+    SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
+    SourceProviderResponseStatusV1, SourceProviderValidationError, SourceReleaseReceiptV1,
 };
 use crate::proof::SourceProviderProofV1;
-use crate::trust::{SourceProviderTrustAnchorV1, SourceProviderTrustError};
 
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos-source-provider-request-digest-v1\0";
 const PROOF_DIGEST_DOMAIN: &[u8] = b"aos-source-provider-proof-digest-v1\0";
@@ -63,13 +62,17 @@ const SIGNED_MAGIC: &[u8; 8] = b"AOSSPX01";
 const SIGNED_VERSION: u16 = 1;
 const SIGNATURE_BYTES: usize = 64;
 
-/// Identifies the only two SourceProvider signing authorities.
+/// Identifies the four physically separated SourceProvider signing roles.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SourceProviderKeyUsageV1 {
-    /// Authenticates Root Mount hello and Acquire, Release, and Inventory queries.
-    RootMountQuery = 1,
-    /// Authenticates provider hello, statuses, leases, receipts, and inventories.
-    ProviderReceipt = 2,
+    /// Authenticates only the Root Mount endpoint hello.
+    RootMountHello = 1,
+    /// Authenticates only the provider endpoint hello.
+    ProviderHello = 2,
+    /// Authenticates Root Mount Acquire, Release, and Inventory requests.
+    RootMountRecord = 3,
+    /// Authenticates provider statuses, leases, receipts, and inventories.
+    ProviderOutcome = 4,
 }
 
 /// Binds a stable authority and key generation to one SourceProvider use.
@@ -209,9 +212,6 @@ pub enum SourceProviderSignatureError {
     /// A signed envelope is malformed, oversized, unknown, or noncanonical.
     #[error("invalid SourceProvider signed envelope")]
     InvalidEnvelope,
-    /// Protected trust rejected the signing key or authority.
-    #[error("SourceProvider protected trust rejected the signer: {0}")]
-    Trust(#[from] SourceProviderTrustError),
 }
 
 /// Carries one signed Root Mount provider request.
@@ -490,8 +490,8 @@ pub fn sign_hello(
     signing_key: &SigningKey,
 ) -> Result<SignedSourceProviderHelloV1, SourceProviderSignatureError> {
     let expected_usage = match hello.role() {
-        SourceProviderPeerRole::RootMount => SourceProviderKeyUsageV1::RootMountQuery,
-        SourceProviderPeerRole::Provider => SourceProviderKeyUsageV1::ProviderReceipt,
+        SourceProviderPeerRole::RootMount => SourceProviderKeyUsageV1::RootMountHello,
+        SourceProviderPeerRole::Provider => SourceProviderKeyUsageV1::ProviderHello,
     };
     require_usage(&signer, expected_usage)?;
     let signature = sign_bytes(
@@ -508,29 +508,28 @@ pub fn sign_hello(
     })
 }
 
-/// Verifies one signed endpoint hello against protected endpoint trust.
+/// Verifies one signed endpoint hello against an already resolved public key.
 ///
 /// # Errors
 ///
-/// Returns [`SourceProviderSignatureError`] for inactive/mismatched trust,
-/// role/use mismatch, weak key material, or an invalid signature.
-pub fn verify_hello(
+/// Returns [`SourceProviderSignatureError`] for a role/use mismatch, weak key
+/// material, fingerprint mismatch, or an invalid signature.
+pub(crate) fn verify_hello(
     value: &SignedSourceProviderHelloV1,
-    trust: &SourceProviderTrustAnchorV1,
+    public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
     let expected_usage = match value.hello.role() {
-        SourceProviderPeerRole::RootMount => SourceProviderKeyUsageV1::RootMountQuery,
-        SourceProviderPeerRole::Provider => SourceProviderKeyUsageV1::ProviderReceipt,
+        SourceProviderPeerRole::RootMount => SourceProviderKeyUsageV1::RootMountHello,
+        SourceProviderPeerRole::Provider => SourceProviderKeyUsageV1::ProviderHello,
     };
     require_usage(&value.signer, expected_usage)?;
-    trust.verify_signer(&value.signer)?;
     verify_bytes(
         HELLO_SIGNATURE_DOMAIN,
         value.hello.role() as u8,
         &encode_hello(&value.hello),
         &value.signer,
         &value.signature,
-        trust.public_key(),
+        public_key,
     )
 }
 
@@ -544,7 +543,7 @@ pub fn sign_response_status(
     signer: SourceProviderSigningKeyV1,
     signing_key: &SigningKey,
 ) -> Result<SignedSourceProviderStatusV1, SourceProviderSignatureError> {
-    require_usage(&signer, SourceProviderKeyUsageV1::ProviderReceipt)?;
+    require_usage(&signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
     let signature = sign_bytes(
         STATUS_SIGNATURE_DOMAIN,
         status.method() as u8,
@@ -559,25 +558,24 @@ pub fn sign_response_status(
     })
 }
 
-/// Verifies one authoritative provider disposition under protected trust.
+/// Verifies one provider disposition against an already resolved public key.
 ///
 /// # Errors
 ///
-/// Returns [`SourceProviderSignatureError`] for inactive/mismatched trust,
-/// wrong key use, weak key material, or an invalid signature.
-pub fn verify_response_status(
+/// Returns [`SourceProviderSignatureError`] for wrong key use, weak key
+/// material, fingerprint mismatch, or an invalid signature.
+pub(crate) fn verify_response_status(
     value: &SignedSourceProviderStatusV1,
-    trust: &SourceProviderTrustAnchorV1,
+    public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
-    require_usage(&value.signer, SourceProviderKeyUsageV1::ProviderReceipt)?;
-    trust.verify_signer(&value.signer)?;
+    require_usage(&value.signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
     verify_bytes(
         STATUS_SIGNATURE_DOMAIN,
         value.status.method() as u8,
         &encode_response_status(&value.status),
         &value.signer,
         &value.signature,
-        trust.public_key(),
+        public_key,
     )
 }
 
@@ -594,7 +592,7 @@ pub fn sign_request(
     signing_key: &SigningKey,
 ) -> Result<SignedSourceProviderRequestV1, SourceProviderSignatureError> {
     validate_request_subject(method, &subject)?;
-    require_usage(&signer, SourceProviderKeyUsageV1::RootMountQuery)?;
+    require_usage(&signer, SourceProviderKeyUsageV1::RootMountRecord)?;
     let signature = sign_bytes(
         REQUEST_SIGNATURE_DOMAIN,
         method as u8,
@@ -615,15 +613,14 @@ pub fn sign_request(
 /// # Errors
 ///
 /// Returns [`SourceProviderSignatureError`] for malformed subject, a holder
-/// authority that differs from the signer, inactive/mismatched protected
-/// trust, a weak key, or an invalid strict Ed25519 signature.
-pub fn verify_request(
+/// authority that differs from the signer, a weak or mismatched key, or an
+/// invalid strict Ed25519 signature.
+pub(crate) fn verify_request(
     value: &SignedSourceProviderRequestV1,
-    trust: &SourceProviderTrustAnchorV1,
+    public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
     validate_request_subject(value.method, &value.subject)?;
-    require_usage(&value.signer, SourceProviderKeyUsageV1::RootMountQuery)?;
-    trust.verify_signer(&value.signer)?;
+    require_usage(&value.signer, SourceProviderKeyUsageV1::RootMountRecord)?;
     let (holder_id, holder_generation, holder_digest) = request_holder(value)?;
     if holder_id != value.signer.authority_id
         || holder_generation != value.signer.authority_generation
@@ -637,7 +634,7 @@ pub fn verify_request(
         &value.subject,
         &value.signer,
         &value.signature,
-        trust.public_key(),
+        public_key,
     )
 }
 
@@ -686,7 +683,7 @@ macro_rules! typed_sign_verify {
             signer: SourceProviderSigningKeyV1,
             signing_key: &SigningKey,
         ) -> Result<$signed, SourceProviderSignatureError> {
-            require_usage(&signer, SourceProviderKeyUsageV1::ProviderReceipt)?;
+            require_usage(&signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
             if !($authority)(&subject, &signer) {
                 return Err(SourceProviderSignatureError::SignerMismatch);
             }
@@ -704,11 +701,11 @@ macro_rules! typed_sign_verify {
         ///
         /// Returns [`SourceProviderSignatureError`] for wrong key use,
         /// authority/fingerprint mismatch, invalid key, or invalid signature.
-        pub fn $verify(
+        pub(crate) fn $verify(
             value: &$signed,
             public_key: &[u8; 32],
         ) -> Result<(), SourceProviderSignatureError> {
-            require_usage(&value.signer, SourceProviderKeyUsageV1::ProviderReceipt)?;
+            require_usage(&value.signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
             if !($authority)(&value.$field, &value.signer) {
                 return Err(SourceProviderSignatureError::SignerMismatch);
             }
@@ -769,9 +766,8 @@ pub fn sign_provider_receipt(
     signer: SourceProviderSigningKeyV1,
     signing_key: &SigningKey,
 ) -> Result<SignedSourceProviderReceiptV1, SourceProviderSignatureError> {
-    require_usage(&signer, SourceProviderKeyUsageV1::ProviderReceipt)?;
-    let signed_lease = receipt_lease(&receipt, &signer)?;
-    verify_export_lease(&signed_lease, signing_key.verifying_key().as_bytes())?;
+    require_usage(&signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
+    receipt_lease(&receipt)?;
     let signature = sign_bytes(
         RECEIPT_SIGNATURE_DOMAIN,
         2,
@@ -792,13 +788,11 @@ pub fn sign_provider_receipt(
 ///
 /// Returns [`SourceProviderSignatureError`] for an invalid nested lease,
 /// signer/authority mismatch, wrong key/fingerprint, or invalid signature.
-pub fn verify_provider_receipt(
+pub(crate) fn verify_provider_receipt(
     value: &SignedSourceProviderReceiptV1,
     public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
-    require_usage(&value.signer, SourceProviderKeyUsageV1::ProviderReceipt)?;
-    let signed_lease = receipt_lease(&value.receipt, &value.signer)?;
-    verify_export_lease(&signed_lease, public_key)?;
+    require_usage(&value.signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
     verify_bytes(
         RECEIPT_SIGNATURE_DOMAIN,
         2,
@@ -851,12 +845,10 @@ fn inventory_authority_matches(
 
 fn receipt_lease(
     receipt: &SourceProviderReceiptV1,
-    signer: &SourceProviderSigningKeyV1,
 ) -> Result<SignedSourceExportLeaseV1, SourceProviderSignatureError> {
     let signed_lease =
         SignedSourceExportLeaseV1::from_canonical_bytes(receipt.signed_export_lease())?;
-    if signed_lease.signer() != signer
-        || digest_signed_export_lease(&signed_lease) != receipt.lease_digest()
+    if digest_signed_export_lease(&signed_lease) != receipt.lease_digest()
         || signed_lease.subject().request_id() != receipt.request_id()
         || signed_lease.subject().request_digest() != receipt.request_digest()
         || digest_provider_proof(signed_lease.subject().proof()) != receipt.observed_proof_digest()
@@ -866,13 +858,13 @@ fn receipt_lease(
     Ok(signed_lease)
 }
 
-fn provider_matches(value: &ProviderAuthorityV1, signer: &SourceProviderSigningKeyV1) -> bool {
+fn provider_matches(
+    value: &SourceProviderAuthorityV1,
+    signer: &SourceProviderSigningKeyV1,
+) -> bool {
     value.authority_id() == signer.authority_id
         && value.authority_generation() == signer.authority_generation
         && value.authority_digest() == signer.authority_digest
-        && value.key_id == signer.key_id
-        && value.key_generation == signer.key_generation
-        && value.public_key_digest() == signer.public_key_digest
 }
 
 fn sign_bytes(
@@ -1012,8 +1004,10 @@ pub(crate) fn decode_signer(
             .map_err(|_| SourceProviderSignatureError::InvalidEnvelope)?,
     );
     let usage = match bytes[112] {
-        1 => SourceProviderKeyUsageV1::RootMountQuery,
-        2 => SourceProviderKeyUsageV1::ProviderReceipt,
+        1 => SourceProviderKeyUsageV1::RootMountHello,
+        2 => SourceProviderKeyUsageV1::ProviderHello,
+        3 => SourceProviderKeyUsageV1::RootMountRecord,
+        4 => SourceProviderKeyUsageV1::ProviderOutcome,
         _ => return Err(SourceProviderSignatureError::InvalidEnvelope),
     };
     if bytes[113..120].iter().any(|byte| *byte != 0) {
@@ -1100,7 +1094,7 @@ fn decode_signed(
 }
 
 macro_rules! signed_wire {
-    ($type:ty, $purpose:expr, $method:expr, $field:ident, $encode:ident, $decode:ident) => {
+    ($type:ty, $purpose:expr, $method:expr, $field:ident, $encode:ident, $decode:ident, $usage:expr) => {
         impl $type {
             /// Encodes the exact canonical signed envelope.
             #[must_use]
@@ -1130,8 +1124,12 @@ macro_rules! signed_wire {
                 if purpose != $purpose || method != $method {
                     return Err(SourceProviderSignatureError::InvalidEnvelope);
                 }
+                let decoded = $decode(subject)?;
+                if signer.usage() != $usage(&decoded) {
+                    return Err(SourceProviderSignatureError::InvalidEnvelope);
+                }
                 Ok(Self {
-                    $field: $decode(subject)?,
+                    $field: decoded,
                     signer,
                     signature,
                 })
@@ -1140,13 +1138,25 @@ macro_rules! signed_wire {
     };
 }
 
+fn provider_outcome_usage<T>(_: &T) -> SourceProviderKeyUsageV1 {
+    SourceProviderKeyUsageV1::ProviderOutcome
+}
+
+fn hello_usage(hello: &SourceProviderHelloV1) -> SourceProviderKeyUsageV1 {
+    match hello.role() {
+        SourceProviderPeerRole::RootMount => SourceProviderKeyUsageV1::RootMountHello,
+        SourceProviderPeerRole::Provider => SourceProviderKeyUsageV1::ProviderHello,
+    }
+}
+
 signed_wire!(
     SignedSourceExportLeaseV1,
     1,
     0,
     lease,
     encode_export_lease,
-    decode_export_lease
+    decode_export_lease,
+    provider_outcome_usage
 );
 signed_wire!(
     SignedSourceProviderReceiptV1,
@@ -1154,7 +1164,8 @@ signed_wire!(
     0,
     receipt,
     encode_provider_receipt,
-    decode_provider_receipt
+    decode_provider_receipt,
+    provider_outcome_usage
 );
 signed_wire!(
     SignedSourceReleaseReceiptV1,
@@ -1162,7 +1173,8 @@ signed_wire!(
     0,
     receipt,
     encode_release_receipt,
-    decode_release_receipt
+    decode_release_receipt,
+    provider_outcome_usage
 );
 signed_wire!(
     SignedSourceProviderInventoryV1,
@@ -1170,7 +1182,8 @@ signed_wire!(
     0,
     inventory,
     encode_inventory,
-    decode_inventory
+    decode_inventory,
+    provider_outcome_usage
 );
 signed_wire!(
     SignedSourceProviderHelloV1,
@@ -1178,7 +1191,8 @@ signed_wire!(
     1,
     hello,
     encode_hello,
-    decode_hello
+    decode_hello,
+    hello_usage
 );
 
 impl SignedSourceProviderStatusV1 {
@@ -1206,7 +1220,9 @@ impl SignedSourceProviderStatusV1 {
             return Err(SourceProviderSignatureError::InvalidEnvelope);
         }
         let status = decode_response_status(subject)?;
-        if method != status.method() as u8 {
+        if method != status.method() as u8
+            || signer.usage() != SourceProviderKeyUsageV1::ProviderOutcome
+        {
             return Err(SourceProviderSignatureError::InvalidEnvelope);
         }
         Ok(Self {
@@ -1233,7 +1249,8 @@ impl SignedSourceProviderRequestV1 {
     /// Decodes an exact signed Acquire, Release, or Inventory query envelope.
     ///
     /// This validates framing and typed subject canonicality but not the Ed25519
-    /// signature. Call [`verify_request`] afterward.
+    /// signature. Use a composite verifier in [`crate::verification`] before
+    /// treating the result as authenticated.
     ///
     /// # Errors
     ///
@@ -1241,7 +1258,7 @@ impl SignedSourceProviderRequestV1 {
     /// reserved, oversized, noncanonical, or trailing bytes.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, SourceProviderSignatureError> {
         let (purpose, method, signer, subject, signature) = decode_signed(bytes)?;
-        if purpose != 5 {
+        if purpose != 5 || signer.usage() != SourceProviderKeyUsageV1::RootMountRecord {
             return Err(SourceProviderSignatureError::InvalidEnvelope);
         }
         let method = match method {

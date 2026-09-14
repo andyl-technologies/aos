@@ -20,7 +20,7 @@ const PROSPECTIVE_MOUNT_TEMPLATE_DIGEST_DOMAIN: &[u8] =
     b"aos-source-provider-prospective-mount-template-v1\0";
 const MOUNT_SEMANTICS_MAGIC: &[u8; 8] = b"AOSMSEM1";
 const MAXIMUM_MOUNT_TEMPLATE_BYTES: usize = 2 * 1024;
-const MAXIMUM_SIGNED_INVENTORY_BYTES: usize = 768 * 1024;
+const MAXIMUM_SIGNED_INVENTORY_BYTES: usize = 432 + 344 * MAXIMUM_INVENTORY_ENTRIES;
 
 /// Largest canonical logical source binding accepted by protocol 1.0.
 pub const MAXIMUM_BINDING_BYTES: usize = 64 * 1024;
@@ -114,6 +114,8 @@ pub enum SourceProviderMethod {
 pub enum SourceProviderFeature {
     /// Requires signed receipts, holder leases, and exact replay.
     SignedLeaseReceipts = 1,
+    /// Requires independent physical keys for hello and traffic signatures.
+    SeparatedSigningRoles = 2,
 }
 
 /// Identifies the sole descriptor role in SourceProvider 1.0.
@@ -150,7 +152,8 @@ pub struct SourceProviderHelloV1 {
     pub(crate) nonce: [u8; 32],
     pub(crate) process_instance: [u8; 16],
     pub(crate) kernel_boot_id: [u8; 16],
-    pub(crate) expected_peer_signer: SourceProviderSigningKeyV1,
+    pub(crate) traffic_signer: SourceProviderSigningKeyV1,
+    pub(crate) expected_peer_traffic_signer: SourceProviderSigningKeyV1,
     pub(crate) route_id: [u8; 16],
     pub(crate) route_generation: u64,
     pub(crate) route_digest: ObjectDigest,
@@ -174,7 +177,8 @@ impl SourceProviderHelloV1 {
         nonce: [u8; 32],
         process_instance: [u8; 16],
         kernel_boot_id: [u8; 16],
-        expected_peer_signer: SourceProviderSigningKeyV1,
+        traffic_signer: SourceProviderSigningKeyV1,
+        expected_peer_traffic_signer: SourceProviderSigningKeyV1,
         route_id: [u8; 16],
         route_generation: u64,
         route_digest: ObjectDigest,
@@ -190,11 +194,21 @@ impl SourceProviderHelloV1 {
         require_generation("hello route", route_generation)?;
         require_digest("hello route digest", route_digest)?;
         require_proof_capabilities(proof_class_capabilities)?;
-        let expected_usage = match role {
-            SourceProviderPeerRole::RootMount => SourceProviderKeyUsageV1::ProviderReceipt,
-            SourceProviderPeerRole::Provider => SourceProviderKeyUsageV1::RootMountQuery,
+        let (traffic_usage, expected_peer_usage) = match role {
+            SourceProviderPeerRole::RootMount => (
+                SourceProviderKeyUsageV1::RootMountRecord,
+                SourceProviderKeyUsageV1::ProviderOutcome,
+            ),
+            SourceProviderPeerRole::Provider => (
+                SourceProviderKeyUsageV1::ProviderOutcome,
+                SourceProviderKeyUsageV1::RootMountRecord,
+            ),
         };
-        if expected_peer_signer.usage() != expected_usage
+        if traffic_signer.usage() != traffic_usage
+            || expected_peer_traffic_signer.usage() != expected_peer_usage
+            || traffic_signer.key_id() == expected_peer_traffic_signer.key_id()
+            || traffic_signer.public_key_digest()
+                == expected_peer_traffic_signer.public_key_digest()
             || (role == SourceProviderPeerRole::RootMount && client_hello_digest.is_some())
             || (role == SourceProviderPeerRole::Provider && client_hello_digest.is_none())
         {
@@ -208,7 +222,8 @@ impl SourceProviderHelloV1 {
             nonce,
             process_instance,
             kernel_boot_id,
-            expected_peer_signer,
+            traffic_signer,
+            expected_peer_traffic_signer,
             route_id,
             route_generation,
             route_digest,
@@ -243,10 +258,16 @@ impl SourceProviderHelloV1 {
         self.kernel_boot_id
     }
 
-    /// Returns the exact peer-key reference claimed for this transcript.
+    /// Returns the local traffic-key reference committed by this endpoint.
     #[must_use]
-    pub const fn expected_peer_signer(&self) -> &SourceProviderSigningKeyV1 {
-        &self.expected_peer_signer
+    pub const fn traffic_signer(&self) -> &SourceProviderSigningKeyV1 {
+        &self.traffic_signer
+    }
+
+    /// Returns the exact peer traffic-key reference expected by this endpoint.
+    #[must_use]
+    pub const fn expected_peer_traffic_signer(&self) -> &SourceProviderSigningKeyV1 {
+        &self.expected_peer_traffic_signer
     }
 
     /// Returns the claimed route identity.
@@ -292,19 +313,16 @@ impl SourceProviderHelloV1 {
     }
 }
 
-/// Identifies one stable provider authority and signing-key generation.
+/// Identifies one stable SourceProvider authority generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderAuthorityV1 {
+pub struct SourceProviderAuthorityV1 {
     pub(crate) authority_id: [u8; 16],
     pub(crate) authority_generation: u64,
     pub(crate) authority_digest: ObjectDigest,
-    pub(crate) key_id: [u8; 16],
-    pub(crate) key_generation: u64,
-    pub(crate) public_key_digest: ObjectDigest,
 }
 
-impl ProviderAuthorityV1 {
-    /// Constructs a stable provider authority and exact signing-key reference.
+impl SourceProviderAuthorityV1 {
+    /// Constructs a stable SourceProvider authority generation.
     ///
     /// # Errors
     ///
@@ -314,23 +332,14 @@ impl ProviderAuthorityV1 {
         authority_id: [u8; 16],
         authority_generation: u64,
         authority_digest: ObjectDigest,
-        key_id: [u8; 16],
-        key_generation: u64,
-        public_key_digest: ObjectDigest,
     ) -> Result<Self, SourceProviderValidationError> {
         require_nonzero("provider authority ID", &authority_id)?;
         require_generation("provider authority", authority_generation)?;
         require_digest("provider authority digest", authority_digest)?;
-        require_nonzero("provider key ID", &key_id)?;
-        require_generation("provider key", key_generation)?;
-        require_digest("provider public-key digest", public_key_digest)?;
         Ok(Self {
             authority_id,
             authority_generation,
             authority_digest,
-            key_id,
-            key_generation,
-            public_key_digest,
         })
     }
 
@@ -350,24 +359,6 @@ impl ProviderAuthorityV1 {
     #[must_use]
     pub const fn authority_digest(&self) -> ObjectDigest {
         self.authority_digest
-    }
-
-    /// Returns the stable key ID.
-    #[must_use]
-    pub const fn key_id(&self) -> [u8; 16] {
-        self.key_id
-    }
-
-    /// Returns the signing-key generation.
-    #[must_use]
-    pub const fn key_generation(&self) -> u64 {
-        self.key_generation
-    }
-
-    /// Returns SHA-256 over the exact Ed25519 public key.
-    #[must_use]
-    pub const fn public_key_digest(&self) -> ObjectDigest {
-        self.public_key_digest
     }
 }
 
@@ -645,7 +636,7 @@ pub struct SourceExportLeaseV1 {
     pub(crate) holder_authority_id: [u8; 16],
     pub(crate) holder_generation: u64,
     pub(crate) holder_authority_digest: ObjectDigest,
-    pub(crate) provider: ProviderAuthorityV1,
+    pub(crate) provider: SourceProviderAuthorityV1,
     pub(crate) resource: SourceResourceV1,
     pub(crate) proof: SourceProviderProofV1,
     pub(crate) binding_digest: ObjectDigest,
@@ -669,7 +660,7 @@ impl SourceExportLeaseV1 {
         holder_authority_id: [u8; 16],
         holder_generation: u64,
         holder_authority_digest: ObjectDigest,
-        provider: ProviderAuthorityV1,
+        provider: SourceProviderAuthorityV1,
         resource: SourceResourceV1,
         proof: SourceProviderProofV1,
         binding_digest: ObjectDigest,
@@ -725,9 +716,9 @@ impl SourceExportLeaseV1 {
         self.request_digest
     }
 
-    /// Returns the stable provider authority and receipt-key reference.
+    /// Returns the stable provider authority generation.
     #[must_use]
-    pub const fn provider(&self) -> &ProviderAuthorityV1 {
+    pub const fn provider(&self) -> &SourceProviderAuthorityV1 {
         &self.provider
     }
 
@@ -1245,7 +1236,7 @@ pub struct SourceReleaseReceiptV1 {
     pub(crate) request_digest: ObjectDigest,
     pub(crate) lease_id: [u8; 16],
     pub(crate) lease_digest: ObjectDigest,
-    pub(crate) provider: ProviderAuthorityV1,
+    pub(crate) provider: SourceProviderAuthorityV1,
     pub(crate) provider_process_instance: [u8; 16],
     pub(crate) release_generation: u64,
     pub(crate) released_seconds: i64,
@@ -1264,7 +1255,7 @@ impl SourceReleaseReceiptV1 {
         request_digest: ObjectDigest,
         lease_id: [u8; 16],
         lease_digest: ObjectDigest,
-        provider: ProviderAuthorityV1,
+        provider: SourceProviderAuthorityV1,
         provider_process_instance: [u8; 16],
         release_generation: u64,
         released_seconds: i64,
@@ -1422,7 +1413,7 @@ pub struct SourceProviderInventoryV1 {
     pub(crate) holder_authority_id: [u8; 16],
     pub(crate) holder_generation: u64,
     pub(crate) holder_authority_digest: ObjectDigest,
-    pub(crate) provider: ProviderAuthorityV1,
+    pub(crate) provider: SourceProviderAuthorityV1,
     pub(crate) provider_process_instance: [u8; 16],
     pub(crate) catalog_generation: u64,
     pub(crate) catalog_digest: ObjectDigest,
@@ -1436,7 +1427,8 @@ impl SourceProviderInventoryV1 {
     /// # Errors
     ///
     /// Returns [`SourceProviderValidationError`] for sentinel fields, too many
-    /// entries, or entries not strictly ordered by lease ID.
+    /// entries, entries not strictly ordered by lease ID, or a repeated
+    /// acquisition ID anywhere in the inventory.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: [u8; 16],
@@ -1444,7 +1436,7 @@ impl SourceProviderInventoryV1 {
         holder_authority_id: [u8; 16],
         holder_generation: u64,
         holder_authority_digest: ObjectDigest,
-        provider: ProviderAuthorityV1,
+        provider: SourceProviderAuthorityV1,
         provider_process_instance: [u8; 16],
         catalog_generation: u64,
         catalog_digest: ObjectDigest,
@@ -1467,6 +1459,11 @@ impl SourceProviderInventoryV1 {
             || !entries
                 .windows(2)
                 .all(|pair| pair[0].lease_id < pair[1].lease_id)
+            || entries.iter().enumerate().any(|(index, entry)| {
+                entries[..index]
+                    .iter()
+                    .any(|prior| prior.acquisition_id == entry.acquisition_id)
+            })
         {
             return Err(SourceProviderValidationError::InventoryNotCanonical);
         }

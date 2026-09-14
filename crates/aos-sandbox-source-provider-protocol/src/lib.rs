@@ -35,7 +35,8 @@ pub mod trust;
 pub mod verification;
 
 pub use codec::{
-    MAXIMUM_FRAME_BYTES, SourceProviderFrameError, SourceProviderFrameKind,
+    MAXIMUM_FRAME_BYTES, SIGNED_SOURCE_PROVIDER_HELLO_BYTES, SOURCE_PROVIDER_HELLO_FRAME_BYTES,
+    SOURCE_PROVIDER_HELLO_SUBJECT_BYTES, SourceProviderFrameError, SourceProviderFrameKind,
     SourceProviderMessageV1, decode_acquire_request, decode_acquire_response, decode_export_lease,
     decode_hello, decode_inventory, decode_inventory_request, decode_inventory_response,
     decode_message, decode_provider_proof, decode_provider_receipt, decode_release_receipt,
@@ -55,17 +56,15 @@ pub use crypto::{
     digest_signed_hello, digest_signed_request, empty_descriptor_set_commitment_v1,
     provider_resource_commitment_v1, response_result_digest_v1, sign_export_lease, sign_hello,
     sign_inventory, sign_provider_receipt, sign_release_receipt, sign_request,
-    sign_response_status, source_provider_session_binding_v1, verify_export_lease, verify_hello,
-    verify_inventory, verify_provider_receipt, verify_release_receipt, verify_request,
-    verify_response_status,
+    sign_response_status, source_provider_session_binding_v1,
 };
 pub use model::{
     ALL_PROOF_CLASS_CAPABILITIES, AcquireSourceRequestV1, AcquireSourceResponseV1,
     InventoryLeaseStateV1, InventorySourceRequestV1, InventorySourceResponseV1,
     MAXIMUM_BINDING_BYTES, MAXIMUM_INVENTORY_ENTRIES, MAXIMUM_RECURSIVE_BYTE_COUNT,
     MAXIMUM_RECURSIVE_DEPTH, MAXIMUM_RECURSIVE_ENTRY_COUNT, MAXIMUM_SOURCE_LEASE_SECONDS,
-    MAXIMUM_SOURCE_SUBMOUNTS, ProviderAuthorityV1, ReleaseSourceRequestV1, ReleaseSourceResponseV1,
-    SourceExportLeaseV1, SourceProviderDescriptorRole, SourceProviderFeature,
+    MAXIMUM_SOURCE_SUBMOUNTS, ReleaseSourceRequestV1, ReleaseSourceResponseV1, SourceExportLeaseV1,
+    SourceProviderAuthorityV1, SourceProviderDescriptorRole, SourceProviderFeature,
     SourceProviderHelloV1, SourceProviderInventoryEntryV1, SourceProviderInventoryV1,
     SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
     SourceProviderResponseStatusV1, SourceProviderStatus, SourceProviderValidationError,
@@ -77,12 +76,26 @@ pub use proof::{
     RecursiveTopologyProofV1, SourceProviderProofV1, ZfsHeldSnapshotProofV1,
 };
 pub use trust::{
-    ProtectedSourceProviderRouteV1, SourceProviderProcessIdentityV1, SourceProviderSessionV1,
-    SourceProviderTrustAnchorV1, SourceProviderTrustError,
+    MAXIMUM_SOURCE_PROVIDER_AUTHORITY_TRUSTS, MAXIMUM_SOURCE_PROVIDER_KEY_TRUSTS,
+    MAXIMUM_SOURCE_SELECTION_FLOORS, ProtectedRootMountPeerV1, ProtectedSourceProviderRouteV1,
+    ProviderCatalogFloorV1, SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityTrustV1,
+    SourceProviderCurrentAuthorityV1, SourceProviderIngressSessionV1,
+    SourceProviderKeyTrustStateV1, SourceProviderKeyTrustV1, SourceProviderProcessIdentityV1,
+    SourceProviderSessionV1, SourceProviderTrustError, SourceProviderTrustSetV1,
+    SourceSelectionFloorV1, source_provider_signer_set_commitment_v1,
+    source_provider_trust_set_digest_v1,
 };
 pub use verification::{
+    ProviderRequestSequenceExpectationV1, ProviderRequestVerificationContextV1,
     SourceProviderVerificationContextV1, SourceProviderVerificationError, SourceRootObservationV1,
-    VerifiedSourceAcquisitionV1, VerifiedSourceInventoryV1, VerifiedSourceProviderDispositionV1,
+    VerifiedProviderAcquireRequestV1, VerifiedProviderIngressProjectionV1,
+    VerifiedProviderInventoryRequestV1, VerifiedProviderReleaseRequestV1,
+    VerifiedProviderRequestAttemptV1, VerifiedProviderRequestReplayV1,
+    VerifiedProviderRequestSequenceAdvanceV1, VerifiedProviderRequestSequenceV1,
+    VerifiedProviderRequestV1, VerifiedRootMountProcessProjectionV1, VerifiedSourceAcquisitionV1,
+    VerifiedSourceInventoryV1, VerifiedSourceProviderDispositionV1,
     VerifiedSourceProviderSequenceV1, VerifiedSourceReleaseV1,
-    source_root_descriptor_commitment_v1, verify_acquire, verify_release, verify_source_inventory,
+    source_provider_acquire_intent_digest_v1, source_provider_inventory_intent_digest_v1,
+    source_provider_release_intent_digest_v1, source_root_descriptor_commitment_v1, verify_acquire,
+    verify_provider_request, verify_release, verify_source_inventory,
 };

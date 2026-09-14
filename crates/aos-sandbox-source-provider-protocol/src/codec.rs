@@ -21,8 +21,8 @@ use crate::crypto::{
 use crate::model::{
     AcquireSourceRequestV1, AcquireSourceResponseV1, InventoryLeaseStateV1,
     InventorySourceRequestV1, InventorySourceResponseV1, MAXIMUM_BINDING_BYTES,
-    MAXIMUM_INVENTORY_ENTRIES, ProviderAuthorityV1, ReleaseSourceRequestV1,
-    ReleaseSourceResponseV1, SourceExportLeaseV1, SourceProviderDescriptorRole,
+    MAXIMUM_INVENTORY_ENTRIES, ReleaseSourceRequestV1, ReleaseSourceResponseV1,
+    SourceExportLeaseV1, SourceProviderAuthorityV1, SourceProviderDescriptorRole,
     SourceProviderHelloV1, SourceProviderInventoryEntryV1, SourceProviderInventoryV1,
     SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
     SourceProviderResponseStatusV1, SourceProviderStatus, SourceProviderValidationError,
@@ -38,12 +38,24 @@ const PROTOCOL_MAJOR: u16 = 1;
 const PROTOCOL_MINOR: u16 = 0;
 const FRAME_HEADER_BYTES: usize = 24;
 const HELLO_METHOD_MASK: u32 = 0b1111;
-const HELLO_FEATURE_MASK: u32 = 0b1;
+const HELLO_FEATURE_MASK: u32 = 0b11;
 const HELLO_DESCRIPTOR_MASK: u32 = 0b1;
 const INVENTORY_ENTRY_BYTES: usize = 344;
 
 /// Largest complete SourceProvider 1.0 record.
 pub const MAXIMUM_FRAME_BYTES: usize = 1024 * 1024;
+/// Exact canonical SourceProvider 1.0 hello subject size.
+pub const SOURCE_PROVIDER_HELLO_SUBJECT_BYTES: usize = 424;
+/// Exact signed SourceProvider 1.0 hello envelope size.
+pub const SIGNED_SOURCE_PROVIDER_HELLO_BYTES: usize = 628;
+/// Exact outer SourceProvider 1.0 hello frame size.
+pub const SOURCE_PROVIDER_HELLO_FRAME_BYTES: usize = 652;
+
+const _: () =
+    assert!(SIGNED_SOURCE_PROVIDER_HELLO_BYTES == SOURCE_PROVIDER_HELLO_SUBJECT_BYTES + 204);
+const _: () = assert!(
+    SOURCE_PROVIDER_HELLO_FRAME_BYTES == SIGNED_SOURCE_PROVIDER_HELLO_BYTES + FRAME_HEADER_BYTES
+);
 
 /// Reports malformed, noncanonical, or oversized SourceProvider bytes.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -394,14 +406,17 @@ fn validate_inventory_response_result(
 /// Encodes one exact Hello body including closed method, feature, and role sets.
 #[must_use]
 pub fn encode_hello(value: &SourceProviderHelloV1) -> Vec<u8> {
-    let mut writer = Writer::with_capacity(288);
+    let mut writer = Writer::with_capacity(SOURCE_PROVIDER_HELLO_SUBJECT_BYTES);
     writer.u8(value.role as u8);
     writer.zeros(7);
     writer.bytes(&value.nonce);
     writer.bytes(&value.process_instance);
     writer.bytes(&value.kernel_boot_id);
     let mut signer = Vec::with_capacity(120);
-    encode_signer(&mut signer, &value.expected_peer_signer);
+    encode_signer(&mut signer, &value.traffic_signer);
+    writer.bytes(&signer);
+    signer.clear();
+    encode_signer(&mut signer, &value.expected_peer_traffic_signer);
     writer.bytes(&signer);
     writer.bytes(&value.route_id);
     writer.u64(value.route_generation);
@@ -434,6 +449,9 @@ pub fn encode_hello(value: &SourceProviderHelloV1) -> Vec<u8> {
 /// Returns [`SourceProviderFrameError`] for truncation, trailing data, unknown
 /// roles/methods/features/descriptor roles, reserved bytes, or sentinels.
 pub fn decode_hello(bytes: &[u8]) -> Result<SourceProviderHelloV1, SourceProviderFrameError> {
+    if bytes.len() != SOURCE_PROVIDER_HELLO_SUBJECT_BYTES {
+        return Err(SourceProviderFrameError::InvalidLength);
+    }
     let mut reader = Reader::new(bytes);
     let role = match reader.u8()? {
         1 => SourceProviderPeerRole::RootMount,
@@ -444,7 +462,9 @@ pub fn decode_hello(bytes: &[u8]) -> Result<SourceProviderHelloV1, SourceProvide
     let nonce = reader.array::<32>()?;
     let process_instance = reader.array::<16>()?;
     let kernel_boot_id = reader.array::<16>()?;
-    let expected_peer_signer =
+    let traffic_signer =
+        decode_signer(reader.take(120)?).map_err(|_| SourceProviderFrameError::InvalidFrame)?;
+    let expected_peer_traffic_signer =
         decode_signer(reader.take(120)?).map_err(|_| SourceProviderFrameError::InvalidFrame)?;
     let route_id = reader.array::<16>()?;
     let route_generation = reader.u64()?;
@@ -480,7 +500,8 @@ pub fn decode_hello(bytes: &[u8]) -> Result<SourceProviderHelloV1, SourceProvide
         nonce,
         process_instance,
         kernel_boot_id,
-        expected_peer_signer,
+        traffic_signer,
+        expected_peer_traffic_signer,
         route_id,
         route_generation,
         route_digest,
@@ -1106,27 +1127,17 @@ pub fn decode_inventory(
     .map_err(Into::into)
 }
 
-fn encode_provider_authority(writer: &mut Writer, value: &ProviderAuthorityV1) {
+fn encode_provider_authority(writer: &mut Writer, value: &SourceProviderAuthorityV1) {
     writer.bytes(&value.authority_id);
     writer.u64(value.authority_generation);
     writer.digest(value.authority_digest);
-    writer.bytes(&value.key_id);
-    writer.u64(value.key_generation);
-    writer.digest(value.public_key_digest);
 }
 
 fn decode_provider_authority(
     reader: &mut Reader<'_>,
-) -> Result<ProviderAuthorityV1, SourceProviderFrameError> {
-    ProviderAuthorityV1::new(
-        reader.array::<16>()?,
-        reader.u64()?,
-        reader.digest()?,
-        reader.array::<16>()?,
-        reader.u64()?,
-        reader.digest()?,
-    )
-    .map_err(Into::into)
+) -> Result<SourceProviderAuthorityV1, SourceProviderFrameError> {
+    SourceProviderAuthorityV1::new(reader.array::<16>()?, reader.u64()?, reader.digest()?)
+        .map_err(Into::into)
 }
 
 fn encode_resource(writer: &mut Writer, value: &SourceResourceV1) {
