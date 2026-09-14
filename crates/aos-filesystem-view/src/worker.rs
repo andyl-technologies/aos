@@ -8,19 +8,45 @@
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::presentation::MetadataTransportCheckpoint;
 use crate::{
     DirectoryHandleId, DirectoryHandleLimits, DirectoryReadKind, DirectoryReservation,
     ForgetRequest, ForgetSummary, IndexError, IndexNodeBodyView, IndexNodeKind, InodeError,
     InodeLookup, InodeTable, InodeTableLimits, MetadataTransportError, MetadataTransportLimits,
-    PreparedPresentation, PresentationError, PresentedInodeAttributes, ValidatedIndex,
+    PreparedPresentation, PresentationError, PresentedInodeAttributes, ProjectedNode,
+    ProjectedNodeKind, ValidatedIndex, ValidatedViewProjection,
 };
+use aos_sandbox_core::PathName;
 
+mod authority;
+mod data;
+mod durable;
 mod file;
+mod lifecycle;
+mod registration;
 mod scratch;
 
+pub use authority::{
+    AuthenticatedConnectionJoin, ConnectionAuthorityError, ConnectionLease, FrozenFeatureSet,
+    FuseCapabilities, MountPolicy, PreparedFuseConnection, UserNamespaceIdentity,
+};
+pub use data::{
+    BackingDisposition, BackingIdentity, DataError, DataOpenPolicy, DataPlane, DataPlaneLimits,
+    DataReadRequest, DataReadResult, DataReadScratch, MonotonicClock, ObjectReadRequest,
+    ObjectReadResult, PreparedDataOpen, ReadSegment, ReleaseDisposition, VerifiedBackingEvidence,
+    VerifiedObjectReader,
+};
+pub use durable::{DurableStateCodec, DurableStateError, DurableStateLimits};
 pub use file::{
     FileAccessMode, FileContentAuthority, FileOpenRequest, OpenFileReply, PendingFileReply,
+};
+pub use lifecycle::{
+    AttachmentHealth, ConsumerEvidence, DurableLifecycleEvent, InventoryEvidence, LifecycleError,
+    ProcessEvidence, PublicationHealth, ReconciliationAction, RepairEvidence, WorkerLifecycle,
+    WorkerLifecycleSnapshot, WorkerPhase,
+};
+pub use registration::{
+    DurableRegistrationRecord, PassthroughRegistrations, RegistrationAction, RegistrationLimits,
+    RegistrationOperation, RegistrationPhase,
 };
 pub use scratch::{ReadDirEntry, ReadDirPage, ReadDirPageEntries, ReplyScratch};
 use scratch::{ReadDirRecord, usize_u64};
@@ -146,6 +172,13 @@ pub enum RequestControlState {
 pub trait RequestControl {
     /// Returns the current state at `checkpoint` without blocking.
     fn state(&self, checkpoint: RequestCheckpoint) -> RequestControlState;
+
+    /// Returns the current trusted monotonic time for lease enforcement.
+    ///
+    /// `None` is fail-closed for every connection-authorized request.
+    fn monotonic_now_ns(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Never cancels and has no deadline.
@@ -363,6 +396,9 @@ static NEXT_CONNECTION_BRAND_ID: AtomicU64 = AtomicU64::new(1);
 /// only diagnostics and teardown remain available afterward.
 pub struct MetadataConnection<'prepared, 'index, 'bytes, 'plan> {
     presentation: &'prepared PreparedPresentation<'index, 'bytes, 'plan>,
+    projection: &'prepared ValidatedViewProjection<'index, 'bytes>,
+    lease: ConnectionLease,
+    authority_binding: [u8; 32],
     inodes: InodeTable<'index, 'bytes>,
     connection_brand: ConnectionBrandId,
     limits: WorkerLimits,
@@ -379,18 +415,29 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     /// Returns a closed worker error when inode-table construction or admission
     /// fails. Returns [`WorkerError::ResourceExhausted`] if the process-local
     /// connection-brand space has been permanently exhausted.
-    pub fn new(
-        presentation: &'prepared PreparedPresentation<'index, 'bytes, 'plan>,
-        connection_key: [u8; 32],
+    pub fn from_prepared<'projection, 'presentation>(
+        prepared: &'prepared PreparedFuseConnection<
+            'projection,
+            'index,
+            'bytes,
+            'presentation,
+            'plan,
+        >,
         inode_limits: InodeTableLimits,
         directory_limits: DirectoryHandleLimits,
         limits: WorkerLimits,
-    ) -> Result<Self, WorkerError> {
+    ) -> Result<Self, WorkerError>
+    where
+        'projection: 'prepared,
+        'presentation: 'prepared,
+    {
         let directory_enabled = directory_limits.maximum_directory_handles != 0
             && directory_limits.maximum_total_handles != 0;
-        let inodes = InodeTable::new_with_directory_limits(
-            presentation.index(),
-            connection_key,
+        let presentation = prepared.presentation();
+        let projection = prepared.projection();
+        let inodes = InodeTable::new_projected(
+            projection,
+            prepared.inode_key(),
             inode_limits,
             directory_limits,
         )
@@ -398,6 +445,9 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         let connection_brand = mint_connection_brand()?;
         Ok(Self {
             presentation,
+            projection,
+            lease: prepared.lease(),
+            authority_binding: prepared.binding(),
             inodes,
             connection_brand,
             limits,
@@ -413,6 +463,18 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     #[must_use]
     pub const fn index(&self) -> &'index ValidatedIndex<'bytes> {
         self.presentation.index()
+    }
+
+    /// Returns the exact projection served by this connection.
+    #[must_use]
+    pub const fn projection(&self) -> &'prepared ValidatedViewProjection<'index, 'bytes> {
+        self.projection
+    }
+
+    /// Returns the non-authorizing brand for dormant callback state.
+    #[must_use]
+    pub const fn connection_binding(&self) -> [u8; 32] {
+        self.authority_binding
     }
 
     /// Returns the connection inode table for read-only diagnostics.
@@ -452,21 +514,87 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         limits: MetadataTransportLimits,
         control: &impl RequestControl,
     ) -> Result<(), MetadataTransportError> {
-        self.presentation
-            .validate_transport_representation_with(limits, |checkpoint| {
-                let checkpoint = match checkpoint {
-                    MetadataTransportCheckpoint::BeforeScan => RequestCheckpoint::BeforeWork,
-                    MetadataTransportCheckpoint::DuringScan => {
-                        RequestCheckpoint::DuringReadOnlyWork
-                    }
-                    MetadataTransportCheckpoint::Complete => RequestCheckpoint::BeforeCommit,
-                };
-                match control.state(checkpoint) {
-                    RequestControlState::Continue => Ok(()),
-                    RequestControlState::Cancelled => Err(MetadataTransportError::Interrupted),
-                    RequestControlState::DeadlineExpired => Err(MetadataTransportError::TimedOut),
+        let now = control
+            .monotonic_now_ns()
+            .ok_or(MetadataTransportError::TimedOut)?;
+        if !self.lease.contains(now) {
+            return Err(MetadataTransportError::TimedOut);
+        }
+        if limits.allocation_unit_bytes == 0
+            || limits.minimum_timestamp_seconds > limits.maximum_timestamp_seconds
+        {
+            return Err(MetadataTransportError::InvalidLimit("projection profile"));
+        }
+        if self.projection.nodes().len() as u64 > limits.maximum_records {
+            return Err(MetadataTransportError::LimitExceeded("projected record"));
+        }
+        projection_checkpoint(control, RequestCheckpoint::BeforeWork)?;
+        for (ordinal, node) in self.projection.nodes().iter().enumerate() {
+            projection_checkpoint(control, RequestCheckpoint::DuringReadOnlyWork)?;
+            let attributes = self
+                .projected_attribute_template(node)
+                .map_err(|_| MetadataTransportError::Unrepresentable("projected metadata"))?;
+            if attributes.uid > limits.maximum_uid
+                || attributes.gid > limits.maximum_gid
+                || attributes.nlink > limits.maximum_link_count
+                || attributes.size > limits.maximum_size
+                || !(limits.minimum_timestamp_seconds..=limits.maximum_timestamp_seconds)
+                    .contains(&attributes.mtime_seconds)
+            {
+                return Err(MetadataTransportError::Unrepresentable(
+                    "projected metadata scalar",
+                ));
+            }
+            let allocation_units = attributes.size / limits.allocation_unit_bytes
+                + u64::from(attributes.size % limits.allocation_unit_bytes != 0);
+            if allocation_units > limits.maximum_allocation_units {
+                return Err(MetadataTransportError::Unrepresentable(
+                    "allocation-unit count",
+                ));
+            }
+            if let Some(name) = node.path().components().last()
+                && name.as_bytes().len() as u64 > limits.maximum_name_bytes
+            {
+                return Err(MetadataTransportError::Unrepresentable(
+                    "component-name length",
+                ));
+            }
+            if projected_is_directory(node) {
+                let cookies = (self.projection.children(ordinal).count() as u64)
+                    .checked_add(2)
+                    .ok_or(MetadataTransportError::Unrepresentable("directory cookie"))?;
+                if cookies > limits.maximum_directory_cookie {
+                    return Err(MetadataTransportError::Unrepresentable("directory cookie"));
                 }
-            })
+            } else if matches!(
+                node.kind(),
+                ProjectedNodeKind::Source {
+                    kind: IndexNodeKind::Symlink,
+                    ..
+                }
+            ) {
+                let record = self
+                    .projected_record(node)
+                    .map_err(|_| MetadataTransportError::Unrepresentable("symlink record"))?;
+                let semantics = self
+                    .index()
+                    .record_semantics(&record)
+                    .map_err(PresentationError::from)?;
+                let IndexNodeBodyView::Symlink { target } = semantics.body() else {
+                    return Err(MetadataTransportError::Unrepresentable("symlink record"));
+                };
+                if target.len() as u64 > limits.maximum_symlink_bytes {
+                    return Err(MetadataTransportError::Unrepresentable("symlink target"));
+                }
+            }
+        }
+        let now = control
+            .monotonic_now_ns()
+            .ok_or(MetadataTransportError::TimedOut)?;
+        if !self.lease.contains(now) {
+            return Err(MetadataTransportError::TimedOut);
+        }
+        projection_checkpoint(control, RequestCheckpoint::BeforeCommit)
     }
 
     /// Negotiates the conservative metadata feature intersection exactly once.
@@ -482,6 +610,7 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<InitReply, WorkerError> {
         self.guard_terminal_fault()?;
+        self.authorize_request(control)?;
         self.check_budget(budget)?;
         require_output(budget, INIT_REPLY_BYTES)?;
         check(control, RequestCheckpoint::BeforeWork)?;
@@ -513,31 +642,33 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<LookupReply, WorkerError> {
         self.ready_budget(budget)?;
+        self.authorize_request(control)?;
         require_output(budget, LOOKUP_REPLY_BYTES)?;
         check(control, RequestCheckpoint::BeforeWork)?;
+        PathName::validate(name).map_err(|_| WorkerError::InvalidArgument)?;
 
-        let parent_live = self.inodes.live_inode(parent).map_err(map_inode)?;
-        if parent_live.attributes().kind != IndexNodeKind::Directory {
+        let parent_ordinal = self.projected_ordinal(parent)?;
+        let parent_node = self
+            .projection
+            .node(parent_ordinal)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        if !projected_is_directory(parent_node) {
             return Err(WorkerError::NotDirectory);
         }
-        let child = self
-            .index()
-            .lookup_child_bytes(parent_live.record(), name)
-            .map_err(map_index)?;
-        let Some(child) = child else {
+        let Some((child_ordinal, child)) = self.projection.child(parent_ordinal, name) else {
             check(control, RequestCheckpoint::AfterReadOnlyWork)?;
             return Ok(LookupReply::Negative);
         };
-        let template = AttributeTemplate::from_presented(
-            &self
-                .presentation
-                .present(&child)
-                .map_err(map_presentation)?,
-        );
+        let record = self.projected_record(child)?;
+        let template = self.projected_attribute_template(child)?;
         check(control, RequestCheckpoint::AfterReadOnlyWork)?;
         check(control, RequestCheckpoint::BeforeCommit)?;
 
-        match self.inodes.lookup_bytes(parent, name).map_err(map_inode)? {
+        match self
+            .inodes
+            .lookup_projected(child_ordinal, child, record)
+            .map_err(map_inode)?
+        {
             InodeLookup::Negative => Err(WorkerError::IntegrityFailure),
             InodeLookup::Positive {
                 attributes,
@@ -623,14 +754,15 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<WorkerAttributes, WorkerError> {
         self.ready_budget(budget)?;
+        self.authorize_request(control)?;
         require_output(budget, ATTRIBUTE_REPLY_BYTES)?;
         check(control, RequestCheckpoint::BeforeWork)?;
-        let live = self.inodes.live_inode(node_id).map_err(map_inode)?;
-        let presented = self
-            .presentation
-            .present(live.record())
-            .map_err(map_presentation)?;
-        let reply = AttributeTemplate::from_presented(&presented).with_node(node_id);
+        let ordinal = self.projected_ordinal(node_id)?;
+        let node = self
+            .projection
+            .node(ordinal)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        let reply = self.projected_attribute_template(node)?.with_node(node_id);
         check(control, RequestCheckpoint::AfterReadOnlyWork)?;
         Ok(reply)
     }
@@ -648,14 +780,20 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<ReadlinkReply<'scratch>, WorkerError> {
         self.ready_budget(budget)?;
+        self.authorize_request(control)?;
         if budget.output_bytes > scratch.limits.maximum_output_bytes
             || budget.variable_bytes > scratch.limits.maximum_variable_bytes
         {
             return Err(WorkerError::ResourceExhausted);
         }
         check(control, RequestCheckpoint::BeforeWork)?;
-        let live = self.inodes.live_inode(node_id).map_err(map_inode)?;
-        let semantics = live.semantics().map_err(map_inode)?;
+        let ordinal = self.projected_ordinal(node_id)?;
+        let node = self
+            .projection
+            .node(ordinal)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        let record = self.projected_record(node)?;
+        let semantics = self.index().record_semantics(&record).map_err(map_index)?;
         let IndexNodeBodyView::Symlink { target } = semantics.body() else {
             return Err(WorkerError::NotSymlink);
         };
@@ -687,22 +825,21 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<PendingDirectoryReply, WorkerError> {
         self.ready_budget(budget)?;
+        self.authorize_request(control)?;
         if !self.ready()?.directory_handles {
             return Err(WorkerError::OperationNotSupported);
         }
         require_output(budget, HANDLE_REPLY_BYTES)?;
         check(control, RequestCheckpoint::BeforeWork)?;
-        let live = self.inodes.live_inode(node_id).map_err(map_inode)?;
-        if live.attributes().kind != IndexNodeKind::Directory {
+        let ordinal = self.projected_ordinal(node_id)?;
+        let node = self
+            .projection
+            .node(ordinal)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        if !projected_is_directory(node) {
             return Err(WorkerError::NotDirectory);
         }
-        let attributes = AttributeTemplate::from_presented(
-            &self
-                .presentation
-                .present(live.record())
-                .map_err(map_presentation)?,
-        )
-        .with_node(node_id);
+        let attributes = self.projected_attribute_template(node)?.with_node(node_id);
         check(control, RequestCheckpoint::AfterReadOnlyWork)?;
         check(control, RequestCheckpoint::BeforeCommit)?;
         let reservation = self.inodes.reserve_directory(node_id).map_err(map_inode)?;
@@ -836,33 +973,69 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<ReadDirPage<'scratch>, WorkerError> {
         self.ready_budget(budget)?;
+        self.authorize_request(control)?;
         validate_scratch(budget, scratch)?;
         require_output(budget, DIRECTORY_PAGE_BYTES)?;
         check(control, RequestCheckpoint::BeforeWork)?;
         scratch.clear();
-        let handle = self
+        let node_id = self
             .inodes
-            .resolve_active_directory(raw_handle)
+            .active_directory_node(raw_handle)
             .map_err(map_inode)?;
-        let source = self
-            .inodes
-            .directory_entries_raw(handle, cookie)
-            .map_err(map_inode)?;
+        let ordinal = self.projected_ordinal(node_id)?;
+        let _directory = self
+            .projection
+            .node(ordinal)
+            .filter(|node| projected_is_directory(node))
+            .ok_or(WorkerError::IntegrityFailure)?;
+        let child_count = self.projection.children(ordinal).count() as u64;
+        let end_cookie = child_count
+            .checked_add(2)
+            .ok_or(WorkerError::ResourceExhausted)?;
+        if cookie > end_cookie || cookie > i64::MAX as u64 {
+            return Err(WorkerError::InvalidArgument);
+        }
         let mut output_bytes = DIRECTORY_PAGE_BYTES;
         let mut continuation = cookie;
         let mut eof = true;
+        let skip_children = usize::try_from(cookie.saturating_sub(2))
+            .map_err(|_| WorkerError::ResourceExhausted)?;
+        let mut children = self.projection.children(ordinal).skip(skip_children);
 
-        for entry in source {
+        for position in cookie..end_cookie {
             check(control, RequestCheckpoint::DuringReadOnlyWork)
                 .inspect_err(|_| scratch.clear())?;
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    scratch.clear();
-                    return Err(map_inode(error));
+            let (kind, name, node_kind, entry_node_id) = match position {
+                0 => (
+                    DirectoryReadKind::Dot,
+                    b".".as_slice(),
+                    IndexNodeKind::Directory,
+                    Some(node_id),
+                ),
+                1 => (
+                    DirectoryReadKind::DotDot,
+                    b"..".as_slice(),
+                    IndexNodeKind::Directory,
+                    None,
+                ),
+                _ => {
+                    let child = children
+                        .next()
+                        .map(|(_, node)| node)
+                        .ok_or(WorkerError::IntegrityFailure)?;
+                    let name = child
+                        .path()
+                        .components()
+                        .last()
+                        .ok_or(WorkerError::IntegrityFailure)?
+                        .as_bytes();
+                    let child_kind = match child.kind() {
+                        ProjectedNodeKind::Source { kind, .. } => kind,
+                        ProjectedNodeKind::SyntheticDirectory => IndexNodeKind::Directory,
+                    };
+                    (DirectoryReadKind::Child, name, child_kind, None)
                 }
             };
-            let name = entry.name();
             let next_names = scratch
                 .names
                 .len()
@@ -884,26 +1057,13 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             let start = scratch.names.len();
             scratch.names.extend_from_slice(name);
             let end = scratch.names.len();
-            let (node_kind, node_id) = match entry.kind() {
-                DirectoryReadKind::Dot => {
-                    (IndexNodeKind::Directory, entry.inode().map(|a| a.node_id))
-                }
-                DirectoryReadKind::DotDot => (IndexNodeKind::Directory, None),
-                DirectoryReadKind::Child => {
-                    let Some(child) = entry.child() else {
-                        scratch.clear();
-                        return Err(WorkerError::IntegrityFailure);
-                    };
-                    (child.node().kind(), None)
-                }
-            };
-            continuation = entry.next_cookie().get();
+            continuation = position + 1;
             scratch.entries.push(ReadDirRecord {
                 name_start: start,
                 name_end: end,
-                kind: entry.kind(),
+                kind,
                 node_kind,
-                node_id,
+                node_id: entry_node_id,
                 next_cookie: continuation,
             });
             output_bytes = next_output;
@@ -913,7 +1073,7 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             names: &scratch.names,
             entries: &scratch.entries,
             continuation_cookie: continuation,
-            eof,
+            eof: eof && continuation == end_cookie,
         })
     }
 
@@ -934,6 +1094,7 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<ReadDirPage<'scratch>, WorkerError> {
         self.ready_budget(budget)?;
+        self.authorize_request(control)?;
         check(control, RequestCheckpoint::BeforeWork)?;
         self.inodes
             .resolve_active_directory_for_node(raw_handle, node_id)
@@ -1041,6 +1202,97 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         }
         Ok(())
     }
+
+    fn authorize_request(&self, control: &impl RequestControl) -> Result<(), WorkerError> {
+        let now = control
+            .monotonic_now_ns()
+            .ok_or(WorkerError::IntegrityFailure)?;
+        self.lease
+            .contains(now)
+            .then_some(())
+            .ok_or(WorkerError::TimedOut)
+    }
+
+    fn projected_ordinal(&self, node_id: u64) -> Result<usize, WorkerError> {
+        self.inodes
+            .live_inode(node_id)
+            .map_err(map_inode)?
+            .projection_ordinal()
+            .ok_or(WorkerError::IntegrityFailure)
+    }
+
+    fn projected_record(
+        &self,
+        node: &ProjectedNode,
+    ) -> Result<crate::IndexNodeView<'bytes>, WorkerError> {
+        match self
+            .projection
+            .source_node(node)
+            .map_err(|_| WorkerError::IntegrityFailure)?
+        {
+            Some(record) => Ok(record),
+            None => self.index().retained_root().map_err(map_index),
+        }
+    }
+
+    fn projected_attribute_template(
+        &self,
+        node: &ProjectedNode,
+    ) -> Result<AttributeTemplate, WorkerError> {
+        let ordinal = self
+            .projection
+            .lookup_with_ordinal(node.path())
+            .filter(|(_, candidate)| *candidate == node)
+            .map(|(ordinal, _)| ordinal)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        if self.projection.profile(ordinal).is_some_and(|profile| {
+            profile.profile() != self.projection.view().identity_presentation()
+        }) {
+            return Err(WorkerError::IntegrityFailure);
+        }
+        let nlink = u32::try_from(node.link_count()).map_err(|_| WorkerError::IntegrityFailure)?;
+        match node.kind() {
+            ProjectedNodeKind::Source { .. } => {
+                let record = self.projected_record(node)?;
+                let presented = self
+                    .presentation
+                    .present(&record)
+                    .map_err(map_presentation)?;
+                let mut template = AttributeTemplate::from_presented(&presented);
+                template.nlink = nlink;
+                Ok(template)
+            }
+            ProjectedNodeKind::SyntheticDirectory => {
+                let metadata = self.projection.synthetic_directory();
+                let (uid, gid) = self
+                    .presentation
+                    .translate_synthetic_identity(metadata.uid(), metadata.gid())
+                    .map_err(map_presentation)?;
+                Ok(AttributeTemplate {
+                    record_id: u64::MAX,
+                    kind: IndexNodeKind::Directory,
+                    mode: metadata.mode(),
+                    uid,
+                    gid,
+                    nlink,
+                    size: 0,
+                    mtime_seconds: metadata.mtime_seconds(),
+                    mtime_nanos: metadata.mtime_nanos(),
+                })
+            }
+        }
+    }
+}
+
+fn projected_is_directory(node: &ProjectedNode) -> bool {
+    matches!(
+        node.kind(),
+        ProjectedNodeKind::SyntheticDirectory
+            | ProjectedNodeKind::Source {
+                kind: IndexNodeKind::Directory,
+                ..
+            }
+    )
 }
 
 fn mint_connection_brand() -> Result<ConnectionBrandId, WorkerError> {
@@ -1106,6 +1358,17 @@ fn check(control: &impl RequestControl, checkpoint: RequestCheckpoint) -> Result
     }
 }
 
+fn projection_checkpoint(
+    control: &impl RequestControl,
+    checkpoint: RequestCheckpoint,
+) -> Result<(), MetadataTransportError> {
+    match control.state(checkpoint) {
+        RequestControlState::Continue => Ok(()),
+        RequestControlState::Cancelled => Err(MetadataTransportError::Interrupted),
+        RequestControlState::DeadlineExpired => Err(MetadataTransportError::TimedOut),
+    }
+}
+
 fn require_output(budget: RequestBudget, bytes: u64) -> Result<(), WorkerError> {
     (bytes <= budget.output_bytes)
         .then_some(())
@@ -1133,6 +1396,7 @@ fn map_index(error: IndexError) -> WorkerError {
 
 fn map_presentation(error: PresentationError) -> WorkerError {
     match error {
+        PresentationError::InvalidBinding => WorkerError::IntegrityFailure,
         PresentationError::LimitExceeded(_) => WorkerError::ResourceExhausted,
         PresentationError::Identity(_) | PresentationError::LinkCountOverflow => {
             WorkerError::IntegrityFailure

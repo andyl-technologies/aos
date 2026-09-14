@@ -5,6 +5,8 @@
 //! kernel parsing and reply publication; Rust owns metadata decisions and handle
 //! state. File data and extended attributes remain unsupported in this profile.
 //! The private ABI and callback modules contain the audited pointer boundary.
+//! [`file_callbacks`] defines the dormant typed OPEN/READ/RELEASE sequencing
+//! contract for a later ABI revision; it is not installed in the C operations table.
 //!
 //! Each connection has exactly one runner. Its descriptors must refer to a
 //! broker-prepared mount with independently qualified permission policy. A
@@ -23,6 +25,7 @@ use aos_filesystem_view::{
 mod abi;
 mod callbacks;
 mod control;
+pub mod file_callbacks;
 
 /// Configures the independently bounded C transport buffers and reply policy.
 #[derive(Clone, Copy, Debug)]

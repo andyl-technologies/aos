@@ -59,6 +59,14 @@ impl<'bytes> ValidatedIndex<'bytes> {
     /// subject to reauthentication by APIs that use it for authorization.
     #[must_use]
     pub fn records(&self) -> IndexRecords<'_> {
+        self.retained_records()
+    }
+
+    /// Iterates records with the lifetime of the validated backing-byte owner.
+    ///
+    /// This is restricted to crate-owned lazy identity tables that retain the
+    /// exact [`ValidatedIndex`] authority alongside every returned locator.
+    pub(crate) fn retained_records(&self) -> IndexRecords<'bytes> {
         let start = HEADER_BYTES;
         let records_bytes = self.layout.records_bytes as usize;
         IndexRecords {

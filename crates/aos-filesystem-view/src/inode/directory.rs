@@ -257,7 +257,7 @@ pub(super) enum DirectorySlot<'bytes> {
         raw_handle_id: u64,
         node_id: u64,
         record_id: u64,
-        range: DirectoryRange<'bytes>,
+        range: Option<DirectoryRange<'bytes>>,
         state: DirectoryState,
     },
 }
@@ -287,17 +287,25 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             .directory_limits
             .ok_or(InodeError::DirectoryHandlesDisabled)?;
         let mut node = self.authenticated_node_entry(node_id)?;
-        if node.record.kind() != IndexNodeKind::Directory {
+        let kind = node
+            .projected
+            .map_or(node.record.kind(), |value| value.kind);
+        if kind != IndexNodeKind::Directory {
             return Err(InodeError::DirectoryTargetNotDirectory);
         }
-        let range = self.index.retained_directory_range(&node.record)?;
-        let end = range
-            .len()
-            .checked_add(2)
-            .ok_or(InodeError::InvalidDirectoryCookie)?;
-        if end > i64::MAX as u64 || end > usize::MAX as u64 {
-            return Err(InodeError::InvalidDirectoryCookie);
-        }
+        let range = if node.projected.is_some() {
+            None
+        } else {
+            let range = self.index.retained_directory_range(&node.record)?;
+            let end = range
+                .len()
+                .checked_add(2)
+                .ok_or(InodeError::InvalidDirectoryCookie)?;
+            if end > i64::MAX as u64 || end > usize::MAX as u64 {
+                return Err(InodeError::InvalidDirectoryCookie);
+            }
+            Some(range)
+        };
         if self.live_directories as u64 >= limits.maximum_directory_handles {
             return Err(InodeError::LimitExceeded("directory handles"));
         }
@@ -477,6 +485,17 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         Ok(handle)
     }
 
+    /// Resolves an active raw directory handle to its connection inode.
+    pub(crate) fn active_directory_node(&self, raw: u64) -> Result<u64, InodeError> {
+        self.resolve_active_directory(raw)?;
+        let slot = find_directory(&self.directories, raw).ok_or(InodeError::InternalInvariant)?;
+        let DirectorySlot::Occupied { node_id, .. } = self.directories[slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        self.authenticated_node_entry(node_id)?;
+        Ok(node_id)
+    }
+
     /// Returns an allocation-free stream beginning at a checked signed offset.
     ///
     /// # Errors
@@ -547,6 +566,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         if state == DirectoryState::Pending {
             return Err(InodeError::DirectoryHandleStillPending);
         }
+        let range = range.ok_or(InodeError::InternalInvariant)?;
         let node = self.authenticated_node_entry(node_id)?;
         if node.record.record_id() != record_id || node.record.kind() != IndexNodeKind::Directory {
             return Err(InodeError::InternalInvariant);
@@ -686,12 +706,16 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             return Err(InodeError::InternalInvariant);
         }
         let authenticated = self.authenticated_node_entry(node_id)?;
+        let range_changed = match range {
+            Some(range) => self
+                .index
+                .retained_directory_range(&authenticated.record)
+                .map_or(true, |current| !current.same_identity(&range)),
+            None => false,
+        };
         if authenticated.record.record_id() != record_id
             || authenticated.record.kind() != IndexNodeKind::Directory
-            || !self
-                .index
-                .retained_directory_range(&authenticated.record)?
-                .same_identity(&range)
+            || range_changed
         {
             return Err(InodeError::InternalInvariant);
         }

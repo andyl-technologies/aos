@@ -207,6 +207,9 @@ impl PresentationLimits {
 /// Reports failure to prepare or use exact worker-facing presentation state.
 #[derive(Debug, thiserror::Error)]
 pub enum PresentationError {
+    /// Controller generation or policy commitment uses a forbidden sentinel.
+    #[error("presentation generation or policy binding is invalid")]
+    InvalidBinding,
     /// Admission exceeded a caller-controlled record, ACL, or map ceiling.
     #[error("presentation exceeds its admitted {0} ceiling")]
     LimitExceeded(&'static str),
@@ -242,6 +245,8 @@ pub enum PresentationError {
 pub struct PreparedPresentation<'index, 'bytes, 'plan> {
     index: &'index ValidatedIndex<'bytes>,
     plan: &'plan PresentationPlan,
+    generation: u64,
+    policy_digest: [u8; 32],
     cache_identity: [u8; 32],
 }
 
@@ -263,6 +268,9 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
         policy_digest: [u8; 32],
         limits: PresentationLimits,
     ) -> Result<Self, PresentationError> {
+        if generation == 0 || policy_digest == [0; 32] {
+            return Err(PresentationError::InvalidBinding);
+        }
         if index.summary().records > limits.maximum_records {
             return Err(PresentationError::LimitExceeded("record"));
         }
@@ -312,6 +320,8 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
         Ok(Self {
             index,
             plan,
+            generation,
+            policy_digest,
             cache_identity: hasher.finalize().into(),
         })
     }
@@ -326,6 +336,35 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
     #[must_use]
     pub const fn cache_identity(&self) -> [u8; 32] {
         self.cache_identity
+    }
+
+    /// Returns the exact typed presentation-plan commitment.
+    #[must_use]
+    pub const fn plan_digest(&self) -> [u8; 32] {
+        self.plan.digest()
+    }
+
+    /// Returns the controller generation bound during presentation admission.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the exact presentation-policy commitment.
+    #[must_use]
+    pub const fn policy_digest(&self) -> [u8; 32] {
+        self.policy_digest
+    }
+
+    pub(crate) fn translate_synthetic_identity(
+        &self,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(u32, u32), PresentationError> {
+        Ok((
+            self.plan.identity.translate_uid(uid)?,
+            self.plan.identity.translate_gid(gid)?,
+        ))
     }
 
     /// Validates every exposed metadata value against one transport profile.

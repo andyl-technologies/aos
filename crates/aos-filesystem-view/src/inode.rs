@@ -35,9 +35,9 @@ pub use directory::{
 };
 use directory::{DirectorySlot, find_directory};
 use identity::{
-    NodeEntry, NodeSlot, SemanticKey, SemanticSlot, allocate_node_slots, allocate_semantic_slots,
-    find_node, find_node_insert, find_semantic, find_semantic_insert, find_semantic_slot,
-    node_bucket, rehash_nodes, rehash_semantics, semantic_hash,
+    NodeEntry, NodeSlot, ProjectedNodeState, SemanticKey, SemanticSlot, allocate_node_slots,
+    allocate_semantic_slots, find_node, find_node_insert, find_semantic, find_semantic_insert,
+    find_semantic_slot, node_bucket, rehash_nodes, rehash_semantics, semantic_hash,
 };
 pub use open::{OpenHandleId, OpenReservation};
 use open::{OpenSlot, find_open};
@@ -195,6 +195,30 @@ impl LiveInode<'_, '_, '_> {
     /// fails closed.
     pub fn directory_range(&self) -> Result<DirectoryRange<'_>, InodeError> {
         Ok(self.table.index.directory_range(&self.record)?)
+    }
+
+    /// Returns the projection ordinal when this inode belongs to a View namespace.
+    #[must_use]
+    pub fn projection_ordinal(&self) -> Option<usize> {
+        match self.table.node_entry(self.attributes.node_id) {
+            Some(entry) => match entry.projected {
+                Some(projected) => Some(projected.ordinal),
+                None => None,
+            },
+            None => None,
+        }
+    }
+
+    /// Returns the projected kind and link count when this is a View inode.
+    #[must_use]
+    pub fn projected_metadata(&self) -> Option<(IndexNodeKind, u64)> {
+        match self.table.node_entry(self.attributes.node_id) {
+            Some(entry) => match entry.projected {
+                Some(projected) => Some((projected.kind, projected.link_count)),
+                None => None,
+            },
+            None => None,
+        }
     }
 }
 
@@ -462,6 +486,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             node_id: ROOT_NODE_ID,
             semantic,
             record: root,
+            projected: None,
             lookup_references: 1,
             handle_pins: 0,
         });
@@ -503,6 +528,124 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             #[cfg(test)]
             rebuilds: 0,
         })
+    }
+
+    /// Creates a table whose root and lazy identities are bound to a validated projection.
+    pub(crate) fn new_projected(
+        projection: &crate::ValidatedViewProjection<'index, 'bytes>,
+        connection_key: [u8; 32],
+        limits: InodeTableLimits,
+        directory_limits: DirectoryHandleLimits,
+    ) -> Result<Self, InodeError> {
+        let root = projection
+            .nodes()
+            .first()
+            .filter(|node| node.path().components().is_empty())
+            .ok_or(InodeError::InternalInvariant)?;
+        if !matches!(
+            root.kind(),
+            crate::ProjectedNodeKind::SyntheticDirectory
+                | crate::ProjectedNodeKind::Source {
+                    kind: IndexNodeKind::Directory,
+                    ..
+                }
+        ) {
+            return Err(InodeError::ParentNotDirectory);
+        }
+
+        let mut table = Self::new_with_directory_limits(
+            projection.index(),
+            connection_key,
+            limits,
+            directory_limits,
+        )?;
+        let slot = find_node(&table.nodes, ROOT_NODE_ID).ok_or(InodeError::InternalInvariant)?;
+        let NodeSlot::Occupied(mut entry) = table.nodes[slot] else {
+            return Err(InodeError::InternalInvariant);
+        };
+        let old_hash = semantic_hash(&table.connection_key, entry.semantic);
+        let old_semantic_slot = find_semantic_slot(&table.semantics, &old_hash, entry.semantic)
+            .ok_or(InodeError::InternalInvariant)?;
+        let semantic = SemanticKey::Projection(root.inode_identity());
+        let hash = semantic_hash(&table.connection_key, semantic);
+        let semantic_slot = find_semantic_insert(&table.semantics, &hash, semantic)?;
+        table.semantics[old_semantic_slot] = SemanticSlot::Tombstone;
+        table.semantics[semantic_slot] = SemanticSlot::Occupied {
+            hash,
+            key: semantic,
+            node_id: ROOT_NODE_ID,
+        };
+        table.semantic_tombstones = 1;
+        entry.semantic = semantic;
+        entry.projected = Some(ProjectedNodeState {
+            ordinal: 0,
+            kind: IndexNodeKind::Directory,
+            link_count: root.link_count(),
+        });
+        table.nodes[slot] = NodeSlot::Occupied(entry);
+        Ok(table)
+    }
+
+    /// Interns one exact node selected from the connection's validated projection.
+    pub(crate) fn lookup_projected(
+        &mut self,
+        ordinal: usize,
+        projected: &crate::ProjectedNode,
+        record: IndexNodeView<'bytes>,
+    ) -> Result<InodeLookup, InodeError> {
+        let projected_kind = match projected.kind() {
+            crate::ProjectedNodeKind::Source { kind, .. } => kind,
+            crate::ProjectedNodeKind::SyntheticDirectory => IndexNodeKind::Directory,
+        };
+        if record.kind() != projected_kind {
+            return Err(InodeError::InternalInvariant);
+        }
+        let semantic = SemanticKey::Projection(projected.inode_identity());
+        let hash = semantic_hash(&self.connection_key, semantic);
+        if let Some(node_id) = find_semantic(&self.semantics, &hash, semantic) {
+            let mut entry = self.authenticated_node_entry(node_id)?;
+            let state = entry.projected.ok_or(InodeError::InternalInvariant)?;
+            if state.kind != projected_kind || state.link_count != projected.link_count() {
+                return Err(InodeError::InternalInvariant);
+            }
+            if state.ordinal != ordinal {
+                let retained_group = entry.record.hardlink_group()?;
+                let requested_group = record.hardlink_group()?;
+                if projected_kind != IndexNodeKind::File
+                    || retained_group.is_none()
+                    || retained_group != requested_group
+                {
+                    return Err(InodeError::InternalInvariant);
+                }
+            }
+            let slot = find_node(&self.nodes, node_id).ok_or(InodeError::InternalInvariant)?;
+            let next = entry
+                .lookup_references
+                .checked_add(1)
+                .ok_or(InodeError::LimitExceeded("lookup references"))?;
+            let next_total = self
+                .total_lookup_references
+                .checked_add(1)
+                .ok_or(InodeError::LimitExceeded("lookup references"))?;
+            if next_total > self.limits.maximum_lookup_references {
+                return Err(InodeError::LimitExceeded("lookup references"));
+            }
+            entry.lookup_references = next;
+            self.nodes[slot] = NodeSlot::Occupied(entry);
+            self.total_lookup_references = next_total;
+            return Ok(positive(entry));
+        }
+
+        self.insert_new_with_projection(
+            semantic,
+            hash,
+            record,
+            Some(ProjectedNodeState {
+                ordinal,
+                kind: projected_kind,
+                link_count: projected.link_count(),
+            }),
+        )
     }
 
     /// Returns the currently modeled retained slot-array bytes.
@@ -748,6 +891,16 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
         hash: [u8; 32],
         record: IndexNodeView<'bytes>,
     ) -> Result<InodeLookup, InodeError> {
+        self.insert_new_with_projection(semantic, hash, record, None)
+    }
+
+    fn insert_new_with_projection(
+        &mut self,
+        semantic: SemanticKey,
+        hash: [u8; 32],
+        record: IndexNodeView<'bytes>,
+        projected: Option<ProjectedNodeState>,
+    ) -> Result<InodeLookup, InodeError> {
         if self.live as u64 >= self.limits.maximum_nodes {
             return Err(InodeError::LimitExceeded("nodes"));
         }
@@ -759,6 +912,7 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             node_id,
             semantic,
             record,
+            projected,
             lookup_references: 1,
             handle_pins: 0,
         };
@@ -902,10 +1056,10 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
             return Err(InodeError::InternalInvariant);
         }
         let record = self.index.authenticate_node(&entry.record)?;
-        let semantic = semantic_key(&record)?;
-        if semantic != entry.semantic {
-            return Err(InodeError::InternalInvariant);
-        }
+        let semantic = match entry.projected {
+            Some(_) => entry.semantic,
+            None => semantic_key(&record)?,
+        };
         let hash = semantic_hash(&self.connection_key, semantic);
         if find_semantic(&self.semantics, &hash, semantic) != Some(node_id) {
             return Err(InodeError::InternalInvariant);

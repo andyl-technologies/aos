@@ -14,6 +14,14 @@ const SEMANTIC_HASH_DOMAIN: &[u8] = b"aos.filesystem-view.inode-semantic.v1\0";
 pub(super) enum SemanticKey {
     Record(u64),
     Hardlink(ObjectDigest),
+    Projection([u8; 32]),
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ProjectedNodeState {
+    pub(super) ordinal: usize,
+    pub(super) kind: super::IndexNodeKind,
+    pub(super) link_count: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -21,6 +29,7 @@ pub(super) struct NodeEntry<'bytes> {
     pub(super) node_id: u64,
     pub(super) semantic: SemanticKey,
     pub(super) record: IndexNodeView<'bytes>,
+    pub(super) projected: Option<ProjectedNodeState>,
     pub(super) lookup_references: u64,
     pub(super) handle_pins: u64,
 }
@@ -55,6 +64,10 @@ pub(super) fn semantic_hash(connection_key: &[u8; 32], key: SemanticKey) -> [u8;
         SemanticKey::Hardlink(group) => {
             hash.update([1]);
             hash.update(group.as_bytes());
+        }
+        SemanticKey::Projection(identity) => {
+            hash.update([2]);
+            hash.update(identity);
         }
     }
     hash.finalize().into()

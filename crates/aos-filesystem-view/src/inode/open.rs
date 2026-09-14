@@ -110,7 +110,10 @@ impl<'index, 'bytes> InodeTable<'index, 'bytes> {
     pub fn reserve_open(&mut self, node_id: u64) -> Result<OpenReservation, InodeError> {
         let mut node = self.authenticated_node_entry(node_id)?;
         let node_slot = find_node(&self.nodes, node_id).ok_or(InodeError::StaleNode)?;
-        if node.record.kind() != IndexNodeKind::File {
+        let kind = node
+            .projected
+            .map_or(node.record.kind(), |value| value.kind);
+        if kind != IndexNodeKind::File {
             return Err(InodeError::OpenTargetNotFile);
         }
         let next_pin_count = node

@@ -33,6 +33,12 @@ impl RequestControl for Control {
             _ => RequestControlState::DeadlineExpired,
         }
     }
+
+    fn monotonic_now_ns(&self) -> Option<u64> {
+        boottime_ns()
+            .ok()
+            .and_then(|value| u64::try_from(value).ok())
+    }
 }
 
 fn boottime_ns() -> std::io::Result<u128> {

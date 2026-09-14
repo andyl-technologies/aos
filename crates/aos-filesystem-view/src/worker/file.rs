@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     ConnectionBrandId, MetadataConnection, RequestBudget, RequestCheckpoint, RequestControl,
-    WorkerError, check, map_index, map_inode, require_output,
+    WorkerAttributes, WorkerError, check, map_index, map_inode, require_output,
 };
 
 const OPEN_REPLY_BYTES: u64 = size_of::<OpenFileReply<'static>>() as u64;
@@ -142,6 +142,7 @@ pub struct PendingFileReply<'index> {
     reservation: OpenReservation,
     connection_brand: ConnectionBrandId,
     node_id: u64,
+    attributes: WorkerAttributes,
     content: FileContentAuthority<'index>,
 }
 
@@ -156,6 +157,12 @@ impl<'index> PendingFileReply<'index> {
     #[must_use]
     pub const fn node_id(&self) -> u64 {
         self.node_id
+    }
+
+    /// Returns the exact projected metadata authorized for the OPEN reply.
+    #[must_use]
+    pub const fn attributes(&self) -> WorkerAttributes {
+        self.attributes
     }
 
     /// Returns the authenticated immutable byte authority for backing resolution.
@@ -175,6 +182,7 @@ pub struct OpenFileReply<'index> {
     handle: OpenHandleId,
     connection_brand: ConnectionBrandId,
     node_id: u64,
+    attributes: WorkerAttributes,
     content: FileContentAuthority<'index>,
 }
 
@@ -184,6 +192,7 @@ impl std::fmt::Debug for OpenFileReply<'_> {
             .debug_struct("OpenFileReply")
             .field("handle", &self.handle)
             .field("node_id", &self.node_id)
+            .field("attributes", &self.attributes)
             .field("content", &self.content)
             .finish()
     }
@@ -194,6 +203,7 @@ impl PartialEq for OpenFileReply<'_> {
         self.handle == other.handle
             && self.connection_brand == other.connection_brand
             && self.node_id == other.node_id
+            && self.attributes == other.attributes
             && self.content == other.content
     }
 }
@@ -211,6 +221,12 @@ impl<'index> OpenFileReply<'index> {
     #[must_use]
     pub const fn node_id(&self) -> u64 {
         self.node_id
+    }
+
+    /// Returns the exact projected metadata published for this open.
+    #[must_use]
+    pub const fn attributes(&self) -> WorkerAttributes {
+        self.attributes
     }
 
     /// Returns the authenticated immutable byte authority for this open.
@@ -240,19 +256,31 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<PendingFileReply<'index>, WorkerError> {
         self.ready_budget(budget)?;
+        self.authorize_request(control)?;
         if !request.is_exactly_read_only() {
             return Err(WorkerError::ReadOnlyFilesystem);
         }
         require_output(budget, OPEN_REPLY_BYTES)?;
         check(control, RequestCheckpoint::BeforeWork)?;
 
-        let record = {
-            let live = self.inodes.live_inode(node_id).map_err(map_inode)?;
-            if live.attributes().kind != crate::IndexNodeKind::File {
-                return Err(WorkerError::NotFile);
+        let ordinal = self.projected_ordinal(node_id)?;
+        let projected = self
+            .projection
+            .node(ordinal)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        if !matches!(
+            projected.kind(),
+            crate::ProjectedNodeKind::Source {
+                kind: crate::IndexNodeKind::File,
+                ..
             }
-            *live.record()
-        };
+        ) {
+            return Err(WorkerError::NotFile);
+        }
+        let record = self.projected_record(projected)?;
+        let attributes = self
+            .projected_attribute_template(projected)?
+            .with_node(node_id);
         let index: &'index ValidatedIndex<'bytes> = self.index();
         let semantics = index.record_semantics(&record).map_err(map_index)?;
         let IndexNodeBodyView::File(file) = semantics.body() else {
@@ -270,6 +298,7 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             reservation,
             connection_brand: self.connection_brand,
             node_id,
+            attributes,
             content,
         })
     }
@@ -413,6 +442,7 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         control: &impl RequestControl,
     ) -> Result<OpenFileReply<'index>, WorkerError> {
         self.ready()?;
+        self.authorize_request(control)?;
         check(control, RequestCheckpoint::BeforeWork)?;
 
         let handle = self
@@ -430,6 +460,52 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             handle,
             connection_brand: self.connection_brand,
             node_id,
+            attributes: self
+                .projected_attribute_template(
+                    self.projection
+                        .node(self.projected_ordinal(node_id)?)
+                        .ok_or(WorkerError::IntegrityFailure)?,
+                )?
+                .with_node(node_id),
+            content,
+        })
+    }
+
+    /// Resolves an active open solely for identity-checked release cleanup.
+    ///
+    /// Lease expiry does not block cleanup of authority created while the lease
+    /// was live. This method performs no content read or new access admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed initialization, stale or pending handle, wrong handle
+    /// kind, mismatched inode, index, or integrity error.
+    pub fn resolve_open_for_release(
+        &self,
+        node_id: u64,
+        raw_handle: u64,
+    ) -> Result<OpenFileReply<'index>, WorkerError> {
+        self.ready()?;
+        let handle = self
+            .inodes
+            .resolve_active_handle(raw_handle)
+            .map_err(map_inode)?;
+        let attributes = self.inodes.active_open(handle).map_err(map_inode)?;
+        if attributes.node_id != node_id {
+            return Err(WorkerError::Stale);
+        }
+        let content = self.content_for_node(node_id)?;
+        Ok(OpenFileReply {
+            handle,
+            connection_brand: self.connection_brand,
+            node_id,
+            attributes: self
+                .projected_attribute_template(
+                    self.projection
+                        .node(self.projected_ordinal(node_id)?)
+                        .ok_or(WorkerError::IntegrityFailure)?,
+                )?
+                .with_node(node_id),
             content,
         })
     }
@@ -464,6 +540,33 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         self.inodes.release_open(handle).map_err(map_inode)
     }
 
+    /// Releases an identity-checked active handle during transport cleanup.
+    ///
+    /// This path intentionally does not consult lease time, cancellation, or a
+    /// request deadline. Those controls gate new authority and byte access; they
+    /// must never strand an already-published handle or backing registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed initialization, stale handle, wrong handle kind,
+    /// mismatched inode, or integrity error without releasing another handle.
+    pub fn release_open_for_cleanup(
+        &mut self,
+        node_id: u64,
+        raw_handle: u64,
+    ) -> Result<(), WorkerError> {
+        self.ready()?;
+        let handle = self
+            .inodes
+            .resolve_active_handle(raw_handle)
+            .map_err(map_inode)?;
+        let attributes = self.inodes.active_open(handle).map_err(map_inode)?;
+        if attributes.node_id != node_id {
+            return Err(WorkerError::Stale);
+        }
+        self.inodes.release_open(handle).map_err(map_inode)
+    }
+
     fn activate_open(
         &mut self,
         pending: &mut PendingFileReply<'index>,
@@ -477,6 +580,7 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
             handle,
             connection_brand: pending.connection_brand,
             node_id: pending.node_id(),
+            attributes: pending.attributes,
             content: pending.content,
         })
     }
@@ -492,7 +596,14 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         }
 
         let content = self.content_for_node(pending.node_id)?;
-        if content != pending.content {
+        let attributes = self
+            .projected_attribute_template(
+                self.projection
+                    .node(self.projected_ordinal(pending.node_id)?)
+                    .ok_or(WorkerError::IntegrityFailure)?,
+            )?
+            .with_node(pending.node_id);
+        if content != pending.content || attributes != pending.attributes {
             return Err(WorkerError::IntegrityFailure);
         }
         Ok(())
@@ -508,20 +619,35 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         }
 
         let content = self.content_for_node(reply.node_id)?;
-        if content != reply.content {
+        let projected_attributes = self
+            .projected_attribute_template(
+                self.projection
+                    .node(self.projected_ordinal(reply.node_id)?)
+                    .ok_or(WorkerError::IntegrityFailure)?,
+            )?
+            .with_node(reply.node_id);
+        if content != reply.content || projected_attributes != reply.attributes {
             return Err(WorkerError::IntegrityFailure);
         }
         Ok(())
     }
 
     fn content_for_node(&self, node_id: u64) -> Result<FileContentAuthority<'index>, WorkerError> {
-        let record = {
-            let live = self.inodes.live_inode(node_id).map_err(map_inode)?;
-            if live.attributes().kind != crate::IndexNodeKind::File {
-                return Err(WorkerError::NotFile);
+        let ordinal = self.projected_ordinal(node_id)?;
+        let projected = self
+            .projection
+            .node(ordinal)
+            .ok_or(WorkerError::IntegrityFailure)?;
+        if !matches!(
+            projected.kind(),
+            crate::ProjectedNodeKind::Source {
+                kind: crate::IndexNodeKind::File,
+                ..
             }
-            *live.record()
-        };
+        ) {
+            return Err(WorkerError::NotFile);
+        }
+        let record = self.projected_record(projected)?;
         let index: &'index ValidatedIndex<'bytes> = self.index();
         let semantics = index.record_semantics(&record).map_err(map_index)?;
         let IndexNodeBodyView::File(file) = semantics.body() else {
