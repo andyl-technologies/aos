@@ -101,6 +101,10 @@ in
       ./aos-registry-server.nix
       ./_aos-registry-server-config
     ];
+    passthru.serviceDocumentation = {
+      kind = "fixture";
+      summary = "Registry service fixture for package-manager integration tests.";
+    };
 
     expose = {
       units = {
