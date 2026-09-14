@@ -154,6 +154,14 @@ in
             chmod 0755 .aos-introspection/ldd-target .aos-introspection/g-ir-scanner
             cp ${gobject-introspection}/lib/pkgconfig/gobject-introspection-1.0.pc \
               .aos-introspection/gobject-introspection-1.0.pc
+            # The target scanner library was built against bootstrap GLib, but
+            # this replacement GLib cannot resolve its own not-yet-installed
+            # pkg-config files. Meson's in-tree GLib dependencies already
+            # supply those headers and libraries to the GIR targets.
+            test "$(grep -Ec '^Requires: glib-2\.0 .*gobject-2\.0 ' \
+              .aos-introspection/gobject-introspection-1.0.pc)" -eq 1
+            sed -i '/^Requires: glib-2\.0 .*gobject-2\.0 /d' \
+              .aos-introspection/gobject-introspection-1.0.pc
             sed -i \
               -e "s|^g_ir_scanner=.*|g_ir_scanner=$PWD/.aos-introspection/g-ir-scanner|" \
               -e 's|^g_ir_compiler=.*|g_ir_compiler=${buildPackages.gobject-introspection}/bin/g-ir-compiler|' \
