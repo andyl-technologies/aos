@@ -7,7 +7,12 @@
 //! do not parse public requests themselves.
 //!
 //! The [`identity`] module defines opaque 128-bit identifiers. The [`version`]
-//! module defines monotonic counters used to reject stale work.
+//! module defines monotonic counters used to reject stale work. The
+//! [`model::execution`] module defines exact command, resource, I/O, and
+//! observation semantics, while [`format`] owns their canonical versioned CBOR
+//! encodings and digest commitments. Execution access is route-dependent: a
+//! live OpenSSH route carries a validated holder key, while a detached capture
+//! route carries no holder key.
 
 pub mod assignment;
 pub mod broker_authorization;
@@ -43,9 +48,12 @@ pub use crypto::{
 };
 pub use format::{
     CanonicalCborError, DecodeLimits, ObjectDescriptorVerificationError, ObjectDescriptorVerifier,
-    StreamingDirectory, decode_attachment_intent_v1, decode_sandbox_spec, decode_view,
-    decode_view_source, descriptor_for_bytes, encode_attachment_intent_v1, encode_sandbox_spec,
-    encode_view, encode_view_source, hardlink_group_digest, validate_canonical_cbor,
+    StreamingDirectory, decode_attachment_intent_v1, decode_execution_observation_v1,
+    decode_execution_spec_v1, decode_sandbox_spec, decode_view, decode_view_source,
+    descriptor_for_bytes, encode_attachment_intent_v1, encode_execution_observation_v1,
+    encode_execution_spec_v1, encode_sandbox_spec, encode_view, encode_view_source,
+    execution_spec_digest_v1, hardlink_group_digest, resource_profile_digest_v1,
+    validate_canonical_cbor,
 };
 pub use guardian_binding::{GuardianPlanBinding, InvalidGuardianPlanBinding};
 pub use identity::{
@@ -53,6 +61,26 @@ pub use identity::{
     GrantId, IncarnationId, IssuerId, LeaseId, NetworkEndpointId, NodeId, OperationId, PrincipalId,
     ProjectId, PublicationReservationId, PublisherInstanceId, ResourceId, RestoreScopeId,
     RevocationScopeId, SandboxId, SecretId, ServiceId, SnapshotId, TrustScopeId, ViewId,
+};
+pub use model::execution::{
+    CapturedStreamV1, ExecutionAccessRouteV1, ExecutionArgumentEnvelopeV1,
+    ExecutionCapturedOutputV1, ExecutionCapturedStreamKindV1, ExecutionCommandV1,
+    ExecutionCredentialsV1, ExecutionDisconnectPolicyV1, ExecutionEndpointCapabilityV1,
+    ExecutionEnvironmentEntry, ExecutionFailureReasonV1, ExecutionIoV1,
+    ExecutionObservationAdvanceError, ExecutionObservationPhaseV1, ExecutionObservationV1,
+    ExecutionOpenSshRouteV1, ExecutionOutputByteAdmissionV1, ExecutionOutputModeV1,
+    ExecutionPublicKeyAlgorithmV1, ExecutionPublicKeyV1, ExecutionResourceAdmissionV1,
+    ExecutionResourceRequestV1, ExecutionResourceRequestValueV1, ExecutionResourceSublimitV1,
+    ExecutionResourceSublimitValueV1, ExecutionRuntimeArgumentLimitV1, ExecutionSignalV1,
+    ExecutionSpecV1, ExecutionTargetV1, ExecutionTerminalModeV1, ExecutionTerminalResultV1,
+    ExecutionTimeoutV1, InvalidExecutionSpec, MAX_EXECUTION_ARGUMENT_BYTES,
+    MAX_EXECUTION_ARGUMENT_STRING_BYTES, MAX_EXECUTION_ARGUMENTS,
+    MAX_EXECUTION_BASE_ENVIRONMENT_BYTES, MAX_EXECUTION_BASE_ENVIRONMENT_CBOR_ITEMS,
+    MAX_EXECUTION_CAPTURED_STREAMS, MAX_EXECUTION_ENDPOINT_CAPABILITIES,
+    MAX_EXECUTION_ENVIRONMENT_BYTES, MAX_EXECUTION_ENVIRONMENT_ENTRIES,
+    MAX_EXECUTION_ENVIRONMENT_NAME_BYTES, MAX_EXECUTION_ENVIRONMENT_VALUE_BYTES,
+    MAX_EXECUTION_RESOURCE_SETTINGS, MAX_EXECUTION_STRING_BYTES,
+    MAX_EXECUTION_SUPPLEMENTARY_GROUPS, PayloadBootId, UnrepresentableLegacyExecutionObservation,
 };
 pub use ownership_lease::{
     BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS,

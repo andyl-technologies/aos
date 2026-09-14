@@ -11,8 +11,10 @@ use crate::{
     CacheDomainId, ExportId, FeatureRef, ObjectDescriptor, RelativePath, Revision, SandboxId,
 };
 
-const MAX_ENVIRONMENT_NAME_BYTES: usize = 4_096;
-const MAX_ENVIRONMENT_VALUE_BYTES: usize = 1_048_576;
+/// Maximum UTF-8 bytes in one project-environment variable name.
+pub(crate) const MAX_ENVIRONMENT_NAME_BYTES: usize = 4_096;
+/// Maximum UTF-8 bytes in one project-environment variable value.
+pub(crate) const MAX_ENVIRONMENT_VALUE_BYTES: usize = 1_048_576;
 
 /// Reports an invalid portable view or environment value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

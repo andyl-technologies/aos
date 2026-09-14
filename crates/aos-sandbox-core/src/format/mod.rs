@@ -10,6 +10,7 @@ mod assignment;
 mod attachment;
 mod broker_authorization;
 mod cbor;
+mod execution;
 mod ownership_lease;
 mod policy;
 mod publisher;
@@ -30,6 +31,10 @@ pub use broker_authorization::{
     decode_broker_authorization_plan, encode_broker_authorization_plan,
 };
 pub use cbor::{CanonicalCborError, DecodeLimits, validate_canonical_cbor};
+pub use execution::{
+    decode_execution_observation_v1, decode_execution_spec_v1, encode_execution_observation_v1,
+    encode_execution_spec_v1, execution_spec_digest_v1, resource_profile_digest_v1,
+};
 pub use ownership_lease::{decode_ownership_lease, encode_ownership_lease};
 pub use policy::{decode_optimization, decode_policy, encode_optimization, encode_policy};
 pub use publisher::{decode_publisher_domain_plan, encode_publisher_domain_plan};
