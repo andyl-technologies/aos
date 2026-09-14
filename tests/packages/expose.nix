@@ -1,4 +1,4 @@
-##! lib/testing/package-expose.nix — RFC-0001 package expose smoke check.
+##! tests/packages/expose.nix — RFC-0001 package expose smoke check.
 ##!
 ##! Builds a normal discovered package with an `expose` block and verifies that
 ##! its integration artifacts are rendered in a separate store path.

@@ -1,9 +1,9 @@
-# lib/testing/package-root-image.nix - RFC-0001 dm-verity root image check.
+# tests/packages/root-image.nix - RFC-0001 dm-verity root image check.
 {
   pkgs,
   lib,
 }: let
-  mkPackageRootImage = import ../build/package-root-image.nix {inherit pkgs lib;};
+  mkPackageRootImage = import ../../lib/build/package-root-image.nix {inherit pkgs lib;};
 
   referencedPackage = pkgs.grep;
 

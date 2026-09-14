@@ -1,4 +1,4 @@
-##! lib/testing/package-firewall-reload.nix — package firewall reload coherence.
+##! tests/packages/firewall-reload.nix — package firewall reload coherence.
 {
   pkgs,
   mkSystem,

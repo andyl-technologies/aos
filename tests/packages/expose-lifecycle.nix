@@ -1,4 +1,4 @@
-##! lib/testing/package-expose-lifecycle.nix — RFC-0001 live package expose check.
+##! tests/packages/expose-lifecycle.nix — RFC-0001 live package expose check.
 ##!
 ##! Boots a full AOS system, seeds package-profile metadata, runs the package
 ##! manager's exposed-unit reconciler, then starts, inspects, reloads, and stops
@@ -11,7 +11,7 @@
 }: let
   storePathHash = path:
     builtins.elemAt (lib.splitString "-" (baseNameOf (builtins.toString path))) 0;
-  mkPackageRootImage = import ../build/package-root-image.nix {inherit pkgs lib;};
+  mkPackageRootImage = import ../../lib/build/package-root-image.nix {inherit pkgs lib;};
 
   privateOutboundNetnsHash = builtins.substring 0 8 (
     builtins.hashString "sha256" "expose-lifecycle-outbound"

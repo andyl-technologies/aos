@@ -1,4 +1,4 @@
-# lib/testing/package-lint.nix — Evaluation-only package definition lint checks
+# tests/packages/lint.nix — Evaluation-only package definition lint checks
 #
 # Exposes one cheap derivation per package derivation for `aos lint`. The checks
 # run at Nix evaluation time: if a package definition is malformed, the lint
