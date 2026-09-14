@@ -3,11 +3,15 @@
 //! These modules depend only on protobuf input, shared protocol validation,
 //! and portable core authority types. They never accept or emit backend paths,
 //! dataset names, GUIDs, encryption keys, or other node-local expressions.
+//! Their outputs are nonauthorizing plan-match tuples: portable object
+//! descriptors may remain committed as data, but ancillary descriptors,
+//! descriptor numbers, and kernel objects never become semantic authority.
 
 pub mod destination_slot;
 pub mod host;
 pub mod mount;
 pub mod mount_scope;
+pub mod mount_source_acquisition;
 pub mod network;
 pub mod payload_scope;
 pub mod storage;
@@ -27,6 +31,11 @@ pub use mount::{
     MountSemanticError, canonical_mount_semantics_v1,
     canonical_precatalog_mount_create_template_v1,
     final_mount_create_matches_precatalog_template_v1,
+};
+pub use mount_source_acquisition::{
+    CanonicalMountSourceAcquisitionSemanticsV1, MountSourceAcquisitionSemanticError,
+    canonical_acquire_mount_source_semantics_v1,
+    canonical_release_mount_source_acquisition_semantics_v1,
 };
 pub use network::{
     CanonicalNetworkSemanticsV1, MAXIMUM_NETWORK_ENDPOINTS, NetworkOperation, NetworkSemanticsError,

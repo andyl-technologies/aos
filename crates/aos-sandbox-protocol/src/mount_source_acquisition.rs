@@ -50,7 +50,11 @@ use correlation::{
     release_fence_dominates_record,
 };
 
-/// Carries one exact, controller-authorized source-acquisition request.
+/// Carries the shared time-independent fields of one source Acquire request.
+///
+/// This DTO is nonauthorizing. Live peer-policy and deadline validation is
+/// represented only by [`LiveValidatedAcquireMountSourceRequest`], while
+/// durable recovery receives [`HistoricalValidatedAcquireMountSourceRequest`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedAcquireMountSourceRequest {
     header: ValidatedHeader,
@@ -64,6 +68,57 @@ pub struct ValidatedAcquireMountSourceRequest {
     requested_lease_seconds: u64,
     requested_maximum_submounts: u32,
     kernel_coupled: bool,
+}
+
+/// Carries a time-independent Acquire request decoded from durable history.
+///
+/// The wrapper proves canonical wire shape and semantic cross-links only. It
+/// deliberately cannot satisfy a live Mount admission API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoricalValidatedAcquireMountSourceRequest {
+    request: ValidatedAcquireMountSourceRequest,
+}
+
+impl HistoricalValidatedAcquireMountSourceRequest {
+    /// Borrows the shared nonauthorizing request DTO.
+    #[must_use]
+    pub const fn request(&self) -> &ValidatedAcquireMountSourceRequest {
+        &self.request
+    }
+}
+
+impl std::ops::Deref for HistoricalValidatedAcquireMountSourceRequest {
+    type Target = ValidatedAcquireMountSourceRequest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.request
+    }
+}
+
+/// Carries an Acquire request after live peer-policy and deadline validation.
+///
+/// Construction is private to [`decode_acquire_mount_source_request`]. Later
+/// admission still rechecks its exact body, current protected clock, signed
+/// authority, ownership lease, and protected assignment fence.
+#[derive(Debug, Eq, PartialEq)]
+pub struct LiveValidatedAcquireMountSourceRequest {
+    request: ValidatedAcquireMountSourceRequest,
+}
+
+impl LiveValidatedAcquireMountSourceRequest {
+    /// Borrows the shared nonauthorizing request DTO.
+    #[must_use]
+    pub const fn request(&self) -> &ValidatedAcquireMountSourceRequest {
+        &self.request
+    }
+}
+
+impl std::ops::Deref for LiveValidatedAcquireMountSourceRequest {
+    type Target = ValidatedAcquireMountSourceRequest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.request
+    }
 }
 
 impl ValidatedAcquireMountSourceRequest {
@@ -134,7 +189,11 @@ impl ValidatedAcquireMountSourceRequest {
     }
 }
 
-/// Carries one exact release request for an existing acquisition row.
+/// Carries the shared fields of one source-acquisition Release request.
+///
+/// This DTO is nonauthorizing. Only
+/// [`LiveValidatedReleaseMountSourceAcquisitionRequest`] proves that live peer
+/// and deadline validation ran.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedReleaseMountSourceAcquisitionRequest {
     header: ValidatedHeader,
@@ -143,6 +202,32 @@ pub struct ValidatedReleaseMountSourceAcquisitionRequest {
     expected_revision: u64,
     expected_record_digest: ObjectDigest,
     request_digest: ObjectDigest,
+}
+
+/// Carries a Release request after live peer-policy and deadline validation.
+///
+/// Construction is private to
+/// [`decode_release_mount_source_acquisition_request`]. Admission still binds
+/// the exact carrier envelope and rechecks protected authority and time.
+#[derive(Debug, Eq, PartialEq)]
+pub struct LiveValidatedReleaseMountSourceAcquisitionRequest {
+    request: ValidatedReleaseMountSourceAcquisitionRequest,
+}
+
+impl LiveValidatedReleaseMountSourceAcquisitionRequest {
+    /// Borrows the shared nonauthorizing request DTO.
+    #[must_use]
+    pub const fn request(&self) -> &ValidatedReleaseMountSourceAcquisitionRequest {
+        &self.request
+    }
+}
+
+impl std::ops::Deref for LiveValidatedReleaseMountSourceAcquisitionRequest {
+    type Target = ValidatedReleaseMountSourceAcquisitionRequest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.request
+    }
 }
 
 /// Carries stable correlation fields from one validated acquisition record.
@@ -362,8 +447,9 @@ pub fn decode_acquire_mount_source_request(
     peer: PeerCredentials,
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
-) -> Result<ValidatedAcquireMountSourceRequest, ProtocolValidationError> {
-    let mut validated = decode_historical_acquire_mount_source_request(bytes)?;
+) -> Result<LiveValidatedAcquireMountSourceRequest, ProtocolValidationError> {
+    let historical = decode_historical_acquire_mount_source_request(bytes)?;
+    let mut validated = historical.request;
     let request = AcquireMountSourceRequest::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     validated.header = validate_request_header(
@@ -376,7 +462,7 @@ pub fn decode_acquire_mount_source_request(
         ProtocolId::MountBroker,
         now_boottime_nanoseconds,
     )?;
-    Ok(validated)
+    Ok(LiveValidatedAcquireMountSourceRequest { request: validated })
 }
 
 /// Decodes one exact historical Mount Acquire body without claiming live authority.
@@ -392,7 +478,7 @@ pub fn decode_acquire_mount_source_request(
 /// or semantically inconsistent request bytes.
 pub fn decode_historical_acquire_mount_source_request(
     bytes: &[u8],
-) -> Result<ValidatedAcquireMountSourceRequest, ProtocolValidationError> {
+) -> Result<HistoricalValidatedAcquireMountSourceRequest, ProtocolValidationError> {
     if bytes.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
@@ -470,18 +556,20 @@ pub fn decode_historical_acquire_mount_source_request(
 
     let request_digest = mount_source_acquisition_request_digest_v1(bytes);
     let acquisition_id = mount_source_acquisition_id_v1(*header.request_id(), request_digest);
-    Ok(ValidatedAcquireMountSourceRequest {
-        header,
-        fence,
-        acquisition_id,
-        request_digest,
-        prospective_mount_template: request.prospective_mount_template,
-        prospective_mount_template_digest,
-        prospective_namespace_generation,
-        source_binding,
-        requested_lease_seconds: request.requested_lease_seconds,
-        requested_maximum_submounts: request.requested_maximum_submounts,
-        kernel_coupled: request.kernel_coupled,
+    Ok(HistoricalValidatedAcquireMountSourceRequest {
+        request: ValidatedAcquireMountSourceRequest {
+            header,
+            fence,
+            acquisition_id,
+            request_digest,
+            prospective_mount_template: request.prospective_mount_template,
+            prospective_mount_template_digest,
+            prospective_namespace_generation,
+            source_binding,
+            requested_lease_seconds: request.requested_lease_seconds,
+            requested_maximum_submounts: request.requested_maximum_submounts,
+            kernel_coupled: request.kernel_coupled,
+        },
     })
 }
 
@@ -497,7 +585,7 @@ pub fn decode_release_mount_source_acquisition_request(
     peer: PeerCredentials,
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
-) -> Result<ValidatedReleaseMountSourceAcquisitionRequest, ProtocolValidationError> {
+) -> Result<LiveValidatedReleaseMountSourceAcquisitionRequest, ProtocolValidationError> {
     if bytes.len() > MAXIMUM_REQUEST_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
@@ -525,19 +613,21 @@ pub fn decode_release_mount_source_acquisition_request(
     if request.expected_revision == 0 {
         return Err(ProtocolValidationError::InvalidField("expected_revision"));
     }
-    Ok(ValidatedReleaseMountSourceAcquisitionRequest {
-        header,
-        fence,
-        acquisition_id: ObjectDigest::from_bytes(exact_nonzero::<32>(
-            &request.acquisition_id,
-            "acquisition_id",
-        )?),
-        expected_revision: request.expected_revision,
-        expected_record_digest: ObjectDigest::from_bytes(exact_nonzero::<32>(
-            &request.expected_record_digest,
-            "expected_record_digest",
-        )?),
-        request_digest: mount_source_acquisition_request_digest_v1(bytes),
+    Ok(LiveValidatedReleaseMountSourceAcquisitionRequest {
+        request: ValidatedReleaseMountSourceAcquisitionRequest {
+            header,
+            fence,
+            acquisition_id: ObjectDigest::from_bytes(exact_nonzero::<32>(
+                &request.acquisition_id,
+                "acquisition_id",
+            )?),
+            expected_revision: request.expected_revision,
+            expected_record_digest: ObjectDigest::from_bytes(exact_nonzero::<32>(
+                &request.expected_record_digest,
+                "expected_record_digest",
+            )?),
+            request_digest: mount_source_acquisition_request_digest_v1(bytes),
+        },
     })
 }
 

@@ -28,7 +28,7 @@ pub type MountAuthorityConfigError = BrokerAuthorityConfigError;
 pub(crate) type VerifiedMountAdmissionV1 = VerifiedBrokerAdmission;
 
 /// Owns protected mount-audience trust and durable authentication state.
-pub struct MountAuthorityV1(BrokerAuthority);
+pub struct MountAuthorityV1(pub(super) BrokerAuthority);
 
 impl MountAuthorityV1 {
     /// Constructs mount authority from already validated protected anchors.
@@ -196,7 +196,9 @@ fn request_assignment(
     assignment(request.fence())
 }
 
-fn assignment(fence: &ValidatedAssignmentFence) -> Result<BrokerAssignment, MountAdmissionError> {
+pub(super) fn assignment(
+    fence: &ValidatedAssignmentFence,
+) -> Result<BrokerAssignment, MountAdmissionError> {
     BrokerAssignment::new(
         SandboxId::from_bytes(*fence.sandbox_id()),
         IncarnationId::from_bytes(*fence.incarnation_id()),

@@ -5,6 +5,7 @@
 
 mod admission_v1;
 pub(crate) mod semantics_v1;
+mod source_acquisition_v1;
 
 pub(crate) use admission_v1::VerifiedMountAdmissionV1;
 pub use admission_v1::{MountAdmissionError, MountAuthorityConfigError, MountAuthorityV1};
