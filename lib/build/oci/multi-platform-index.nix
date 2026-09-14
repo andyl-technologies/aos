@@ -119,7 +119,7 @@ in
     src = null;
     buildDeps =
       [abilityContractValidator coreutils findutils gzip jq tar]
-      ++ checkedAbilityContract.passthru.abilityPackageManifests;
+      ++ checkedAbilityContract.passthru.packageAbilityContracts;
 
     outputChecks.out = {};
     inherit indexSpec;

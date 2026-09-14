@@ -31,8 +31,9 @@
   localKeyType = moduleTypes.strMatching "[A-Za-z0-9._-]+";
   qualifiedNameType = moduleTypes.strMatching "[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+";
   digestType = moduleTypes.strMatching "sha256:[0-9a-f]{64}";
-  positiveU32Type = moduleTypes.addCheck moduleTypes.int (value:
-    value > 0 && value <= 4294967295);
+  positiveU32Type =
+    moduleTypes.addCheck moduleTypes.int (value:
+      value > 0 && value <= 4294967295);
   stageType = moduleTypes.enum [
     "build"
     "initrd"
@@ -50,6 +51,26 @@
 
   exportType = markerType "ability implementation definition" "aos-ability-export";
 
+  handlerType = strictSubmodule {
+    artifact = mkOption {
+      type = moduleTypes.nullOr moduleTypes.anything;
+      default = null;
+      description = "Symbolic package artifact containing the handler executable.";
+    };
+    entryPoint = mkOption {
+      type = moduleTypes.str;
+      description = "Relative executable path within the selected artifact.";
+    };
+    arguments = mkOption {
+      type = moduleTypes.attrs;
+      description = "Portable schema for the handler argument document.";
+    };
+    result = mkOption {
+      type = moduleTypes.attrs;
+      description = "Portable schema for the handler result document.";
+    };
+  };
+
   implementationType = strictSubmodule {
     definition = mkOption {
       type = exportType;
@@ -59,6 +80,16 @@
       type = moduleTypes.nullOr moduleTypes.anything;
       default = null;
       description = "Symbolic package output containing this implementation.";
+    };
+    artifacts = mkOption {
+      type = moduleTypes.listOf moduleTypes.anything;
+      default = [];
+      description = "Additional symbolic package artifacts retained by this implementation.";
+    };
+    handler = mkOption {
+      type = moduleTypes.nullOr handlerType;
+      default = null;
+      description = "Executable handler selected by a terminal implementation.";
     };
     requiredFeatures = mkOption {
       type = moduleTypes.listOf localKeyType;

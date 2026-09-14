@@ -192,18 +192,13 @@
       version = "1.0.0";
       src = selectedProviderSource;
       runtimeDeps = [selectedControl selectedPostgresql];
-      abilityPackage = {
-        activationMode = "structured-effects";
-        requiredFeatures =
-          if stateFormat == null
-          then ["abilities-v1"]
-          else ["abilities-v1" "provider-state-format-v1"];
-        artifacts = [selectedControl selectedPostgresql];
-        ownership = [[]];
-        exports = {
+      abilities = {
+        config.aos.abilities.implementations = {
           postgresql = {
             artifact = selectedProviderSource;
-            export = let
+            artifacts = [selectedControl selectedPostgresql];
+            requiredFeatures = lib.optional (stateFormat != null) "provider-state-format-v1";
+            definition = let
               base = postgresqlExport stateFormat;
             in
               base
@@ -217,7 +212,7 @@
           };
           credential = {
             artifact = packageRuntime;
-            export = terminalExport {
+            definition = terminalExport {
               selected = credentialEffects;
               group = "credential";
               handler = "native-credential-delivery-v1";
@@ -225,10 +220,16 @@
               methods = credentialMethods;
               persistent = false;
             };
+            handler = {
+              artifact = packageRuntime;
+              entryPoint = "libexec/aos-credential-delivery-handler-v1";
+              arguments = credentialRequest;
+              result = credentialObservation;
+            };
           };
           endpoint = {
             artifact = packageRuntime;
-            export = terminalExport {
+            definition = terminalExport {
               selected = endpointEffects;
               group = "endpoint";
               handler = "native-network-endpoint-v1";
@@ -236,10 +237,16 @@
               methods = endpointMethods;
               persistent = false;
             };
+            handler = {
+              artifact = packageRuntime;
+              entryPoint = "libexec/aos-network-endpoint-handler-v1";
+              arguments = endpointRequest;
+              result = endpointObservation;
+            };
           };
           network-policy = {
             artifact = packageRuntime;
-            export = terminalExport {
+            definition = terminalExport {
               selected = networkPolicyEffects;
               group = "network-policy";
               handler = "native-host-network-policy-v1";
@@ -248,10 +255,16 @@
               persistent = false;
               guarantees = [loopbackIngressGuarantee];
             };
+            handler = {
+              artifact = packageRuntime;
+              entryPoint = "libexec/aos-host-network-policy-handler-v1";
+              arguments = networkPolicyRequest false;
+              result = networkPolicyObservation;
+            };
           };
           postgresql-terminal = {
             artifact = packageRuntime;
-            export = terminalExport {
+            definition = terminalExport {
               selected = postgresqlEffects;
               group = "postgresql-terminal";
               handler = "native-postgresql-v1";
@@ -259,10 +272,16 @@
               methods = postgresqlMethods;
               persistent = true;
             };
+            handler = {
+              artifact = packageRuntime;
+              entryPoint = "libexec/aos-postgresql-handler-v1";
+              arguments = postgresqlRequest;
+              result = postgresqlObservation;
+            };
           };
           storage = {
             artifact = packageRuntime;
-            export = terminalExport {
+            definition = terminalExport {
               selected = storageEffects;
               group = "storage";
               handler = "native-host-storage-v1";
@@ -276,38 +295,12 @@
                 persistentDeleteMethod = null;
               };
             };
-          };
-        };
-        handlers = {
-          native-credential-delivery-v1 = {
-            artifact = packageRuntime;
-            entryPoint = "libexec/aos-credential-delivery-handler-v1";
-            arguments = credentialRequest;
-            result = credentialObservation;
-          };
-          native-network-endpoint-v1 = {
-            artifact = packageRuntime;
-            entryPoint = "libexec/aos-network-endpoint-handler-v1";
-            arguments = endpointRequest;
-            result = endpointObservation;
-          };
-          native-host-storage-v1 = {
-            artifact = packageRuntime;
-            entryPoint = "libexec/aos-host-storage-handler-v1";
-            arguments = storageRequest;
-            result = storageObservation;
-          };
-          native-host-network-policy-v1 = {
-            artifact = packageRuntime;
-            entryPoint = "libexec/aos-host-network-policy-handler-v1";
-            arguments = networkPolicyRequest false;
-            result = networkPolicyObservation;
-          };
-          native-postgresql-v1 = {
-            artifact = packageRuntime;
-            entryPoint = "libexec/aos-postgresql-handler-v1";
-            arguments = postgresqlRequest;
-            result = postgresqlObservation;
+            handler = {
+              artifact = packageRuntime;
+              entryPoint = "libexec/aos-host-storage-handler-v1";
+              arguments = storageRequest;
+              result = storageObservation;
+            };
           };
         };
       };
@@ -400,9 +393,8 @@ in {
     pname = "ability-reference-postgresql-consumer";
     version = "1.0.0";
     src = providerSource;
-    abilityPackage = {
-      activationMode = "contracts-only";
-      requirements.postgresql = requirement postgresqlInterface [];
+    abilities = {
+      config.aos.abilities.requirementTemplates.postgresql = requirement postgresqlInterface [];
     };
     phases = [
       {

@@ -27,8 +27,7 @@
     builtins.filter (
       package:
         builtins.isAttrs package
-        && package ? abilities
-        && (package.abilities.passthru.abilityPackage or false)
+        && package ? abilityContract
     )
     config.environment.systemPackages;
   staticAbilityContractSource = oci.mkStaticAbilityContract {
@@ -39,7 +38,7 @@
     packages =
       map (package: {
         payload = package;
-        manifest = package.abilities;
+        manifest = package.abilityContract;
       })
       abilityPackages;
     runtimeRoots = config.environment.systemPackages;
@@ -138,9 +137,11 @@
       manager = {
         inherit (initrdActivationInput.manager) kind stage;
       };
-      operations = map (operation: {
-        inherit (operation) id kind;
-      }) initrdActivationInput.operations;
+      operations =
+        map (operation: {
+          inherit (operation) id kind;
+        })
+        initrdActivationInput.operations;
     };
   initrdActivationSelection = {
     schema = "aos.ability.initrd-activation-selection/v1";

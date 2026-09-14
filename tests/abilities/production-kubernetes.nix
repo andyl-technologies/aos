@@ -5,7 +5,7 @@
 }: let
   parseManifest = package:
     builtins.fromJSON (
-      builtins.unsafeDiscardStringContext package.abilities.abilityTemplateJson
+      builtins.unsafeDiscardStringContext package.abilityContract.abilityTemplateJson
     );
 
   payload = parseManifest pkgs.k3s;

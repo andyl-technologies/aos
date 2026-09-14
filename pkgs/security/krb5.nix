@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  mkServiceAbilityModule,
   fetchurl,
   gnumake,
   bison,
@@ -13,7 +14,6 @@
   buildPackages,
   coreutils,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   version = "1.22.2";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -199,8 +199,7 @@ in
     runtimeDeps = [openssl bash coreutils control];
     propagatedDeps = [];
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "krb5";
       spec = {
         interface = "aos.service.krb5";

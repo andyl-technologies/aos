@@ -40,7 +40,7 @@
     }
   ];
 
-  packageRoots = lib.concatMap (entry: [entry.package entry.package.abilities]) orderedPackages;
+  packageRoots = lib.concatMap (entry: [entry.package entry.package.abilityContract]) orderedPackages;
   emptyAddonPayload = {
     schema = "aos.kubernetes-resources/v2";
     role = "combined";
@@ -127,7 +127,7 @@
   in {
     inherit (entry) name;
     primary = entry.package;
-    abilities = entry.package.abilities;
+    abilities = entry.package.abilityContract;
     originalRuntime = pkgs.aos.packageRuntime;
   }) ["ability-reference-systemd-bootstrap"];
 in {
@@ -189,7 +189,7 @@ in {
       }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
-          abilities = builtins.toString entry.package.abilities;
+          abilities = builtins.toString entry.package.abilityContract;
         })
         orderedPackages)}${
         if guestTools

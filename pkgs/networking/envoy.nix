@@ -5,6 +5,7 @@
 ##! (2) bazelPhases patchelfs downloaded ELFs and builds offline
 {
   mkBazelPackage,
+  mkServiceAbilityModule,
   fetchBazelDeps,
   stdenv,
   buildPackages,
@@ -43,7 +44,6 @@
   m4,
   patchelf,
   bootstrapTools,
-  writeTextFile,
 }: let
   version = "1.37.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -750,8 +750,7 @@ in
       };
     };
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "envoy";
       spec.interface = "aos.service.envoy";
     };

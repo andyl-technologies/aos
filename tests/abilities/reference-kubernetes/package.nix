@@ -17,9 +17,9 @@
   systemdArtifact = ./providers/systemd;
   kubernetesArtifact = ./providers/kubernetes;
 
-  mkPackage = pname: src: abilityPackage:
+  mkPackage = pname: src: abilities:
     mkDerivation {
-      inherit pname src abilityPackage;
+      inherit pname src abilities;
       version = "1.0.0";
       phases = [
         {

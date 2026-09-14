@@ -526,32 +526,31 @@
   managedConfigurationProvider = import ./providers/managed-configuration/default.nix;
   credentialProvider = import ./providers/credential/default.nix;
   httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
-  baseNginxAbilityPackage = import ../../../pkgs/networking/_nginx-ability-contract.nix {
+  baseNginxAbilityModule = import ../../../pkgs/networking/_nginx-ability-contract.nix {
     inherit effectQualification providerStateQualification lib hostResourceRuntime;
     providerArtifact = nginxArtifact;
     runtimeArtifact = nginxRuntime;
   };
-  nginxAbilityPackage =
-    baseNginxAbilityPackage
-    // {
-      exports =
-        baseNginxAbilityPackage.exports
-        // {
-          nginx =
-            baseNginxAbilityPackage.exports.nginx
-            // {
-              export =
-                baseNginxAbilityPackage.exports.nginx.export
-                // {
-                  transition = transitionTransform baseNginxAbilityPackage.exports.nginx.export.transition;
-                };
-            };
-        };
-    };
+  baseNginxImplementations = baseNginxAbilityModule.config.aos.abilities.implementations;
+  nginxAbilityModule = {
+    config.aos.abilities.implementations =
+      baseNginxImplementations
+      // {
+        nginx =
+          baseNginxImplementations.nginx
+          // {
+            definition =
+              baseNginxImplementations.nginx.definition
+              // {
+                transition = transitionTransform baseNginxImplementations.nginx.definition.transition;
+              };
+          };
+      };
+  };
 in let
-  mkPackage = pname: src: abilityPackage:
+  mkPackage = pname: src: abilities:
     mkDerivation {
-      inherit pname src abilityPackage;
+      inherit pname src abilities;
       version = "1.0.0";
 
       phases = [
@@ -569,33 +568,22 @@ in let
         license = "Apache-2.0";
       };
     };
-
-  common = {
-    activationMode = "structured-effects";
-    ownership = [[]];
-  };
 in {
   consumer = mkPackage "ability-reference-nginx-consumer" nginxArtifact {
-    activationMode = "contracts-only";
-    requirements.nginx = required nginxInterface;
-    ownership = [];
+    config.aos.abilities.requirementTemplates.nginx = required nginxInterface;
   };
 
   backend-consumer = mkPackage "ability-reference-nginx-backend-consumer" nginxArtifact {
-    activationMode = "contracts-only";
-    requirements = {
+    config.aos.abilities.requirementTemplates = {
       nginx = required nginxInterface;
       backend = required httpBackend;
     };
-    ownership = [];
   };
 
   backend-registry = mkPackage "ability-reference-http-backend-registry" httpBackendRegistryArtifact {
-    activationMode = "contracts-only";
-    ownership = [];
-    exports.http-backend = {
+    config.aos.abilities.implementations.http-backend = {
       artifact = httpBackendRegistryArtifact;
-      export = lib.abilities.define {
+      definition = lib.abilities.define {
         interface = httpBackend.name;
         abi = httpBackend.abi;
         requestSchema = endpoint;
@@ -615,247 +603,244 @@ in {
     };
   };
 
-  nginx = mkPackage "ability-reference-nginx" nginxArtifact nginxAbilityPackage;
+  nginx = mkPackage "ability-reference-nginx" nginxArtifact nginxAbilityModule;
 
-  managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact (common
-    // {
-      exports = {
-        managed-configuration = {
-          artifact = managedConfigurationArtifact;
-          export = lib.abilities.define {
-            interface = managedConfiguration.name;
-            abi = managedConfiguration.abi;
-            requestSchema = schemas.record {
-              fields = {
-                virtualHosts = schemas.list {
-                  element = managedVirtualHost;
-                  maxItems = 1024;
-                };
-                consumer_content_revision = string;
-                consumer_controller_revision = string;
-                consumer_instance = string;
-                consumer_probe = consumerProbe;
-                consumer_storage_paths = storagePaths;
+  managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact {
+    config.aos.abilities.implementations = {
+      managed-configuration = {
+        artifact = managedConfigurationArtifact;
+        definition = lib.abilities.define {
+          interface = managedConfiguration.name;
+          abi = managedConfiguration.abi;
+          requestSchema = schemas.record {
+            fields = {
+              virtualHosts = schemas.list {
+                element = managedVirtualHost;
+                maxItems = 1024;
               };
-              optional = [];
+              consumer_content_revision = string;
+              consumer_controller_revision = string;
+              consumer_instance = string;
+              consumer_probe = consumerProbe;
+              consumer_storage_paths = storagePaths;
             };
-            outputs = {
-              published-configurations = output resourceMap;
-              rendered-configurations = output stringMap;
-            };
-            methods = {};
-            inherit lifecycle;
-            guarantees = [];
-            aggregation = aggregation "configuration";
-            requires.effects = methodRequirement managedConfigurationEffects ["prepare" "publish" "release"];
-            composeEntry = "compose";
-            transitionEntry = "transition";
-            ownsResourceKinds = [managedConfiguration.name];
-            compose = managedConfigurationProvider.compose;
-            transition = transitionTransform (
-              if providerStateQualification
-              then managedConfigurationProvider.effectQualificationTransition
-              else if effectQualification
-              then managedConfigurationProvider.effectQualificationTransition
-              else managedConfigurationProvider.transition
-            );
+            optional = [];
           };
-        };
-        managed-configuration-effects = {
-          artifact = managedConfigurationRuntime;
-          export = terminalExport {
-            name = managedConfigurationEffects.name;
-            group = "managed-configuration-effects";
-            handler = "managed-configuration-terminal";
-            methods = {
-              prepare = method managedConfigurationEffects.name {kind = "prepare-managed-configuration";} "prepare";
-              publish = method managedConfigurationEffects.name {kind = "publish-configuration";} "publish";
-              release = method managedConfigurationEffects.name {kind = "release-resource";} "release";
-            };
+          outputs = {
+            published-configurations = output resourceMap;
+            rendered-configurations = output stringMap;
           };
+          methods = {};
+          inherit lifecycle;
+          guarantees = [];
+          aggregation = aggregation "configuration";
+          requires.effects = methodRequirement managedConfigurationEffects ["prepare" "publish" "release"];
+          composeEntry = "compose";
+          transitionEntry = "transition";
+          ownsResourceKinds = [managedConfiguration.name];
+          compose = managedConfigurationProvider.compose;
+          transition = transitionTransform (
+            if providerStateQualification
+            then managedConfigurationProvider.effectQualificationTransition
+            else if effectQualification
+            then managedConfigurationProvider.effectQualificationTransition
+            else managedConfigurationProvider.transition
+          );
         };
       };
-      handlers.managed-configuration-terminal = {
+      managed-configuration-effects = {
         artifact = managedConfigurationRuntime;
-        entryPoint = "bin/.aos-package-runtime-unwrapped";
-        arguments = schemas.boolean;
-        result = schemas.boolean;
+        definition = terminalExport {
+          name = managedConfigurationEffects.name;
+          group = "managed-configuration-effects";
+          handler = "managed-configuration-terminal";
+          methods = {
+            prepare = method managedConfigurationEffects.name {kind = "prepare-managed-configuration";} "prepare";
+            publish = method managedConfigurationEffects.name {kind = "publish-configuration";} "publish";
+            release = method managedConfigurationEffects.name {kind = "release-resource";} "release";
+          };
+        };
+        handler = {
+          artifact = managedConfigurationRuntime;
+          entryPoint = "bin/.aos-package-runtime-unwrapped";
+          arguments = schemas.boolean;
+          result = schemas.boolean;
+        };
       };
-    });
+    };
+  };
 
-  credential = mkPackage "ability-reference-credential" credentialArtifact (common
-    // {
-      exports = {
-        credential-delivery = {
-          artifact = credentialArtifact;
-          export = lib.abilities.define {
-            interface = credentialDelivery.name;
-            abi = credentialDelivery.abi;
-            requestSchema = schemas.record {
-              fields = {
-                hosts = schemas.list {
-                  element = string;
-                  maxItems = 1024;
-                };
-                version = schemas.string {
-                  maxLength = 71;
-                  syntax = null;
-                };
+  credential = mkPackage "ability-reference-credential" credentialArtifact {
+    config.aos.abilities.implementations = {
+      credential-delivery = {
+        artifact = credentialArtifact;
+        definition = lib.abilities.define {
+          interface = credentialDelivery.name;
+          abi = credentialDelivery.abi;
+          requestSchema = schemas.record {
+            fields = {
+              hosts = schemas.list {
+                element = string;
+                maxItems = 1024;
               };
-              optional = [];
+              version = schemas.string {
+                maxLength = 71;
+                syntax = null;
+              };
             };
-            outputs.credential-views = output resourceMap;
-            methods = {};
-            inherit lifecycle;
-            guarantees = [];
-            aggregation = aggregation "credentials";
-            requires.effects = methodRequirement credentialDeliveryEffects ["acquire" "deliver" "release"];
-            composeEntry = "compose";
-            transitionEntry = "transition";
-            ownsResourceKinds = [credentialDelivery.name];
-            compose = credentialProvider.compose;
-            transition = transitionTransform (
-              if providerStateQualification
-              then credentialProvider.providerStateQualificationTransition
-              else if effectQualification
-              then credentialProvider.effectQualificationTransition
-              else credentialProvider.transition
-            );
+            optional = [];
           };
-        };
-        credential-delivery-effects = {
-          artifact = credentialRuntime;
-          export = terminalExport {
-            name = credentialDeliveryEffects.name;
-            group = "credential-delivery-effects";
-            handler = "native-credential-delivery-v1";
-            requestSchema = credentialRequest;
-            selectedLifecycle = credentialEffectsLifecycle;
-            methods = {
-              acquire =
-                credentialEffectMethod {
-                  kind = "credential";
-                  action = "acquire";
-                } "acquire" {
-                  credential-view = runtimeMethodOutput credentialView;
-                };
-              deliver =
-                credentialEffectMethod {
-                  kind = "credential";
-                  action = "deliver";
-                } "deliver" {
-                  credential-view = runtimeMethodOutput credentialView;
-                };
-              release = credentialEffectMethod {kind = "release-resource";} "release" {};
-            };
-          };
+          outputs.credential-views = output resourceMap;
+          methods = {};
+          inherit lifecycle;
+          guarantees = [];
+          aggregation = aggregation "credentials";
+          requires.effects = methodRequirement credentialDeliveryEffects ["acquire" "deliver" "release"];
+          composeEntry = "compose";
+          transitionEntry = "transition";
+          ownsResourceKinds = [credentialDelivery.name];
+          compose = credentialProvider.compose;
+          transition = transitionTransform (
+            if providerStateQualification
+            then credentialProvider.providerStateQualificationTransition
+            else if effectQualification
+            then credentialProvider.effectQualificationTransition
+            else credentialProvider.transition
+          );
         };
       };
-      handlers.native-credential-delivery-v1 = {
+      credential-delivery-effects = {
         artifact = credentialRuntime;
-        entryPoint = "libexec/aos-credential-delivery-handler-v1";
-        arguments = credentialRequest;
-        result = credentialObservation;
-      };
-    });
-
-  service = mkPackage "ability-reference-service" serviceArtifact (common
-    // {
-      exports = {
-        foreground-process = {
-          artifact = serviceRuntime;
-          export = terminalExport {
-            name = foregroundProcess.name;
-            group = "foreground-process";
-            handler = "native-foreground-process-v1";
-            requestSchema = foregroundProcessRequest;
-            selectedLifecycle = foregroundProcessLifecycle;
-            guarantees = [foregroundProcessSupervisionGuarantee];
-            methods = {
-              observe = foregroundProcessMethod {kind = "observe-readiness";} "observe";
-              start = foregroundProcessMethod {
-                kind = "service-lifecycle";
-                action = "start";
-              } "start";
-              stop = foregroundProcessMethod {
-                kind = "service-lifecycle";
-                action = "stop";
-              } "stop";
-            };
-          };
-        };
-        service-definition = {
-          artifact = serviceArtifact;
-          export = lib.abilities.define {
-            interface = serviceDefinition.name;
-            abi = serviceDefinition.abi;
-            requestSchema = schemas.record {
-              fields = {
-                configuration_revision = string;
-                consumer_endpoint = string;
-                service = string;
-                virtual_host_count = schemas.integer {
-                  minimum = 0;
-                  maximum = 1024;
-                };
-                storage_paths = storagePaths;
+        definition = terminalExport {
+          name = credentialDeliveryEffects.name;
+          group = "credential-delivery-effects";
+          handler = "native-credential-delivery-v1";
+          requestSchema = credentialRequest;
+          selectedLifecycle = credentialEffectsLifecycle;
+          methods = {
+            acquire =
+              credentialEffectMethod {
+                kind = "credential";
+                action = "acquire";
+              } "acquire" {
+                credential-view = runtimeMethodOutput credentialView;
               };
-              optional = [];
-            };
-            outputs.managers = output resourceMap;
-            methods = {};
-            inherit lifecycle;
-            guarantees = [];
-            aggregation = aggregation "services";
-            requires = {};
-            composeEntry = "compose";
-            transitionEntry = "transition";
-            ownsResourceKinds = [serviceDefinition.name];
-            compose = serviceProvider.compose;
-            transition = transitionTransform serviceProvider.transition;
+            deliver =
+              credentialEffectMethod {
+                kind = "credential";
+                action = "deliver";
+              } "deliver" {
+                credential-view = runtimeMethodOutput credentialView;
+              };
+            release = credentialEffectMethod {kind = "release-resource";} "release" {};
           };
         };
-        service-management = {
+        handler = {
+          artifact = credentialRuntime;
+          entryPoint = "libexec/aos-credential-delivery-handler-v1";
+          arguments = credentialRequest;
+          result = credentialObservation;
+        };
+      };
+    };
+  };
+
+  service = mkPackage "ability-reference-service" serviceArtifact {
+    config.aos.abilities.implementations = {
+      foreground-process = {
+        artifact = serviceRuntime;
+        definition = terminalExport {
+          name = foregroundProcess.name;
+          group = "foreground-process";
+          handler = "native-foreground-process-v1";
+          requestSchema = foregroundProcessRequest;
+          selectedLifecycle = foregroundProcessLifecycle;
+          guarantees = [foregroundProcessSupervisionGuarantee];
+          methods = {
+            observe = foregroundProcessMethod {kind = "observe-readiness";} "observe";
+            start = foregroundProcessMethod {
+              kind = "service-lifecycle";
+              action = "start";
+            } "start";
+            stop = foregroundProcessMethod {
+              kind = "service-lifecycle";
+              action = "stop";
+            } "stop";
+          };
+        };
+        handler = {
           artifact = serviceRuntime;
-          export = terminalExport {
-            name = serviceManagement.name;
-            group = "service-management";
-            handler = "service-management-terminal";
-            guarantees = builtins.attrValues serviceManagementContract.features;
-            selectedLifecycle = serviceManagementContract.lifecycle;
-            methods = {
-              observe = method serviceManagement.name {kind = "observe-readiness";} "observe";
-              reload = method serviceManagement.name {
-                kind = "service-lifecycle";
-                action = "reload";
-              } "reload";
-              restart = method serviceManagement.name {
-                kind = "service-lifecycle";
-                action = "restart";
-              } "restart";
-              start = method serviceManagement.name {
-                kind = "service-lifecycle";
-                action = "start";
-              } "start";
-              stop = method serviceManagement.name {
-                kind = "service-lifecycle";
-                action = "stop";
-              } "stop";
-            };
-          };
+          entryPoint = "libexec/aos-foreground-process-handler-v1";
+          arguments = foregroundProcessRequest;
+          result = foregroundProcessObservation;
         };
       };
-      handlers.native-foreground-process-v1 = {
-        artifact = serviceRuntime;
-        entryPoint = "libexec/aos-foreground-process-handler-v1";
-        arguments = foregroundProcessRequest;
-        result = foregroundProcessObservation;
+      service-definition = {
+        artifact = serviceArtifact;
+        definition = lib.abilities.define {
+          interface = serviceDefinition.name;
+          abi = serviceDefinition.abi;
+          requestSchema = schemas.record {
+            fields = {
+              configuration_revision = string;
+              consumer_endpoint = string;
+              service = string;
+              virtual_host_count = schemas.integer {
+                minimum = 0;
+                maximum = 1024;
+              };
+              storage_paths = storagePaths;
+            };
+            optional = [];
+          };
+          outputs.managers = output resourceMap;
+          methods = {};
+          inherit lifecycle;
+          guarantees = [];
+          aggregation = aggregation "services";
+          requires = {};
+          composeEntry = "compose";
+          transitionEntry = "transition";
+          ownsResourceKinds = [serviceDefinition.name];
+          compose = serviceProvider.compose;
+          transition = transitionTransform serviceProvider.transition;
+        };
       };
-      handlers.service-management-terminal = {
+      service-management = {
         artifact = serviceRuntime;
-        entryPoint = "bin/.aos-package-runtime-unwrapped";
-        arguments = schemas.boolean;
-        result = schemas.boolean;
+        definition = terminalExport {
+          name = serviceManagement.name;
+          group = "service-management";
+          handler = "service-management-terminal";
+          guarantees = builtins.attrValues serviceManagementContract.features;
+          selectedLifecycle = serviceManagementContract.lifecycle;
+          methods = {
+            observe = method serviceManagement.name {kind = "observe-readiness";} "observe";
+            reload = method serviceManagement.name {
+              kind = "service-lifecycle";
+              action = "reload";
+            } "reload";
+            restart = method serviceManagement.name {
+              kind = "service-lifecycle";
+              action = "restart";
+            } "restart";
+            start = method serviceManagement.name {
+              kind = "service-lifecycle";
+              action = "start";
+            } "start";
+            stop = method serviceManagement.name {
+              kind = "service-lifecycle";
+              action = "stop";
+            } "stop";
+          };
+        };
+        handler = {
+          artifact = serviceRuntime;
+          entryPoint = "bin/.aos-package-runtime-unwrapped";
+          arguments = schemas.boolean;
+          result = schemas.boolean;
+        };
       };
-    });
+    };
+  };
 }

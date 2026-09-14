@@ -322,9 +322,9 @@
   productionPackageAdoption = import ./production-package-adoption.nix {
     inherit pkgs lib;
   };
-  migratedServiceAbilities =
+  migratedServiceContracts =
     map (
-      name: pkgs.${name}.abilities
+      name: pkgs.${name}.abilityContract
     )
     (import ../../qualification/package-activation-inventory.nix {
       inherit pkgs lib;
@@ -367,9 +367,9 @@
         src = null;
         outputs = ["out" output];
         phases = [];
-        abilityPackage = {};
+        abilities = {};
       })
-      .abilities
+      .abilityContract
       .outPath))
     .success;
   proseVariant = prose:
@@ -397,7 +397,7 @@
           (lib.aosDoc.paragraph prose)
         ];
       };
-      abilityPackage = {};
+      abilities = {};
     };
   proseBefore = proseVariant "Original package guidance.";
   proseAfter = proseVariant "Revised package guidance with no contract change.";
@@ -406,7 +406,8 @@
   };
 in
   assert reservedAbilityOutputRejected "abilities";
-  assert reservedAbilityOutputRejected "abilityPackage";
+  assert reservedAbilityOutputRejected "abilityContract";
+  assert reservedAbilityOutputRejected "abilityModule";
   # Documentation prose is retained in the config companion and therefore
   # changes that companion (and the later documentation object's identity).
   # mkDerivation removes configModule before building the payload and prepares
@@ -415,7 +416,7 @@ in
   # byte-identical across this prose-only edit.
   assert proseBefore.config.drvPath != proseAfter.config.drvPath;
   assert proseBefore.drvPath == proseAfter.drvPath;
-  assert proseBefore.abilities.drvPath == proseAfter.abilities.drvPath;
+  assert proseBefore.abilityContract.drvPath == proseAfter.abilityContract.drvPath;
   assert canonicalInterface == expectedInterface;
   assert interfaceDocument.schema == "aos.ability.interface/v1";
   assert interfaceDocument.interface.name == "aos.test.echo";
@@ -746,5 +747,5 @@ in
           '';
         }
       ];
-      buildDeps = [authoringConformance] ++ migratedServiceAbilities;
+      buildDeps = [authoringConformance] ++ migratedServiceContracts;
     }

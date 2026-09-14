@@ -2,11 +2,11 @@
 {
   lib,
   mkDerivation,
+  mkServiceAbilityModule,
   fetchurl,
   buildPackages,
   kubeedgeSource,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   inherit (kubeedgeSource) version src;
   control = writeShellScriptBin "cloudcore-control" ''
@@ -25,8 +25,7 @@ in
     buildDeps = [buildPackages.go];
     runtimeDeps = [control];
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "cloudcore";
       spec.interface = "aos.service.cloudcore";
     };

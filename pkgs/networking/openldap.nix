@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  mkServiceAbilityModule,
   fetchurl,
   gnumake,
   pkg-config,
@@ -15,7 +16,6 @@
   bash,
   coreutils,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   version = "2.7.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -53,8 +53,7 @@ in
     runtimeDeps = [cyrus-sasl krb5 openssl libtool bash coreutils control];
     propagatedDeps = [];
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "openldap";
       spec.interface = "aos.service.openldap";
     };

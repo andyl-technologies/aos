@@ -707,7 +707,7 @@ let
 
   helperInventory = {
     "_platform-support.nix" = "platform-policy";
-    "build-support/_ability-package-renderer.nix" = "native-build-helper";
+    "build-support/_ability-contract-renderer.nix" = "native-build-helper";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
     "build-support/_expose-module.nix" = "target-independent-source";
@@ -716,6 +716,8 @@ let
     "build-support/_github-upstream.nix" = "native-build-helper";
     "build-support/_manual-upstream.nix" = "native-build-helper";
     "build-support/_perl-module.nix" = "native-build-helper";
+    "build-support/_service-ability-module.nix" = "native-build-helper";
+    "build-support/_service-ability-provider/default.nix" = "target-independent-source";
     "build-support/_upstream.nix" = "native-build-helper";
     "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";

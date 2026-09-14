@@ -142,10 +142,18 @@
   # declared-interface manifest). A fixed companion derivation builds it so
   # package-authored phases cannot skip or mutate its validation boundary.
   configModuleRenderer = import ./build-support/_config-module-renderer.nix {inherit lib;};
-  abilityPackageRenderer = import ./build-support/_ability-package-renderer.nix {
+  abilityContractRenderer = import ./build-support/_ability-contract-renderer.nix {
     inherit lib;
     abilities = lib.abilities;
   };
+  mkServiceAbilityModule = args:
+    import ./build-support/_service-ability-module.nix (
+      args
+      // {
+        inherit lib;
+        writeTextFile = self.writeTextFile;
+      }
+    );
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -204,7 +212,27 @@
         }
       else null;
     authoredConfigModule = args.configModule or null;
-    authoredAbilityPackage = args.abilityPackage or null;
+    authoredAbilities = args.abilities or null;
+    abilityModules =
+      if authoredAbilities == null
+      then []
+      else if builtins.isList authoredAbilities
+      then authoredAbilities
+      else [authoredAbilities];
+    abilityEvaluation =
+      if authoredAbilities == null
+      then null
+      else
+        lib.evalModules {
+          modules = [lib.abilities.module] ++ abilityModules;
+          inherit lib;
+          pkgs = self;
+          specialArgs = {inherit packageName;};
+        };
+    abilityProjection =
+      if abilityEvaluation == null
+      then null
+      else abilityEvaluation.config.aos.abilities;
     preparedAuthoredConfigModule =
       if authoredConfigModule != null
       then
@@ -394,9 +422,9 @@
         else phase
     ) (args.phases or []);
     lowerArgs =
-      # `configModule` is an mkDerivation-level arg consumed here, not passed
-      # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["abilityPackage" "configModule"])
+      # Package integration modules are evaluated by this wrapper and never
+      # become low-level derivation attributes.
+      (builtins.removeAttrs args ["abilities" "configModule"])
       // {
         meta =
           (args.meta or {})
@@ -420,10 +448,57 @@
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
-    preparedAbilityPackage =
-      if authoredAbilityPackage != null
+    implementationNames =
+      if abilityProjection == null
+      then []
+      else builtins.attrNames abilityProjection.implementations;
+    implementationValues =
+      builtins.map (name: abilityProjection.implementations.${name}) implementationNames;
+    authoredAbilityContract =
+      if abilityProjection == null
+      then null
+      else {
+        activationMode =
+          if builtins.any (entry: entry.definition.compose != null) implementationValues
+          then "structured-effects"
+          else "contracts-only";
+        requiredFeatures = lib.unique (
+          ["abilities-v1"]
+          ++ lib.concatMap (entry: entry.requiredFeatures) implementationValues
+          ++ lib.optional
+          (builtins.any (entry: entry.definition.state_format != null) implementationValues)
+          "provider-state-format-v1"
+        );
+        ownership = lib.optional (implementationNames != []) [];
+        artifacts = lib.concatMap (entry: entry.artifacts) implementationValues;
+        exports =
+          builtins.mapAttrs (
+            _: entry:
+              {
+                export = entry.definition;
+                inherit (entry) requiredFeatures;
+              }
+              // lib.optionalAttrs (entry.artifact != null) {inherit (entry) artifact;}
+          )
+          abilityProjection.implementations;
+        handlers = builtins.listToAttrs (lib.concatMap (entry:
+          lib.optional (entry.handler != null) {
+            name = entry.definition.handler;
+            value =
+              {
+                inherit (entry.handler) entryPoint arguments result;
+              }
+              // lib.optionalAttrs (entry.handler.artifact != null) {
+                inherit (entry.handler) artifact;
+              };
+          })
+        implementationValues);
+        requirements = abilityProjection.requirementTemplates;
+      };
+    preparedAbilityContract =
+      if authoredAbilityContract != null
       then
-        abilityPackageRenderer.prepare {
+        abilityContractRenderer.prepare {
           inherit packageName;
           version = args.version or "0";
           payload = drv;
@@ -431,62 +506,62 @@
             if (args.src or null) != null
             then args.src
             else drv.drvPath;
-          abilityPackage = authoredAbilityPackage;
+          declaration = authoredAbilityContract;
         }
       else null;
-    abilityArtifact =
-      if preparedAbilityPackage != null
+    abilityContract =
+      if preparedAbilityContract != null
       then
         lib.throwIfNot
-        (!(builtins.elem "abilities" existingOutputs) && !(builtins.elem "abilityPackage" existingOutputs))
-        "mkDerivation abilityPackage for package '${packageName}' reserves the 'abilities' and 'abilityPackage' output names"
-        (rawMkDerivation {
-          pname = "${packageName}-abilities";
-          version = args.version or "0";
-          src = null;
-          buildDeps = [
-            resolvedBuildPackages.aos-ability-contract-validator
-            resolvedBuildPackages.jq
-            resolvedBuildPackages.nix
-          ];
-          exportReferencesGraph = preparedAbilityPackage.referenceGraph;
-          abilityTemplateJson = preparedAbilityPackage.templateJson;
-          abilityGraphSpecsJson = preparedAbilityPackage.graphSpecsJson;
-          abilityInterfacesJson = preparedAbilityPackage.interfacesJson;
-          passthru = {
-            abilityPackage = true;
-            abilityPackagePayload = drv;
-            abilitySemanticValidator = resolvedBuildPackages.aos-ability-contract-validator;
-          };
-          dontNukeRefs = true;
-          phases = [
-            {
-              name = "install";
-              script = ''
-                ${stdenv.coreutils}/bin/env -i \
-                  HOME=/homeless-shelter \
-                  NIX_ATTRS_JSON_FILE="$NIX_ATTRS_JSON_FILE" \
-                  ABILITY_CLOSURE_GRAPH_JQ=${./build-support/_ability-closure-graph.jq} \
-                  PATH="$PATH" \
-                  TMPDIR=/build \
-                  out="$out" \
-                  ${stdenv.bash}/bin/bash --noprofile --norc ${./build-support/_ability-package-builder.sh}
+        (!(builtins.any (name: builtins.elem name existingOutputs) ["abilities" "abilityContract" "abilityModule"]))
+        "mkDerivation abilities for package '${packageName}' reserves the 'abilities', 'abilityContract', and 'abilityModule' output names"
+        ((rawMkDerivation {
+            pname = "${packageName}-abilities";
+            version = args.version or "0";
+            src = null;
+            buildDeps = [
+              resolvedBuildPackages.aos-ability-contract-validator
+              resolvedBuildPackages.jq
+              resolvedBuildPackages.nix
+            ];
+            exportReferencesGraph = preparedAbilityContract.referenceGraph;
+            abilityTemplateJson = preparedAbilityContract.templateJson;
+            abilityGraphSpecsJson = preparedAbilityContract.graphSpecsJson;
+            abilityInterfacesJson = preparedAbilityContract.interfacesJson;
+            dontNukeRefs = true;
+            phases = [
+              {
+                name = "install";
+                script = ''
+                  ${stdenv.coreutils}/bin/env -i \
+                    HOME=/homeless-shelter \
+                    NIX_ATTRS_JSON_FILE="$NIX_ATTRS_JSON_FILE" \
+                    ABILITY_CLOSURE_GRAPH_JQ=${./build-support/_ability-closure-graph.jq} \
+                    PATH="$PATH" \
+                    TMPDIR=/build \
+                    out="$out" \
+                    ${stdenv.bash}/bin/bash --noprofile --norc ${./build-support/_ability-contract-builder.sh}
 
-                ${resolvedBuildPackages.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-                  package-source "$out/package.json" "$out/interfaces"
-              '';
-            }
-          ];
-          outputChecks.out.allowedReferences = preparedAbilityPackage.allPaths;
-          preferLocalBuild = true;
-          allowSubstitutes = false;
-        })
+                  ${resolvedBuildPackages.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
+                    package-source "$out/package.json" "$out/interfaces"
+                '';
+              }
+            ];
+            outputChecks.out.allowedReferences = preparedAbilityContract.allPaths;
+            preferLocalBuild = true;
+            allowSubstitutes = false;
+          })
+          // {
+            packagePayload = drv;
+            semanticValidator = resolvedBuildPackages.aos-ability-contract-validator;
+          })
       else null;
-    abilityPackageAttrs =
-      if abilityArtifact != null
+    abilityAttrs =
+      if abilityContract != null
       then {
-        abilities = abilityArtifact;
-        abilityPackage = abilityArtifact;
+        abilities = abilityProjection;
+        abilityModule = authoredAbilities;
+        inherit abilityContract;
       }
       else {};
     exposeCheck =
@@ -519,15 +594,12 @@
       drv
       // secondaryOutputAttrs
       // configModuleAttrs
-      // abilityPackageAttrs
-      // lib.optionalAttrs (abilityArtifact != null) {
-        passthru = drv.passthru // abilityPackageAttrs;
-      }
+      // abilityAttrs
       // (
         if args ? expose
         then {
           inherit exposeCheck;
-          passthru = drv.passthru // abilityPackageAttrs // {inherit exposeCheck;};
+          passthru = drv.passthru // {inherit exposeCheck;};
         }
         else {}
       );
@@ -1528,7 +1600,7 @@
   self =
     {
       # --- Plumbing ---
-      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
+      inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream mkServiceAbilityModule lib packageNames allPackageNames;
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;

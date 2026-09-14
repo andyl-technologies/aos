@@ -163,17 +163,12 @@
   };
   rolloutProvider = import (providerArtifact + "/default.nix");
 
-  abilityPackage = {
-    requiredFeatures = ["ab-image-rollout-v1" "abilities-v1" "provider-state-format-v1"];
-    activationMode = "structured-effects";
-    ownership = [[]];
-    artifacts = [];
-    requirements = {};
-    exports = {
+  abilities = {
+    config.aos.abilities.implementations = {
       rollout = {
         artifact = providerArtifact;
         requiredFeatures = ["ab-image-rollout-v1"];
-        export = lib.abilities.define {
+        definition = lib.abilities.define {
           interface = "aos.ab-image-rollout";
           abi = 1;
           requestSchema = schemas.boolean;
@@ -208,7 +203,7 @@
       rollout-effects = {
         artifact = rolloutRuntime;
         requiredFeatures = ["ab-image-rollout-v1"];
-        export = lib.abilities.define {
+        definition = lib.abilities.define {
           interface = rolloutEffects.name;
           abi = rolloutEffects.abi;
           requestSchema = rolloutRequest;
@@ -234,13 +229,13 @@
           ownsResourceKinds = [rolloutEffects.name];
           handler = "native-ab-image-rollout-v1";
         };
+        handler = {
+          artifact = rolloutRuntime;
+          entryPoint = "libexec/aos-ab-image-rollout-handler-v1";
+          arguments = rolloutRequest;
+          result = rolloutObservation;
+        };
       };
-    };
-    handlers.native-ab-image-rollout-v1 = {
-      artifact = rolloutRuntime;
-      entryPoint = "libexec/aos-ab-image-rollout-handler-v1";
-      arguments = rolloutRequest;
-      result = rolloutObservation;
     };
   };
 in
@@ -248,7 +243,7 @@ in
     pname = packageName;
     version = "1.0.0";
     src = providerArtifact;
-    inherit abilityPackage;
+    inherit abilities;
 
     phases = [
       {

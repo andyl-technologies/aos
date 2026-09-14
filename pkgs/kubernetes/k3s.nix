@@ -33,7 +33,7 @@ in
     runtimeDeps = [];
 
     # Role packages consume this artifact and own the service lifecycle.
-    abilityPackage = (import ./_ability-contracts.nix {inherit lib;}).payloadPackage;
+    abilities = (import ./_ability-contracts.nix {inherit lib;}).payloadPackage;
 
     phases = [
       {

@@ -419,10 +419,10 @@ in
   assert (providerContract "image-rollout")
   == {
     resource_lifetime = "persistent";
-    state_format = rolloutPackageContract.abilityPackage.exports.rollout.export.state_format;
+    state_format = rolloutPackageContract.abilities.implementations.rollout.definition.state_format;
   };
-  assert rolloutPackageContract.abilityPackage.exports.rollout.export.outputs.machine.lifetime == "persistent";
-  assert rolloutPackageContract.abilityPackage.exports.rollout.export.state_format
+  assert rolloutPackageContract.abilities.implementations.rollout.definition.outputs.machine.lifetime == "persistent";
+  assert rolloutPackageContract.abilities.implementations.rollout.definition.state_format
   == "sha256:ab3d033a412b9b81a99491c719eb8ff6d564080701f45a20ccd723c1133fb8e8";
   assert builtins.length nativeRoleRevocationCells == 600;
   assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;

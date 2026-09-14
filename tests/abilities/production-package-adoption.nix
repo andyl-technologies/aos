@@ -5,7 +5,7 @@
 }: let
   packageContract = package: let
     ability = builtins.fromJSON (
-      builtins.unsafeDiscardStringContext package.abilities.abilityTemplateJson
+      builtins.unsafeDiscardStringContext package.abilityContract.abilityTemplateJson
     );
     exposure = package.expose.passthru.manifest;
   in {
@@ -81,12 +81,15 @@
     ];
   };
   serviceSpec = name: let
-    services = specialServices.${name} or [
-      {
-        key = "main";
-        dependencies = [];
-      }
-    ];
+    services =
+      specialServices.${
+        name
+      } or [
+        {
+          key = "main";
+          dependencies = [];
+        }
+      ];
     hasDependencies = builtins.any (service: service.dependencies != []) services;
   in {
     inherit services;
@@ -150,10 +153,10 @@
     mappedUnits
     && contract.exposure.expose.units != [];
 
-  serviceProvider = import ../../lib/abilities/providers/service-package {
+  serviceProvider = import ../../pkgs/build-support/_service-ability-provider {
     spec = serviceSpec "rsync";
   };
-  garageProvider = import ../../lib/abilities/providers/service-package {
+  garageProvider = import ../../pkgs/build-support/_service-ability-provider {
     spec = serviceSpec "garage";
   };
   providerId = {

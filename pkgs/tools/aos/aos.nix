@@ -197,11 +197,11 @@
   abilityReferenceNginxGraph = mkReferenceGraph {
     rootPaths =
       [abilityReferenceNginxFixture abilityReferenceHttpBackendFixture]
-      ++ builtins.map (package: package.abilities) (builtins.attrValues abilityReferenceRegistryPackages);
+      ++ builtins.map (package: package.abilityContract) (builtins.attrValues abilityReferenceRegistryPackages);
     pname = "aos-ability-reference-nginx-graph";
   };
-  abilityPackageSmokeGraph = mkReferenceGraph {
-    rootPaths = [ability-package-smoke ability-package-smoke.abilities];
+  abilityContractSmokeGraph = mkReferenceGraph {
+    rootPaths = [ability-package-smoke ability-package-smoke.abilityContract];
     pname = "aos-ability-package-smoke-graph";
   };
   abilityEvaluatorIfdFixture = builtins.derivation {
@@ -466,10 +466,10 @@ in
       export AOS_TEST_ABILITY_REFERENCE_SERVICE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceServiceFixture})"
       export AOS_TEST_ABILITY_REFERENCE_PACKAGES="${
         lib.concatStringsSep ":" (
-          builtins.map (package: "${package.abilities}") (builtins.attrValues abilityReferenceRegistryPackages)
+          builtins.map (package: "${package.abilityContract}") (builtins.attrValues abilityReferenceRegistryPackages)
         )
       }"
-      export AOS_TEST_ABILITY_PACKAGE_SMOKE="${ability-package-smoke.abilities}"
+      export AOS_TEST_ABILITY_PACKAGE_SMOKE="${ability-package-smoke.abilityContract}"
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
       ${lib.optionalString (!isCross) ''
         ability_nix_root="$NIX_BUILD_TOP/ability-retention-nix"
@@ -495,7 +495,7 @@ in
         NIX_STATE_DIR="$ability_nix_state" \
         NIX_LOG_DIR="$ability_nix_log" \
         NIX_REMOTE=local \
-          ${buildNix}/bin/nix-store --load-db < ${abilityPackageSmokeGraph}/registration
+          ${buildNix}/bin/nix-store --load-db < ${abilityContractSmokeGraph}/registration
 
         export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
         export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"
