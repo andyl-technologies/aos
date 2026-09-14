@@ -48,6 +48,17 @@
     .build
     .configManifest;
   testAgentPath = builtins.unsafeDiscardStringContext (builtins.toString pkgs.aos-test-agent);
+  selectedAbilityImplementations =
+    (mkSystem {
+      modules = [
+        serverModule
+        {environment.systemPackages = [pkgs.nginx];}
+      ];
+    })
+    .config
+    .aos
+    .abilities
+    .implementations;
   hostSessionManifest =
     (mkSystem {
       modules = [serverModule];
@@ -176,6 +187,7 @@ in
   assert hostComposedManifest.ownership.etc.profile == "@host";
   assert hostComposedManifest.ownership.etc."pam/environment" == "@host";
   assert hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host";
+  assert builtins.attrNames selectedAbilityImplementations == ["nginx" "nginx-validation"];
   assert hostSessionManifest.ownership.etc.profile == "@base";
   assert hostSessionManifest.ownership.etc."pam/environment" == "@host";
   assert directHostLoginManifest.ownership.etc.profile == "@host";

@@ -180,26 +180,51 @@
       then args.packageModules
       else [];
     systemModules = builtins.filter builtins.isPath moduleList;
+    baseLibProbe = {
+      aos.config.evalAtBoot = {
+        baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
+        baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
+      };
+    };
+    # Resolve the static package selection before admitting package modules.
+    # This pass chooses the module set only; the final evaluation below remains
+    # the sole authoritative configuration fixed point.
+    selectionEvaluation = lib.evalModules {
+      modules = modules ++ moduleList ++ [baseLibProbe];
+      inherit pkgs lib operatorModules runtimeModules packageModules;
+      specialArgs = moduleSpecialArgs;
+    };
+    selectedAbilityPackages = let
+      selectedByPath = builtins.listToAttrs (
+        builtins.map (package: {
+          name = builtins.unsafeDiscardStringContext (builtins.toString package);
+          value = package;
+        })
+        (builtins.filter
+          (package: builtins.isAttrs package && package ? abilityModule)
+          selectionEvaluation.config.environment.systemPackages)
+      );
+    in
+      builtins.attrValues selectedByPath;
+    callerPackageNames = builtins.map (record: record.name) packageModules;
+    nativeAbilityPackageModules =
+      builtins.map (package: {
+        name = package.pname or package.name;
+        module = package.abilityModule;
+        authorization = {
+          owns = [];
+          contributes.aos = ["abilities"];
+        };
+      }) (builtins.filter
+        (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
+        selectedAbilityPackages);
+    finalPackageModules = packageModules ++ nativeAbilityPackageModules;
     # Determine the resolved image ABI from the complete caller module list.
     # The base library bundles only source-backed system modules, so without
     # carrying this value explicitly an inline image override would leave the
     # runtime image and its evaluator library on different ABIs.
     moduleAbi =
-      (lib.evalModules {
-        modules =
-          modules
-          ++ moduleList
-          ++ [
-            {
-              aos.config.evalAtBoot = {
-                baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
-                baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
-              };
-            }
-          ];
-        inherit pkgs lib operatorModules runtimeModules packageModules;
-        specialArgs = moduleSpecialArgs;
-      })
+      selectionEvaluation
       .config
       .aos
       .system
@@ -221,7 +246,8 @@
             };
           }
         ];
-      inherit pkgs lib operatorModules runtimeModules packageModules;
+      inherit pkgs lib operatorModules runtimeModules;
+      packageModules = finalPackageModules;
       specialArgs = moduleSpecialArgs;
     };
 
