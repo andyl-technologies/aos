@@ -94,13 +94,26 @@ cannot use that future revision to finish the same pure Nix evaluation.
 
 ## Nix authoring and evaluation contract
 
-`abilities` is a native `mkDerivation` field. Its package-level vocabulary is
-`abilities.provides` and `abilities.consumes`; deployment-owned
-`abilityBindings` selects among the resulting candidates. Provider modules may
-use `exports`, `imports`, `define`, `resultOf`, and effect helpers internally to
-construct data checked by the shared validators. The module ABI publishes their
-signatures together; callers cannot substitute arbitrary attribute sets as
-trusted bindings.
+`abilities` is a native `mkDerivation` field containing a standard AOS module.
+The shared schema module declares typed `aos.abilities.interfaces`,
+`implementations`, `requirementTemplates`, `instances`, `requests`, `bindings`,
+and `desiredResources` options. Package modules declare static definitions and
+conditional instances/requests; deployment-owned modules declare bindings;
+selected provider modules derive desired resources. The package's normalized
+`package.abilities` value and the final desired configuration are projections
+of those module definitions, not separately authored manifests. Provider
+modules may use `implementation`, `request`, `resultOf`, and effect helpers to
+construct values checked by the shared validators. The module ABI publishes
+their signatures together; callers cannot substitute arbitrary attribute sets
+as trusted bindings.
+
+Ability request and result fields use `lib.abilities.types`, whose values are
+normal AOS module option types carrying a canonical portable-schema projection.
+The same declaration drives module type checking, generic configuration
+parsing, serialized schemas, editor metadata, and reference documentation.
+Rust duplicates only the generic closed-schema implementation and verifies it
+with conformance tests; it does not own interface-specific fields, defaults, or
+method catalogs.
 
 An export declares interface/schema, aggregation group, named lower-interface
 requirements, `compose`, and `transition`. A primitive implementation declares

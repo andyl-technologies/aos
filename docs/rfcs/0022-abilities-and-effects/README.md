@@ -37,7 +37,10 @@ an ability, consume abilities from other packages or its execution environment,
 and implement higher-level abilities using those bindings.
 
 Nix remains the authoring and configuration language. Package-owned modules
-declare typed interfaces, requests, and pure mappings. Source-defined systems
+declare typed interfaces, requests, settings, and pure mappings through the
+ordinary AOS `options` and `config` fixed point. Shared ability-aware option
+types drive evaluation, portable schemas, generic parsing, editor support, and
+generated reference documentation from one declaration. Source-defined systems
 select bindings explicitly and validate them during evaluation and build.
 APM resolves eligible providers for authenticated registry packages, evaluates
 their configuration modules, and constructs equivalent bound plans. Both paths
@@ -76,8 +79,11 @@ transaction's ordering or failure semantics.
 3. Make recursive implementation part of ability authorship: exports declare
    lower requirements, typed child requests/results, aggregation, and
    transitions grounded in authorized operations and a valid bootstrap path.
-4. Retain the Nix language and extend AOS libraries/modules. Do not require an
-   evaluator fork, language-level effect inference, or a new service DSL.
+4. Retain the Nix language and extend the standard AOS module option
+   vocabulary. Define each ability and configuration fact once through
+   `mkOption` and `config`; derive package contracts, parsing schemas, and
+   reference documentation from that fixed point. Do not require an evaluator
+   fork, language-level effect inference, or a new service DSL.
 5. Preserve rich service declarations and package configuration ownership.
    Expose manager features from provider packages and translate only an
    explicitly supported subset through an alternative provider.
@@ -93,7 +99,8 @@ transaction's ordering or failure semantics.
 10. Preserve independent package, configuration, and image generations, linked
     by transaction and binding records. Rollback is a newly validated
     transition, not unconditional reversal of past effects.
-11. Generate explanations from the same contracts for CLI, Hub, documentation,
+11. Generate option and ability reference data and explanations from the same
+    module declarations and checked contracts for CLI, Hub, documentation,
     editor tooling, previews, diagnostics, and generation comparisons.
 12. Preserve hermetic builds, registry trust, secret handling, resource fencing,
     and the Crucible/QEMU process and licensing boundaries.

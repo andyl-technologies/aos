@@ -151,10 +151,15 @@ debugger; it would need defined lease, timeout, and recovery semantics.
 
 ## AOS Hub and generated reference pages
 
-Generate interface, request, result, guarantee, and operation documentation
-from the same versioned contracts used for validation. Package-authored prose
-explains intent and tradeoffs. The signed release's documentation locator
-continues to resolve exact reference material, including offline use.
+Generate option, interface, request, result, guarantee, and operation
+documentation from the same evaluated module declarations and versioned
+contracts used for validation. `mkOption` supplies each option's canonical
+name, type, default, description, example, visibility, and declaration
+provenance. Ability declarations supply their relationships and supported
+methods. Package-authored prose explains intent, workflows, and tradeoffs
+without restating machine-reference tables. The signed release's documentation
+locator continues to resolve exact generated reference material, including
+offline use.
 
 Hub should show provided/required interfaces, how dependencies are consumed,
 supported environments, configuration contributions, and declared activation
@@ -168,6 +173,14 @@ whether hosted natively or in a Worker. A deployment-aware view requires a
 separate authenticated connection and must distinguish private deployment
 state from public registry documentation.
 
+`aos docs`, APM, native Hub, Worker Hub, and the editor consume one shared
+serializable view constructed from the checked package module projection and,
+where available, the final deployment projection. They do not own package to
+option maps, service/unit maps, copied defaults, interface field tables, or
+separate joins for provided and consumed abilities. Backend artifact names,
+including service units and process identities, come from evaluated provider
+output.
+
 Documentation-only prose edits have a separate identity from executable
 contracts. They do not cause service restarts, configuration digest churn, or
 new authority decisions. A changed semantic schema or mapping can affect
@@ -176,9 +189,12 @@ runtime identity even when its documentation happens to change alongside it.
 ## Editor support
 
 The existing [documentation language server](../../../crates/aos-package/src/documentation_lsp.rs)
-is the starting point for interface hover text, completion, request/result
-schemas, and known compatibility diagnostics. It can identify an invalid
-field or unresolved explicit provider from available authenticated metadata.
+is the starting point for option and interface hover text, completion,
+request/result schemas, and known compatibility diagnostics. Its parse and
+completion model is generated from the same exported option and portable
+ability schemas used by module evaluation. It can identify an invalid field or
+unresolved explicit provider from available authenticated metadata without a
+handwritten package schema.
 
 Do not execute arbitrary Nix from an editor buffer implicitly. Full evaluation
 uses the existing explicit, restricted evaluation path. Static editor checks

@@ -15,7 +15,7 @@ effects out of portable model/validation/inspection code.
 | Feature | Responsible surface | Completion evidence |
 | --- | --- | --- |
 | Closed versioned contracts and identity | Shared model and validation libraries | Canonical valid/invalid fixtures; native and web decoders agree; unknown semantics and bounded-input violations reject |
-| Nix schemas and helpers | AOS module library plus restricted evaluation adapter | Request/output/method fixtures agree with Rust; evaluated outputs are forced and checked; no effect or secret access during evaluation |
+| Nix schemas and helpers | Standard AOS module library plus restricted evaluation adapter | One typed `aos.abilities` option tree supports ordinary module composition; portable option projections agree with Rust; evaluated outputs are forced and checked; no effect or secret access during evaluation |
 | Recursive implementation | Provider modules plus shared graph validator | Separately authored providers compose to admitted leaves without package-name special cases; cycles, missing ports, phase errors, and scope escapes reject |
 | Controller ownership and aggregation | Composition and transition planner | Two contributors cause one shared transition; two instances stay distinct; collisions and double controllers reject |
 | Static matching and late resolution | Shared validator/resolver with source and registry adapters | Equal canonical inputs yield equal choices and plans; ambiguity, invalid pins, conditional TLS, backtracking limits, and oscillation have deterministic outcomes |
@@ -32,7 +32,7 @@ effects out of portable model/validation/inspection code.
 | Aggregate roles and Kubernetes | Role/package interfaces and Kubernetes adapter | k3s consumes its payloads without extra service starts; Cilium contribution is scoped; unauthorized objects reject and submitted revisions are observed |
 | Images and initrd | Existing image/boot builders and stage interfaces | Userland and bootable artifacts carry the right contract; unavailable launch facilities remain obligations; early consumers cannot depend on late facilities |
 | Rollout and rollback | Strategy providers plus ordinary runtime contracts | At least one qualified strategy handles partial completion, health failure, draining, and retention; rollback revalidates current grants and data compatibility |
-| Documentation and operator tools | Shared inspection library, CLI, docs, Hub, editor | Same checked graph yields consistent identities/explanations; signed release docs differ from deployment/observation views; prose changes cause no reload |
+| Documentation and operator tools | Evaluated option graph, shared inspection library, CLI, docs, Hub, editor | One `mkOption`/ability declaration yields every option and ability reference view; the same checked graph yields consistent identities/explanations; signed release docs differ from deployment/observation views; prose changes cause no reload |
 | Debugging and visualization | Inspection queries and execution records | Expand/collapse, projection selection, dependency/removal traces, timeline, and redacted bundles work against successful and failed fixtures |
 | VM/fleet and release qualification | Existing test harnesses and qualification catalog | Production path is exercised with independent probes; fresh evidence binds exact subjects and required coverage; cached regression output is not release admission |
 | Optional Crucible instrumentation | AOS guest adapter and existing generic interfaces | Ordinary runtime needs no Crucible; enabled assertions/choices use the same execution; advanced campaign gates track PR #194 explicitly |
@@ -43,6 +43,14 @@ NOT pin the current number of interfaces, methods, adapters, qualification
 cells, or fixtures. Adding or removing a provider changes the generated subject
 set; the release check proves that every resulting required subject has
 evidence.
+
+The source-of-truth audit traces each option, interface, implementation,
+requirement, method, guarantee, default, description, handler, and realized
+backend artifact from one owning module declaration or evaluated provider
+output to every consumer. Package manifests, parser schemas, documentation,
+Hub/editor data, and qualification inputs must be generated projections. A
+test that keeps two handwritten copies equal is evidence of duplication rather
+than completion.
 
 Conformance fixtures are small semantic inputs shared by Nix and Rust
 consumers. Production provider documents and matrices are generated during
