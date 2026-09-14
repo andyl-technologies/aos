@@ -167,7 +167,11 @@
     hash = "sha256-muPW1D/3cc8CuMeAWsDwpFf1+nAmsTNOoQhSYtPYbZ0=";
   };
 in
-  mkDerivation ({}
+  mkDerivation (lib.optionalAttrs isLinuxCross {
+      # The generic shrink step converts the transitive HotSpot RPATH back to
+      # RUNPATH after installation. Keep the mandatory installed RPATH intact.
+      dontPatchELF = true;
+    }
     // {
       pname = "openjdk-7";
       version = icedteaVersion;
