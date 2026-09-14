@@ -510,11 +510,17 @@ pub fn sign_hello(
 
 /// Verifies one signed endpoint hello against an already resolved public key.
 ///
+/// This function performs signature and role/key-use validation only. The
+/// caller remains responsible for resolving and authorizing `public_key`
+/// through protected trust and currentness state. Successful verification
+/// grants no trust, currentness, session, route, process, or transport
+/// authority.
+///
 /// # Errors
 ///
 /// Returns [`SourceProviderSignatureError`] for a role/use mismatch, weak key
 /// material, fingerprint mismatch, or an invalid signature.
-pub(crate) fn verify_hello(
+pub fn verify_hello(
     value: &SignedSourceProviderHelloV1,
     public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {

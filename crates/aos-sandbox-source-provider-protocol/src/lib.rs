@@ -56,7 +56,7 @@ pub use crypto::{
     digest_signed_hello, digest_signed_request, empty_descriptor_set_commitment_v1,
     provider_resource_commitment_v1, response_result_digest_v1, sign_export_lease, sign_hello,
     sign_inventory, sign_provider_receipt, sign_release_receipt, sign_request,
-    sign_response_status, source_provider_session_binding_v1,
+    sign_response_status, source_provider_session_binding_v1, verify_hello,
 };
 pub use model::{
     ALL_PROOF_CLASS_CAPABILITIES, AcquireSourceRequestV1, AcquireSourceResponseV1,
