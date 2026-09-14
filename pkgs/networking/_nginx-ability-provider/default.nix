@@ -58,6 +58,11 @@ let
       descriptor = "sha256:9b691f3825a27d582ab9d68848ef6733c8daff6591af5d5aefb1ed1b33ca5731";
     }
     {
+      name = "aos.service.feature.dependencies";
+      version = 1;
+      descriptor = "sha256:d41d1c135639c9c64f9c2c3fd14f5155e27e69f815a50cc36070c46972ab5791";
+    }
+    {
       name = "aos.service.feature.identity";
       version = 1;
       descriptor = "sha256:428c991097b18a0e43ee19bc799ce735986567f7934f5c148d39c485efd1406c";
@@ -1274,22 +1279,16 @@ in rec {
       deadline = operationDeadline;
       recovery = {
         retry = {kind = "disabled";};
-        reconcile =
-          if action == "stop"
-          then {
-            interface = serviceTerminal.interface;
-            method = "observe";
-          }
-          else null;
-        # Active state cannot prove that start or reload took effect. A stopped
-        # state is an exact postcondition for cancelling Stop.
-        cancel =
-          if action == "stop"
-          then {
-            interface = serviceTerminal.interface;
-            method = "observe";
-          }
-          else null;
+        # The selected manager's observation contract classifies durable
+        # lifecycle outcomes; a raw active-state check is not sufficient.
+        reconcile = {
+          interface = serviceTerminal.interface;
+          method = "observe";
+        };
+        cancel = {
+          interface = serviceTerminal.interface;
+          method = "observe";
+        };
         compensate = null;
       };
     };
