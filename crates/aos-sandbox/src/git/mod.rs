@@ -1,0 +1,71 @@
+//! Dormant Git repository, immutable-export, and exchange commitments.
+//!
+//! AOS does not define a replacement Git object protocol. The control envelope
+//! in this module authorizes nothing by itself and is intended to select one
+//! standard Git protocol-v2 upload-pack or receive-pack conversation after a
+//! future controller performs admission and obtains fresh broker authority.
+
+mod checkpoint;
+mod checkpoint_replay;
+mod compaction;
+mod durable;
+mod durable_payload;
+mod fork_history;
+mod format;
+mod history;
+mod journal;
+mod lease_recovery;
+mod model;
+mod pack_format;
+mod protocol;
+mod time;
+pub(crate) mod validator;
+
+pub use compaction::{
+    GitRetiredPackSummaryV1, GitTerminalForkTombstoneV1, GitTerminalLeaseTombstoneV1,
+    MAXIMUM_GIT_RETIRED_PACKS, MAXIMUM_GIT_TERMINAL_LEASE_TOMBSTONES,
+};
+pub use durable::{
+    bind_git_atomic_join_v1, decode_git_durable_record_v1, decode_git_projection_checkpoint_v1,
+    encode_git_durable_record_v1, encode_git_projection_checkpoint_v1, git_atomic_join_digest_v1,
+    GitDurableRecordKindV1, GitDurableRecordV1, GitProjectionCheckpointV1, GitProjectionHistoryV1,
+    MAXIMUM_GIT_ATOMIC_JOIN_MEMBERS, MAXIMUM_GIT_DURABLE_BYTES, MAXIMUM_GIT_DURABLE_RECORDS,
+};
+pub use durable_payload::{
+    decode_git_durable_payload_v1, encode_git_durable_payload_v1, GitDurablePayloadV1,
+    MAXIMUM_GIT_DURABLE_PAYLOAD_BYTES,
+};
+pub use format::{decode_git_exchange_plan_v1, encode_git_exchange_plan_v1};
+pub use history::{
+    GitDurableHistoryV1, GitExportHistoryRecordV1, GitPackLeaseV1, GitPublicationRecordV1,
+    GitReceiveHistoryRecordV1, GitReceivePhaseV1, GitRepositoryStateV1,
+};
+pub use journal::{
+    decode_git_journal_record_v1, encode_git_journal_record_v1, git_custodied_payload_digest_v1,
+    GitAcceptedRecordSetV1, GitAcceptedRecordV1, GitBootRolloverAuthorityV1, GitJournalHistoryV1,
+    GitJournalOwnershipRecordV1, GitJournalRecordKindV1, GitJournalVerifierV1,
+    GIT_JOURNAL_NAMESPACE_V1,
+};
+pub use model::{
+    git_pack_index_set_digest_v1, git_ref_map_digest_v1, GitAdvertisedRefV1,
+    GitAncestryProofDigestV1, GitAncestryReportV1, GitAtomicCasDigestV1, GitAudienceDigestV1,
+    GitChannelBindingDigestV1, GitDescriptorRoleV1, GitDescriptorV1, GitExportGenerationDigestV1,
+    GitExportGenerationV1, GitGraphCompletenessV1, GitGraphProofDigestV1,
+    GitGraphValidatorEvidenceV1, GitModelError, GitObjectDatabaseDigestV1, GitObjectFormatV1,
+    GitObjectGraphEvidenceV1, GitObjectIdV1, GitObjectInventoryDigestV1, GitPackGenerationDigestV1,
+    GitPackGenerationPredecessorV1, GitPackIndexSetDigestV1, GitPhysicalObjectEnumerationV1,
+    GitQuarantineDigestV1, GitReadAudienceV1, GitRefMapDigestV1, GitRefNameV1, GitRepositoryV1,
+    GitTrustedValidatorV1, GitValidationPolicyDigestV1, GitValidatorTrustDigestV1,
+    GitWholeObjectDatabaseV1, ImmutablePackGenerationV1,
+};
+pub use pack_format::{decode_pack_generation_v1, encode_pack_generation_v1};
+pub use protocol::{
+    GitExchangePlanV1, GitProtocolV2CapabilitiesDigestV1, GitProtocolV2CapabilityV1,
+    GitProtocolV2ProfileV1, GitProtocolV2ServiceV1, GitReceiveFenceV1, GitReceivePlanV1,
+    GitRefTransitionV1, GitUploadPlanV1,
+};
+pub use time::{
+    GitBootIdV1, GitBoottimeV1, GitCheapForkStatusV1, GitCheapForkV1, GitPackConsumerV1,
+    GitPackLeaseStatusV1, GitTrustedBoottimeV1, MAXIMUM_GIT_HISTORY_RECORDS,
+    MAXIMUM_GIT_PACK_LEASES,
+};

@@ -35,6 +35,9 @@ impl Default for DecodeLimits {
 /// Reports a deterministic-CBOR profile or decoder-limit violation.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CanonicalCborError {
+    /// Checked allocation for an encoder or decoder output failed.
+    #[error("CBOR allocation failed")]
+    AllocationFailed,
     /// The encoded object exceeds the caller's total-byte ceiling.
     #[error("CBOR object exceeds the maximum encoded byte length")]
     ObjectTooLarge,
@@ -196,6 +199,14 @@ pub(crate) struct Encoder {
 impl Encoder {
     pub(crate) fn new() -> Self {
         Self { bytes: Vec::new() }
+    }
+
+    pub(crate) fn with_capacity(capacity: usize) -> Result<Self, CanonicalCborError> {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|_| CanonicalCborError::AllocationFailed)?;
+        Ok(Self { bytes })
     }
 
     pub(crate) fn finish(self) -> Vec<u8> {

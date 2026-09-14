@@ -95,6 +95,33 @@ pub fn decode_view(bytes: &[u8], limits: DecodeLimits) -> Result<View, Canonical
 #[must_use]
 pub fn encode_environment(environment: &Environment) -> Vec<u8> {
     let mut encoder = Encoder::new();
+    encode_environment_into(&mut encoder, environment);
+    encoder.finish()
+}
+
+/// Encodes one immutable project environment after fallibly reserving its
+/// exact portable v1 CBOR length.
+///
+/// This variant is intended for bounded outer formats that must observe an
+/// allocation failure before any proportional output growth occurs.
+///
+/// # Errors
+///
+/// Returns [`CanonicalCborError::ObjectTooLarge`] if the exact encoded length
+/// overflows `usize`, or [`CanonicalCborError::AllocationFailed`] if the exact
+/// output reservation cannot be satisfied.
+pub fn try_encode_environment(environment: &Environment) -> Result<Vec<u8>, CanonicalCborError> {
+    let encoded_length = environment_encoded_length(environment)?;
+    let mut encoder = Encoder::with_capacity(encoded_length)?;
+    encode_environment_into(&mut encoder, environment);
+    let encoded = encoder.finish();
+    if encoded.len() != encoded_length {
+        return Err(CanonicalCborError::ObjectTooLarge);
+    }
+    Ok(encoded)
+}
+
+fn encode_environment_into(encoder: &mut Encoder, environment: &Environment) {
     encoder.array(5);
     encoder.unsigned(1);
     encode_slice(&mut encoder, environment.closure(), encode_descriptor);
@@ -109,7 +136,94 @@ pub fn encode_environment(environment: &Environment) -> Vec<u8> {
         environment.required_features(),
         encode_feature,
     );
-    encoder.finish()
+}
+
+fn environment_encoded_length(environment: &Environment) -> Result<usize, CanonicalCborError> {
+    let closure = environment.closure().iter().try_fold(
+        cbor_head_length(environment.closure().len()),
+        |total, descriptor| {
+            total
+                .checked_add(descriptor_encoded_length(descriptor))
+                .ok_or(CanonicalCborError::ObjectTooLarge)
+        },
+    )?;
+    let variables = environment.variables().iter().try_fold(
+        cbor_head_length(environment.variables().len()),
+        |total, entry| {
+            let length = 1_usize
+                .checked_add(text_encoded_length(entry.name()))
+                .and_then(|value| value.checked_add(text_encoded_length(entry.value())))
+                .ok_or(CanonicalCborError::ObjectTooLarge)?;
+            total
+                .checked_add(length)
+                .ok_or(CanonicalCborError::ObjectTooLarge)
+        },
+    )?;
+    let paths = environment.command_search_path().iter().try_fold(
+        cbor_head_length(environment.command_search_path().len()),
+        |total, path| {
+            let length = path.components().iter().try_fold(
+                cbor_head_length(path.components().len()),
+                |path_total, component| {
+                    path_total
+                        .checked_add(bytes_encoded_length(component.as_bytes()))
+                        .ok_or(CanonicalCborError::ObjectTooLarge)
+                },
+            )?;
+            total
+                .checked_add(length)
+                .ok_or(CanonicalCborError::ObjectTooLarge)
+        },
+    )?;
+    let features = environment.required_features().iter().try_fold(
+        cbor_head_length(environment.required_features().len()),
+        |total, feature| {
+            let length = 1_usize
+                .checked_add(text_encoded_length(feature.namespace()))
+                .and_then(|value| value.checked_add(cbor_head_length(feature.major() as usize)))
+                .and_then(|value| value.checked_add(cbor_head_length(feature.minor() as usize)))
+                .ok_or(CanonicalCborError::ObjectTooLarge)?;
+            total
+                .checked_add(length)
+                .ok_or(CanonicalCborError::ObjectTooLarge)
+        },
+    )?;
+
+    2_usize
+        .checked_add(closure)
+        .and_then(|value| value.checked_add(variables))
+        .and_then(|value| value.checked_add(paths))
+        .and_then(|value| value.checked_add(features))
+        .ok_or(CanonicalCborError::ObjectTooLarge)
+}
+
+fn descriptor_encoded_length(descriptor: &ObjectDescriptor) -> usize {
+    1 + text_encoded_length(descriptor.media_type().as_str())
+        + 1
+        + bytes_encoded_length(descriptor.digest().as_bytes())
+        + cbor_head_length_u64(descriptor.encoded_size())
+}
+
+fn text_encoded_length(value: &str) -> usize {
+    cbor_head_length(value.len()) + value.len()
+}
+
+fn bytes_encoded_length(value: &[u8]) -> usize {
+    cbor_head_length(value.len()) + value.len()
+}
+
+fn cbor_head_length(value: usize) -> usize {
+    cbor_head_length_u64(value as u64)
+}
+
+const fn cbor_head_length_u64(value: u64) -> usize {
+    match value {
+        0..=23 => 1,
+        24..=0xff => 2,
+        0x100..=0xffff => 3,
+        0x1_0000..=0xffff_ffff => 5,
+        _ => 9,
+    }
 }
 
 /// Decodes and validates one exact portable v1 project environment.
