@@ -11,7 +11,7 @@
   effectQualification ? false,
   transitionTransform ? transition: transition,
 }: let
-  contract = import ../../../lib/abilities/postgresql.nix {inherit lib;};
+  contract = import ../../../pkgs/storage/_postgresql-ability/contract.nix {inherit lib;};
   inherit
     (contract)
     aggregation

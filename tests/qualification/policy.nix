@@ -183,7 +183,7 @@
   nativeAdapterSurface = builtins.fromJSON (builtins.readFile ../../qualification/native-adapter-surface.json);
   providerContract = adapterName:
     (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
-  postgresqlAbilityContract = import ../../lib/abilities/postgresql.nix {inherit lib;};
+  postgresqlAbilityContract = import ../../pkgs/storage/_postgresql-ability/contract.nix {inherit lib;};
   postgresqlExport = postgresqlAbilityContract.postgresqlExport postgresqlAbilityContract.compatibleStateFormat;
   rolloutPackageContract = import ../abilities/reference-image-rollout/package.nix {
     inherit lib;
