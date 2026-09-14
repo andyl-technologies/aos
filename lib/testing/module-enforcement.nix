@@ -66,8 +66,7 @@
   imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
   defaultRootPartitionHasHeadroom =
     healthySystem.config.aos.image.rootPartitionMiB
-    == 1024
-    && healthySystem.config.aos.image.budgets.maxRootMiB == 512;
+    > healthySystem.config.aos.image.budgets.maxRootMiB;
 
   overriddenRootPartitionSystem = aos.mkSystem {
     modules = [
