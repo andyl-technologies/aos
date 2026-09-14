@@ -17,6 +17,9 @@
 //! This module deliberately performs no syscall and launches no helper. It
 //! exposes a non-clone ordered-step authorization whose next visible step is
 //! returned only after another current-fence and effect-time check.
+//! Its private dormant reducer defines bounded canonical recovery checkpoints,
+//! but the envelopes do not prove durability without future protected storage
+//! write and readback.
 
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
@@ -45,6 +48,11 @@ use aos_sandbox_linux::pidfd::NamespaceIdentity;
 
 mod codec;
 mod execution;
+#[allow(
+    dead_code,
+    reason = "the lifecycle authority reducer remains dormant until protected adapter integration"
+)]
+mod reducer;
 
 pub use codec::MAXIMUM_NETWORK_LIFECYCLE_WORKER_REQUEST_BYTES;
 use codec::{

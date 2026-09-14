@@ -1,4 +1,8 @@
 //! Signed Guardian-plan and ownership-lease admission.
+//!
+//! The private dormant reducer also defines bounded canonical recovery
+//! checkpoints. Those in-memory envelopes are not persistence evidence; a
+//! future protected adapter must durably write and read them back.
 
 use aos_sandbox_core::format::{
     CanonicalCborError, DecodeLimits, decode_broker_authorization_plan, decode_signature,
@@ -13,6 +17,12 @@ use aos_sandbox_core::{
 };
 
 use crate::{DurablyPersistedGuardian, GuardianState, GuardianStateCodecError};
+
+#[allow(
+    dead_code,
+    reason = "the Guardian authority reducer remains dormant until protected broker integration"
+)]
+mod reducer;
 
 const MAXIMUM_PLAN_BYTES: usize = 256 * 1024;
 const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
