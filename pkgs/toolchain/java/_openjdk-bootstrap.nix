@@ -85,11 +85,11 @@
     if isLinuxArmCross && major >= 14
     then " -ffile-prefix-map=${stdenv.gcc}=/aos-toolchain"
     else "";
-  # JDK 17 omits the configured X include directory from several headless AWT
+  # JDK 16 and 17 omit the configured X include directory from several headless AWT
   # compilation rules when cross compiling. Keep those rules on the target
   # header set selected by configure.
-  linuxJdk17X11CFlag =
-    if isLinuxArmCross && major == 17
+  linuxLegacyX11CFlag =
+    if isLinuxArmCross && major >= 16 && major <= 17
     then " -I${xorg-stubs}/include"
     else "";
 
@@ -1210,7 +1210,7 @@ in
               --with-version-build=${build} \
               --with-version-opt=aos \
               --with-version-pre= \
-              --with-extra-cflags="-std=gnu17 -Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxJdk17X11CFlag}" \
+              --with-extra-cflags="-std=gnu17 -Wno-error -fcommon -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxLegacyX11CFlag}" \
               --with-extra-cxxflags="-Wno-error -fno-lifetime-dse -fno-delete-null-pointer-checks${linuxJpackageCxxFlag}" \
               --with-extra-ldflags="''${NIX_LDFLAGS:-}" \
               --with-jobs=$NIX_BUILD_CORES \
