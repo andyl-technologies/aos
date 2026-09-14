@@ -1,470 +1,871 @@
-//! Canonical in-memory and serde model for AOSMSA01 records.
+//! Canonical private model for the `AOSMSA02` namespace-40 format.
 //!
-//! The closed enums and structs in this module are the exact namespace-40
-//! acquisition and provider-head value model. Validation and journal framing
-//! live in sibling modules.
+//! The four record bodies below are deliberately crate-private. Public code
+//! receives read-only views from the recovered table; constructing a shaped
+//! record is never evidence of current provider authority.
 
-use aos_sandbox_source_provider_protocol::{SourceProviderMethod, SourceProviderStatus};
 use serde::{Deserialize, Serialize};
+
+/// Identifies one stable holder, provider, route, and resource namespace.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProviderScopeV2 {
+    pub holder_authority_id: [u8; 16],
+    pub provider_authority_id: [u8; 16],
+    pub route_id: [u8; 16],
+    pub resource_namespace_digest: [u8; 32],
+}
+
+/// Names one controller-issued Mount operation and exact body.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MountOperationV2 {
+    pub operation_id: [u8; 16],
+    pub request_digest: [u8; 32],
+}
+
+/// Retains one exact assignment lineage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AssignmentV2 {
+    pub sandbox_id: [u8; 16],
+    pub incarnation_id: [u8; 16],
+    pub assignment_epoch: u64,
+    pub desired_generation: u64,
+    pub assignment_digest: [u8; 32],
+    pub namespace_generation: u64,
+}
+
+/// Retains the dominating teardown fence and predecessor compare-and-swap.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReleaseAuthorityV2 {
+    pub sandbox_id: [u8; 16],
+    pub incarnation_id: [u8; 16],
+    pub assignment_epoch: u64,
+    pub desired_generation: u64,
+    pub assignment_digest: [u8; 32],
+    pub expected_revision: u64,
+    pub expected_record_digest: [u8; 32],
+}
 
 /// Names the exact durable phase of one source acquisition.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SourceAcquisitionPhaseV1 {
-    /// The signed provider query may be pending, unsent, or ambiguously delivered.
+pub enum SourceAcquisitionPhaseV2 {
+    /// A provider Acquire may be pending or awaiting recovery.
     PendingQuery,
-    /// The provider result and descriptor are durable and handed to PID 1.
+    /// A verified descriptor was handed to the manager but is not usable.
     DescriptorCustodied,
-    /// Authoritative PID 1 readback proved the exact descriptor name present.
+    /// Authoritative manager readback proved custody.
     Active,
-    /// The acquisition was atomically consumed by source-pin and Create admission.
+    /// Source-pin and Create admission consumed the acquisition atomically.
     Consumed,
-    /// Provider release was durably fenced before release I/O.
+    /// Provider release is durably fenced.
     Releasing,
-    /// Provider terminality and authoritative PID 1 absence are both proven.
+    /// Provider terminality and manager absence are proven.
     Released,
-    /// A sanitized terminal fault retained the exact preceding phase.
+    /// A sanitized fault retains its effective predecessor phase.
     Faulted,
 }
 
-/// Correlates one controller-issued Mount effect with its exact body.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceAcquisitionOperationV1 {
-    /// Nonzero Mount request ID.
-    pub operation_id: [u8; 16],
-    /// SHA-256 over the exact Mount method body.
-    pub request_digest: [u8; 32],
-}
-
-/// Retains the assignment lineage authorized by the plan and ownership lease.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceAcquisitionAssignmentV1 {
-    /// Logical sandbox identity.
-    pub sandbox_id: [u8; 16],
-    /// Sandbox incarnation identity.
-    pub incarnation_id: [u8; 16],
-    /// Monotonic assignment epoch.
-    pub assignment_epoch: u64,
-    /// Current desired generation.
-    pub desired_generation: u64,
-    /// Exact assignment semantics digest.
-    pub assignment_digest: [u8; 32],
-    /// Payload mount-namespace generation in the prospective Create.
-    pub namespace_generation: u64,
-}
-
-/// Retains the exact current-or-dominating teardown fence and predecessor CAS.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceAcquisitionReleaseAuthorityV1 {
-    /// Sandbox identity, which must equal the Acquire lineage.
-    pub sandbox_id: [u8; 16],
-    /// Sandbox incarnation, which must equal the Acquire lineage.
-    pub incarnation_id: [u8; 16],
-    /// Current teardown assignment epoch.
-    pub assignment_epoch: u64,
-    /// Current teardown desired generation.
-    pub desired_generation: u64,
-    /// Current teardown assignment digest.
-    pub assignment_digest: [u8; 32],
-    /// Exact predecessor revision authorized by the controller request.
-    pub expected_revision: u64,
-    /// Exact predecessor record digest authorized by the controller request.
-    pub expected_record_digest: [u8; 32],
-}
-
-/// Captures the protected route, trust, session, and Root Mount holder snapshot.
-///
-/// Construction of this scalar record proves only shape. Production must load
-/// it from protected Mount configuration and a branded authenticated session.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceProviderContextSnapshotV1 {
-    /// Root Mount holder authority ID.
-    pub holder_authority_id: [u8; 16],
-    /// Root Mount holder generation.
-    pub holder_generation: u64,
-    /// Root Mount holder state digest.
-    pub holder_authority_digest: [u8; 32],
-    /// Current node identity.
-    pub node_id: [u8; 16],
-    /// Current kernel boot identity.
-    pub kernel_boot_id: [u8; 16],
-    /// Current revocation-state digest.
-    pub revocation_digest: [u8; 32],
-    /// Protected provider route ID.
-    pub provider_route_id: [u8; 16],
-    /// Protected provider route generation.
-    pub provider_route_generation: u64,
-    /// Protected provider route digest.
-    pub provider_route_digest: [u8; 32],
-    /// Protected stable provider authority ID.
-    pub provider_authority_id: [u8; 16],
-    /// Protected stable provider authority generation.
-    pub provider_authority_generation: u64,
-    /// Protected provider authority-state digest.
-    pub provider_authority_digest: [u8; 32],
-    /// Protected active provider key ID.
-    pub provider_key_id: [u8; 16],
-    /// Protected active provider key generation.
-    pub provider_key_generation: u64,
-    /// Protected provider Ed25519 key fingerprint.
-    pub provider_public_key_digest: [u8; 32],
-    /// Protected provider resource namespace.
-    pub resource_namespace_digest: [u8; 32],
-    /// Mutually signed SourceProvider hello transcript digest.
-    pub session_binding: [u8; 32],
-}
-
-/// Retains one provider-signed disposition after atomic sequence consumption.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderDispositionCheckpointV1 {
-    /// Closed SourceProvider method authenticated by the status envelope.
-    pub method: ProviderMethodV1,
-    /// Closed signed provider status.
-    pub status: ProviderStatusV1,
-    /// Client-to-provider sequence consumed by the transaction.
-    pub request_sequence: u64,
-    /// Provider-to-client sequence consumed by the transaction.
-    pub response_sequence: u64,
-    /// Digest of the complete signed provider request envelope.
-    pub signed_request_digest: [u8; 32],
-    /// Digest of the complete signed provider status envelope.
-    pub signed_status_digest: [u8; 32],
-    /// Digest of the exact optional result bytes.
-    pub result_digest: [u8; 32],
-    /// Exact signed request bytes retained for recovery and redelivery checks.
-    pub signed_request: Vec<u8>,
-    /// Exact signed status bytes retained for recovery and redelivery checks.
-    pub signed_status: Vec<u8>,
-    /// Exact optional signed result bytes retained for recovery.
-    ///
-    /// A Complete Inventory checkpoint leaves this empty because its provider
-    /// head retains the same signed inventory bytes exactly once.
-    pub signed_result: Vec<u8>,
-}
-
-/// Identifies the durable owner of one outstanding provider query.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", tag = "query_kind")]
-pub enum ProviderQueryOwnerV1 {
-    /// An Acquire query for the named acquisition row.
-    Acquire { acquisition_id: [u8; 32] },
-    /// A Release query for the named acquisition row.
-    Release { acquisition_id: [u8; 32] },
-    /// A holder-scoped provider inventory query.
-    Inventory,
-}
-
-/// Retains one request whose client-to-provider sequence is already reserved.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PendingProviderQueryV1 {
-    /// Lifecycle operation that owns the reservation.
-    pub owner: ProviderQueryOwnerV1,
-    /// Exact request sequence reserved by the namespace-40 transaction.
-    pub request_sequence: u64,
-    /// Digest of the exact signed provider request envelope.
-    pub signed_request_digest: [u8; 32],
-    /// Exact signed provider request envelope, retained across ambiguous I/O.
-    pub signed_request: Vec<u8>,
-}
-
-/// Mirrors the three closed SourceProvider methods without native enum persistence.
+/// Maps SourceProvider proofs to Mount's three closed source classes.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderMethodV1 {
-    /// A source acquisition query.
-    Acquire,
-    /// A lease release query.
-    Release,
-    /// A holder-scoped source inventory query.
-    Inventory,
-}
-
-impl ProviderMethodV1 {
-    pub(super) const fn protocol(self) -> SourceProviderMethod {
-        match self {
-            Self::Acquire => SourceProviderMethod::Acquire,
-            Self::Release => SourceProviderMethod::Release,
-            Self::Inventory => SourceProviderMethod::Inventory,
-        }
-    }
-}
-
-/// Mirrors the closed SourceProvider status without native enum persistence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderStatusV1 {
-    /// The operation completed with its exact nested signed result.
-    Complete,
-    /// The provider durably retained the operation as pending.
-    Pending,
-    /// The provider durably rejected the operation without an effect.
-    Rejected,
-    /// The provider signed that it could not currently answer.
-    Unavailable,
-}
-
-impl From<SourceProviderStatus> for ProviderStatusV1 {
-    fn from(value: SourceProviderStatus) -> Self {
-        match value {
-            SourceProviderStatus::Complete => Self::Complete,
-            SourceProviderStatus::Pending => Self::Pending,
-            SourceProviderStatus::Rejected => Self::Rejected,
-            SourceProviderStatus::Unavailable => Self::Unavailable,
-        }
-    }
-}
-
-/// Retains stable provider lease, resource, proof, and descriptor evidence.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceAcquisitionEvidenceV1 {
-    /// Provider resource ID.
-    pub provider_resource_id: [u8; 32],
-    /// Provider resource generation.
-    pub provider_resource_generation: u64,
-    /// SourceProvider resource/proof commitment consumed by `AOSMSP01`.
-    pub provider_resource_digest: [u8; 32],
-    /// Provider catalog generation.
-    pub provider_catalog_generation: u64,
-    /// Provider catalog digest.
-    pub provider_catalog_digest: [u8; 32],
-    /// Protected-route selection generation.
-    pub provider_selection_generation: u64,
-    /// Protected-route selection digest.
-    pub provider_selection_digest: [u8; 32],
-    /// Closed Mount proof class, never a numeric cast from provider proof codes.
-    pub proof_class: SourceAcquisitionProofClassV1,
-    /// Exact provider proof digest.
-    pub provider_proof_digest: [u8; 32],
-    /// Exact provider lease ID.
-    pub lease_id: [u8; 16],
-    /// Digest of the complete signed provider lease envelope.
-    pub signed_lease_digest: [u8; 32],
-    /// Inclusive provider lease issue time.
-    pub lease_issued_seconds: i64,
-    /// Exclusive provider lease expiry time.
-    pub lease_expires_seconds: i64,
-    /// Mount-minted physical source realization handle.
-    pub source_realization_handle: [u8; 32],
-    /// Exact Stage-1 physical proof digest.
-    pub source_physical_proof_digest: [u8; 32],
-    /// Descriptor observation kernel boot.
-    pub source_kernel_boot_id: [u8; 16],
-    /// Descriptor device identity.
-    pub source_device: u64,
-    /// Descriptor inode identity.
-    pub source_inode: u64,
-    /// Descriptor unique mount identity.
-    pub source_unique_mount_id: u64,
-    /// Commitment to the adapter-branded descriptor observation.
-    pub descriptor_commitment: [u8; 32],
-}
-
-/// Maps provider proof variants to the three Stage-1 Mount proof classes.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceAcquisitionProofClassV1 {
-    /// ZFS and immutable-publisher sources become immutable Mount trees.
+pub enum SourceAcquisitionProofClassV2 {
+    /// An immutable publisher tree or held ZFS snapshot.
     ImmutableTree,
-    /// A kernel-coupled local-live export remains local-live.
+    /// A kernel-coupled local-live export.
     LocalLive,
-    /// A reconstructible replica remains explicitly best effort.
+    /// A reconstructible best-effort replica.
     BestEffortReplica,
 }
 
-/// Proves a future kernel adapter branded the exact SourceRoot descriptor observation.
-///
-/// There is intentionally no public constructor. SourceProvider verification
-/// accepts shaped scalar observations, so production acquisition remains
-/// closed until the Linux adapter can mint this brand from kernel evidence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BrandedSourceRootObservationV1 {
-    pub(super) descriptor_commitment: [u8; 32],
-}
-
-/// Proves a protected adapter authenticated the current provider session head.
-///
-/// There is intentionally no public constructor. Public scalar context and
-/// head records establish shape only and cannot seed production replay state.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthenticatedProviderSessionV1 {
-    pub(super) provider: SourceProviderContextSnapshotV1,
-    pub(super) head: SourceProviderHeadV1,
-}
-
-/// Stores one exact `AOSMSA01` lifecycle row.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// Identifies a record by immutable ID, revision, and digest.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceAcquisitionRowV1 {
-    /// Mount-minted acquisition identity and namespace key suffix.
-    pub acquisition_id: [u8; 32],
-    /// Monotonic row revision.
+pub(super) struct RecordRefV2 {
+    pub id: [u8; 32],
     pub revision: u64,
-    /// Current closed lifecycle phase.
-    pub phase: SourceAcquisitionPhaseV1,
-    /// Original controller Acquire operation.
-    pub acquire: SourceAcquisitionOperationV1,
-    /// Exact controller-to-Mount Acquire request body.
-    pub mount_acquire_request: Vec<u8>,
-    /// Controller Release operation, present from Releasing onward.
-    pub release: Option<SourceAcquisitionOperationV1>,
-    /// Exact validated controller-to-Mount Release request body.
-    pub mount_release_request: Option<Vec<u8>>,
-    /// Current-or-dominating teardown fence and exact predecessor CAS.
-    pub release_authority: Option<SourceAcquisitionReleaseAuthorityV1>,
-    /// Protected current provider session that signed the active Release query.
-    pub release_provider: Option<SourceProviderContextSnapshotV1>,
-    /// Provider inventory observation ordinal captured before first Release I/O.
-    pub release_inventory_observation_floor: Option<u64>,
-    /// Exact assignment lineage.
-    pub assignment: SourceAcquisitionAssignmentV1,
-    /// Exact prospective pre-catalog `AOSMSEM1` bytes.
-    pub prospective_mount_template: Vec<u8>,
-    /// SourceProvider prospective-template digest.
-    pub prospective_mount_template_digest: [u8; 32],
-    /// Canonical logical source binding bytes.
-    pub source_binding: Vec<u8>,
-    /// Canonical source-binding digest.
-    pub source_binding_digest: [u8; 32],
-    /// Digest of the controller-signed Mount plan.
-    pub mount_plan_digest: [u8; 32],
-    /// Digest of the current ownership lease.
-    pub ownership_lease_digest: [u8; 32],
-    /// Protected provider/session snapshot resolved by Mount.
-    pub provider: SourceProviderContextSnapshotV1,
-    /// Exact signed SourceProvider Acquire request durable before provider I/O.
-    pub provider_acquire_request: Vec<u8>,
-    /// SHA-256 of the exact signed SourceProvider Acquire request envelope.
-    pub provider_acquire_request_digest: [u8; 32],
-    /// Last durably consumed provider Acquire disposition, if one arrived.
-    pub acquire_checkpoint: Option<ProviderDispositionCheckpointV1>,
-    /// Earlier signed Acquire dispositions retained across provider Pending retries.
-    pub acquire_history: Vec<ProviderDispositionCheckpointV1>,
-    /// Complete verified provider and branded descriptor evidence after success.
-    pub evidence: Option<SourceAcquisitionEvidenceV1>,
-    /// Digest of the authoritative PID 1 descriptor-handoff acknowledgement.
-    pub descriptor_custody_digest: Option<[u8; 32]>,
-    /// Digest of authoritative PID 1 positive evidence, present from Active.
-    pub positive_custody_digest: Option<[u8; 32]>,
-    /// Digest of the exact AOSMSP01 activation record consumed with Create.
-    pub consumed_source_pin_record_digest: Option<[u8; 32]>,
-    /// Digest of the exact Create effect record consumed with the source pin.
-    pub consumed_create_effect_record_digest: Option<[u8; 32]>,
-    /// Digest of the exact Create operation record consumed with the source pin.
-    pub consumed_create_operation_record_digest: Option<[u8; 32]>,
-    /// Exact signed SourceProvider Release request durable before release I/O.
-    pub provider_release_request: Option<Vec<u8>>,
-    /// SHA-256 of the exact signed SourceProvider Release request envelope.
-    pub provider_release_request_digest: Option<[u8; 32]>,
-    /// Immutable first signed Release request retained for controller replay.
-    pub initial_provider_release_request: Option<Vec<u8>>,
-    /// Digest of the immutable first signed Release request.
-    pub initial_provider_release_request_digest: Option<[u8; 32]>,
-    /// Last durably consumed provider Release disposition.
-    pub release_checkpoint: Option<ProviderDispositionCheckpointV1>,
-    /// Earlier signed Release dispositions retained across provider Pending retries.
-    pub release_history: Vec<ProviderDispositionCheckpointV1>,
-    /// Monotonic provider release generation after terminal release.
-    pub release_generation: Option<u64>,
-    /// Digest of signed provider inventory establishing terminality, if used.
-    pub provider_inventory_digest: Option<[u8; 32]>,
-    /// Provider inventory observation ordinal establishing inventory terminality.
-    pub provider_inventory_observation_ordinal: Option<u64>,
-    /// Digest of authoritative PID 1 negative evidence in Released.
-    pub negative_custody_digest: Option<[u8; 32]>,
-    /// Exact source phase from which a fault was recorded.
-    pub faulted_from: Option<SourceAcquisitionPhaseV1>,
-    /// Sanitized terminal fault identity.
-    pub fault_digest: Option<[u8; 32]>,
-    /// Fault source retained when authenticated cleanup resumes from Faulted.
-    pub retained_faulted_from: Option<SourceAcquisitionPhaseV1>,
-    /// Fault digest retained when authenticated cleanup resumes from Faulted.
-    pub retained_fault_digest: Option<[u8; 32]>,
-    /// Digest over this canonical row with this field zeroed.
     pub record_digest: [u8; 32],
 }
 
-/// Stores atomic direction-sequence state and the durable inventory floor.
+/// Identifies the closed SourceProvider operation of an attempt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ProviderMethodV2 {
+    Acquire,
+    Release,
+    Inventory,
+}
+
+impl ProviderMethodV2 {
+    pub(super) const fn tag(self) -> u8 {
+        match self {
+            Self::Acquire => 1,
+            Self::Release => 2,
+            Self::Inventory => 3,
+        }
+    }
+}
+
+/// Identifies the stable owner of one immutable query lineage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "owner_kind", rename_all = "snake_case")]
+pub(super) enum ProviderQueryOwnerV2 {
+    Acquire { acquisition_id: [u8; 32] },
+    Release { acquisition_id: [u8; 32] },
+    Inventory,
+}
+
+impl ProviderQueryOwnerV2 {
+    pub(super) const fn tag(self) -> u8 {
+        match self {
+            Self::Acquire { .. } => 1,
+            Self::Release { .. } => 2,
+            Self::Inventory => 3,
+        }
+    }
+
+    pub(super) const fn owner_id(self) -> [u8; 32] {
+        match self {
+            Self::Acquire { acquisition_id } | Self::Release { acquisition_id } => acquisition_id,
+            Self::Inventory => [0; 32],
+        }
+    }
+}
+
+/// Commits the session-independent meaning of an Acquire lineage.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceProviderHeadV1 {
-    /// Stable Root Mount holder authority ID.
-    pub holder_authority_id: [u8; 16],
-    /// Current Root Mount holder generation.
-    pub holder_generation: u64,
-    /// Current Root Mount holder authority-state digest.
+pub(super) struct AcquireIntentV2 {
+    pub scope: ProviderScopeV2,
+    pub acquisition_id: [u8; 32],
+    #[serde(with = "super::format::canonical_bytes")]
+    pub mount_request: Vec<u8>,
+    pub mount_request_digest: [u8; 32],
+    pub assignment: AssignmentV2,
+    pub mount_plan_digest: [u8; 32],
+    pub ownership_lease_digest: [u8; 32],
+    #[serde(with = "super::format::canonical_bytes")]
+    pub prospective_mount_template: Vec<u8>,
+    pub prospective_mount_template_digest: [u8; 32],
+    #[serde(with = "super::format::canonical_bytes")]
+    pub source_binding: Vec<u8>,
+    pub source_binding_digest: [u8; 32],
+    pub requested_lease_seconds: u64,
+    pub requested_maximum_submounts: u32,
+    pub recursive: bool,
+    pub kernel_coupled: bool,
+}
+
+/// Retains the exact session-specific AOSNPI01 normalization of an Acquire.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AttemptNormalizedAcquireV2 {
+    #[serde(with = "super::format::canonical_bytes")]
+    pub bytes: Vec<u8>,
+    pub digest: [u8; 32],
+    pub maximum_lease_expiry_seconds: i64,
+}
+
+/// Commits a bounded Release-Inventory fence from an acquisition predecessor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReleaseInventoryFenceWitnessV2 {
+    pub inventory_observation_floor: u64,
+    pub projection_epoch: u64,
+    pub projection_digest: [u8; 32],
+    pub projection_entry_count: u32,
+}
+
+/// Commits the security-relevant projection of an acquisition predecessor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AcquisitionPredecessorWitnessV2 {
+    pub record: RecordRefV2,
+    pub acquisition_id: [u8; 32],
+    pub phase: SourceAcquisitionPhaseV2,
+    pub scope: ProviderScopeV2,
+    pub acquire: MountOperationV2,
+    pub acquire_intent_digest: [u8; 32],
+    pub acquire_lineage: QueryLineageV2,
+    pub acquire_terminal_attempt: Option<RecordRefV2>,
+    pub release: Option<MountOperationV2>,
+    pub release_authority: Option<ReleaseAuthorityV2>,
+    pub release_from_phase: Option<SourceAcquisitionPhaseV2>,
+    pub release_intent_digest: Option<[u8; 32]>,
+    pub release_lineage: Option<QueryLineageV2>,
+    pub release_terminal_attempt: Option<RecordRefV2>,
+    pub release_inventory_fence: Option<ReleaseInventoryFenceWitnessV2>,
+    pub assignment: AssignmentV2,
+    pub prospective_mount_template_digest: [u8; 32],
+    pub source_binding_digest: [u8; 32],
+    pub mount_plan_digest: [u8; 32],
+    pub ownership_lease_digest: [u8; 32],
+    pub evidence: Option<SourceAcquisitionEvidenceV2>,
+    pub descriptor_custody_digest: Option<[u8; 32]>,
+    pub positive_custody_digest: Option<[u8; 32]>,
+    pub consumption: Option<ConsumptionEvidenceV2>,
+    pub release_proof: Option<ReleaseProofV2>,
+    pub negative_custody_digest: Option<[u8; 32]>,
+    pub faulted_from: Option<SourceAcquisitionPhaseV2>,
+    pub fault_digest: Option<[u8; 32]>,
+    pub retained_faulted_from: Option<SourceAcquisitionPhaseV2>,
+    pub retained_fault_digest: Option<[u8; 32]>,
+    pub recovery: AcquisitionRecoveryV2,
+}
+
+/// Commits the complete bounded projection of a provider-head predecessor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProviderHeadPredecessorWitnessV2 {
+    pub record: RecordRefV2,
+    pub scope: ProviderScopeV2,
+    pub holder_authority_generation: u64,
     pub holder_authority_digest: [u8; 32],
-    /// Stable provider authority ID.
-    pub provider_authority_id: [u8; 16],
-    /// Current provider authority generation.
     pub provider_authority_generation: u64,
-    /// Current provider authority-state digest.
     pub provider_authority_digest: [u8; 32],
-    /// Current signed-session binding.
-    pub session_binding: [u8; 32],
-    /// Current kernel boot for the session binding.
-    pub kernel_boot_id: [u8; 16],
-    /// Next required client-to-provider sequence.
+    pub current_session_id: [u8; 32],
+    pub current_session_record_digest: [u8; 32],
     pub next_request_sequence: u64,
-    /// Next required provider-to-client sequence.
     pub next_response_sequence: u64,
-    /// Current protected route generation.
-    pub route_generation: u64,
-    /// Stable protected provider route ID.
-    pub route_id: [u8; 16],
-    /// Current protected route digest.
-    pub route_digest: [u8; 32],
-    /// Current protected provider key generation.
-    pub provider_key_generation: u64,
-    /// Current protected provider key ID.
-    pub provider_key_id: [u8; 16],
-    /// Current protected provider public-key digest.
-    pub provider_public_key_digest: [u8; 32],
-    /// Current protected provider resource-namespace digest.
-    pub resource_namespace_digest: [u8; 32],
-    /// Current protected revocation-state digest.
-    pub revocation_digest: [u8; 32],
-    /// Monotonic count of newly consumed Complete Inventory observations.
+    pub pending_attempt: Option<RecordRefV2>,
     pub inventory_observation_ordinal: u64,
-    /// At most one durable request reservation for this signed session.
-    pub pending_query: Option<PendingProviderQueryV1>,
-    /// Highest authenticated provider inventory generation.
-    pub inventory_generation: Option<u64>,
-    /// Digest of the exact canonical inventory subject at the floor.
-    pub inventory_digest: Option<[u8; 32]>,
-    /// Digest of the exact complete signed inventory envelope.
-    pub signed_inventory_digest: Option<[u8; 32]>,
-    /// Exact complete signed inventory bytes at the floor.
-    pub signed_inventory: Vec<u8>,
-    /// Provider catalog generation at the floor.
-    pub catalog_generation: Option<u64>,
-    /// Provider catalog digest at the floor.
-    pub catalog_digest: Option<[u8; 32]>,
-    /// Last signed inventory disposition consumed by this session head.
-    pub last_inventory_checkpoint: Option<ProviderDispositionCheckpointV1>,
-    /// Diagnoses untracked leases in the row projection at last observation.
-    pub has_untracked_inventory_residuals: bool,
-    /// Diagnoses authority conflicts in the row projection at last observation.
-    pub has_inventory_authority_conflicts: bool,
+    pub inventory_floor: Option<InventoryFloorV2>,
+    pub last_inventory_attempt: Option<RecordRefV2>,
+    pub current_projection_epoch: u64,
+    pub current_projection_digest: [u8; 32],
+    pub last_reconciliation: Option<ReconciliationV2>,
+    pub recovery_barrier: Option<RecoveryBarrierV2>,
 }
 
+/// Retains a compact exact witness of the owner read before reservation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "record_kind", rename_all = "snake_case")]
-pub(super) enum StoredRecordV1 {
-    Acquisition { row: SourceAcquisitionRowV1 },
-    ProviderHead { head: SourceProviderHeadV1 },
+#[serde(
+    deny_unknown_fields,
+    tag = "owner_record_kind",
+    rename_all = "snake_case"
+)]
+pub(super) enum OwnerPredecessorWitnessV2 {
+    Acquisition {
+        value: AcquisitionPredecessorWitnessV2,
+    },
+    ProviderHead {
+        value: ProviderHeadPredecessorWitnessV2,
+    },
 }
 
+/// Commits the session-independent meaning of a Release lineage.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct StoredEnvelopeV1 {
-    pub(super) schema: String,
-    pub(super) version: u16,
-    pub(super) record: StoredRecordV1,
+pub(super) struct ReleaseIntentV2 {
+    pub scope: ProviderScopeV2,
+    pub acquisition_id: [u8; 32],
+    #[serde(with = "super::format::canonical_bytes")]
+    pub mount_request: Vec<u8>,
+    pub mount_operation: MountOperationV2,
+    pub authority: ReleaseAuthorityV2,
+    pub lease_id: [u8; 16],
+    pub signed_lease_digest: [u8; 32],
+    pub provider_resource_id: [u8; 32],
+    pub provider_resource_digest: [u8; 32],
+    pub provider_proof_digest: [u8; 32],
+    pub descriptor_commitment: [u8; 32],
+}
+
+/// Commits the stable rollback floor of an Inventory lineage.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InventoryIntentV2 {
+    pub scope: ProviderScopeV2,
+    pub known_inventory_generation: Option<u64>,
+    pub known_inventory_digest: Option<[u8; 32]>,
+    pub known_catalog_generation: Option<u64>,
+    pub known_catalog_digest: Option<[u8; 32]>,
+    pub known_observation_ordinal: u64,
+    pub recovery_root_attempt_id: Option<[u8; 32]>,
+}
+
+/// Stores one of the three immutable query intents.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "intent_kind", rename_all = "snake_case")]
+pub(super) enum ProviderIntentV2 {
+    Acquire { value: AcquireIntentV2 },
+    Release { value: ReleaseIntentV2 },
+    Inventory { value: InventoryIntentV2 },
+}
+
+impl ProviderIntentV2 {
+    pub(super) const fn scope(&self) -> ProviderScopeV2 {
+        match self {
+            Self::Acquire { value } => value.scope,
+            Self::Release { value } => value.scope,
+            Self::Inventory { value } => value.scope,
+        }
+    }
+}
+
+/// Identifies the closed SourceProvider disposition.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ProviderStatusV2 {
+    Complete,
+    Pending,
+    Rejected,
+    Unavailable,
+}
+
+/// Names the two admissible provider-death proofs.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DeadProviderExecutionProofKindV2 {
+    PidfdExited,
+    BootReplaced,
+}
+
+/// Retains the safe durable projection of a dead provider execution.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DeadProviderExecutionProjectionV2 {
+    pub proof_kind: DeadProviderExecutionProofKindV2,
+    pub old_session_id: [u8; 32],
+    pub old_session_record_digest: [u8; 32],
+    pub node_id: [u8; 16],
+    pub old_kernel_boot_id: [u8; 16],
+    pub provider_process_instance: [u8; 16],
+    pub process_execution_digest: [u8; 32],
+    pub observed_kernel_boot_id: [u8; 16],
+    pub death_evidence_digest: [u8; 32],
+}
+
+/// Records the exact Inventory evidence resolving an indeterminate attempt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecoveryInventoryProofV2 {
+    pub inventory_attempt: RecordRefV2,
+    pub inventory_digest: [u8; 32],
+    pub inventory_observation_ordinal: u64,
+    pub projection_epoch: u64,
+    pub projection_digest: [u8; 32],
+    pub reconciliation: ReconciliationV2,
+    pub reconciliation_digest: [u8; 32],
+}
+
+/// Records the exact Inventory evidence resolving an indeterminate attempt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    tag = "resolution_kind",
+    rename_all = "snake_case"
+)]
+pub(super) enum RecoveryResolutionV2 {
+    RetryAcquireSameIntent {
+        proof: RecoveryInventoryProofV2,
+    },
+    RetryReleaseSameIntent {
+        proof: RecoveryInventoryProofV2,
+    },
+    ProviderTerminalObserved {
+        proof: RecoveryInventoryProofV2,
+    },
+    InventoryReconciled {
+        proof: RecoveryInventoryProofV2,
+    },
+    Conflict {
+        proof: RecoveryInventoryProofV2,
+        conflict_digest: [u8; 32],
+    },
+}
+
+/// Stores the closed durable state of an immutable provider attempt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "state", rename_all = "snake_case")]
+pub(super) enum ProviderAttemptStateV2 {
+    Reserved,
+    DispositionConsumed {
+        response_sequence: u64,
+        status: ProviderStatusV2,
+        #[serde(with = "super::format::canonical_bytes")]
+        signed_status: Vec<u8>,
+        signed_status_digest: [u8; 32],
+        #[serde(with = "super::format::canonical_bytes")]
+        signed_result: Vec<u8>,
+        signed_result_digest: [u8; 32],
+    },
+    AbandonedIndeterminate {
+        dead_execution: DeadProviderExecutionProjectionV2,
+        successor_session_id: [u8; 32],
+        recovery_root_attempt_id: [u8; 32],
+        outcome_may_exist: bool,
+        resolution: Option<RecoveryResolutionV2>,
+    },
+}
+
+/// Stores one immutable SourceProvider query attempt and its terminal evidence.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SourceProviderQueryAttemptV2 {
+    pub attempt_id: [u8; 32],
+    pub revision: u64,
+    pub scope: ProviderScopeV2,
+    pub method: ProviderMethodV2,
+    pub owner: ProviderQueryOwnerV2,
+    pub intent: ProviderIntentV2,
+    pub immutable_intent_digest: [u8; 32],
+    pub lineage_root_attempt_id: [u8; 32],
+    pub previous_attempt_id: Option<[u8; 32]>,
+    pub attempt_number: u64,
+    pub session_id: [u8; 32],
+    pub session_record_digest: [u8; 32],
+    pub signer_set_commitment: [u8; 32],
+    pub trust_digest: [u8; 32],
+    pub revocation_digest: [u8; 32],
+    pub route_digest: [u8; 32],
+    pub process_execution_digest: [u8; 32],
+    pub normalized_acquire_intent: Option<AttemptNormalizedAcquireV2>,
+    pub request_id: [u8; 16],
+    pub request_sequence: u64,
+    #[serde(with = "super::format::canonical_bytes")]
+    pub signed_request: Vec<u8>,
+    pub signed_request_digest: [u8; 32],
+    pub owner_predecessor_revision: u64,
+    pub owner_predecessor_digest: [u8; 32],
+    pub owner_predecessor: Option<OwnerPredecessorWitnessV2>,
+    pub state: ProviderAttemptStateV2,
+    pub record_digest: [u8; 32],
+}
+
+/// Retains one provider authority generation from protected trust.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AuthorityTrustSnapshotV2 {
+    pub authority_id: [u8; 16],
+    pub authority_generation: u64,
+    pub authority_digest: [u8; 32],
+    pub valid_from_seconds: i64,
+    pub valid_until_seconds: i64,
+    pub state: AuthorityAdmissionStateV2,
+}
+
+/// Is the sole authority state permitted at session admission.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum AuthorityAdmissionStateV2 {
+    Trusted,
+}
+
+/// Names one of the four physically separated signing roles.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SignerRoleV2 {
+    RootMountHello,
+    RootMountRecord,
+    ProviderHello,
+    ProviderOutcome,
+}
+
+/// Is the sole key state permitted at session admission.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum KeyAdmissionStateV2 {
+    Eligible,
+}
+
+/// Retains one exact signer and raw key from protected trust.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SignerSnapshotV2 {
+    pub role: SignerRoleV2,
+    pub authority_id: [u8; 16],
+    pub authority_generation: u64,
+    pub authority_digest: [u8; 32],
+    pub key_id: [u8; 16],
+    pub key_generation: u64,
+    pub public_key: [u8; 32],
+    pub public_key_fingerprint: [u8; 32],
+    pub authority_valid_from_seconds: i64,
+    pub authority_valid_until_seconds: i64,
+    pub key_valid_from_seconds: i64,
+    pub key_valid_until_seconds: i64,
+    pub authority_state: AuthorityAdmissionStateV2,
+    pub key_state: KeyAdmissionStateV2,
+    pub superseded_by_key_generation: u64,
+}
+
+/// Retains the negotiated proof and traversal capability intersection.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct NegotiatedCapabilitiesV2 {
+    pub proof_class_capabilities: u8,
+    pub supports_recursive: bool,
+    pub supports_kernel_coupled: bool,
+    pub signed_lease_receipts: bool,
+    pub separated_signing_roles: bool,
+}
+
+/// Retains every PIDFD_GET_INFO credential field without a liveness claim.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProviderExecutionSnapshotV2 {
+    pub pid: u32,
+    pub tgid: u32,
+    pub ppid: u32,
+    pub start_time_ticks: u64,
+    pub cgroup_id: u64,
+    pub real_uid: u32,
+    pub effective_uid: u32,
+    pub saved_uid: u32,
+    pub filesystem_uid: u32,
+    pub real_gid: u32,
+    pub effective_gid: u32,
+    pub saved_gid: u32,
+    pub filesystem_gid: u32,
+    pub process_execution_digest: [u8; 32],
+}
+
+/// Retains the authenticated process that actually wrote the Root Mount hello.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ActualWriterRootMountSnapshotV2 {
+    pub uid: u32,
+    pub gid: u32,
+    pub tgid: u32,
+    pub start_time_ticks: u64,
+    pub cgroup_digest: [u8; 32],
+}
+
+/// Stores one immutable authenticated SourceProvider session snapshot.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SourceProviderSessionV2 {
+    pub session_id: [u8; 32],
+    pub revision: u64,
+    pub predecessor_session_id: Option<[u8; 32]>,
+    pub scope: ProviderScopeV2,
+    pub node_id: [u8; 16],
+    pub kernel_boot_id: [u8; 16],
+    pub root_mount_authority_generation: u64,
+    pub root_mount_authority_digest: [u8; 32],
+    pub provider_authority_generation: u64,
+    pub provider_authority_digest: [u8; 32],
+    pub route_generation: u64,
+    pub route_digest: [u8; 32],
+    pub negotiated_capabilities: NegotiatedCapabilitiesV2,
+    #[serde(with = "super::format::canonical_bytes")]
+    pub signed_root_mount_hello: Vec<u8>,
+    pub signed_root_mount_hello_digest: [u8; 32],
+    #[serde(with = "super::format::canonical_bytes")]
+    pub signed_provider_hello: Vec<u8>,
+    pub signed_provider_hello_digest: [u8; 32],
+    pub session_binding: [u8; 32],
+    pub signer_set_commitment: [u8; 32],
+    pub authenticated_at_seconds: i64,
+    pub current_valid_until_seconds: i64,
+    pub trusted_clock_evidence_digest: [u8; 32],
+    pub trust_generation: u64,
+    pub trust_digest: [u8; 32],
+    pub revocation_generation: u64,
+    pub revocation_digest: [u8; 32],
+    pub authority_trust: [AuthorityTrustSnapshotV2; 2],
+    pub signers: [SignerSnapshotV2; 4],
+    pub root_mount_process_instance: [u8; 16],
+    pub actual_writer_root_mount_process: ActualWriterRootMountSnapshotV2,
+    pub provider_process_instance: [u8; 16],
+    pub provider_execution: ProviderExecutionSnapshotV2,
+    pub record_digest: [u8; 32],
+}
+
+/// Retains the exact historical outcome signer and its selection-floor trust.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HistoricalLeaseSignerV2 {
+    pub signer: SignerSnapshotV2,
+    pub catalog_floor_provider_authority_id: [u8; 16],
+    pub catalog_floor_resource_namespace_digest: [u8; 32],
+    pub minimum_catalog_generation: u64,
+    pub minimum_catalog_digest: [u8; 32],
+    pub selection_floor: SelectionFloorSnapshotV2,
+    pub selection_floor_digest: [u8; 32],
+}
+
+/// Is a complete isomorphic projection of `SourceSelectionFloorV1`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SelectionFloorSnapshotV2 {
+    pub acquisition_id: [u8; 32],
+    pub provider_authority_id: [u8; 16],
+    pub route_id: [u8; 16],
+    pub resource_namespace_digest: [u8; 32],
+    pub catalog_generation: u64,
+    pub catalog_digest: [u8; 32],
+    pub resource_id: [u8; 32],
+    pub resource_generation: u64,
+    pub resource_digest: [u8; 32],
+    pub selection_generation: u64,
+    pub selection_digest: [u8; 32],
+    pub lease_id: [u8; 16],
+    pub signed_lease_digest: [u8; 32],
+    pub proof_class: u8,
+    pub proof_digest: [u8; 32],
+    pub resource_commitment: [u8; 32],
+    pub trust_generation: u64,
+    pub trust_digest: [u8; 32],
+    pub revocation_generation: u64,
+    pub revocation_digest: [u8; 32],
+}
+
+/// Commits a complete provider Inventory result retained in its attempt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InventoryFloorV2 {
+    pub attempt: RecordRefV2,
+    pub provider_authority_generation: u64,
+    pub provider_authority_digest: [u8; 32],
+    pub provider_outcome_signer_digest: [u8; 32],
+    pub inventory_generation: u64,
+    pub inventory_digest: [u8; 32],
+    pub catalog_generation: u64,
+    pub catalog_digest: [u8; 32],
+    pub signed_result_digest: [u8; 32],
+}
+
+/// Retains bounded reconciliation diagnostics for one exact projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReconciliationV2 {
+    pub projection_epoch: u64,
+    pub projection_digest: [u8; 32],
+    pub residual_count: u32,
+    pub residual_digest: [u8; 32],
+    pub conflict_count: u32,
+    pub conflict_digest: [u8; 32],
+}
+
+/// Names the only provider states consistent with one projected acquisition.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ProjectionExpectationV2 {
+    AbsentOrMatchingActive,
+    MatchingActive,
+    MatchingActiveOrReaping,
+    MatchingReleasedOrAbsent,
+}
+
+/// Is one canonical acquisition member of a provider projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProjectionEntryV2 {
+    pub acquisition_id: [u8; 32],
+    pub acquire_intent_digest: [u8; 32],
+    pub release_intent_digest: Option<[u8; 32]>,
+    pub expectation: ProjectionExpectationV2,
+    pub lease_id: Option<[u8; 16]>,
+    pub signed_lease_digest: Option<[u8; 32]>,
+    pub provider_resource_id: Option<[u8; 32]>,
+    pub provider_resource_generation: Option<u64>,
+    pub provider_resource_state_digest: Option<[u8; 32]>,
+    pub provider_resource_digest: Option<[u8; 32]>,
+    pub provider_catalog_generation: Option<u64>,
+    pub provider_catalog_digest: Option<[u8; 32]>,
+    pub provider_selection_generation: Option<u64>,
+    pub provider_selection_digest: Option<[u8; 32]>,
+    pub provider_proof_class: Option<u8>,
+    pub mount_proof_class: Option<SourceAcquisitionProofClassV2>,
+    pub provider_proof_digest: Option<[u8; 32]>,
+    pub release_generation: Option<u64>,
+}
+
+/// Suspends normal work until successor-session Inventory resolves ambiguity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecoveryBarrierV2 {
+    pub root_attempt: RecordRefV2,
+    pub baseline_inventory_ordinal: u64,
+    pub required_session_id: [u8; 32],
+    pub recovery_inventory_tail: Option<RecordRefV2>,
+    pub replacement_count: u64,
+}
+
+/// Stores one stable provider scope's sequence, projection, and recovery head.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SourceProviderHeadV2 {
+    pub revision: u64,
+    pub scope: ProviderScopeV2,
+    pub holder_authority_generation: u64,
+    pub holder_authority_digest: [u8; 32],
+    pub provider_authority_generation: u64,
+    pub provider_authority_digest: [u8; 32],
+    pub current_session_id: [u8; 32],
+    pub current_session_record_digest: [u8; 32],
+    pub next_request_sequence: u64,
+    pub next_response_sequence: u64,
+    pub pending_attempt: Option<RecordRefV2>,
+    pub inventory_observation_ordinal: u64,
+    pub inventory_floor: Option<InventoryFloorV2>,
+    pub last_inventory_attempt: Option<RecordRefV2>,
+    pub current_projection_epoch: u64,
+    pub current_projection_digest: [u8; 32],
+    pub last_reconciliation: Option<ReconciliationV2>,
+    pub recovery_barrier: Option<RecoveryBarrierV2>,
+    pub record_digest: [u8; 32],
+}
+
+/// Retains exact verified provider resource and descriptor evidence.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SourceAcquisitionEvidenceV2 {
+    pub acquire_attempt: RecordRefV2,
+    pub session_id: [u8; 32],
+    pub provider_outcome_signer_digest: [u8; 32],
+    pub historical_lease_signer: HistoricalLeaseSignerV2,
+    pub provider_resource_id: [u8; 32],
+    pub provider_resource_generation: u64,
+    pub provider_resource_digest: [u8; 32],
+    pub provider_catalog_generation: u64,
+    pub provider_catalog_digest: [u8; 32],
+    pub provider_selection_generation: u64,
+    pub provider_selection_digest: [u8; 32],
+    pub provider_proof_class: u8,
+    pub proof_class: SourceAcquisitionProofClassV2,
+    pub provider_proof_digest: [u8; 32],
+    pub lease_id: [u8; 16],
+    pub signed_lease_digest: [u8; 32],
+    pub lease_issued_seconds: i64,
+    pub lease_expires_seconds: i64,
+    pub source_realization_handle: [u8; 32],
+    pub source_physical_proof_digest: [u8; 32],
+    pub source_kernel_boot_id: [u8; 16],
+    pub source_device: u64,
+    pub source_inode: u64,
+    pub source_unique_mount_id: u64,
+    pub descriptor_commitment: [u8; 32],
+}
+
+/// Commits the exact companion records consumed by Active-to-Consumed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ConsumptionEvidenceV2 {
+    pub source_pin_record_digest: [u8; 32],
+    pub create_effect_record_digest: [u8; 32],
+    pub create_operation_record_digest: [u8; 32],
+}
+
+/// Orders Inventory terminality after an exact retained Release projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReleaseInventoryFenceV2 {
+    pub inventory_observation_floor: u64,
+    pub projection_epoch: u64,
+    pub projection_digest: [u8; 32],
+    pub projection_entries: Vec<ProjectionEntryV2>,
+}
+
+/// Retains either a Release receipt or exact Inventory proof of terminality.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "proof_kind", rename_all = "snake_case")]
+pub(super) enum ReleaseProofV2 {
+    ProviderReceipt {
+        attempt: RecordRefV2,
+        release_generation: u64,
+    },
+    ProviderInventory {
+        attempt: RecordRefV2,
+        inventory_digest: [u8; 32],
+        inventory_observation_ordinal: u64,
+        projection_epoch: u64,
+    },
+}
+
+/// Links a row to one contiguous immutable attempt lineage.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct QueryLineageV2 {
+    pub root: RecordRefV2,
+    pub tail: RecordRefV2,
+    pub next_attempt_number: u64,
+}
+
+/// Retains acquisition-scoped recovery without copying attempt history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "recovery_state", rename_all = "snake_case")]
+pub(super) enum AcquisitionRecoveryV2 {
+    Ready,
+    InventoryRequired {
+        root_attempt: RecordRefV2,
+    },
+    RetryPermitted {
+        root_attempt: RecordRefV2,
+    },
+    Conflict {
+        inventory_attempt: RecordRefV2,
+        reconciliation_digest: [u8; 32],
+        conflict_digest: [u8; 32],
+    },
+}
+
+/// Stores one acquisition lifecycle row in `AOSMSA02`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SourceAcquisitionRowV2 {
+    pub acquisition_id: [u8; 32],
+    pub revision: u64,
+    pub phase: SourceAcquisitionPhaseV2,
+    pub scope: ProviderScopeV2,
+    pub acquire: MountOperationV2,
+    #[serde(with = "super::format::canonical_bytes")]
+    pub mount_acquire_request: Vec<u8>,
+    pub acquire_intent_digest: [u8; 32],
+    pub acquire_lineage: QueryLineageV2,
+    pub acquire_terminal_attempt: Option<RecordRefV2>,
+    pub release: Option<MountOperationV2>,
+    #[serde(with = "super::format::canonical_optional_bytes")]
+    pub mount_release_request: Option<Vec<u8>>,
+    pub release_authority: Option<ReleaseAuthorityV2>,
+    pub release_from_phase: Option<SourceAcquisitionPhaseV2>,
+    pub release_intent_digest: Option<[u8; 32]>,
+    pub release_lineage: Option<QueryLineageV2>,
+    pub release_terminal_attempt: Option<RecordRefV2>,
+    pub release_inventory_fence: Option<ReleaseInventoryFenceV2>,
+    pub assignment: AssignmentV2,
+    #[serde(with = "super::format::canonical_bytes")]
+    pub prospective_mount_template: Vec<u8>,
+    pub prospective_mount_template_digest: [u8; 32],
+    #[serde(with = "super::format::canonical_bytes")]
+    pub source_binding: Vec<u8>,
+    pub source_binding_digest: [u8; 32],
+    pub mount_plan_digest: [u8; 32],
+    pub ownership_lease_digest: [u8; 32],
+    pub evidence: Option<SourceAcquisitionEvidenceV2>,
+    pub descriptor_custody_digest: Option<[u8; 32]>,
+    pub positive_custody_digest: Option<[u8; 32]>,
+    pub consumption: Option<ConsumptionEvidenceV2>,
+    pub release_proof: Option<ReleaseProofV2>,
+    pub negative_custody_digest: Option<[u8; 32]>,
+    pub faulted_from: Option<SourceAcquisitionPhaseV2>,
+    pub fault_digest: Option<[u8; 32]>,
+    pub retained_faulted_from: Option<SourceAcquisitionPhaseV2>,
+    pub retained_fault_digest: Option<[u8; 32]>,
+    pub recovery: AcquisitionRecoveryV2,
+    pub record_digest: [u8; 32],
+}
+
+/// Wraps one of the four exact namespace-40 record bodies.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "record_kind", rename_all = "snake_case")]
+pub(super) enum StoredRecordV2 {
+    Acquisition { value: SourceAcquisitionRowV2 },
+    ProviderHead { value: SourceProviderHeadV2 },
+    ProviderSession { value: SourceProviderSessionV2 },
+    ProviderQueryAttempt { value: SourceProviderQueryAttemptV2 },
+}
+
+/// Is the sole accepted namespace-40 value envelope.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct StoredEnvelopeV2 {
+    pub schema: String,
+    pub version: u16,
+    pub record: StoredRecordV2,
 }

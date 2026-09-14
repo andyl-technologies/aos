@@ -1,228 +1,302 @@
-//! Cross-row provider history validation for AOSMSA01 state.
+//! Cross-record authority, route, signer, and operation history invariants.
 //!
-//! Acquisition rows retain the authority, route, key, selection, resource,
-//! catalog, and physical evidence current when their provider disposition was
-//! accepted. This module rejects rollback and equal-generation equivocation
-//! across that durable history before commit and again during recovery.
+//! These checks prevent two individually well-shaped historical records from
+//! assigning different meanings to the same stable generation or operation.
 
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn validate_global_provider_history(
-    acquisitions: &BTreeMap<[u8; 32], SourceAcquisitionRowV1>,
+use aos_sandbox_protocol::{
+    mount_source_provider_history_is_valid_v1, MountSourceProviderHistoryV1,
+};
+
+use super::format::state_error;
+use super::model::{ProviderAttemptStateV2, SourceAcquisitionRowV2, SourceProviderSessionV2};
+use crate::Result;
+
+pub(super) fn validate_global_history(
+    rows: &BTreeMap<[u8; 32], SourceAcquisitionRowV2>,
+    sessions: &BTreeMap<[u8; 32], SourceProviderSessionV2>,
 ) -> Result<()> {
+    let mut operations = BTreeSet::new();
+    let mut holder_generations = BTreeMap::new();
+    let mut provider_generations = BTreeMap::new();
     let mut route_generations = BTreeMap::new();
     let mut route_scopes = BTreeMap::new();
-    let mut holder_generations = BTreeMap::new();
-    let mut authority_generations = BTreeMap::new();
-    let mut key_generations = BTreeMap::new();
+    let mut signer_generations = BTreeMap::new();
+    let mut signer_ids = BTreeMap::new();
     let mut selection_generations = BTreeMap::new();
     let mut selection_targets = BTreeMap::new();
-    let history = acquisitions
-        .values()
-        .map(|row| {
-            for provider in std::iter::once(row.provider).chain(row.release_provider) {
-                insert_consistent(
-                    &mut holder_generations,
-                    (provider.holder_authority_id, provider.holder_generation),
-                    provider.holder_authority_digest,
-                )?;
-                insert_consistent(
-                    &mut authority_generations,
-                    (
-                        provider.provider_authority_id,
-                        provider.provider_authority_generation,
-                    ),
-                    provider.provider_authority_digest,
-                )?;
-                insert_consistent(
-                    &mut route_generations,
-                    (
-                        provider.provider_route_id,
-                        provider.provider_route_generation,
-                    ),
-                    provider.provider_route_digest,
-                )?;
-                insert_consistent(
-                    &mut route_scopes,
-                    provider.provider_route_id,
-                    (
-                        provider.provider_authority_id,
-                        provider.resource_namespace_digest,
-                    ),
-                )?;
-                insert_consistent(
-                    &mut key_generations,
-                    (
-                        provider.provider_authority_id,
-                        provider.provider_key_generation,
-                    ),
-                    (
-                        provider.provider_key_id,
-                        provider.provider_public_key_digest,
-                    ),
-                )?;
-            }
-            let Some(evidence) = row.evidence.as_ref() else {
-                return Ok(None);
-            };
+    let mut session_bindings = BTreeMap::new();
+    let mut trust_generations = BTreeMap::new();
+    let mut revocation_generations = BTreeMap::new();
+    let mut provider_history = Vec::new();
+
+    for row in rows.values() {
+        if !operations.insert(row.acquire.operation_id)
+            || row
+                .release
+                .is_some_and(|value| !operations.insert(value.operation_id))
+        {
+            return Err(state_error(
+                "Mount operation identity is reused across AOSMSA02 rows",
+            ));
+        }
+        if let Some(evidence) = &row.evidence {
+            let historical = &evidence.historical_lease_signer;
+            let signer = &historical.signer;
+            insert_consistent(
+                &mut provider_generations,
+                (signer.authority_id, signer.authority_generation),
+                signer.authority_digest,
+            )?;
+            insert_consistent(
+                &mut signer_generations,
+                (signer.authority_id, signer.role, signer.key_generation),
+                (signer.key_id, signer.public_key_fingerprint),
+            )?;
+            insert_consistent(
+                &mut signer_ids,
+                signer.key_id,
+                (
+                    signer.authority_id,
+                    signer.role,
+                    signer.public_key_fingerprint,
+                ),
+            )?;
+            insert_consistent(
+                &mut route_scopes,
+                historical.selection_floor.route_id,
+                (
+                    historical.selection_floor.provider_authority_id,
+                    historical.selection_floor.resource_namespace_digest,
+                ),
+            )?;
             insert_consistent(
                 &mut selection_generations,
                 (
-                    row.provider.provider_route_id,
-                    evidence.provider_selection_generation,
+                    historical.selection_floor.route_id,
+                    historical.selection_floor.selection_generation,
                 ),
-                evidence.provider_selection_digest,
+                historical.selection_floor.selection_digest,
             )?;
             insert_consistent(
                 &mut selection_targets,
                 (
-                    row.provider.provider_route_id,
-                    evidence.provider_selection_generation,
-                    evidence.provider_selection_digest,
+                    historical.selection_floor.route_id,
+                    historical.selection_floor.selection_generation,
+                    historical.selection_floor.selection_digest,
                 ),
                 (
                     evidence.provider_resource_id,
                     evidence.provider_resource_digest,
                 ),
             )?;
-            Ok(Some(MountSourceProviderHistoryV1 {
-                authority_id: row.provider.provider_authority_id,
-                authority_generation: row.provider.provider_authority_generation,
-                authority_digest: row.provider.provider_authority_digest,
+            insert_consistent(
+                &mut trust_generations,
+                (
+                    row.scope.holder_authority_id,
+                    historical.selection_floor.trust_generation,
+                ),
+                historical.selection_floor.trust_digest,
+            )?;
+            provider_history.push(MountSourceProviderHistoryV1 {
+                authority_id: signer.authority_id,
+                authority_generation: signer.authority_generation,
+                authority_digest: signer.authority_digest,
                 resource_id: evidence.provider_resource_id,
                 resource_generation: evidence.provider_resource_generation,
                 resource_digest: evidence.provider_resource_digest,
                 catalog_generation: evidence.provider_catalog_generation,
                 catalog_digest: evidence.provider_catalog_digest,
                 physical_proof_digest: evidence.source_physical_proof_digest,
-            }))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    if !mount_source_provider_history_is_valid_v1(&history) {
-        return Err(state_error(
-            "source acquisition provider history is nonmonotonic",
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_global_provider_and_head_history(
-    acquisitions: &BTreeMap<[u8; 32], SourceAcquisitionRowV1>,
-    heads: &BTreeMap<([u8; 16], [u8; 16]), SourceProviderHeadV1>,
-) -> Result<()> {
-    validate_global_provider_history(acquisitions)?;
-
-    let mut route_generations = BTreeMap::new();
-    let mut route_scopes = BTreeMap::new();
-    let mut holder_generations = BTreeMap::new();
-    let mut authority_generations = BTreeMap::new();
-    let mut key_generations = BTreeMap::new();
-    for row in acquisitions.values() {
-        for provider in std::iter::once(row.provider).chain(row.release_provider) {
-            insert_context_history(
-                &mut holder_generations,
-                &mut authority_generations,
-                &mut route_generations,
-                &mut route_scopes,
-                &mut key_generations,
-                provider,
+            });
+            insert_consistent(
+                &mut revocation_generations,
+                (
+                    row.scope.holder_authority_id,
+                    historical.selection_floor.revocation_generation,
+                ),
+                historical.selection_floor.revocation_digest,
             )?;
         }
     }
-    for head in heads.values() {
+    for session in sessions.values() {
         insert_consistent(
-            &mut holder_generations,
-            (head.holder_authority_id, head.holder_generation),
-            head.holder_authority_digest,
+            &mut session_bindings,
+            session.session_binding,
+            session.session_id,
         )?;
         insert_consistent(
-            &mut authority_generations,
+            &mut holder_generations,
             (
-                head.provider_authority_id,
-                head.provider_authority_generation,
+                session.scope.holder_authority_id,
+                session.root_mount_authority_generation,
             ),
-            head.provider_authority_digest,
+            session.root_mount_authority_digest,
+        )?;
+        insert_consistent(
+            &mut provider_generations,
+            (
+                session.scope.provider_authority_id,
+                session.provider_authority_generation,
+            ),
+            session.provider_authority_digest,
         )?;
         insert_consistent(
             &mut route_generations,
-            (head.route_id, head.route_generation),
-            head.route_digest,
+            (session.scope.route_id, session.route_generation),
+            session.route_digest,
         )?;
         insert_consistent(
             &mut route_scopes,
-            head.route_id,
-            (head.provider_authority_id, head.resource_namespace_digest),
+            session.scope.route_id,
+            (
+                session.scope.provider_authority_id,
+                session.scope.resource_namespace_digest,
+            ),
+        )?;
+        for signer in &session.signers {
+            insert_consistent(
+                &mut signer_generations,
+                (signer.authority_id, signer.role, signer.key_generation),
+                (signer.key_id, signer.public_key_fingerprint),
+            )?;
+            insert_consistent(
+                &mut signer_ids,
+                signer.key_id,
+                (
+                    signer.authority_id,
+                    signer.role,
+                    signer.public_key_fingerprint,
+                ),
+            )?;
+        }
+        insert_consistent(
+            &mut trust_generations,
+            (session.scope.holder_authority_id, session.trust_generation),
+            session.trust_digest,
         )?;
         insert_consistent(
-            &mut key_generations,
-            (head.provider_authority_id, head.provider_key_generation),
-            (head.provider_key_id, head.provider_public_key_digest),
+            &mut revocation_generations,
+            (
+                session.scope.holder_authority_id,
+                session.revocation_generation,
+            ),
+            session.revocation_digest,
         )?;
     }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn insert_context_history(
-    holder_generations: &mut BTreeMap<([u8; 16], u64), [u8; 32]>,
-    authority_generations: &mut BTreeMap<([u8; 16], u64), [u8; 32]>,
-    route_generations: &mut BTreeMap<([u8; 16], u64), [u8; 32]>,
-    route_scopes: &mut BTreeMap<[u8; 16], ([u8; 16], [u8; 32])>,
-    key_generations: &mut BTreeMap<([u8; 16], u64), ([u8; 16], [u8; 32])>,
-    provider: SourceProviderContextSnapshotV1,
-) -> Result<()> {
-    insert_consistent(
-        holder_generations,
-        (provider.holder_authority_id, provider.holder_generation),
-        provider.holder_authority_digest,
-    )?;
-    insert_consistent(
-        authority_generations,
-        (
-            provider.provider_authority_id,
-            provider.provider_authority_generation,
-        ),
-        provider.provider_authority_digest,
-    )?;
-    insert_consistent(
-        route_generations,
-        (
-            provider.provider_route_id,
-            provider.provider_route_generation,
-        ),
-        provider.provider_route_digest,
-    )?;
-    insert_consistent(
-        route_scopes,
-        provider.provider_route_id,
-        (
-            provider.provider_authority_id,
-            provider.resource_namespace_digest,
-        ),
-    )?;
-    insert_consistent(
-        key_generations,
-        (
-            provider.provider_authority_id,
-            provider.provider_key_generation,
-        ),
-        (
-            provider.provider_key_id,
-            provider.provider_public_key_digest,
-        ),
-    )?;
-    Ok(())
-}
-
-fn insert_consistent<K: Ord, V: Eq>(values: &mut BTreeMap<K, V>, key: K, value: V) -> Result<()> {
-    if values.get(&key).is_some_and(|existing| existing != &value) {
+    if !mount_source_provider_history_is_valid_v1(&provider_history) {
         return Err(state_error(
-            "source acquisition provider history equivocated",
+            "AOSMSA02 provider resource history is nonmonotonic",
         ));
     }
-    values.insert(key, value);
+    validate_session_predecessors(sessions)?;
+    Ok(())
+}
+
+fn validate_session_predecessors(
+    sessions: &BTreeMap<[u8; 32], SourceProviderSessionV2>,
+) -> Result<()> {
+    let mut successors = BTreeMap::new();
+    for session in sessions.values() {
+        if let Some(predecessor) = session.predecessor_session_id {
+            if successors.insert(predecessor, session.session_id).is_some() {
+                return Err(state_error("SourceProvider session history forks"));
+            }
+        }
+    }
+    for session in sessions.values() {
+        let mut seen = BTreeSet::new();
+        let mut current = Some(session.session_id);
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                return Err(state_error(
+                    "SourceProvider session predecessor graph is cyclic",
+                ));
+            }
+            current = sessions
+                .get(&id)
+                .ok_or_else(|| state_error("SourceProvider session predecessor is missing"))?
+                .predecessor_session_id;
+        }
+        if let Some(predecessor_id) = session.predecessor_session_id {
+            let predecessor = sessions
+                .get(&predecessor_id)
+                .ok_or_else(|| state_error("SourceProvider session predecessor is missing"))?;
+            if predecessor.scope != session.scope
+                || !generation_dominates(
+                    predecessor.root_mount_authority_generation,
+                    predecessor.root_mount_authority_digest,
+                    session.root_mount_authority_generation,
+                    session.root_mount_authority_digest,
+                )
+                || !generation_dominates(
+                    predecessor.provider_authority_generation,
+                    predecessor.provider_authority_digest,
+                    session.provider_authority_generation,
+                    session.provider_authority_digest,
+                )
+                || !generation_dominates(
+                    predecessor.route_generation,
+                    predecessor.route_digest,
+                    session.route_generation,
+                    session.route_digest,
+                )
+                || !generation_dominates(
+                    predecessor.trust_generation,
+                    predecessor.trust_digest,
+                    session.trust_generation,
+                    session.trust_digest,
+                )
+                || !generation_dominates(
+                    predecessor.revocation_generation,
+                    predecessor.revocation_digest,
+                    session.revocation_generation,
+                    session.revocation_digest,
+                )
+                || predecessor
+                    .signers
+                    .iter()
+                    .zip(&session.signers)
+                    .any(|(old, new)| {
+                        old.role != new.role
+                            || new.key_generation < old.key_generation
+                            || (new.key_generation == old.key_generation
+                                && (new.key_id != old.key_id
+                                    || new.public_key_fingerprint != old.public_key_fingerprint))
+                    })
+            {
+                return Err(state_error(
+                    "SourceProvider successor session rolls back or changes scope",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn generation_dominates(
+    old_generation: u64,
+    old_digest: [u8; 32],
+    new_generation: u64,
+    new_digest: [u8; 32],
+) -> bool {
+    new_generation > old_generation
+        || (new_generation == old_generation && new_digest == old_digest)
+}
+
+pub(super) fn attempt_is_terminal(state: &ProviderAttemptStateV2) -> bool {
+    !matches!(state, ProviderAttemptStateV2::Reserved)
+}
+
+fn insert_consistent<K, V>(map: &mut BTreeMap<K, V>, key: K, value: V) -> Result<()>
+where
+    K: Ord,
+    V: Eq,
+{
+    if map.get(&key).is_some_and(|prior| prior != &value) {
+        return Err(state_error("AOSMSA02 stable generation equivocated"));
+    }
+    map.insert(key, value);
     Ok(())
 }
