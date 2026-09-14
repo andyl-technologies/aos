@@ -56,6 +56,8 @@ impl LoadedDocumentation {
         let mut output = self.document.render_plain();
         if let Some(reference) = &self.ability_reference {
             output.push_str(&ability_render::plain(reference)?);
+        } else {
+            output.push_str(&ability_render::plain_absent());
         }
         Ok(output)
     }
@@ -69,6 +71,8 @@ impl LoadedDocumentation {
         output.push_str(&self.document.render_html_fragment());
         if let Some(reference) = &self.ability_reference {
             output.push_str(&ability_render::html(reference)?);
+        } else {
+            output.push_str(&ability_render::html_absent());
         }
         output.push_str("</body></html>");
         Ok(output)
@@ -78,6 +82,8 @@ impl LoadedDocumentation {
         let mut output = self.document.render_roff();
         if let Some(reference) = &self.ability_reference {
             output.push_str(&ability_render::roff(reference)?);
+        } else {
+            output.push_str(&ability_render::roff_absent());
         }
         Ok(output)
     }
@@ -1254,7 +1260,7 @@ mod tests {
     use super::*;
     use aos_ability_model::{
         ABILITY_LIMITS_V1, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
-        ScopePath, ValueSchema, decode_canonical,
+        RequirementDeclaration, RequirementStrength, ScopePath, ValueSchema, decode_canonical,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
@@ -1346,10 +1352,15 @@ mod tests {
             max_length: 64,
             syntax: None,
         });
+        let interface_key = interface.interface_key().unwrap();
 
         PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
-            required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
+            required_features: vec![
+                RequiredFeature::new("abilities-v1").unwrap(),
+                RequiredFeature::new(aos_doc_model::ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
+                    .unwrap(),
+            ],
             package: LocalKey::new("nginx").unwrap(),
             version: "1.0".to_string(),
             manifest_sha256: Sha256Digest::of_bytes("manifest"),
@@ -1360,6 +1371,14 @@ mod tests {
                 implementation: Sha256Digest::of_bytes("implementation"),
                 interface,
                 aggregation: None,
+                requirements: vec![RequirementDeclaration {
+                    alias: LocalKey::new("service-runtime").unwrap(),
+                    accepted_interfaces: vec![interface_key],
+                    methods: Vec::new(),
+                    guarantees: Vec::new(),
+                    strength: RequirementStrength::Required,
+                    fallback: None,
+                }],
             }],
             requirements: Vec::new(),
             handlers: vec![AbilityHandlerReference {
@@ -1466,7 +1485,10 @@ mod tests {
 
         let plain = loaded.render_plain().unwrap();
         assert!(plain.contains("DECLARED ABILITIES"));
+        assert!(plain.contains("EXPOSED ABILITIES"));
+        assert!(plain.contains("CONSUMED ABILITIES"));
         assert!(plain.contains("declared export\tserver\taos.test.echo\tABI 1"));
+        assert!(plain.contains("service-runtime\trequired\tconsumed by export server"));
         assert!(plain.contains("declared request or contribution schema"));
         assert!(plain.contains("declared operator-owned provider instance configuration schema"));
         assert!(plain.contains("\"max_length\": 64"));
@@ -1478,6 +1500,9 @@ mod tests {
 
         let html = loaded.render_html().unwrap();
         assert!(html.contains("Declared request or contribution schema"));
+        assert!(html.contains("Exposed abilities"));
+        assert!(html.contains("Consumed abilities"));
+        assert!(html.contains("consumed by <code>export server</code>"));
         assert!(html.contains("Declared operator-owned provider instance configuration schema"));
         assert!(html.contains("&quot;max_length&quot;: 64"));
         assert!(html.contains("public schemas only, never deployed instance values"));
@@ -1514,6 +1539,26 @@ mod tests {
                 .unwrap()
                 .contains("package-ability-reference")
         );
+    }
+
+    #[test]
+    fn packages_without_companions_document_empty_ability_directions() {
+        let loaded = LoadedDocumentation {
+            document: fixture(),
+            ability_reference: None,
+        };
+
+        let plain = loaded.render_plain().unwrap();
+        assert!(plain.contains("EXPOSED ABILITIES\nNo exposed abilities are declared."));
+        assert!(plain.contains("CONSUMED ABILITIES\nNo consumed abilities are declared."));
+
+        let html = loaded.render_html().unwrap();
+        assert!(html.contains("<h3>Exposed abilities</h3>"));
+        assert!(html.contains("<h3>Consumed abilities</h3>"));
+
+        let roff = loaded.render_roff().unwrap();
+        assert!(roff.contains("EXPOSED ABILITIES"));
+        assert!(roff.contains("CONSUMED ABILITIES"));
     }
 
     #[test]
