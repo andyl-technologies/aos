@@ -69,6 +69,11 @@ in
       };
     };
 
+    passthru.serviceDocumentation = {
+      kind = "on-demand";
+      summary = "Pod-scoped engine launched by the Longhorn controller.";
+    };
+
     meta = {
       description = "Longhorn Engine — block device data plane";
       homepage = "https://longhorn.io";

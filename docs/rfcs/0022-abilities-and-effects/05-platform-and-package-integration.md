@@ -22,9 +22,12 @@ another component supplies behavior, resources, or a guarantee.
 | Image construction | Produce a typed bootable or userland artifact |
 | Container launch | Instantiate an artifact under a separately granted runtime contract |
 
-The current [service documentation model](../../../lib/service-documentation.nix)
-already distinguishes service owners from payload-only packages. Ability
-contracts should gradually supply that classification and its explanation.
+The current [system service documentation module](../../../modules/base/service-documentation.nix)
+projects host-owned options and units from the evaluated module graph.
+Package-owned services are discovered from their typed configuration and expose
+contracts, while payload-only and fixture dispositions remain package metadata.
+Ability contracts should gradually supply that classification and its
+explanation.
 
 ## Systemd is a package and a scoped runtime provider
 

@@ -41,6 +41,11 @@ mkDerivation {
     ];
   };
 
+  passthru.serviceDocumentation = {
+    kind = "fixture";
+    summary = "Configuration-module publication fixture.";
+  };
+
   meta = {
     description = "Package config-output smoke fixture";
     license = "Apache-2.0";

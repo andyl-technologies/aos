@@ -138,6 +138,11 @@ in
       };
     };
 
+    passthru.serviceDocumentation = {
+      kind = "fixture";
+      summary = "Service-manager integration fixture for APM tests.";
+    };
+
     meta = {
       description = "AOS exposed package for apm systemd-client integration tests";
       license = "Apache-2.0";

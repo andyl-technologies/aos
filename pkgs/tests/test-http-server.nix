@@ -83,6 +83,11 @@ mkDerivation {
     };
   };
 
+  passthru.serviceDocumentation = {
+    kind = "fixture";
+    summary = "HTTP service fixture for integration tests.";
+  };
+
   meta = {
     description = "AOS exposed test HTTP server package";
     license = "Apache-2.0";
