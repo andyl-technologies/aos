@@ -12,34 +12,30 @@
 
   requireConfiguration = context: let
     configuration = context.configuration;
-    explicitRevision = configuration.revision or null;
-    revisionInputs = configuration.revision_inputs or [];
+    unknown =
+      builtins.filter
+      (name: !(builtins.elem name ["enabled" "restart_token"]))
+      (builtins.attrNames configuration);
     restartToken = configuration.restart_token or null;
-    automaticRevision = context.activation_revision or context.package;
-    customized = revisionInputs != [] || restartToken != null;
+    automaticRevision =
+      context.activation_revision
+      or (throw "service ability requires a centrally derived activation revision");
     revision =
-      if explicitRevision != null
-      then explicitRevision
-      else if customized
+      if restartToken != null
       then "sha256:${builtins.hashString "sha256" (builtins.toJSON {
-        schema = "aos.service-activation-customization/v1";
+        schema = "aos.service-restart-token/v1";
         automatic_revision = automaticRevision;
-        revision_inputs = revisionInputs;
         restart_token = restartToken;
       })}"
       else automaticRevision;
   in
-    if !builtins.isBool configuration.enabled
+    if unknown != []
+    then throw "service ability configuration contains unknown fields: ${builtins.concatStringsSep ", " unknown}"
+    else if !builtins.isBool configuration.enabled
     then throw "service ability configuration enabled field must be Boolean"
-    else if explicitRevision != null && !isRevision explicitRevision
-    then throw "service ability configuration revision must be a canonical SHA-256 digest"
-    else if !builtins.isList revisionInputs || !(builtins.all isRevision revisionInputs)
-    then throw "service ability revision inputs must be canonical SHA-256 digests"
     else if restartToken != null && !builtins.isString restartToken
     then throw "service ability restart token must be a string"
-    else if explicitRevision != null && customized
-    then throw "service ability explicit revision cannot be combined with automatic revision customization"
-    else if explicitRevision == null && !isRevision automaticRevision
+    else if !isRevision automaticRevision
     then throw "service ability activation revision must be a canonical SHA-256 digest"
     else configuration // {inherit revision;};
 

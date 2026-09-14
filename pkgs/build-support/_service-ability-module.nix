@@ -55,17 +55,9 @@
     '';
   };
 
-  revision = schemas.string {
-    maxLength = 71;
-    syntax = null;
-  };
   restartToken = schemas.string {
     maxLength = 1024;
     syntax = null;
-  };
-  revisionInputs = schemas.list {
-    element = revision;
-    maxItems = 64;
   };
   provider = (import providerSourcePath) {spec = serviceSpec;};
 in {
@@ -77,11 +69,9 @@ in {
       configurationSchema = schemas.record {
         fields = {
           enabled = schemas.boolean;
-          inherit revision;
           restart_token = restartToken;
-          revision_inputs = revisionInputs;
         };
-        optional = ["restart_token" "revision" "revision_inputs"];
+        optional = ["restart_token"];
       };
       outputs = {};
       methods = {};
