@@ -67,7 +67,11 @@ pub use model::{
     SIGNED_CLIENT_HELLO_BYTES,
 };
 pub use profile::{
-    BrokerSessionNegotiationError, maximum_broker_session_request_bytes_v1,
+    AUTHENTICATED_BROKER_METHOD_COUNT_V1, AUTHENTICATED_BROKER_METHODS_V1,
+    BrokerSessionAuthorizationPresenceV1, BrokerSessionMethodFeatureV1,
+    BrokerSessionMethodProfileV1, BrokerSessionNegotiationError,
+    BrokerSessionSuccessBodyPresenceV1, authenticated_broker_method_profile_v1,
+    authenticated_request_predecode_maximum_bytes_v1, maximum_broker_session_request_bytes_v1,
     supported_broker_session_version_v1,
 };
 pub use projection::{

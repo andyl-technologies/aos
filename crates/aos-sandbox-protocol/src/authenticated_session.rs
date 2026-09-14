@@ -19,20 +19,23 @@
 pub mod checkpoint;
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerDescriptorRole, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
+    BrokerDescriptorRole, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
     BrokerResponseEnvelope, InventoryNetworksRequest, RequestHeader,
 };
 use aos_sandbox_broker_session_protocol::{
     AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, BrokerOutcomeAdmissionV1, BrokerOutcomeSubjectV1,
-    BrokerRequestAdmissionV1, BrokerRequestSubjectV1, BrokerSessionProjectionError,
-    BrokerSessionProtocolV1, BrokerSessionReplayEvidenceV1, BrokerSessionSequenceError,
+    BrokerRequestAdmissionV1, BrokerRequestSubjectV1, BrokerSessionAuthorizationPresenceV1,
+    BrokerSessionMethodProfileV1, BrokerSessionProjectionError, BrokerSessionProtocolV1,
+    BrokerSessionReplayEvidenceV1, BrokerSessionSequenceError, BrokerSessionSuccessBodyPresenceV1,
     BrokerSessionTrafficStateV1, BrokerSessionTranscriptError,
     ProtectedBrokerSessionVerificationContextV1, SignedBrokerOutcomeV1, SignedBrokerRequestV1,
-    authenticated_response_cleared_budget_v1, decode_canonical_client_hello_v1,
-    decode_canonical_request_v1, decode_canonical_response_v1, decode_canonical_server_hello_v1,
-    encode_signed_request_packet_v1, encode_signed_response_packet_v1, outcome_fields_digest_v1,
-    request_fields_digest_v1, verify_broker_session_transcript_v1,
+    authenticated_broker_method_profile_v1, authenticated_response_cleared_budget_v1,
+    decode_canonical_client_hello_v1, decode_canonical_request_v1, decode_canonical_response_v1,
+    decode_canonical_server_hello_v1, encode_signed_request_packet_v1,
+    encode_signed_response_packet_v1, outcome_fields_digest_v1, request_fields_digest_v1,
+    verify_broker_session_transcript_v1,
 };
+use aos_sandbox_core::{FeatureRef, ProtocolId};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
@@ -51,7 +54,6 @@ const NETWORK_INVENTORY_REQUEST_PACKET_DOMAIN: &[u8] =
     b"aos-sandbox-authenticated-network-inventory-request-packet-v1\0";
 const NETWORK_INVENTORY_OUTCOME_PACKET_DOMAIN: &[u8] =
     b"aos-sandbox-authenticated-network-inventory-outcome-packet-v1\0";
-const EMPTY_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 0] = [];
 
 /// Reports a failed authenticated handshake, traffic check, or method semantic.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -185,8 +187,11 @@ impl AuthenticatedNetworkInventoryRequestV1 {
 
     /// Returns the exact signed descriptor-role table, which is empty here.
     #[must_use]
-    pub const fn descriptor_roles(&self) -> &[BrokerDescriptorRole] {
-        &EMPTY_DESCRIPTOR_ROLES
+    pub fn descriptor_roles(&self) -> &[BrokerDescriptorRole] {
+        match authenticated_broker_method_profile_v1(self.method()) {
+            Some(profile) => profile.request_descriptor_roles(),
+            None => &[],
+        }
     }
 }
 
@@ -259,8 +264,11 @@ impl AuthenticatedNetworkInventoryOutcomeV1 {
 
     /// Returns the exact response descriptor-role table, which is empty here.
     #[must_use]
-    pub const fn descriptor_roles(&self) -> &[BrokerDescriptorRole] {
-        &EMPTY_DESCRIPTOR_ROLES
+    pub fn descriptor_roles(&self) -> &[BrokerDescriptorRole] {
+        match authenticated_broker_method_profile_v1(self.request.method()) {
+            Some(profile) => profile.success_response_descriptor_roles(),
+            None => &[],
+        }
     }
 }
 
@@ -651,16 +659,17 @@ impl AuthenticatedBrokerSessionStateV1 {
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<AuthenticatedNetworkInventoryRequestSigningPlanV1, AuthenticatedBrokerSessionError>
     {
-        self.require_network_inventory_profile()?;
+        let profile = self.require_network_inventory_profile()?;
         self.require_current_context(context)?;
         self.require_initial_traffic_state()?;
+        let (protocol_major, protocol_minor) = profile.version();
 
         let body = InventoryNetworksRequest {
             header: Some(RequestHeader {
-                protocol_major: 1,
-                protocol_minor: 0,
+                protocol_major: u32::from(protocol_major),
+                protocol_minor: u32::from(protocol_minor),
                 request_id: request_id.to_vec(),
-                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                audience: profile.audience().into(),
                 deadline_boottime_nanoseconds,
                 maximum_response_bytes,
                 ..Default::default()
@@ -670,15 +679,16 @@ impl AuthenticatedBrokerSessionStateV1 {
         }
         .encode_to_vec();
         let message = BrokerRequestEnvelope {
-            method: BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES.into(),
+            method: profile.method().into(),
             body,
             ..Default::default()
         };
         let envelope = validate_decoded_request_envelope(
             message.clone(),
-            aos_sandbox_core::ProtocolId::NetworkBroker,
-            0,
+            protocol_id_for_profile(profile.protocol()),
+            profile.request_descriptor_roles().len(),
         )?;
+        validate_request_against_profile(&envelope, &profile)?;
         let header =
             decode_network_resource_inventory_request_static(envelope.body(), peer, policy)?;
         if *header.request_id() != request_id
@@ -722,7 +732,9 @@ impl AuthenticatedBrokerSessionStateV1 {
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<AuthenticatedNetworkInventoryOutcomeSigningPlanV1, AuthenticatedBrokerSessionError>
     {
+        let profile = self.require_network_inventory_profile()?;
         self.require_current_context(context)?;
+        validate_success_body_against_profile(&body, &profile)?;
         let inventory = decode_network_resource_inventory_response(
             &body,
             u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES).unwrap_or(u32::MAX),
@@ -746,8 +758,8 @@ impl AuthenticatedBrokerSessionStateV1 {
             &request.request_id(),
             &request.validated_envelope,
             body,
-            &[],
-            &[],
+            profile.success_response_descriptor_roles(),
+            profile.request_descriptor_dispositions(),
             cleared_minimum,
             cleared_budget,
         ) {
@@ -773,6 +785,7 @@ impl AuthenticatedBrokerSessionStateV1 {
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<AuthenticatedNetworkInventoryOutcomeSigningPlanV1, AuthenticatedBrokerSessionError>
     {
+        let profile = self.require_network_inventory_profile()?;
         self.require_current_context(context)?;
         let request = self.initial_outstanding_request()?;
         let cleared_budget =
@@ -812,7 +825,7 @@ impl AuthenticatedBrokerSessionStateV1 {
             message,
             retryable,
             None,
-            &[],
+            profile.request_descriptor_dispositions(),
             cleared_minimum,
             cleared_budget,
         )?;
@@ -932,30 +945,31 @@ impl AuthenticatedBrokerSessionStateV1 {
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<AuthenticatedNetworkInventoryRequestAdmissionV1, AuthenticatedBrokerSessionError>
     {
-        self.require_network_inventory_profile()?;
-        if actual_descriptor_count != 0 {
+        let profile = self.require_network_inventory_profile()?;
+        if actual_descriptor_count != profile.request_descriptor_roles().len() {
             return Err(ProtocolValidationError::DescriptorTableMismatch.into());
         }
-        if bytes.len() > self.maximum_request_receive_bytes() {
+        if bytes.len() > self.maximum_request_receive_bytes()
+            || bytes.len() > profile.total_request_maximum_bytes()
+        {
             return Err(ProtocolValidationError::RequestTooLarge.into());
         }
 
         let canonical = decode_canonical_request_v1(bytes)?;
         let envelope = validate_decoded_request_envelope(
             canonical.message().clone(),
-            aos_sandbox_core::ProtocolId::NetworkBroker,
+            protocol_id_for_profile(profile.protocol()),
             actual_descriptor_count,
         )?;
-        if envelope.method() != BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
-            || envelope.authorization().is_some()
-            || !envelope.descriptors().is_empty()
-        {
-            return Err(ProtocolValidationError::MethodMismatch.into());
-        }
+        validate_request_against_profile(&envelope, &profile)?;
         let header =
             decode_network_resource_inventory_request_static(envelope.body(), peer, policy)?;
         let transcript = self.traffic.transcript();
-        if header.protocol_version() != aos_sandbox_core::ProtocolVersion::new(1, 0)
+        if (
+            header.protocol_version().major(),
+            header.protocol_version().minor(),
+        ) != profile.version()
+            || header.audience() != profile.audience()
             || header.audience() != transcript.audience()
         {
             return Err(ProtocolValidationError::MethodMismatch.into());
@@ -1037,8 +1051,8 @@ impl AuthenticatedBrokerSessionStateV1 {
         context: &ProtectedBrokerSessionVerificationContextV1,
     ) -> Result<AuthenticatedNetworkInventoryOutcomeAdmissionV1, AuthenticatedBrokerSessionError>
     {
-        self.require_network_inventory_profile()?;
-        if actual_descriptor_count != 0 {
+        let profile = self.require_network_inventory_profile()?;
+        if actual_descriptor_count != profile.success_response_descriptor_roles().len() {
             return Err(ProtocolValidationError::DescriptorTableMismatch.into());
         }
         let admission = self.traffic.decode_and_admit_outcome(bytes, context)?;
@@ -1060,6 +1074,7 @@ impl AuthenticatedBrokerSessionStateV1 {
                     actual_descriptor_count,
                     context,
                     outcome.sequence(),
+                    &profile,
                 )?;
                 let completed = CompletedNetworkInventoryV1 {
                     outcome: semantic.clone(),
@@ -1089,6 +1104,7 @@ impl AuthenticatedBrokerSessionStateV1 {
                     actual_descriptor_count,
                     context,
                     replay.sequence(),
+                    &profile,
                 )?;
 
                 Ok(
@@ -1101,18 +1117,24 @@ impl AuthenticatedBrokerSessionStateV1 {
         }
     }
 
-    fn require_network_inventory_profile(&self) -> Result<(), AuthenticatedBrokerSessionError> {
+    fn require_network_inventory_profile(
+        &self,
+    ) -> Result<BrokerSessionMethodProfileV1, AuthenticatedBrokerSessionError> {
+        let profile = authenticated_broker_method_profile_v1(
+            BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+        )
+        .ok_or(AuthenticatedBrokerSessionError::UnsupportedProfile)?;
         let transcript = self.traffic.transcript();
-        if transcript.protocol() != BrokerSessionProtocolV1::Network
-            || transcript.protocol_version() != (1, 0)
-            || transcript.audience() != Audience::AUDIENCE_NODE_CONTROLLER
-            || !transcript
-                .negotiated_methods()
-                .contains(&BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES)
+        if transcript.protocol() != profile.protocol()
+            || transcript.protocol_version() != profile.version()
+            || transcript.audience() != profile.audience()
+            || !transcript.negotiated_methods().contains(&profile.method())
+            || transcript.negotiated_maximum_request_bytes() > profile.total_request_maximum_bytes()
+            || !profile_features_are_negotiated(&profile, transcript.required_features())
         {
             return Err(AuthenticatedBrokerSessionError::UnsupportedProfile);
         }
-        Ok(())
+        Ok(profile)
     }
 
     fn require_initial_traffic_state(&self) -> Result<(), AuthenticatedBrokerSessionError> {
@@ -1208,19 +1230,16 @@ impl AuthenticatedBrokerSessionStateV1 {
         actual_descriptor_count: usize,
         context: &ProtectedBrokerSessionVerificationContextV1,
         broker_sequence: u64,
+        profile: &BrokerSessionMethodProfileV1,
     ) -> Result<AuthenticatedNetworkInventoryOutcomeV1, AuthenticatedBrokerSessionError> {
         let envelope = validate_decoded_response_envelope(
             canonical.message().clone(),
             &request.request_id(),
-            request.method(),
-            &[],
+            profile.method(),
+            request.validated_envelope.descriptors(),
             actual_descriptor_count,
         )?;
-        if !envelope.descriptors().is_empty()
-            || !envelope.request_descriptor_dispositions().is_empty()
-        {
-            return Err(ProtocolValidationError::DescriptorTableMismatch.into());
-        }
+        validate_outcome_against_profile(&envelope, profile)?;
         let result = if let Some(error) = envelope.error() {
             AuthenticatedNetworkInventoryResultV1::Error(error.clone())
         } else {
@@ -1248,6 +1267,105 @@ impl AuthenticatedBrokerSessionStateV1 {
             result,
         })
     }
+}
+
+fn protocol_id_for_profile(protocol: BrokerSessionProtocolV1) -> ProtocolId {
+    match protocol {
+        BrokerSessionProtocolV1::Host => ProtocolId::HostBroker,
+        BrokerSessionProtocolV1::Storage => ProtocolId::StorageBroker,
+        BrokerSessionProtocolV1::Mount => ProtocolId::MountBroker,
+        BrokerSessionProtocolV1::Network => ProtocolId::NetworkBroker,
+    }
+}
+
+fn profile_features_are_negotiated(
+    profile: &BrokerSessionMethodProfileV1,
+    features: &[FeatureRef],
+) -> bool {
+    profile.required_features().iter().all(|required| {
+        let (major, minor) = required.version();
+        features.iter().any(|feature| {
+            feature.namespace() == required.namespace()
+                && feature.major() == u32::from(major)
+                && feature.minor() == u32::from(minor)
+        })
+    })
+}
+
+fn validate_request_against_profile(
+    request: &ValidatedBrokerRequestEnvelope,
+    profile: &BrokerSessionMethodProfileV1,
+) -> Result<(), ProtocolValidationError> {
+    let authorization_matches = match profile.authorization() {
+        BrokerSessionAuthorizationPresenceV1::Required => request.authorization().is_some(),
+        BrokerSessionAuthorizationPresenceV1::Forbidden => request.authorization().is_none(),
+    };
+    if request.method() != profile.method() || !authorization_matches {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
+    if request.descriptors().len() != profile.request_descriptor_roles().len()
+        || request
+            .descriptors()
+            .iter()
+            .zip(profile.request_descriptor_roles())
+            .any(|(actual, expected)| actual.role() != *expected)
+    {
+        return Err(ProtocolValidationError::DescriptorTableMismatch);
+    }
+    Ok(())
+}
+
+fn validate_success_body_against_profile(
+    body: &[u8],
+    profile: &BrokerSessionMethodProfileV1,
+) -> Result<(), ProtocolValidationError> {
+    if matches!(
+        profile.success_body(),
+        BrokerSessionSuccessBodyPresenceV1::Required
+    ) && body.is_empty()
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "authenticated response body profile",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_outcome_against_profile(
+    outcome: &crate::session::ValidatedBrokerResponseEnvelope,
+    profile: &BrokerSessionMethodProfileV1,
+) -> Result<(), ProtocolValidationError> {
+    let expected_response_roles = if outcome.error().is_some() {
+        profile.error_response_descriptor_roles()
+    } else {
+        validate_success_body_against_profile(outcome.body(), profile)?;
+        profile.success_response_descriptor_roles()
+    };
+    if outcome.descriptors().len() != expected_response_roles.len()
+        || outcome
+            .descriptors()
+            .iter()
+            .zip(expected_response_roles)
+            .any(|(actual, expected)| actual.role() != *expected)
+    {
+        return Err(ProtocolValidationError::DescriptorTableMismatch);
+    }
+
+    let expected_request_roles = profile.request_descriptor_roles();
+    let expected_dispositions = profile.request_descriptor_dispositions();
+    if expected_request_roles.len() != expected_dispositions.len()
+        || outcome.request_descriptor_dispositions().len() != expected_dispositions.len()
+        || outcome
+            .request_descriptor_dispositions()
+            .iter()
+            .zip(expected_request_roles.iter().zip(expected_dispositions))
+            .any(|(actual, (role, disposition))| {
+                actual.role() != *role || actual.disposition() != *disposition
+            })
+    {
+        return Err(ProtocolValidationError::DescriptorTableMismatch);
+    }
+    Ok(())
 }
 
 fn packet_digest(domain: &[u8], bytes: &[u8]) -> Result<[u8; 32], AuthenticatedBrokerSessionError> {

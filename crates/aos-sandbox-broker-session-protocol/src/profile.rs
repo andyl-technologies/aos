@@ -6,7 +6,8 @@
 //! the authentication feature.
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerClientHello, BrokerMethod, BrokerServerHello, Feature,
+    Audience, BrokerClientHello, BrokerDescriptorDisposition, BrokerDescriptorRole, BrokerMethod,
+    BrokerServerHello, Feature,
 };
 use aos_sandbox_core::{
     BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, FeatureRef, validate_required_features,
@@ -21,6 +22,348 @@ use crate::projection::{
 
 const SIGNED_PLAN_LEASE_FEATURE: &str = "aos.sandbox.authorization.signed-plan-lease";
 const MOUNT_SOURCE_ACQUISITION_FEATURE: &str = "aos.sandbox.mount.source-acquisition";
+
+const NO_FEATURES: [BrokerSessionMethodFeatureV1; 0] = [];
+const SIGNED_PLAN_LEASE_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
+    [BrokerSessionMethodFeatureV1::SignedPlanLease];
+const MOUNT_SOURCE_EFFECT_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
+    BrokerSessionMethodFeatureV1::SignedPlanLease,
+    BrokerSessionMethodFeatureV1::MountSourceAcquisition,
+];
+const MOUNT_SOURCE_INVENTORY_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
+    [BrokerSessionMethodFeatureV1::MountSourceAcquisition];
+const NO_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 0] = [];
+const HOST_CATALOG_REQUEST_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 1] =
+    [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG];
+const HOST_PAYLOAD_SCOPE_RESPONSE_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 2] = [
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD,
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP,
+];
+const HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 5] = [
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD,
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP,
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT,
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE,
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE,
+];
+const NO_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 0] = [];
+const HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 1] =
+    [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
+
+/// Lists every authenticated broker method in canonical numeric order.
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 22] = [
+    BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+    BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+    BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+    BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+    BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+    BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
+    BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE,
+    BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+    BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
+    BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
+    BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
+    BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+    BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+    BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+    BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
+    BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+    BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+    BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
+];
+
+/// Number of non-sentinel methods in the authenticated broker profile.
+pub const AUTHENTICATED_BROKER_METHOD_COUNT_V1: usize = AUTHENTICATED_BROKER_METHODS_V1.len();
+
+/// Defines whether a method carries the established authorization quartet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrokerSessionAuthorizationPresenceV1 {
+    /// Every request must carry the quartet.
+    Required,
+    /// Every request must omit the quartet.
+    Forbidden,
+}
+
+/// Defines whether a successful method response must contain a body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrokerSessionSuccessBodyPresenceV1 {
+    /// A successful response must contain a nonempty body.
+    Required,
+    /// A successful response may contain an empty body.
+    Optional,
+}
+
+/// Names a feature condition attached to one authenticated method.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrokerSessionMethodFeatureV1 {
+    /// Requires exact Signed Plan + Lease 1.0 negotiation.
+    SignedPlanLease,
+    /// Requires exact Mount source-acquisition 1.0 negotiation.
+    MountSourceAcquisition,
+}
+
+impl BrokerSessionMethodFeatureV1 {
+    /// Returns the canonical feature namespace.
+    #[must_use]
+    pub const fn namespace(self) -> &'static str {
+        match self {
+            Self::SignedPlanLease => SIGNED_PLAN_LEASE_FEATURE,
+            Self::MountSourceAcquisition => MOUNT_SOURCE_ACQUISITION_FEATURE,
+        }
+    }
+
+    /// Returns the exact feature version.
+    #[must_use]
+    pub const fn version(self) -> (u16, u16) {
+        (1, 0)
+    }
+}
+
+/// Describes the closed authenticated wire contract for one broker method.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrokerSessionMethodProfileV1 {
+    method: BrokerMethod,
+    protocol: BrokerSessionProtocolV1,
+    major: u16,
+    minor: u16,
+    audience: Audience,
+    authorization: BrokerSessionAuthorizationPresenceV1,
+    required_features: &'static [BrokerSessionMethodFeatureV1],
+    total_request_maximum_bytes: usize,
+    cleared_request_maximum_bytes: usize,
+    request_descriptor_roles: &'static [BrokerDescriptorRole],
+    success_response_descriptor_roles: &'static [BrokerDescriptorRole],
+    request_descriptor_dispositions: &'static [BrokerDescriptorDisposition],
+    success_body: BrokerSessionSuccessBodyPresenceV1,
+}
+
+impl BrokerSessionMethodProfileV1 {
+    /// Returns the exact method represented by this profile.
+    #[must_use]
+    pub const fn method(self) -> BrokerMethod {
+        self.method
+    }
+
+    /// Returns the independently versioned broker protocol.
+    #[must_use]
+    pub const fn protocol(self) -> BrokerSessionProtocolV1 {
+        self.protocol
+    }
+
+    /// Returns the exact protocol version.
+    #[must_use]
+    pub const fn version(self) -> (u16, u16) {
+        (self.major, self.minor)
+    }
+
+    /// Returns the sole legal authenticated audience.
+    #[must_use]
+    pub const fn audience(self) -> Audience {
+        self.audience
+    }
+
+    /// Returns the exact authorization-field presence rule.
+    #[must_use]
+    pub const fn authorization(self) -> BrokerSessionAuthorizationPresenceV1 {
+        self.authorization
+    }
+
+    /// Returns every exact feature condition for this method.
+    #[must_use]
+    pub const fn required_features(self) -> &'static [BrokerSessionMethodFeatureV1] {
+        self.required_features
+    }
+
+    /// Returns the total authenticated request ceiling.
+    #[must_use]
+    pub const fn total_request_maximum_bytes(self) -> usize {
+        self.total_request_maximum_bytes
+    }
+
+    /// Returns the cleared canonical request ceiling.
+    #[must_use]
+    pub const fn cleared_request_maximum_bytes(self) -> usize {
+        self.cleared_request_maximum_bytes
+    }
+
+    /// Returns the exact request descriptor-role sequence.
+    #[must_use]
+    pub const fn request_descriptor_roles(self) -> &'static [BrokerDescriptorRole] {
+        self.request_descriptor_roles
+    }
+
+    /// Returns the exact successful response descriptor-role sequence.
+    #[must_use]
+    pub const fn success_response_descriptor_roles(self) -> &'static [BrokerDescriptorRole] {
+        self.success_response_descriptor_roles
+    }
+
+    /// Returns the exact error response descriptor-role sequence.
+    #[must_use]
+    pub const fn error_response_descriptor_roles(self) -> &'static [BrokerDescriptorRole] {
+        &NO_DESCRIPTOR_ROLES
+    }
+
+    /// Returns the exact terminal dispositions for request descriptors.
+    #[must_use]
+    pub const fn request_descriptor_dispositions(self) -> &'static [BrokerDescriptorDisposition] {
+        self.request_descriptor_dispositions
+    }
+
+    /// Returns the successful response-body presence rule.
+    #[must_use]
+    pub const fn success_body(self) -> BrokerSessionSuccessBodyPresenceV1 {
+        self.success_body
+    }
+}
+
+/// Returns the largest packet accepted before its method can be decoded.
+#[must_use]
+pub const fn authenticated_request_predecode_maximum_bytes_v1() -> usize {
+    AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES
+}
+
+/// Resolves one non-sentinel method to its complete authenticated profile.
+#[must_use]
+pub const fn authenticated_broker_method_profile_v1(
+    method: BrokerMethod,
+) -> Option<BrokerSessionMethodProfileV1> {
+    let protocol = match method {
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => BrokerSessionProtocolV1::Host,
+        BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+        | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
+            BrokerSessionProtocolV1::Storage
+        }
+        BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+        | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
+        | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+        | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
+            BrokerSessionProtocolV1::Mount
+        }
+        BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
+        | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
+            BrokerSessionProtocolV1::Network
+        }
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+    };
+    let (major, minor) = supported_broker_session_version_v1(protocol);
+    let audience = if matches!(method, BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE) {
+        Audience::AUDIENCE_ROOT_MOUNT
+    } else {
+        Audience::AUDIENCE_NODE_CONTROLLER
+    };
+    let authorization = if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
+            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
+            | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+            | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
+    ) {
+        BrokerSessionAuthorizationPresenceV1::Required
+    } else {
+        BrokerSessionAuthorizationPresenceV1::Forbidden
+    };
+    let required_features: &'static [BrokerSessionMethodFeatureV1] = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+        | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
+            &MOUNT_SOURCE_EFFECT_FEATURES
+        }
+        BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
+            &MOUNT_SOURCE_INVENTORY_FEATURES
+        }
+        _ if matches!(
+            authorization,
+            BrokerSessionAuthorizationPresenceV1::Required
+        ) =>
+        {
+            &SIGNED_PLAN_LEASE_FEATURES
+        }
+        _ => &NO_FEATURES,
+    };
+    let (total_request_maximum_bytes, cleared_request_maximum_bytes) = match method {
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => (
+            AUTHENTICATED_HOST_QUERY_MAXIMUM_BYTES,
+            crate::projection::AUTHENTICATED_HOST_QUERY_CLEARED_MAXIMUM_BYTES,
+        ),
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => (
+            AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES,
+            crate::projection::AUTHENTICATED_MOUNT_PREPARE_CATALOG_CLEARED_MAXIMUM_BYTES,
+        ),
+        _ => (
+            AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES,
+            crate::projection::AUTHENTICATED_ORDINARY_REQUEST_CLEARED_MAXIMUM_BYTES,
+        ),
+    };
+    let request_descriptor_roles: &'static [BrokerDescriptorRole] = match method {
+        BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => &HOST_CATALOG_REQUEST_DESCRIPTOR_ROLES,
+        _ => &NO_DESCRIPTOR_ROLES,
+    };
+    let success_response_descriptor_roles: &'static [BrokerDescriptorRole] = match method {
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
+            &HOST_PAYLOAD_SCOPE_RESPONSE_DESCRIPTOR_ROLES
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+            &HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES
+        }
+        _ => &NO_DESCRIPTOR_ROLES,
+    };
+    let request_descriptor_dispositions: &'static [BrokerDescriptorDisposition] = match method {
+        BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
+            &HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS
+        }
+        _ => &NO_DESCRIPTOR_DISPOSITIONS,
+    };
+    let success_body = if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
+            | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
+    ) {
+        BrokerSessionSuccessBodyPresenceV1::Optional
+    } else {
+        BrokerSessionSuccessBodyPresenceV1::Required
+    };
+
+    Some(BrokerSessionMethodProfileV1 {
+        method,
+        protocol,
+        major,
+        minor,
+        audience,
+        authorization,
+        required_features,
+        total_request_maximum_bytes,
+        cleared_request_maximum_bytes,
+        request_descriptor_roles,
+        success_response_descriptor_roles,
+        request_descriptor_dispositions,
+        success_body,
+    })
+}
 
 /// Reports a closed authenticated negotiation mismatch.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -232,15 +575,10 @@ const fn validate_role(
 }
 
 fn methods_match_role(methods: &[BrokerMethod], audience: Audience) -> bool {
-    match audience {
-        Audience::AUDIENCE_NODE_CONTROLLER => methods
-            .iter()
-            .all(|method| *method != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
-        Audience::AUDIENCE_ROOT_MOUNT => methods
-            .iter()
-            .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
-        _ => false,
-    }
+    methods.iter().all(|method| {
+        authenticated_broker_method_profile_v1(*method)
+            .is_some_and(|profile| profile.audience() == audience)
+    })
 }
 
 fn validate_feature_conditions(
@@ -303,60 +641,26 @@ pub(crate) const fn method_matches_protocol(
     method: BrokerMethod,
     protocol: BrokerSessionProtocolV1,
 ) -> bool {
-    match protocol {
-        BrokerSessionProtocolV1::Host => matches!(
-            method,
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
-                | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
-                | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
-        ),
-        BrokerSessionProtocolV1::Storage => matches!(
-            method,
-            BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-                | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
-                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
-                | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-        ),
-        BrokerSessionProtocolV1::Mount => matches!(
-            method,
-            BrokerMethod::BROKER_METHOD_MOUNT_APPLY
-                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
-                | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
-                | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
-                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
-                | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
-                | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
-                | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
-        ),
-        BrokerSessionProtocolV1::Network => matches!(
-            method,
-            BrokerMethod::BROKER_METHOD_NETWORK_APPLY
-                | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
-                | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES
-        ),
+    match authenticated_broker_method_profile_v1(method) {
+        Some(profile) => match (profile.protocol(), protocol) {
+            (BrokerSessionProtocolV1::Host, BrokerSessionProtocolV1::Host)
+            | (BrokerSessionProtocolV1::Storage, BrokerSessionProtocolV1::Storage)
+            | (BrokerSessionProtocolV1::Mount, BrokerSessionProtocolV1::Mount)
+            | (BrokerSessionProtocolV1::Network, BrokerSessionProtocolV1::Network) => true,
+            _ => false,
+        },
+        None => false,
     }
 }
 
 const fn method_requires_authorization(method: BrokerMethod) -> bool {
-    matches!(
-        method,
-        BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
-            | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
-            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
-            | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
-            | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
-            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
-            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
-            | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-            | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-            | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
-    )
+    match authenticated_broker_method_profile_v1(method) {
+        Some(profile) => matches!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Required
+        ),
+        None => false,
+    }
 }
 
 pub(crate) fn method_has_required_traffic_features(
@@ -370,10 +674,21 @@ pub(crate) fn method_has_required_traffic_features(
 }
 
 const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
-    matches!(
-        method,
-        BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
-            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
-            | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
-    )
+    match authenticated_broker_method_profile_v1(method) {
+        Some(profile) => {
+            let features = profile.required_features();
+            let mut index = 0;
+            while index < features.len() {
+                if matches!(
+                    features[index],
+                    BrokerSessionMethodFeatureV1::MountSourceAcquisition
+                ) {
+                    return true;
+                }
+                index += 1;
+            }
+            false
+        }
+        None => false,
+    }
 }

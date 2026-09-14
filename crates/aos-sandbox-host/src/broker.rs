@@ -21,7 +21,10 @@ use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
-    PeerCredentials, PeerPolicy, ValidatedRuntimeRequest, decode_runtime_request,
+    HistoricalRuntimeRequestCandidateV1, PeerCredentials, PeerPolicy,
+    ValidatedQueryRuntimeEffectRequestV1, ValidatedRuntimeRequest,
+    classify_historical_runtime_request_v1, decode_grandfathered_runtime_request_replay_v1,
+    decode_runtime_request,
 };
 use aos_systemd::{
     GuardianCredentialDescriptors, GuardianCredentialRole, GuardianUnitSpec,
@@ -54,6 +57,7 @@ use crate::{HostError, Result};
 
 const MAXIMUM_INVENTORY_RUNTIMES: usize = 1_024;
 const MAXIMUM_SCOPE_HANDLE_ATTEMPTS: usize = 16;
+#[cfg(test)]
 pub(crate) struct RuntimeEffectQueryContext<'a> {
     pub(crate) original_request_bytes: &'a [u8],
     pub(crate) request_id: [u8; 16],
@@ -84,6 +88,30 @@ pub(crate) struct RetainedRuntimePins {
     pub(crate) supervisor: PinnedLeader,
     pub(crate) payload: PinnedPayloadLeader,
     pub(crate) scope_handle: [u8; 32],
+}
+
+/// Carries response metadata validated before a Host Apply effect can run.
+pub(crate) struct ValidatedRuntimeApplyResponse {
+    request_id: [u8; 16],
+    maximum_response_bytes: u32,
+    body: Vec<u8>,
+}
+
+impl ValidatedRuntimeApplyResponse {
+    /// Returns the request ID from the fully validated Apply header.
+    pub(crate) const fn request_id(&self) -> &[u8; 16] {
+        &self.request_id
+    }
+
+    /// Returns the fully validated Apply response ceiling.
+    pub(crate) const fn maximum_response_bytes(&self) -> u32 {
+        self.maximum_response_bytes
+    }
+
+    /// Consumes the response and returns its encoded observation or receipt.
+    pub(crate) fn into_body(self) -> Vec<u8> {
+        self.body
+    }
 }
 
 impl RetainedRuntimePins {
@@ -193,8 +221,41 @@ where
         protocol_version: ProtocolVersion,
         peer: PeerCredentials,
         policy: PeerPolicy,
-        mut trusted_clock: impl FnMut() -> Result<RawPairedClockSample> + Send,
+        trusted_clock: impl FnMut() -> Result<RawPairedClockSample> + Send,
     ) -> Result<Vec<u8>>
+    where
+        W: Sync,
+    {
+        let candidate = classify_historical_runtime_request_v1(request_bytes, peer, policy)?;
+        self.apply_runtime_candidate(
+            candidate,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            u32::MAX,
+            trusted_clock,
+        )
+        .await
+        .map(ValidatedRuntimeApplyResponse::into_body)
+    }
+
+    /// Applies a preclassified canonical or grandfathered Host request.
+    ///
+    /// A grandfathered candidate remains nonauthorizing until its exact request
+    /// ID and transport digest locate an existing protected effect. It can only
+    /// replay or resume that effect and can never select a new one.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn apply_runtime_candidate(
+        &mut self,
+        candidate: HistoricalRuntimeRequestCandidateV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        negotiated_maximum_response_bytes: u32,
+        mut trusted_clock: impl FnMut() -> Result<RawPairedClockSample> + Send,
+    ) -> Result<ValidatedRuntimeApplyResponse>
     where
         W: Sync,
     {
@@ -204,28 +265,60 @@ where
                 aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
             ));
         }
-        // Deadline-free decoding is used only to locate an already authenticated
-        // complete record. No pending or new effect consumes this value.
-        let replay_request = decode_runtime_request(request_bytes, peer, policy, 0)?;
-        if replay_request.header().protocol_version() != protocol_version {
-            return Err(HostError::Authority(
-                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
-            ));
-        }
-        let guardian_launch = replay_request.action() == RuntimeAction::RUNTIME_ACTION_LAUNCH;
-        let composite_stop = replay_request.action() == RuntimeAction::RUNTIME_ACTION_STOP;
-        let request_id = *replay_request.header().request_id();
+        let request_bytes = candidate.exact_bytes();
+        let request_id = *candidate.request_id();
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
-
+        let durable_status = self.state.query_effect(&request_id, request_digest)?;
         let existing_effect = self
             .state
             .effect(&request_id)
             .map(|bytes| self.authority.open_effect(&request_id, bytes))
             .transpose()?;
+
+        let canonical_request = candidate.canonical_request().cloned();
+        let replay_request = match canonical_request {
+            Some(request) => request,
+            None => {
+                if matches!(durable_status, RuntimeEffectQuery::Absent) {
+                    return Err(request_mismatch());
+                }
+                let existing = existing_effect.as_ref().ok_or_else(|| {
+                    HostError::State(
+                        "grandfathered request lost its protected durable effect".to_owned(),
+                    )
+                })?;
+                validate_effect_request(existing, request_digest)?;
+
+                decode_grandfathered_runtime_request_replay_v1(
+                    candidate
+                        .grandfathered_candidate()
+                        .ok_or_else(request_mismatch)?,
+                    peer,
+                    policy,
+                )?
+            }
+        };
+        if replay_request.header().protocol_version() != protocol_version {
+            return Err(HostError::Authority(
+                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
+            ));
+        }
+        if replay_request.header().maximum_response_bytes() > negotiated_maximum_response_bytes {
+            return Err(HostError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::InvalidResponseBound,
+            ));
+        }
+        let guardian_launch = replay_request.action() == RuntimeAction::RUNTIME_ACTION_LAUNCH;
+        let composite_stop = replay_request.action() == RuntimeAction::RUNTIME_ACTION_STOP;
+
         if let Some(effect) = &existing_effect {
             validate_effect_request(effect, request_digest)?;
             if effect.status() == BrokerEffectStatusV1::Complete {
-                return Ok(effect.receipt().to_vec());
+                return Ok(ValidatedRuntimeApplyResponse {
+                    request_id,
+                    maximum_response_bytes: replay_request.header().maximum_response_bytes(),
+                    body: effect.receipt().to_vec(),
+                });
             }
         }
 
@@ -236,12 +329,16 @@ where
         }
 
         let admission_clock = trusted_clock()?;
-        let request = decode_runtime_request(
-            request_bytes,
-            peer,
-            policy,
-            admission_clock.boottime_nanoseconds(),
-        )?;
+        let request = if candidate.canonical_request().is_some() {
+            decode_runtime_request(
+                request_bytes,
+                peer,
+                policy,
+                admission_clock.boottime_nanoseconds(),
+            )?
+        } else {
+            replay_request
+        };
         let action = action_code(request.action());
 
         let operation = if guardian_launch || composite_stop {
@@ -437,7 +534,11 @@ where
             response.clone(),
         )?;
         self.commit_state(&proposed)?;
-        Ok(response)
+        Ok(ValidatedRuntimeApplyResponse {
+            request_id,
+            maximum_response_bytes: request.header().maximum_response_bytes(),
+            body: response,
+        })
     }
 
     /// Authenticates and reports one exact original Apply transaction.
@@ -446,29 +547,70 @@ where
     /// operation, call a worker, admit a fence, or commit state. Existing
     /// records are reverified at their authenticated admission clock because
     /// this query reports history and grants no effect authority. An absent
-    /// request must still be live under the current protected clock.
+    /// canonical request must still be live under the current protected clock;
+    /// an absent noncanonical request is rejected without semantic decoding.
+    pub(crate) fn query_validated_runtime_effect(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        query: &ValidatedQueryRuntimeEffectRequestV1,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: RawPairedClockSample,
+    ) -> Result<Vec<u8>> {
+        self.query_runtime_effect_semantics(
+            artifacts,
+            query.original_apply_candidate(),
+            *query.header().request_id(),
+            peer,
+            policy,
+            current_clock,
+            query.header().maximum_response_bytes(),
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn query_runtime_effect(
         &self,
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
         context: RuntimeEffectQueryContext<'_>,
     ) -> Result<Vec<u8>> {
-        self.ensure_healthy()?;
         let RuntimeEffectQueryContext {
             original_request_bytes,
-            request_id: query_request_id,
+            request_id,
             peer,
             policy,
             current_clock,
             maximum_response_bytes,
         } = context;
-        let located = decode_runtime_request(original_request_bytes, peer, policy, 0)?;
-        if !is_exact_host_protocol(located.header().protocol_version())
-            || located.header().request_id() != &query_request_id
-        {
-            return Err(HostError::Authority(
-                aos_sandbox_broker::BrokerAdmissionError::RequestMismatch,
-            ));
+        let candidate =
+            classify_historical_runtime_request_v1(original_request_bytes, peer, policy)?;
+        self.query_runtime_effect_semantics(
+            artifacts,
+            &candidate,
+            request_id,
+            peer,
+            policy,
+            current_clock,
+            maximum_response_bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn query_runtime_effect_semantics(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        candidate: &HistoricalRuntimeRequestCandidateV1,
+        query_request_id: [u8; 16],
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: RawPairedClockSample,
+        maximum_response_bytes: u32,
+    ) -> Result<Vec<u8>> {
+        self.ensure_healthy()?;
+        if candidate.request_id() != &query_request_id {
+            return Err(request_mismatch());
         }
+        let original_request_bytes = candidate.exact_bytes();
         let request_digest: [u8; 32] = Sha256::digest(original_request_bytes).into();
         let status = self.state.query_effect(&query_request_id, request_digest)?;
         let existing_effect = self
@@ -476,16 +618,40 @@ where
             .effect(&query_request_id)
             .map(|bytes| self.authority.open_effect(&query_request_id, bytes))
             .transpose()?;
+        let request = match candidate.canonical_request() {
+            Some(request) => request.clone(),
+            None => {
+                if matches!(status, RuntimeEffectQuery::Absent) {
+                    return Err(request_mismatch());
+                }
+                let existing = existing_effect.as_ref().ok_or_else(|| {
+                    HostError::State(
+                        "grandfathered query lost its protected durable effect".to_owned(),
+                    )
+                })?;
+                validate_effect_request(existing, request_digest)?;
+
+                decode_grandfathered_runtime_request_replay_v1(
+                    candidate
+                        .grandfathered_candidate()
+                        .ok_or_else(request_mismatch)?,
+                    peer,
+                    policy,
+                )?
+            }
+        };
+        if !is_exact_host_protocol(request.header().protocol_version())
+            || request.header().request_id() != &query_request_id
+        {
+            return Err(request_mismatch());
+        }
+        if let Some(effect) = &existing_effect {
+            validate_effect_request(effect, request_digest)?;
+        }
         let verification_clock = match &existing_effect {
             Some(effect) => historical_clock(effect)?,
             None => current_clock,
         };
-        let request = decode_runtime_request(
-            original_request_bytes,
-            peer,
-            policy,
-            verification_clock.boottime_nanoseconds(),
-        )?;
         let prior_fence = existing_effect.as_ref().map_or_else(
             || self.state.prior_authorization(request.fence().sandbox_id()),
             |_| self.state.request_authorization(&query_request_id),

@@ -25,7 +25,9 @@ use aos_sandbox_protocol::payload_scope::{
 };
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
-    MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError, decode_runtime_request,
+    MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError,
+    classify_historical_runtime_request_v1, decode_inventory_runtime_request_v1,
+    decode_observe_runtime_request_v1, decode_query_runtime_effect_request_v1,
     encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
     negotiate_client_hello, validate_request_descriptor_roles,
 };
@@ -34,19 +36,15 @@ use rustix::time::{ClockId, clock_gettime};
 use sha2::{Digest as _, Sha256};
 
 use crate::KERNEL_CLOCK_PROVENANCE;
-use crate::broker::{HostBroker, RuntimeEffectQueryContext};
+use crate::broker::HostBroker;
 use crate::catalog::{
     FileHostCatalogPublisher, HostCatalogPublicationOutcome, HostCatalogSnapshot,
-};
-use crate::observation::{
-    decode_inventory_runtime_request, decode_observe_runtime_request,
-    decode_query_runtime_effect_request,
 };
 use crate::peer::ControllerPeerVerifier;
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
 use crate::transport::ActivatedSeqpacketListener;
-use crate::worker::HostWorker;
+use crate::worker::{HostRuntimeIdentity, HostWorker};
 use crate::{HostError, Result};
 
 /// Classifies the completed handling of one accepted connection.
@@ -354,34 +352,58 @@ where
                 let Some(artifacts) = request.authorization() else {
                     return Ok(ConnectionOutcome::RequestRejected);
                 };
-                // The broker applies the live deadline to new and pending
-                // effects. This pass permits exact completed-receipt recovery.
-                let Ok(validated) =
-                    decode_runtime_request(request.body(), peer.credentials(), self.peer_policy, 0)
-                else {
+                let Ok(candidate) = classify_historical_runtime_request_v1(
+                    request.body(),
+                    peer.credentials(),
+                    self.peer_policy,
+                ) else {
                     return Ok(ConnectionOutcome::RequestRejected);
                 };
-                if session.validate_header(validated.header()).is_err() {
+                let canonical_response_context = candidate.canonical_request().map(|validated| {
+                    (
+                        *validated.header().request_id(),
+                        validated.header().maximum_response_bytes(),
+                    )
+                });
+                // Canonical requests bind to the session before broker entry.
+                // Grandfathered headers stay opaque until the broker proves an
+                // exact protected effect, then applies these same version,
+                // audience, and negotiated-response-ceiling constraints.
+                if candidate
+                    .canonical_request()
+                    .is_some_and(|validated| session.validate_header(validated.header()).is_err())
+                {
                     return Ok(ConnectionOutcome::RequestRejected);
                 }
-                let request_id = *validated.header().request_id();
-                let ceiling = validated.header().maximum_response_bytes();
                 let result = self
                     .broker
-                    .apply_runtime(
-                        request.body(),
+                    .apply_runtime_candidate(
+                        candidate,
                         artifacts,
                         session.version(),
                         peer.credentials(),
                         self.peer_policy,
+                        session.maximum_response_bytes(),
                         trusted_paired_clock_sample,
                     )
                     .await;
-                (request_id, ceiling, result)
+                match result {
+                    Ok(response) => (
+                        *response.request_id(),
+                        response.maximum_response_bytes(),
+                        Ok(response.into_body()),
+                    ),
+                    Err(error) => {
+                        let Some((request_id, ceiling)) = canonical_response_context else {
+                            return Ok(ConnectionOutcome::RequestRejected);
+                        };
+                        (request_id, ceiling, Err(error))
+                    }
+                }
             }
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME => {
                 let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
-                let Ok(validated) = decode_observe_runtime_request(
+                let Ok(validated) = decode_observe_runtime_request_v1(
                     request.body(),
                     peer.credentials(),
                     self.peer_policy,
@@ -389,20 +411,21 @@ where
                 ) else {
                     return Ok(ConnectionOutcome::RequestRejected);
                 };
-                if session.validate_header(&validated.header).is_err() {
+                if session.validate_header(validated.header()).is_err() {
                     return Ok(ConnectionOutcome::RequestRejected);
                 }
-                let request_id = *validated.header.request_id();
-                let ceiling = validated.header.maximum_response_bytes();
+                let request_id = *validated.header().request_id();
+                let ceiling = validated.header().maximum_response_bytes();
+                let identity = HostRuntimeIdentity::from(validated.fence());
                 let result = self
                     .broker
-                    .observe_runtime(validated.identity, validated.runtime_handle, ceiling)
+                    .observe_runtime(identity, *validated.runtime_handle(), ceiling)
                     .await;
                 (request_id, ceiling, result)
             }
             BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME => {
                 let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
-                let Ok(header) = decode_inventory_runtime_request(
+                let Ok(header) = decode_inventory_runtime_request_v1(
                     request.body(),
                     peer.credentials(),
                     self.peer_policy,
@@ -420,7 +443,7 @@ where
             }
             BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => {
                 let now = trusted_paired_clock_sample()?;
-                let Ok(validated) = decode_query_runtime_effect_request(
+                let Ok(validated) = decode_query_runtime_effect_request_v1(
                     request.body(),
                     peer.credentials(),
                     self.peer_policy,
@@ -428,24 +451,20 @@ where
                 ) else {
                     return Ok(ConnectionOutcome::RequestRejected);
                 };
-                if session.validate_header(&validated.header).is_err() {
+                if session.validate_header(validated.header()).is_err() {
                     return Ok(ConnectionOutcome::RequestRejected);
                 }
                 let Some(artifacts) = request.authorization() else {
                     return Ok(ConnectionOutcome::RequestRejected);
                 };
-                let request_id = *validated.header.request_id();
-                let ceiling = validated.header.maximum_response_bytes();
-                let result = self.broker.query_runtime_effect(
+                let request_id = *validated.header().request_id();
+                let ceiling = validated.header().maximum_response_bytes();
+                let result = self.broker.query_validated_runtime_effect(
                     artifacts,
-                    RuntimeEffectQueryContext {
-                        original_request_bytes: &validated.original_apply_request,
-                        request_id,
-                        peer: peer.credentials(),
-                        policy: self.peer_policy,
-                        current_clock: now,
-                        maximum_response_bytes: ceiling,
-                    },
+                    &validated,
+                    peer.credentials(),
+                    self.peer_policy,
+                    now,
                 );
                 (request_id, ceiling, result)
             }

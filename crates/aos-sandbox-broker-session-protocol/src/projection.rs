@@ -7,11 +7,13 @@
 //! signature is checked, closing unknown fields, reordered fields, duplicate
 //! known fields, non-minimal varints, and trailing data.
 //!
-//! These routines validate canonical projection structure, not the complete
-//! method semantics needed for dispatch. A future production composite must
-//! still validate method-body/header request ID and response budget, ancillary
-//! descriptor count and roles, error/body shape, and descriptor dispositions
-//! before it may authorize an effect or consume a descriptor.
+//! These routines validate canonical projection structure and profile-owned
+//! packet ceilings, not complete method semantics. The authenticated session
+//! composite additionally binds method, audience, authorization carrier,
+//! required features, body/header identity, response budget, descriptor table,
+//! disposition table, and success-body shape before candidate state advances.
+//! Each method adapter must still supply its audience-specific body proof before
+//! it may authorize an effect or consume a descriptor.
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerClientHello, BrokerDescriptorEntry, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
@@ -27,6 +29,9 @@ use crate::artifact::{
 use crate::model::{
     SIGNED_BROKER_HELLO_BYTES, SIGNED_BROKER_OUTCOME_BYTES, SIGNED_BROKER_REQUEST_BYTES,
     SIGNED_CLIENT_HELLO_BYTES,
+};
+use crate::profile::{
+    authenticated_broker_method_profile_v1, authenticated_request_predecode_maximum_bytes_v1,
 };
 
 /// Existing total ClientHello ceiling retained by the authenticated profile.
@@ -412,17 +417,18 @@ pub fn request_fields_digest_v1(
     if !message.signed_session_request.is_empty() {
         return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
     }
+    let method = message
+        .method
+        .as_known()
+        .ok_or(BrokerSessionProjectionError::InvalidSemantics)?;
+    let profile = authenticated_broker_method_profile_v1(method)
+        .ok_or(BrokerSessionProjectionError::InvalidSemantics)?;
     validate_request_nested(message)?;
-    let maximum = if message.method.as_known()
-        == Some(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT)
-    {
-        AUTHENTICATED_HOST_QUERY_CLEARED_MAXIMUM_BYTES
-    } else if message.method.as_known() == Some(BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG) {
-        AUTHENTICATED_MOUNT_PREPARE_CATALOG_CLEARED_MAXIMUM_BYTES
-    } else {
-        AUTHENTICATED_ORDINARY_REQUEST_CLEARED_MAXIMUM_BYTES
-    };
-    digest_cleared(REQUEST_FIELDS_DOMAIN, &message.encode_to_vec(), maximum)
+    digest_cleared(
+        REQUEST_FIELDS_DOMAIN,
+        &message.encode_to_vec(),
+        profile.cleared_request_maximum_bytes(),
+    )
 }
 
 /// Digests one outbound response whose authentication field is still clear.
@@ -542,32 +548,18 @@ pub fn decode_canonical_server_hello_v1(
 pub fn decode_canonical_request_v1(
     bytes: &[u8],
 ) -> Result<CanonicalBrokerRequestEnvelopeV1, BrokerSessionProjectionError> {
-    if bytes.len() > AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES {
+    if bytes.len() > authenticated_request_predecode_maximum_bytes_v1() {
         return Err(BrokerSessionProjectionError::TooLarge);
     }
     let mut message = BrokerRequestEnvelope::decode_from_slice(bytes)
         .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    let is_host_query =
-        message.method.as_known() == Some(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT);
-    let is_mount_prepare =
-        message.method.as_known() == Some(BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG);
-    let (total_maximum, cleared_maximum) = if is_host_query {
-        (
-            AUTHENTICATED_HOST_QUERY_MAXIMUM_BYTES,
-            AUTHENTICATED_HOST_QUERY_CLEARED_MAXIMUM_BYTES,
-        )
-    } else if is_mount_prepare {
-        (
-            AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES,
-            AUTHENTICATED_MOUNT_PREPARE_CATALOG_CLEARED_MAXIMUM_BYTES,
-        )
-    } else {
-        (
-            AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES,
-            AUTHENTICATED_ORDINARY_REQUEST_CLEARED_MAXIMUM_BYTES,
-        )
-    };
-    if bytes.len() > total_maximum {
+    let method = message
+        .method
+        .as_known()
+        .ok_or(BrokerSessionProjectionError::InvalidSemantics)?;
+    let profile = authenticated_broker_method_profile_v1(method)
+        .ok_or(BrokerSessionProjectionError::InvalidSemantics)?;
+    if bytes.len() > profile.total_request_maximum_bytes() {
         return Err(BrokerSessionProjectionError::TooLarge);
     }
     require_canonical(bytes, &message)?;
@@ -581,7 +573,7 @@ pub fn decode_canonical_request_v1(
     require_projection_sizes(
         bytes.len(),
         cleared.len(),
-        cleared_maximum,
+        profile.cleared_request_maximum_bytes(),
         REQUEST_FIELD_CONTRIBUTION,
     )?;
     Ok(CanonicalBrokerRequestEnvelopeV1 {

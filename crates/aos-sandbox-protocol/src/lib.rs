@@ -14,6 +14,7 @@ pub mod authenticated_session;
 pub mod fencing;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
+pub mod host_observation;
 pub mod inventory;
 pub mod mount_catalog;
 pub mod mount_destination_slot;
@@ -39,6 +40,11 @@ pub use host_catalog_snapshot::{
     CatalogIdentityAllocation, HostCatalogHandle, HostCatalogSnapshot, HostCatalogSnapshotError,
     MAXIMUM_HOST_CATALOG_ATTACHMENTS, MAXIMUM_HOST_CATALOG_ENTRIES, MINIMUM_HOST_IDENTITY_RANGE,
     NETWORK_PIN_PREFIX, NetworkCatalogEntry, WORKSPACE_PIN_PREFIX, WorkspaceCatalogEntry,
+};
+pub use host_observation::{
+    ValidatedObserveRuntimeRequestV1, ValidatedQueryRuntimeEffectRequestV1,
+    decode_inventory_runtime_request_v1, decode_observe_runtime_request_v1,
+    decode_query_runtime_effect_request_v1,
 };
 pub use inventory::{
     MAXIMUM_MOUNT_INVENTORY_RECORDS, ValidatedMountAssignmentBinding,
@@ -723,6 +729,251 @@ pub fn decode_runtime_request(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
+    let template = runtime_template::validate_live_runtime_body(&request)?;
+
+    Ok(ValidatedRuntimeRequest {
+        header,
+        fence: template.fence,
+        action: template.action,
+        launch_plan: template.launch_plan,
+        guardian_arm: template.guardian_arm,
+    })
+}
+
+/// Decodes one byte-canonical historical Host runtime request.
+///
+/// Historical decoding validates every time-independent header and runtime-body
+/// invariant without treating the original deadline as a current work permit.
+/// The returned semantics are nonauthorizing and remain subject to independent
+/// signed-plan, lease, durable-record, and protected-state verification.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an oversized, malformed, or
+/// noncanonical body, unknown nested fields or enums, peer/audience mismatch,
+/// an absent original deadline, malformed fences or bounded collections, or a
+/// launch plan whose presence does not exactly match its action.
+pub fn decode_historical_runtime_request_v1(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+) -> Result<ValidatedRuntimeRequest, ProtocolValidationError> {
+    if bytes.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    let request = ApplyRuntimeRequest::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !request.__buffa_unknown_fields.is_empty() || request.encode_to_vec() != bytes {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+
+    let header = validate_request_header_static(
+        request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::HostBroker,
+    )?;
+    if header.deadline_boottime_nanoseconds() == 0 {
+        return Err(ProtocolValidationError::DeadlineExpired);
+    }
+    let template = runtime_template::validate_live_runtime_body(&request)?;
+
+    Ok(ValidatedRuntimeRequest {
+        header,
+        fence: template.fence,
+        action: template.action,
+        launch_plan: template.launch_plan,
+        guardian_arm: template.guardian_arm,
+    })
+}
+
+/// Classifies historical Host Apply bytes without granting legacy semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistoricalRuntimeRequestCandidateV1 {
+    /// The exact bytes are canonical and have complete nonauthorizing semantics.
+    Canonical(CanonicalHistoricalRuntimeRequestV1),
+    /// The exact bytes are noncanonical and may only locate a protected replay.
+    GrandfatheredNoncanonical(GrandfatheredRuntimeRequestReplayCandidateV1),
+}
+
+impl HistoricalRuntimeRequestCandidateV1 {
+    /// Returns the byte-exact historical Apply body.
+    #[must_use]
+    pub fn exact_bytes(&self) -> &[u8] {
+        match self {
+            Self::Canonical(candidate) => candidate.exact_bytes(),
+            Self::GrandfatheredNoncanonical(candidate) => candidate.exact_bytes(),
+        }
+    }
+
+    /// Returns the request ID used only to locate exact durable identity.
+    #[must_use]
+    pub const fn request_id(&self) -> &[u8; 16] {
+        match self {
+            Self::Canonical(candidate) => candidate.request().header().request_id(),
+            Self::GrandfatheredNoncanonical(candidate) => candidate.request_id(),
+        }
+    }
+
+    /// Returns semantics only when the historical body was already canonical.
+    #[must_use]
+    pub const fn canonical_request(&self) -> Option<&ValidatedRuntimeRequest> {
+        match self {
+            Self::Canonical(candidate) => Some(candidate.request()),
+            Self::GrandfatheredNoncanonical(_) => None,
+        }
+    }
+
+    /// Returns the opaque candidate requiring protected durable proof.
+    #[must_use]
+    pub const fn grandfathered_candidate(
+        &self,
+    ) -> Option<&GrandfatheredRuntimeRequestReplayCandidateV1> {
+        match self {
+            Self::Canonical(_) => None,
+            Self::GrandfatheredNoncanonical(candidate) => Some(candidate),
+        }
+    }
+}
+
+/// Carries canonical exact bytes and their complete historical semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalHistoricalRuntimeRequestV1 {
+    exact_bytes: Vec<u8>,
+    request: ValidatedRuntimeRequest,
+}
+
+impl CanonicalHistoricalRuntimeRequestV1 {
+    /// Returns the byte-exact canonical historical Apply body.
+    #[must_use]
+    pub fn exact_bytes(&self) -> &[u8] {
+        &self.exact_bytes
+    }
+
+    /// Returns its complete time-independent request semantics.
+    #[must_use]
+    pub const fn request(&self) -> &ValidatedRuntimeRequest {
+        &self.request
+    }
+}
+
+/// Carries noncanonical bytes that have no semantics or authority on their own.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GrandfatheredRuntimeRequestReplayCandidateV1 {
+    exact_bytes: Vec<u8>,
+    request_id: [u8; 16],
+}
+
+impl GrandfatheredRuntimeRequestReplayCandidateV1 {
+    /// Returns the byte-exact noncanonical historical Apply body.
+    #[must_use]
+    pub fn exact_bytes(&self) -> &[u8] {
+        &self.exact_bytes
+    }
+
+    /// Returns the untrusted locator ID extracted without semantic admission.
+    #[must_use]
+    pub const fn request_id(&self) -> &[u8; 16] {
+        &self.request_id
+    }
+}
+
+/// Classifies exact Host Apply bytes for canonical or grandfathered replay.
+///
+/// A noncanonical result is deliberately opaque. Its request ID may only be
+/// used to locate a protected durable record whose retained transport digest
+/// equals the digest of [`GrandfatheredRuntimeRequestReplayCandidateV1::exact_bytes`].
+/// It must not select a new effect or be passed to authorization.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] for an oversized or malformed message,
+/// a canonical message with invalid semantics, unknown outer fields, or an
+/// absent or malformed locator request ID.
+pub fn classify_historical_runtime_request_v1(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+) -> Result<HistoricalRuntimeRequestCandidateV1, ProtocolValidationError> {
+    match decode_historical_runtime_request_v1(bytes, peer, policy) {
+        Ok(request) => Ok(HistoricalRuntimeRequestCandidateV1::Canonical(
+            CanonicalHistoricalRuntimeRequestV1 {
+                exact_bytes: bytes.to_vec(),
+                request,
+            },
+        )),
+        Err(canonical_error) => {
+            if bytes.len() > MAXIMUM_REQUEST_BYTES {
+                return Err(ProtocolValidationError::RequestTooLarge);
+            }
+            let request = ApplyRuntimeRequest::decode_from_slice(bytes)
+                .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+            if request.encode_to_vec() == bytes {
+                return Err(canonical_error);
+            }
+            if !request.__buffa_unknown_fields.is_empty() {
+                return Err(ProtocolValidationError::UnknownFields);
+            }
+            let header = request
+                .header
+                .as_option()
+                .ok_or(ProtocolValidationError::MissingField("header"))?;
+            let request_id = exact_nonzero::<16>(&header.request_id, "header.request_id")?;
+            Ok(
+                HistoricalRuntimeRequestCandidateV1::GrandfatheredNoncanonical(
+                    GrandfatheredRuntimeRequestReplayCandidateV1 {
+                        exact_bytes: bytes.to_vec(),
+                        request_id,
+                    },
+                ),
+            )
+        }
+    }
+}
+
+/// Decodes grandfathered semantics after an exact protected durable lookup.
+///
+/// This function is nonauthorizing. Callers must first prove that the
+/// candidate's request ID and exact-byte digest identify an existing protected
+/// effect or attempt. The resulting semantics may reverify that record but
+/// must never admit a new request.
+///
+/// # Errors
+///
+/// Returns [`ProtocolValidationError`] unless the retained bytes remain
+/// noncanonical and satisfy every historical static-header and runtime-body
+/// invariant established before canonical wire enforcement.
+pub fn decode_grandfathered_runtime_request_replay_v1(
+    candidate: &GrandfatheredRuntimeRequestReplayCandidateV1,
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+) -> Result<ValidatedRuntimeRequest, ProtocolValidationError> {
+    let request = ApplyRuntimeRequest::decode_from_slice(candidate.exact_bytes())
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !request.__buffa_unknown_fields.is_empty()
+        || request.encode_to_vec() == candidate.exact_bytes()
+    {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+
+    let header = validate_request_header_static(
+        request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::HostBroker,
+    )?;
+    if header.request_id() != candidate.request_id() {
+        return Err(ProtocolValidationError::InvalidField("header.request_id"));
+    }
+    if header.deadline_boottime_nanoseconds() == 0 {
+        return Err(ProtocolValidationError::DeadlineExpired);
+    }
     let template = runtime_template::validate_live_runtime_body(&request)?;
 
     Ok(ValidatedRuntimeRequest {

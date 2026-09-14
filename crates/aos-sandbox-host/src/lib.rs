@@ -25,6 +25,7 @@ pub mod activation;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+#[cfg(test)]
 mod observation;
 pub mod peer;
 pub mod plan;
