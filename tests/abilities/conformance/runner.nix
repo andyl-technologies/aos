@@ -477,8 +477,8 @@
       // {
         abilities = [
           "artifactReference"
-          "declarationModule"
           "define"
+          "module"
           "normalizeExportDeclaration"
           "normalizeImplementation"
           "normalizeRequirements"
@@ -554,7 +554,7 @@
       };
     in
       assert abilities.types.schemaOf "conformance Boolean" abilities.types.boolean == abilities.schemas.boolean;
-      assert builtins.attrNames abilities.declarationModule.options == ["abilities" "abilityBindings"]; {
+      assert builtins.attrNames abilities.module.options == ["aos"]; {
         implementation = abilities.normalizeImplementation artifact pinned;
         declaration = abilities.normalizeExportDeclaration "corpus" (digest "6") pinned;
         requirements = abilities.normalizeRequirements {};

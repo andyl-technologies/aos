@@ -7,10 +7,11 @@
   types,
   mkOption,
 }: let
+  moduleOptionTypes = types;
   schemas = import ./schema.nix;
   abilityTypes = import ./types.nix {
     inherit mkOption schemas;
-    moduleTypes = types;
+    moduleTypes = moduleOptionTypes;
   };
   effects = import ./effects;
   diagnostics = import ./diagnostic.nix;
@@ -1235,6 +1236,10 @@ in rec {
     transition
     ;
   types = abilityTypes;
+  module = import ./module.nix {
+    inherit mkOption;
+    moduleTypes = moduleOptionTypes;
+  };
 
   normalizeRequirements = values:
     builtins.map
@@ -1381,36 +1386,4 @@ in rec {
     interface = normalizeExport export;
   };
 
-  declarationModule = let
-    exportType = types.coercedTo types.attrs define (types.mkOptionType {
-      name = "ability export";
-      check = value: (value._type or null) == "aos-ability-export";
-    });
-    importType = types.coercedTo types.attrs request (types.mkOptionType {
-      name = "ability import";
-      check = value: (value._type or null) == "aos-ability-import";
-    });
-    bindingType = types.coercedTo types.attrs bindingReference (types.mkOptionType {
-      name = "ability binding";
-      check = value: (value._type or null) == "aos-ability-binding-reference";
-    });
-  in {
-    options = {
-      abilities.exports = mkOption {
-        type = types.attrsOf exportType;
-        default = {};
-        description = "Package-authored ability exports.";
-      };
-      abilities.imports = mkOption {
-        type = types.attrsOf importType;
-        default = {};
-        description = "Package-authored ability requests.";
-      };
-      abilityBindings = mkOption {
-        type = types.attrsOf bindingType;
-        default = {};
-        description = "Deployment-owned exact ability bindings.";
-      };
-    };
-  };
 }
