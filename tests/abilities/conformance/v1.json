@@ -3522,7 +3522,8 @@
       "resourceReference",
       "resultOf",
       "schemas",
-      "transition"
+      "transition",
+      "types"
     ],
     "effects": [
       "after",

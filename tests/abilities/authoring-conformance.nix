@@ -28,6 +28,49 @@
       })
       values));
 
+  portableRecordType = lib.abilities.types.record {
+    fields = {
+      enabled = {
+        type = lib.abilities.types.boolean;
+        default = true;
+        description = "Whether the portable record is enabled.";
+      };
+      mode = lib.abilities.types.enum ["active" "passive"];
+      name = lib.abilities.types.string {
+        maxLength = 32;
+        syntax = "local-key-v1";
+      };
+    };
+  };
+  portableRecordEvaluation = lib.evalModules {
+    modules = [
+      {
+        options.testRecord = lib.mkOption {
+          type = portableRecordType;
+        };
+        config.testRecord = {
+          mode = "active";
+          name = "example";
+        };
+      }
+    ];
+  };
+  invalidPortableRecord = builtins.tryEval (builtins.deepSeq
+    (lib.evalModules {
+      modules = [
+        {
+          options.testRecord = lib.mkOption {
+            type = portableRecordType;
+          };
+          config.testRecord = {
+            mode = "invalid";
+            name = "example";
+          };
+        }
+      ];
+    }).config.testRecord
+    true);
+
   recipeIsBounded = case: let
     arguments = case.arguments;
     depth = arguments.depth or 0;
@@ -104,6 +147,30 @@ in
   assert corpus.public_helpers.effects == builtins.attrNames lib.abilities.effects;
   assert builtins.attrNames lib.abilities.declarationModule.options
   == ["abilities" "abilityBindings"];
+  assert portableRecordEvaluation.config.testRecord
+  == {
+    enabled = true;
+    mode = "active";
+    name = "example";
+  };
+  assert lib.abilities.types.schemaOf "portable record" portableRecordType
+  == {
+    fields = {
+      enabled = {kind = "boolean";};
+      mode = {
+        kind = "string-enum";
+        values = ["active" "passive"];
+      };
+      name = {
+        kind = "string";
+        max_length = 32;
+        syntax = "local-key-v1";
+      };
+    };
+    kind = "record";
+    optional_fields = ["enabled"];
+  };
+  assert !invalidPortableRecord.success;
   assert builtins.all checkAcceptedCase nixCases;
   assert builtins.all (
     case: builtins.all (consumer: builtins.elem consumer case.consumers) ["nix" "evaluator"]
