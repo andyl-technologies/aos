@@ -6,12 +6,13 @@ The public value is a concrete answer to "what will this package do here?"
 Users should not need to navigate a whole-system graph to find a missing
 credential, unsupported manager, or incompatible provider.
 
-At the baseline, package documentation belongs to `apm docs`, not an `aos docs`
-command. AOS, APM, and APR are separate entry points. Extend the relevant
-existing surfaces rather than introducing command aliases by implication.
+`aos docs`, APM package documentation, AOS Hub, and editor integrations consume
+one shared documentation/view model. AOS, APM, and APR remain separate entry
+points, but none owns a private package-to-ability or package-to-service join.
 The [documentation implementation](../../../crates/aos-package/src/documentation.rs)
-and [shared model](../../../crates/aos-doc-model/src/lib.rs) already support
-exact package documentation and runtime/effect metadata.
+and [shared model](../../../crates/aos-doc-model/src/lib.rs) provide the existing
+integration surfaces for exact package documentation and runtime/effect
+metadata.
 
 Three kinds of information must be visibly distinguished:
 

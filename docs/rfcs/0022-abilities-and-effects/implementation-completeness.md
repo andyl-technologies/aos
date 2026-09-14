@@ -19,7 +19,7 @@ effects out of portable model/validation/inspection code.
 | Recursive implementation | Provider modules plus shared graph validator | Separately authored providers compose to admitted leaves without package-name special cases; cycles, missing ports, phase errors, and scope escapes reject |
 | Controller ownership and aggregation | Composition and transition planner | Two contributors cause one shared transition; two instances stay distinct; collisions and double controllers reject |
 | Static matching and late resolution | Shared validator/resolver with source and registry adapters | Equal canonical inputs yield equal choices and plans; ambiguity, invalid pins, conditional TLS, backtracking limits, and oscillation have deterministic outcomes |
-| Publication and legacy compatibility | Package builders, APR publication, APM readers | Exact signed ability artifacts and gates survive round trips; supported old clients reject before activation through every entry path |
+| Publication and client compatibility | Package construction, APR publication, APM readers | Exact signed ability artifacts and gates survive round trips; supported old clients reject before activation through every entry path; unreleased drafts leave no compatibility code |
 | Authority and provider admission | Policy adapter plus existing runtime providers | Mediation checks caller and provider grants; stale assignments, missing enforcement, and foreign resources fail before dependent effects |
 | Planned providers and stage handoff | Runtime orchestration and boot adapters | A planned manager becomes ready before consumer acquisition; missing root prerequisites and cyclic bootstrap fail; receiving stage safely resumes ownership |
 | Complete resource lifecycle | Provider transition constructors | Create, update, restart, no-op, drift, contribution removal, disable, replacement, and retained-target activation follow the lifecycle table |
@@ -37,148 +37,24 @@ effects out of portable model/validation/inspection code.
 | VM/fleet and release qualification | Existing test harnesses and qualification catalog | Production path is exercised with independent probes; fresh evidence binds exact subjects and required coverage; cached regression output is not release admission |
 | Optional Crucible instrumentation | AOS guest adapter and existing generic interfaces | Ordinary runtime needs no Crucible; enabled assertions/choices use the same execution; advanced campaign gates track PR #194 explicitly |
 
-The Nix schemas-and-helpers row now has one checked-in version-1 corpus with 46
-cases: 22 forced accepts and 24 exact coded rejects. It inventories the public
-request, output, method, schema, and effect helpers and exercises the same values
-through Nix authoring, the restricted evaluator, and the Rust decoders and
-validator where each surface applies. Restricted cases attempt secret reads,
-network fetches, and import-from-derivation, and cover depth, document, output,
-and work bounds. The config-evaluation gate also seeds a private Nix store from
-an explicit closure graph, verifies its inputs, and reruns the production
-evaluation twice for byte-identical output.
+Acceptance evidence is derived from the package and provider declarations
+described in the [target state](13-target-state.md). The completion report MUST
+NOT pin the current number of interfaces, methods, adapters, qualification
+cells, or fixtures. Adding or removing a provider changes the generated subject
+set; the release check proves that every resulting required subject has
+evidence.
 
-The documentation and operator-tools row has concrete shared-inspector evidence
-in the current tree. One canonical public-reference input and bounded query
-produce byte-identical `aos.ability.reference-inspection-slice/v1` output in
-the CLI, release-scoped Hub renderer, and documentation language server. The
-slice preserves typed package and interface node identities, export and
-requirement relation meanings, query bounds, a public-only disclosure class,
-and stable limitation diagnostics. It contains no deployment configuration,
-provider assignment, grant, resource observation, or live authority claim.
-The Hub binds the source reference back to its indexed commit locator before
-inspection; the editor uses references already authenticated by its local or
-Hub loader. A prose-only regression preserves the checked graph and emits no
-reload or restart decision.
+Conformance fixtures are small semantic inputs shared by Nix and Rust
+consumers. Production provider documents and matrices are generated during
+checks rather than committed as snapshots. Package-specific runtime evidence
+exercises the implementation shipped by the owning package through reusable
+harnesses and independent observations. Reference implementations are removed
+when their only purpose was to duplicate a production provider.
 
-The provider-replacement portion of the complete resource-lifecycle row uses
-the production native PostgreSQL path. The `pkgs.postgresql` derivation emits
-its authenticated ability companion from the same shared contract as the
-replacement fixtures. Its pure provider implementation is bound to its
-persistent-state format and to the exact PostgreSQL resource kind it owns.
-Structured activation omits that package's legacy exposed-unit enablement so
-the effect graph remains the sole lifecycle owner. Transition authority pins
-the stable owner, the source and candidate packages and implementations, and
-each side's live terminal handler assignment. The VM flight rejects an
-incompatible format before effects, runs a compatible replacement against a
-real PostgreSQL data directory, and verifies the changed executable while
-preserving the database system identifier and queryable rows. A second
-replacement is interrupted after PostgreSQL starts but before the outcome is
-recorded. Its atomic ledger receipt survives executor and handler loss,
-generation cleanup, and Nix-store
-garbage collection; replay reconciles the operation once, a terminal marker
-retires the receipt, and later cleanup collects the unique source artifact.
-Adoption back to the earlier implementation preserves the same durable target.
-The validator regressions separately reject missing feature declarations,
-unselected owners, foreign scopes, ambiguous or stale ledger evidence, and any
-retained owner change that lacks one exact compatible adoption contract.
-
-The build-and-library-consumption row has production evidence beyond ordinary
-startup linkage. CPython's interpreter loads its exact `_sqlite3` extension
-during an observed invocation, `zram-generator` reproduces its installed manual
-by executing the build-platform Lowdown artifact, and the eBPF LSM loader reads
-its exact immutable policy document during validation. Each package check emits
-the corresponding version-1 consumption mechanism and build/host/target
-identities, joins the exact provider and consumer artifacts to a checked ability
-graph, hashes the observed files and output, and verifies the runtime closure
-retains runtime inputs while excluding the build-only tool.
-
-The authority-and-provider-admission row also has a closed, descriptor-derived
-qualification cohort for every native method's foreign-resource rejection and
-RequiredSuccess dependency scenario. Each flight selects a provider-authored
-dependency edge, pauses its production predecessor after durable intent, changes
-authority in that provider's real live substrate, and resumes through the
-authenticated native handler. The release gate accepts the pair only when the
-operation rejects before its external effect, the exact RequiredSuccess
-successor has no execution events, and independent provider observations show
-the foreign target and successor state unchanged. Observation-only methods also
-retain the provider-authored downstream effect that the failed prerequisite
-blocked. That effect is a mutation where the provider graph has one; the
-conditional image-rollout health graph instead retains its authenticated
-settlement observation without bypassing the decision and branch guard. The
-single-machine image-rollout fixture uses a forged logical-resource mapping for
-foreign rejection and a same-machine successor for dependency blocking, while
-retaining independent boot-slot and service observations. Foreground-process
-flights run inside a real application container and bind receipt, PID, process
-group, ownership token, cgroup, namespaces, and an independent live process
-sentinel. Evidence is generated inside the freshly booted published image and
-is bound to the exact matrix cell, plan bundle, provider assignment, operation,
-journal, and live-resource oracle; checked-in or host-generated fixture output
-cannot qualify a release.
-
-The test chapters define the evidence needed for these rows. A schema fixture
-does not substitute for an enforcement test; an opaque legacy adapter does not
-establish typed guarantees; one supported provider does not establish semantic
-equivalence for other runtimes.
-
-The candidate runtime audit qualifies the shared failure controls only where
-their semantics do not depend on a provider implementation. It exercises all
-51 method cells for trusted-clock deadline expiry, cleanup failure, and release
-failure, plus the four cancellation cells whose descriptors declare no
-cancellation route. Separate candidate-linked production cohorts cover the 47
-cells with a declared route by executing each provider's cancellation handler
-and applying an exact provider-specific oracle. Routing a cancellation request
-to a generic callback does not complete these cells.
-
-Provider state qualification uses a separate two-phase production path. The
-first phase settles a live resource under one authenticated provider
-incarnation. The second phase executes the exact matrix method under a fresh
-candidate incarnation and monotonic current authority, or retains the
-checked-plan transfer rejection before that method crosses its provider effect
-boundary. Retained-target flights also require the method-specific durable
-journal, required-success settlement, and an independent provider observation.
-PostgreSQL and A/B image rollout supply authenticated persistent state-format
-contracts in this surface. Image rollout binds its durable execution journal,
-retained EFI payloads, and authenticated image identities to a versioned format,
-then proves adoption across a fresh terminal-provider incarnation for all nine
-methods. The other 37 non-rollout methods have instance lifetime because they
-own processes, manager sessions, temporary credentials, API transactions, or
-host-configuration transactions whose identity ends with the selected provider.
-Their compatible-adoption cells remain explicitly inapplicable. The surface
-projects each checked resource lifetime and
-authenticated provider state-format descriptor into its canonical digest. The
-matrix retains all 1,428 Cartesian cells and derives the 37 exact exclusions
-and reasons from that metadata. Nix, Rust, and the production evidence builder
-reject stale partitions after either contract field changes, leaving 1,391
-mandatory production cells and 5,949 postconditions. Unsupported-transfer
-siblings remain mandatory and prove the rejection side of the replacement
-invariant before provider effects.
-
-Supported cancellation is divided by production adapter because the physical
-state that establishes a safe cancellation result differs by provider:
-
-| Adapter | Declared method routes | Exact production observation |
-| --- | --- | --- |
-| `credential-delivery` | `acquire`, `deliver`, `release` | The qualified credential source is compared with the owned view, metadata record, and unrelated credential views before, during, and after cancellation. |
-| `foreground-process` | `observe`, `start`, `stop` | The disposition is bound to the exact PID, process group, ownership token, cgroup, namespaces, receipt, and a secondary process sentinel. |
-| `host-network-policy` | `apply`, `observe`, `remove` | The isolated qualified policy is compared with its exact rules and unrelated rules after the native host-resource handler returns. |
-| `host-storage` | `ensure`, `observe`, `release` | Persistent and ephemeral path identity, retention, ownership, and a foreign path are observed independently of the runtime journal. |
-| `image-rollout` | `drain`, `hold`, `observe-boot`, `observe-health`, `prepare`, `retain`, `retire`, `select`, `withdraw` | One authenticated plan per method observes the exact slot, boot selection, retained roots, drain and health state, boot files, hook facts, and kernel identity. |
-| `kubernetes-object` | `apply`, `delete`, `observe` | The live API object, ownership record, UID and resource version evidence, and an unrelated object are retained around the native handler. |
-| `managed-configuration` | `prepare`, `publish`, `release` | The managed marker, content revision, publication target, ownership, and unrelated managed files are compared around cancellation. |
-| `network-endpoint` | `materialize`, `observe`, `release` | The qualified listener and policy binding are observed with the exact endpoint reservation and unrelated listeners. |
-| `nginx-validation` | `record`, `release`, `validate` | The exact configuration, credential, storage binding, validation record, referenced bytes, and unrelated record are observed independently. |
-| `postgresql` | `materialize`, `observe`, `restart`, `start`, `stop` | The qualified cluster's service state, data identity, ownership markers, socket state, and foreign cluster are compared around cancellation. |
-| `systemd-bootstrap` | `observe-manager`, `stop` | The bootstrap provider result is bound to the exact manager boot identity, unit state, and an unrelated unit. |
-| `systemd-manager` | `observe`, `stop` | The exact unit active state, job result, ownership record, and an unrelated manager unit are observed. |
-| `service-management` | `observe`, `reload`, `restart`, `start`, `stop` | The exact logical service mapping, manager-readiness dependency, ownership record, current backend state, and an unrelated service are observed. |
-
-Every flight enters the `cancel-unsettled-attempt` boundary through the checked
-production graph. It confirms the transient service's candidate executable
-before signaling it, then retains the exact cancel route, handler entry point,
-durable journal and boundary timelines, before/unsettled/after provider state,
-unchanged foreign state, and a blocked required-success dependent. These
-records become passing evidence only when the production VM cohort executes;
-source tests remain regressions and cannot substitute for those observations.
+Every acceptance row above needs direct evidence for its stated boundary. A
+schema fixture does not establish runtime behavior, a generated manifest for an
+opaque script does not establish structured activation, and a matrix assembled
+from a second handwritten inventory does not establish production coverage.
 
 ## Required end-to-end reference fixture
 
@@ -267,20 +143,22 @@ selection, reached event, digest-bound adapter acknowledgements, and inspector
 timeline in a durable finding. Typed adaptive campaigns remain a separate PR
 #194 integration.
 
-During migration, preserve one activation owner per resource and the current
-high-level install/desired-state intent. A package switches to structured
-activation only when its required features, retained-generation behavior,
-recovery, and actual runtime provider path are qualified together. Keep legacy
-packages explicitly legacy; publication cannot claim a completed migration by
-merely generating manifests for their existing opaque scripts.
+The RFC-0022 implementation change cuts migrated packages directly to their
+final structured activation path while preserving one activation owner per
+resource and the current high-level install/desired-state intent. A package's
+required features, retained-generation behavior, recovery, and actual runtime
+provider path are qualified together before the old path is removed. The final
+tree contains no legacy classification or opaque adapter for a package migrated
+within the same change. Generating a manifest for an old script is not a
+migration.
 
 Generic package-owned services derive their activation revision after
-configuration rendering. The canonical revision material includes the runtime
-NAR identity, ability package digest, exposed-unit artifact NAR identity, and
-the exact rendered configuration projection; raw Nix store paths are excluded.
-Operators may add content digests with `revision_inputs` or force a new
-revision with `restart_token`. An explicit `revision` remains a complete manual
-override and cannot be combined with those automatic customization fields.
+configuration rendering. The canonical revision material includes the exact
+artifact identities, normalized package ability document, selected provider
+implementation, and rendered semantic configuration; raw Nix store-path
+strings are excluded. Package authors do not set ordinary revisions. Operators
+may add narrowly typed external content inputs or use one restart token to
+force reapplication.
 
 ## Details an implementor may choose
 

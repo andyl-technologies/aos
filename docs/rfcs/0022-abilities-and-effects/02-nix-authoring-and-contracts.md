@@ -21,10 +21,14 @@ a provider-selection algorithm.
 
 ## Authoring responsibilities
 
-The library provides package-local declarations for exported interfaces,
-consumer requests, lower-interface requirements, explicit deployment bindings,
-and provider-owned composition and transitions. The complete authoring example
-is in [recursive composition](03-recursive-composition.md).
+`abilities` is a first-class field of an AOS package. The library provides
+package-local declarations for provided interfaces, consumed abilities,
+lower-interface requirements, explicit deployment bindings, and provider-owned
+composition and transitions. The normalized value is available as
+`package.abilities`; a `passthru` convention or companion package model is not
+part of the public authoring API. The complete authoring rules are in the
+[target state](13-target-state.md), and a composition example is in
+[recursive composition](03-recursive-composition.md).
 
 Existing pure mappings into nginx or another owner's option tree remain a
 useful contribution mechanism. They are only one facet of an exported ability.
@@ -112,9 +116,13 @@ depending on a particular in-memory Nix value.
 
 ## Publication artifacts
 
-Extend the existing companion-artifact pattern. Integration edits should not
-rebuild an unchanged payload, and the payload must not acquire a circular
-reference to its own integration companion.
+Package construction separates the ordinary payload derivation from the
+normalized first-class ability value. Integration edits should not rebuild
+unchanged payload bytes, and the payload must not acquire a circular reference
+to its own integration artifacts. Publication resolves symbolic package-output
+selectors and binds the resulting ability document to the release using the
+same canonical artifact metadata as other release inputs. A package does not
+run a private closure scanner or manifest-rewriting derivation.
 
 The exact signed release associates:
 

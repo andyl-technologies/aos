@@ -1,10 +1,10 @@
 # Implementation contract: data, composition, and admission
 
 This chapter fixes implementation decisions that the architectural examples
-abbreviate. The rules here, the [execution contract](execution-contract.md),
-and the chapter-specific invariants govern implementations. Illustrative
-helper spelling does not override them. A change to these semantics requires
-an explicit design revision; internal module layout and error wording do not.
+abbreviate. The [target state](13-target-state.md) governs component ownership
+and data flow. The rules here, the [execution contract](execution-contract.md),
+and the chapter-specific invariants govern implementations. Illustrative helper
+spelling does not override them.
 
 ## Data ownership and schema
 
@@ -94,11 +94,13 @@ cannot use that future revision to finish the same pure Nix evaluation.
 
 ## Nix authoring and evaluation contract
 
-Keep `abilities.exports`, `abilities.imports`, and deployment-owned
-`abilityBindings` as the proposed top-level vocabulary. `define`, `resultOf`,
-and effect helpers construct data checked by the shared validators. The module
-ABI publishes their signatures together; callers cannot substitute arbitrary
-attribute sets as trusted bindings.
+`abilities` is a native `mkDerivation` field. Its package-level vocabulary is
+`abilities.provides` and `abilities.consumes`; deployment-owned
+`abilityBindings` selects among the resulting candidates. Provider modules may
+use `exports`, `imports`, `define`, `resultOf`, and effect helpers internally to
+construct data checked by the shared validators. The module ABI publishes their
+signatures together; callers cannot substitute arbitrary attribute sets as
+trusted bindings.
 
 An export declares interface/schema, aggregation group, named lower-interface
 requirements, `compose`, and `transition`. A primitive implementation declares
@@ -237,16 +239,15 @@ explicit bindings. A declared configuration is required while that provider is
 enabled; an interface without the declaration rejects one. Consumer
 contributions cannot supply, replace, or remove instance configuration.
 Disabled instances may retain the value for later re-enablement without
-evaluating the provider. Omitting both optional fields preserves the original
-version-1 encoding and identity; readers that do not implement the extension
-reject configured documents as unsupported closed-record fields.
+evaluating the provider. The initial version-1 schema includes the final
+configuration representation; no reader or identity rule for an earlier draft
+of that schema remains.
 
-Legacy single-root packages initially map to a stable `default` instance.
-Unqualified legacy contributions route only to that instance. Additional
+Every migrated package declares an explicit stable instance key. Additional
 instances require instance-aware rendering of unit names, directories,
 credential destinations, endpoints, and resource ownership before admission.
 Do not create a second instance by copying a global root that still targets
-`nginx.service` or its directories.
+another instance's service or directories.
 
 Removing a contribution recomputes its provider aggregate. Removing the last
 contribution does not implicitly disable an operator-enabled provider. Root
@@ -354,7 +355,7 @@ resource tests. Record effective limits with diagnostics/reproduction inputs.
 An implementation cannot silently truncate a graph or drop its diagnostics'
 critical failure condition to fit a limit.
 
-## Required compatibility path
+## Release compatibility boundary
 
 Use the existing package metadata `requires-features` gate, enforced by
 [`validate_supported_package_meta`](../../../crates/aos-package/src/types.rs)
@@ -374,6 +375,10 @@ of a persisted plan also validates its format/features independently.
 
 Do not advertise compatibility with clients predating the common feature gate.
 Ability-bearing releases are not delivered through a compatibility path that
-lets those clients activate them. A legacy adapter is explicitly opaque and
-keeps one lifecycle owner; it does not cause both old exposed-unit activation
-and the new effect graph to operate on the same service.
+lets those clients activate them.
+
+Compatibility applies to formats present in a supported release or persisted
+state users can possess. It does not preserve draft formats developed and
+replaced within the same unreleased change. Packages migrated by the RFC-0022
+implementation have one structured activation owner in the final tree; their
+old activation path and branch-local adapters are removed.

@@ -22,12 +22,12 @@ another component supplies behavior, resources, or a guarantee.
 | Image construction | Produce a typed bootable or userland artifact |
 | Container launch | Instantiate an artifact under a separately granted runtime contract |
 
-The current [system service documentation module](../../../modules/base/service-documentation.nix)
-projects host-owned options and units from the evaluated module graph.
-Package-owned services are discovered from their typed configuration and expose
-contracts, while payload-only and fixture dispositions remain package metadata.
-Ability contracts should gradually supply that classification and its
-explanation.
+The central documentation projection reads package abilities and the evaluated
+module fixed point. Package-owned services, selected providers, options, and
+realized units or processes retain operational provenance through that graph.
+Payload-only packages are identified by the absence of service requirements;
+fixtures belong to explicit test package sets. Documentation does not maintain
+a parallel package, option-prefix, unit-name, or disposition catalog.
 
 ## Systemd is a package and a scoped runtime provider
 
@@ -37,11 +37,13 @@ management. These identities must not be conflated. The host system manager,
 an initrd manager, a user manager, and a container-local manager are distinct
 instances with different resources and lifetimes.
 
-Packages continue to author typed systemd units. The interface includes the
-semantics they require: identity, directories, credentials, namespace setup,
-dependencies, reload behavior, restart policy, and hardening. A unit name alone
-does not select a manager. `After` ordering does not establish readiness or
-required-success behavior; those are separate dependencies in the plan.
+The systemd package exposes service lifecycle, dependency, reload, credential,
+socket, identity, directory, namespace, restart, and hardening abilities.
+Service packages consume the exact features they require and contribute a
+logical service declaration. Packages may consume an explicitly systemd-specific
+interface when they intentionally require native unit semantics. A unit name
+alone does not select a manager. `After` ordering does not establish readiness
+or required-success behavior; those are separate dependencies in the plan.
 
 The renderer must know the target environment before adding host-only sandbox
 helpers or unit directives. Current host and initrd renderers are separate

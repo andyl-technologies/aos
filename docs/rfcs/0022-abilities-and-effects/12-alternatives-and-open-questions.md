@@ -109,7 +109,7 @@ They are not left to independent interpretation by each adapter or frontend.
 | Provider selection | Explicit binding, existing pin, then operator-ordered bounded search; invalid pins fail and unordered ambiguity rejects |
 | Runtime revocation | Provider-specific enforcement contract and fresh assignments; stop/restart when needed, reject unsupported revocation guarantees |
 | Boot and executor upgrades | Grounded staged admission and explicit ownership handoff; retained recovery artifacts; unknown journal/method versions prohibit resume |
-| Legacy clients | Existing `requires-features` gate with `abilities-v1` and `ability-effects-v1`; qualify all supported entry paths |
+| Released clients | Existing `requires-features` gate with `abilities-v1` and `ability-effects-v1`; unsupported clients reject before activation, while unreleased drafts receive no compatibility path |
 | Partial publication | Independent generation axes with actual receipts; post-publication failure retains the commit and reports failed/uncertain consumers |
 | Retention and privacy | Root plans before effects and retain active/recovery inputs; protected execution evidence separate from public redacted views |
 
