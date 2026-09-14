@@ -57,6 +57,8 @@ in
     runtimeDeps = [glib qemu-crucible];
 
     preBuild = ''
+      export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
       export CRUCIBLE_QEMU_BUILD_ID=${qemu-crucible.passthru.qemuBuildIdentity}
       export CRUCIBLE_QEMU_PATCH_SERIES_HASH=${qemu-crucible.passthru.patchSeriesHash}
       export CRUCIBLE_SHMEM_HEADER_HASH=${qemu-crucible.passthru.shmemHeaderHash}
