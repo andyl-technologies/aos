@@ -21,6 +21,9 @@
   duktape,
   systemd,
   util-linux,
+  libselinux,
+  libsepol,
+  pcre2,
   gobject-introspection,
   gtk-doc,
   libxslt,
@@ -77,7 +80,12 @@ in
         docbook-xsl
         coreutils
       ]
-      ++ lib.optionals isLinuxCross [patchelf];
+      ++ lib.optionals isLinuxCross [
+        patchelf
+        libselinux
+        libsepol
+        pcre2
+      ];
     runtimeDeps = runtimeLibraries;
     propagatedDeps = [glib];
 
@@ -130,7 +138,7 @@ in
 
             # Native GLib generators also provide pkg-config metadata. Keep
             # target declarations and development linker symlinks first.
-            export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig:${gobject-introspection}/lib/pkgconfig:${dbus}/lib/pkgconfig:${systemd}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [glib.dev util-linux libselinux libsepol pcre2 gobject-introspection dbus systemd]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
             export LDFLAGS="-L${glib.dev}/lib''${LDFLAGS:+ $LDFLAGS}"
           ''
           + ''
