@@ -177,25 +177,13 @@
     abi = 1;
     descriptor = "sha256:${lib.concatStrings (builtins.genList (_: "3") 64)}";
   };
-  manualOverrideRevision = "sha256:${lib.concatStrings (builtins.genList (_: "4") 64)}";
   activationRevision = "sha256:${lib.concatStrings (builtins.genList (_: "6") 64)}";
-  supplementalRevisionInput = "sha256:${lib.concatStrings (builtins.genList (_: "7") 64)}";
   composition = serviceProvider.compose {
     provider = providerId;
     interface = rsyncInterface;
     package = providerId.package;
     activation_revision = activationRevision;
     configuration.enabled = true;
-  };
-  manualOverrideComposition = serviceProvider.compose {
-    provider = providerId;
-    interface = rsyncInterface;
-    package = providerId.package;
-    activation_revision = activationRevision;
-    configuration = {
-      enabled = true;
-      revision = manualOverrideRevision;
-    };
   };
   customizedComposition = serviceProvider.compose {
     provider = providerId;
@@ -205,7 +193,6 @@
     configuration = {
       enabled = true;
       restart_token = "restart-on-demand";
-      revision_inputs = [supplementalRevisionInput];
     };
   };
   resource = (builtins.head composition.resources).resource;
@@ -334,24 +321,23 @@
     activation_revision = activationRevision;
     configuration.enabled = false;
   };
-  invalidRevision = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
+  missingAutomaticRevision = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
       provider = providerId;
       interface = rsyncInterface;
       configuration = {
         enabled = true;
-        revision = "latest";
+        restart_token = "restart-on-demand";
       };
     })
     true);
-  ambiguousRevision = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
+  forbiddenManualRevision = builtins.tryEval (builtins.deepSeq (serviceProvider.compose {
       provider = providerId;
       interface = rsyncInterface;
       package = providerId.package;
       activation_revision = activationRevision;
       configuration = {
         enabled = true;
-        revision = manualOverrideRevision;
-        restart_token = "force-restart";
+        revision = activationRevision;
       };
     })
     true);
@@ -381,7 +367,6 @@ in
   assert inventory.legacyEffectful == [];
   assert composition.requests != [];
   assert (builtins.head composition.resources).revision == activationRevision;
-  assert (builtins.head manualOverrideComposition.resources).revision == manualOverrideRevision;
   assert (builtins.head customizedComposition.resources).revision != activationRevision;
   assert builtins.match "sha256:[0-9a-f]{64}" (builtins.head customizedComposition.resources).revision != null;
   assert start.method == "start";
@@ -432,6 +417,6 @@ in
   ];
   assert disabledComposition.resources == [];
   assert disabledComposition.controllers == [];
-  assert !invalidRevision.success;
-  assert !ambiguousRevision.success;
+  assert !missingAutomaticRevision.success;
+  assert !forbiddenManualRevision.success;
   assert !unknownInterface.success; true
