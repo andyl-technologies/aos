@@ -483,6 +483,7 @@
           "normalizeImplementation"
           "normalizeRequirements"
           "pinInterface"
+          "types"
         ];
       }
     else if operation == "compose-terminal"
@@ -552,6 +553,7 @@
         descriptor = digest "5";
       };
     in
+      assert abilities.types.schemaOf "conformance Boolean" abilities.types.boolean == abilities.schemas.boolean;
       assert builtins.attrNames abilities.declarationModule.options == ["abilities" "abilityBindings"]; {
         implementation = abilities.normalizeImplementation artifact pinned;
         declaration = abilities.normalizeExportDeclaration "corpus" (digest "6") pinned;

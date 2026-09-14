@@ -8,6 +8,10 @@
   mkOption,
 }: let
   schemas = import ./schema.nix;
+  abilityTypes = import ./types.nix {
+    inherit mkOption schemas;
+    moduleTypes = types;
+  };
   effects = import ./effects;
   diagnostics = import ./diagnostic.nix;
 
@@ -1230,6 +1234,7 @@ in rec {
     expand
     transition
     ;
+  types = abilityTypes;
 
   normalizeRequirements = values:
     builtins.map
