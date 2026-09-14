@@ -15,7 +15,7 @@ The implementation has one source of truth for each kind of information:
 | Package declarations | The package's first-class `abilities` field |
 | Available implementations | `abilities.provides` from packages selected for the target environment |
 | Consumer requirements | `abilities.consumes` from those packages and their evaluated instances |
-| Concrete configuration | The evaluated AOS module fixed point |
+| Concrete configuration | One final evaluated AOS module fixed point |
 | Provider selection | The checked binding plan |
 | Requested runtime changes | The checked effect plan |
 | Live results | The execution journal and provider observations |
@@ -39,16 +39,18 @@ package definitions
                          |
 selected packages -------+
         |
-        +--> provider candidates
-        +--> package and instance requirements
+        +--> static provider candidates and module locators
+        +--> package requirements
                          |
 explicit target environment and operator bindings
                          |
-                  checked binding plan
+             selected package/provider modules
                          |
-evaluated module fixed point and provider transitions
+       one complete AOS module fixed point
                          |
-                   checked effect plan
+concrete instances, requirements, provider definitions, and desired resources
+                         |
+             checked binding and effect plans
                          |
 selected handler artifacts and observed provider state
                          |
@@ -180,12 +182,18 @@ environment. The outer evaluator collects their static
 and bounded selection, and imports only the selected provider modules. Imports
 do not depend on the final `config` value.
 
-The AOS module fixed point then composes the admitted provider modules,
-consumer configuration, contributions, and operator policy. It produces
-concrete instances and conditional requirements. If those requirements need a
-further resolution round, the outer evaluator performs the bounded round and
-reevaluates from explicit inputs. Missing providers remain explicit deployment
-obligations or errors; arbitrary attribute lookup is not discovery.
+The AOS module fixed point then composes all deploy-time configuration: base
+features, the system variant, operator and runtime modules, admitted package
+configuration modules, admitted provider modules, contributions, and policy.
+It produces concrete instances, provider definitions, desired resources, and
+conditional requirements. No second ability-specific module set owns or merges
+configuration.
+
+If concrete requirements need another provider-selection round, the outer
+evaluator updates the selected module set and reevaluates the entire fixed point
+from explicit inputs. The final successful evaluation is the sole authoritative
+desired configuration. Missing providers remain explicit deployment obligations
+or errors; arbitrary attribute lookup is not discovery.
 
 There is no central list of production packages, providers, services, or
 activation dispositions. Absence or presence of native package abilities is
@@ -200,10 +208,16 @@ guarantees, phases, lifetimes, ownership, contribution scopes, and bounded
 composition before constructing checked values.
 
 The resolver operates on provider declarations rather than built-in package
-knowledge. The planner calls provider-owned pure composition and transition
-definitions through the restricted evaluation boundary. It emits typed desired
-resources, bindings, and effect operations. Every changed resource has one
-controller and one activation path.
+knowledge. Selected provider modules register pure composition and transition
+definitions in the module fixed point. The final evaluated projection contains
+their concrete desired resources and authenticated callable definitions.
+
+Planning may invoke a provider transition with explicit old state,
+observations, and checked bindings after configuration evaluation. That
+invocation evaluates a pure projection of the frozen provider definition; it
+does not assemble, import, or merge another configuration module graph. The
+planner emits typed bindings and effect operations. Every changed resource has
+one controller and one activation path.
 
 The model and validation layers contain no Nix runner, package manager,
 registry transport, manager connection, filesystem mutation, or handler
@@ -407,7 +421,7 @@ reimplementing semantic validation.
 | `lib.abilities` | Nix constructors, schemas, normalization, local checks | Package/provider catalog, runtime commands, documentation inventory |
 | AOS `mkDerivation` | Native `abilities` package field and payload/contract separation | Provider selection or target-specific binding |
 | Package definitions | Their provided/consumed abilities, modules, handlers, service declarations | Generic resolver behavior or self-computed artifact identity |
-| AOS module evaluator | Admitted configuration fixed point and provenance | Registry traversal or runtime effects |
+| AOS module evaluator | The sole deploy-time configuration fixed point, provider definitions, and provenance | Registry traversal, a parallel ability configuration graph, or runtime effects |
 | `aos-ability-model` | Wire types, canonical encoding, typed identities | Nix evaluation, transport, package-specific handlers |
 | `aos-ability-validate` | Pure structural and semantic validation | Filesystem mutation or provider discovery I/O |
 | `aos-ability-plan` | Pure bounded resolution, composition, and transition planning | Package-name dispatch or live effects |
@@ -434,6 +448,7 @@ The completed implementation rejects these patterns during review or checks:
 - checked-in generated provider matrices or normalized production snapshots;
 - documentation-only package-to-option or package-to-unit mappings;
 - declarative contracts depending on `jq`, shell, or another executable tool;
+- an independently assembled ability-module configuration evaluation;
 - raw store paths used as semantic revisions;
 - two activation owners for one migrated resource;
 - compatibility code for drafts introduced and replaced within the same PR;
@@ -442,7 +457,8 @@ The completed implementation rejects these patterns during review or checks:
 ## Completion condition
 
 RFC-0022 is implemented only when every supported package and system path uses
-this ownership model, all frontends consume the shared projections, production
+this ownership model, all deploy-time configuration shares one final module
+fixed point, all frontends consume the shared projections, production
 qualification is derived from package declarations, and searches plus tests
 demonstrate that the forbidden patterns are absent. A working engine beneath a
 parallel legacy package model does not satisfy the RFC.

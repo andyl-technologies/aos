@@ -14,10 +14,13 @@ exact features it needs. Backend-specific definitions stay inside the selected
 provider, so the public contract remains rich without becoming a universal
 workload schema.
 
-The module fixed point composes already-admitted definitions. The outer APM
-resolver discovers and selects provider modules. Imports MUST NOT depend on
-the final `config` being computed; arbitrary missing-attribute recursion is not
-a provider-selection algorithm.
+One final module fixed point composes base, system, operator, runtime, selected
+package, and selected provider modules. The outer APM resolver discovers and
+selects package/provider modules before each complete evaluation. Imports MUST
+NOT depend on the final `config` being computed; arbitrary missing-attribute
+recursion is not a provider-selection algorithm. A bounded selection loop may
+reevaluate the whole fixed point, but it does not create a parallel
+ability-specific configuration graph.
 
 ## Authoring responsibilities
 

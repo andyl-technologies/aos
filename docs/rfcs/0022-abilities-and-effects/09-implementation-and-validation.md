@@ -91,6 +91,11 @@ existing configuration ownership and restricted evaluation. Publish exact
 declarations by projecting the selected package fixed point and resolving
 symbolic handler artifacts through the central release pipeline.
 
+All admitted package and provider modules participate in the same complete AOS
+module fixed point as base, system, operator, and runtime modules. Pure
+transition evaluation may consume a frozen provider definition after that
+point; it must not construct a second module graph or configuration authority.
+
 Build one real nginx example with two application contributors. Its export
 must compose through independently authored managed-configuration and systemd
 providers, including credentials when configured. Exercise separate instances,
