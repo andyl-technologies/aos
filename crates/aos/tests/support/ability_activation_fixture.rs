@@ -2339,7 +2339,7 @@ fn lower_authority(suffix: &str) -> Result<(&'static str, Vec<&'static str>, &'s
         "credential" => Ok(("credentials", vec!["deliver"], "credential-view")),
         "service" => Ok((
             "services",
-            vec!["observe", "reload", "restart", "start"],
+            vec!["observe", "reload", "restart", "start", "stop"],
             "service",
         )),
         _ => bail!("unknown lower authority {suffix:?}"),

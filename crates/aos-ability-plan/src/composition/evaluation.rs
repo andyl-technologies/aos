@@ -468,16 +468,44 @@ fn validate_fragment(
                 "fragment emits an undeclared lower-interface request",
             ));
         };
-        if request.id.consumer != *provider
-            || request.id.scope != child_scope
-            || request.accepted_interfaces != requirement.accepted_interfaces
-            || request.methods != requirement.methods
-            || request.guarantees != requirement.guarantees
-            || request.lifetime > maximum_lifetime
-        {
-            return Err(invalid(
-                "fragment request differs from its declared alias, scope, interface, methods, guarantees, or lifetime authority",
+        let mut mismatches = Vec::new();
+        if request.id.consumer != *provider {
+            mismatches.push("consumer".to_string());
+        }
+        if request.id.scope != child_scope {
+            mismatches.push("scope".to_string());
+        }
+        if request.accepted_interfaces != requirement.accepted_interfaces {
+            mismatches.push("interfaces".to_string());
+        }
+        if request.methods != requirement.methods {
+            mismatches.push("methods".to_string());
+        }
+        if request.guarantees != requirement.guarantees {
+            let emitted = request
+                .guarantees
+                .iter()
+                .map(|guarantee| guarantee.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let declared = requirement
+                .guarantees
+                .iter()
+                .map(|guarantee| guarantee.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            mismatches.push(format!(
+                "guarantees (emitted [{emitted}]; declared [{declared}])"
             ));
+        }
+        if request.lifetime > maximum_lifetime {
+            mismatches.push("lifetime".to_string());
+        }
+        if !mismatches.is_empty() {
+            return Err(invalid(&format!(
+                "fragment request differs from its declared authority: {}",
+                mismatches.join(", ")
+            )));
         }
         supplied.insert(request.id.key.clone());
     }
@@ -634,9 +662,21 @@ pub(super) fn validate_desired_outputs(
                     })
                     .map(|selection| (&selection.provider_grant, selection.lifetime)),
             )
-            .map_err(|error| CompositionError::InvalidFragment {
-                provider: output.aggregate.provider.clone(),
-                reason: error.to_string(),
+            .map_err(|error| {
+                let reason = error.diagnostics().first().map_or_else(
+                    || error.to_string(),
+                    |diagnostic| {
+                        format!(
+                            "ability validation failed at /{}: {}",
+                            diagnostic.path.join("/"),
+                            diagnostic.message
+                        )
+                    },
+                );
+                CompositionError::InvalidFragment {
+                    provider: output.aggregate.provider.clone(),
+                    reason,
+                }
             })?;
     }
     Ok(())

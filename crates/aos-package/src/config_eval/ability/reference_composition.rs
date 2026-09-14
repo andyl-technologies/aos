@@ -729,17 +729,6 @@ impl Deployment<'_> {
             resources: provider_resources,
         };
 
-        let guarantees = if interface.name.as_str() == "aos.host-network-policy-effects" {
-            vec![
-                host_network_policy_loopback_tcp_egress_guarantee().unwrap(),
-                host_network_policy_loopback_tcp_ingress_guarantee().unwrap(),
-            ]
-        } else if request.id.key.as_str() == "service-terminal" {
-            vec![aos_ability_model::builtin::local_systemd_manager_guarantee().unwrap()]
-        } else {
-            Vec::new()
-        };
-
         BindingCandidate {
             key: binding_key(&request.id),
             request: request.id.clone(),
@@ -749,7 +738,7 @@ impl Deployment<'_> {
             implementation,
             caller_grant,
             provider_grant,
-            guarantees,
+            guarantees: request.guarantees.clone(),
             policy_revision: self.fixture.policy_revision,
             lifetime: ResourceLifetime::Instance,
             mediation_allowed: true,
@@ -1885,7 +1874,7 @@ fn assert_initial_effect_pipeline(
     ] {
         assert_recovery_method(recoverable, recoverable.method.as_str());
     }
-    assert!(start.recovery.reconcile.is_none());
+    assert_recovery_method(start, "observe");
     assert_eq!(
         prepare.target.resource.key.as_str(),
         "nginx-main-configuration"
@@ -1966,7 +1955,7 @@ fn assert_update_pipeline(
     assert!(!methods.contains(&"start"));
     for operation in &updated.checked_effect().document().operations {
         if operation.method.as_str() == "reload" {
-            assert!(operation.recovery.reconcile.is_none());
+            assert_recovery_method(operation, "observe");
         } else {
             assert_recovery_method(operation, operation.method.as_str());
         }
@@ -3279,7 +3268,11 @@ fn lower_authority(suffix: &str) -> (&'static str, Vec<&'static str>, &'static s
             "configuration",
         ),
         "credential" => ("credentials", vec!["acquire", "deliver"], "credential-view"),
-        "service" => ("services", vec!["observe", "reload", "start"], "service"),
+        "service" => (
+            "services",
+            vec!["observe", "reload", "restart", "start", "stop"],
+            "service",
+        ),
         _ => panic!("unknown lower-interface suffix"),
     }
 }
