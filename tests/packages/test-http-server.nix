@@ -1,4 +1,4 @@
-##! lib/testing/package-test-http-server.nix - Exposed test-http-server VM check.
+##! tests/packages/test-http-server.nix - Exposed test-http-server VM check.
 {
   pkgs,
   lib,

@@ -1006,7 +1006,7 @@
   packagePresetCheck = import ./lib/testing/package-preset.nix {
     inherit pkgs mkSystem testing;
   };
-  packageTestHttpServerCheck = import ./lib/testing/package-test-http-server.nix {
+  packageTestHttpServerCheck = import ./tests/packages/test-http-server.nix {
     inherit pkgs lib mkSystem testing;
   };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
@@ -1971,18 +1971,18 @@ in {
       inherit pkgs mkSystem;
       serverModule = ./systems/server.nix;
     };
-    nginx-config = import ./lib/testing/nginx-config.nix {
+    nginx-config = import ./tests/packages/nginx-config.nix {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
-    registry-hub = import ./lib/testing/registry-hub.nix {
+    registry-hub = import ./tests/packages/registry-hub.nix {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
-    aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
+    aos-registry-server-config = import ./tests/packages/aos-registry-server-config.nix {
       inherit pkgs lib;
     };
-    k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
+    k3s-config = import ./tests/packages/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     container = rec {
       phase0 = import ./tests/containers/phase0.nix {
