@@ -22,19 +22,27 @@
 
   exposedPackages = builtins.filter exposes packageNames;
   abilityPackages = builtins.filter hasAbility packageNames;
-  productionStructured = builtins.filter (
-    name: exposes name && activationMode name == "structured-effects"
-  ) abilityPackages;
-  productionContractsOnly = builtins.filter (
-    name: !isFixture name && activationMode name == "contracts-only"
-  ) abilityPackages;
-  testOnlyLegacy = builtins.filter (
-    name: exposes name && !hasAbility name && isFixture name
-  ) packageNames;
+  productionStructured =
+    builtins.filter (
+      name: exposes name && activationMode name == "structured-effects"
+    )
+    abilityPackages;
+  productionContractsOnly =
+    builtins.filter (
+      name: !isFixture name && activationMode name == "contracts-only"
+    )
+    abilityPackages;
+  testOnlyLegacy =
+    builtins.filter (
+      name: exposes name && !hasAbility name && isFixture name
+    )
+    packageNames;
   passive = builtins.filter (name: !exposes name && !hasAbility name) packageNames;
-  legacyEffectful = builtins.filter (
-    name: !hasAbility name && !isFixture name
-  ) exposedPackages;
+  legacyEffectful =
+    builtins.filter (
+      name: !hasAbility name && !isFixture name
+    )
+    exposedPackages;
 
   require = condition: message:
     if condition
