@@ -181,11 +181,14 @@ pub fn ReviewedPlanCard(
     on_apply: Callback<()>,
     /// Action that discards the current plan and returns to editing.
     on_cancel: Callback<()>,
+    /// Names the result of applying this plan, such as creating a draft.
+    #[prop(default = "Apply plan")]
+    action_label: &'static str,
 ) -> impl IntoView {
     let apply_label = if applying {
         "Applying…"
     } else {
-        "Apply plan"
+        action_label
     };
     view! {
         <section class="panel review-card" aria-labelledby="review-plan-title">
@@ -200,7 +203,7 @@ pub fn ReviewedPlanCard(
                 <div>
                     <h3>"Effects"</h3>
                     <ul>
-                        {plan.effects.into_iter().map(|effect| view! { <li>{effect}</li> }).collect_view()}
+                        {plan.effects.into_iter().map(|effect| view! { <li class="plan-effect">{effect}</li> }).collect_view()}
                     </ul>
                 </div>
                 {(!plan.warnings.is_empty()).then(|| view! {

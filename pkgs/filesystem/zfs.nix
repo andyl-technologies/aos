@@ -1,4 +1,9 @@
 ##! ZFS — OpenZFS filesystem and volume manager
+# OpenZFS is an out-of-tree module, so each release builds only against a
+# bounded range of kernel versions (its META file's Linux-Minimum and
+# Linux-Maximum). A release older than the pinned kernel fails deep in the
+# kernel probe with a configure error rather than at evaluation, so the pin
+# here has to move with pkgs/kernel/_source.nix.
 {
   lib,
   mkDerivation,
@@ -17,7 +22,7 @@
   dwarves,
   kernel ? null,
 }: let
-  version = "2.4.0";
+  version = "2.4.4";
 in
   mkDerivation {
     pname = "zfs";
@@ -27,7 +32,7 @@ in
       urls = [
         "https://github.com/openzfs/zfs/releases/download/zfs-${version}/zfs-${version}.tar.gz"
       ];
-      hash = "sha256-e98T3gpx2VVUwOPkfV6PUHhsMNT0tjt8WTsdEa91ye4=";
+      hash = "sha256-Kjxw1Vo3zHFhipWmDoGtZlMCAesRjTd0Hcku/PhIyLE=";
     };
 
     buildDeps =
@@ -137,6 +142,17 @@ in
           # suite. It belongs in a dedicated test output, not on a production
           # host, and its compiled fixtures retain compiler paths.
           rm -rf "$out/share/zfs/zfs-tests"
+
+          # Interactive kstat formatters written in Python. Keeping them would
+          # put a Python interpreter in the runtime closure of every image that
+          # carries ZFS, and their `/usr/bin/env` shebangs do not resolve in an
+          # AOS root. Everything they report is read from
+          # /proc/spl/kstat/zfs/arcstats, which is where the ARC metrics
+          # service takes its figures.
+          rm -f "$out/bin/dbufstat" "$out/bin/zarcstat" \
+            "$out/bin/zarcsummary" "$out/bin/zilstat"
+          rm -f "$out/share/man/man1/dbufstat.1" "$out/share/man/man1/zarcstat.1" \
+            "$out/share/man/man1/zarcsummary.1" "$out/share/man/man1/zilstat.1"
 
           # zvol_id is installed below lib/udev rather than bin/libexec, so the
           # generic fixup pass does not recognize it as a runtime executable.

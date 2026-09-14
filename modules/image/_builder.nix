@@ -210,6 +210,20 @@
           cp ${activeImageDbCerts}/active-db-certs.pem \
             rootfs/usr/lib/aos/image-trust/active-db-certs.pem
         ''}
+        # Mount points for declared ZFS datasets. systemd creates a missing
+        # Where= directory itself, but it cannot do so on the read-only root,
+        # so any dataset whose mount point sits directly on the image needs
+        # that directory to exist in the image. Points nested inside another
+        # dataset are shadowed once their parent mounts and are created there
+        # at runtime; making them here too is harmless and keeps the rule
+        # simple.
+        ${lib.concatMapStringsSep "\n" (mountPoint: ''
+            mkdir -p ${lib.escapeShellArg "rootfs${mountPoint}"}
+          '') (
+            builtins.filter (point: point != null && point != "/")
+            (map (dataset: dataset.mountPoint)
+              (builtins.attrValues system.config.aos.filesystems.zfs.datasets))
+          )}
         ${lib.optionalString (system.config.aos.apm.drainScript != null) ''
           # Draining belongs to the system that is currently serving
           # workloads, not the image selected as the next boot. Keep the hook
@@ -340,6 +354,12 @@
     import ../base/_recovery-initrd-builder.nix {
       inherit pkgs lib;
       kernel = system.config.system.build.kernel;
+      # Recovery loads the same early-boot modules as the normal initrd, so it
+      # needs the same external module packages behind them. Without the ZFS
+      # module and userland, a recovery environment cannot import the pool that
+      # holds the host's state, which is exactly when it is needed.
+      kernelModulePackages = system.config.aos.boot.initrd.modulePackages;
+      recoveryExtraPackages = system.config.aos.boot.recovery.extraPackages;
       loadModules = system.config.aos.boot.initrd.loadModules;
       dbCert = dbCertificate;
       authorizedDbCerts = "${activeImageDbCerts}/active-db-certs.pem";
