@@ -163,6 +163,11 @@ in
       }
     ];
 
+    passthru.serviceDocumentation = {
+      kind = "on-demand";
+      summary = "Per-VM TPM process launched by a VM orchestrator.";
+    };
+
     meta = {
       description = "Software TPM emulator (libtpms-backed) for QEMU vTPM";
       homepage = "https://github.com/stefanberger/swtpm";

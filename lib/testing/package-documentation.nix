@@ -6,6 +6,10 @@
 }: let
   allowedConceptualGuides = [
     "README.md"
+    "ability-inspection.md"
+    "access-control.md"
+    "auditing.md"
+    "certificates.md"
     "cli.md"
     "configuration.md"
     "deployment.md"
@@ -14,11 +18,14 @@
     "networking.md"
     "operations.md"
     "package-authoring.md"
+    "package-sandbox.md"
     "packages.md"
     "quickstart.md"
     "recovery.md"
+    "registries.md"
     "secrets.md"
-    "security.md"
+    "secure-boot.md"
+    "security-hardening.md"
     "support-status.md"
     "troubleshooting.md"
     "upgrades.md"
@@ -26,12 +33,6 @@
   observedGuides = lib.sort builtins.lessThan (lib.filter
     (name: lib.hasSuffix ".md" name)
     (builtins.attrNames (builtins.readDir ../../docs/users/aos)));
-  serviceCatalog = import ../service-documentation.nix;
-  serviceNames = builtins.attrNames serviceCatalog.services;
-  packageServiceNames =
-    builtins.filter
-    (name: serviceCatalog.services.${name}.ownership == "package")
-    serviceNames;
   managedPackageNames = lib.sort builtins.lessThan (lib.unique (
     builtins.filter
     (name: let
@@ -42,6 +43,45 @@
       && (value.value ? config || value.value ? expose))
     (builtins.attrNames pkgs)
   ));
+  packageDocumentation = name: let
+    value = builtins.tryEval pkgs.${name};
+  in
+    if value.success && builtins.isAttrs value.value
+    then value.value.passthru.serviceDocumentation or null
+    else null;
+  documentedPackageNames =
+    builtins.filter
+    (name: packageDocumentation name != null)
+    (builtins.attrNames pkgs);
+  fixtureNames =
+    builtins.filter
+    (name: ((packageDocumentation name).kind or null) == "fixture")
+    documentedPackageNames;
+  packageServiceNames =
+    builtins.filter
+    (name: !builtins.elem name fixtureNames)
+    managedPackageNames;
+  invalidPackageDocumentation =
+    builtins.filter
+    (name: let
+      documentation = packageDocumentation name;
+      kind =
+        if builtins.isAttrs documentation
+        then documentation.kind or null
+        else null;
+      summary =
+        if builtins.isAttrs documentation
+        then documentation.summary or null
+        else null;
+      managed = builtins.elem name managedPackageNames;
+    in
+      !builtins.isAttrs documentation
+      || !builtins.elem kind ["fixture" "on-demand"]
+      || !builtins.isString summary
+      || summary == ""
+      || (kind == "fixture" && !managed)
+      || (kind == "on-demand" && managed))
+    documentedPackageNames;
   unmanagedUnitPackages =
     builtins.filter
     (name: let
@@ -52,18 +92,6 @@
       && value.value ? systemdUnitInventory
       && !(value.value ? expose))
     (builtins.attrNames pkgs);
-  catalogedManagedNames = lib.sort builtins.lessThan (packageServiceNames ++ serviceCatalog.fixtures);
-  unmanagedPackages = builtins.filter (name: !builtins.elem name catalogedManagedNames) managedPackageNames;
-  staleCatalogPackages = builtins.filter (name: !builtins.elem name managedPackageNames) catalogedManagedNames;
-  invalidNonServices = builtins.filter (name: let
-    value = pkgs.${name} or null;
-  in
-    value
-    == null
-    || !builtins.isString serviceCatalog.nonServices.${name}
-    || serviceCatalog.nonServices.${name} == ""
-    || value ? config
-    || value ? expose) (builtins.attrNames serviceCatalog.nonServices);
   configurablePackages =
     builtins.map
     (name:
@@ -158,24 +186,20 @@
       --expr ${lib.escapeShellArg expression} >/dev/null
   '';
   optionSurface = lib.optionSurface system;
+  systemServices = system.config.aos.documentation.systemServices;
   prefixMatches = prefix: option:
     option.pathStr == prefix || lib.hasPrefix "${prefix}." option.pathStr;
-  systemServiceNames =
-    builtins.filter
-    (name: builtins.elem serviceCatalog.services.${name}.ownership ["platform" "system"])
-    serviceNames;
+  systemServiceNames = builtins.attrNames systemServices;
   undocumentedSystemServices =
     builtins.filter (
       name: let
-        service = serviceCatalog.services.${name};
+        service = systemServices.${name};
         selected =
           builtins.filter
           (option:
             option.visibility
             != "internal"
-            && (service.ownership
-              == "platform"
-              || builtins.any (prefix: prefixMatches prefix option) service.optionPrefixes))
+            && builtins.any (prefix: prefixMatches prefix option) service.optionPrefixes)
           optionSurface;
       in
         selected
@@ -192,14 +216,10 @@ in
       option/runtime reference belongs in configModule.documentation so every
       authenticated documentation surface is generated from one Nix authority.
     ''
-  else if serviceCatalog.schema != "aos.service-documentation/v1"
-  then throw "unsupported service documentation catalog schema"
-  else if unmanagedPackages != [] || staleCatalogPackages != []
-  then throw "managed package service inventory drift (unmanaged: ${builtins.concatStringsSep ", " unmanagedPackages}; stale: ${builtins.concatStringsSep ", " staleCatalogPackages})"
+  else if invalidPackageDocumentation != []
+  then throw "package-owned documentation dispositions are invalid: ${builtins.concatStringsSep ", " invalidPackageDocumentation}"
   else if unmanagedUnitPackages != []
   then throw "packages shipping systemd units must expose a typed service contract: ${builtins.concatStringsSep ", " unmanagedUnitPackages}"
-  else if invalidNonServices != []
-  then throw "on-demand package dispositions are missing, stale, or unexpectedly managed: ${builtins.concatStringsSep ", " invalidNonServices}"
   else if undocumentedSystemServices != []
   then throw "system service documentation is missing typed options, descriptions, or units: ${builtins.concatStringsSep ", " undocumentedSystemServices}"
   else

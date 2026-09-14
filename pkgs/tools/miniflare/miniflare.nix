@@ -346,6 +346,10 @@ in
       npmSrc
       esbuildSrc
     ];
+    passthru.serviceDocumentation = {
+      kind = "on-demand";
+      summary = "Developer command that launches a requested Worker instance.";
+    };
 
     meta = {
       description = "Cloudflare wrangler + miniflare local Workers test tooling (vendored npm closure)";

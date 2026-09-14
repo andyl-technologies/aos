@@ -43,6 +43,11 @@ in
       };
     };
 
+    passthru.serviceDocumentation = {
+      kind = "fixture";
+      summary = "Desired configuration pruning fixture.";
+    };
+
     meta = {
       description = "AOS desired package prune sequencing test payload";
       license = "Apache-2.0";

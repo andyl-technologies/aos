@@ -208,9 +208,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, ArtifactReference, ExportDeclaration, PackageDocument,
-        PackageImplementation, RequiredFeature, VersionedDocument, decode_canonical,
-        encode_canonical,
+        AbilityActivationMode, ArtifactReference, ExportDeclaration, ImplementationKind,
+        PackageDocument, PackageImplementation, ProviderImplementation, RequiredFeature,
+        VersionedDocument, decode_canonical, encode_canonical,
     };
     use aos_contract::Sha256Digest;
 
@@ -307,6 +307,20 @@ mod tests {
             nar_hash: Sha256Digest::from_bytes([2; 32]),
             closure: Sha256Digest::from_bytes([3; 32]),
         };
+        let compose_entry = aos_ability_model::LocalKey::new("compose").expect("valid entry");
+        let transition_entry = aos_ability_model::LocalKey::new("transition").expect("valid entry");
+        let provider = ProviderImplementation {
+            interface: interface_key.clone(),
+            artifact: artifact.clone(),
+            requirements: Vec::new(),
+            implementation: ImplementationKind::PureComposition {
+                compose_entry: compose_entry.clone(),
+                transition_entry: transition_entry.clone(),
+            },
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let provider_digest = provider.descriptor_digest().expect("provider digest");
         let package = PackageDocument {
             schema: PackageDocument::SCHEMA.into(),
             required_features: features.into_iter().collect(),
@@ -315,7 +329,7 @@ mod tests {
                 name: aos_ability_model::LocalKey::new("demo").expect("valid package"),
                 version: "1.0.0".into(),
                 payload: artifact.clone(),
-                source: artifact,
+                source: artifact.clone(),
             },
             artifacts: Vec::new(),
             exports: vec![
@@ -323,20 +337,23 @@ mod tests {
                     name: aos_ability_model::LocalKey::new("echo").expect("valid export"),
                     interface: interface_key.clone(),
                     aggregation: None,
-                    implementation: Sha256Digest::from_bytes([4; 32]),
+                    implementation: provider_digest,
                 },
                 ExportDeclaration {
                     name: aos_ability_model::LocalKey::new("echo-alias")
                         .expect("valid export alias"),
                     interface: interface_key.clone(),
                     aggregation: None,
-                    implementation: Sha256Digest::from_bytes([4; 32]),
+                    implementation: provider_digest,
                 },
             ],
             requirements: Vec::new(),
-            module_entry_points: BTreeMap::new(),
+            module_entry_points: BTreeMap::from([
+                (compose_entry, artifact.clone()),
+                (transition_entry, artifact),
+            ]),
             implementation: PackageImplementation {
-                providers: Vec::new(),
+                providers: vec![provider],
                 handlers: BTreeMap::new(),
             },
             ownership: Vec::new(),

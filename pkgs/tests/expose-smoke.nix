@@ -57,6 +57,11 @@ mkDerivation {
     };
   };
 
+  passthru.serviceDocumentation = {
+    kind = "fixture";
+    summary = "Package expose rendering fixture.";
+  };
+
   meta = {
     description = "Package expose renderer smoke test payload";
     license = "Apache-2.0";

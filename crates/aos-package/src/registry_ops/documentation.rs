@@ -80,8 +80,7 @@ pub(in crate::registry_ops) struct PublishedSystemDocumentation {
     pub(in crate::registry_ops) units: Vec<String>,
 }
 
-/// Extracts system-owned service options from the immutable Nix catalog in an
-/// image evaluation base library.
+/// Extracts system-owned service options from the evaluated image module graph.
 pub(in crate::registry_ops) fn derive_system_documentation(
     base_lib: StorePathInfo,
     package_name: &str,
@@ -89,22 +88,19 @@ pub(in crate::registry_ops) fn derive_system_documentation(
     let expression = format!(
         r#"let
   base = import <aos-documentation-base-lib>;
-  catalog = import <aos-documentation-base-lib/lib/service-documentation.nix>;
-  service = catalog.services.{} or null;
   evaluated = base.evalHostConfig {{}};
+  service = evaluated.config.aos.documentation.systemServices.{} or null;
   publicDeclarations = builtins.filter
     (declaration: declaration.visibility != "internal")
     (base.lib.optionSurface evaluated);
   matchesPrefix = prefix: declaration:
     declaration.pathStr == prefix || base.lib.hasPrefix "${{prefix}}." declaration.pathStr;
   selected =
-    if service == null || service.ownership == "package" then []
-    else if service.ownership == "platform" then publicDeclarations
+    if service == null then []
     else builtins.filter
       (declaration: builtins.any (prefix: matchesPrefix prefix declaration) service.optionPrefixes)
       publicDeclarations;
-in assert catalog.schema == "aos.service-documentation/v1";
-  if service == null || service.ownership == "package" then null else {{
+in if service == null then null else {{
     declarations = builtins.map (declaration: {{
       inherit (declaration)
         path pathStr typeSig type description default example visibility readOnly
@@ -158,9 +154,7 @@ in assert catalog.schema == "aos.service-documentation/v1";
         return Ok(None);
     };
     if surface.declarations.is_empty() {
-        bail!(
-            "system-owned documentation catalog entry for package '{package_name}' selects no options"
-        );
+        bail!("system-owned documentation entry for package '{package_name}' selects no options");
     }
     surface.units.sort();
     surface.units.dedup();
