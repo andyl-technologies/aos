@@ -1,47 +1,6 @@
 ##! Pure lifecycle provider for package-owned logical services.
 {spec}: let
-  serviceManagement = {
-    name = "aos.service-management";
-    abi = 1;
-    descriptor = "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff";
-  };
-  serviceFeatures = {
-    configuration = {
-      name = "aos.service.feature.configuration";
-      version = 1;
-      descriptor = "sha256:795691e4da6ad4983fdcdee83ce3241f00b880a7a75e9f8c8c1292ed10d02728";
-    };
-    dependencies = {
-      name = "aos.service.feature.dependencies";
-      version = 1;
-      descriptor = "sha256:d41d1c135639c9c64f9c2c3fd14f5155e27e69f815a50cc36070c46972ab5791";
-    };
-    identity = {
-      name = "aos.service.feature.identity";
-      version = 1;
-      descriptor = "sha256:428c991097b18a0e43ee19bc799ce735986567f7934f5c148d39c485efd1406c";
-    };
-    isolation = {
-      name = "aos.service.feature.isolation";
-      version = 1;
-      descriptor = "sha256:4890b6ca323060f281a98fd49f290ac081d9acefc9fc23e02c8981759ef3f86d";
-    };
-    readiness = {
-      name = "aos.service.feature.readiness";
-      version = 1;
-      descriptor = "sha256:8db2fc4868b442bf71a5658db9ccb181fa928029d26411d7aafa6d1cac77e3de";
-    };
-    storage = {
-      name = "aos.service.feature.storage";
-      version = 1;
-      descriptor = "sha256:b35dbbe867ce562df3efdaa7a17b7a61169df4fa0ef4dd19c76203b48b697704";
-    };
-    supervision = {
-      name = "aos.service.feature.supervision";
-      version = 1;
-      descriptor = "sha256:634cf62951642871683e93d7fc1df90b378610563955d13781d26b7a5fd91b9f";
-    };
-  };
+  inherit (spec.serviceManagement) interface features;
   operationDeadline = {
     attempt_timeout_millis = 300000;
     total_recovery_millis = 1200000;
@@ -123,9 +82,9 @@ in {
             scope = [context.provider.key];
             key = "service-terminal";
           };
-          accepted_interfaces = [serviceManagement];
+          accepted_interfaces = [interface];
           inherit (spec) methods;
-          guarantees = builtins.map (name: serviceFeatures.${name}) spec.features;
+          guarantees = builtins.map (name: features.${name}) spec.features;
           lifetime = "instance";
         }
       ];
@@ -160,7 +119,7 @@ in {
         entry:
           entry.binding.request.consumer
           == context.provider
-          && entry.binding.interface == serviceManagement
+          && entry.binding.interface == interface
           && (
             entry.binding.request.key
             == "service-terminal"
