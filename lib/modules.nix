@@ -933,8 +933,9 @@
           !builtins.isAttrs record
           || !(keys
             == ["authorization" "module" "name"]
+            || keys == ["authorization" "module" "name" "outputs"]
             || keys == ["authorization" "configRoot" "module" "name" "outputs"])
-        then throw "evalModules: packageModules entries must contain authorization/module/name or the resolver-authenticated configRoot/outputs form"
+        then throw "evalModules: packageModules entries must contain authorization/module/name, optionally with outputs, or the resolver-authenticated configRoot/outputs form"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied package provenance name"
         else if !validAuthorization record.authorization
@@ -946,7 +947,7 @@
             || !builtins.isPath record.module
             || builtins.toString record.module != "${builtins.toString configRoot}/module.nix")
         then throw "evalModules: package '${record.name}' module is not module.nix beneath its authenticated configRoot"
-        else if configRoot != null && !validPackageOutputs record.outputs
+        else if record ? outputs && !validPackageOutputs record.outputs
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
         else
           record

@@ -201,7 +201,7 @@
           value = package;
         })
         (builtins.filter
-          (package: builtins.isAttrs package && package ? abilityModule)
+          (package: builtins.isAttrs package && package ? packageModule)
           selectionEvaluation.config.environment.systemPackages)
       );
     in
@@ -210,11 +210,9 @@
     nativeAbilityPackageModules =
       builtins.map (package: {
         name = package.pname or package.name;
-        module = package.abilityModule;
-        authorization = {
-          owns = [];
-          contributes.aos = ["abilities"];
-        };
+        module = package.packageModule;
+        authorization = package.packageModuleAuthorization;
+        outputs = package.packageModuleOutputs;
       }) (builtins.filter
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))
         selectedAbilityPackages);
