@@ -19,6 +19,10 @@ use crate::{DocumentationError, Result};
 /// Exact schema discriminator for generated package ability reference data.
 pub const ABILITY_REFERENCE_SCHEMA: &str = "aos.package-ability-reference/v1";
 
+/// Required feature identifying per-export provider requirements in references.
+pub const ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1: &str =
+    "ability-reference-provider-requirements-v1";
+
 /// Maximum canonical reference size admitted by version 1.
 pub const MAX_ABILITY_REFERENCE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -35,6 +39,7 @@ pub fn ability_reference_supported_features() -> Result<BTreeSet<RequiredFeature
         aos_ability_model::builtin::AB_IMAGE_ROLLOUT_FEATURE,
         "abilities-v1",
         "ability-effects-v1",
+        ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1,
         aos_ability_model::PROVIDER_STATE_FORMAT_V1,
     ]
     .into_iter()
@@ -55,6 +60,9 @@ pub struct AbilityExportReference {
     pub aggregation: Option<AggregationContract>,
     /// Identifies the separately authenticated provider implementation.
     pub implementation: Sha256Digest,
+    /// Lists abilities consumed by this export's provider implementation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<RequirementDeclaration>,
 }
 
 /// One public operation-handler schema without its executable artifact path.
@@ -120,6 +128,9 @@ impl PackageAbilityReference {
         let manifest = encode_canonical(package).map_err(invalid_model)?;
         let manifest_sha256 = Sha256Digest::of_bytes(&manifest);
         let package_digest = package.content_digest().map_err(invalid_model)?;
+        let provider_requirements_feature =
+            RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
+                .map_err(invalid_model)?;
 
         let mut exports = Vec::with_capacity(package.exports.len());
         for export in &package.exports {
@@ -142,11 +153,32 @@ impl PackageAbilityReference {
                     export.name.as_str()
                 )));
             }
+
+            let mut matching_provider = None;
+            for provider in &package.implementation.providers {
+                let descriptor = provider.descriptor_digest().map_err(invalid_model)?;
+                if provider.interface == export.interface && descriptor == export.implementation {
+                    if matching_provider.replace(provider).is_some() {
+                        return Err(invalid(format!(
+                            "export '{}' repeats its provider implementation",
+                            export.name.as_str()
+                        )));
+                    }
+                }
+            }
+            let provider = matching_provider.ok_or_else(|| {
+                invalid(format!(
+                    "export '{}' has no exact provider implementation",
+                    export.name.as_str()
+                ))
+            })?;
+
             exports.push(AbilityExportReference {
                 name: export.name.clone(),
                 interface: interface.clone(),
                 aggregation: export.aggregation.clone(),
                 implementation: export.implementation,
+                requirements: provider.requirements.clone(),
             });
         }
 
@@ -156,9 +188,15 @@ impl PackageAbilityReference {
             .iter()
             .map(|(name, handler)| handler_reference(name, handler))
             .collect();
+        let mut required_features = package.required_features.clone();
+        if !required_features.contains(&provider_requirements_feature) {
+            required_features.push(provider_requirements_feature);
+            required_features.sort();
+        }
+
         let reference = Self {
             schema: ABILITY_REFERENCE_SCHEMA.to_string(),
-            required_features: package.required_features.clone(),
+            required_features,
             package: package.package.name.clone(),
             version: package.package.version.clone(),
             manifest_sha256,
@@ -253,8 +291,37 @@ impl PackageAbilityReference {
                     "ability reference exports are not in canonical order",
                 ));
             }
+            if export.requirements.len() > max_items {
+                return Err(invalid(
+                    "ability export requirements exceed their collection limit",
+                ));
+            }
+            let mut previous_requirement = None;
+            for requirement in &export.requirements {
+                if previous_requirement
+                    .is_some_and(|previous: &LocalKey| previous >= &requirement.alias)
+                {
+                    return Err(invalid(
+                        "ability export requirements are not in canonical order",
+                    ));
+                }
+                previous_requirement = Some(&requirement.alias);
+            }
             export.interface.content_digest().map_err(invalid_model)?;
             previous_export = Some(&export.name);
+        }
+        if self
+            .exports
+            .iter()
+            .any(|export| !export.requirements.is_empty())
+            && !self
+                .required_features
+                .iter()
+                .any(|feature| feature.as_str() == ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
+        {
+            return Err(invalid(
+                "ability export requirements require provider-requirement reference semantics",
+            ));
         }
         let mut previous_handler = None;
         for handler in &self.handlers {
@@ -310,6 +377,7 @@ fn invalid_model(error: impl std::fmt::Display) -> DocumentationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_ability_model::RequirementStrength;
 
     fn reference() -> PackageAbilityReference {
         PackageAbilityReference {
@@ -393,9 +461,53 @@ mod tests {
             interface,
             aggregation: None,
             implementation: Sha256Digest::of_bytes("implementation"),
+            requirements: Vec::new(),
         });
         let bytes = reference.canonical_json().expect("encode reference");
 
         assert!(PackageAbilityReference::from_canonical_json(&bytes, &supported).is_err());
+    }
+
+    #[test]
+    fn provider_requirements_round_trip_with_explicit_reader_semantics() {
+        let supported = ability_reference_supported_features().expect("reader features");
+        let interface = decode_canonical::<InterfaceDocument>(
+            include_bytes!("../../../tests/abilities/fixtures/interface.json"),
+            ABILITY_LIMITS_V1,
+            &supported,
+        )
+        .expect("decode interface fixture");
+        let interface_key = interface.interface_key().expect("interface key");
+        let requirement = RequirementDeclaration {
+            alias: LocalKey::new("runtime").expect("requirement alias"),
+            accepted_interfaces: vec![interface_key],
+            methods: Vec::new(),
+            guarantees: Vec::new(),
+            strength: RequirementStrength::Required,
+            fallback: None,
+        };
+        let mut reference = reference();
+        reference.required_features.push(
+            RequiredFeature::new(ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
+                .expect("provider requirements feature"),
+        );
+        reference.required_features.sort();
+        reference.exports.push(AbilityExportReference {
+            name: LocalKey::new("echo").expect("export name"),
+            interface,
+            aggregation: None,
+            implementation: Sha256Digest::of_bytes("implementation"),
+            requirements: vec![requirement],
+        });
+
+        let bytes = reference.canonical_json().expect("encode reference");
+        let decoded = PackageAbilityReference::from_canonical_json(&bytes, &supported)
+            .expect("decode provider requirements");
+        assert_eq!(decoded, reference);
+
+        reference
+            .required_features
+            .retain(|feature| feature.as_str() != ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1);
+        assert!(reference.canonical_json().is_err());
     }
 }

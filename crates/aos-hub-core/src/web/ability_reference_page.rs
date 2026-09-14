@@ -2,7 +2,9 @@
 
 use std::fmt::Write as _;
 
-use aos_ability_model::{AbilityActivationMode, RequirementStrength, ValueSchema};
+use aos_ability_model::{
+    AbilityActivationMode, RequirementDeclaration, RequirementStrength, ValueSchema,
+};
 
 use super::console_render::urlencode;
 use super::render::{escape, hash_value};
@@ -51,9 +53,21 @@ pub fn section(
             html.push_str(
                 "<p class=\"warn\">An authenticated ability reference is unavailable for this release.</p>",
             );
+            html.push_str(
+                "<h3>Exposed abilities</h3><p class=\"warn\">Exposed ability declarations are unavailable.</p>",
+            );
+            html.push_str(
+                "<h3>Consumed abilities</h3><p class=\"warn\">Consumed ability declarations are unavailable.</p>",
+            );
         } else {
             html.push_str(
                 "<p class=\"dim\">No authenticated ability contract was published for this package in this release.</p>",
+            );
+            html.push_str(
+                "<h3>Exposed abilities</h3><p class=\"dim\">This package declares no exposed abilities.</p>",
+            );
+            html.push_str(
+                "<h3>Consumed abilities</h3><p class=\"dim\">This package declares no consumed abilities.</p>",
             );
         }
         html.push_str("</section>");
@@ -105,7 +119,7 @@ pub fn section(
 
     html.push_str(&checked_graph);
 
-    html.push_str("<h3>Provides</h3>");
+    html.push_str("<h3>Exposed abilities</h3>");
     if reference.exports.is_empty() {
         html.push_str("<p class=\"dim\">This package publishes no provider interfaces.</p>");
     }
@@ -214,45 +228,26 @@ pub fn section(
         html.push_str("</article>");
     }
 
-    html.push_str("<h3>Requires</h3>");
-    if reference.requirements.is_empty() {
+    html.push_str("<h3>Consumed abilities</h3>");
+    if reference.requirements.is_empty()
+        && reference
+            .exports
+            .iter()
+            .all(|export| export.requirements.is_empty())
+    {
         html.push_str(
-            "<p class=\"dim\">This package declares no lower-interface requirements.</p>",
+            "<p class=\"dim\">This package declares no consumed ability requirements.</p>",
         );
     } else {
         html.push_str("<ul class=\"ability-requirements\">");
         for requirement in &reference.requirements {
-            let strength = match requirement.strength {
-                RequirementStrength::Required => "required",
-                RequirementStrength::Advisory => "advisory",
-            };
-            let _ = write!(
-                html,
-                "<li><strong>{}</strong> <span class=\"dim\">({strength})</span><ul>",
-                escape(requirement.alias.as_str()),
-            );
-            for accepted in &requirement.accepted_interfaces {
-                let _ = write!(
-                    html,
-                    "<li>{} ABI {} · {}</li>",
-                    escape(accepted.name.as_str()),
-                    accepted.abi,
-                    hash_value(&accepted.descriptor.to_string()),
-                );
+            requirement_item(&mut html, "package", requirement);
+        }
+        for export in &reference.exports {
+            let consumer = format!("export {}", export.name.as_str());
+            for requirement in &export.requirements {
+                requirement_item(&mut html, &consumer, requirement);
             }
-            if !requirement.methods.is_empty() {
-                let methods = requirement
-                    .methods
-                    .iter()
-                    .map(|method| format!("<code>{}</code>", escape(method.as_str())))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = write!(html, "<li>Methods: {methods}</li>");
-            }
-            if requirement.fallback.is_some() {
-                html.push_str("<li>Has an authenticated fallback output contract.</li>");
-            }
-            html.push_str("</ul></li>");
         }
         html.push_str("</ul>");
     }
@@ -312,6 +307,41 @@ pub fn section(
         "assignment health, and observed runtime state belong to deployment views.</p></section>"
     ));
     html
+}
+
+fn requirement_item(html: &mut String, consumer: &str, requirement: &RequirementDeclaration) {
+    let strength = match requirement.strength {
+        RequirementStrength::Required => "required",
+        RequirementStrength::Advisory => "advisory",
+    };
+    let _ = write!(
+        html,
+        "<li><strong>{}</strong> <span class=\"dim\">({strength}, consumed by <code>{}</code>)</span><ul>",
+        escape(requirement.alias.as_str()),
+        escape(consumer),
+    );
+    for accepted in &requirement.accepted_interfaces {
+        let _ = write!(
+            html,
+            "<li>{} ABI {} · {}</li>",
+            escape(accepted.name.as_str()),
+            accepted.abi,
+            hash_value(&accepted.descriptor.to_string()),
+        );
+    }
+    if !requirement.methods.is_empty() {
+        let methods = requirement
+            .methods
+            .iter()
+            .map(|method| format!("<code>{}</code>", escape(method.as_str())))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(html, "<li>Methods: {methods}</li>");
+    }
+    if requirement.fallback.is_some() {
+        html.push_str("<li>Has an authenticated fallback output contract.</li>");
+    }
+    html.push_str("</ul></li>");
 }
 
 fn deployment_section(html: &mut String, panel: &PackageAbilityDeploymentPanel) {
@@ -404,7 +434,11 @@ fn scalar(value: &impl serde::Serialize) -> String {
 }
 
 const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 #[cfg(test)]
@@ -484,7 +518,11 @@ mod tests {
         let interface_key = interface.interface_key().expect("interface key");
         let reference = aos_doc_model::PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.into(),
-            required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
+            required_features: vec![
+                RequiredFeature::new("abilities-v1").expect("feature"),
+                RequiredFeature::new(aos_doc_model::ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
+                    .expect("provider requirements feature"),
+            ],
             package: key("demo"),
             version: "1.2.3".into(),
             manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
@@ -495,6 +533,14 @@ mod tests {
                 interface,
                 aggregation: None,
                 implementation: Sha256Digest::of_bytes(b"implementation"),
+                requirements: vec![RequirementDeclaration {
+                    alias: key("service-runtime"),
+                    accepted_interfaces: vec![interface_key.clone()],
+                    methods: Vec::new(),
+                    guarantees: Vec::new(),
+                    strength: RequirementStrength::Required,
+                    fallback: None,
+                }],
             }],
             requirements: vec![RequirementDeclaration {
                 alias: key("network"),
@@ -598,7 +644,11 @@ mod tests {
         assert!(html.contains("Request or contribution schema"));
         assert!(html.contains("Operator-owned provider instance configuration schema"));
         assert!(html.contains("&quot;max_length&quot;: 64"));
+        assert!(html.contains("Exposed abilities"));
+        assert!(html.contains("Consumed abilities"));
         assert!(html.contains("<strong>network</strong>"));
+        assert!(html.contains("<strong>service-runtime</strong>"));
+        assert!(html.contains("consumed by <code>export server</code>"));
         assert!(html.contains("Structured effect ownership"));
         assert!(html.contains("signed package contract"));
         assert!(html.contains("public schemas only, never deployed instance values"));
@@ -610,8 +660,11 @@ mod tests {
     #[test]
     fn shared_inspector_rejection_hides_contract_and_deployment_projections() {
         let mut reference = panel();
-        reference.reference.required_features =
-            vec![RequiredFeature::new("future-reference-semantics-v1").expect("feature")];
+        reference.reference.required_features = vec![
+            RequiredFeature::new(aos_doc_model::ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1)
+                .expect("provider requirements feature"),
+            RequiredFeature::new("future-reference-semantics-v1").expect("future feature"),
+        ];
         reference.locator.canonical_json = reference
             .reference
             .canonical_json()
@@ -629,10 +682,20 @@ mod tests {
             )
         );
         assert!(!html.contains("future-reference-semantics-v1"));
-        assert!(!html.contains("Provides"));
-        assert!(!html.contains("Requires"));
+        assert!(!html.contains("Exposed abilities"));
+        assert!(!html.contains("Consumed abilities"));
         assert!(!html.contains("Private deployment state"));
         assert!(!html.contains("reporter-bearer:"));
+    }
+
+    #[test]
+    fn packages_without_companions_still_document_both_ability_directions() {
+        let html = section("demo", None, false, None, false);
+
+        assert!(html.contains("Exposed abilities"));
+        assert!(html.contains("This package declares no exposed abilities."));
+        assert!(html.contains("Consumed abilities"));
+        assert!(html.contains("This package declares no consumed abilities."));
     }
 
     #[test]

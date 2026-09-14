@@ -802,6 +802,7 @@ mod tests {
                     interface,
                     aggregation: None,
                     implementation: Sha256Digest::of_bytes("implementation"),
+                    requirements: Vec::new(),
                 }],
                 requirements: Vec::new(),
                 handlers: Vec::new(),

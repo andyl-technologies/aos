@@ -7,7 +7,9 @@
 use std::fmt::Write as _;
 
 use anyhow::Result;
-use aos_ability_model::{AbilityActivationMode, RequirementStrength, ValueSchema};
+use aos_ability_model::{
+    AbilityActivationMode, RequirementDeclaration, RequirementStrength, ValueSchema,
+};
 use aos_doc_model::PackageAbilityReference;
 
 const SCOPE_NOTICE: &str = concat!(
@@ -31,7 +33,7 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         reference.package_digest
     );
 
-    output.push_str("\nDECLARED PROVIDES\n");
+    output.push_str("\nEXPOSED ABILITIES\n");
     if reference.exports.is_empty() {
         output.push_str("No provider interfaces are declared.\n");
     }
@@ -117,37 +119,22 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
         }
     }
 
-    output.push_str("\nDECLARED REQUIRES\n");
-    if reference.requirements.is_empty() {
-        output.push_str("No lower-interface requirements are declared.\n");
+    output.push_str("\nCONSUMED ABILITIES\n");
+    if reference.requirements.is_empty()
+        && reference
+            .exports
+            .iter()
+            .all(|export| export.requirements.is_empty())
+    {
+        output.push_str("No consumed ability requirements are declared.\n");
     }
     for requirement in &reference.requirements {
-        let _ = writeln!(
-            output,
-            "declared requirement\t{}\t{}",
-            requirement.alias.as_str(),
-            requirement_strength(requirement.strength)
-        );
-        for accepted in &requirement.accepted_interfaces {
-            let _ = writeln!(
-                output,
-                "  accepted interface\t{}\tABI {}\t{}",
-                accepted.name.as_str(),
-                accepted.abi,
-                accepted.descriptor
-            );
-        }
-        if !requirement.methods.is_empty() {
-            let methods = requirement
-                .methods
-                .iter()
-                .map(|method| method.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let _ = writeln!(output, "  declared methods\t{methods}");
-        }
-        if requirement.fallback.is_some() {
-            output.push_str("  authenticated fallback output contract declared\n");
+        plain_requirement(&mut output, "package", requirement);
+    }
+    for export in &reference.exports {
+        let consumer = format!("export {}", export.name.as_str());
+        for requirement in &export.requirements {
+            plain_requirement(&mut output, &consumer, requirement);
         }
     }
 
@@ -177,6 +164,18 @@ pub(super) fn plain(reference: &PackageAbilityReference) -> Result<String> {
     Ok(output)
 }
 
+pub(super) fn plain_absent() -> String {
+    concat!(
+        "\nDECLARED ABILITIES\n------------------\n",
+        "No authenticated ability companion is declared for this package.\n",
+        "\nEXPOSED ABILITIES\n",
+        "No exposed abilities are declared.\n",
+        "\nCONSUMED ABILITIES\n",
+        "No consumed abilities are declared.\n",
+    )
+    .to_string()
+}
+
 pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
     let mut output =
         String::from("<section id=\"declared-abilities\"><h2>Declared abilities</h2><p>");
@@ -187,7 +186,7 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
     escape_html_into(&reference.manifest_sha256.to_string(), &mut output);
     output.push_str("</code></dd><dt>Package contract identity</dt><dd><code>");
     escape_html_into(&reference.package_digest.to_string(), &mut output);
-    output.push_str("</code></dd></dl><h3>Declared provides</h3>");
+    output.push_str("</code></dd></dl><h3>Exposed abilities</h3>");
 
     if reference.exports.is_empty() {
         output.push_str("<p>No provider interfaces are declared.</p>");
@@ -289,40 +288,24 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
         output.push_str("</article>");
     }
 
-    output.push_str("<h3>Declared requires</h3>");
-    if reference.requirements.is_empty() {
-        output.push_str("<p>No lower-interface requirements are declared.</p>");
+    output.push_str("<h3>Consumed abilities</h3>");
+    if reference.requirements.is_empty()
+        && reference
+            .exports
+            .iter()
+            .all(|export| export.requirements.is_empty())
+    {
+        output.push_str("<p>No consumed ability requirements are declared.</p>");
     } else {
         output.push_str("<ul>");
         for requirement in &reference.requirements {
-            output.push_str("<li>Declared requirement <strong>");
-            escape_html_into(requirement.alias.as_str(), &mut output);
-            output.push_str("</strong> (");
-            output.push_str(requirement_strength(requirement.strength));
-            output.push_str(")<ul>");
-            for accepted in &requirement.accepted_interfaces {
-                output.push_str("<li>Accepted interface <code>");
-                escape_html_into(accepted.name.as_str(), &mut output);
-                let _ = write!(output, "</code> ABI {} - <code>", accepted.abi);
-                escape_html_into(&accepted.descriptor.to_string(), &mut output);
-                output.push_str("</code></li>");
+            html_requirement(&mut output, "package", requirement);
+        }
+        for export in &reference.exports {
+            let consumer = format!("export {}", export.name.as_str());
+            for requirement in &export.requirements {
+                html_requirement(&mut output, &consumer, requirement);
             }
-            if !requirement.methods.is_empty() {
-                output.push_str("<li>Declared methods: ");
-                for (index, method) in requirement.methods.iter().enumerate() {
-                    if index > 0 {
-                        output.push_str(", ");
-                    }
-                    output.push_str("<code>");
-                    escape_html_into(method.as_str(), &mut output);
-                    output.push_str("</code>");
-                }
-                output.push_str("</li>");
-            }
-            if requirement.fallback.is_some() {
-                output.push_str("<li>Authenticated fallback output contract declared.</li>");
-            }
-            output.push_str("</ul></li>");
         }
         output.push_str("</ul>");
     }
@@ -355,12 +338,31 @@ pub(super) fn html(reference: &PackageAbilityReference) -> Result<String> {
     Ok(output)
 }
 
+pub(super) fn html_absent() -> String {
+    concat!(
+        "<section id=\"declared-abilities\"><h2>Declared abilities</h2>",
+        "<p>No authenticated ability companion is declared for this package.</p>",
+        "<h3>Exposed abilities</h3><p>No exposed abilities are declared.</p>",
+        "<h3>Consumed abilities</h3><p>No consumed abilities are declared.</p>",
+        "</section>",
+    )
+    .to_string()
+}
+
 pub(super) fn roff(reference: &PackageAbilityReference) -> Result<String> {
     let plain = plain(reference)?;
+    Ok(plain_to_roff(&plain))
+}
+
+pub(super) fn roff_absent() -> String {
+    plain_to_roff(&plain_absent())
+}
+
+fn plain_to_roff(plain: &str) -> String {
     let mut output = String::from(".SH \"DECLARED ABILITIES\"\n.nf\n");
     for line in plain
         .strip_prefix("\nDECLARED ABILITIES\n------------------\n")
-        .unwrap_or(&plain)
+        .unwrap_or(plain)
         .lines()
     {
         if line.starts_with('.') || line.starts_with('\'') {
@@ -376,7 +378,71 @@ pub(super) fn roff(reference: &PackageAbilityReference) -> Result<String> {
         output.push('\n');
     }
     output.push_str(".fi\n");
-    Ok(output)
+    output
+}
+
+fn plain_requirement(output: &mut String, consumer: &str, requirement: &RequirementDeclaration) {
+    let _ = writeln!(
+        output,
+        "declared requirement\t{}\t{}\tconsumed by {}",
+        requirement.alias.as_str(),
+        requirement_strength(requirement.strength),
+        consumer,
+    );
+    for accepted in &requirement.accepted_interfaces {
+        let _ = writeln!(
+            output,
+            "  accepted interface\t{}\tABI {}\t{}",
+            accepted.name.as_str(),
+            accepted.abi,
+            accepted.descriptor,
+        );
+    }
+    if !requirement.methods.is_empty() {
+        let methods = requirement
+            .methods
+            .iter()
+            .map(|method| method.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(output, "  declared methods\t{methods}");
+    }
+    if requirement.fallback.is_some() {
+        output.push_str("  authenticated fallback output contract declared\n");
+    }
+}
+
+fn html_requirement(output: &mut String, consumer: &str, requirement: &RequirementDeclaration) {
+    output.push_str("<li>Declared requirement <strong>");
+    escape_html_into(requirement.alias.as_str(), output);
+    output.push_str("</strong> (");
+    output.push_str(requirement_strength(requirement.strength));
+    output.push_str(") consumed by <code>");
+    escape_html_into(consumer, output);
+    output.push_str("</code><ul>");
+    for accepted in &requirement.accepted_interfaces {
+        output.push_str("<li>Accepted interface <code>");
+        escape_html_into(accepted.name.as_str(), output);
+        let _ = write!(output, "</code> ABI {} - <code>", accepted.abi);
+        escape_html_into(&accepted.descriptor.to_string(), output);
+        output.push_str("</code></li>");
+    }
+    if !requirement.methods.is_empty() {
+        output.push_str("<li>Declared methods: ");
+        for (index, method) in requirement.methods.iter().enumerate() {
+            if index > 0 {
+                output.push_str(", ");
+            }
+            output.push_str("<code>");
+            escape_html_into(method.as_str(), output);
+            output.push_str("</code>");
+        }
+        output.push_str("</li>");
+    }
+    if requirement.fallback.is_some() {
+        output.push_str("<li>Authenticated fallback output contract declared.</li>");
+    }
+    output.push_str("</ul></li>");
 }
 
 fn indented_schema(output: &mut String, schema: &ValueSchema, indent: &str) -> Result<()> {

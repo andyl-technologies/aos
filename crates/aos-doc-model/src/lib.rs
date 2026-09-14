@@ -35,8 +35,9 @@ pub use ability_nar::{
     AbilityCompanionDocuments, MAX_ABILITY_COMPANION_NAR_BYTES, decode_ability_companion_nar,
 };
 pub use ability_reference::{
-    ABILITY_REFERENCE_SCHEMA, AbilityExportReference, AbilityHandlerReference,
-    MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
+    ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1, ABILITY_REFERENCE_SCHEMA, AbilityExportReference,
+    AbilityHandlerReference, MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference,
+    ability_reference_supported_features,
 };
 pub use nar::decode_single_file_nar;
 
