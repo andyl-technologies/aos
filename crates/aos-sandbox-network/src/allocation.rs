@@ -324,6 +324,22 @@ impl NetworkAddressPairV1 {
     pub const fn prefix_length(self) -> u8 {
         self.prefix_length
     }
+
+    pub(crate) fn recover(
+        host: NetworkIpAddressV1,
+        sandbox: NetworkIpAddressV1,
+        prefix_length: u8,
+    ) -> Result<Self, NetworkAllocationError> {
+        let value = Self {
+            host,
+            sandbox,
+            prefix_length,
+        };
+        if !valid_recovered_address_pair(&value) {
+            return Err(NetworkAllocationError);
+        }
+        Ok(value)
+    }
 }
 
 /// Carries one exact route through the corresponding host peer address.
@@ -344,6 +360,19 @@ impl NetworkRouteV1 {
     #[must_use]
     pub const fn gateway(self) -> NetworkIpAddressV1 {
         self.gateway
+    }
+
+    pub(crate) fn recover(
+        destination: NetworkIpPrefixV1,
+        gateway: NetworkIpAddressV1,
+    ) -> Result<Self, NetworkAllocationError> {
+        if !destination.is_canonical() || !gateway.matches_prefix(destination) {
+            return Err(NetworkAllocationError);
+        }
+        Ok(Self {
+            destination,
+            gateway,
+        })
     }
 }
 
@@ -763,6 +792,307 @@ fn encode_prefix(prefix: NetworkIpPrefixV1) -> Vec<u8> {
             bytes.extend_from_slice(&network);
             bytes
         }
+    }
+}
+
+impl NetworkNamespacePlanV1 {
+    pub(crate) fn encode_recovery(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"AOSNNP02");
+        bytes.extend_from_slice(&self.network_handle);
+        bytes.extend_from_slice(&self.allocation_generation.to_be_bytes());
+        bytes.push(allocation_kind_code(self.kind));
+        bytes.push(u8::from(self.lease_gate_program_digest.is_some()));
+        bytes.push(u8::from(self.mtu.is_some()));
+        bytes.push(u8::from(self.host_interface_name.is_some()));
+        bytes.extend_from_slice(&(self.address_pairs.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&(self.routes.len() as u16).to_be_bytes());
+        for digest in [
+            self.profile_digest,
+            self.packet_program_digest,
+            self.enforcement_program_digest,
+        ] {
+            bytes.extend_from_slice(digest.as_bytes());
+        }
+        bytes.extend_from_slice(
+            &self
+                .lease_gate_program_digest
+                .map_or([0; 32], |value| *value.as_bytes()),
+        );
+        bytes.extend_from_slice(&self.mtu.unwrap_or(0).to_be_bytes());
+        for name in [&self.host_interface_name, &self.sandbox_interface_name] {
+            let value = name
+                .as_ref()
+                .map_or(&[][..], |name| name.as_str().as_bytes());
+            bytes.push(value.len() as u8);
+            bytes.extend_from_slice(value);
+        }
+        bytes.extend_from_slice(&self.host_mac.map_or([0; 6], NetworkMacAddressV1::octets));
+        bytes.extend_from_slice(&self.sandbox_mac.map_or([0; 6], NetworkMacAddressV1::octets));
+        for pair in &self.address_pairs {
+            bytes.extend_from_slice(&encode_address(pair.host));
+            bytes.extend_from_slice(&encode_address(pair.sandbox));
+            bytes.push(pair.prefix_length);
+        }
+        for route in &self.routes {
+            bytes.extend_from_slice(&encode_prefix(route.destination));
+            bytes.extend_from_slice(&encode_address(route.gateway));
+        }
+        bytes
+    }
+
+    pub(crate) fn decode_recovery(bytes: &[u8]) -> Result<Self, NetworkAllocationError> {
+        if bytes.len() > 65_536 || bytes.get(..8) != Some(b"AOSNNP02") {
+            return Err(NetworkAllocationError);
+        }
+        let mut cursor = 8;
+        let network_handle = allocation_take_array(bytes, &mut cursor)?;
+        let allocation_generation = u64::from_be_bytes(allocation_take_array(bytes, &mut cursor)?);
+        let kind = allocation_decode_kind(allocation_take_byte(bytes, &mut cursor)?)?;
+        let gate_present = allocation_take_bool(bytes, &mut cursor)?;
+        let mtu_present = allocation_take_bool(bytes, &mut cursor)?;
+        let interfaces_present = allocation_take_bool(bytes, &mut cursor)?;
+        let pair_count = usize::from(u16::from_be_bytes(allocation_take_array(
+            bytes,
+            &mut cursor,
+        )?));
+        let route_count = usize::from(u16::from_be_bytes(allocation_take_array(
+            bytes,
+            &mut cursor,
+        )?));
+        if pair_count > 2 || route_count > MAXIMUM_ROUTES {
+            return Err(NetworkAllocationError);
+        }
+        let profile_digest = ObjectDigest::from_bytes(allocation_take_array(bytes, &mut cursor)?);
+        let packet_program_digest =
+            ObjectDigest::from_bytes(allocation_take_array(bytes, &mut cursor)?);
+        let enforcement_program_digest =
+            ObjectDigest::from_bytes(allocation_take_array(bytes, &mut cursor)?);
+        let gate_bytes = allocation_take_array::<32>(bytes, &mut cursor)?;
+        let lease_gate_program_digest =
+            gate_present.then_some(ObjectDigest::from_bytes(gate_bytes));
+        if !gate_present && gate_bytes != [0; 32] {
+            return Err(NetworkAllocationError);
+        }
+        let mtu_value = u32::from_be_bytes(allocation_take_array(bytes, &mut cursor)?);
+        let mtu = mtu_present.then_some(mtu_value);
+        if !mtu_present && mtu_value != 0 {
+            return Err(NetworkAllocationError);
+        }
+        let host_interface_name = allocation_take_name(bytes, &mut cursor, interfaces_present)?;
+        let sandbox_interface_name = allocation_take_name(bytes, &mut cursor, interfaces_present)?;
+        let host_mac_bytes = allocation_take_array::<6>(bytes, &mut cursor)?;
+        let sandbox_mac_bytes = allocation_take_array::<6>(bytes, &mut cursor)?;
+        let host_mac = interfaces_present.then_some(NetworkMacAddressV1(host_mac_bytes));
+        let sandbox_mac = interfaces_present.then_some(NetworkMacAddressV1(sandbox_mac_bytes));
+        if !interfaces_present && (host_mac_bytes != [0; 6] || sandbox_mac_bytes != [0; 6]) {
+            return Err(NetworkAllocationError);
+        }
+        let mut address_pairs = Vec::with_capacity(pair_count);
+        for _ in 0..pair_count {
+            address_pairs.push(NetworkAddressPairV1 {
+                host: allocation_take_address(bytes, &mut cursor)?,
+                sandbox: allocation_take_address(bytes, &mut cursor)?,
+                prefix_length: allocation_take_byte(bytes, &mut cursor)?,
+            });
+        }
+        let mut routes = Vec::with_capacity(route_count);
+        for _ in 0..route_count {
+            routes.push(NetworkRouteV1 {
+                destination: allocation_take_prefix(bytes, &mut cursor)?,
+                gateway: allocation_take_address(bytes, &mut cursor)?,
+            });
+        }
+        if cursor != bytes.len()
+            || network_handle == [0; 32]
+            || allocation_generation == 0
+            || allocation_generation > MAXIMUM_RESERVATIONS
+            || profile_digest.as_bytes() == &[0; 32]
+            || packet_program_digest.as_bytes() == &[0; 32]
+            || enforcement_program_digest.as_bytes() == &[0; 32]
+        {
+            return Err(NetworkAllocationError);
+        }
+        let mut value = Self {
+            network_handle,
+            allocation_generation,
+            kind,
+            profile_digest,
+            packet_program_digest,
+            enforcement_program_digest,
+            lease_gate_program_digest,
+            mtu,
+            host_interface_name,
+            sandbox_interface_name,
+            host_mac,
+            sandbox_mac,
+            address_pairs,
+            routes,
+            digest: ObjectDigest::from_bytes([0; 32]),
+        };
+        if !valid_recovered_namespace_plan(&value) {
+            return Err(NetworkAllocationError);
+        }
+        value.digest = namespace_plan_digest(&value);
+        if value.encode_recovery() != bytes {
+            return Err(NetworkAllocationError);
+        }
+        Ok(value)
+    }
+}
+
+fn valid_recovered_namespace_plan(value: &NetworkNamespacePlanV1) -> bool {
+    let isolated = value.kind == NetworkKind::Isolated;
+    if isolated {
+        return value.lease_gate_program_digest.is_none()
+            && value.mtu.is_none()
+            && value.host_interface_name.is_none()
+            && value.sandbox_interface_name.is_none()
+            && value.host_mac.is_none()
+            && value.sandbox_mac.is_none()
+            && value.address_pairs.is_empty()
+            && value.routes.is_empty();
+    }
+    let suffix = format!("{:012x}", value.allocation_generation);
+    value.lease_gate_program_digest.is_some()
+        && value
+            .mtu
+            .is_some_and(|mtu| (MINIMUM_IPV4_MTU..=MAXIMUM_MTU).contains(&mtu))
+        && (!value
+            .address_pairs
+            .iter()
+            .any(|pair| matches!(pair.host, NetworkIpAddressV1::Ipv6(_)))
+            || value.mtu.is_some_and(|mtu| mtu >= MINIMUM_IPV6_MTU))
+        && value
+            .host_interface_name
+            .as_ref()
+            .is_some_and(|name| name.as_str() == format!("aoh{suffix}"))
+        && value
+            .sandbox_interface_name
+            .as_ref()
+            .is_some_and(|name| name.as_str() == format!("aog{suffix}"))
+        && value
+            .host_mac
+            .is_some_and(|mac| mac.octets()[0] & 0x03 == 0x02)
+        && value
+            .sandbox_mac
+            .is_some_and(|mac| mac.octets()[0] & 0x03 == 0x02)
+        && value
+            .host_mac
+            .zip(value.sandbox_mac)
+            .is_some_and(|(host, sandbox)| {
+                let host = host.octets();
+                let sandbox = sandbox.octets();
+                host != sandbox && host[..3] == sandbox[..3]
+            })
+        && !value.address_pairs.is_empty()
+        && value.address_pairs.iter().all(valid_recovered_address_pair)
+        && value.address_pairs.windows(2).all(|pair| pair[0] < pair[1])
+        && value.routes.windows(2).all(|pair| pair[0] < pair[1])
+        && value.routes.iter().all(|route| {
+            route.destination.is_canonical()
+                && value.address_pairs.iter().any(|pair| {
+                    route.gateway == pair.host && route.gateway.matches_prefix(route.destination)
+                })
+        })
+}
+
+fn valid_recovered_address_pair(pair: &NetworkAddressPairV1) -> bool {
+    match (pair.host, pair.sandbox, pair.prefix_length) {
+        (NetworkIpAddressV1::Ipv4(host), NetworkIpAddressV1::Ipv4(sandbox), 31) => {
+            u32::from_be_bytes(host).checked_add(1) == Some(u32::from_be_bytes(sandbox))
+        }
+        (NetworkIpAddressV1::Ipv6(host), NetworkIpAddressV1::Ipv6(sandbox), 127) => {
+            u128::from_be_bytes(host).checked_add(1) == Some(u128::from_be_bytes(sandbox))
+        }
+        _ => false,
+    }
+}
+
+fn allocation_take_byte(bytes: &[u8], cursor: &mut usize) -> Result<u8, NetworkAllocationError> {
+    let value = *bytes.get(*cursor).ok_or(NetworkAllocationError)?;
+    *cursor = cursor.checked_add(1).ok_or(NetworkAllocationError)?;
+    Ok(value)
+}
+fn allocation_take_bool(bytes: &[u8], cursor: &mut usize) -> Result<bool, NetworkAllocationError> {
+    match allocation_take_byte(bytes, cursor)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(NetworkAllocationError),
+    }
+}
+fn allocation_take_array<const N: usize>(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<[u8; N], NetworkAllocationError> {
+    let end = cursor.checked_add(N).ok_or(NetworkAllocationError)?;
+    let mut value = [0; N];
+    value.copy_from_slice(bytes.get(*cursor..end).ok_or(NetworkAllocationError)?);
+    *cursor = end;
+    Ok(value)
+}
+fn allocation_take_name(
+    bytes: &[u8],
+    cursor: &mut usize,
+    present: bool,
+) -> Result<Option<NetworkInterfaceNameV1>, NetworkAllocationError> {
+    let length = usize::from(allocation_take_byte(bytes, cursor)?);
+    let end = cursor.checked_add(length).ok_or(NetworkAllocationError)?;
+    let text = core::str::from_utf8(bytes.get(*cursor..end).ok_or(NetworkAllocationError)?)
+        .map_err(|_| NetworkAllocationError)?;
+    *cursor = end;
+    if present && !text.is_empty() {
+        Ok(Some(NetworkInterfaceNameV1(text.to_owned())))
+    } else if !present && text.is_empty() {
+        Ok(None)
+    } else {
+        Err(NetworkAllocationError)
+    }
+}
+fn allocation_take_address(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<NetworkIpAddressV1, NetworkAllocationError> {
+    match allocation_take_byte(bytes, cursor)? {
+        4 => Ok(NetworkIpAddressV1::Ipv4(allocation_take_array(
+            bytes, cursor,
+        )?)),
+        6 => Ok(NetworkIpAddressV1::Ipv6(allocation_take_array(
+            bytes, cursor,
+        )?)),
+        _ => Err(NetworkAllocationError),
+    }
+}
+fn allocation_take_prefix(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<NetworkIpPrefixV1, NetworkAllocationError> {
+    let family = allocation_take_byte(bytes, cursor)?;
+    let length = allocation_take_byte(bytes, cursor)?;
+    match family {
+        4 => NetworkIpPrefixV1::ipv4(allocation_take_array(bytes, cursor)?, length)
+            .map_err(|_| NetworkAllocationError),
+        6 => NetworkIpPrefixV1::ipv6(allocation_take_array(bytes, cursor)?, length)
+            .map_err(|_| NetworkAllocationError),
+        _ => Err(NetworkAllocationError),
+    }
+}
+fn allocation_kind_code(kind: NetworkKind) -> u8 {
+    match kind {
+        NetworkKind::Isolated => 1,
+        NetworkKind::Project => 2,
+        NetworkKind::Outbound => 3,
+        NetworkKind::Published => 4,
+        NetworkKind::Host => 5,
+    }
+}
+fn allocation_decode_kind(value: u8) -> Result<NetworkKind, NetworkAllocationError> {
+    match value {
+        1 => Ok(NetworkKind::Isolated),
+        2 => Ok(NetworkKind::Project),
+        3 => Ok(NetworkKind::Outbound),
+        4 => Ok(NetworkKind::Published),
+        _ => Err(NetworkAllocationError),
     }
 }
 

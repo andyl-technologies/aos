@@ -525,6 +525,150 @@ const fn protocol_code(protocol: NetworkTransportProtocolV1) -> u8 {
     }
 }
 
+impl NetworkPolicyProgramV1 {
+    pub(crate) fn encode_recovery(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"AOSNPP01");
+        bytes.extend_from_slice(&[
+            network_kind_code(self.kind),
+            u8::from(self.lease_gate_program_digest.is_some()),
+        ]);
+        bytes.extend_from_slice(&(self.endpoints.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(self.enforcement_program_digest.as_bytes());
+        bytes.extend_from_slice(
+            &self
+                .lease_gate_program_digest
+                .map_or([0; 32], |value| *value.as_bytes()),
+        );
+        for endpoint in &self.endpoints {
+            bytes.extend_from_slice(endpoint.endpoint_id.as_bytes());
+            bytes.push(endpoint.flows.len() as u8);
+            for flow in &endpoint.flows {
+                let encoded = encode_flow(*flow);
+                bytes.push(encoded.len() as u8);
+                bytes.extend_from_slice(&encoded);
+            }
+        }
+        bytes
+    }
+
+    pub(crate) fn decode_recovery(bytes: &[u8]) -> Result<Self, NetworkPolicyProgramError> {
+        if bytes.len() > 1_048_576 || bytes.get(..8) != Some(b"AOSNPP01") {
+            return Err(NetworkPolicyProgramError);
+        }
+        let mut cursor = 8;
+        let kind = decode_kind(take_byte(bytes, &mut cursor)?)?;
+        let gate_present = take_byte(bytes, &mut cursor)?;
+        if gate_present > 1 {
+            return Err(NetworkPolicyProgramError);
+        }
+        let endpoint_count = usize::from(take_u16(bytes, &mut cursor)?);
+        if endpoint_count > MAXIMUM_ENDPOINTS {
+            return Err(NetworkPolicyProgramError);
+        }
+        let enforcement = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
+        let gate_bytes = take_array::<32>(bytes, &mut cursor)?;
+        let gate = (gate_present == 1).then_some(ObjectDigest::from_bytes(gate_bytes));
+        if gate_present == 0 && gate_bytes != [0; 32] {
+            return Err(NetworkPolicyProgramError);
+        }
+        let mut endpoints = Vec::with_capacity(endpoint_count);
+        for _ in 0..endpoint_count {
+            let id = NetworkEndpointId::from_bytes(take_array(bytes, &mut cursor)?);
+            let count = usize::from(take_byte(bytes, &mut cursor)?);
+            if count > MAXIMUM_FLOWS_PER_ENDPOINT {
+                return Err(NetworkPolicyProgramError);
+            }
+            let mut flows = Vec::with_capacity(count);
+            for _ in 0..count {
+                let length = usize::from(take_byte(bytes, &mut cursor)?);
+                let end = cursor
+                    .checked_add(length)
+                    .ok_or(NetworkPolicyProgramError)?;
+                let encoded = bytes.get(cursor..end).ok_or(NetworkPolicyProgramError)?;
+                cursor = end;
+                flows.push(decode_flow(encoded)?);
+            }
+            endpoints.push(NetworkEndpointPolicyV1::new(id, flows)?);
+        }
+        if cursor != bytes.len() {
+            return Err(NetworkPolicyProgramError);
+        }
+        let value = Self::new(kind, enforcement, gate, endpoints)?;
+        if value.encode_recovery() != bytes {
+            return Err(NetworkPolicyProgramError);
+        }
+        Ok(value)
+    }
+}
+
+fn take_byte(bytes: &[u8], cursor: &mut usize) -> Result<u8, NetworkPolicyProgramError> {
+    let value = *bytes.get(*cursor).ok_or(NetworkPolicyProgramError)?;
+    *cursor = cursor.checked_add(1).ok_or(NetworkPolicyProgramError)?;
+    Ok(value)
+}
+
+fn take_u16(bytes: &[u8], cursor: &mut usize) -> Result<u16, NetworkPolicyProgramError> {
+    Ok(u16::from_be_bytes(take_array(bytes, cursor)?))
+}
+
+fn take_array<const N: usize>(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<[u8; N], NetworkPolicyProgramError> {
+    let end = cursor.checked_add(N).ok_or(NetworkPolicyProgramError)?;
+    let mut value = [0; N];
+    value.copy_from_slice(bytes.get(*cursor..end).ok_or(NetworkPolicyProgramError)?);
+    *cursor = end;
+    Ok(value)
+}
+
+fn decode_flow(bytes: &[u8]) -> Result<NetworkFlowPolicyV1, NetworkPolicyProgramError> {
+    let mut cursor = 0;
+    let direction = match take_byte(bytes, &mut cursor)? {
+        1 => NetworkFlowDirectionV1::Ingress,
+        2 => NetworkFlowDirectionV1::Egress,
+        _ => return Err(NetworkPolicyProgramError),
+    };
+    let protocol = match take_byte(bytes, &mut cursor)? {
+        1 => NetworkTransportProtocolV1::Tcp,
+        2 => NetworkTransportProtocolV1::Udp,
+        3 => NetworkTransportProtocolV1::IcmpV4,
+        4 => NetworkTransportProtocolV1::IcmpV6,
+        _ => return Err(NetworkPolicyProgramError),
+    };
+    let family = take_byte(bytes, &mut cursor)?;
+    let length = take_byte(bytes, &mut cursor)?;
+    let prefix = match family {
+        4 => NetworkIpPrefixV1::ipv4(take_array(bytes, &mut cursor)?, length)?,
+        6 => NetworkIpPrefixV1::ipv6(take_array(bytes, &mut cursor)?, length)?,
+        _ => return Err(NetworkPolicyProgramError),
+    };
+    let ports = match take_byte(bytes, &mut cursor)? {
+        0 => None,
+        1 => Some(NetworkPortRangeV1::new(
+            take_u16(bytes, &mut cursor)?,
+            take_u16(bytes, &mut cursor)?,
+        )?),
+        _ => return Err(NetworkPolicyProgramError),
+    };
+    if cursor != bytes.len() {
+        return Err(NetworkPolicyProgramError);
+    }
+    NetworkFlowPolicyV1::new(direction, protocol, prefix, ports)
+}
+
+fn decode_kind(value: u8) -> Result<NetworkKind, NetworkPolicyProgramError> {
+    match value {
+        1 => Ok(NetworkKind::Isolated),
+        2 => Ok(NetworkKind::Project),
+        3 => Ok(NetworkKind::Outbound),
+        4 => Ok(NetworkKind::Published),
+        5 => Ok(NetworkKind::Host),
+        _ => Err(NetworkPolicyProgramError),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
