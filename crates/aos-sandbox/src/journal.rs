@@ -22,6 +22,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use aos_sandbox_core::OperationId;
 use rustix::fs::{
@@ -36,6 +37,7 @@ const HEADER_BYTES: usize = 72;
 const CHECKSUM_OFFSET: usize = 40;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.journal.transaction.v1\0";
 const FRAME_DOMAIN: &[u8] = b"aos.sandbox.journal.frame.v1\0";
+const AUTHORITY_PREFLIGHT_DOMAIN: &[u8] = b"aos.sandbox.journal.authority-preflight.v1\0";
 const IDEMPOTENCY_VALUE_BYTES: usize = 48;
 const MAXIMUM_PROTECTED_COMPONENT_BYTES: usize = 255;
 const MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES: usize = 200;
@@ -416,6 +418,15 @@ pub enum JournalError {
     /// A protected path, owner, file type, or mode violates its boundary.
     #[error("protected journal storage boundary is invalid")]
     ProtectedBoundary,
+    /// A dedicated authority journal contains a record in another namespace.
+    #[error("protected authority journal contains a foreign namespace")]
+    ForeignAuthorityNamespace,
+    /// An authority token does not describe this journal's current snapshot.
+    #[error("protected authority snapshot is stale or belongs to another journal")]
+    StaleAuthoritySnapshot,
+    /// A preflight token was presented for a different transaction sequence.
+    #[error("protected authority preflight does not match the supplied transactions")]
+    AuthorityPreflightMismatch,
     /// The kernel cannot enforce the protected opener's resolution policy.
     #[error("protected journal opening requires supported, permitted openat2 resolution")]
     UnsupportedProtectedOpen,
@@ -472,12 +483,56 @@ pub struct Journal {
     next_sequence: u64,
     committed_transactions: usize,
     transaction_ids: BTreeSet<[u8; 16]>,
+    // Deleted records remain provenance until compaction establishes a new boundary.
+    committed_namespaces: BTreeSet<RecordNamespace>,
     state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     materialized_bytes: usize,
     idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
     poisoned: bool,
     protected: Option<ProtectedJournalLocation>,
+    authority_instance: Arc<JournalAuthorityInstance>,
 }
+
+/// Grants scoped access to one closed authority namespace in a protected journal.
+///
+/// The guard can only be constructed by [`Journal::claim_protected_authority`].
+/// Claiming rejects every materialized record and every committed namespace
+/// since the last compaction outside the selected namespace. Transactions
+/// submitted through the guard cannot name another namespace. Every operation
+/// checks journal health and retained protected-open provenance. Values and
+/// iterators borrowed through the guard cannot remain live across a commit or
+/// another mutable operation.
+#[must_use = "a protected authority claim must be used while its journal borrow is active"]
+pub struct ProtectedJournalAuthority<'journal> {
+    journal: &'journal mut Journal,
+    namespace: RecordNamespace,
+}
+
+/// Proves the protected authority snapshot observed at one journal sequence.
+///
+/// This token is opaque and bound to the exact in-memory journal instance and
+/// namespace that minted it. Use
+/// [`ProtectedJournalAuthority::validate_snapshot_for_effect`] immediately
+/// before relying on copied snapshot state at an effect boundary.
+#[must_use = "an authority snapshot token must be validated at its use boundary"]
+pub struct ProtectedJournalSnapshot {
+    instance: Arc<JournalAuthorityInstance>,
+    namespace: RecordNamespace,
+    sequence: u64,
+}
+
+/// Proves successful preflight at one protected authority snapshot.
+///
+/// This opaque token is bound to the exact in-memory journal instance,
+/// namespace, sequence, and ordered transaction contents for which preflight
+/// completed. It becomes stale after any intervening commit.
+#[must_use = "a preflight token must be validated at its effect boundary"]
+pub struct ProtectedJournalPreflight {
+    snapshot: ProtectedJournalSnapshot,
+    transaction_digest: [u8; 32],
+}
+
+struct JournalAuthorityInstance;
 
 struct ProtectedJournalLocation {
     directory: File,
@@ -570,11 +625,13 @@ impl Journal {
                 next_sequence: replay.next_sequence,
                 committed_transactions: replay.committed_transactions,
                 transaction_ids: replay.transaction_ids,
+                committed_namespaces: replay.committed_namespaces,
                 state: replay.state,
                 materialized_bytes: replay.materialized_bytes,
                 idempotency: replay.idempotency,
                 poisoned: false,
                 protected: None,
+                authority_instance: Arc::new(JournalAuthorityInstance),
             },
             report,
         ))
@@ -724,6 +781,7 @@ impl Journal {
                 next_sequence: replay.next_sequence,
                 committed_transactions: replay.committed_transactions,
                 transaction_ids: replay.transaction_ids,
+                committed_namespaces: replay.committed_namespaces,
                 state: replay.state,
                 materialized_bytes: replay.materialized_bytes,
                 idempotency: replay.idempotency,
@@ -733,17 +791,19 @@ impl Journal {
                     name: name.to_owned(),
                     expected_uid,
                 }),
+                authority_instance: Arc::new(JournalAuthorityInstance),
             },
             report,
         ))
     }
 
-    /// Rejects authority reads after an ambiguous durable mutation.
+    /// Reports whether this journal handle remains healthy.
     ///
     /// Materialized values deliberately remain available for diagnostics after
     /// an I/O failure, but they may precede a transaction that reached disk.
-    /// Authority consumers must use this guard before reading, including when
-    /// rebuilding a facade around the same exclusively borrowed journal.
+    /// This health check alone does not establish protected, current authority.
+    /// External authority owners should use [`Self::claim_protected_authority`].
+    ///
     /// # Errors
     ///
     /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation.
@@ -753,6 +813,44 @@ impl Journal {
         } else {
             Ok(())
         }
+    }
+
+    /// Claims this protected journal for one closed authority namespace.
+    ///
+    /// The claim is unavailable for journals opened through [`Self::open`] and
+    /// fails when any materialized record or committed history since the last
+    /// compaction belongs to another namespace. The returned guard retains an
+    /// exclusive borrow and removes namespace choice from reads. It also
+    /// rejects transactions containing foreign records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::ProtectedBoundary`] when this journal was not
+    /// opened through a protected opener, or [`JournalError::Poisoned`] after
+    /// an ambiguous durable mutation. Returns
+    /// [`JournalError::ForeignAuthorityNamespace`] when the journal contains
+    /// committed history or materialized state outside `namespace`.
+    pub fn claim_protected_authority(
+        &mut self,
+        namespace: RecordNamespace,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        let has_foreign_history = self
+            .committed_namespaces
+            .iter()
+            .any(|committed_namespace| *committed_namespace != namespace);
+        let has_foreign_state = self
+            .state
+            .keys()
+            .any(|(record_namespace, _)| *record_namespace != namespace);
+        if has_foreign_history || has_foreign_state {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+
+        Ok(ProtectedJournalAuthority {
+            journal: self,
+            namespace,
+        })
     }
 
     /// Requires retained protected storage provenance before resolving authority.
@@ -804,6 +902,10 @@ impl Journal {
     }
 
     /// Reports whether replay produced no materialized record in any namespace.
+    ///
+    /// This diagnostic view remains available after an ambiguous I/O failure
+    /// and does not establish protected, current authority. Authority owners
+    /// should use [`ProtectedJournalAuthority::is_materialized_empty`].
     #[must_use]
     pub fn is_materialized_empty(&self) -> bool {
         self.state.is_empty()
@@ -814,13 +916,18 @@ impl Journal {
     /// The value starts at one for an empty journal and advances only after a
     /// transaction is durably committed. Inventory producers may therefore use
     /// it as a nonzero watermark without implying that an empty journal has a
-    /// committed frame.
+    /// committed frame. This diagnostic value remains available after poison;
+    /// it is not an authority token. Authority owners should use
+    /// [`ProtectedJournalAuthority::snapshot`].
     #[must_use]
     pub const fn snapshot_sequence(&self) -> u64 {
         self.next_sequence
     }
 
-    /// Resolves a caller key against durable semantic request identity.
+    /// Diagnostically resolves a caller key against materialized request identity.
+    ///
+    /// This view remains available after poison and does not establish current
+    /// authority.
     #[must_use]
     pub fn check_idempotency(
         &self,
@@ -909,6 +1016,8 @@ impl Journal {
         self.next_sequence = following_sequence;
         self.committed_transactions += 1;
         self.transaction_ids.insert(transaction.id);
+        self.committed_namespaces
+            .extend(transaction.records().iter().map(JournalRecord::namespace));
 
         Ok(CommitResult {
             commit_sequence,
@@ -920,10 +1029,10 @@ impl Journal {
     ///
     /// This performs the same structural, transaction-count, materialized-view,
     /// sequence, and append-length checks as [`Self::commit`] against a cloned
-    /// view. It does not write or reserve bytes. The result remains authoritative
-    /// while this exclusively locked journal has no unmodeled intervening
-    /// commits. That lets a sole controller budget all crash phases before
-    /// starting an irreversible effect.
+    /// view. It does not write or reserve bytes, so its result is advisory and
+    /// can be invalidated by an intervening commit. Protected authority owners
+    /// should use [`ProtectedJournalAuthority::preflight_transactions`] and
+    /// validate its opaque token at the dependent effect boundary.
     ///
     /// # Errors
     ///
@@ -986,6 +1095,12 @@ impl Journal {
 
     /// Rewrites the materialized state into an atomically installed journal.
     ///
+    /// A successful compaction establishes a new canonical materialization
+    /// boundary. Namespace history removed by compaction no longer participates
+    /// in later protected-authority claims. Compaction also rotates the
+    /// in-memory authority identity, making every earlier snapshot and
+    /// preflight token stale even when the replacement reuses a sequence value.
+    ///
     /// # Errors
     ///
     /// Returns [`JournalError`] when the compacted state exceeds transaction
@@ -1007,9 +1122,11 @@ impl Journal {
             self.next_sequence = replay.next_sequence;
             self.committed_transactions = replay.committed_transactions;
             self.transaction_ids = replay.transaction_ids;
+            self.committed_namespaces = replay.committed_namespaces;
             self.state = replay.state;
             self.materialized_bytes = replay.materialized_bytes;
             self.idempotency = replay.idempotency;
+            self.authority_instance = Arc::new(JournalAuthorityInstance);
             return Ok(());
         }
         let temporary = sibling_with_suffix(&self.path, ".compact.tmp");
@@ -1035,11 +1152,249 @@ impl Journal {
         self.next_sequence = replay.next_sequence;
         self.committed_transactions = replay.committed_transactions;
         self.transaction_ids = replay.transaction_ids;
+        self.committed_namespaces = replay.committed_namespaces;
         self.state = replay.state;
         self.materialized_bytes = replay.materialized_bytes;
         self.idempotency = replay.idempotency;
+        self.authority_instance = Arc::new(JournalAuthorityInstance);
         Ok(())
     }
+}
+
+impl ProtectedJournalAuthority<'_> {
+    /// Returns the current authority value for a logical key.
+    ///
+    /// The returned value borrows this guard, so it cannot remain live across a
+    /// commit or another mutable authority operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation,
+    /// or [`JournalError::ProtectedBoundary`] if retained protected-open
+    /// provenance is absent.
+    pub fn get(&self, key: &[u8]) -> Result<Option<&[u8]>, JournalError> {
+        self.journal.ensure_protected_authority()?;
+        Ok(self.journal.get(self.namespace, key))
+    }
+
+    /// Iterates current authority records by bytewise key.
+    ///
+    /// The iterator borrows this guard, so it cannot remain live across a
+    /// commit or another mutable authority operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation,
+    /// or [`JournalError::ProtectedBoundary`] if retained protected-open
+    /// provenance is absent.
+    pub fn records(&self) -> Result<impl Iterator<Item = (&[u8], &[u8])>, JournalError> {
+        self.journal.ensure_protected_authority()?;
+        Ok(self.journal.records(self.namespace))
+    }
+
+    /// Reports whether current authority contains no materialized records.
+    ///
+    /// This supports fail-closed initialization of a dedicated authority
+    /// journal without treating diagnostic state from a poisoned handle as
+    /// authoritative.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation,
+    /// or [`JournalError::ProtectedBoundary`] if retained protected-open
+    /// provenance is absent.
+    pub fn is_materialized_empty(&self) -> Result<bool, JournalError> {
+        self.journal.ensure_protected_authority()?;
+        Ok(self.journal.is_materialized_empty())
+    }
+
+    /// Captures an opaque token for the current authority snapshot.
+    ///
+    /// The token carries no authority by itself. Consumers must validate it
+    /// immediately before an effect that depends on state copied from this
+    /// snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation,
+    /// or [`JournalError::ProtectedBoundary`] if retained protected-open
+    /// provenance is absent.
+    pub fn snapshot(&self) -> Result<ProtectedJournalSnapshot, JournalError> {
+        self.journal.ensure_protected_authority()?;
+        Ok(self.current_snapshot())
+    }
+
+    /// Validates a snapshot token immediately before an authority-bound effect.
+    ///
+    /// Validation checks journal health, the exact in-memory journal instance,
+    /// the claimed namespace, and the current sequence. A successful check is
+    /// therefore invalidated by every intervening commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation,
+    /// [`JournalError::ProtectedBoundary`] when this journal lacks retained
+    /// protected-open provenance, or [`JournalError::StaleAuthoritySnapshot`]
+    /// when `snapshot` belongs to another journal or namespace or its sequence
+    /// is no longer current.
+    pub fn validate_snapshot_for_effect(
+        &self,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.journal.ensure_protected_authority()?;
+        self.validate_snapshot(snapshot)
+    }
+
+    /// Validates ordered authority transactions against the current journal.
+    ///
+    /// Every record must belong to the namespace claimed by this guard. The
+    /// returned token records the exact journal instance and sequence at which
+    /// validation completed. Preflight remains advisory until the token is
+    /// validated at the corresponding effect boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError`] if protected current authority is unavailable
+    /// or any transaction would fail the journal's commit validation.
+    pub fn preflight_transactions(
+        &self,
+        transactions: &[JournalTransaction],
+    ) -> Result<ProtectedJournalPreflight, JournalError> {
+        self.journal.ensure_protected_authority()?;
+        self.validate_transaction_namespaces(transactions)?;
+        self.journal.preflight_transactions(transactions)?;
+
+        Ok(ProtectedJournalPreflight {
+            snapshot: self.current_snapshot(),
+            transaction_digest: authority_preflight_digest(transactions),
+        })
+    }
+
+    /// Validates a preflight token immediately before its dependent effect.
+    ///
+    /// Validation checks journal health, the exact in-memory journal instance,
+    /// the claimed namespace, the current sequence, and the exact ordered
+    /// transaction contents supplied to preflight. It fails after any
+    /// intervening commit, including one made through this guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation,
+    /// [`JournalError::ProtectedBoundary`] when this journal lacks retained
+    /// protected-open provenance,
+    /// [`JournalError::ForeignAuthorityNamespace`] when any supplied
+    /// transaction record belongs to another namespace, or
+    /// [`JournalError::StaleAuthoritySnapshot`] when `preflight` belongs to
+    /// another journal or namespace or its sequence is no longer current.
+    /// Returns
+    /// [`JournalError::AuthorityPreflightMismatch`] when `transactions` differ
+    /// from the preflighted sequence.
+    pub fn validate_preflight_for_effect(
+        &self,
+        preflight: &ProtectedJournalPreflight,
+        transactions: &[JournalTransaction],
+    ) -> Result<(), JournalError> {
+        self.journal.ensure_protected_authority()?;
+        self.validate_transaction_namespaces(transactions)?;
+        self.validate_snapshot(&preflight.snapshot)?;
+        if preflight.transaction_digest != authority_preflight_digest(transactions) {
+            return Err(JournalError::AuthorityPreflightMismatch);
+        }
+
+        Ok(())
+    }
+
+    /// Appends and synchronously commits one authority transaction.
+    ///
+    /// Every record must belong to the namespace claimed by this guard. A
+    /// durability failure poisons the underlying journal; every subsequent
+    /// operation through this guard will then fail its health check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError`] if protected current authority is unavailable,
+    /// transaction validation fails, or the durable append cannot complete.
+    pub fn commit(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<CommitResult, JournalError> {
+        self.journal.ensure_protected_authority()?;
+        self.validate_transaction_namespace(transaction)?;
+        self.journal.commit(transaction)
+    }
+
+    fn current_snapshot(&self) -> ProtectedJournalSnapshot {
+        ProtectedJournalSnapshot {
+            instance: Arc::clone(&self.journal.authority_instance),
+            namespace: self.namespace,
+            sequence: self.journal.snapshot_sequence(),
+        }
+    }
+
+    fn validate_snapshot(&self, snapshot: &ProtectedJournalSnapshot) -> Result<(), JournalError> {
+        if !Arc::ptr_eq(&self.journal.authority_instance, &snapshot.instance)
+            || snapshot.namespace != self.namespace
+            || snapshot.sequence != self.journal.snapshot_sequence()
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+
+        Ok(())
+    }
+
+    fn validate_transaction_namespaces(
+        &self,
+        transactions: &[JournalTransaction],
+    ) -> Result<(), JournalError> {
+        for transaction in transactions {
+            self.validate_transaction_namespace(transaction)?;
+        }
+
+        Ok(())
+    }
+
+    fn validate_transaction_namespace(
+        &self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), JournalError> {
+        if transaction
+            .records()
+            .iter()
+            .any(|record| record.namespace() != self.namespace)
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+
+        Ok(())
+    }
+}
+
+fn authority_preflight_digest(transactions: &[JournalTransaction]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(AUTHORITY_PREFLIGHT_DOMAIN);
+    digest.update(transactions.len().to_be_bytes());
+
+    for transaction in transactions {
+        digest.update(transaction.id());
+        digest.update(transaction.records().len().to_be_bytes());
+
+        for record in transaction.records() {
+            digest.update([record.namespace() as u8]);
+            digest.update(record.key().len().to_be_bytes());
+            digest.update(record.key());
+
+            match record.value() {
+                Some(value) => {
+                    digest.update([1]);
+                    digest.update(value.len().to_be_bytes());
+                    digest.update(value);
+                }
+                None => digest.update([0]),
+            }
+        }
+    }
+
+    digest.finalize().into()
 }
 
 struct ReplayState {
@@ -1048,6 +1403,7 @@ struct ReplayState {
     committed_transactions: usize,
     committed_records: usize,
     transaction_ids: BTreeSet<[u8; 16]>,
+    committed_namespaces: BTreeSet<RecordNamespace>,
     state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     materialized_bytes: usize,
     idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
@@ -1062,6 +1418,7 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
     let mut committed_transactions = 0_usize;
     let mut committed_records = 0_usize;
     let mut transaction_ids = BTreeSet::new();
+    let mut committed_namespaces = BTreeSet::new();
     let mut state = BTreeMap::new();
     let mut materialized_bytes = 0_usize;
     let mut idempotency = BTreeMap::new();
@@ -1142,6 +1499,7 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     limits,
                 )?;
                 for record in &replay_transaction.records {
+                    committed_namespaces.insert(record.namespace());
                     apply_record(&mut state, &mut idempotency, record)?;
                 }
                 committed_transactions = committed_transactions
@@ -1165,6 +1523,7 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
         committed_transactions,
         committed_records,
         transaction_ids,
+        committed_namespaces,
         state,
         materialized_bytes,
         idempotency,

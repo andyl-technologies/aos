@@ -133,7 +133,8 @@ pub use host_catalog_reconciliation::{
 };
 pub use journal::{
     CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
-    JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
+    JournalRecord, JournalTransaction, ProtectedJournalAuthority, ProtectedJournalPreflight,
+    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 #[cfg(target_os = "linux")]
 pub use mount_attempt::{
