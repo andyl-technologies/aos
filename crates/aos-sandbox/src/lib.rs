@@ -44,7 +44,11 @@ pub mod local_sessions;
 #[cfg(target_os = "linux")]
 pub mod mount_attempt;
 #[cfg(target_os = "linux")]
+pub mod mount_observation_state;
+#[cfg(target_os = "linux")]
 pub mod mount_preparation;
+#[cfg(target_os = "linux")]
+pub mod mount_source_acquisition_inventory;
 pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;
@@ -143,6 +147,16 @@ pub use mount_attempt::{
     MountAttemptError, MountAttemptInventoryObservationV1, MountAttemptInventoryStatusV1,
     MountCompletionOutcomeV1, MountDispatchClient, MountInventoryClient,
     MountInventorySnapshotOutcomeV1,
+};
+#[cfg(target_os = "linux")]
+pub use mount_observation_state::{
+    CurrentMountFilesystemInventoryV1, MountFilesystemInventoryError,
+    MountJournalObservationIdentityV1,
+};
+#[cfg(target_os = "linux")]
+pub use mount_source_acquisition_inventory::{
+    DurableMountSourceAcquisitionInventorySnapshotV1, MountSourceAcquisitionInventoryClient,
+    MountSourceAcquisitionInventoryError, MountSourceAcquisitionInventorySnapshotOutcomeV1,
 };
 pub use ownership_authority::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,

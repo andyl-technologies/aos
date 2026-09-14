@@ -27,6 +27,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::completion::CompletionHistory;
 use super::{History as AttemptHistory, MountAttemptError};
+use crate::mount_observation_state::MountJournalObservationIdentityV1;
 use crate::mount_preparation::transport;
 use crate::mount_preparation::{
     MountCatalogPreparationError, MountServiceIdentity, ServiceExecution, request_id,
@@ -257,6 +258,17 @@ impl DurableMountInventorySnapshotV1 {
     #[must_use]
     pub const fn inventory(&self) -> &ValidatedMountInventory {
         &self.inventory
+    }
+
+    /// Returns the exact controller and Mount journal boundary of this snapshot.
+    #[must_use]
+    pub const fn observation_identity(&self) -> MountJournalObservationIdentityV1 {
+        MountJournalObservationIdentityV1::new(
+            self.record.controller_state_digest,
+            *self.inventory.kernel_boot_id(),
+            *self.inventory.broker_instance_id(),
+            self.inventory.journal_sequence(),
+        )
     }
 
     pub(crate) fn recheck(&self, journal: &mut Journal) -> Result<(), MountAttemptError> {

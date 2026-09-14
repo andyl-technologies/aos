@@ -164,6 +164,8 @@ pub enum RecordNamespace {
     MountSourceAcquisition = 40,
     /// Protected SourceProvider authority, key, route, and revocation state.
     SourceProviderAuthority = 41,
+    /// Latest exact Mount source-acquisition inventory observation.
+    MountSourceAcquisitionInventory = 42,
 }
 
 impl RecordNamespace {
@@ -210,6 +212,7 @@ impl RecordNamespace {
             39 => Ok(Self::MountSourcePin),
             40 => Ok(Self::MountSourceAcquisition),
             41 => Ok(Self::SourceProviderAuthority),
+            42 => Ok(Self::MountSourceAcquisitionInventory),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

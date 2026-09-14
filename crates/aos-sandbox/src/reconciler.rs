@@ -584,6 +584,10 @@ pub enum ReconcilerError {
     #[cfg(target_os = "linux")]
     #[error("mount attempt failed: {0}")]
     MountAttempt(#[source] Box<crate::mount_attempt::MountAttemptError>),
+    /// Protected Mount source-acquisition inventory could not be validated.
+    #[cfg(target_os = "linux")]
+    #[error("Mount source-acquisition inventory failed: {0}")]
+    MountSourceAcquisitionInventory(#[source] Box<crate::MountSourceAcquisitionInventoryError>),
     /// Protected destination-slot inventory could not be validated.
     #[cfg(target_os = "linux")]
     #[error("destination-slot inventory failed: {0}")]
@@ -1414,6 +1418,22 @@ where
                 #[cfg(not(target_os = "linux"))]
                 return Err(ReconcilerError::CorruptLedger(
                     "mount inventory requires Linux validation",
+                ));
+            }
+            if self
+                .journal
+                .records(RecordNamespace::MountSourceAcquisitionInventory)
+                .next()
+                .is_some()
+            {
+                #[cfg(target_os = "linux")]
+                crate::mount_source_acquisition_inventory::validate_namespace(&mut self.journal)
+                    .map_err(|error| {
+                        ReconcilerError::MountSourceAcquisitionInventory(Box::new(error))
+                    })?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(ReconcilerError::CorruptLedger(
+                    "Mount source-acquisition inventory requires Linux validation",
                 ));
             }
             if self

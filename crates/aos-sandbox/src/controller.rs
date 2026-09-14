@@ -960,6 +960,33 @@ where
         crate::mount_attempt::record_snapshot(self.reconciler.journal_mut(), client)
     }
 
+    /// Queries and durably records Mount's complete source-acquisition inventory.
+    ///
+    /// The one-shot client requires the exact source-acquisition profile and
+    /// rejects authorization artifacts and ancillary descriptors. It validates
+    /// every lossless public row and commits the exact canonical request and
+    /// response against current protected controller state. This observation
+    /// carries no provider session, source descriptor, or effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe controller-journal provenance, service-subject or
+    /// negotiation failure, malformed or nonmonotonic broker history, stale
+    /// controller state, capacity exhaustion, and failed durable commits.
+    #[cfg(target_os = "linux")]
+    pub fn record_mount_source_acquisition_inventory(
+        &mut self,
+        client: crate::MountSourceAcquisitionInventoryClient,
+    ) -> Result<
+        crate::DurableMountSourceAcquisitionInventorySnapshotV1,
+        crate::MountSourceAcquisitionInventoryError,
+    > {
+        crate::mount_source_acquisition_inventory::record_snapshot(
+            self.reconciler.journal_mut(),
+            client,
+        )
+    }
+
     /// Reconciles a fresh Mount snapshot with one current namespace target.
     ///
     /// The snapshot must still be the latest durable observation and must
