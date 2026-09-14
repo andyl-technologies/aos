@@ -2,6 +2,7 @@
 
 use aos_sandbox_protocol::semantics::storage_prepare::StoragePreparationOperationV1;
 
+use crate::clone_identity::CloneIdentityRequirementV1;
 use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::{ActiveHoldEvidence, CatalogPlanV1, HoldId, PlannedDataset, PlannedSnapshot};
 
@@ -15,7 +16,14 @@ pub(super) fn resolve_action(
     operation: StoragePreparationOperationV1,
     sandbox_id: [u8; 16],
     operation_id: [u8; 16],
-) -> Result<(CatalogPlanV1, Option<WorkspaceRootPolicyV1>), StorageCatalogResolverErrorV1> {
+) -> Result<
+    (
+        CatalogPlanV1,
+        Option<WorkspaceRootPolicyV1>,
+        Option<CloneIdentityRequirementV1>,
+    ),
+    StorageCatalogResolverErrorV1,
+> {
     match operation {
         StoragePreparationOperationV1::CreateWorkspace {
             quota_bytes,
@@ -33,6 +41,7 @@ pub(super) fn resolve_action(
                     ancestor: policy.project_ancestor().clone(),
                 },
                 Some(WorkspaceRootPolicyV1::create_initialize()),
+                None,
             ))
         }
         StoragePreparationOperationV1::Snapshot { storage_handle } => {
@@ -46,6 +55,7 @@ pub(super) fn resolve_action(
                     source,
                     destination,
                 },
+                None,
                 None,
             ))
         }
@@ -62,7 +72,11 @@ pub(super) fn resolve_action(
             if inventory.has_hold(snapshot.guid(), hold_id) {
                 return Err(StorageCatalogResolverErrorV1::StateConflict);
             }
-            Ok((CatalogPlanV1::HoldSnapshot { snapshot, hold_id }, None))
+            Ok((
+                CatalogPlanV1::HoldSnapshot { snapshot, hold_id },
+                None,
+                None,
+            ))
         }
         StoragePreparationOperationV1::ReleaseHold {
             storage_handle,
@@ -77,7 +91,7 @@ pub(super) fn resolve_action(
             if !inventory.has_hold(snapshot.guid(), hold_id) {
                 return Err(StorageCatalogResolverErrorV1::StateConflict);
             }
-            Ok((CatalogPlanV1::ReleaseHold { snapshot, hold_id }, None))
+            Ok((CatalogPlanV1::ReleaseHold { snapshot, hold_id }, None, None))
         }
         StoragePreparationOperationV1::Clone {
             storage_handle,
@@ -94,7 +108,7 @@ pub(super) fn resolve_action(
             if !inventory.has_hold(source.snapshot().guid(), hold_id) {
                 return Err(StorageCatalogResolverErrorV1::StateConflict);
             }
-            let root_policy = source.clone_root_policy()?;
+            let (root_policy, clone_identity) = source.clone_identity_policy()?;
             let name = policy.workspace_name(&sandbox_id)?;
             ensure_absent(inventory, &name)?;
             let destination =
@@ -113,6 +127,7 @@ pub(super) fn resolve_action(
                     ancestor: policy.project_ancestor().clone(),
                 },
                 Some(root_policy),
+                Some(clone_identity),
             ))
         }
         StoragePreparationOperationV1::SetQuota {
@@ -128,6 +143,7 @@ pub(super) fn resolve_action(
                     ancestor: policy.project_ancestor().clone(),
                 },
                 None,
+                None,
             ))
         }
         StoragePreparationOperationV1::Destroy {
@@ -140,7 +156,7 @@ pub(super) fn resolve_action(
             if inventory.snapshot_has_holds(snapshot.guid()) {
                 return Err(StorageCatalogResolverErrorV1::StateConflict);
             }
-            Ok((CatalogPlanV1::DestroySnapshot { snapshot }, None))
+            Ok((CatalogPlanV1::DestroySnapshot { snapshot }, None, None))
         }
         StoragePreparationOperationV1::Destroy {
             storage_handle,
@@ -150,7 +166,7 @@ pub(super) fn resolve_action(
             if inventory.dataset_has_snapshots(&storage_handle) {
                 return Err(StorageCatalogResolverErrorV1::StateConflict);
             }
-            Ok((CatalogPlanV1::DestroyDataset { dataset }, None))
+            Ok((CatalogPlanV1::DestroyDataset { dataset }, None, None))
         }
     }
 }

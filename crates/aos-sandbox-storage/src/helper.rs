@@ -377,6 +377,7 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
             &observation.observed,
             observation.object_guid,
             observation.digest,
+            crate::snapshot_metadata::CatalogCommitSupplementV1::None,
         )?;
         Ok(ZfsHelperOutcome::Committed(result))
     }

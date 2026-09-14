@@ -30,6 +30,7 @@ use crate::catalog_transition::{
 use crate::resolver::protected_catalog::{
     StorageResolverPolicyBindingV1, StorageResolverPolicyCatalogBindingV1,
 };
+use crate::snapshot_metadata::{CatalogCommitSupplementV1, CheckedSnapshotMetadataRecordV1};
 use crate::workspace_catalog::{
     DurablePortableWorkspaceMetadataV1, StorageWorkspacePublicationIntentV1,
 };
@@ -746,6 +747,7 @@ impl StorageTransactionStore {
         }) {
             return Err(StorageStateError::CorruptRecord);
         }
+        store.validate_snapshot_metadata_authority_set()?;
         Ok(store)
     }
 
@@ -2991,7 +2993,8 @@ impl StorageTransactionStore {
         catalog: &ResolvedCatalogCommitmentV1,
         observed: &PostconditionPolicyV1,
         observed_object_guid: Option<u64>,
-        observation_digest: ObjectDigest,
+        zfs_observation_digest: ObjectDigest,
+        supplement: CatalogCommitSupplementV1,
     ) -> Result<CommittedStorageResultV1, StorageStateError> {
         self.ensure_authority_readable()?;
         let mut record = self.exact_current(operation_id, mutation_digest)?.clone();
@@ -3007,10 +3010,14 @@ impl StorageTransactionStore {
             mutation_digest,
             catalog,
             observed_object_guid,
-            observation_digest,
+            zfs_observation_digest,
+            supplement,
             self.key.key_id,
             &self.key.secret,
         )?;
+        if let Some(metadata) = transition.snapshot_metadata() {
+            self.validate_snapshot_metadata_authority(metadata, &record, catalog)?;
+        }
         let verified = VerifiedStorageResultV1::verify_observation(
             operation_id,
             record.request_digest,
@@ -3018,7 +3025,7 @@ impl StorageTransactionStore {
             observed,
             observed_object_guid,
             transition.result_binding(),
-            observation_digest,
+            transition.observation_digest(),
         )?;
         self.validate_verified_result(&record, &verified)?;
 
@@ -3281,6 +3288,140 @@ impl StorageTransactionStore {
                 Ok(())
             }
         }
+    }
+
+    fn validate_snapshot_metadata_authority(
+        &self,
+        metadata: CheckedSnapshotMetadataRecordV1,
+        snapshot_record: &DurableRecord,
+        snapshot_catalog: &ResolvedCatalogCommitmentV1,
+    ) -> Result<(), StorageStateError> {
+        let CatalogPlanV1::Snapshot { source, .. } = snapshot_catalog.plan() else {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        };
+        if metadata.operation_id() != snapshot_record.operation_id
+            || metadata.request_digest() != snapshot_record.request_digest
+            || metadata.mutation_digest() != snapshot_record.mutation_digest
+            || metadata.request_catalog() != snapshot_record.catalog
+            || metadata.source_dataset_guid() != source.guid()
+            || metadata.source_storage_handle() != source.storage_handle()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let source_operation_id = metadata.source_creation_operation_id();
+        let source_record = self
+            .records
+            .get(&source_operation_id)
+            .filter(|record| record.phase == DurableStoragePhase::Committed)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let source_result = source_record
+            .result
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let source_catalog =
+            ResolvedCatalogCommitmentV1::from_canonical_bytes(&source_record.catalog_bytes)
+                .map_err(|_| StorageStateError::CorruptRecord)?;
+        let source_name = match source_catalog.plan() {
+            CatalogPlanV1::CreateWorkspace { destination, .. }
+            | CatalogPlanV1::Clone { destination, .. } => destination.name(),
+            _ => return Err(StorageStateError::AuthorityLinkMismatch),
+        };
+        if source_result.storage_handle() != Some(source.storage_handle())
+            || source_result.object_guid() != Some(source.guid())
+            || source_result.immutable_version_handle().is_some()
+            || source_name != source.name()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let publication = self
+            .publication_intents
+            .get(&source_operation_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let publication_bytes = self
+            .journal
+            .get(
+                RecordNamespace::StorageWorkspacePublicationIntent,
+                &source_operation_id,
+            )
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if publication.request_catalog() != source_record.catalog
+            || digest_bytes(publication_bytes) != metadata.source_publication_record_digest()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let pin_attempt_id = metadata.source_pin_attempt_id();
+        let pin_attempt = self
+            .pin_attempts
+            .get(&pin_attempt_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        self.validate_pin_attempt_context(pin_attempt)?;
+        let pin_bytes = self
+            .journal
+            .get(RecordNamespace::StorageWorkspacePinAttempt, &pin_attempt_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let pin_root = pin_attempt
+            .satisfied_pin()
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if pin_attempt.action() != WorkspacePinActionV1::Ensure
+            || pin_attempt.phase() != WorkspacePinAttemptPhaseV1::Satisfied
+            || pin_attempt.creation_operation_id() != source_operation_id
+            || pin_attempt.creation_result_catalog() != source_result.catalog()
+            || pin_attempt.creation_result_digest() != source_result.result_digest()
+            || pin_attempt.workspace_handle() != source.storage_handle()
+            || pin_attempt.dataset_guid() != source.guid()
+            || pin_attempt.dataset_name() != source.name()
+            || pin_root.root_attributes() != metadata.root_attributes()
+            || metadata.maximum_portable_uid() >= pin_attempt.identity_range_size()
+            || metadata.maximum_portable_gid() >= pin_attempt.identity_range_size()
+            || digest_bytes(pin_bytes) != metadata.source_pin_record_digest()
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot_metadata_authority_set(&self) -> Result<(), StorageStateError> {
+        for record in self.records.values() {
+            let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(&record.catalog_bytes)
+                .map_err(|_| StorageStateError::CorruptRecord)?;
+            let evidence = self.catalog_transitions.validates_operation_transition(
+                record.format_version,
+                record.operation_id,
+                record.request_digest,
+                record.mutation_digest,
+                &catalog,
+                record.phase,
+                record.result.map(|result| result.catalog),
+                self.key.key_id,
+                &self.key.secret,
+            )?;
+            match (catalog.plan(), record.phase, evidence) {
+                (
+                    CatalogPlanV1::Snapshot { .. },
+                    DurableStoragePhase::Committed,
+                    Some(evidence),
+                ) => self
+                    .validate_snapshot_metadata_authority(
+                        evidence
+                            .snapshot_metadata
+                            .ok_or(StorageStateError::CorruptRecord)?,
+                        record,
+                        &catalog,
+                    )
+                    .map_err(|_| StorageStateError::CorruptRecord)?,
+                (CatalogPlanV1::Snapshot { .. }, _, None) => {}
+                (CatalogPlanV1::Snapshot { .. }, _, Some(_)) => {
+                    return Err(StorageStateError::CorruptRecord);
+                }
+                (_, _, Some(evidence)) if evidence.snapshot_metadata.is_some() => {
+                    return Err(StorageStateError::CorruptRecord);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn preflight_pin_attempt(

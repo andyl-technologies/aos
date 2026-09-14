@@ -6,6 +6,10 @@
 //! handles depend on the resulting catalog binding and remain authenticated in
 //! the committed operation record. Rows instead retain the creating operation
 //! and observed GUID, which gives restart validation a non-circular join.
+//!
+//! This pre-release V1 physical snapshot encoding is a hard reset of the
+//! earlier experimental shape. Decoding fails closed on those bytes, and no
+//! migration is provided because that shape was never activated or shipped.
 
 use std::collections::BTreeMap;
 
@@ -18,8 +22,11 @@ use crate::{
     CatalogBindingV1, CatalogObjectKind, CatalogPlanV1, DurableStoragePhase, ManagedDatasetRoot,
     ProjectAncestorPolicyV1, ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset,
     ResolvedSnapshot, StorageDomainsV1, StorageStateError, WorkspaceSpacePolicyV1,
-    resolver::inventory::CheckedSnapshotRootMetadataRecordV1,
     root_policy::PortableRootAttributesV1,
+    snapshot_metadata::{
+        CatalogCommitSupplementV1, CheckedSnapshotMetadataRecordV1, SnapshotMetadataRecordPartsV1,
+        snapshot_commit_observation_digest,
+    },
 };
 
 mod format;
@@ -56,11 +63,12 @@ const MAXIMUM_NAME_BYTES: usize = 255;
 // The synthetic transition fixes the observation digest to decimal `255`
 // bytes and the captured GUID to `u64::MAX`. The result-state digest and
 // envelope MAC remain data-dependent for every format; an execution Snapshot
-// also derives the rich root-metadata record digest. JSON renders each byte in
+// also derives the whole-tree metadata record and combined observation
+// digests. JSON renders each byte in
 // one to three decimal digits, so two extra digits per byte is a complete
 // upper bound independent of their values.
 const VARIABLE_TRANSITION_ARRAY_BYTES: usize = 32 + 32;
-const SNAPSHOT_VARIABLE_ARRAY_BYTES: usize = 32;
+const SNAPSHOT_VARIABLE_ARRAY_BYTES: usize = 384 + 32 + 32;
 const MAXIMUM_JSON_BYTE_EXPANSION: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -203,11 +211,10 @@ struct SnapshotWire {
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SnapshotRootMetadataWireV1 {
+struct SnapshotMetadataWireV1 {
     version: u16,
     record: Vec<u8>,
     record_digest: [u8; 32],
-    content_commitment: [u8; 32],
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -218,7 +225,7 @@ struct SnapshotWireV1 {
     source_name: String,
     source_guid: u64,
     created_by: Option<[u8; 16]>,
-    root_metadata: Option<SnapshotRootMetadataWireV1>,
+    snapshot_metadata: Option<SnapshotMetadataWireV1>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -278,7 +285,7 @@ struct PhysicalStateWireV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PhysicalCatalogState {
     wire: PhysicalStateWire,
-    snapshot_root_metadata: BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+    snapshot_metadata: BTreeMap<(String, u64), SnapshotMetadataWireV1>,
     bytes: Vec<u8>,
     binding: CatalogBindingV1,
 }
@@ -322,7 +329,7 @@ pub(crate) struct VerifiedPhysicalSnapshotV1 {
     source_name: String,
     source_guid: u64,
     created_by: Option<[u8; 16]>,
-    root_metadata: Option<CheckedSnapshotRootMetadataRecordV1>,
+    metadata: Option<CheckedSnapshotMetadataRecordV1>,
 }
 
 impl VerifiedPhysicalCatalogSnapshotV1 {
@@ -360,15 +367,14 @@ impl VerifiedPhysicalCatalogSnapshotV1 {
             .snapshots
             .iter()
             .map(|snapshot| {
-                let root_metadata = state
-                    .snapshot_root_metadata
+                let metadata = state
+                    .snapshot_metadata
                     .get(&(snapshot.name.clone(), snapshot.guid))
                     .map(|wire| {
-                        validate_snapshot_root_metadata_wire(
+                        validate_snapshot_metadata_wire(
                             wire,
                             snapshot.guid,
                             snapshot.source_guid,
-                            None,
                             None,
                         )
                     })
@@ -379,7 +385,7 @@ impl VerifiedPhysicalCatalogSnapshotV1 {
                     source_name: snapshot.source_name.clone(),
                     source_guid: snapshot.source_guid,
                     created_by: snapshot.created_by,
-                    root_metadata,
+                    metadata,
                 })
             })
             .collect::<Result<Vec<_>, StorageStateError>>()?;
@@ -475,8 +481,8 @@ impl VerifiedPhysicalSnapshotV1 {
         self.created_by
     }
 
-    pub(crate) const fn root_metadata(&self) -> Option<CheckedSnapshotRootMetadataRecordV1> {
-        self.root_metadata
+    pub(crate) const fn metadata(&self) -> Option<CheckedSnapshotMetadataRecordV1> {
+        self.metadata
     }
 }
 
@@ -524,11 +530,11 @@ impl PhysicalCatalogState {
 
     fn canonicalize(
         mut wire: PhysicalStateWire,
-        snapshot_root_metadata: BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+        snapshot_metadata: BTreeMap<(String, u64), SnapshotMetadataWireV1>,
     ) -> Result<Self, StorageStateError> {
         normalize_and_validate(&mut wire)?;
-        validate_snapshot_root_metadata_set(&wire, &snapshot_root_metadata)?;
-        let bytes = serde_json::to_vec(&persistent_wire(&wire, &snapshot_root_metadata)?)
+        validate_snapshot_metadata_set(&wire, &snapshot_metadata)?;
+        let bytes = serde_json::to_vec(&persistent_wire(&wire, &snapshot_metadata)?)
             .map_err(|_| StorageStateError::CorruptRecord)?;
         if bytes.len() > MAXIMUM_STATE_BYTES {
             return Err(StorageStateError::InvalidValue);
@@ -541,14 +547,14 @@ impl PhysicalCatalogState {
             .map_err(|_| StorageStateError::InvalidValue)?;
         Ok(Self {
             wire,
-            snapshot_root_metadata,
+            snapshot_metadata,
             bytes,
             binding,
         })
     }
 
     fn persistent_wire(&self) -> Result<PhysicalStateWireV1, StorageStateError> {
-        persistent_wire(&self.wire, &self.snapshot_root_metadata)
+        persistent_wire(&self.wire, &self.snapshot_metadata)
     }
 
     fn apply(
@@ -565,7 +571,7 @@ impl PhysicalCatalogState {
         operation_id: [u8; 16],
         catalog: &ResolvedCatalogCommitmentV1,
         object_guid: Option<u64>,
-        snapshot_root_metadata: Option<SnapshotRootMetadataWireV1>,
+        snapshot_metadata: Option<CheckedSnapshotMetadataRecordV1>,
     ) -> Result<Self, StorageStateError> {
         if self.binding.generation().checked_add(1) != Some(catalog.generation()) {
             return Err(StorageStateError::InvalidTransition);
@@ -575,19 +581,20 @@ impl PhysicalCatalogState {
         }
         let mut wire = self.wire.clone();
         wire.version = FORMAT_VERSION;
-        let mut metadata = self.snapshot_root_metadata.clone();
+        let mut metadata = self.snapshot_metadata.clone();
         ingest_plan_inputs(&mut wire, catalog.plan(), false)?;
         apply_postcondition(&mut wire, operation_id, catalog.plan(), object_guid)?;
-        match (catalog.plan(), snapshot_root_metadata) {
-            (CatalogPlanV1::Snapshot { destination, .. }, Some(metadata_wire)) => {
+        match (catalog.plan(), snapshot_metadata) {
+            (CatalogPlanV1::Snapshot { destination, .. }, Some(metadata_record)) => {
                 let guid = object_guid.ok_or(StorageStateError::InvalidValue)?;
-                validate_snapshot_root_metadata_wire(
-                    &metadata_wire,
+                validate_snapshot_metadata_record(
+                    metadata_record,
+                    operation_id,
                     guid,
                     destination.dataset().guid(),
                     Some(destination.dataset().storage_handle()),
-                    None,
                 )?;
+                let metadata_wire = snapshot_metadata_wire(metadata_record);
                 if metadata
                     .insert((destination.name().to_owned(), guid), metadata_wire)
                     .is_some()
@@ -651,16 +658,16 @@ fn split_wire(
 ) -> Result<
     (
         PhysicalStateWire,
-        BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+        BTreeMap<(String, u64), SnapshotMetadataWireV1>,
     ),
     StorageStateError,
 > {
     let mut metadata = BTreeMap::new();
     let mut snapshots = Vec::with_capacity(wire.snapshots.len());
     for snapshot in wire.snapshots {
-        if let Some(root_metadata) = snapshot.root_metadata {
+        if let Some(snapshot_metadata) = snapshot.snapshot_metadata {
             if metadata
-                .insert((snapshot.name.clone(), snapshot.guid), root_metadata)
+                .insert((snapshot.name.clone(), snapshot.guid), snapshot_metadata)
                 .is_some()
             {
                 return Err(StorageStateError::CorruptRecord);
@@ -693,7 +700,7 @@ fn split_wire(
 
 fn persistent_wire(
     wire: &PhysicalStateWire,
-    metadata: &BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+    metadata: &BTreeMap<(String, u64), SnapshotMetadataWireV1>,
 ) -> Result<PhysicalStateWireV1, StorageStateError> {
     let snapshots = wire
         .snapshots
@@ -704,7 +711,7 @@ fn persistent_wire(
             source_name: snapshot.source_name.clone(),
             source_guid: snapshot.source_guid,
             created_by: snapshot.created_by,
-            root_metadata: metadata
+            snapshot_metadata: metadata
                 .get(&(snapshot.name.clone(), snapshot.guid))
                 .cloned(),
         })
@@ -723,21 +730,23 @@ fn persistent_wire(
     })
 }
 
-fn validate_snapshot_root_metadata_set(
+fn validate_snapshot_metadata_set(
     wire: &PhysicalStateWire,
-    metadata: &BTreeMap<(String, u64), SnapshotRootMetadataWireV1>,
+    metadata: &BTreeMap<(String, u64), SnapshotMetadataWireV1>,
 ) -> Result<(), StorageStateError> {
     for snapshot in &wire.snapshots {
         let metadata_wire = metadata.get(&(snapshot.name.clone(), snapshot.guid));
         match (snapshot.created_by, metadata_wire) {
-            (Some(_), Some(metadata_wire)) => {
-                validate_snapshot_root_metadata_wire(
+            (Some(operation_id), Some(metadata_wire)) => {
+                let record = validate_snapshot_metadata_wire(
                     metadata_wire,
                     snapshot.guid,
                     snapshot.source_guid,
                     None,
-                    None,
                 )?;
+                if record.operation_id() != operation_id {
+                    return Err(StorageStateError::CorruptRecord);
+                }
             }
             (None, None) => {}
             _ => return Err(StorageStateError::CorruptRecord),
@@ -746,53 +755,87 @@ fn validate_snapshot_root_metadata_set(
     Ok(())
 }
 
-fn validate_snapshot_root_metadata_wire(
-    wire: &SnapshotRootMetadataWireV1,
+fn validate_snapshot_metadata_wire(
+    wire: &SnapshotMetadataWireV1,
     snapshot_guid: u64,
     dataset_guid: u64,
     storage_handle: Option<[u8; 32]>,
-    version_handle: Option<[u8; 32]>,
-) -> Result<CheckedSnapshotRootMetadataRecordV1, StorageStateError> {
-    if wire.version != 1 || wire.record.len() != 136 {
+) -> Result<CheckedSnapshotMetadataRecordV1, StorageStateError> {
+    if wire.version != 1 || wire.record.len() != 384 {
         return Err(StorageStateError::CorruptRecord);
     }
-    let record = CheckedSnapshotRootMetadataRecordV1::from_canonical_bytes(&wire.record)
+    let record = CheckedSnapshotMetadataRecordV1::from_canonical_bytes(&wire.record)
         .map_err(|_| StorageStateError::CorruptRecord)?;
     if record.record_digest().as_bytes() != &wire.record_digest
-        || record.content_commitment().as_bytes() != &wire.content_commitment
         || record.snapshot_guid() != snapshot_guid
-        || record.dataset_guid() != dataset_guid
-        || storage_handle.is_some_and(|handle| record.storage_handle() != handle)
-        || version_handle.is_some_and(|handle| record.version_handle() != handle)
+        || record.source_dataset_guid() != dataset_guid
+        || storage_handle.is_some_and(|handle| record.source_storage_handle() != handle)
     {
         return Err(StorageStateError::CorruptRecord);
     }
     Ok(record)
 }
 
-fn maximum_snapshot_root_metadata_wire(
-    catalog: &ResolvedCatalogCommitmentV1,
+fn validate_snapshot_metadata_record(
+    record: CheckedSnapshotMetadataRecordV1,
+    operation_id: [u8; 16],
     snapshot_guid: u64,
-) -> Result<Option<SnapshotRootMetadataWireV1>, StorageStateError> {
-    let CatalogPlanV1::Snapshot { destination, .. } = catalog.plan() else {
-        return Ok(None);
-    };
-    let record = CheckedSnapshotRootMetadataRecordV1::new(
-        snapshot_guid,
-        destination.dataset().guid(),
-        PortableRootAttributesV1::new(u32::MAX - 1, u32::MAX - 1, 0o7777)
-            .map_err(|_| StorageStateError::InvalidValue)?,
-        destination.dataset().storage_handle(),
-        [u8::MAX; 32],
-        ObjectDigest::from_bytes([u8::MAX; 32]),
-    )
-    .map_err(|_| StorageStateError::InvalidValue)?;
-    Ok(Some(SnapshotRootMetadataWireV1 {
+    source_dataset_guid: u64,
+    source_storage_handle: Option<[u8; 32]>,
+) -> Result<(), StorageStateError> {
+    if record.operation_id() != operation_id
+        || record.snapshot_guid() != snapshot_guid
+        || record.source_dataset_guid() != source_dataset_guid
+        || source_storage_handle.is_some_and(|handle| record.source_storage_handle() != handle)
+    {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(())
+}
+
+fn snapshot_metadata_wire(record: CheckedSnapshotMetadataRecordV1) -> SnapshotMetadataWireV1 {
+    SnapshotMetadataWireV1 {
         version: 1,
         record: record.canonical_bytes().to_vec(),
         record_digest: *record.record_digest().as_bytes(),
-        content_commitment: *record.content_commitment().as_bytes(),
-    }))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maximum_snapshot_metadata_record(
+    operation_id: [u8; 16],
+    request_digest: ObjectDigest,
+    mutation_digest: ObjectDigest,
+    catalog: &ResolvedCatalogCommitmentV1,
+    snapshot_guid: u64,
+    zfs_observation_digest: ObjectDigest,
+) -> Result<Option<CheckedSnapshotMetadataRecordV1>, StorageStateError> {
+    let CatalogPlanV1::Snapshot { source, .. } = catalog.plan() else {
+        return Ok(None);
+    };
+    CheckedSnapshotMetadataRecordV1::new(SnapshotMetadataRecordPartsV1 {
+        operation_id,
+        request_digest,
+        mutation_digest,
+        request_catalog: catalog.binding(),
+        snapshot_guid,
+        source_dataset_guid: source.guid(),
+        source_storage_handle: source.storage_handle(),
+        source_creation_operation_id: [u8::MAX; 16],
+        source_publication_record_digest: ObjectDigest::from_bytes([u8::MAX; 32]),
+        source_pin_attempt_id: [u8::MAX; 16],
+        source_pin_record_digest: ObjectDigest::from_bytes([u8::MAX; 32]),
+        zfs_observation_digest,
+        root_attributes: PortableRootAttributesV1::new(u32::MAX - 1, u32::MAX - 1, 0o7777)
+            .map_err(|_| StorageStateError::InvalidValue)?,
+        maximum_portable_uid: u32::MAX - 1,
+        maximum_portable_gid: u32::MAX - 1,
+        distinct_inode_count: u64::MAX,
+        directory_entry_count: u64::MAX,
+        identity_tree_digest: ObjectDigest::from_bytes([u8::MAX; 32]),
+    })
+    .map(Some)
+    .map_err(|_| StorageStateError::InvalidValue)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -885,6 +928,7 @@ pub(crate) struct CatalogReservation {
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedCatalogTransition {
     operation_id: [u8; 16],
+    snapshot_metadata: Option<CheckedSnapshotMetadataRecordV1>,
     transition: TransitionPayload,
     transition_bytes: Vec<u8>,
     head_bytes: Vec<u8>,
@@ -896,6 +940,7 @@ pub(crate) struct CatalogTransitionEvidence {
     pub(crate) result_catalog: CatalogBindingV1,
     pub(crate) observation_digest: ObjectDigest,
     pub(crate) object_guid: Option<u64>,
+    pub(crate) snapshot_metadata: Option<CheckedSnapshotMetadataRecordV1>,
 }
 
 pub(crate) struct PreparedCatalogBootstrap {
@@ -920,6 +965,14 @@ impl PreparedCatalogBootstrap {
 impl PreparedCatalogTransition {
     pub(crate) const fn result_binding(&self) -> CatalogBindingV1 {
         self.result_state.binding()
+    }
+
+    pub(crate) const fn observation_digest(&self) -> ObjectDigest {
+        ObjectDigest::from_bytes(self.transition.observation_digest)
+    }
+
+    pub(crate) const fn snapshot_metadata(&self) -> Option<CheckedSnapshotMetadataRecordV1> {
+        self.snapshot_metadata
     }
 
     pub(crate) fn records(&self) -> Vec<JournalRecord> {

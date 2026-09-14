@@ -8,17 +8,12 @@
 //! ```text
 //! AOSSRP01 | version:u16 | kind:u8 | reserved:u8
 //! source-snapshot-guid:u64 | uid:u32 | gid:u32 | mode:u16 | reserved:u16
-//! source-metadata-commitment:32
+//! source-metadata-record-digest:32
 //! ```
 //!
-//! The source metadata commitment is opaque input here. The future protected
-//! resolver must authenticate a canonical source record, recompute
-//! `SHA-256("aos.sandbox.storage.snapshot-root-metadata.v1\0" ||
-//! source-snapshot-guid:u64be || uid:u32be || gid:u32be || mode:u16be)`, and
-//! require those decoded fields to equal the fields passed to
-//! [`WorkspaceRootPolicyV1::clone_preserve`]. This pure constructor rejects
-//! sentinels and binds both values; it does not establish that cryptographic
-//! linkage on the resolver's behalf.
+//! The source metadata record digest is opaque input here. The protected
+//! resolver authenticates the complete AOSSMT01 source record and derives both
+//! its digest and root attributes before constructing a Clone policy.
 
 use aos_sandbox_core::ObjectDigest;
 use serde::{Deserialize, Serialize};
@@ -31,7 +26,6 @@ const CLONE_PRESERVE_KIND: u8 = 2;
 const FIXED_CANONICAL_BYTES: usize = 64;
 const MAXIMUM_PORTABLE_MODE: u32 = 0o7777;
 const PORTABLE_ID_SENTINEL: u32 = u32::MAX;
-const SNAPSHOT_ROOT_METADATA_DOMAIN: &[u8] = b"aos.sandbox.storage.snapshot-root-metadata.v1\0";
 const ROOT_POLICY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-root-policy.v1\0";
 
 const CREATE_ROOT_UID: u32 = 0;
@@ -134,7 +128,7 @@ enum WorkspaceRootPolicyKindV1 {
     ClonePreserve {
         source_snapshot_guid: u64,
         root_attributes: PortableRootAttributesV1,
-        source_metadata_commitment: ObjectDigest,
+        source_metadata_record_digest: ObjectDigest,
     },
 }
 
@@ -148,7 +142,7 @@ impl WorkspaceRootPolicyV1 {
 
     /// Binds clone root attributes to one authenticated source snapshot.
     ///
-    /// `source_metadata_commitment` is opaque at this boundary. The protected
+    /// `source_metadata_record_digest` is opaque at this boundary. The protected
     /// resolver is responsible for authenticating its canonical source record
     /// under the module-level domain/preimage contract and matching every
     /// decoded field before calling this constructor.
@@ -160,12 +154,12 @@ impl WorkspaceRootPolicyV1 {
     pub(crate) fn clone_preserve(
         source_snapshot_guid: u64,
         root_attributes: PortableRootAttributesV1,
-        source_metadata_commitment: ObjectDigest,
+        source_metadata_record_digest: ObjectDigest,
     ) -> Result<Self, WorkspaceRootPolicyError> {
         if source_snapshot_guid == 0 {
             return Err(WorkspaceRootPolicyError::InvalidSourceSnapshotGuid);
         }
-        if source_metadata_commitment.as_bytes() == &[0; 32] {
+        if source_metadata_record_digest.as_bytes() == &[0; 32] {
             return Err(WorkspaceRootPolicyError::InvalidSourceMetadataCommitment);
         }
 
@@ -173,7 +167,7 @@ impl WorkspaceRootPolicyV1 {
             kind: WorkspaceRootPolicyKindV1::ClonePreserve {
                 source_snapshot_guid,
                 root_attributes,
-                source_metadata_commitment,
+                source_metadata_record_digest,
             },
         })
     }
@@ -208,14 +202,14 @@ impl WorkspaceRootPolicyV1 {
         }
     }
 
-    /// Returns the approved compact source-root metadata commitment.
-    pub(crate) const fn source_metadata_commitment(self) -> Option<ObjectDigest> {
+    /// Returns the digest of the complete authenticated source metadata record.
+    pub(crate) const fn source_metadata_record_digest(self) -> Option<ObjectDigest> {
         match self.kind {
             WorkspaceRootPolicyKindV1::CreateInitialize => None,
             WorkspaceRootPolicyKindV1::ClonePreserve {
-                source_metadata_commitment,
+                source_metadata_record_digest,
                 ..
-            } => Some(source_metadata_commitment),
+            } => Some(source_metadata_record_digest),
         }
     }
 
@@ -265,12 +259,12 @@ impl WorkspaceRootPolicyV1 {
             WorkspaceRootPolicyKindV1::ClonePreserve {
                 source_snapshot_guid,
                 root_attributes,
-                source_metadata_commitment,
+                source_metadata_record_digest,
             } => {
                 bytes[10] = CLONE_PRESERVE_KIND;
                 bytes[12..20].copy_from_slice(&source_snapshot_guid.to_be_bytes());
                 encode_attributes(&mut bytes, root_attributes);
-                bytes[32..64].copy_from_slice(source_metadata_commitment.as_bytes());
+                bytes[32..64].copy_from_slice(source_metadata_record_digest.as_bytes());
             }
         }
 
@@ -303,7 +297,7 @@ impl WorkspaceRootPolicyV1 {
             kind: WorkspaceRootPolicyKindV1::ClonePreserve {
                 source_snapshot_guid,
                 root_attributes,
-                source_metadata_commitment: ObjectDigest::from_bytes([0; 32]),
+                source_metadata_record_digest: ObjectDigest::from_bytes([0; 32]),
             },
         }
     }
@@ -331,7 +325,7 @@ impl WorkspaceRootPolicyV1 {
                 .map_err(|_| WorkspaceRootPolicyError::MalformedEncoding)?,
         );
         let root_attributes = decode_attributes(bytes)?;
-        let source_metadata_commitment = ObjectDigest::from_bytes(
+        let source_metadata_record_digest = ObjectDigest::from_bytes(
             bytes[32..64]
                 .try_into()
                 .map_err(|_| WorkspaceRootPolicyError::MalformedEncoding)?,
@@ -346,7 +340,7 @@ impl WorkspaceRootPolicyV1 {
                             gid: CREATE_ROOT_GID,
                             mode: CREATE_ROOT_MODE,
                         }
-                    && source_metadata_commitment.as_bytes() == &[0; 32] =>
+                    && source_metadata_record_digest.as_bytes() == &[0; 32] =>
             {
                 Self::create_initialize()
             }
@@ -356,7 +350,7 @@ impl WorkspaceRootPolicyV1 {
             CLONE_PRESERVE_KIND => Self::clone_preserve(
                 source_snapshot_guid,
                 root_attributes,
-                source_metadata_commitment,
+                source_metadata_record_digest,
             )?,
             _ => return Err(WorkspaceRootPolicyError::MalformedEncoding),
         };
@@ -367,24 +361,6 @@ impl WorkspaceRootPolicyV1 {
 
         Ok(policy)
     }
-}
-
-/// Commits the approved compact source-root metadata preimage for clone policy.
-pub(crate) fn snapshot_root_metadata_commitment(
-    source_snapshot_guid: u64,
-    root_attributes: PortableRootAttributesV1,
-) -> Result<ObjectDigest, WorkspaceRootPolicyError> {
-    if source_snapshot_guid == 0 {
-        return Err(WorkspaceRootPolicyError::InvalidSourceSnapshotGuid);
-    }
-
-    let mut hasher = Sha256::new();
-    hasher.update(SNAPSHOT_ROOT_METADATA_DOMAIN);
-    hasher.update(source_snapshot_guid.to_be_bytes());
-    hasher.update(root_attributes.uid().to_be_bytes());
-    hasher.update(root_attributes.gid().to_be_bytes());
-    hasher.update(root_attributes.mode().to_be_bytes());
-    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 
 /// Describes the only pure attribute action admitted by a root policy.

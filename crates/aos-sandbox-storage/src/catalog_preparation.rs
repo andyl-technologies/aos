@@ -13,13 +13,16 @@
 //!   apply-transport-digest || apply-semantic-digest || apply-plan-digest ||
 //!   apply-lease-digest || catalog-binding || inventory-binding ||
 //!   expected-head || host-boot-id || expiry || plan-digest || lease-digest ||
-//!   assignment-digest || sealed-preparation-fence || sealed-preparation-effect ||
-//!   sealed-preparation-operation-fence || canonical-request || resolved-catalog || receipt
+//!   assignment-digest || catalog-format || root-policy-digest ||
+//!   clone-identity-digest || resolver-policy-binding ||
+//!   sealed-preparation-fence || sealed-preparation-effect ||
+//!   sealed-preparation-operation-fence || canonical-request ||
+//!   resolved-catalog || receipt
 //! ```
 //!
-//! The sole format also binds the exact catalog format and root-policy digest,
-//! plus the generation and complete digest of the trusted resolver-policy
-//! catalog and the digest of its exact assignment row.
+//! The sole format also binds the exact catalog format, root-policy digest,
+//! and whole-tree Clone identity digest, plus the generation and complete
+//! digest of the trusted resolver-policy catalog and its exact assignment row.
 
 use aos_proto::aos::sandbox::local::v1::PrepareStorageCatalogResponse;
 use aos_sandbox_core::{BrokerArgumentCommitment, ObjectDigest};
@@ -176,6 +179,7 @@ pub(crate) struct RetainedStorageCatalogPreparationV1 {
     lease_digest: ObjectDigest,
     assignment_digest: ObjectDigest,
     root_policy_digest: ObjectDigest,
+    clone_identity_digest: ObjectDigest,
     resolver_policy_binding: StorageResolverPolicyBindingV1,
     sealed_fence: Vec<u8>,
     sealed_effect: Vec<u8>,
@@ -292,6 +296,7 @@ impl RetainedStorageCatalogPreparationV1 {
             .execution_binding()
             .map_err(|_| StorageCatalogPreparationError::ResolutionMismatch)?;
         let root_policy_digest = execution.root_policy_digest();
+        let clone_identity_digest = execution.clone_identity_digest();
         let receipt_payload = encode_receipt_payload(
             semantics.operation_id(),
             catalog.binding(),
@@ -314,6 +319,7 @@ impl RetainedStorageCatalogPreparationV1 {
             lease_digest,
             assignment_digest,
             root_policy_digest,
+            clone_identity_digest,
             resolver_policy_binding,
             sealed_fence: authority_records.sealed_fence.to_vec(),
             sealed_effect: authority_records.sealed_effect.to_vec(),
@@ -358,7 +364,7 @@ impl RetainedStorageCatalogPreparationV1 {
         }
         let format_bytes = 106;
         let mut encoder = Encoder::with_capacity(
-            532 + format_bytes
+            564 + format_bytes
                 + self.sealed_fence.len()
                 + self.sealed_effect.len()
                 + self.sealed_operation_fence.len()
@@ -399,6 +405,7 @@ impl RetainedStorageCatalogPreparationV1 {
         encoder.fixed(self.assignment_digest.as_bytes());
         encoder.fixed(&self.catalog.format_version().to_be_bytes());
         encoder.fixed(self.root_policy_digest.as_bytes());
+        encoder.fixed(self.clone_identity_digest.as_bytes());
         let binding = self.resolver_policy_binding;
         encoder.fixed(&binding.generation().to_be_bytes());
         encoder.fixed(binding.catalog_digest().as_bytes());
@@ -462,6 +469,7 @@ impl RetainedStorageCatalogPreparationV1 {
         let assignment_digest = ObjectDigest::from_bytes(decoder.nonzero()?);
         let catalog_format = u16::from_be_bytes(decoder.fixed()?);
         let root_policy_digest = ObjectDigest::from_bytes(decoder.fixed()?);
+        let clone_identity_digest = ObjectDigest::from_bytes(decoder.fixed()?);
         let resolver_policy_binding = StorageResolverPolicyBindingV1::from_authenticated_parts(
             u64::from_be_bytes(decoder.fixed()?),
             ObjectDigest::from_bytes(decoder.fixed()?),
@@ -499,6 +507,7 @@ impl RetainedStorageCatalogPreparationV1 {
         if catalog.format_version() != catalog_format
             || execution.catalog() != catalog_binding
             || execution.root_policy_digest() != root_policy_digest
+            || execution.clone_identity_digest() != clone_identity_digest
         {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
@@ -516,6 +525,7 @@ impl RetainedStorageCatalogPreparationV1 {
             lease_digest,
             assignment_digest,
             root_policy_digest,
+            clone_identity_digest,
             resolver_policy_binding,
             sealed_fence,
             sealed_effect,
@@ -618,6 +628,9 @@ impl RetainedStorageCatalogPreparationV1 {
             .execution_binding()
             .map_err(|_| StorageCatalogPreparationError::CorruptRecord)?;
         if execution.root_policy_digest() != self.root_policy_digest {
+            return Err(StorageCatalogPreparationError::CorruptRecord);
+        }
+        if execution.clone_identity_digest() != self.clone_identity_digest {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
         Ok(execution)

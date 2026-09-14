@@ -27,6 +27,7 @@ pub mod catalog;
 mod catalog_decode;
 pub mod catalog_preparation;
 mod catalog_transition;
+mod clone_identity;
 #[allow(
     dead_code,
     reason = "sealed helper boundary is not wired until Apply readiness exists"
@@ -56,6 +57,7 @@ mod resolver;
 mod root_policy;
 pub mod runtime;
 pub mod service;
+mod snapshot_metadata;
 pub mod state;
 pub mod transport;
 pub mod workspace_catalog;

@@ -93,7 +93,7 @@ impl StorageCatalogResolverV1 {
             .generation()
             .checked_add(1)
             .ok_or(StorageCatalogResolverErrorV1::GenerationExhausted)?;
-        let (plan, root_policy) = resolve_action(
+        let (plan, root_policy, clone_identity) = resolve_action(
             &self.policy,
             &self.inventory,
             operation,
@@ -105,6 +105,7 @@ impl StorageCatalogResolverV1 {
             self.policy.domains(),
             plan,
             root_policy,
+            clone_identity,
         )
         .map_err(|_| StorageCatalogResolverErrorV1::PolicyRejected)
     }

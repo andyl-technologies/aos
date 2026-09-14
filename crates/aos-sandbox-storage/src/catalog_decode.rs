@@ -13,7 +13,8 @@ use aos_sandbox_core::ObjectDigest;
 use crate::{
     ActiveHoldEvidence, CatalogPlanV1, CatalogSemanticError, HoldId, ManagedDatasetRoot,
     PlannedDataset, PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
-    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1, root_policy::WorkspaceRootPolicyV1,
+    ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1,
+    clone_identity::CloneIdentityRequirementV1, root_policy::WorkspaceRootPolicyV1,
 };
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
@@ -25,6 +26,7 @@ pub(crate) struct DecodedCatalog {
     pub(crate) domains: StorageDomainsV1,
     pub(crate) plan: CatalogPlanV1,
     pub(crate) root_policy: Option<WorkspaceRootPolicyV1>,
+    pub(crate) clone_identity: Option<CloneIdentityRequirementV1>,
 }
 
 pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSemanticError> {
@@ -69,7 +71,8 @@ pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSema
     for tag in 28..=37 {
         let _ = decoder.field(tag)?;
     }
-    let encoded_root_policy = Some(decoder.field(38)?);
+    let encoded_root_policy = decoder.field(38)?;
+    let encoded_clone_identity = decoder.field(39)?;
     decoder.finish()?;
 
     let space = raw_space.finish(&root, domains, ancestor_handle)?;
@@ -88,9 +91,16 @@ pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSema
     )?;
 
     let root_policy = match encoded_root_policy {
-        None | Some([]) => None,
-        Some(bytes) => Some(
+        [] => None,
+        bytes => Some(
             WorkspaceRootPolicyV1::from_canonical_bytes(bytes)
+                .map_err(|_| CatalogSemanticError::MalformedEncoding)?,
+        ),
+    };
+    let clone_identity = match encoded_clone_identity {
+        [] => None,
+        bytes => Some(
+            CloneIdentityRequirementV1::from_canonical_bytes(bytes)
                 .map_err(|_| CatalogSemanticError::MalformedEncoding)?,
         ),
     };
@@ -100,6 +110,7 @@ pub(crate) fn decode_catalog(bytes: &[u8]) -> Result<DecodedCatalog, CatalogSema
         domains,
         plan,
         root_policy,
+        clone_identity,
     })
 }
 

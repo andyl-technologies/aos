@@ -1019,11 +1019,23 @@ impl StorageBrokerRuntime {
             .root_policy()
             .ok_or(StorageRuntimeError::Recovery)?
             .root_attributes();
-        if !private_identity_profile_supports_root(
+        let identity_range_size = id_range_size.get();
+        let root_is_representable = private_identity_profile_supports_root(
             *unmappable_policy,
             root_attributes,
-            id_range_size.get(),
-        ) {
+            identity_range_size,
+        );
+        let tree_is_representable = match catalog.plan() {
+            crate::CatalogPlanV1::CreateWorkspace { .. } => catalog.clone_identity().is_none(),
+            crate::CatalogPlanV1::Clone { .. } => {
+                catalog.clone_identity().is_some_and(|requirement| {
+                    requirement.maximum_portable_uid() < identity_range_size
+                        && requirement.maximum_portable_gid() < identity_range_size
+                })
+            }
+            _ => false,
+        };
+        if !root_is_representable || !tree_is_representable {
             return Err(StorageRuntimeError::Recovery);
         }
         let transaction_ranges = self.coordinator.workspace_identity_ranges()?;
@@ -1040,7 +1052,7 @@ impl StorageBrokerRuntime {
             pool,
             &transaction_ranges,
             retained_range,
-            id_range_size.get(),
+            identity_range_size,
         )?;
         let result = self.coordinator.admit_workspace_apply_intent(
             request_body,

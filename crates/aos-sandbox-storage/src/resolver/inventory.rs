@@ -5,10 +5,7 @@
 //! snapshot carries a separately authenticated root-metadata record.
 //!
 //! ```text
-//! snapshot-root-record-v1 =
-//!   magic || version || reserved || snapshot-guid || dataset-guid ||
-//!   uid || gid || mode || reserved || storage-handle || version-handle ||
-//!   immutable-content-commitment
+//! snapshot-metadata-record-v1 = canonical AOSSMT01 bytes
 //!
 //! resolver-inventory-v1 =
 //!   magic || version || generation || catalog-head || managed-root || domains ||
@@ -16,7 +13,7 @@
 //!   hold-count || hold-rows || occupied-name-count || occupied-names
 //! dataset-row = storage-handle || name || dataset-guid
 //! snapshot-row = storage-handle || version-handle || name || snapshot-guid ||
-//!   immutable-content-commitment || root-record-digest || snapshot-root-record-v1
+//!   metadata-record-digest || snapshot-metadata-record-v1
 //! hold-row = snapshot-guid || hold-id
 //! catalog-head = generation || digest
 //! managed-root = pool || dataset-prefix || root-guid
@@ -30,10 +27,9 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use sha2::{Digest as _, Sha256};
 
-use crate::root_policy::{
-    PortableRootAttributesV1, WorkspaceRootPolicyError, WorkspaceRootPolicyV1,
-    snapshot_root_metadata_commitment,
-};
+use crate::clone_identity::CloneIdentityRequirementV1;
+use crate::root_policy::{WorkspaceRootPolicyError, WorkspaceRootPolicyV1};
+use crate::snapshot_metadata::{CheckedSnapshotMetadataRecordV1, SnapshotMetadataError};
 use crate::{
     ActiveHoldEvidence, HoldId, ManagedDatasetRoot, ResolvedDataset, ResolvedSnapshot,
     StorageDomainsV1, state::VerifiedStorageResolverJournalV1,
@@ -41,10 +37,6 @@ use crate::{
 
 use super::policy::ProtectedStorageResolverPolicyV1;
 
-const RECORD_MAGIC: &[u8; 8] = b"AOSSRM01";
-const RECORD_VERSION: u16 = 1;
-const RECORD_BYTES: usize = 136;
-const RECORD_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.snapshot-root-record.v1\0";
 const INVENTORY_MAGIC: &[u8; 8] = b"AOSSRI01";
 const INVENTORY_VERSION: u16 = 1;
 const INVENTORY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-inventory.v1\0";
@@ -76,135 +68,21 @@ impl From<WorkspaceRootPolicyError> for ProtectedStorageInventoryError {
     }
 }
 
-/// Stores one canonically checked rich snapshot-root record.
-///
-/// This value proves only canonical field consistency. It becomes trusted
-/// resolver input only after the enclosing physical-catalog record has passed
-/// protected journal authentication and full chain validation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CheckedSnapshotRootMetadataRecordV1 {
-    snapshot_guid: u64,
-    dataset_guid: u64,
-    root_attributes: PortableRootAttributesV1,
-    storage_handle: [u8; 32],
-    version_handle: [u8; 32],
-    content_commitment: ObjectDigest,
-}
-
-impl CheckedSnapshotRootMetadataRecordV1 {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        snapshot_guid: u64,
-        dataset_guid: u64,
-        root_attributes: PortableRootAttributesV1,
-        storage_handle: [u8; 32],
-        version_handle: [u8; 32],
-        content_commitment: ObjectDigest,
-    ) -> Result<Self, ProtectedStorageInventoryError> {
-        if snapshot_guid == 0
-            || dataset_guid == 0
-            || storage_handle == [0; 32]
-            || version_handle == [0; 32]
-            || content_commitment.as_bytes() == &[0; 32]
-        {
-            return Err(ProtectedStorageInventoryError::InvalidRootMetadata);
-        }
-
-        Ok(Self {
-            snapshot_guid,
-            dataset_guid,
-            root_attributes,
-            storage_handle,
-            version_handle,
-            content_commitment,
-        })
-    }
-
-    pub(crate) fn canonical_bytes(self) -> [u8; RECORD_BYTES] {
-        let mut bytes = [0_u8; RECORD_BYTES];
-        bytes[..8].copy_from_slice(RECORD_MAGIC);
-        bytes[8..10].copy_from_slice(&RECORD_VERSION.to_be_bytes());
-        bytes[12..20].copy_from_slice(&self.snapshot_guid.to_be_bytes());
-        bytes[20..28].copy_from_slice(&self.dataset_guid.to_be_bytes());
-        bytes[28..32].copy_from_slice(&self.root_attributes.uid().to_be_bytes());
-        bytes[32..36].copy_from_slice(&self.root_attributes.gid().to_be_bytes());
-        bytes[36..38].copy_from_slice(&self.root_attributes.mode().to_be_bytes());
-        bytes[40..72].copy_from_slice(&self.storage_handle);
-        bytes[72..104].copy_from_slice(&self.version_handle);
-        bytes[104..136].copy_from_slice(self.content_commitment.as_bytes());
-        bytes
-    }
-
-    pub(crate) fn from_canonical_bytes(
-        bytes: &[u8],
-    ) -> Result<Self, ProtectedStorageInventoryError> {
-        if bytes.len() != RECORD_BYTES
-            || &bytes[..8] != RECORD_MAGIC
-            || bytes[10..12] != [0, 0]
-            || bytes[38..40] != [0, 0]
-        {
-            return Err(ProtectedStorageInventoryError::InvalidRootMetadata);
-        }
-        if u16::from_be_bytes([bytes[8], bytes[9]]) != RECORD_VERSION {
-            return Err(ProtectedStorageInventoryError::InvalidRootMetadata);
-        }
-
-        let record = Self::new(
-            u64::from_be_bytes(array(bytes, 12)?),
-            u64::from_be_bytes(array(bytes, 20)?),
-            PortableRootAttributesV1::new(
-                u32::from_be_bytes(array(bytes, 28)?),
-                u32::from_be_bytes(array(bytes, 32)?),
-                u32::from(u16::from_be_bytes(array(bytes, 36)?)),
-            )?,
-            array(bytes, 40)?,
-            array(bytes, 72)?,
-            ObjectDigest::from_bytes(array(bytes, 104)?),
-        )?;
-        if record.canonical_bytes() != bytes {
-            return Err(ProtectedStorageInventoryError::InvalidRootMetadata);
-        }
-        Ok(record)
-    }
-
-    pub(crate) fn record_digest(self) -> ObjectDigest {
-        digest(RECORD_DIGEST_DOMAIN, &self.canonical_bytes())
-    }
-
-    pub(crate) const fn snapshot_guid(self) -> u64 {
-        self.snapshot_guid
-    }
-
-    pub(crate) const fn dataset_guid(self) -> u64 {
-        self.dataset_guid
-    }
-
-    pub(crate) const fn root_attributes(self) -> PortableRootAttributesV1 {
-        self.root_attributes
-    }
-
-    pub(crate) const fn storage_handle(self) -> [u8; 32] {
-        self.storage_handle
-    }
-
-    pub(crate) const fn version_handle(self) -> [u8; 32] {
-        self.version_handle
-    }
-
-    pub(crate) const fn content_commitment(self) -> ObjectDigest {
-        self.content_commitment
+impl From<SnapshotMetadataError> for ProtectedStorageInventoryError {
+    fn from(_: SnapshotMetadataError) -> Self {
+        Self::InvalidRootMetadata
     }
 }
 
 /// Proves that protected state authenticated one exact rich metadata record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AuthenticatedSnapshotRootMetadataV1 {
-    record: CheckedSnapshotRootMetadataRecordV1,
+pub(crate) struct AuthenticatedSnapshotMetadataV1 {
+    record: CheckedSnapshotMetadataRecordV1,
     record_digest: ObjectDigest,
 }
 
-impl AuthenticatedSnapshotRootMetadataV1 {
-    fn from_verified_journal_record(record: CheckedSnapshotRootMetadataRecordV1) -> Self {
+impl AuthenticatedSnapshotMetadataV1 {
+    fn from_verified_journal_record(record: CheckedSnapshotMetadataRecordV1) -> Self {
         Self {
             record,
             record_digest: record.record_digest(),
@@ -216,7 +94,7 @@ impl AuthenticatedSnapshotRootMetadataV1 {
         bytes: &[u8],
         expected_record_digest: ObjectDigest,
     ) -> Result<Self, ProtectedStorageInventoryError> {
-        let record = CheckedSnapshotRootMetadataRecordV1::from_canonical_bytes(bytes)?;
+        let record = CheckedSnapshotMetadataRecordV1::from_canonical_bytes(bytes)?;
         let record_digest = record.record_digest();
         if expected_record_digest.as_bytes() == &[0; 32] || record_digest != expected_record_digest
         {
@@ -228,7 +106,7 @@ impl AuthenticatedSnapshotRootMetadataV1 {
         })
     }
 
-    pub(crate) const fn record(self) -> CheckedSnapshotRootMetadataRecordV1 {
+    pub(crate) const fn record(self) -> CheckedSnapshotMetadataRecordV1 {
         self.record
     }
 
@@ -241,67 +119,63 @@ impl AuthenticatedSnapshotRootMetadataV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProtectedSnapshotInventoryV1 {
     snapshot: ResolvedSnapshot,
-    content_commitment: ObjectDigest,
-    root_metadata: AuthenticatedSnapshotRootMetadataV1,
+    metadata: AuthenticatedSnapshotMetadataV1,
 }
 
 impl ProtectedSnapshotInventoryV1 {
     #[cfg(test)]
     pub(super) fn authenticated_for_test(
         snapshot: ResolvedSnapshot,
-        content_commitment: ObjectDigest,
-        root_metadata: AuthenticatedSnapshotRootMetadataV1,
+        metadata: AuthenticatedSnapshotMetadataV1,
     ) -> Result<Self, ProtectedStorageInventoryError> {
-        Self::authenticated_row(snapshot, content_commitment, root_metadata)
+        Self::authenticated_row(snapshot, metadata)
     }
 
     fn from_verified_journal_record(
         snapshot: ResolvedSnapshot,
-        root_metadata: CheckedSnapshotRootMetadataRecordV1,
+        metadata: CheckedSnapshotMetadataRecordV1,
     ) -> Result<Self, ProtectedStorageInventoryError> {
-        let metadata =
-            AuthenticatedSnapshotRootMetadataV1::from_verified_journal_record(root_metadata);
-        Self::authenticated_row(snapshot, root_metadata.content_commitment(), metadata)
+        let metadata = AuthenticatedSnapshotMetadataV1::from_verified_journal_record(metadata);
+        Self::authenticated_row(snapshot, metadata)
     }
 
     fn authenticated_row(
         snapshot: ResolvedSnapshot,
-        content_commitment: ObjectDigest,
-        root_metadata: AuthenticatedSnapshotRootMetadataV1,
+        metadata: AuthenticatedSnapshotMetadataV1,
     ) -> Result<Self, ProtectedStorageInventoryError> {
-        let record = root_metadata.record();
-        if content_commitment.as_bytes() == &[0; 32]
-            || record.snapshot_guid != snapshot.guid()
-            || record.dataset_guid != snapshot.dataset().guid()
-            || record.storage_handle != snapshot.dataset().storage_handle()
-            || record.version_handle != snapshot.version_handle()
-            || record.content_commitment != content_commitment
+        let record = metadata.record();
+        if record.snapshot_guid() != snapshot.guid()
+            || record.source_dataset_guid() != snapshot.dataset().guid()
+            || record.source_storage_handle() != snapshot.dataset().storage_handle()
         {
             return Err(ProtectedStorageInventoryError::InconsistentInventory);
         }
-        Ok(Self {
-            snapshot,
-            content_commitment,
-            root_metadata,
-        })
+        Ok(Self { snapshot, metadata })
     }
 
     pub(crate) const fn snapshot(&self) -> &ResolvedSnapshot {
         &self.snapshot
     }
 
-    pub(crate) fn clone_root_policy(
+    pub(crate) fn clone_identity_policy(
         &self,
-    ) -> Result<WorkspaceRootPolicyV1, ProtectedStorageInventoryError> {
-        let metadata = self.root_metadata;
+    ) -> Result<(WorkspaceRootPolicyV1, CloneIdentityRequirementV1), ProtectedStorageInventoryError>
+    {
+        let metadata = self.metadata;
         let record = metadata.record();
-        if self.content_commitment != record.content_commitment {
+        if metadata.record_digest() != record.record_digest() {
             return Err(ProtectedStorageInventoryError::InconsistentInventory);
         }
-        let compact =
-            snapshot_root_metadata_commitment(record.snapshot_guid, record.root_attributes)?;
-        WorkspaceRootPolicyV1::clone_preserve(record.snapshot_guid, record.root_attributes, compact)
-            .map_err(Into::into)
+        let root_policy = WorkspaceRootPolicyV1::clone_preserve(
+            record.snapshot_guid(),
+            record.root_attributes(),
+            record.record_digest(),
+        )?;
+        let requirement = CloneIdentityRequirementV1::from_snapshot_metadata(&record);
+        requirement
+            .validate_source_metadata(&record)
+            .map_err(|_| ProtectedStorageInventoryError::InconsistentInventory)?;
+        Ok((root_policy, requirement))
     }
 }
 
@@ -441,8 +315,13 @@ impl ProtectedStorageInventoryV1 {
             )
             .map_err(|_| ProtectedStorageInventoryError::InconsistentInventory)?;
             let metadata = row
-                .root_metadata()
+                .metadata()
                 .ok_or(ProtectedStorageInventoryError::InconsistentInventory)?;
+            if metadata.operation_id() != operation_id
+                || metadata.request_catalog() != operation.catalog().binding()
+            {
+                return Err(ProtectedStorageInventoryError::InconsistentInventory);
+            }
             let protected =
                 ProtectedSnapshotInventoryV1::from_verified_journal_record(snapshot, metadata)?;
             if dataset.root() == policy.root() && dataset.domains() == policy.domains() {
@@ -740,9 +619,8 @@ fn encode_inventory(
         encoder.fixed(version_handle)?;
         encoder.variable(row.snapshot().name().as_bytes())?;
         encoder.fixed(&row.snapshot().guid().to_be_bytes())?;
-        encoder.fixed(row.content_commitment.as_bytes())?;
-        encoder.fixed(row.root_metadata.record_digest().as_bytes())?;
-        encoder.fixed(&row.root_metadata.record().canonical_bytes())?;
+        encoder.fixed(row.metadata.record_digest().as_bytes())?;
+        encoder.fixed(&row.metadata.record().canonical_bytes())?;
     }
     encoder.count(holds.len())?;
     for (snapshot_guid, hold_id) in holds {
@@ -761,16 +639,6 @@ fn digest(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
     hasher.update(domain);
     hasher.update(bytes);
     ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
-fn array<const N: usize>(
-    bytes: &[u8],
-    offset: usize,
-) -> Result<[u8; N], ProtectedStorageInventoryError> {
-    bytes
-        .get(offset..offset + N)
-        .and_then(|value| value.try_into().ok())
-        .ok_or(ProtectedStorageInventoryError::InvalidRootMetadata)
 }
 
 struct Encoder {

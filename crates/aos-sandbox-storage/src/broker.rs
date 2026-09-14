@@ -2077,6 +2077,7 @@ impl StorageAdmissionCoordinator {
                     transaction.postcondition(),
                     None,
                     result.observation_digest(),
+                    crate::snapshot_metadata::CatalogCommitSupplementV1::None,
                 )?;
                 let disposition = self.transactions.complete_workspace_pin_attempt(
                     attempt.attempt_id(),

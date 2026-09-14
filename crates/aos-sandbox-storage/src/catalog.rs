@@ -11,12 +11,17 @@
 //! [`PostconditionPolicyV1::CaptureDataset`] or snapshot-capture rule; the source or managed parent
 //! still carries its exact pre-effect GUID. The service must persist the newly
 //! observed GUID before publishing a resolved object.
+//!
+//! This pre-release V1 encoding is a hard reset of the earlier experimental
+//! catalog shape. Decoding fails closed on those bytes, and no migration is
+//! provided because that shape was never activated or shipped.
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::StorageOperation;
+use crate::clone_identity::CloneIdentityRequirementV1;
 use crate::root_policy::WorkspaceRootPolicyV1;
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSSCAT1";
@@ -52,6 +57,9 @@ pub enum CatalogSemanticError {
     /// An execution catalog omitted, added, or mismatched its root policy.
     #[error("resolved storage catalog root policy is absent or inconsistent")]
     InvalidRootPolicy,
+    /// An execution catalog omitted, added, or mismatched whole-tree Clone identity.
+    #[error("resolved storage catalog Clone identity policy is absent or inconsistent")]
+    InvalidIdentityPolicy,
 }
 
 /// Carries the catalog and root-policy bindings safe for later execution.
@@ -63,6 +71,7 @@ pub enum CatalogSemanticError {
 pub(crate) struct ExecutionCatalogBindingV1 {
     catalog: CatalogBindingV1,
     root_policy_digest: ObjectDigest,
+    clone_identity_digest: ObjectDigest,
 }
 
 impl ExecutionCatalogBindingV1 {
@@ -72,6 +81,10 @@ impl ExecutionCatalogBindingV1 {
 
     pub(crate) const fn root_policy_digest(self) -> ObjectDigest {
         self.root_policy_digest
+    }
+
+    pub(crate) const fn clone_identity_digest(self) -> ObjectDigest {
+        self.clone_identity_digest
     }
 }
 
@@ -881,6 +894,7 @@ pub struct ResolvedCatalogCommitmentV1 {
     domains: StorageDomainsV1,
     plan: CatalogPlanV1,
     root_policy: Option<WorkspaceRootPolicyV1>,
+    clone_identity: Option<CloneIdentityRequirementV1>,
     bytes: Vec<u8>,
     digest: ObjectDigest,
     binding: CatalogBindingV1,
@@ -899,45 +913,39 @@ impl ResolvedCatalogCommitmentV1 {
         domains: StorageDomainsV1,
         plan: CatalogPlanV1,
     ) -> Result<Self, CatalogSemanticError> {
-        let root_policy = match &plan {
+        let (root_policy, clone_identity) = match &plan {
             CatalogPlanV1::CreateWorkspace { .. } => {
-                Some(WorkspaceRootPolicyV1::create_initialize())
+                (Some(WorkspaceRootPolicyV1::create_initialize()), None)
             }
-            CatalogPlanV1::Clone { source, .. } => {
-                let attributes = crate::root_policy::PortableRootAttributesV1::new(0, 0, 0o755)
-                    .map_err(|_| CatalogSemanticError::InvalidRootPolicy)?;
-                let commitment = crate::root_policy::snapshot_root_metadata_commitment(
-                    source.guid(),
-                    attributes,
-                )
-                .map_err(|_| CatalogSemanticError::InvalidRootPolicy)?;
-                Some(
-                    WorkspaceRootPolicyV1::clone_preserve(source.guid(), attributes, commitment)
-                        .map_err(|_| CatalogSemanticError::InvalidRootPolicy)?,
-                )
-            }
-            _ => None,
+            CatalogPlanV1::Clone { .. } => (None, None),
+            _ => (None, None),
         };
-        Self::new_at_format(generation, domains, plan, root_policy)
+        Self::new_at_format(generation, domains, plan, root_policy, clone_identity)
     }
 
     /// Canonicalizes one catalog eligible for later execution.
     ///
-    /// Create requires the fixed initialization policy, Clone requires a
-    /// preservation policy bound to its exact source snapshot, and all other
-    /// operations require no root policy.
+    /// Create requires the fixed initialization policy and no Clone identity.
+    /// Clone requires both a preservation policy bound to its exact source
+    /// snapshot and the matching `CloneIdentityRequirementV1` derived from
+    /// that snapshot's authenticated metadata. All other operations require
+    /// neither policy value.
     ///
     /// # Errors
     ///
-    /// Returns [`CatalogSemanticError`] for invalid catalog semantics or a
-    /// missing, extra, or mismatched root policy.
+    /// Returns [`CatalogSemanticError::InvalidIdentityPolicy`] when the Clone
+    /// identity is absent or inconsistent, or when another operation supplies
+    /// one. Returns [`CatalogSemanticError::InvalidRootPolicy`] for a missing,
+    /// extra, or mismatched root policy, and another [`CatalogSemanticError`]
+    /// variant for other invalid catalog semantics.
     pub(crate) fn new_execution_v1(
         generation: u64,
         domains: StorageDomainsV1,
         plan: CatalogPlanV1,
         root_policy: Option<WorkspaceRootPolicyV1>,
+        clone_identity: Option<CloneIdentityRequirementV1>,
     ) -> Result<Self, CatalogSemanticError> {
-        Self::new_at_format(generation, domains, plan, root_policy)
+        Self::new_at_format(generation, domains, plan, root_policy, clone_identity)
     }
 
     fn new_at_format(
@@ -945,6 +953,7 @@ impl ResolvedCatalogCommitmentV1 {
         domains: StorageDomainsV1,
         plan: CatalogPlanV1,
         root_policy: Option<WorkspaceRootPolicyV1>,
+        clone_identity: Option<CloneIdentityRequirementV1>,
     ) -> Result<Self, CatalogSemanticError> {
         if generation == 0 {
             return Err(CatalogSemanticError::InvalidValue);
@@ -953,8 +962,8 @@ impl ResolvedCatalogCommitmentV1 {
         if domains != plan.domains() {
             return Err(CatalogSemanticError::InconsistentPlan);
         }
-        validate_root_policy(&plan, root_policy)?;
-        let bytes = encode_plan(generation, domains, &plan, root_policy)?;
+        validate_identity_policy(&plan, root_policy, clone_identity)?;
+        let bytes = encode_plan(generation, domains, &plan, root_policy, clone_identity)?;
         let mut hasher = Sha256::new();
         hasher.update(DIGEST_DOMAIN);
         hasher.update(&bytes);
@@ -966,6 +975,7 @@ impl ResolvedCatalogCommitmentV1 {
             domains,
             plan,
             root_policy,
+            clone_identity,
             bytes,
             digest,
             binding,
@@ -985,6 +995,7 @@ impl ResolvedCatalogCommitmentV1 {
             decoded.domains,
             decoded.plan,
             decoded.root_policy,
+            decoded.clone_identity,
         )?;
         if catalog.canonical_bytes() != bytes {
             return Err(CatalogSemanticError::MalformedEncoding);
@@ -1022,6 +1033,12 @@ impl ResolvedCatalogCommitmentV1 {
         self.root_policy
     }
 
+    /// Returns the exact whole-tree identity requirement carried by Clone.
+    #[must_use]
+    pub(crate) const fn clone_identity(&self) -> Option<CloneIdentityRequirementV1> {
+        self.clone_identity
+    }
+
     /// Produces a checked binding for this execution catalog.
     ///
     /// # Errors
@@ -1031,13 +1048,17 @@ impl ResolvedCatalogCommitmentV1 {
     pub(crate) fn execution_binding(
         &self,
     ) -> Result<ExecutionCatalogBindingV1, CatalogSemanticError> {
-        validate_root_policy(&self.plan, self.root_policy)?;
+        validate_identity_policy(&self.plan, self.root_policy, self.clone_identity)?;
 
         Ok(ExecutionCatalogBindingV1 {
             catalog: self.binding,
             root_policy_digest: self
                 .root_policy
                 .map(WorkspaceRootPolicyV1::commitment)
+                .unwrap_or_else(|| ObjectDigest::from_bytes([0; 32])),
+            clone_identity_digest: self
+                .clone_identity
+                .map(CloneIdentityRequirementV1::commitment)
                 .unwrap_or_else(|| ObjectDigest::from_bytes([0; 32])),
         })
     }
@@ -1136,20 +1157,28 @@ fn validate_plan(plan: &CatalogPlanV1) -> Result<(), CatalogSemanticError> {
     }
 }
 
-fn validate_root_policy(
+fn validate_identity_policy(
     plan: &CatalogPlanV1,
     root_policy: Option<WorkspaceRootPolicyV1>,
+    clone_identity: Option<CloneIdentityRequirementV1>,
 ) -> Result<(), CatalogSemanticError> {
     if root_policy.is_some_and(|policy| policy.validate().is_err()) {
         return Err(CatalogSemanticError::InvalidRootPolicy);
     }
 
-    match (plan, root_policy) {
-        (CatalogPlanV1::CreateWorkspace { .. }, Some(policy)) if policy.is_create_initialize() => {
+    match (plan, root_policy, clone_identity) {
+        (CatalogPlanV1::CreateWorkspace { .. }, Some(policy), None)
+            if policy.is_create_initialize() =>
+        {
             Ok(())
         }
-        (CatalogPlanV1::Clone { source, .. }, Some(policy))
-            if policy.source_snapshot_guid() == Some(source.guid()) =>
+        (CatalogPlanV1::Clone { source, .. }, Some(policy), Some(requirement))
+            if policy.source_snapshot_guid() == Some(source.guid())
+                && requirement.source_snapshot_guid() == source.guid()
+                && policy.source_metadata_record_digest()
+                    == Some(requirement.source_metadata_record_digest())
+                && policy.root_attributes().uid() <= requirement.maximum_portable_uid()
+                && policy.root_attributes().gid() <= requirement.maximum_portable_gid() =>
         {
             Ok(())
         }
@@ -1161,7 +1190,10 @@ fn validate_root_policy(
             | CatalogPlanV1::DestroyDataset { .. }
             | CatalogPlanV1::DestroySnapshot { .. },
             None,
+            None,
         ) => Ok(()),
+        (CatalogPlanV1::Clone { .. }, _, _) => Err(CatalogSemanticError::InvalidIdentityPolicy),
+        (_, _, Some(_)) => Err(CatalogSemanticError::InvalidIdentityPolicy),
         _ => Err(CatalogSemanticError::InvalidRootPolicy),
     }
 }
@@ -1185,6 +1217,7 @@ fn encode_plan(
     domains: StorageDomainsV1,
     plan: &CatalogPlanV1,
     root_policy: Option<WorkspaceRootPolicyV1>,
+    clone_identity: Option<CloneIdentityRequirementV1>,
 ) -> Result<Vec<u8>, CatalogSemanticError> {
     let mut encoder = Encoder::new();
     encoder.field(1, FORMAT_MAGIC)?;
@@ -1203,6 +1236,10 @@ fn encode_plan(
     match root_policy {
         Some(policy) => encoder.field(38, &policy.canonical_bytes())?,
         None => encoder.field(38, &[])?,
+    }
+    match clone_identity {
+        Some(requirement) => encoder.field(39, &requirement.canonical_bytes())?,
+        None => encoder.field(39, &[])?,
     }
     Ok(encoder.finish())
 }

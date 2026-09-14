@@ -190,15 +190,34 @@ impl StorageCatalogTransitionProvider {
         ingest_plan_inputs(&mut predecessor.wire.clone(), catalog.plan(), false)?;
 
         let worst_case_guid = capture_guid(catalog.plan()).then_some(u64::MAX);
+        let worst_case_zfs_observation = ObjectDigest::from_bytes([u8::MAX; 32]);
+        let worst_case_metadata = worst_case_guid
+            .map(|guid| {
+                maximum_snapshot_metadata_record(
+                    operation_id,
+                    request_digest,
+                    mutation_digest,
+                    catalog,
+                    guid,
+                    worst_case_zfs_observation,
+                )
+            })
+            .transpose()?
+            .flatten();
         let worst_case_state = predecessor.apply_with_snapshot_metadata(
             operation_id,
             catalog,
             worst_case_guid,
-            worst_case_guid
-                .map(|guid| maximum_snapshot_root_metadata_wire(catalog, guid))
-                .transpose()?
-                .flatten(),
+            worst_case_metadata,
         )?;
+        let worst_case_observation = match worst_case_metadata {
+            Some(metadata) => snapshot_commit_observation_digest(
+                worst_case_zfs_observation,
+                metadata.record_digest(),
+            )
+            .map_err(|_| StorageStateError::InvalidValue)?,
+            None => worst_case_zfs_observation,
+        };
         let maximum_transition_bytes = encoded_transition_size(
             operation_id,
             mutation_digest,
@@ -206,7 +225,7 @@ impl StorageCatalogTransitionProvider {
             &predecessor,
             &worst_case_state,
             worst_case_guid,
-            ObjectDigest::from_bytes([u8::MAX; 32]),
+            worst_case_observation,
             key_id,
             secret,
         )?;
@@ -318,17 +337,59 @@ impl StorageCatalogTransitionProvider {
         mutation_digest: ObjectDigest,
         catalog: &ResolvedCatalogCommitmentV1,
         object_guid: Option<u64>,
-        observation_digest: ObjectDigest,
+        zfs_observation_digest: ObjectDigest,
+        supplement: CatalogCommitSupplementV1,
         key_id: [u8; 16],
         secret: &[u8; 32],
     ) -> Result<PreparedCatalogTransition, StorageStateError> {
+        let reservation = self
+            .reservations
+            .get(&operation_id)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let snapshot_metadata = match (catalog.plan(), supplement) {
+            (
+                CatalogPlanV1::Snapshot { source, .. },
+                CatalogCommitSupplementV1::Snapshot(evidence),
+            ) => {
+                let metadata = evidence.metadata();
+                let snapshot_guid = object_guid.ok_or(StorageStateError::InvalidValue)?;
+                validate_snapshot_metadata_record(
+                    metadata,
+                    operation_id,
+                    snapshot_guid,
+                    source.guid(),
+                    Some(source.storage_handle()),
+                )?;
+                if metadata.request_digest()
+                    != ObjectDigest::from_bytes(reservation.payload.request_digest)
+                    || metadata.mutation_digest() != mutation_digest
+                    || metadata.request_catalog() != catalog.binding()
+                    || metadata.zfs_observation_digest() != zfs_observation_digest
+                {
+                    return Err(StorageStateError::AuthorityLinkMismatch);
+                }
+                Some(metadata)
+            }
+            (CatalogPlanV1::Snapshot { .. }, CatalogCommitSupplementV1::None)
+            | (_, CatalogCommitSupplementV1::Snapshot(_)) => {
+                return Err(StorageStateError::InvalidTransition);
+            }
+            (_, CatalogCommitSupplementV1::None) => None,
+        };
+        let observation_digest = match snapshot_metadata {
+            Some(metadata) => {
+                snapshot_commit_observation_digest(zfs_observation_digest, metadata.record_digest())
+                    .map_err(|_| StorageStateError::InvalidValue)?
+            }
+            None => zfs_observation_digest,
+        };
         self.prepare_transition_inner(
             operation_id,
             mutation_digest,
             catalog,
             object_guid,
             observation_digest,
-            None,
+            snapshot_metadata,
             key_id,
             secret,
         )
@@ -343,23 +404,19 @@ impl StorageCatalogTransitionProvider {
         catalog: &ResolvedCatalogCommitmentV1,
         object_guid: u64,
         observation_digest: ObjectDigest,
-        metadata: CheckedSnapshotRootMetadataRecordV1,
+        metadata: CheckedSnapshotMetadataRecordV1,
         key_id: [u8; 16],
         secret: &[u8; 32],
     ) -> Result<PreparedCatalogTransition, StorageStateError> {
-        let metadata = SnapshotRootMetadataWireV1 {
-            version: 1,
-            record: metadata.canonical_bytes().to_vec(),
-            record_digest: *metadata.record_digest().as_bytes(),
-            content_commitment: *metadata.content_commitment().as_bytes(),
-        };
-        self.prepare_transition_inner(
+        self.prepare_transition(
             operation_id,
             mutation_digest,
             catalog,
             Some(object_guid),
             observation_digest,
-            Some(metadata),
+            CatalogCommitSupplementV1::Snapshot(
+                crate::snapshot_metadata::SnapshotCommitEvidenceV1::from_checked_record(metadata),
+            ),
             key_id,
             secret,
         )
@@ -373,7 +430,7 @@ impl StorageCatalogTransitionProvider {
         catalog: &ResolvedCatalogCommitmentV1,
         object_guid: Option<u64>,
         observation_digest: ObjectDigest,
-        snapshot_root_metadata: Option<SnapshotRootMetadataWireV1>,
+        snapshot_metadata: Option<CheckedSnapshotMetadataRecordV1>,
         key_id: [u8; 16],
         secret: &[u8; 32],
     ) -> Result<PreparedCatalogTransition, StorageStateError> {
@@ -404,7 +461,7 @@ impl StorageCatalogTransitionProvider {
             operation_id,
             catalog,
             object_guid,
-            snapshot_root_metadata,
+            snapshot_metadata,
         )?;
         let transition = transition_payload(
             operation_id,
@@ -434,6 +491,7 @@ impl StorageCatalogTransitionProvider {
         }
         Ok(PreparedCatalogTransition {
             operation_id,
+            snapshot_metadata,
             transition,
             transition_bytes,
             head_bytes,
@@ -489,19 +547,44 @@ impl StorageCatalogTransitionProvider {
                 Ok(None)
             }
             (DurableStoragePhase::Committed, Some(transition), Some(result_catalog)) => {
+                let snapshot_metadata = match (catalog.plan(), transition.object_guid) {
+                    (CatalogPlanV1::Snapshot { destination, .. }, Some(guid)) => transition
+                        .result_state
+                        .snapshot_metadata
+                        .get(&(destination.name().to_owned(), guid))
+                        .map(|wire| {
+                            validate_snapshot_metadata_wire(
+                                wire,
+                                guid,
+                                destination.dataset().guid(),
+                                Some(destination.dataset().storage_handle()),
+                            )
+                        })
+                        .transpose()?,
+                    _ => None,
+                };
+                if snapshot_metadata.is_some_and(|metadata| {
+                    metadata.operation_id() != operation_id
+                        || metadata.request_digest() != request_digest
+                        || metadata.mutation_digest() != mutation_digest
+                        || metadata.request_catalog() != catalog.binding()
+                }) {
+                    return Err(StorageStateError::CorruptRecord);
+                }
                 let result_state = reservation.predecessor.apply_with_snapshot_metadata(
                     operation_id,
                     catalog,
                     transition.object_guid,
-                    match (catalog.plan(), transition.object_guid) {
-                        (CatalogPlanV1::Snapshot { destination, .. }, Some(guid)) => transition
-                            .result_state
-                            .snapshot_root_metadata
-                            .get(&(destination.name().to_owned(), guid))
-                            .cloned(),
-                        _ => None,
-                    },
+                    snapshot_metadata,
                 )?;
+                let expected_observation_digest = match snapshot_metadata {
+                    Some(metadata) => snapshot_commit_observation_digest(
+                        metadata.zfs_observation_digest(),
+                        metadata.record_digest(),
+                    )
+                    .map_err(|_| StorageStateError::CorruptRecord)?,
+                    None => ObjectDigest::from_bytes(transition.observation_digest),
+                };
                 if transition.operation_id != operation_id
                     || transition.mutation_digest != *mutation_digest.as_bytes()
                     || transition.catalog != catalog.binding().into()
@@ -509,6 +592,7 @@ impl StorageCatalogTransitionProvider {
                     || transition.result != result_state.binding.into()
                     || transition.result_state != result_state
                     || result_catalog != result_state.binding
+                    || transition.observation_digest != *expected_observation_digest.as_bytes()
                 {
                     return Err(StorageStateError::CorruptRecord);
                 }
@@ -516,6 +600,7 @@ impl StorageCatalogTransitionProvider {
                     result_catalog,
                     observation_digest: ObjectDigest::from_bytes(transition.observation_digest),
                     object_guid: transition.object_guid,
+                    snapshot_metadata,
                 }))
             }
             _ => Err(StorageStateError::CorruptRecord),

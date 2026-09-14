@@ -31,8 +31,9 @@ use super::{
     RECORD_MAC_DOMAIN, RESERVATION_MAGIC, ReservationPayload, ReservationPayloadV1,
     SNAPSHOT_VARIABLE_ARRAY_BYTES, TRANSITION_DIGEST_DOMAIN, TRANSITION_MAGIC, TransitionPayload,
     TransitionPayloadV1, VARIABLE_TRANSITION_ARRAY_BYTES, capture_guid,
-    maximum_snapshot_root_metadata_wire,
+    maximum_snapshot_metadata_record,
 };
+use crate::snapshot_metadata::snapshot_commit_observation_digest;
 use crate::{CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageStateError};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -109,15 +110,33 @@ pub(super) fn validate_reserved_transition_bound(
     secret: &[u8; 32],
 ) -> Result<(), StorageStateError> {
     let worst_case_guid = capture_guid(catalog.plan()).then_some(u64::MAX);
+    let worst_case_zfs_observation = ObjectDigest::from_bytes([u8::MAX; 32]);
+    let worst_case_metadata = worst_case_guid
+        .map(|guid| {
+            maximum_snapshot_metadata_record(
+                reservation.payload.operation_id,
+                ObjectDigest::from_bytes(reservation.payload.request_digest),
+                ObjectDigest::from_bytes(reservation.payload.mutation_digest),
+                catalog,
+                guid,
+                worst_case_zfs_observation,
+            )
+        })
+        .transpose()?
+        .flatten();
     let worst_case_state = reservation.predecessor.apply_with_snapshot_metadata(
         reservation.payload.operation_id,
         catalog,
         worst_case_guid,
-        worst_case_guid
-            .map(|guid| maximum_snapshot_root_metadata_wire(catalog, guid))
-            .transpose()?
-            .flatten(),
+        worst_case_metadata,
     )?;
+    let worst_case_observation = match worst_case_metadata {
+        Some(metadata) => {
+            snapshot_commit_observation_digest(worst_case_zfs_observation, metadata.record_digest())
+                .map_err(|_| StorageStateError::CorruptRecord)?
+        }
+        None => worst_case_zfs_observation,
+    };
     let expected = encoded_transition_size(
         reservation.payload.operation_id,
         ObjectDigest::from_bytes(reservation.payload.mutation_digest),
@@ -125,7 +144,7 @@ pub(super) fn validate_reserved_transition_bound(
         &reservation.predecessor,
         &worst_case_state,
         worst_case_guid,
-        ObjectDigest::from_bytes([u8::MAX; 32]),
+        worst_case_observation,
         key_id,
         secret,
     )?;
