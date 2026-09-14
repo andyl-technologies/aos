@@ -3,7 +3,6 @@
   lib,
   packageName,
   spec,
-  writeTextFile,
 }: let
   inherit (lib.abilities) schemas;
   inherit (lib.abilities.interfaces) serviceManagement;
@@ -35,27 +34,11 @@
     };
   };
 
-  providerSourcePath = ./_service-ability-provider/default.nix;
-  providerSource = builtins.readFile providerSourcePath;
-  providerArtifact = writeTextFile {
-    name = "${packageName}-service-ability-provider";
-    destination = "/default.nix";
-    text = ''
-      let
-        makeProvider = (
-          ${providerSource}
-        );
-        spec = builtins.fromJSON ${builtins.toJSON (builtins.toJSON serviceSpec)};
-      in
-        makeProvider {inherit spec;}
-    '';
-  };
-
   restartToken = schemas.string {
     maxLength = 1024;
     syntax = null;
   };
-  provider = (import providerSourcePath) {spec = serviceSpec;};
+  provider = (import ./_service-ability-provider/default.nix) {spec = serviceSpec;};
 in {
   config.aos.abilities.implementations.service = {
     definition = lib.abilities.define {
@@ -94,6 +77,5 @@ in {
       compose = provider.compose;
       transition = provider.transition;
     };
-    artifact = providerArtifact;
   };
 }

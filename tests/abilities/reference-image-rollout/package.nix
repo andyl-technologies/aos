@@ -162,11 +162,14 @@
     };
   };
   rolloutProvider = import (providerArtifact + "/default.nix");
+  rolloutRuntimeSelector = lib.abilities.packageOutput {
+    package = "aos";
+    output = "packageRuntime";
+  };
 
   abilities = {
     config.aos.abilities.implementations = {
       rollout = {
-        artifact = providerArtifact;
         requiredFeatures = ["ab-image-rollout-v1"];
         definition = lib.abilities.define {
           interface = "aos.ab-image-rollout";
@@ -201,7 +204,7 @@
         };
       };
       rollout-effects = {
-        artifact = rolloutRuntime;
+        artifact = rolloutRuntimeSelector;
         requiredFeatures = ["ab-image-rollout-v1"];
         definition = lib.abilities.define {
           interface = rolloutEffects.name;
@@ -230,7 +233,7 @@
           handler = "native-ab-image-rollout-v1";
         };
         handler = {
-          artifact = rolloutRuntime;
+          artifact = rolloutRuntimeSelector;
           entryPoint = "libexec/aos-ab-image-rollout-handler-v1";
           arguments = rolloutRequest;
           result = rolloutObservation;
@@ -243,6 +246,7 @@ in
     pname = packageName;
     version = "1.0.0";
     src = providerArtifact;
+    runtimeDeps = [rolloutRuntime];
     inherit abilities;
 
     phases = [

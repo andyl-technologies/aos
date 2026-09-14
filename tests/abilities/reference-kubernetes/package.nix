@@ -10,6 +10,10 @@
   bootstrapMatrix ? false,
 }: let
   contracts = import ../../../pkgs/kubernetes/_ability-contracts.nix {inherit lib;};
+  packageRuntimeSelector = lib.abilities.packageOutput {
+    package = "aos";
+    output = "packageRuntime";
+  };
 
   k3sArtifact = ../../../pkgs/kubernetes/_k3s-ability-provider;
   ciliumArtifact = ./providers/cilium;
@@ -17,9 +21,9 @@
   systemdArtifact = ./providers/systemd;
   kubernetesArtifact = ./providers/kubernetes;
 
-  mkPackage = pname: src: abilities:
+  mkPackage = pname: src: runtimeDeps: abilities:
     mkDerivation {
-      inherit pname src abilities;
+      inherit pname src runtimeDeps abilities;
       version = "1.0.0";
       phases = [
         {
@@ -36,20 +40,19 @@
       };
     };
 in {
-  cilium = mkPackage "ability-reference-cilium" ciliumArtifact contracts.contributorPackage;
+  cilium = mkPackage "ability-reference-cilium" ciliumArtifact [] contracts.contributorPackage;
 
-  longhorn = mkPackage "ability-reference-longhorn" longhornArtifact contracts.contributorPackage;
+  longhorn = mkPackage "ability-reference-longhorn" longhornArtifact [] contracts.contributorPackage;
 
-  k3s = mkPackage "ability-reference-k3s" k3sArtifact (contracts.k3sPackage {
-    providerArtifact = k3sArtifact;
+  k3s = mkPackage "ability-reference-k3s" k3sArtifact [] (contracts.k3sPackage {
     inherit bootstrapMatrix effectQualification providerStateQualification transitionTransform;
   });
 
-  systemd = mkPackage "ability-reference-systemd-bootstrap" systemdArtifact (
-    contracts.systemdPackage systemdRuntime
+  systemd = mkPackage "ability-reference-systemd-bootstrap" systemdArtifact [systemdRuntime] (
+    contracts.systemdPackage packageRuntimeSelector
   );
 
-  kubernetes = mkPackage "ability-reference-kubernetes-terminal" kubernetesArtifact (
-    contracts.kubernetesPackage kubernetesRuntime
+  kubernetes = mkPackage "ability-reference-kubernetes-terminal" kubernetesArtifact [systemdRuntime kubernetesRuntime] (
+    contracts.kubernetesPackage packageRuntimeSelector
   );
 }

@@ -100,6 +100,63 @@
     }).config.aos.abilities.requirementTemplates
     true);
 
+  implementationDefinition = lib.abilities.define {
+    interface = "aos.test.symbolic-artifact";
+    abi = 1;
+    requestSchema = lib.abilities.schemas.boolean;
+    outputs = {};
+    methods = {};
+    lifecycle = {
+      stableResourceIdentity = true;
+      releasesEphemeralOnDisable = true;
+      retainsPersistentByDefault = true;
+      persistentDeleteMethod = null;
+    };
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "symbolic-artifact";
+    };
+    requires = {};
+    ownsResourceKinds = [];
+  };
+  evaluateImplementation = implementation:
+    (lib.evalModules {
+      modules = [
+        lib.abilities.module
+        {config.aos.abilities.implementations.test = implementation;}
+      ];
+    }).config.aos.abilities.implementations.test;
+  rejectsImplementation = implementation:
+    !(builtins.tryEval (builtins.deepSeq (evaluateImplementation implementation) true)).success;
+  selfOutput = lib.abilities.packageOutput {};
+  namedOutput = lib.abilities.packageOutput {
+    package = "aos";
+    output = "packageRuntime";
+  };
+  forgedSelector = package: output: {
+    _type = "aos-package-output-selector";
+    inherit package output;
+  };
+  handlerImplementation = artifact: entryPoint: {
+    artifact = selfOutput;
+    definition = implementationDefinition // {handler = "test-handler";};
+    handler = {
+      inherit artifact entryPoint;
+      arguments = lib.abilities.schemas.boolean;
+      result = lib.abilities.schemas.boolean;
+    };
+  };
+  invalidPackageOutputField = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.packageOutput {unknown = true;})
+    true);
+  invalidPackageOutputKey = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.packageOutput {package = "bad/package";})
+    true);
+
   recipeIsBounded = case: let
     arguments = case.arguments;
     depth = arguments.depth or 0;
@@ -186,6 +243,45 @@ in
     strength = "required";
   };
   assert !invalidCanonicalAbility.success;
+  assert selfOutput
+  == {
+    _type = "aos-package-output-selector";
+    output = "out";
+    package = "self";
+  };
+  assert namedOutput.output == "packageRuntime";
+  assert !invalidPackageOutputField.success;
+  assert !invalidPackageOutputKey.success;
+  assert rejectsImplementation {
+    artifact = pkgs.bash;
+    definition = implementationDefinition;
+  };
+  assert rejectsImplementation {
+    artifact = "/nix/store/00000000000000000000000000000000-artifact";
+    definition = implementationDefinition;
+  };
+  assert rejectsImplementation {
+    artifacts = [pkgs.bash];
+    definition = implementationDefinition;
+  };
+  assert rejectsImplementation {
+    artifact = forgedSelector "bad/package" "out";
+    definition = implementationDefinition;
+  };
+  assert rejectsImplementation {
+    artifact = forgedSelector "self" "bad/output";
+    definition = implementationDefinition;
+  };
+  assert rejectsImplementation {
+    artifact = (forgedSelector "self" "out") // {unknown = true;};
+    definition = implementationDefinition;
+  };
+  assert rejectsImplementation (handlerImplementation pkgs.bash "bin/handler");
+  assert rejectsImplementation (handlerImplementation selfOutput "/bin/handler");
+  assert rejectsImplementation (handlerImplementation selfOutput "");
+  assert rejectsImplementation (handlerImplementation selfOutput "bin//handler");
+  assert rejectsImplementation (handlerImplementation selfOutput "bin/./handler");
+  assert rejectsImplementation (handlerImplementation selfOutput "bin/../handler");
   assert portableRecordEvaluation.config.testRecord
   == {
     enabled = true;

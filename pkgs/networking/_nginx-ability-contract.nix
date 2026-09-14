@@ -2,7 +2,7 @@
 {
   lib,
   providerArtifact,
-  runtimeArtifact ? null,
+  runtimeArtifact,
   hostResourceRuntime ? null,
   effectQualification ? false,
   providerStateQualification ? false,
@@ -413,7 +413,6 @@ in let
   implementations =
     {
       nginx = {
-        artifact = providerArtifact;
         export = lib.abilities.define {
           interface = "aos.nginx";
           abi = 1;

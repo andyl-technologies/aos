@@ -49,6 +49,7 @@ in {
     payload,
     source,
     declaration,
+    resolveArtifact,
   }: let
     checked =
       requireAttrs packageName "ability module projection" [
@@ -72,7 +73,7 @@ in {
         # An export implemented by the package executable naturally uses the
         # payload itself. Defaulting here avoids a circular authoring reference
         # from the payload derivation to its separately built companion.
-        artifact = entry.artifact or payload;
+        artifact = resolveArtifact (entry.artifact or (abilities.packageOutput {}));
         authored = entry.export or (fail packageName "export '${name}' must set export");
         interfaceDocument = abilities.interfaceDocument (entry.requiredFeatures or []) authored;
         pinned = abilities.pinInterface {
@@ -93,7 +94,7 @@ in {
       builtins.mapAttrs (name: value: let
         entry = requireAttrs packageName "ability module handler '${name}'" ["arguments" "artifact" "entryPoint" "result"] value;
       in {
-        artifact = entry.artifact or payload;
+        artifact = resolveArtifact entry.artifact;
         entry_point = entry.entryPoint or (fail packageName "handler '${name}' must set entryPoint");
         arguments = abilities.schemas.validateSchema "ability handler '${name}' arguments" entry.arguments;
         result = abilities.schemas.validateSchema "ability handler '${name}' result" entry.result;
@@ -125,7 +126,7 @@ in {
         == "${export.artifact}"
       ))
     exportNames;
-    explicitArtifacts = checked.artifacts or [];
+    explicitArtifacts = builtins.map resolveArtifact (checked.artifacts or []);
     implementationPaths = builtins.map (name: preparedExports.${name}.artifact) exportNames;
     handlerPaths = builtins.map (name: preparedHandlers.${name}.artifact) handlerNames;
     artifactPaths = lib.unique (implementationPaths ++ handlerPaths ++ explicitArtifacts);

@@ -20,6 +20,53 @@
   credentialArtifact = ./providers/credential;
   serviceArtifact = ./providers/service;
   serviceProvider = import serviceArtifact;
+  fixtureRuntime = name: entryPoints: source:
+    if builtins.isAttrs source
+    then source
+    else
+      mkDerivation {
+        pname = "ability-reference-${name}-runtime";
+        version = "1.0.0";
+        src = source;
+        phases = [
+          {
+            name = "install";
+            script = ''
+              mkdir -p "$out/share/source"
+              cp -R "$src"/. "$out/share/source/"
+              ${lib.concatMapStringsSep "\n" (entryPoint: ''
+                  mkdir -p "$out/$(dirname ${lib.escapeShellArg entryPoint})"
+                  printf '#!%s\nexit 64\n' "$CONFIG_SHELL" > "$out/${entryPoint}"
+                  chmod +x "$out/${entryPoint}"
+                '')
+                entryPoints}
+            '';
+          }
+        ];
+      };
+  selectorFor = runtime:
+    lib.abilities.packageOutput {
+      package = runtime.pname;
+      output = runtime.outputName or "out";
+    };
+  credentialRuntimeDependency = fixtureRuntime "credential" ["libexec/aos-credential-delivery-handler-v1"] credentialRuntime;
+  hostResourceRuntimeDependency =
+    fixtureRuntime "host-resources" [
+      "libexec/aos-host-network-policy-handler-v1"
+      "libexec/aos-host-storage-handler-v1"
+      "libexec/aos-network-endpoint-handler-v1"
+    ]
+    hostResourceRuntime;
+  managedConfigurationRuntimeDependency = fixtureRuntime "managed-configuration" ["bin/.aos-package-runtime-unwrapped"] managedConfigurationRuntime;
+  nginxRuntimeDependency = fixtureRuntime "nginx" ["bin/nginx"] nginxRuntime;
+  serviceRuntimeDependency =
+    fixtureRuntime "service" [
+      "bin/.aos-package-runtime-unwrapped"
+      "libexec/aos-foreground-process-handler-v1"
+    ]
+    serviceRuntime;
+  packageRuntimeSelector = selectorFor serviceRuntimeDependency;
+  nginxRuntimeSelector = selectorFor nginxRuntimeDependency;
   serviceManagementContract = import ../../../lib/abilities/service-management.nix {
     inherit schemas;
     inherit (lib.abilities) guarantee;
@@ -527,9 +574,10 @@
   credentialProvider = import ./providers/credential/default.nix;
   httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
   baseNginxAbilityModule = import ../../../pkgs/networking/_nginx-ability-contract.nix {
-    inherit effectQualification providerStateQualification lib hostResourceRuntime;
+    inherit effectQualification providerStateQualification lib;
     providerArtifact = nginxArtifact;
-    runtimeArtifact = nginxRuntime;
+    runtimeArtifact = nginxRuntimeSelector;
+    hostResourceRuntime = selectorFor hostResourceRuntimeDependency;
   };
   baseNginxImplementations = baseNginxAbilityModule.config.aos.abilities.implementations;
   nginxAbilityModule = {
@@ -548,9 +596,9 @@
       };
   };
 in let
-  mkPackage = pname: src: abilities:
+  mkPackage = pname: src: runtimeDeps: abilities:
     mkDerivation {
-      inherit pname src abilities;
+      inherit pname src runtimeDeps abilities;
       version = "1.0.0";
 
       phases = [
@@ -569,20 +617,19 @@ in let
       };
     };
 in {
-  consumer = mkPackage "ability-reference-nginx-consumer" nginxArtifact {
+  consumer = mkPackage "ability-reference-nginx-consumer" nginxArtifact [] {
     config.aos.abilities.requirementTemplates.nginx = required nginxInterface;
   };
 
-  backend-consumer = mkPackage "ability-reference-nginx-backend-consumer" nginxArtifact {
+  backend-consumer = mkPackage "ability-reference-nginx-backend-consumer" nginxArtifact [] {
     config.aos.abilities.requirementTemplates = {
       nginx = required nginxInterface;
       backend = required httpBackend;
     };
   };
 
-  backend-registry = mkPackage "ability-reference-http-backend-registry" httpBackendRegistryArtifact {
+  backend-registry = mkPackage "ability-reference-http-backend-registry" httpBackendRegistryArtifact [] {
     config.aos.abilities.implementations.http-backend = {
-      artifact = httpBackendRegistryArtifact;
       definition = lib.abilities.define {
         interface = httpBackend.name;
         abi = httpBackend.abi;
@@ -603,12 +650,11 @@ in {
     };
   };
 
-  nginx = mkPackage "ability-reference-nginx" nginxArtifact nginxAbilityModule;
+  nginx = mkPackage "ability-reference-nginx" nginxArtifact [nginxRuntimeDependency hostResourceRuntimeDependency] nginxAbilityModule;
 
-  managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact {
+  managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact [managedConfigurationRuntimeDependency] {
     config.aos.abilities.implementations = {
       managed-configuration = {
-        artifact = managedConfigurationArtifact;
         definition = lib.abilities.define {
           interface = managedConfiguration.name;
           abi = managedConfiguration.abi;
@@ -649,7 +695,7 @@ in {
         };
       };
       managed-configuration-effects = {
-        artifact = managedConfigurationRuntime;
+        artifact = selectorFor managedConfigurationRuntimeDependency;
         definition = terminalExport {
           name = managedConfigurationEffects.name;
           group = "managed-configuration-effects";
@@ -661,7 +707,7 @@ in {
           };
         };
         handler = {
-          artifact = managedConfigurationRuntime;
+          artifact = selectorFor managedConfigurationRuntimeDependency;
           entryPoint = "bin/.aos-package-runtime-unwrapped";
           arguments = schemas.boolean;
           result = schemas.boolean;
@@ -670,10 +716,9 @@ in {
     };
   };
 
-  credential = mkPackage "ability-reference-credential" credentialArtifact {
+  credential = mkPackage "ability-reference-credential" credentialArtifact [credentialRuntimeDependency] {
     config.aos.abilities.implementations = {
       credential-delivery = {
-        artifact = credentialArtifact;
         definition = lib.abilities.define {
           interface = credentialDelivery.name;
           abi = credentialDelivery.abi;
@@ -710,7 +755,7 @@ in {
         };
       };
       credential-delivery-effects = {
-        artifact = credentialRuntime;
+        artifact = selectorFor credentialRuntimeDependency;
         definition = terminalExport {
           name = credentialDeliveryEffects.name;
           group = "credential-delivery-effects";
@@ -736,7 +781,7 @@ in {
           };
         };
         handler = {
-          artifact = credentialRuntime;
+          artifact = selectorFor credentialRuntimeDependency;
           entryPoint = "libexec/aos-credential-delivery-handler-v1";
           arguments = credentialRequest;
           result = credentialObservation;
@@ -745,10 +790,10 @@ in {
     };
   };
 
-  service = mkPackage "ability-reference-service" serviceArtifact {
+  service = mkPackage "ability-reference-service" serviceArtifact [serviceRuntimeDependency] {
     config.aos.abilities.implementations = {
       foreground-process = {
-        artifact = serviceRuntime;
+        artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = foregroundProcess.name;
           group = "foreground-process";
@@ -769,14 +814,13 @@ in {
           };
         };
         handler = {
-          artifact = serviceRuntime;
+          artifact = packageRuntimeSelector;
           entryPoint = "libexec/aos-foreground-process-handler-v1";
           arguments = foregroundProcessRequest;
           result = foregroundProcessObservation;
         };
       };
       service-definition = {
-        artifact = serviceArtifact;
         definition = lib.abilities.define {
           interface = serviceDefinition.name;
           abi = serviceDefinition.abi;
@@ -807,7 +851,7 @@ in {
         };
       };
       service-management = {
-        artifact = serviceRuntime;
+        artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = serviceManagement.name;
           group = "service-management";
@@ -835,7 +879,7 @@ in {
           };
         };
         handler = {
-          artifact = serviceRuntime;
+          artifact = packageRuntimeSelector;
           entryPoint = "bin/.aos-package-runtime-unwrapped";
           arguments = schemas.boolean;
           result = schemas.boolean;

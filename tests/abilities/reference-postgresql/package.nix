@@ -179,6 +179,10 @@
       value = mkProviderSource faultPoint;
     })
     faultPoints);
+  packageRuntimeSelector = lib.abilities.packageOutput {
+    package = "aos";
+    output = "packageRuntime";
+  };
 
   mkSuite = {
     pname,
@@ -191,12 +195,14 @@
       inherit pname;
       version = "1.0.0";
       src = selectedProviderSource;
-      runtimeDeps = [selectedControl selectedPostgresql];
+      runtimeDeps = [packageRuntime selectedControl selectedPostgresql];
       abilities = {
         config.aos.abilities.implementations = {
           postgresql = {
-            artifact = selectedProviderSource;
-            artifacts = [selectedControl selectedPostgresql];
+            artifacts = [
+              (lib.abilities.packageOutput {package = selectedControl.pname;})
+              (lib.abilities.packageOutput {package = selectedPostgresql.pname;})
+            ];
             requiredFeatures = lib.optional (stateFormat != null) "provider-state-format-v1";
             definition = let
               base = postgresqlExport stateFormat;
@@ -211,7 +217,7 @@
               };
           };
           credential = {
-            artifact = packageRuntime;
+            artifact = packageRuntimeSelector;
             definition = terminalExport {
               selected = credentialEffects;
               group = "credential";
@@ -221,14 +227,14 @@
               persistent = false;
             };
             handler = {
-              artifact = packageRuntime;
+              artifact = packageRuntimeSelector;
               entryPoint = "libexec/aos-credential-delivery-handler-v1";
               arguments = credentialRequest;
               result = credentialObservation;
             };
           };
           endpoint = {
-            artifact = packageRuntime;
+            artifact = packageRuntimeSelector;
             definition = terminalExport {
               selected = endpointEffects;
               group = "endpoint";
@@ -238,14 +244,14 @@
               persistent = false;
             };
             handler = {
-              artifact = packageRuntime;
+              artifact = packageRuntimeSelector;
               entryPoint = "libexec/aos-network-endpoint-handler-v1";
               arguments = endpointRequest;
               result = endpointObservation;
             };
           };
           network-policy = {
-            artifact = packageRuntime;
+            artifact = packageRuntimeSelector;
             definition = terminalExport {
               selected = networkPolicyEffects;
               group = "network-policy";
@@ -256,14 +262,14 @@
               guarantees = [loopbackIngressGuarantee];
             };
             handler = {
-              artifact = packageRuntime;
+              artifact = packageRuntimeSelector;
               entryPoint = "libexec/aos-host-network-policy-handler-v1";
               arguments = networkPolicyRequest false;
               result = networkPolicyObservation;
             };
           };
           postgresql-terminal = {
-            artifact = packageRuntime;
+            artifact = packageRuntimeSelector;
             definition = terminalExport {
               selected = postgresqlEffects;
               group = "postgresql-terminal";
@@ -273,14 +279,14 @@
               persistent = true;
             };
             handler = {
-              artifact = packageRuntime;
+              artifact = packageRuntimeSelector;
               entryPoint = "libexec/aos-postgresql-handler-v1";
               arguments = postgresqlRequest;
               result = postgresqlObservation;
             };
           };
           storage = {
-            artifact = packageRuntime;
+            artifact = packageRuntimeSelector;
             definition = terminalExport {
               selected = storageEffects;
               group = "storage";
@@ -296,7 +302,7 @@
               };
             };
             handler = {
-              artifact = packageRuntime;
+              artifact = packageRuntimeSelector;
               entryPoint = "libexec/aos-host-storage-handler-v1";
               arguments = storageRequest;
               result = storageObservation;

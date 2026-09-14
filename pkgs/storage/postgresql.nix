@@ -276,7 +276,6 @@ in
 
     abilities = {
       config.aos.abilities.implementations.postgresql = {
-        artifact = abilityContract.providerSource;
         definition = abilityContract.postgresqlExport abilityContract.compatibleStateFormat;
         requiredFeatures = ["provider-state-format-v1"];
       };
