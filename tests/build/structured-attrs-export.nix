@@ -74,36 +74,36 @@ in
   assert builtins.elem secondRuntimeInput mergedChecks.out.disallowedReferences;
   assert builtins.elem firstRuntimeInput mergedChecks.dev.disallowedReferences;
   assert mergedChecks.dev.allowedReferences == [];
-  pkgs.mkDerivation {
-    pname = "aos-structured-attrs-export-check";
-    version = "0";
-    src = null;
+    pkgs.mkDerivation {
+      pname = "aos-structured-attrs-export-check";
+      version = "0";
+      src = null;
 
-    AOS_STRUCTURED_ATTR_EXPORT_PROBE = "visible-to-child";
-    outputChecks = {};
-    dontStrip = true;
-    dontNukeRefs = true;
-    buildDeps = [scrubProbe referencePolicyProbe];
+      AOS_STRUCTURED_ATTR_EXPORT_PROBE = "visible-to-child";
+      outputChecks = {};
+      dontStrip = true;
+      dontNukeRefs = true;
+      buildDeps = [scrubProbe referencePolicyProbe];
 
-    phases = [
-      {
-        name = "check";
-        script = ''
-          child_value=$(
-            ${pkgs.bash}/bin/bash -c \
-              'printf "%s" "$AOS_STRUCTURED_ATTR_EXPORT_PROBE"'
-          )
-          if [ "$child_value" != "$AOS_STRUCTURED_ATTR_EXPORT_PROBE" ]; then
-            echo "structured derivation attrs were not exported to a child process" >&2
-            exit 1
-          fi
+      phases = [
+        {
+          name = "check";
+          script = ''
+            child_value=$(
+              ${pkgs.bash}/bin/bash -c \
+                'printf "%s" "$AOS_STRUCTURED_ATTR_EXPORT_PROBE"'
+            )
+            if [ "$child_value" != "$AOS_STRUCTURED_ATTR_EXPORT_PROBE" ]; then
+              echo "structured derivation attrs were not exported to a child process" >&2
+              exit 1
+            fi
 
-          grep -Fqx '${firstRuntimeInput}' ${scrubProbe}/bin/runtime-paths
-          grep -Fqx '${secondRuntimeInput}' ${scrubProbe}/bin/runtime-paths
+            grep -Fqx '${firstRuntimeInput}' ${scrubProbe}/bin/runtime-paths
+            grep -Fqx '${secondRuntimeInput}' ${scrubProbe}/bin/runtime-paths
 
-          mkdir -p "$out"
-          echo PASS > "$out/result"
-        '';
-      }
-    ];
-  }
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
+    }

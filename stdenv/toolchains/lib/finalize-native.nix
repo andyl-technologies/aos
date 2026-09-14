@@ -85,12 +85,12 @@
       this = compilerBuildTools;
     };
   constructionGcc = finishConstruction (call (compilerBuildScope
-      // {
-        prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;
-        binutils = exports.binutils;
-        gccStage1 = compilerForLibc;
-      })
-    compilerSource {});
+    // {
+      prev = compilerBuildTools // {binutils = exports.binutils;} // compilerToolOverrides;
+      binutils = exports.binutils;
+      gccStage1 = compilerForLibc;
+    })
+  compilerSource {});
   bashManifestScope =
     buildTools
     // platforms
