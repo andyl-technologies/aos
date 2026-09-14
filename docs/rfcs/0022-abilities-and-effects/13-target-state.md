@@ -11,15 +11,15 @@ The implementation has one source of truth for each kind of information:
 
 | Information | Authoritative value |
 | --- | --- |
-| Interface semantics | A provider-neutral interface document constructed by `lib.abilities` |
-| Package declarations | The package's first-class `abilities` field |
-| Available implementations | `abilities.provides` from packages selected for the target environment |
-| Consumer requirements | `abilities.consumes` from those packages and their evaluated instances |
+| Interface semantics | A provider-neutral typed module declaration using `lib.abilities` |
+| Package declarations | The package's first-class ability module |
+| Available implementations | `package.abilities.implementations` from packages selected for the target environment |
+| Consumer requirements | Package requirement templates and the final fixed point's concrete requests |
 | Concrete configuration | One final evaluated AOS module fixed point |
 | Provider selection | The checked binding plan |
 | Requested runtime changes | The checked effect plan |
 | Live results | The execution journal and provider observations |
-| Package reference documentation | A projection of the checked package ability document |
+| Package reference documentation | A projection of the package module's checked options and declarations |
 | Deployment documentation | A projection of the evaluated configuration, binding plan, and effect plan |
 | Qualification subjects | A projection of the implementations and methods exposed by selected packages |
 
@@ -28,14 +28,99 @@ They MUST NOT restate its package names, interfaces, handlers, unit names,
 counts, digests, or documentation ownership in a separately maintained
 catalog.
 
+## One typed module vocabulary
+
+Every authored configuration fact enters through the ordinary AOS module
+system. The shared schema module declares a single option tree under
+`aos.abilities`:
+
+```nix
+options.aos.abilities = {
+  interfaces = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule interfaceModule);
+    default = {};
+  };
+
+  implementations = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule implementationModule);
+    default = {};
+  };
+
+  requirementTemplates = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule requirementModule);
+    default = {};
+  };
+
+  instances = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule instanceModule);
+    default = {};
+  };
+
+  requests = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule requestModule);
+    default = {};
+  };
+
+  bindings = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule bindingModule);
+    default = {};
+  };
+
+  desiredResources = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule desiredResourceModule);
+    default = {};
+  };
+};
+```
+
+The exact submodule definitions are supplied by `lib.abilities`, but these are
+ordinary `mkOption`, `types.attrsOf`, and `types.submodule` values. Base,
+system, operator, runtime, package, and provider modules use ordinary
+`options`, `config`, `imports`, `mkIf`, `mkMerge`, defaults, priorities, and
+assertions to contribute to this tree. Package and provider provenance is
+attached to the definitions by the existing module evaluator. There is no
+second `abilities.exports` / `abilities.imports` / `abilityBindings` module
+schema.
+
+`lib.abilities.types` is the portable subset of AOS option types. Its Boolean,
+bounded integer, bounded string and enumeration, list, map, record, tagged
+union, reference, and lifetime constructors return normal Nix option types
+with a canonical portable-schema projection. An interface field is authored
+once with one of these types. The same value drives module evaluation,
+normalized package and wire schemas, generic configuration parsing, editor
+metadata, and reference documentation. Rust implements the generic closed
+schema decoder and validator; it does not repeat interface fields, defaults,
+method sets, or package declarations. Conformance checks compare the generic
+Nix and Rust schema implementations.
+
+Every interface, implementation, requirement template, option type, default,
+semantic constraint, method, guarantee, handler selector, and description has
+one owning module declaration. Configured instances and requests refer to
+those declarations by typed identity instead of copying their contents.
+Bindings refer to requests and implementations; desired resources refer to
+the selected definitions. Module type checking rejects unknown fields,
+malformed values, invalid merges, and missing required values during the final
+evaluation. TOML, JSON, CLI, and editor inputs are converted generically into
+module definitions from the exported option schema and then pass through that
+same evaluation path; they have no handwritten package parser tables.
+
+This is semantic single authorship, not a ban on materializing derived output.
+A canonical package document, release manifest, documentation page, or cache
+may contain the projected value needed at its boundary, but it is generated
+from the evaluated option graph and cannot be edited as another source. Human
+guides may explain workflows and concepts. Types, defaults, accepted values,
+ability relationships, provider features, unit names, and other machine
+reference material are generated from their owning declarations and evaluated
+outputs.
+
 ## End-to-end data flow
 
 ```text
 package definitions
-  mkDerivation { abilities = { provides = ...; consumes = ...; }; }
+  mkDerivation { abilities = packageIntegrationModule; }
         |
         +--> ordinary payload derivations
-        +--> normalized package ability documents
+        +--> checked option declarations and normalized package projections
                          |
 selected packages -------+
         |
@@ -71,16 +156,23 @@ human-readable output, or a private copy of the provider inventory.
 
 ## Package construction
 
-`abilities` is a first-class AOS package field:
+`abilities` is a first-class AOS package field whose value is a standard module
+or list of modules:
 
 ```nix
 mkDerivation {
   pname = "example";
   version = "1.0";
 
-  abilities = {
-    provides = { /* package-owned implementations */ };
-    consumes = { /* requirements and contributions */ };
+  abilities = { lib, ... }: {
+    options.services.example = {
+      enable = lib.mkEnableOption "the example service";
+    };
+
+    config.aos.abilities.requirementTemplates.service =
+      lib.abilities.requirement {
+        interface = lib.abilities.interfaces.serviceLifecycle;
+      };
   };
 };
 ```
@@ -89,10 +181,24 @@ Package definitions receive the composed AOS `lib` through the existing
 package call mechanism. They use `lib.abilities` constructors and MUST NOT
 import private library files by relative path.
 
-The AOS `mkDerivation` wrapper removes `abilities` before invoking the low-level
-derivation primitive, validates and normalizes the declarations, and returns
-them as `package.abilities`. The public model does not use
+The module owns the package's configuration options, static interfaces,
+implementations, requirement templates, and conditional instance/request
+definitions. Package authors do not maintain a configuration module and a
+parallel ability manifest containing the same facts. The wrapper removes
+`abilities` before invoking the low-level derivation primitive, evaluates it
+against the shared ability schema for its package projection, and returns that
+projection as `package.abilities`. When the package is admitted to a system,
+the evaluator imports the exact same module value into the complete system
+fixed point. The public model does not use
 `passthru.abilityPackage`, `passthru.abilities`, or a parallel package wrapper.
+
+The package projection contains statically discoverable implementations and
+requirement templates plus the module option surface. The final system
+projection contains enabled instances and concrete requests. An enabled
+instance references its package-owned template; it does not restate the
+interface, schema, methods, or guarantees. A provider instance likewise
+references its package-owned implementation declaration. This preserves
+static discovery without introducing a second declaration.
 
 Ability-only changes alter the package release contract without needlessly
 rebuilding unchanged payload bytes. The release identity binds the payload,
@@ -133,11 +239,13 @@ Every implementation is exposed by the package that ships it:
 ```nix
 systemd = mkDerivation {
   # Ordinary package fields are omitted from this example.
-  abilities.provides = {
-    serviceLifecycle = { /* interface and handler binding */ };
-    serviceDependencies = { /* interface and handler binding */ };
-    serviceReload = { /* interface and handler binding */ };
-    serviceCredentials = { /* interface and handler binding */ };
+  abilities = { lib, ... }: {
+    config.aos.abilities.implementations = {
+      serviceLifecycle = lib.abilities.implementation { /* ... */ };
+      serviceDependencies = lib.abilities.implementation { /* ... */ };
+      serviceReload = lib.abilities.implementation { /* ... */ };
+      serviceCredentials = lib.abilities.implementation { /* ... */ };
+    };
   };
 };
 ```
@@ -178,9 +286,9 @@ ownership map.
 
 Provider discovery starts from the packages selected for the explicit target
 environment. The outer evaluator collects their static
-`package.abilities.provides` declarations, applies explicit operator bindings
-and bounded selection, and imports only the selected provider modules. Imports
-do not depend on the final `config` value.
+`package.abilities.implementations` declarations, applies explicit operator
+bindings and bounded selection, and imports only the selected provider modules.
+Imports do not depend on the final `config` value.
 
 The AOS module fixed point then composes all deploy-time configuration: base
 features, the system variant, operator and runtime modules, admitted package
@@ -337,11 +445,12 @@ manager instance is running or selected.
 
 ## Configuration, images, and staged environments
 
-Package-owned configuration modules continue to use the restricted module
-evaluation boundary. Ability outputs may feed authorized option contributions,
-and the resulting fixed point preserves their provenance. Runtime-produced
-values remain typed deferred results rather than being read during pure Nix
-evaluation.
+Package ability modules use the restricted module evaluation boundary. Their
+ordinary package settings and their ability declarations share one `options`
+and `config` graph, and the resulting fixed point preserves definition and
+option provenance. Ability outputs may feed authorized option contributions.
+Runtime-produced values remain typed deferred results rather than being read
+during pure Nix evaluation.
 
 Early-boot, host, container, and image-build stages advertise separate
 environment abilities. Requirements cannot cross stages implicitly. Image
@@ -359,9 +468,10 @@ from checked package documents, plans, and observations. `aos docs`, APM-facing
 package documentation, AOS Hub, editor tooling, and JSON exports render that
 model rather than implementing their own joins.
 
-Package reference documentation reads `package.abilities` and shows every
-provided and consumed interface, method, guarantee, configuration contribution,
-handler artifact, and supported environment. Deployment documentation adds the
+Package reference documentation reads the checked package option declarations
+and `package.abilities` projection and shows every provided and consumed
+interface, method, guarantee, configuration option, contribution, handler
+artifact, and supported environment. Deployment documentation adds the
 selected provider for each requirement, resolved service instances, actual
 provider-produced unit or process identities, effects, and current observations.
 
@@ -369,8 +479,11 @@ The central documentation module is a pure projection over the package and
 module fixed points. `aos.documentation.systemServices`, manual option-prefix
 lists, copied unit-name lists, and package-specific documentation branches do
 not exist. Unit names and other backend artifacts come from evaluated provider
-output. Option documentation comes from the evaluated option declarations and
-their operational component provenance.
+output. Option names, types, defaults, descriptions, examples, and provenance
+come from evaluated `mkOption` declarations. Ability schemas and relationships
+come from the corresponding `aos.abilities` definitions. A frontend cannot
+provide a second default, method description, provider feature list, or
+package-to-option association.
 
 Documentation prose has its own identity and does not change a semantic
 revision. Semantic fields are documented from the canonical schemas so prose
@@ -418,8 +531,8 @@ reimplementing semantic validation.
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `lib.abilities` | Nix constructors, schemas, normalization, local checks | Package/provider catalog, runtime commands, documentation inventory |
-| AOS `mkDerivation` | Native `abilities` package field and payload/contract separation | Provider selection or target-specific binding |
+| `lib.abilities` | Shared ability submodules, portable option types, normalization, and local checks | Package/provider catalog, runtime commands, documentation inventory |
+| AOS `mkDerivation` | Native ability-module field, package projection, and payload/contract separation | Provider selection or target-specific binding |
 | Package definitions | Their provided/consumed abilities, modules, handlers, service declarations | Generic resolver behavior or self-computed artifact identity |
 | AOS module evaluator | The sole deploy-time configuration fixed point, provider definitions, and provenance | Registry traversal, a parallel ability configuration graph, or runtime effects |
 | `aos-ability-model` | Wire types, canonical encoding, typed identities | Nix evaluation, transport, package-specific handlers |
@@ -447,6 +560,9 @@ The completed implementation rejects these patterns during review or checks:
 - manual hashes or counts for values available to the evaluator;
 - checked-in generated provider matrices or normalized production snapshots;
 - documentation-only package-to-option or package-to-unit mappings;
+- an ability fact authored both in package metadata and module configuration;
+- handwritten parser, option, default, or reference-documentation tables for
+  package abilities;
 - declarative contracts depending on `jq`, shell, or another executable tool;
 - an independently assembled ability-module configuration evaluation;
 - raw store paths used as semantic revisions;
@@ -457,8 +573,10 @@ The completed implementation rejects these patterns during review or checks:
 ## Completion condition
 
 RFC-0022 is implemented only when every supported package and system path uses
-this ownership model, all deploy-time configuration shares one final module
-fixed point, all frontends consume the shared projections, production
-qualification is derived from package declarations, and searches plus tests
-demonstrate that the forbidden patterns are absent. A working engine beneath a
-parallel legacy package model does not satisfy the RFC.
+this ownership model, every semantic fact is authored once through the typed
+module vocabulary, all deploy-time configuration shares one final module fixed
+point, all parsers and frontends consume generated schemas or shared
+projections, production qualification is derived from package declarations,
+and searches plus tests demonstrate that the forbidden patterns are absent. A
+working engine beneath a parallel legacy package model does not satisfy the
+RFC.

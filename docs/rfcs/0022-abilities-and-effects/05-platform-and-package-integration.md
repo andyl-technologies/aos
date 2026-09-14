@@ -8,6 +8,13 @@ which mechanism, under whose authority, and during which stage. Ordinary
 scalar options do not all need to become abilities. A boundary matters when
 another component supplies behavior, resources, or a guarantee.
 
+Those package schemas and ability relationships are ordinary typed module
+options in the same fixed point. A package's first-class ability module owns
+its `mkOption` declarations, static implementation and requirement templates,
+and conditional instances/requests. `package.abilities`, deployment plans,
+documentation, Hub data, and editor schemas are projections of that source;
+the package does not repeat the information in an integration manifest.
+
 | Existing surface | Proposed consumption contract |
 | --- | --- |
 | Package executable | Execute an exact artifact on a specified platform |

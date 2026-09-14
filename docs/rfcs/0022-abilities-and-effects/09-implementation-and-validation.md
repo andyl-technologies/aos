@@ -84,12 +84,14 @@ implementation of the semantic rules.
 
 ## Phase 2: Nix authorship and recursive composition
 
-Implement the native package `abilities.provides` and `abilities.consumes`
-vocabulary, plus provider-module exports, imports, requirements, explicit
-bindings, aggregation, typed results, and provider-owned composition. Reuse
-existing configuration ownership and restricted evaluation. Publish exact
-declarations by projecting the selected package fixed point and resolving
-symbolic handler artifacts through the central release pipeline.
+Implement the native package ability-module field and the shared typed
+`aos.abilities` options for interfaces, implementations, requirement templates,
+instances, requests, bindings, and desired resources. Add portable ability
+option types whose canonical schema projections drive generic parsing, Rust
+validation, editor data, and reference documentation. Reuse existing
+configuration ownership and restricted evaluation. Publish exact declarations
+by projecting the selected package fixed point and resolving symbolic handler
+artifacts through the central release pipeline.
 
 All admitted package and provider modules participate in the same complete AOS
 module fixed point as base, system, operator, and runtime modules. Pure

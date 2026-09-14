@@ -2,10 +2,11 @@
 
 ## Keep the language and extend the AOS module vocabulary
 
-Nix attribute sets, functions, imports, and the AOS module engine can express
+Nix attribute sets, functions, imports, and the AOS module engine express
 interfaces, provider declarations, requests, explicit bindings, and pure
-lowering into configuration. This proposal requires no new syntax or evaluator
-fork. It extends AOS libraries and package construction.
+lowering into configuration through ordinary `options` and `config`. This
+proposal requires no new syntax or evaluator fork. It extends the shared AOS
+option vocabulary, libraries, and package construction.
 
 The existing option interfaces remain useful. A virtual-host request should
 reuse nginx's types within an explicitly authorized contribution surface. A
@@ -24,14 +25,26 @@ ability-specific configuration graph.
 
 ## Authoring responsibilities
 
-`abilities` is a first-class field of an AOS package. The library provides
-package-local declarations for provided interfaces, consumed abilities,
-lower-interface requirements, explicit deployment bindings, and provider-owned
-composition and transitions. The normalized value is available as
-`package.abilities`; a `passthru` convention or companion package model is not
-part of the public authoring API. The complete authoring rules are in the
+`abilities` is a first-class field of an AOS package. Its value is an ordinary
+AOS module, not a free-form manifest. The module uses the shared typed
+`aos.abilities` option tree for provided interfaces, consumed abilities,
+lower-interface requirements, and provider-owned composition and transitions.
+Operator modules use the same tree for explicit deployment bindings. The
+package's checked static projection is available as `package.abilities`, and
+the exact same module is imported when the package participates in the final
+system fixed point. A `passthru` convention, companion package model, or
+separate ability module evaluator is not part of the public authoring API. The
+complete authoring rules are in the
 [target state](13-target-state.md), and a composition example is in
 [recursive composition](03-recursive-composition.md).
+
+`lib.abilities.types` supplies ordinary AOS option types with a canonical
+portable-schema projection. Authors declare each field, default, constraint,
+description, interface method, and guarantee once. Module evaluation, generic
+configuration parsing, package publication, Rust validation, editor metadata,
+and generated reference documentation consume projections from those
+declarations. Package modules do not repeat the same facts in metadata or a
+documentation-only tree.
 
 Existing pure mappings into nginx or another owner's option tree remain a
 useful contribution mechanism. They are only one facet of an exported ability.
@@ -120,12 +133,13 @@ depending on a particular in-memory Nix value.
 ## Publication artifacts
 
 Package construction separates the ordinary payload derivation from the
-normalized first-class ability value. Integration edits should not rebuild
-unchanged payload bytes, and the payload must not acquire a circular reference
-to its own integration artifacts. Publication resolves symbolic package-output
-selectors and binds the resulting ability document to the release using the
-same canonical artifact metadata as other release inputs. A package does not
-run a private closure scanner or manifest-rewriting derivation.
+normalized projection of its first-class ability module. Integration edits
+should not rebuild unchanged payload bytes, and the payload must not acquire a
+circular reference to its own integration artifacts. Publication resolves
+symbolic package-output selectors and binds the resulting ability document to
+the release using the same canonical artifact metadata as other release
+inputs. A package does not run a private closure scanner or
+manifest-rewriting derivation.
 
 The exact signed release associates:
 
@@ -189,9 +203,11 @@ checks cannot establish that configuration-dependent requests are valid; the
 concrete configuration must be evaluated. Nontermination and evaluation
 resource limits remain explicit error conditions.
 
-Each interface's serializable request/result description is the common schema
-contract. Nix option helpers, Rust structural validation, and generated editor
-documentation must use that description or demonstrate agreement against it.
+Each interface's portable option type is the common schema contract. Its
+canonical schema projection drives Rust structural validation and generated
+editor and reference documentation. Generic Nix/Rust conformance tests prove
+agreement of the closed type vocabulary; interface-specific fields and
+defaults are not copied into Rust or frontend tables.
 Native Nix predicates that cannot be represented in the supported schema remain
 additional evaluation checks; they cannot masquerade as portable Rust solver
 constraints. Cross-resource semantics and authorization require dedicated

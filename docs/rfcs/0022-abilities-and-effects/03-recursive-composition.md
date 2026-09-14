@@ -51,19 +51,19 @@ authorized provider instance. The application uses the provider's public
 interface without inheriting its implementation handles:
 
 ```nix
-abilities.imports.web = {
-  interface = "nginx.virtual-host";
-  abi = 1;
-
-  request = {
-    serverNames = ["app.example.com"];
-    listen = [8080];
-    locations."/".proxyPass = "http://127.0.0.1:9000";
+config.aos.abilities.requests."my-app.web" =
+  lib.abilities.request {
+    requirement = "package:my-app/web";
+    parameters = {
+      serverNames = ["app.example.com"];
+      listen = [8080];
+      locations."/".proxyPass = "http://127.0.0.1:9000";
+    };
   };
-};
 
-abilityBindings."my-app.web" = {
-  provider = "nginx/edge.virtualHosts";
+config.aos.abilities.bindings."my-app.web" = {
+  implementation = "package:nginx/virtual-hosts";
+  providerInstance = "container:web/nginx:edge";
   slot = "my-app";
 };
 ```
@@ -74,7 +74,7 @@ context. Other topologies need an explicit endpoint binding and corresponding
 rendering. Names above stand for exact instance-qualified identities, not
 unrestricted global attribute paths.
 
-The following illustrates the authoring model implemented by `lib.abilities`.
+The following illustrates the authoring model supplied by `lib.abilities`.
 It intentionally abbreviates the concrete `requestSchema`, `outputs`,
 `methods`, lifecycle, and entry-point fields used by executable package
 definitions. Type values and rendering functions denote package-owned schema
@@ -82,7 +82,8 @@ and pure rendering helpers. It shows the desired-state facet; credential
 binding and transition operations follow below.
 
 ```nix
-abilities.exports.virtualHosts = lib.abilities.define {
+config.aos.abilities.implementations.virtualHosts =
+  lib.abilities.implementation {
   interface = "nginx.virtual-host";
   abi = 1;
   requestType = virtualHostContributionType;
@@ -134,8 +135,14 @@ abilities.exports.virtualHosts = lib.abilities.define {
 
     outputs.virtualHosts = describeVirtualHosts requests;
   };
-};
+  };
 ```
+
+This definition appears once in nginx's package ability module. Its normalized
+package projection supplies discovery and package reference data. When nginx is
+selected, the exact same module definition participates in the system fixed
+point; a provider module does not repeat the interface, methods, guarantees, or
+handler identity.
 
 The service interface's full schema must retain required systemd semantics;
 the small parameter set above is not a replacement workload schema. The
