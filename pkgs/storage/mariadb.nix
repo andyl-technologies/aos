@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  mkServiceAbilityModule,
   fetchurl,
   gnumake,
   cmake,
@@ -38,7 +39,6 @@
   coreutils,
   sed,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   version = "12.3.3";
   isDarwin = stdenv.hostPlatform.isDarwin;
@@ -461,8 +461,7 @@ in
     propagatedDeps = [];
     inherit expose configModule;
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "mariadb";
       spec = {
         interface = "aos.service.mariadb";

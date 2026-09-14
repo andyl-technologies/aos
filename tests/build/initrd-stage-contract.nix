@@ -118,8 +118,8 @@ in
           pkgs.zstd
           runtimeEvalInputClosure
         ]
-        ++ hostAbilities.passthru.abilityPackageManifests
-        ++ initrdAbilities.passthru.abilityPackageManifests;
+        ++ hostAbilities.passthru.packageAbilityContracts
+        ++ initrdAbilities.passthru.packageAbilityContracts;
       phases = [
         {
           name = "check";

@@ -25,12 +25,12 @@
     inherit lib pkgs;
   };
   authorityInterfaceRoots =
-    map (entry: entry.package.abilities) fixture.orderedPackages
+    map (entry: entry.package.abilityContract) fixture.orderedPackages
     ++ [
       postgresqlFixture.packageSet.suite.abilities
       kubernetesFixture.packageSet.kubernetes.abilities
       kubernetesFixture.packageSet.systemd.abilities
-      imageRolloutFixture.package.abilities
+      imageRolloutFixture.package.abilityContract
     ];
   authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   authorityMatrixSpec = pkgs.writeTextFile {

@@ -209,7 +209,7 @@ in
       }
     ];
 
-    abilityPackage = import ./_nginx-ability-contract.nix {
+    abilities = import ./_nginx-ability-contract.nix {
       inherit lib;
       providerArtifact = ./_nginx-ability-provider;
     };
@@ -397,7 +397,7 @@ in
                 and .implementation.handlers."nginx-terminal".entry_point == "bin/nginx"
                 and .module_entry_points.compose == .module_entry_points.transition
                 and .module_entry_points.compose != $document.package.payload
-            ' ${self.abilities}/package.json >/dev/null
+            ' ${self.abilityContract}/package.json >/dev/null
 
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"

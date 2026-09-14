@@ -9,12 +9,12 @@
 {
   lib,
   mkCargoPackage,
+  mkServiceAbilityModule,
   fetchurl,
   fetchCargoDeps,
   bash,
   coreutils,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   version = "2.3.0";
   src = fetchurl {
@@ -88,8 +88,7 @@ in
       test -x "$out/bin/garage-control"
     '';
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "garage";
       spec = {
         interface = "aos.service.garage";

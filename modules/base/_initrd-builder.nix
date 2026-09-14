@@ -130,8 +130,7 @@
     builtins.filter (
       package:
         builtins.isAttrs package
-        && package ? abilities
-        && (package.abilities.passthru.abilityPackage or false)
+        && package ? abilityContract
     )
     uniqueInitrdPackages;
   initrdStaticAbilityContract = oci.mkStaticAbilityContract {
@@ -142,7 +141,7 @@
     packages =
       map (package: {
         payload = package;
-        manifest = package.abilities;
+        manifest = package.abilityContract;
       })
       initrdAbilityPackages;
     runtimeRoots = uniqueInitrdPackages;

@@ -2,10 +2,10 @@
 {
   lib,
   mkGoPackage,
+  mkServiceAbilityModule,
   kubeSource,
   bash,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   launcher = writeShellScriptBin "kubelet-start" ''
     set -eu
@@ -30,8 +30,7 @@ in
     doCheck = false;
     runtimeDeps = [bash launcher];
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "kubelet";
       spec.interface = "aos.service.kubelet";
     };

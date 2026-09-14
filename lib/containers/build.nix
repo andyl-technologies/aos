@@ -204,8 +204,7 @@
     builtins.filter
     (package:
       builtins.isAttrs package
-      && package ? abilities
-      && (package.abilities.passthru.abilityPackage or false))
+      && package ? abilityContract)
     container.packageRoots;
   staticAbilityContract = oci.mkStaticAbilityContract {
     pname = "aos-container-${container.name}-static-abilities";
@@ -215,7 +214,7 @@
     packages =
       map (package: {
         payload = package;
-        manifest = package.abilities;
+        manifest = package.abilityContract;
       })
       abilityPackages;
     runtimeRoots = auditRoots;

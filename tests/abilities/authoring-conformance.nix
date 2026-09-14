@@ -4,13 +4,13 @@
   lib,
 }: let
   corpus = builtins.fromJSON (builtins.readFile ./conformance/v1.json);
-  abilityPackageRenderer = import ../../pkgs/build-support/_ability-package-renderer.nix {
+  abilityContractRenderer = import ../../pkgs/build-support/_ability-contract-renderer.nix {
     inherit lib;
     inherit (lib) abilities;
   };
   runner = import ./conformance/runner.nix {
     inherit (lib) abilities;
-    inherit abilityPackageRenderer;
+    inherit abilityContractRenderer;
   };
 
   unique = values:
@@ -151,7 +151,7 @@
           cp -R ${../../lib}/. "$out/lib/"
           cp ${./conformance/direct.nix} "$out/direct.nix"
           cp ${./conformance/runner.nix} "$out/runner.nix"
-          cp ${../../pkgs/build-support/_ability-package-renderer.nix} "$out/ability-package-renderer.nix"
+          cp ${../../pkgs/build-support/_ability-contract-renderer.nix} "$out/ability-contract-renderer.nix"
           cp ${./conformance/provider.nix} "$out/conformance/provider.nix"
           cp ${./composition.nix} "$out/composition.nix"
           cp ${./effects.nix} "$out/effects.nix"

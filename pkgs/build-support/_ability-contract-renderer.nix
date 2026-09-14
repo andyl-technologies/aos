@@ -1,4 +1,4 @@
-##! Validates package-authored ability declarations and prepares their closed
+##! Projects a checked package ability module into the current wire contract.
 ##! JSON projection. Realized artifact identities are filled by the fixed
 ##! companion builder from Nix's exported reference graph.
 {
@@ -8,9 +8,9 @@
   placeholderDigest = "sha256:${lib.concatStrings (builtins.genList (_: "0") 64)}";
 
   fail = packageName: message:
-    throw "mkDerivation abilityPackage for package '${packageName}' ${message}";
+    throw "mkDerivation abilities for package '${packageName}' ${message}";
   failFeature = packageName: message:
-    throw "AOS_ABILITY_DIAGNOSTIC_V1[unsupported-required-feature] mkDerivation abilityPackage for package '${packageName}' ${message}";
+    throw "AOS_ABILITY_DIAGNOSTIC_V1[unsupported-required-feature] mkDerivation abilities for package '${packageName}' ${message}";
 
   requireAttrs = packageName: context: allowed: value: let
     unknown =
@@ -48,10 +48,10 @@ in {
     version,
     payload,
     source,
-    abilityPackage,
+    declaration,
   }: let
     checked =
-      requireAttrs packageName "abilityPackage" [
+      requireAttrs packageName "ability module projection" [
         "activationMode"
         "artifacts"
         "exports"
@@ -60,7 +60,7 @@ in {
         "requiredFeatures"
         "requirements"
       ]
-      abilityPackage;
+      declaration;
     activationMode = checked.activationMode or "contracts-only";
     requiredFeatures = lib.sort builtins.lessThan (lib.unique (checked.requiredFeatures or ["abilities-v1"]));
     authoredExports = checked.exports or {};
@@ -68,7 +68,7 @@ in {
 
     preparedExports =
       builtins.mapAttrs (name: value: let
-        entry = requireAttrs packageName "abilityPackage.exports.${name}" ["artifact" "export" "requiredFeatures"] value;
+        entry = requireAttrs packageName "ability module implementation '${name}'" ["artifact" "export" "requiredFeatures"] value;
         # An export implemented by the package executable naturally uses the
         # payload itself. Defaulting here avoids a circular authoring reference
         # from the payload derivation to its separately built companion.
@@ -91,7 +91,7 @@ in {
 
     preparedHandlers =
       builtins.mapAttrs (name: value: let
-        entry = requireAttrs packageName "abilityPackage.handlers.${name}" ["arguments" "artifact" "entryPoint" "result"] value;
+        entry = requireAttrs packageName "ability module handler '${name}'" ["arguments" "artifact" "entryPoint" "result"] value;
       in {
         artifact = entry.artifact or payload;
         entry_point = entry.entryPoint or (fail packageName "handler '${name}' must set entryPoint");

@@ -100,16 +100,11 @@
     guarantees = [localManager];
   };
   provider = import ./provider/default.nix;
-  abilityPackage = {
-    requiredFeatures = ["abilities-v1"];
-    activationMode = "structured-effects";
-    ownership = [[]];
-    artifacts = [];
-    requirements = {};
-    exports = {
+  abilities = {
+    config.aos.abilities.implementations = {
       driver = {
         artifact = providerArtifact;
-        export = lib.abilities.define {
+        definition = lib.abilities.define {
           interface = "aos.test.systemd-manager-matrix";
           abi = 1;
           requestSchema = schemas.boolean;
@@ -140,7 +135,7 @@
       };
       systemd-manager = {
         artifact = packageRuntime;
-        export = lib.abilities.define {
+        definition = lib.abilities.define {
           interface = systemdManager.name;
           inherit (systemdManager) abi;
           requestSchema = request;
@@ -148,7 +143,8 @@
           methods = builtins.listToAttrs (builtins.map (name: {
               inherit name;
               value = method name;
-            }) methods);
+            })
+            methods);
           inherit lifecycle;
           guarantees = [localManager delegatedManager];
           aggregation = aggregation "systemd-manager";
@@ -156,13 +152,13 @@
           ownsResourceKinds = [systemdManager.name];
           handler = "native-systemd-manager-v1";
         };
+        handler = {
+          artifact = packageRuntime;
+          entryPoint = "libexec/aos-systemd-manager-handler-v1";
+          arguments = request;
+          result = observation;
+        };
       };
-    };
-    handlers.native-systemd-manager-v1 = {
-      artifact = packageRuntime;
-      entryPoint = "libexec/aos-systemd-manager-handler-v1";
-      arguments = request;
-      result = observation;
     };
   };
 in
@@ -170,7 +166,7 @@ in
     pname = "ability-reference-systemd-manager";
     version = "1.0.0";
     src = providerArtifact;
-    inherit abilityPackage;
+    inherit abilities;
     phases = [
       {
         name = "install";

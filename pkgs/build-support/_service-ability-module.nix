@@ -1,4 +1,4 @@
-##! Shared package contract for manager-neutral service lifecycle.
+##! Builds a package module for a manager-neutral service implementation.
 {
   lib,
   packageName,
@@ -7,7 +7,7 @@
 }: let
   inherit (lib.abilities) schemas;
 
-  serviceManagement = import ./service-management.nix {
+  serviceManagement = import ../../lib/abilities/service-management.nix {
     inherit schemas;
     inherit (lib.abilities) guarantee;
   };
@@ -35,7 +35,7 @@
     features = spec.features or (defaultFeatures ++ lib.optional hasDependencies "dependencies");
   };
 
-  providerSourcePath = ./providers/service-package/default.nix;
+  providerSourcePath = ./_service-ability-provider/default.nix;
   providerSource = builtins.readFile providerSourcePath;
   providerArtifact = writeTextFile {
     name = "${packageName}-service-ability-provider";
@@ -65,15 +65,8 @@
   };
   provider = (import providerSourcePath) {spec = serviceSpec;};
 in {
-  activationMode = "structured-effects";
-  requiredFeatures = ["abilities-v1"];
-  ownership = [[]];
-  artifacts = [];
-  requirements = {};
-
-  exports.service = {
-    artifact = providerArtifact;
-    export = lib.abilities.define {
+  config.aos.abilities.implementations.service = {
+    definition = lib.abilities.define {
       interface = serviceSpec.interface;
       abi = 1;
       requestSchema = schemas.boolean;
@@ -111,5 +104,6 @@ in {
       compose = provider.compose;
       transition = provider.transition;
     };
+    artifact = providerArtifact;
   };
 }

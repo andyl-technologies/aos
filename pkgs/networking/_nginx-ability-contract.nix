@@ -413,14 +413,8 @@
   hostResourceRuntimeAttrs = lib.optionalAttrs (hostResourceRuntime != null) {
     artifact = hostResourceRuntime;
   };
-in {
-  activationMode = "structured-effects";
-
-  # Legacy configuration has one package owner. The empty root scope preserves
-  # that single controller while named virtual-host slots remain contributable.
-  ownership = [[]];
-
-  exports =
+in let
+  implementations =
     {
       nginx = {
         artifact = providerArtifact;
@@ -640,4 +634,17 @@ in {
         }
         // hostResourceRuntimeAttrs;
     };
+in {
+  config.aos.abilities.implementations =
+    builtins.mapAttrs (
+      _: implementation: {
+        definition = implementation.export;
+        artifact = implementation.artifact or null;
+        handler =
+          if implementation.export.handler == null
+          then null
+          else handlers.${implementation.export.handler};
+      }
+    )
+    implementations;
 }

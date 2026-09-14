@@ -61,12 +61,11 @@
     if
       lib.all (entry:
         builtins.isAttrs entry
-        && (entry.manifest.passthru.abilityPackage or false)
-        && (entry.manifest.passthru.abilitySemanticValidator or null) == abilityContractValidator)
+        && (entry.manifest.semanticValidator or null) == abilityContractValidator)
       packages
       && lib.all (entry:
         builtins.toString entry.payload
-        == builtins.toString entry.manifest.passthru.abilityPackagePayload)
+        == builtins.toString entry.manifest.packagePayload)
       packages
       && lib.all (entry: builtins.elem (builtins.toString entry.payload) runtimeRootPaths) packages
       && builtins.length packagePaths == builtins.length (lib.unique (map (entry: entry.manifest) packagePaths))
@@ -82,10 +81,10 @@
       contracts
     then contractPaths
     else common.fail "static ability contract inputs must be produced by mkStaticAbilityContract";
-  abilityPackageManifests =
+  packageAbilityContracts =
     if platformMode
     then map (entry: entry.manifest) packages
-    else lib.unique (lib.concatMap (contract: contract.passthru.abilityPackageManifests) contracts);
+    else lib.unique (lib.concatMap (contract: contract.passthru.packageAbilityContracts) contracts);
   runtimeRootPaths = map builtins.toString runtimeRoots;
   checkedRuntimeRoots =
     if
@@ -146,7 +145,7 @@ in
     inherit pname;
     version = "1";
     src = null;
-    buildDeps = [abilityContractValidator coreutils jq] ++ abilityPackageManifests;
+    buildDeps = [abilityContractValidator coreutils jq] ++ packageAbilityContracts;
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
     outputChecks.out = {};
@@ -418,7 +417,7 @@ in
     passthru = {
       ociStaticAbilityContract = true;
       inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
-      inherit abilityPackageManifests;
+      inherit packageAbilityContracts;
       inputContractPaths = contractPaths;
       selectedPayloadPaths = map (entry: entry.payload) packagePaths;
     };

@@ -1,6 +1,7 @@
 ##! containerd — Container runtime
 {
   mkDerivation,
+  mkServiceAbilityModule,
   fetchurl,
   buildPackages,
   gnumake,
@@ -8,7 +9,6 @@
   kmod,
   bash,
   lib,
-  writeTextFile,
 }: let
   version = "2.3.5";
   payload = mkDerivation {
@@ -81,8 +81,7 @@ in
     runtimeDeps = [payload runc kmod bash];
     propagatedDeps = [];
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "containerd";
       spec.interface = "aos.service.containerd";
     };

@@ -176,22 +176,14 @@
       requires = {};
       ownsResourceKinds = [selected.name];
     };
-
-  common = {
-    activationMode = "structured-effects";
-    ownership = [[]];
-  };
 in rec {
   inherit k3sInterface kubernetesEffects systemdBootstrap;
 
   contributorPackage = {
-    activationMode = "contracts-only";
-    requirements.k3s = requirement k3sInterface [];
+    config.aos.abilities.requirementTemplates.k3s = requirement k3sInterface [];
   };
 
-  payloadPackage = {
-    activationMode = "contracts-only";
-  };
+  payloadPackage = {};
 
   k3sPackage = {
     providerArtifact,
@@ -200,85 +192,79 @@ in rec {
     providerStateQualification ? false,
     transitionTransform ? transition: transition,
     bootstrapMatrix ? false,
-  }:
-    common
-    // {
+  }: {
+    config.aos.abilities.implementations.k3s = {
+      artifact = providerArtifact;
       artifacts = payloadArtifacts;
-      exports.k3s = {
-        artifact = providerArtifact;
-        export = lib.abilities.define {
-          interface = k3sInterface.name;
-          abi = k3sInterface.abi;
-          requestSchema = addon;
-          outputs = {
-            object-json = output stringMap "planning";
-            objects = output resourceMap "planning";
-            service = output schemas.resourceReference "planning";
-            services = output resourceMap "planning";
-          };
-          methods = {};
-          lifecycle = lifecycle null;
-          guarantees = [];
-          aggregation = aggregation "k3s";
-          requires = {
-            systemd-bootstrap = requirement systemdBootstrap ["observe-manager" "start" "stop"];
-            kubernetes-terminal = requirement kubernetesEffects ["apply" "delete" "observe"];
-          };
-          composeEntry = "compose";
-          transitionEntry = "transition";
-          ownsResourceKinds = [k3sInterface.name];
-          inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}) compose;
-          transition = transitionTransform (
-            if providerStateQualification
-            then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).providerStateQualificationTransition
-            else if effectQualification
-            then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).effectQualificationTransition
-            else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).transition
-          );
+      definition = lib.abilities.define {
+        interface = k3sInterface.name;
+        abi = k3sInterface.abi;
+        requestSchema = addon;
+        outputs = {
+          object-json = output stringMap "planning";
+          objects = output resourceMap "planning";
+          service = output schemas.resourceReference "planning";
+          services = output resourceMap "planning";
         };
+        methods = {};
+        lifecycle = lifecycle null;
+        guarantees = [];
+        aggregation = aggregation "k3s";
+        requires = {
+          systemd-bootstrap = requirement systemdBootstrap ["observe-manager" "start" "stop"];
+          kubernetes-terminal = requirement kubernetesEffects ["apply" "delete" "observe"];
+        };
+        composeEntry = "compose";
+        transitionEntry = "transition";
+        ownsResourceKinds = [k3sInterface.name];
+        inherit (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}) compose;
+        transition = transitionTransform (
+          if providerStateQualification
+          then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).providerStateQualificationTransition
+          else if effectQualification
+          then (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).effectQualificationTransition
+          else (import ./_k3s-ability-provider/default.nix {inherit bootstrapMatrix;}).transition
+        );
       };
     };
+  };
 
-  systemdPackage = runtimeArtifact:
-    common
-    // {
-      exports.systemd-bootstrap = {
-        artifact = runtimeArtifact;
-        export = terminalExport {
-          selected = systemdBootstrap;
-          group = "systemd-bootstrap";
-          handler = "systemd-bootstrap-terminal";
-          requestSchema = schemas.boolean;
-          methods = bootstrapMethods;
-        };
+  systemdPackage = runtimeArtifact: {
+    config.aos.abilities.implementations.systemd-bootstrap = {
+      artifact = runtimeArtifact;
+      definition = terminalExport {
+        selected = systemdBootstrap;
+        group = "systemd-bootstrap";
+        handler = "systemd-bootstrap-terminal";
+        requestSchema = schemas.boolean;
+        methods = bootstrapMethods;
       };
-      handlers.systemd-bootstrap-terminal = {
+      handler = {
         artifact = runtimeArtifact;
         entryPoint = "bin/.aos-package-runtime-unwrapped";
         arguments = schemas.boolean;
         result = schemas.boolean;
       };
     };
+  };
 
-  kubernetesPackage = runtimeArtifact:
-    common
-    // {
-      exports.kubernetes = {
-        artifact = runtimeArtifact;
-        export = terminalExport {
-          selected = kubernetesEffects;
-          group = "kubernetes";
-          handler = "native-kubernetes-object-v1";
-          requestSchema = kubernetesIdentity;
-          methods = kubernetesMethods;
-          deleteMethod = "delete";
-        };
+  kubernetesPackage = runtimeArtifact: {
+    config.aos.abilities.implementations.kubernetes = {
+      artifact = runtimeArtifact;
+      definition = terminalExport {
+        selected = kubernetesEffects;
+        group = "kubernetes";
+        handler = "native-kubernetes-object-v1";
+        requestSchema = kubernetesIdentity;
+        methods = kubernetesMethods;
+        deleteMethod = "delete";
       };
-      handlers.native-kubernetes-object-v1 = {
+      handler = {
         artifact = runtimeArtifact;
         entryPoint = "libexec/aos-kubernetes-object-handler-v1";
         arguments = schemas.boolean;
         result = kubernetesObservation;
       };
     };
+  };
 }

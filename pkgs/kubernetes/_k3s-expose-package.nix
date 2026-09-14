@@ -109,7 +109,7 @@ in
       # The role owns lifecycle for the shared k3s service. The raw k3s and
       # containerd packages remain payloads in this relationship and therefore
       # do not acquire independent service operations.
-      abilityPackage = abilityContracts.k3sPackage {
+      abilities = abilityContracts.k3sPackage {
         providerArtifact = ./_k3s-ability-provider;
         payloadArtifacts = [k3s containerd];
       };

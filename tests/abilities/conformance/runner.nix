@@ -1,7 +1,7 @@
 ##! tests/abilities/conformance/runner.nix - Version-1 corpus Nix dispatcher.
 {
   abilities,
-  abilityPackageRenderer ? null,
+  abilityContractRenderer ? null,
   fixtureRoot ? ../.,
 }: let
   inherit (abilities) effects schemas;
@@ -248,16 +248,16 @@
 
   evaluatePackageRenderer = arguments: let
     renderer =
-      if abilityPackageRenderer == null
-      then throw "ability package renderer is unavailable"
-      else abilityPackageRenderer;
+      if abilityContractRenderer == null
+      then throw "ability contract renderer is unavailable"
+      else abilityContractRenderer;
     fixturePath = fixtureRoot + "/conformance/provider.nix";
     rendered = renderer.prepare {
       packageName = "state-format-conformance";
       version = "1.0.0";
       payload = fixturePath;
       source = fixturePath;
-      abilityPackage = {
+      declaration = {
         activationMode = "structured-effects";
         requiredFeatures = arguments.required_features;
         exports.stateful = {

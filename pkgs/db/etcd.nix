@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  mkServiceAbilityModule,
   fetchurl,
   fetchGoModules,
   buildPackages,
@@ -9,7 +10,6 @@
   go,
   stdenv,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   version = "3.7.1";
   src = fetchurl {
@@ -74,8 +74,7 @@ in
       else [gnumake go];
     runtimeDeps = [control];
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "etcd";
       spec.interface = "aos.service.etcd";
     };

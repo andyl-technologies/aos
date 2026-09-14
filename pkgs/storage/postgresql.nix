@@ -273,16 +273,11 @@ in
         ++ [bash coreutils control];
     propagatedDeps = [];
 
-    # Structured activation owns the database lifecycle when this provider is
-    # selected. The legacy exposed units remain available to older package
-    # installations, but the v3 runtime does not project them for this package.
-    abilityPackage = {
-      activationMode = "structured-effects";
-      requiredFeatures = ["abilities-v1" "provider-state-format-v1"];
-      ownership = [[]];
-      exports.postgresql = {
+    abilities = {
+      config.aos.abilities.implementations.postgresql = {
         artifact = abilityContract.providerSource;
-        export = abilityContract.postgresqlExport abilityContract.compatibleStateFormat;
+        definition = abilityContract.postgresqlExport abilityContract.compatibleStateFormat;
+        requiredFeatures = ["provider-state-format-v1"];
       };
     };
 
@@ -838,7 +833,7 @@ in
               == "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596"
             and .implementation.providers[0].state_format.artifact
               == .implementation.providers[0].artifact
-          ' ${self.abilities}/package.json >/dev/null
+          ' ${self.abilityContract}/package.json >/dev/null
 
           mkdir -p "$out"
           echo PASS > "$out/result"

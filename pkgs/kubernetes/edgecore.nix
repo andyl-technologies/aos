@@ -2,11 +2,11 @@
 {
   lib,
   mkDerivation,
+  mkServiceAbilityModule,
   fetchurl,
   buildPackages,
   kubeedgeSource,
   writeShellScriptBin,
-  writeTextFile,
 }: let
   inherit (kubeedgeSource) version src;
   control = writeShellScriptBin "edgecore-control" ''
@@ -25,8 +25,7 @@ in
     buildDeps = [buildPackages.go];
     runtimeDeps = [control];
 
-    abilityPackage = import ../../lib/abilities/service-package.nix {
-      inherit lib writeTextFile;
+    abilities = mkServiceAbilityModule {
       packageName = "edgecore";
       spec.interface = "aos.service.edgecore";
     };

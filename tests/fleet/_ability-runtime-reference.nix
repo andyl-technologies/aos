@@ -50,7 +50,7 @@
     }
   ];
 
-  packageRoots = lib.concatMap (entry: [entry.package entry.package.abilities]) orderedPackages;
+  packageRoots = lib.concatMap (entry: [entry.package entry.package.abilityContract]) orderedPackages;
 
   reloadWrapper = pkgs.writeShellScriptBin "ability-nginx-reload" ''
     set -eu
@@ -192,7 +192,7 @@
     in {
       inherit (entry) name;
       primary = entry.package;
-      abilities = entry.package.abilities;
+      abilities = entry.package.abilityContract;
       originalRuntime = pkgs.aos.packageRuntime;
     }) [
       "ability-reference-nginx"
@@ -270,7 +270,7 @@ in {
       }${builtins.toJSON (map (entry: {
           inherit (entry) name;
           package = builtins.toString entry.package;
-          abilities = builtins.toString entry.package.abilities;
+          abilities = builtins.toString entry.package.abilityContract;
         })
         orderedPackages)}${
         if guestTools
