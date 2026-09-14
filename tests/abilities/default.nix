@@ -1,15 +1,15 @@
-##! lib/testing/abilities.nix - Pure ability authoring and wire fixtures.
+##! tests/abilities/default.nix - Pure ability authoring and wire fixtures.
 {
   pkgs,
   lib,
 }: let
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
 
-  interfaceDocument = import ../../tests/abilities/interface.nix {
+  interfaceDocument = import ./interface.nix {
     inherit (lib) abilities;
   };
   canonicalInterface = builtins.toJSON interfaceDocument;
-  expectedInterface = builtins.readFile ../../tests/abilities/fixtures/interface.json;
+  expectedInterface = builtins.readFile ./fixtures/interface.json;
 
   invalidNestedSchema = builtins.tryEval (builtins.deepSeq (
       lib.abilities.schemas.record {
@@ -133,7 +133,8 @@
       requires = {};
       ownsResourceKinds = [];
       handler = "ordering-handler";
-    }).guarantees;
+    })
+    .guarantees;
 
   methodFamilyInterface = operationFamily:
     lib.abilities.define {
@@ -177,12 +178,18 @@
     (methodFamilyInterface {
       kind = "image-rollout";
       action = "retain";
-    }).methods.run.operation_family;
+    })
+    .methods
+    .run
+    .operation_family;
   invalidMethodImageFamily = builtins.tryEval (builtins.deepSeq (
       (methodFamilyInterface {
         kind = "image-rollout";
         action = "unknown";
-      }).methods.run.operation_family
+      })
+      .methods
+      .run
+      .operation_family
     )
     true);
 
@@ -224,7 +231,7 @@
   };
   invalidConfigurationSchema =
     builtins.fromJSON
-    (builtins.readFile ../../tests/abilities/fixtures/invalid-configuration-schema.json);
+    (builtins.readFile ./fixtures/invalid-configuration-schema.json);
   invalidConfigurationExport = builtins.tryEval (builtins.deepSeq (
       (configurationExport invalidConfigurationSchema).configuration_schema
     )
@@ -268,7 +275,9 @@
         enabled = true;
         endpoint = null;
       };
-    }).requirements.optional;
+    })
+    .requirements
+    .optional;
   requiredFallback = builtins.tryEval (builtins.deepSeq (
       requirementExport "required" {outputs.enabled = true;}
     )
@@ -282,7 +291,7 @@
     )
     true);
 
-  composition = import ../../tests/abilities/composition.nix {
+  composition = import ./composition.nix {
     inherit (lib) abilities;
   };
   expansion = composition.expansion;
@@ -302,15 +311,15 @@
   emptyEffects = lib.abilities.effects.normalize [] (
     lib.abilities.effects.when false (lib.abilities.effects.graph {})
   );
-  effectFixture = import ../../tests/abilities/effects.nix {
+  effectFixture = import ./effects.nix {
     inherit (lib) abilities;
   };
   effectPlan = effectFixture.normalized;
-  postgresqlReconciliation = import ../../tests/abilities/reference-postgresql/reconciliation.nix;
-  productionKubernetes = import ../../tests/abilities/production-kubernetes.nix {
+  postgresqlReconciliation = import ./reference-postgresql/reconciliation.nix;
+  productionKubernetes = import ./production-kubernetes.nix {
     inherit pkgs lib;
   };
-  productionPackageAdoption = import ../../tests/abilities/production-package-adoption.nix {
+  productionPackageAdoption = import ./production-package-adoption.nix {
     inherit pkgs lib;
   };
   migratedServiceAbilities =
@@ -319,13 +328,15 @@
     )
     (import ../../qualification/package-activation-inventory.nix {
       inherit pkgs lib;
-    }).productionStructured;
+    })
+    .productionStructured;
   acceptedEffectImageFamily =
     (builtins.head
       (effectFixture.familyPlan {
         kind = "image-rollout";
         action = "retain";
-      }).operations)
+      })
+      .operations)
     .family;
   invalidEffectImageFamily = builtins.tryEval (builtins.deepSeq (
       effectFixture.familyPlan {
@@ -365,7 +376,7 @@
     pkgs.mkDerivation {
       pname = "ability-prose-invariance";
       version = "1.0.0";
-      src = ../../tests/abilities/prose-invariance;
+      src = ./prose-invariance;
       phases = [
         {
           name = "install";
@@ -376,7 +387,7 @@
         }
       ];
       configModule = {
-        src = ../../tests/abilities/prose-invariance;
+        src = ./prose-invariance;
         moduleAbiCompat = {
           min = 1;
           max = 1;
@@ -390,7 +401,7 @@
     };
   proseBefore = proseVariant "Original package guidance.";
   proseAfter = proseVariant "Revised package guidance with no contract change.";
-  authoringConformance = import ./ability-authoring-conformance.nix {
+  authoringConformance = import ./authoring-conformance.nix {
     inherit pkgs lib;
   };
 in

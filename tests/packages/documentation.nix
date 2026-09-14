@@ -1,4 +1,4 @@
-##! lib/testing/package-documentation.nix — RFC-0016 documentation policy gate.
+##! tests/packages/documentation.nix — RFC-0016 documentation policy gate.
 {
   lib,
   pkgs,

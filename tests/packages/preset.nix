@@ -1,4 +1,4 @@
-##! lib/testing/package-preset.nix — RFC-0001 preset enablement VM check.
+##! tests/packages/preset.nix — RFC-0001 preset enablement VM check.
 {
   pkgs,
   mkSystem,

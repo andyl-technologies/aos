@@ -1,14 +1,14 @@
-##! lib/testing/ability-authoring-conformance.nix - Shared corpus Nix checks.
+##! tests/abilities/authoring-conformance.nix - Shared corpus Nix checks.
 {
   pkgs,
   lib,
 }: let
-  corpus = builtins.fromJSON (builtins.readFile ../../tests/abilities/conformance/v1.json);
+  corpus = builtins.fromJSON (builtins.readFile ./conformance/v1.json);
   abilityPackageRenderer = import ../../pkgs/build-support/_ability-package-renderer.nix {
     inherit lib;
     inherit (lib) abilities;
   };
-  runner = import ../../tests/abilities/conformance/runner.nix {
+  runner = import ./conformance/runner.nix {
     inherit (lib) abilities;
     inherit abilityPackageRenderer;
   };
@@ -76,13 +76,13 @@
         name = "install";
         script = ''
           mkdir -p "$out/lib" "$out/conformance"
-          cp -R ${../.}/. "$out/lib/"
-          cp ${../../tests/abilities/conformance/direct.nix} "$out/direct.nix"
-          cp ${../../tests/abilities/conformance/runner.nix} "$out/runner.nix"
+          cp -R ${../../lib}/. "$out/lib/"
+          cp ${./conformance/direct.nix} "$out/direct.nix"
+          cp ${./conformance/runner.nix} "$out/runner.nix"
           cp ${../../pkgs/build-support/_ability-package-renderer.nix} "$out/ability-package-renderer.nix"
-          cp ${../../tests/abilities/conformance/provider.nix} "$out/conformance/provider.nix"
-          cp ${../../tests/abilities/composition.nix} "$out/composition.nix"
-          cp ${../../tests/abilities/effects.nix} "$out/effects.nix"
+          cp ${./conformance/provider.nix} "$out/conformance/provider.nix"
+          cp ${./composition.nix} "$out/composition.nix"
+          cp ${./effects.nix} "$out/effects.nix"
         '';
       }
     ];
@@ -132,7 +132,7 @@ in
             rejection_cases="$TMPDIR/nix-rejections.jsonl"
             ${pkgs.jq}/bin/jq -c \
               '.cases[] | select(.consumers | index("nix")) | select(.expected.outcome == "reject")' \
-              ${../../tests/abilities/conformance/v1.json} > "$rejection_cases"
+              ${./conformance/v1.json} > "$rejection_cases"
 
             tested=0
             while IFS= read -r case_json; do
@@ -166,7 +166,7 @@ in
             fi
 
             mkdir -p "$out"
-            cp ${../../tests/abilities/conformance/v1.json} "$out/corpus.json"
+            cp ${./conformance/v1.json} "$out/corpus.json"
             echo PASS > "$out/result"
           '';
         }

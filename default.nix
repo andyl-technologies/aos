@@ -997,13 +997,13 @@
   packagesWithExpose =
     lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
 
-  packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
+  packageExposeLifecycleCheck = import ./tests/packages/expose-lifecycle.nix {
     inherit pkgs lib mkSystem testing;
   };
-  packageFirewallReloadCheck = import ./lib/testing/package-firewall-reload.nix {
+  packageFirewallReloadCheck = import ./tests/packages/firewall-reload.nix {
     inherit pkgs mkSystem testing;
   };
-  packagePresetCheck = import ./lib/testing/package-preset.nix {
+  packagePresetCheck = import ./tests/packages/preset.nix {
     inherit pkgs mkSystem testing;
   };
   packageTestHttpServerCheck = import ./tests/packages/test-http-server.nix {
@@ -1817,8 +1817,8 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
-    abilities = import ./lib/testing/abilities.nix {inherit pkgs lib;};
-    package-maintenance = import ./lib/testing/package-maintenance.nix {inherit pkgs lib;};
+    abilities = import ./tests/abilities {inherit pkgs lib;};
+    package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
     # Pure evaluation and focused all-variant output contracts are one gate.
     # Rendered store paths remain contextual Nix references rather than
     # duplicated source snapshots.
@@ -1914,7 +1914,7 @@ in {
       initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
         inherit pkgs lib mkSystem;
       };
-      package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
+      package-root-image = import ./tests/packages/root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
     in
@@ -1956,7 +1956,7 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
-    package-documentation = import ./lib/testing/package-documentation.nix {
+    package-documentation = import ./tests/packages/documentation.nix {
       inherit pkgs lib;
       system = serverSystem;
     };
@@ -2131,7 +2131,7 @@ in {
       };
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
-    package-expose = import ./lib/testing/package-expose.nix {
+    package-expose = import ./tests/packages/expose.nix {
       inherit pkgs lib mkSystem packagesWithExpose;
     };
     package-firewall-reload = packageFirewallReloadCheck;
@@ -2140,7 +2140,7 @@ in {
     package-test-http-server = packageTestHttpServerCheck;
     selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
-    lint = import ./lib/testing/package-lint.nix {inherit pkgs lib;};
+    lint = import ./tests/packages/lint.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverVmSystem.config.system.build.checks
