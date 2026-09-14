@@ -26,6 +26,7 @@
   fontconfig,
   freetype,
   xorg-stubs,
+  gcc-libs,
   perl,
   jamvm-2_0,
   ecj-bootstrap,
@@ -38,6 +39,7 @@
   bootstrapTools,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   platformTools =
     if isDarwinCross
     then buildPackages
@@ -206,7 +208,8 @@ in
       ];
     runtimeDeps =
       [zlib]
-      ++ lib.optionals (!isDarwinCross) [alsa-lib]
+      ++ lib.optional (!isDarwinCross) alsa-lib
+      ++ lib.optional isLinuxCross gcc-libs
       ++ lib.optionals isDarwinCross [
         java-native-foundation
         krb5
@@ -2430,20 +2433,29 @@ in
             INTERP=$(cat "${bootstrapTools}/nix-support/dynamic-linker")
             BT_LIB=$(dirname "$INTERP")
 
-            # Find libstdc++ directory (nested under lib/gcc/...)
-            STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
-            STDCXX_DIR=""
-            if [ -n "$STDCXX_FILE" ]; then
-              STDCXX_DIR=$(dirname "$STDCXX_FILE")
-            fi
-            RPATH="$out/lib:$out/lib/${hotspotTargetArch}:$out/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}:$out/jre/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}/server:$BT_LIB"
-            if [ -n "$STDCXX_DIR" ]; then
-              RPATH="$RPATH:$STDCXX_DIR"
-            fi
-
+            ${
+              if isLinuxCross
+              then ''
+                # Cross HotSpot retains a target libstdc++ dependency. Force a
+                # transitive RPATH so that library can find its sibling libgcc.
+                RPATH="$out/lib:$out/lib/${hotspotTargetArch}:$out/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}:$out/jre/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}/server:${gcc-libs}/lib:$BT_LIB"
+              ''
+              else ''
+                # Find libstdc++ directory (nested under lib/gcc/...)
+                STDCXX_FILE=$(find "$BT_LIB" -name 'libstdc++.so.6' -not -name '*.py' 2>/dev/null | head -1)
+                STDCXX_DIR=""
+                if [ -n "$STDCXX_FILE" ]; then
+                  STDCXX_DIR=$(dirname "$STDCXX_FILE")
+                fi
+                RPATH="$out/lib:$out/lib/${hotspotTargetArch}:$out/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}:$out/jre/lib/${hotspotTargetArch}/jli:$out/jre/lib/${hotspotTargetArch}/server:$BT_LIB"
+                if [ -n "$STDCXX_DIR" ]; then
+                  RPATH="$RPATH:$STDCXX_DIR"
+                fi
+              ''
+            }
             for f in $out/bin/* $out/jre/bin/*; do
               if [ -f "$f" ] && [ ! -L "$f" ]; then
-                patchelf --set-interpreter "$INTERP" \
+                patchelf ${lib.optionalString isLinuxCross "--force-rpath "}--set-interpreter "$INTERP" \
                          --set-rpath "$RPATH" \
                          "$f" 2>/dev/null || true
               fi
@@ -2451,10 +2463,20 @@ in
 
             find $out -name '*.so' -o -name '*.so.*' | while read f; do
               if [ -f "$f" ] && [ ! -L "$f" ]; then
-                patchelf --set-rpath "$RPATH" \
+                patchelf ${lib.optionalString isLinuxCross "--force-rpath "}--set-rpath "$RPATH" \
                          "$f" 2>/dev/null || true
               fi
-            done
+            done${lib.optionalString isLinuxCross ''
+
+              # The image copy preserves read-only library modes. Repatch each
+              # target ELF after making it writable, and fail if any patch is
+              # rejected so a non-transitive HotSpot RUNPATH cannot escape.
+              find "$out" \( -name '*.so' -o -name '*.so.*' \) -type f | while read f; do
+                file "$f" 2>/dev/null | grep -q ELF || continue
+                chmod u+w "$f"
+                patchelf --force-rpath --set-rpath "$RPATH" "$f"
+              done
+            ''}
 
             # The JDK launch helper lives under lib rather than bin, so the
             # general output scrub does not select it as an executable. Remove
