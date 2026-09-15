@@ -608,6 +608,7 @@ in
       export AOS_METADATA_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_METADATA_BLKID="${util-linux}/sbin/blkid"
       export AOS_METADATA_MOUNT="${util-linux}/bin/mount"
+      export AOS_METADATA_UMOUNT="${util-linux}/bin/umount"
       export AOS_METADATA_LSBLK="${util-linux}/bin/lsblk"
       exec "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped" "$@"
       METADATA_PROVIDER

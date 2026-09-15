@@ -61,10 +61,36 @@
       base_library = baseLibraryIdentity;
     };
   };
+  platformId = abilityTypes.enum [
+    "aos-metadata"
+    "nocloud"
+    "config-drive"
+    "qemu"
+    "aws"
+    "gcp"
+    "azure"
+    "digitalocean"
+    "openstack"
+    "metal"
+    "hyperv"
+    "vmware"
+    "virtualbox"
+  ];
+  detectedPlatform = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.metadata.provisioning-platform/v1"];
+      platform_id = platformId;
+      need_network = abilityTypes.boolean;
+    };
+  };
+  detectionParameters = abilityTypes.record {
+    fields.request = storage.requestType;
+  };
   authorizationParameters = abilityTypes.record {
     fields = {
       request = storage.requestType;
       configuration = authorizationConfiguration;
+      platform = abilityTypes.deferredResult detectedPlatform;
     };
   };
   authorizedInput = abilityTypes.record {
@@ -110,6 +136,13 @@
       state = abilityTypes.enum ["ready" "authorized"];
     };
   };
+  detectionObservation = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.metadata.provisioning-platform-observation/v1"];
+      platform_id = optional platformId;
+      state = abilityTypes.enum ["ready" "detected"];
+    };
+  };
   planObservation = abilityTypes.record {
     fields = {
       schema = abilityTypes.enum ["aos.metadata.provisioning-plan-observation/v1"];
@@ -136,10 +169,11 @@
     parameters,
     evidence,
     outputs,
+    access ? "exclusive-write",
   }: {
     inherit description parameters outputs;
     semantics = {
-      requiredTargetAccess = "exclusive-write";
+      requiredTargetAccess = access;
       stopsProvider = false;
     };
     targetResource = storage.identity.name;
@@ -158,6 +192,29 @@
     rejectSlotCollisions = true;
     mergeContract = null;
     controllerGroup = alias;
+  };
+  detectionAlias = "storage-provisioning-platform-detector";
+  detectionMethod = method {
+    name = "detect";
+    description = "Detects the exact metadata platform and whether acquisition needs network readiness.";
+    parameters = detectionParameters;
+    evidence = detectionObservation;
+    access = "read";
+    outputs = {
+      platform = output detectedPlatform "Returns the exact detected metadata platform for acquisition.";
+      need-network = output abilityTypes.boolean "Selects the network preparation branch for cloud metadata.";
+    };
+  };
+  detectionDeclaration = lib.abilities.declareInterface {
+    name = "aos.metadata.storage-provisioning-platform-detection";
+    description = "Detects metadata acquisition requirements before fetching untrusted input.";
+    abi = 1;
+    requestType = storage.requestType;
+    methods.detect = detectionMethod;
+    outputs = {};
+    inherit (storage.declaration) lifecycle;
+    aggregation = aggregation detectionAlias;
+    guarantees = [];
   };
   authorizationAlias = "storage-provisioning-input-authorizer";
   authorizationMethod = method {
@@ -233,12 +290,26 @@ in {
 
   config.aos.abilities = {
     interfaces = {
+      ${detectionAlias} = detectionDeclaration;
       ${authorizationAlias} = authorizationDeclaration;
       ${observerAlias} = observerDeclaration;
       ${seedAlias} = seedDeclaration;
     };
 
     implementations = {
+      ${detectionAlias} = {
+        description = "Detects metadata acquisition requirements through the package-owned metadata runtime.";
+        artifact = runtimeArtifact;
+        interface = lib.abilities.interfaceIdentity (
+          lib.abilities.interfaceDocumentFromDeclaration detectionDeclaration
+        );
+        methods = ["detect"];
+        guarantees = [];
+        handlerDescriptor = handler detectionParameters detectionObservation;
+        providerModule = null;
+        desiredType = null;
+        requiredFeatures = [];
+      };
       ${authorizationAlias} = {
         description = "Authorizes metadata input through the package-owned metadata runtime.";
         artifact = runtimeArtifact;
@@ -281,6 +352,7 @@ in {
     };
 
     instances = lib.mkIf (config.aos.abilities.environment != null) {
+      ${detectionAlias}.implementation = detectionAlias;
       ${authorizationAlias}.implementation = authorizationAlias;
       ${observerAlias}.implementation = observerAlias;
       ${seedAlias}.implementation = seedAlias;
