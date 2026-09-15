@@ -54,9 +54,11 @@
     description,
     program,
     enabled ? true,
+    executionModel ? "oneshot",
     restart ? "never",
     remainAfterExit ? false,
     activation ? null,
+    directories ? null,
     environment ? null,
     scheduling ? null,
     acceptedExitStatuses ? [0],
@@ -69,7 +71,7 @@
           inherit enabled;
           lifecycle = {
             inherit description restart;
-            execution_model = "oneshot";
+            execution_model = executionModel;
             environment_files = [];
             condition = [];
             pre_start = [];
@@ -120,6 +122,7 @@
           };
         }
         // lib.optionalAttrs (activation != null) {inherit activation;}
+        // lib.optionalAttrs (directories != null) {inherit directories;}
         // lib.optionalAttrs (environment != null) {inherit environment;}
         // lib.optionalAttrs (scheduling != null) {inherit scheduling;};
     };
@@ -141,8 +144,29 @@
   zed = service {
     key = "zfs-zed";
     description = "Observe OpenZFS events and act on device faults";
-    program = executable zfsArtifact "sbin/zed" ["-F"];
+    program = executable zfsArtifact "sbin/zed" [
+      "-F"
+      "-p"
+      "/run/zed/zed.pid"
+      "-s"
+      "/var/lib/zed/zed.state"
+    ];
+    executionModel = "foreground";
     restart = "always";
+    directories.managed = [
+      {
+        path = "zed";
+        purpose = "runtime";
+        mode = "0755";
+        retention = "service-lifetime";
+      }
+      {
+        path = "zed";
+        purpose = "state";
+        mode = "0755";
+        retention = "persistent";
+      }
+    ];
     environment = {
       variables = {
         ZED_SYSLOG_PRIORITY = "daemon.notice";
