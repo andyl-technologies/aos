@@ -1694,10 +1694,6 @@ class Scenario:
             cohort_probes = namespace.get("NATIVE_ADAPTER_MATRIX_PROBES")
             subject_map = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECTS")
             evidence_map = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_EVIDENCE")
-            if evidence_map is None:
-                evidence_map = namespace.get(
-                    "NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLES"
-                )
             cohort_runtime_audit = namespace.get(
                 "NATIVE_ADAPTER_MATRIX_RUNTIME_AUDIT"
             )
@@ -1740,13 +1736,6 @@ class Scenario:
                 cohort_probes = {}
                 subject_map = {}
                 evidence_map = {}
-            if subject_map is None and isinstance(cohort_probes, dict):
-                legacy_subject = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_SUBJECT")
-                legacy_bundle = namespace.get("NATIVE_ADAPTER_MATRIX_COHORT_PLAN_BUNDLE")
-                if len(cohort_probes) == 1:
-                    cell_id = next(iter(cohort_probes))
-                    subject_map = {cell_id: legacy_subject}
-                    evidence_map = {cell_id: legacy_bundle}
             if (
                 not isinstance(cohort_probes, dict)
                 or not isinstance(subject_map, dict)
@@ -1853,7 +1842,7 @@ class Scenario:
             "predecessor_manifest_digest": self.case["predecessor"][
                 "manifest_digest"
             ],
-            "cohort": "host-resource-provider-replacement-v3",
+            "cohort": "host-resource-provider-replacement",
             "qemu": {
                 "name": "qemu",
                 "version": "qemu-" + qemu_match.group(1),
@@ -1878,12 +1867,12 @@ class Scenario:
             },
             "fault_injection_tool": {
                 "name": "native-adapter-cohort-faults",
-                "version": "cohort-v2",
+                "version": "current",
                 "digest": sha256_file(FIXTURE_ARCHIVE),
             },
             "harness": {
                 "name": "native-adapter-host-resource-cohort",
-                "version": "cohort-v2",
+                "version": "current",
                 "digest": raw_digest(
                     {
                         "fixture": sha256_file(FIXTURE_ARCHIVE),

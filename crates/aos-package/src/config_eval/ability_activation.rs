@@ -829,10 +829,10 @@ pub fn verify_generation_packages(
 
 /// Verifies structured ability companions directly from registry resolution.
 ///
-/// This bootstrap path is used before a version-3 manifest exists. It applies
-/// the same provenance, trusted-key, package-manifest, artifact, and live
-/// retention checks as generation replay and does not treat evaluated manifest
-/// data as package authority.
+/// This bootstrap path verifies registry resolution before a generation
+/// manifest is materialized. It applies the same provenance, trusted-key,
+/// package-manifest, artifact, and live retention checks as generation replay
+/// and does not treat evaluated manifest data as package authority.
 ///
 /// # Errors
 ///
