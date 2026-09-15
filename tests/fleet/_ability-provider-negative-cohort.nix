@@ -23,54 +23,11 @@
     destination = "/cells.json";
     text = builtins.toJSON qualifiedCells;
   };
-  observerController = pkgs.writeTextFile {
-    name = "${name}-boundary-controller";
-    destination = "/bin/aos-ability-boundary-controller";
-    executable = true;
-    text = ''
-      #!${pkgs.python3}/bin/python3
-      ${builtins.readFile ./ability-boundary-observer.py}
-    '';
+  observerFixture = import ./_ability-execution-observer.nix {
+    inherit lib pkgs;
   };
-  observerService = {
-    description = "AOS provider-negative boundary controller";
-    wantedBy = ["multi-user.target"];
-    after = ["local-fs.target"];
-    before = ["aos-activate.service"];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
-      Restart = "on-failure";
-      RestartSec = "1s";
-      RuntimeDirectory = "aos-instrumentation";
-      RuntimeDirectoryMode = "0700";
-      UMask = "0077";
-    };
-  };
-  observerModule = {
-    imports = [./_ability-execution-observer.nix];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = observerService;
-  };
-  observerHostModule = ''
-    imports = [ ${./_ability-execution-observer.nix} ];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = {
-      description = "AOS provider-negative boundary controller";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
-      before = [ "aos-activate.service" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${observerController}/bin/aos-ability-boundary-controller";
-        Restart = "on-failure";
-        RestartSec = "1s";
-        RuntimeDirectory = "aos-instrumentation";
-        RuntimeDirectoryMode = "0700";
-        UMask = "0077";
-      };
-    };
-  '';
+  inherit (observerFixture) observerModule observerHostModule;
+  observerController = observerFixture.controller;
   providerOracleClosures = [
     pkgs.findutils
     pkgs.grep

@@ -1329,6 +1329,7 @@
     );
   localMaintenanceRoots = [
     "ability-package-smoke"
+    "aos-ability-boundary-observer"
     "aos-ability-contract-validator"
     "aos-ability-crucible"
     "aos"

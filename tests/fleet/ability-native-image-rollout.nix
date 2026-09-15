@@ -6,58 +6,14 @@
   systems ? null,
   qualificationImage ? false,
 }: let
-  observerController = pkgs.writeTextFile {
-    name = "aos-image-rollout-boundary-controller";
-    destination = "/bin/aos-image-rollout-boundary-controller";
-    executable = true;
-    text = ''
-      #!${pkgs.python3}/bin/python3
-      ${builtins.readFile ./ability-boundary-observer.py}
-    '';
+  observerFixture = import ./_ability-execution-observer.nix {
+    inherit lib pkgs;
   };
-  observerService = {
-    description = "AOS image rollout execution-boundary controller";
-    wantedBy = ["multi-user.target"];
-    after = ["local-fs.target"];
-    before = ["aos-activate.service"];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${observerController}/bin/aos-image-rollout-boundary-controller";
-      Restart = "on-failure";
-      RestartSec = "1s";
-      RuntimeDirectory = "aos-instrumentation";
-      RuntimeDirectoryMode = "0700";
-      UMask = "0077";
-    };
-  };
-  observerModule = {
-    imports = [./_ability-execution-observer.nix];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = observerService;
-  };
-  observerHostModule = ''
-    imports = [ ${./_ability-execution-observer.nix} ];
-    aos.tests.executionObserver.enable = true;
-    systemd.services.aos-ability-boundary-controller = {
-      description = "AOS image rollout execution-boundary controller";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
-      before = [ "aos-activate.service" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${observerController}/bin/aos-image-rollout-boundary-controller";
-        Restart = "on-failure";
-        RestartSec = "1s";
-        RuntimeDirectory = "aos-instrumentation";
-        RuntimeDirectoryMode = "0700";
-        UMask = "0077";
-      };
-    };
-  '';
+  inherit (observerFixture) observerModule observerHostModule;
+  observerController = observerFixture.controller;
   imageLifecycle = import ./system-image-rollback.nix {
     inherit lib mkSystem pkgs systems;
     extraFixtureModules = [observerModule];
-    extraTestArtifactRoots = [pkgs.python3];
   };
   image = imageLifecycle.abilityRolloutFixture;
   rollout = import ./_image-rollout-runtime-reference.nix {
@@ -396,7 +352,7 @@ in {
       RESUMED_EVENT = f"{BOUNDARY_ROOT}/resumed-event.json"
       TARGET = f"{BOUNDARY_ROOT}/target.json"
       OBSERVER_CONTROLLER = (
-          "${observerController}/bin/aos-image-rollout-boundary-controller"
+          "${observerController}/bin/aos-ability-boundary-controller"
       )
       OBSERVER_HOST_MODULE = ${builtins.toJSON observerHostModule}
       HEALTH_OPERATION = "observe-health"

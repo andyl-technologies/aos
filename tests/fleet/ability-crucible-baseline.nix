@@ -21,7 +21,11 @@
   '';
   base = import ./ability-native-power-loss.nix {
     inherit lib mkSystem pkgs qualificationImage;
-    observerForwardSocket = adapterSocket;
+    observerForwardEndpoint = {
+      request = "aos-ability-crucible:observer-endpoint";
+      resourceOutput = "retained-resource";
+      socketOutput = "socket-path";
+    };
     extraRuntimeModules = [crucibleModule];
     extraHostModule = crucibleHostModule;
     additionalClosures = [pkgs.aos-ability-crucible];
