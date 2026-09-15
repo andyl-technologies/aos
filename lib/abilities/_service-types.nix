@@ -1007,6 +1007,10 @@
       referencedViewFields
       // {
         access = types.enum ["read-only" "read-write"];
+        relative_path = {
+          type = types.optional types.relativePath;
+          optional = true;
+        };
       };
   };
   storageAllocation = types.record {
