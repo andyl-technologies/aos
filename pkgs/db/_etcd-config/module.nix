@@ -11,10 +11,37 @@
   serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
 
-  positiveInt = types.addCheck types.int (value: value > 0);
-  endpoint = types.strMatching "https?://[^[:space:],]+";
-  nonEmpty = types.strMatching ".+";
-  memberName = types.strMatching "[A-Za-z0-9][A-Za-z0-9_.-]*";
+  positiveInt = abilityTypes.integer {
+    minimum = 1;
+    maximum = 9007199254740991;
+  };
+  endpoint = abilityTypes.refined {
+    name = "etcd endpoint";
+    description = "an HTTP or HTTPS endpoint without whitespace or commas";
+    type = abilityTypes.runtimeString;
+    predicate = value: builtins.match "https?://[^[:space:],]+" value != null;
+  };
+  nonEmpty = abilityTypes.refined {
+    name = "non-empty etcd value";
+    description = "a non-empty etcd configuration value";
+    type = abilityTypes.runtimeString;
+    predicate = value: builtins.match ".+" value != null;
+  };
+  memberName = abilityTypes.refined {
+    name = "etcd member name";
+    description = "an etcd member name beginning with an alphanumeric character";
+    type = abilityTypes.runtimeString;
+    predicate = value: builtins.match "[A-Za-z0-9][A-Za-z0-9_.-]*" value != null;
+  };
+  clusterToken = abilityTypes.refined {
+    name = "etcd cluster token";
+    description = "an etcd cluster token containing alphanumerics, dots, underscores, or dashes";
+    type = abilityTypes.runtimeString;
+    predicate = value: builtins.match "[A-Za-z0-9_.-]+" value != null;
+  };
+  clusterStateType = abilityTypes.enum ["new" "existing"];
+  compactionModeType = abilityTypes.enum ["periodic" "revision"];
+  metricsType = abilityTypes.enum ["basic" "extensive"];
   secretRef = types.submodule ({...}: {
     config._module.strict = true;
     options = {
@@ -78,8 +105,12 @@
   allUnique = values: builtins.length values == builtins.length (lib.unique values);
   allScheme = scheme: values:
     builtins.all (value: lib.hasPrefix "${scheme}://" value) values;
-  localMemberName = builtins.unsafeDiscardStringContext cfg.name;
   clusterMembers = lib.mapAttrsToList (_: value: value) cfg.cluster.members;
+  localMembers = builtins.filter (memberValue: memberValue.name == cfg.name) clusterMembers;
+  localMember =
+    if builtins.length localMembers == 1
+    then builtins.head localMembers
+    else null;
   initialCluster = lib.concatStringsSep "," (
     lib.concatMap
     (memberValue: builtins.map (url: "${memberValue.name}=${url}") memberValue.peerUrls)
@@ -155,27 +186,23 @@
   };
   serverConfigType = abilityTypes.record {
     fields = {
-      name = runtimeString;
+      name = memberName;
       "data-dir" = abilityTypes.deferredResult runtimeString;
+      # URL collections become the comma-delimited scalar syntax etcd accepts;
+      # their package options validate each endpoint before this encoding step.
       "listen-client-urls" = runtimeString;
       "advertise-client-urls" = runtimeString;
       "listen-peer-urls" = runtimeString;
       "initial-advertise-peer-urls" = runtimeString;
       "initial-cluster" = runtimeString;
-      "initial-cluster-state" = runtimeString;
-      "initial-cluster-token" = runtimeString;
-      "quota-backend-bytes" = abilityTypes.integer {
-        minimum = 1;
-        maximum = 9007199254740991;
-      };
-      "snapshot-count" = abilityTypes.integer {
-        minimum = 1;
-        maximum = 9007199254740991;
-      };
-      "auto-compaction-mode" = runtimeString;
-      "auto-compaction-retention" = runtimeString;
+      "initial-cluster-state" = clusterStateType;
+      "initial-cluster-token" = clusterToken;
+      "quota-backend-bytes" = positiveInt;
+      "snapshot-count" = positiveInt;
+      "auto-compaction-mode" = compactionModeType;
+      "auto-compaction-retention" = nonEmpty;
       "enable-grpc-gateway" = abilityTypes.boolean;
-      metrics = runtimeString;
+      metrics = metricsType;
       "client-transport-security" = {
         type = abilityTypes.optional transportConfigType;
         optional = true;
@@ -250,6 +277,7 @@
           stop = [];
           post_stop = [];
           restart = "on-failure";
+          restart_token = cfg.restartToken;
           restart_delay_millis = 5000;
           remain_after_exit = false;
           start_timeout_millis = 90000;
@@ -416,12 +444,12 @@ in {
         description = "Initial member topology keyed by stable member name.";
       };
       state = mkOption {
-        type = types.enum ["new" "existing"];
+        type = clusterStateType;
         default = "new";
         description = "Whether this member creates or joins the declared cluster.";
       };
       token = mkOption {
-        type = types.strMatching "[A-Za-z0-9_.-]+";
+        type = clusterToken;
         default = "aos-etcd-cluster";
         description = "Non-secret identifier preventing accidental cross-cluster joins.";
       };
@@ -439,7 +467,7 @@ in {
       };
       autoCompaction = {
         mode = mkOption {
-          type = types.enum ["periodic" "revision"];
+          type = compactionModeType;
           default = "periodic";
           description = "Automatic history compaction mode.";
         };
@@ -451,9 +479,14 @@ in {
       };
     };
     metrics = mkOption {
-      type = types.enum ["basic" "extensive"];
+      type = metricsType;
       default = "basic";
       description = "Prometheus metric detail exported by etcd.";
+    };
+    restartToken = mkOption {
+      type = types.nullOr serviceTypes.restartToken;
+      default = null;
+      description = "Optional operator token that forces lifecycle reconciliation when changed.";
     };
   };
 
@@ -461,11 +494,11 @@ in {
     {
       assertions = [
         {
-          assertion = builtins.hasAttr localMemberName cfg.cluster.members;
+          assertion = localMember != null;
           message = "etcd.cluster.members must contain the local etcd.name";
         }
         {
-          assertion = !builtins.hasAttr localMemberName cfg.cluster.members || cfg.cluster.members.${localMemberName}.peerUrls == cfg.peer.advertiseUrls;
+          assertion = localMember == null || localMember.peerUrls == cfg.peer.advertiseUrls;
           message = "the local etcd cluster member peerUrls must equal etcd.peer.advertiseUrls";
         }
         {

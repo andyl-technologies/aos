@@ -26,6 +26,7 @@
   rootDirectoryPath = executionPath;
   principalName = types.principalName;
   groupName = types.groupName;
+  restartToken = boundedString 1024;
   command = types.record {
     fields = {
       executable = types.executableReference;
@@ -81,6 +82,10 @@
     stop = commands;
     post_stop = commands;
     restart = types.enum ["always" "never" "on-failure"];
+    restart_token = {
+      type = types.optional restartToken;
+      optional = true;
+    };
     restart_delay_millis = types.integer {
       minimum = 0;
       maximum = 86400000;
@@ -768,6 +773,7 @@ in {
     rootDirectoryPath
     principalName
     groupName
+    restartToken
     configurationMaterialization
     configurationMaterializationObservation
     networkReadiness

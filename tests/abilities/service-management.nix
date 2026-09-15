@@ -104,6 +104,15 @@
         };
       };
   };
+  expandedWithRestartToken = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration =
+      minimalService
+      // {
+        lifecycle = minimalService.lifecycle // {restart_token = "operator-requested-restart";};
+      };
+  };
   structuredConfiguration = {
     name = "structured";
     source = {
@@ -265,6 +274,7 @@ in
   assert builtins.attrNames expandedWithReload.requests == ["main-lifecycle" "main-reload"];
   assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
   assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
+  assert expandedWithRestartToken.requests.main-lifecycle.parameters.restart_token == "operator-requested-restart";
   assert expanded.requests.main-lifecycle.consumer == "consumer";
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
