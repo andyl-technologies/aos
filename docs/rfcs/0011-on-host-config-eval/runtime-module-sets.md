@@ -56,7 +56,7 @@ retry from a fresh snapshot; it must not let an older evaluation commit last.
 At boot, rollback, cross-ABI re-evaluation, and attestation, the active or
 selected generation supplies the exact retained runtime module set. Dirty,
 partially edited, or absent worktree contents are ignored. The platform input,
-runtime set, package configuration-module closure, facts, evaluator, and base
+runtime set, authenticated package-module closure, facts, evaluator, and base
 library are independently identified in the manifest and attestation record.
 The per-generation `cfgsrc` root retains all of them, and garbage collection
 may remove a runtime snapshot only after no retained generation refers to it.

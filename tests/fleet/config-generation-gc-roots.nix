@@ -98,7 +98,7 @@
               generation["facts_ref"],
               generation["base_lib_ref"],
               generation["evaluator_ref"],
-              *generation["config_module_paths"],
+              *generation["package_module_paths"],
           ]
           for input_path in inputs:
               target.succeed(f"test -e {input_path}")

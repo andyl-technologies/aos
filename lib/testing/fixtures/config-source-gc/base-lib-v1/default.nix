@@ -4,7 +4,7 @@
   evalRetained = {
     requestedAbi,
     host,
-    configModule,
+    packageModule,
     facts,
   }:
     if requestedAbi != 1
@@ -13,7 +13,7 @@
       moduleAbi = requestedAbi;
       baseLibGeneration = "v1";
       hostName = host.hostName;
-      configValue = configModule.value;
+      configValue = packageModule.value;
       instanceFact = facts.instance;
     };
 }

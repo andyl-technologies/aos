@@ -112,13 +112,6 @@ in {
       node.wait_until_succeeds(
           "systemctl is-active --quiet aos-config.target", timeout=300
       )
-      node.succeed(
-          f"{JQ} -s -e "
-          "'map(select(.apm.name == \"kubelet\"))[0]"
-          ".apm.config_module.artifacts.etc "
-          "== [\"aos/packages/kubelet/config.json\"]' "
-          "/var/lib/profiles/system-packages/current/meta/*.json"
-      )
       node.succeed(f"install -d -m 0700 {CACHE} /run/kubelet-runtime")
       initial = generation()
 

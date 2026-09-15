@@ -50,8 +50,9 @@ are *specified here* so the tests are written before the code:
   evaluates → emits manifest; **eval twice ⇒ byte-identical** (determinism gate);
   manifest has the expected `etc`/`units`/`jobScripts`/`inputs` shape.
 - **Resolve↔eval fixpoint** (`checks.eval` + `fleet`): a host.nix enabling a
-  package whose config module isn't present pulls the **config output first**,
-  re-evals, converges; a missing provider fails legibly; a cycle dumps the trace.
+  package resolves and authenticates its `PackageDocument.package_module`
+  artifact, re-evaluates, and converges; a missing provider fails legibly; a
+  cycle dumps the trace.
 - **`module_abi` gate** (`checks.eval`): a config module with an incompatible
   `module_abi_compat` is **refused pre-eval**, fail-closed, old gen stays live.
 - **Two-axis generations** (`fleet`): config rollback is a pointer switch

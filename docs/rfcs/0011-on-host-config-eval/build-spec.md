@@ -5,7 +5,7 @@ Decision-free implementation contracts for RFC-0011, written against the locked 
 
 ---
 
-# Data model — manifest, config output, system roots, module_abi
+# Data model — manifest, package documents, and module ABI
 
 Grounding complete. Here is the drop-in RFC markdown.
 
@@ -14,15 +14,12 @@ Grounding complete. Here is the drop-in RFC markdown.
 # Data model — the field-level contract
 
 This document is the **implementation contract** for the RFC-0011 data model. It
-specifies, with no remaining choices, three artifacts:
+specifies, with no remaining choices, three inputs:
 
 1. the **`config-manifest/v1`** eval output (`gen-N/manifest.json`);
-2. the second **`config`** package output and its `PackageMeta` metadata
-   (`ConfigOutputMeta` + `ConfigModuleMeta`) and its feature gate;
-3. the per-package `ConfigModuleMeta` carried by name in `registry.toml`
-   (`owns_roots` / `provides_capabilities` / `module_abi_compat = { min, max }`),
-   the locally-derived **`SystemRoots`** structure it feeds, and their resolver
-   gate.
+2. each selected package's authenticated `PackageDocument.package_module`;
+3. the typed option declarations and binding plan produced by the complete
+   package-module fixed point.
 
 All Rust types live in `crates/aos-package/src/types.rs` alongside the existing
 `PackageMeta` family and follow its conventions: `#[serde(deny_unknown_fields)]`
@@ -100,7 +97,14 @@ forcing, no secrets (credentials appear only as handles). It is persisted at
   "inputs": {
     "base_lib":       { "store_path": "/nix/store/<hash>-aos-base-lib", "abi_hash": "sha256:…", "module_abi": 1 },
     "evaluator":      { "store_path": "/nix/store/<hash>-nix-2.24.12", "store_hash": "sha256:…" },
-    "config_modules": { "closure_hash": "sha256:…", "count": 2 },
+    "package_modules": {
+      "modules": [
+        { "package": "redis", "document_digest": "sha256:…",
+          "store_path": "/nix/store/<hash>-redis-module",
+          "nar_hash": "sha256:…", "entrypoint": "module.nix",
+          "origin": "image" }
+      ]
+    },
     "host_nix":       { "content_hash": "sha256:…", "trust_mode": "platform", "platform": "aws", "signer_key": null },
     "instance_facts": { "facts_hash": "sha256:…", "platform": "aws" }
   }
@@ -301,14 +305,14 @@ as `module_abi_pinned` and checked by the rollback pin.
 ```rust
 /// The five content-addressed inputs that fully determine the manifest.
 ///
-/// `manifest = eval(base_lib, evaluator, config_modules, host_nix, facts)`.
+/// `manifest = eval(base_lib, evaluator, package_modules, host_nix, facts)`.
 /// A verifier reproduces the generation from these alone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestInputs {
     pub base_lib: BaseLibInput,
     pub evaluator: EvaluatorInput,
-    pub config_modules: ConfigModulesInput,
+    pub package_modules: PackageModulesInput,
     pub host_nix: HostNixInput,
     pub instance_facts: InstanceFactsInput,
 }
@@ -335,7 +339,7 @@ pub struct EvaluatorInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigModulesInput {
+pub struct PackageModulesInput {
     /// Registry whose signed release selected the module set.
     pub registry: Option<String>,
     /// Semver release tag accepted by `verify_tag_chain`.
@@ -344,18 +348,17 @@ pub struct ConfigModulesInput {
     pub tag_signer_key: Option<String>,
     /// Hash of the exact signed `store/` subgraphs consumed below.
     pub realization: Option<String>,
-    /// Set-hash over every resolved package's `config` output NAR (below).
-    pub closure_hash: String,
-    /// Number of config modules in the resolved set.
-    pub count: usize,
-    /// Exact config-output store paths, sorted by path.
-    pub store_paths: Vec<String>,
-    /// Canonical NAR hashes corresponding positionally to `store_paths`.
-    pub nar_hashes: Vec<String>,
-    /// Package identities corresponding positionally to `store_paths`.
-    pub package_names: Vec<String>,
-    /// ABI compatibility evidence corresponding positionally to `store_paths`.
-    pub module_abi_compat: Vec<ModuleAbiCompat>,
+    /// Canonically package-ordered checked module locators.
+    pub modules: Vec<PackageModuleInput>,
+}
+
+pub struct PackageModuleInput {
+    pub package: String,
+    pub document_digest: String,
+    pub store_path: String,
+    pub nar_hash: String,
+    pub entrypoint: String,
+    pub origin: PackageModuleOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,310 +395,82 @@ foreign declarations only when the declaring option is marked `contributable`.
 |-------|----------------|
 | `base_lib.abi_hash` | `hash_cjson({ "abi": <module_abi:u32>, "schema": [ [path, type_sig], … ] })` where the schema array is the result of an **options-only eval** of the base lib (no `config` forced), one `[option-path, type-signature-string]` pair per declared shared-tree option, sorted by `option-path`. `type_sig` is `options.<path>.type.description`. |
 | `evaluator.store_hash` | the evaluator store path's hash component decoded from nixbase32 to its 20 bytes, re-encoded `"sha256:"+hex`. (`store_path` carries the same identity; both recorded for cross-checking.) |
-| `config_modules.closure_hash` | set-hash (§0) over `[ [config_output_store_path, config_output_nar_hash], … ]` for every resolved package, taken from each package's `ConfigOutputMeta`. Sorted; identity is the *set*. |
-| `config_modules.realization` | For each selected config-output root, hash the canonical JSON object mapping every reachable IA hash to the canonical signed `store/` realization record. Then set-hash (§0) the sorted `[config_output_store_path, subtree_hash]` pairs. This commits to the exact consumed signed graph, including non-package dependencies. Absent only when `count == 0`. |
+| `package_modules.modules` | Canonical package order over the exact package name, semantic `PackageDocument` digest, module artifact store path and NAR hash, relative entry point, and checked registry/image origin. |
+| `package_modules.realization` | Hash of the exact authenticated registry store subgraph consumed by registry-origin modules. It is absent when the selected set contains no registry modules. |
 | `host_nix.content_hash` | `"sha256:"+hex(sha256(verified_host_nix_bytes))` — the exact bytes the resolver verified the operator signature over, before any parsing. |
 | `instance_facts.facts_hash` | `hash_cjson(resolved_host_facts_tree)` — the `host.facts.*` subtree as resolved into the fixpoint (hostname, MAC→interface map, disk-id map, ssh_authorized_keys, …), serialized as a nested JSON object and CJSON-hashed. Facts are recorded, not signed. |
 
-For a non-empty config-module set, all four signed-release identity fields are
-required and every selected module must come from that one release. For the
-canonical empty set, all four are absent, all parallel arrays are empty, and
-`closure_hash = hash_cjson([])`; a mixture of empty and non-empty evidence is
-invalid.
+Registry release fields are either all present for one checked release or all
+absent. Image-origin entries derive their authority from the authenticated
+static contract. A count is always derived from `modules`; it is never carried
+as a separate field.
 
 `manifest_hash` (used as `generation_id` input and in the attestation bundle) =
 `hash_cjson(manifest)` over the whole `ConfigManifest` value.
 
 ---
 
-## (b) The second `config` package output and its metadata
+## (b) Package modules come from the authenticated package document
 
-### 2.1 Feature gate
+Each package publishes one canonical `PackageDocument`. The optional
+`package_module` field is a `ModuleLocator` containing an exact artifact
+reference and a strict relative Nix entry point. There is no second config
+metadata carrier and no independently authored module inventory.
 
-```rust
-/// Registry feature flag for the RFC-0011 second `config` package output and
-/// its config-module metadata (`ConfigOutputMeta` + `ConfigModuleMeta`).
-pub const FEATURE_CONFIG_MODULE_V1: &str = "config-module-v1";
-```
-
-Appended to `SUPPORTED_PACKAGE_FEATURES` (`types.rs:71`). Gating rule, enforced
-in `validate_supported_package_meta_with` (`types.rs:1169`):
-
-- If `PackageMeta.config_module.is_some()` → `require_feature(meta,
-  FEATURE_CONFIG_MODULE_V1)?`.
-- A `config_module` block makes the package privileged metadata: it MUST be
-  backed by DSSE provenance. Extend `rfc0001_metadata_requires_provenance`
-  (`types.rs:828`) so `config_module.is_some()` forces
-  `attestation.provenance.is_some()`; otherwise bail
-  (`"…uses config-module metadata without attestation provenance"`).
-- A package MAY carry `config_module` without `expose`; the two are
-  independent. A `config_module` whose `config_output` references a store path
-  that fails the publish-time *no-derivation* lint (architecture.md §Stage-1) is
-  a **publish failure**, surfaced as `validate_config_module_meta`.
-
-### 2.2 `PackageMeta` additions
-
-Add to `PackageMeta` (`types.rs:513`), after `expose_artifact`:
+The registry path authenticates the document through `platform.contract`; the
+immutable-image path authenticates the same document through the embedded
+static ability contract. Both paths return one checked package-selection view.
+The evaluator records each selected module as:
 
 ```rust
-    /// RFC-0011 config-only module output and its declared interface.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_module: Option<ConfigModuleMeta>,
-```
-
-### 2.3 `ConfigOutputMeta`
-
-The `config` output is a store path NAR carrying the package's config-only Nix
-module (`module.nix` at its root) plus any relative-imported private `.nix`.
-Its metadata mirrors `ExposeArtifactMeta` (`types.rs:755`):
-
-```rust
-/// Store metadata for a package's second `config` output (RFC-0011).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigOutputMeta {
-    /// Store path of the `config` output (contains `module.nix` at its root).
+pub struct PackageModuleInput {
+    pub package: String,
+    pub document_digest: String,
     pub store_path: String,
-    /// Hash of the uncompressed `config`-output NAR: `"sha256:…"`.
     pub nar_hash: String,
-    /// Uncompressed NAR size in bytes.
-    pub nar_size: u64,
-    /// Store-path hashes of the `config` output's *direct* references.
-    /// MUST be empty of any `.drv` and MUST NOT include the `out` closure —
-    /// the module references binaries as string paths, pinned by the manifest's
-    /// `store_paths`, not by a config-output reference edge.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
+    pub entrypoint: String,
+    pub origin: PackageModuleOrigin,
 }
 ```
 
-Validation (`validate_config_output_meta`): `store_path` absolute and a valid
-store path; `nar_hash` starts `sha256:`/`sha256-`; every entry of `references`
-is a store-path hash; **no reference may name a `.drv`** (publish lint). These
-mirror `validate_expose_artifact_meta` (`types.rs:1472`).
+The fields are projections of the checked `PackageDocument` and its selected
+artifact. Operators do not author them. The module store path, NAR identity,
+entry point, package coordinate, and semantic document digest are checked
+before the module enters `evalModules`. Package option documentation and root
+ownership are projected from the document's typed `option_declarations` rather
+than from a parallel metadata structure.
 
 ---
 
-## (c) System roots, ABI compat, and the resolver gate
+## (c) Complete module fixed point and ABI gate
 
-### 3.1 Per-package config-module metadata
+The evaluator starts from the exact selected package set. It resolves every
+selected package's checked `PackageDocument.package_module`, constructs the
+ordinary `packageModules` input, and evaluates the whole module graph. New
+requirements and provider candidates discovered in that unbound evaluation are
+resolved into a checked binding plan; the complete fixed point is then
+re-evaluated with those exact bindings and provider modules. An unresolved,
+ambiguous, or mismatched request rejects the result.
 
-```rust
-/// RFC-0011 config-module interface declared by a package.
-///
-/// Carries the second `config` output, the declared option surface (the
-/// package's own `declares`, computed by options-only eval at publish), the
-/// shared roots it owns or contributes to, and its base-lib ABI compatibility
-/// range. This metadata is looked up **by name** from `registry.toml`; nothing
-/// registry-published aggregates it into a cross-package index.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigModuleMeta {
-    /// The `config` output store metadata.
-    pub config_output: ConfigOutputMeta,
-    /// Base-lib ABI range this module is compatible with (inclusive).
-    pub module_abi_compat: ModuleAbiCompat,
-    /// Option paths this module *declares*, computed by an options-only eval in
-    /// isolation. Sorted, deduplicated. Retained as per-package metadata for
-    /// publish-side lints and `aos show`; it is **not** aggregated into any
-    /// cross-package registry index.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub declares: Vec<String>,
-    /// Shared roots this module declares exclusive ownership of (e.g.
-    /// `firewall`, `nginx`). Each carries its own interface ABI.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub owns_roots: Vec<OwnedRoot>,
-    /// Foreign shared roots this module contributes into, restricted to the
-    /// owner-declared contributable sub-paths (F3-B).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contributes: Vec<RootContribution>,
-    /// Capability tokens this module *sets*, e.g.
-    /// `system.capabilities.dns-resolver`. Contributed to the installed-set
-    /// capability map in `SystemRoots` at resolve time.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub provides_capabilities: Vec<String>,
-}
+The running image supplies `module_abi`. Every selected package module is
+validated against that ABI before its configuration can become active. Package
+option declarations retain their package owner, exact path, portable type,
+default, visibility, and contribution policy. The module system therefore
+performs its normal typed merge while the package document supplies the single
+authenticated declaration source used by the resolver, documentation, and
+attestation paths.
 
-/// Inclusive base-lib ABI compatibility range for a config module.
-///
-/// The resolver refuses the module unless `min <= running_image_abi <= max`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModuleAbiCompat {
-    /// Lowest `module_abi` this module supports.
-    pub min: u32,
-    /// Highest `module_abi` this module supports.
-    pub max: u32,
-}
+The manifest records the package modules in canonical package order under
+`inputs.package_modules.modules`. Its generation attestation repeats the exact
+same records as `PackageModulesAttInput.modules`; equality of package,
+document digest, artifact store path, NAR hash, entry point, and origin is
+required. The retained generation state derives `package_module_paths` and
+`package_module_packages` from those records. It never accepts a separately
+authored count or package list.
 
-/// A shared root a package owns, plus its own interface ABI and the sub-paths
-/// non-owners may contribute into (F3-B capability-scoped surface).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OwnedRoot {
-    /// Root segment, e.g. `firewall`, `nginx`.
-    pub root: String,
-    /// Independent interface ABI for this shared root.
-    pub interface_abi: u32,
-    /// Owner-declared contributable sub-paths (relative to the root), e.g.
-    /// `virtualHosts`, `upstreams`. Owner-only paths (`enable`, globals) are
-    /// excluded. A non-owner write outside these is rejected at resolve time
-    /// against the installed owner's contributable surface in `SystemRoots`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contributable: Vec<String>,
-}
-
-/// A foreign-root contribution declared by a non-owner package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RootContribution {
-    /// The shared root being contributed into, e.g. `nginx`.
-    pub root: String,
-    /// Sub-paths (relative to `root`) this package writes; each MUST be within
-    /// the owner's `contributable` set, checked at resolve.
-    pub paths: Vec<String>,
-}
-```
-
-`module_abi_compat` is validated `min <= max`. `ModuleAbiCompat` is the RFC-0011
-analogue of the `SbatEntry` revocation floor (`types.rs:3016`): a monotonic
-integer band, gated pre-eval.
-
-### 3.2 System roots (`SystemRoots`) — derived on-host, never published
-
-There is **no registry-published cross-package index.** Shared-root ownership is an
-attribute of the **system** (the composed image/toplevel plus the installed
-set), not of the registry. The resolver derives a `SystemRoots` structure at
-resolve time and consults it in place of any fetched index. It is computed
-locally, held in memory for the duration of a `switch`, and never serialized to
-a registry repo.
-
-`SystemRoots` maps each **shared** root (`firewall`, `dns`, `nginx`, …) to the
-single installed package that owns it, and each capability token to the
-installed packages that set it. It is built from exactly two local sources:
-
-1. the **base-lib / image manifest**'s bundled roots (the structural tree the
-   in-image module library ships, `manifest.inputs.base_lib`); and
-2. the **installed set**'s per-package `ConfigModuleMeta`, read by name from
-   `registry.toml`: each package's `owns_roots` (→ root owners) and
-   `provides_capabilities` (→ capability setters).
-
-Private roots (`{pkg}.*`) are **not** members of `SystemRoots`: their ownership
-is structural (root segment = package name) and is resolved by a registry
-by-name lookup, not by this map (§3.3, §4).
-
-```rust
-/// Locally-derived map of shared roots to their installed owner and of
-/// capability tokens to their installed setters, assembled at resolve time.
-///
-/// Built from the base-lib/image manifest's bundled roots and the installed
-/// set's [`ConfigModuleMeta`] (`owns_roots` / `provides_capabilities`). Held in
-/// memory for one `switch`; **never published to a registry, never fetched.**
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemRoots {
-    /// Shared root segment (`firewall`, `nginx`) → its single installed owner.
-    /// Two installed packages owning the same root is a hard error at build
-    /// time, citing both (owned-root exclusivity is per-system).
-    pub roots: BTreeMap<String, RootOwner>,
-    /// Capability token → the installed packages that *set* it (the union of
-    /// every installed package's `provides_capabilities`).
-    pub capabilities: BTreeMap<String, Vec<CapabilitySetter>>,
-}
-
-/// The installed package that owns a shared root, with the ABI and contribution
-/// surface the resolver enforces against.
-///
-/// `module_abi_compat` and `config_output` are **pinned from the installed
-/// owner** at build time — never re-queried from the registry at selection — so
-/// the fixpoint fetches and ABI-gates exactly the config output the system
-/// owns, immune to a newer version appearing in the registry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RootOwner {
-    /// Owning package name.
-    pub package: String,
-    /// Owning package version.
-    pub version: String,
-    /// Owning package target platform.
-    pub platform: String,
-    /// Independent interface ABI for this shared root (from `OwnedRoot`).
-    pub interface_abi: u32,
-    /// The owner's base-lib ABI band; selection is gated on it (§3.3 gate 1).
-    pub module_abi_compat: ModuleAbiCompat,
-    /// The owner's `config` output store path, fetched when the root is needed.
-    pub config_output: String,
-    /// Owner-declared contributable sub-paths (relative to the root); a foreign
-    /// contributor's paths MUST be a subset of these (F3-B, checked at resolve).
-    pub contributable: Vec<String>,
-}
-
-/// One installed package that *sets* a capability token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilitySetter {
-    /// Setting package name.
-    pub package: String,
-    /// Setting package version.
-    pub version: String,
-}
-```
-
-**Construction (resolve time, mechanical).** Seed `roots` from the base-lib
-manifest's bundled roots. Then, for each package in the installed set carrying
-`config_module`: for every `OwnedRoot` in `owns_roots`, insert
-`root → RootOwner` (all fields pinned from the installed owner) — a second
-installed owner of an already-present root is a hard error citing both packages
-(**owned-root exclusivity, per-system**, `module-system.md`). For every token in
-`provides_capabilities`, append a `CapabilitySetter` to `capabilities[token]`. The
-registry never adjudicates ownership: two registry packages may each claim
-`firewall`, but a single system cannot install both, and it is the install
-decision — not a publish-time claim — that resolves the choice.
-
-**Shadowing guard.** A shared root in `SystemRoots.roots` that collides with the
-NAME of a different installed package is a hard error: `SystemRoots` is consulted
-before the structural (`root = package name`) fallback, so a package name must
-never be silently shadowed by another package's owned root.
-
-### 3.3 Resolver gate (normative algorithm)
-
-The resolver reads the **running image's** `module_abi` (`K`) from the toplevel
-manifest / `os-release` — never from the network. Two gates, both **pre-eval,
-fail-closed**, the old config-gen stays live on failure (mirrors
-`enforce_totality`, `sysroot.rs:192`):
-
-1. **Root-based dispatch → provider selection.** On a missing-option signal
-   (strict throw or missing-attr; `module-system.md` §Requires), the resolver
-   dispatches on the option's **root segment** (§4):
-   - if the root is present in `SystemRoots.roots`, the owner is the installed
-     package named there — no fetch. A shared root with **no** installed owner
-     is a terminal, legible error (`"no installed package owns root
-     '<root>'"`); the resolver never auto-fetches a shared-root owner from the
-     registry.
-   - otherwise the root is treated **structurally** (root segment = package
-     name): the resolver performs a registry **by-name** lookup of that
-     package's `ConfigModuleMeta`, gates it on
-     `module_abi_compat.min <= K <= module_abi_compat.max` (ABI band excludes
-     `K` ⇒ `AbiMismatch`; name absent ⇒ `NoProvider`), fetches its
-     `config_output`, and re-evals to a fixpoint.
-
-2. **ABI compat gate (per module in the resolved set).** Before the manifest is
-   forced, for every config module `M`:
-   `M.module_abi_compat.min <= K <= M.module_abi_compat.max` MUST hold; else
-   refuse `M` with `"config module '<pkg>@<ver>' requires module_abi in
-   [<min>,<max>], running image is <K>"` and abort before producing a manifest.
-
-3. **Owned-root interface ABI + contributable surface** is checked independently
-   of the base `K`, entirely at resolve time against `SystemRoots`: for each
-   installed contributor, its `RootContribution.root` must name a root whose
-   `RootOwner` is installed, the contributor must have been built against that
-   owner's `interface_abi`, and every contributed path must lie within that
-   owner's `contributable` set (`RootContribution.paths ⊆ RootOwner.contributable`)
-   — otherwise reject (conscription / foreign-write guard, F3-B). Publish no
-   longer performs this check against any global index; it is a per-system,
-   resolve-time assertion.
-
-The produced manifest records `module_abi = K` (→ `module_abi_pinned`), which the
-rollback pin (`generations.md` §pinning rule) later checks: a config-gen
-re-activates directly iff its `module_abi_pinned` equals the running image's `K`,
-and is re-evaluated (never replayed) across a different `K`.
+`module_abi_pinned` remains part of the generation identity. A generation can
+be reactivated directly only under the ABI it was evaluated against; crossing
+an ABI boundary re-evaluates the retained package documents and host input.
 
 
 ---
@@ -744,7 +519,7 @@ re-evaluating until the eval succeeds or a terminal state is reached.
 
 ```text
 working_set : OrderedSet<PackageName>   // starts = seed_set; grows monotonically
-fetched     : Set<StorePath>            // config-output NARs already local
+fetched     : Set<StorePath>            // package-module artifacts already local
 trace       : Vec<IterRecord>           // causal chain, for non-convergence dump
 iter        : u32                       // 0-based iteration counter
 ```
@@ -779,7 +554,7 @@ fn fixpoint(inputs) -> Result<Manifest, FixpointError>:
                 if provider in state.working_set:
                     # already present yet still missing ⇒ not a fetch problem
                     return Err(Unsatisfiable{ path, provider })  # §5 cycle/guard
-                fetch_config_output(provider)?      # §4 config output FIRST
+                fetch_package_module(provider)?      # §4 package module artifact FIRST
                 state.working_set.insert(provider)
                 state.trace.push(IterRecord{ iter, path, provider, kind })
                 state.iter += 1
@@ -962,7 +737,7 @@ fn resolve_root(path, system_roots) -> Option<Provider>:
   shared root with no installed owner is the terminal `"no installed package
   owns root '<root>'"` error — never an auto-fetch.
 - **Structural root** (root segment = package name) → a registry **by-name**
-  lookup of that package's `ConfigModuleMeta`, ABI-gated pre-fetch (§3.3). The
+  lookup of that package's `PackageDocument`, ABI-gated pre-fetch (§3.3). The
   `declares` surface is still computed by **options-only evaluation** at publish
   (does not force `config`; `lib/modules.nix:924-930`, `lib/testing/eval.nix:20`)
   but is retained as per-package metadata, not aggregated registry-wide.
@@ -971,7 +746,7 @@ fn resolve_root(path, system_roots) -> Option<Provider>:
 package's owned root always shadows the bare-name convention (shadowing guard,
 §3.2).
 
-### Fetch — config output first
+### Fetch — package module artifact first
 
 On a resolved provider the driver fetches the **`config` output NAR before the
 `out` closure** (`architecture.md` §"Stage 1"): the next eval needs only the
@@ -979,7 +754,7 @@ config-only module (typed options + string-path `config`), and the runtime
 binary closure is needed solely if that provider survives into the final
 manifest. Concretely:
 
-1. `fetch_config_output(provider)` — download + verify the `config` output NAR
+1. `fetch_package_module(provider)` — download + verify the `config` output NAR
    into the local store, mark in `fetched`. This is the only thing the *eval*
    reads.
 2. The `out` closure is resolved lazily via the existing
@@ -987,7 +762,7 @@ manifest. Concretely:
    provider is in the **converged** `working_set`, so a provider fetched then
    shadowed by a conflict (terminal) never drags its binary closure.
 
-The config-output NAR must be present locally for `restrict-eval` to read it
+The package-module artifact must be present locally for `restrict-eval` to read it
 (`-I /run/aos-eval` + store). The fetch failure modes (registry unreachable,
 unsigned, hash mismatch) are terminal `Err` and, like every fixpoint error,
 leave the box live on the gen-0 seed.
@@ -1852,7 +1627,7 @@ aos.gen-attestation/v1  (canonical JSON; field order below is the struct order)
       root_verity_uuid    : "<uuid>"         # F1: optional; omitted when unavailable
     evaluator:
       store_path          : "/nix/store/<hash>-aos-eval-<ver>"
-    config_modules:
+    package_modules:
       registry            : "<name>"
       release_tag         : "<semver>"       # verify_tag_chain target
       tag_signer_key      : "<fingerprint>"  # security.rs::key_fingerprint, 8 hex
@@ -2023,7 +1798,7 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
        extract roothash token from the UKI .cmdline the catalog published;
        record.inputs.base_lib.root_verity_roothash == that token
          == catalog.image.root.roothash (root.roothash file)     else FAIL(root-verity)
-  8. config_modules.release_tag is signed by a roster key in catalog,
+  8. package_modules.release_tag is signed by a roster key in catalog,
        not revoked: verify_tag_chain(release_tag) succeeds        else FAIL(tag)
        AND tag_signer_key ∈ catalog roster fingerprints
        AND strict receipt registry/tag/commit/signer fields equal the
@@ -2045,7 +1820,7 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
  11. (optional for platform/signed; REQUIRED for image, full re-derivation)
        given the authenticated inputs
        (base-lib@pcr11_expected, evaluator@store_path,
-        config_modules@realization, host_nix@content_hash,
+        package_modules@realization, host_nix@content_hash,
         instance_facts@facts_hash), re-run the pure eval and check
         sha256(canonical(manifest)) == record.manifest_hash      else FAIL(rederive)
  12. before blessing a counted boot, the local boot-commit verifier validates
@@ -2577,7 +2352,7 @@ pub struct ConfigGeneration {
     /// Store path of the config-module **source** closure the evaluator read
     /// (the eval *input*, distinct from package runtime outputs). GC-rooted by
     /// `gen-N/cfgsrc/<hash>` (§2, M-gc-inputs); required for cross-ABI re-eval.
-    pub config_module_closure: String,
+    pub package_module_closure: String,
     /// Store path / content hash of the exact `host.nix` this config-gen was
     /// evaluated from (OQ5: content-pin, NOT a mutable git ref). GC-rooted by
     /// the same `gen-N/cfgsrc/<hash>` root. Image-rollback re-eval feeds this
@@ -2615,7 +2390,7 @@ with it.
 | `module_abi` | `module_abi` | `module_abi_pinned` (copy at eval) | `/etc/os-release` `AOS_MODULE_ABI`; PCR-11 via `.osrel` |
 | base-lib identity | `evaluator_ref`, `baselib_digest` | — | `/etc/os-release` `AOS_BASELIB_DIGEST`; PCR-11 |
 | base-lib byte integrity | `root_verity_roothash` | — | UKI `.cmdline` `roothash=`; PCR-11; dm-verity target |
-| eval inputs | — | `config_module_closure`, `host_nix_ref`, `facts_hash` | the store paths themselves (GC-rooted, §2) |
+| eval inputs | — | `package_module_closure`, `host_nix_ref`, `facts_hash` | the store paths themselves (GC-rooted, §2) |
 | eval output | `toplevel` | `manifest_hash` → `gen-N/manifest.json` | the realized `/etc` store paths (GC-rooted, §2) |
 | boot selection | `slot`, `uki_path`, `default`, `pending` | — | ESP UKIs + `bootctl set-default` (§5.2) |
 
@@ -2634,7 +2409,7 @@ exactly what each pins:
 | `gen-N/cfgsrc/<hash>` | config-module **source** closure **+** `host_nix_ref` store path | the eval **inputs** | **M-gc-inputs**: `cfg/` pins outputs, which reference package *runtime* closures, **not** the config-module source NARs nor `host.nix`; without `cfgsrc/` a plain `apm gc` collects the inputs and breaks cross-ABI re-eval (§6) |
 
 `cfgsrc/` is the load-bearing addition. It pins **both** the
-`ConfigGeneration::config_module_closure` **and** the
+`ConfigGeneration::package_module_closure` **and** the
 `ConfigGeneration::host_nix_ref` store path (OQ5: `host.nix` is content-pinned,
 so it is a real store path the root can hold). Because cross-ABI re-eval feeds
 exactly these two inputs plus `facts.json` (also pinned via `cfgsrc/`) into the
@@ -2744,7 +2519,7 @@ the eval targeting it runs.** Therefore:
    *"running image-gen ref ≠ the live config-gen's `image_gen_parent`"* (read
    from `/etc/os-release` vs `state.json`). When true it performs
    generations.md steps 3–4: the **new** evaluator runs over **new base lib (in
-   image) + downloaded config modules + the recorded `host_nix_ref`**; the §3
+   image) + authenticated selected package modules + the recorded `host_nix_ref`**; the §3
    pre-eval ABI gate fires here; output is a new config-gen parented to the new
    image-gen. It is **idempotent and re-entrant** — on a clean boot the predicate
    is false and it is a no-op.
@@ -2800,7 +2575,7 @@ different schema is undefined. Re-activation branches on the comparison between
   `cfg/` outputs (§2). No eval, no reboot.
 - **Different ABI ⇒ refuse direct activation, re-eval instead.** The old
   config-gen is **not** blindly replayed. The system re-evaluates the triple
-  `(old_base_lib, config_module_closure, host_nix_ref)` — all three retained on
+  `(old_base_lib, package_module_closure, host_nix_ref)` — all three retained on
   `/var` by `image-gen-N/baselib/<module_abi>` (§4) and `gen-N/cfgsrc/<hash>`
   (§2) — under the rolled-back image's evaluator, with `facts.json` (also
   `cfgsrc/`-pinned) as the instance facts. Because eval is pure and content-

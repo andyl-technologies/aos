@@ -84,11 +84,11 @@ identity.
 
 The completed implementation uses these repository seams:
 
-- `PlatformEntry` authenticates payload, expose, configuration-module, and
-  documentation companion artifacts, including packages without configuration
-  modules.
-- `ConfigModuleMeta.declaration_schema` carries sorted option paths and stable
-  type signatures. It is the compatibility index, but not rich enough to be the
+- `PlatformEntry` authenticates payload, package-contract, expose, and
+  documentation companion artifacts, including packages without a package
+  module.
+- `PackageDocument.option_declarations` carries sorted option paths and stable
+  type signatures. It is the checked machine-readable source used to derive the
   human and tooling document proposed here.
 - `SurfaceFetch::fetch_bounded` and the WASM-safe documentation model provide a
   size-checked, streaming, single-file NAR verifier shared by native and Worker

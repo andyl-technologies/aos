@@ -67,8 +67,8 @@ the invariants, and the resolved decisions; the topic files hold the detail:
 - [`decisions.md`](decisions.md) — the **locked resolutions** of F1/F2/F3 + the
   generations open questions, each with a decision-free mechanism.
 - [`build-spec.md`](build-spec.md) — **field-level interface/schema contracts**
-  (manifest, config output, per-package config-module metadata and the derived
-  `SystemRoots`, the resolver fixpoint algorithm, the
+  (manifest, authenticated package documents and module locators, the complete
+  selected-package fixed point, the resolver fixpoint algorithm, the
   unit-graph compiler, the metadata `PlatformFetcher`, trust/secrets, generation
   data structures) so implementation has nothing left to invent.
 - [`acceptance-criteria.md`](acceptance-criteria.md) — a **definition-of-done**
