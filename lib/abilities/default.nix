@@ -1500,8 +1500,8 @@ in rec {
   types = abilityTypes;
   interfaces = {
     serviceManagement = import ./service-management.nix {
-      inherit declareInterface guarantee interfaceDocumentFromDeclaration interfaceIdentity;
-      inherit (abilityTypes) boolean;
+      inherit declareInterface descriptorFor interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
     };
   };
   module = {config, ...}:
