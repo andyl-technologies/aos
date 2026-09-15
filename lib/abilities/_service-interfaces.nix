@@ -330,6 +330,39 @@
   };
   activationMilestoneDocument = interfaceDocumentFromDeclaration activationMilestoneDeclaration;
 
+  runtimeEntryPopulationName = "aos.filesystem.runtime-entry-population";
+  runtimeEntryPopulationMethods = {
+    observe =
+      method
+      serviceTypes.runtimeEntryPopulation
+      serviceTypes.runtimeEntryPopulationObservation
+      runtimeEntryPopulationName
+      "observe"
+      "Observes completion of provider-neutral runtime filesystem entry population."
+      read;
+  };
+  runtimeEntryPopulationDeclaration = declareInterface {
+    name = runtimeEntryPopulationName;
+    description = "Publishes the lifecycle boundary at which configured runtime filesystem entries have been populated.";
+    abi = 1;
+    requestType = serviceTypes.runtimeEntryPopulation;
+    outputs.lifecycle-resource =
+      output "planning" "instance"
+      "References the exact runtime entry population lifecycle selected for this request."
+      serviceTypes.resourceReference;
+    methods = runtimeEntryPopulationMethods;
+    lifecycle = lifecyclePolicy // {releasesEphemeralOnDisable = false;};
+    guarantees = [];
+    aggregation = {
+      scope = "provider-instance";
+      key = "slot";
+      rejectSlotCollisions = true;
+      mergeContract = null;
+      controllerGroup = "runtime-entry-population";
+    };
+  };
+  runtimeEntryPopulationDocument = interfaceDocumentFromDeclaration runtimeEntryPopulationDeclaration;
+
   kernelModulesName = "aos.kernel.modules";
   kernelModulesMethods = {
     load =
@@ -968,6 +1001,15 @@
       methods = builtins.attrNames activationMilestoneMethods;
       requestType = serviceTypes.activationMilestone;
       observationType = serviceTypes.activationMilestoneObservation;
+    };
+    runtimeEntryPopulation = {
+      alias = "runtime-entry-population";
+      declaration = runtimeEntryPopulationDeclaration;
+      document = runtimeEntryPopulationDocument;
+      identity = interfaceIdentity runtimeEntryPopulationDocument;
+      methods = builtins.attrNames runtimeEntryPopulationMethods;
+      requestType = serviceTypes.runtimeEntryPopulation;
+      observationType = serviceTypes.runtimeEntryPopulationObservation;
     };
     kernelModules = {
       alias = "kernel-modules";

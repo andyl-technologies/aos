@@ -35,56 +35,11 @@
     owner = "root";
     group = "root";
   };
-  packagedUnits = {
-    requirementTemplates.systemd-packaged-unit =
-      lib.abilities.interfaceSelector {
-        name = "aos.systemd.packaged-unit";
-        abi = 1;
-      }
-      // {
-        description = "References the authenticated system initialization target and tmpfiles unit.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requests = builtins.listToAttrs (builtins.map (unit: {
-        name = unit.key;
-        value = {
-          requirement = "systemd-packaged-unit";
-          consumer = consumerInstance;
-          scope = [unit.key];
-          parameters = {
-            source = {
-              artifact = lib.abilities.packageOutput {package = "systemd";};
-              unit_file = "lib/systemd/system/${unit.name}";
-              unit_name = unit.name;
-            };
-            activation = "reference";
-            prerequisites = [];
-            dependencies = {
-              after = [];
-              before = [];
-              requires = [];
-              wants = [];
-            };
-            drop_in = {
-              accepted_exit_statuses = [];
-              reload_triggers = [];
-              search_path = [];
-            };
-          };
-        };
-      }) [
-        {
-          key = "sysinit-target";
-          name = "sysinit.target";
-        }
-        {
-          key = "tmpfiles-setup";
-          name = "systemd-tmpfiles-setup.service";
-        }
-      ]);
+  earlySystem = producer "early-system" interfaces.activationMilestone {
+    milestone = "early-system";
+  };
+  runtimeEntryPopulation = producer "runtime-entry-population" interfaces.runtimeEntryPopulation {
+    scope = "runtime-entries";
   };
 
   selinuxConfiguration = serviceManagement.forConfiguration {
@@ -284,8 +239,8 @@
           (resultOf "policy-state" "retained-resource")
         ];
         before = [
-          (resultOf "sysinit-target" "unit-resource")
-          (resultOf "tmpfiles-setup" "unit-resource")
+          (resultOf "early-system" "readiness-resource")
+          (resultOf "runtime-entry-population" "lifecycle-resource")
         ];
         requires = [
           (resultOf "policy-state" "retained-resource")
@@ -293,7 +248,7 @@
           (resultOf "semanage-config" "retained-resource")
         ];
         wants = [];
-        wanted_by = [(resultOf "sysinit-target" "unit-resource")];
+        wanted_by = [(resultOf "early-system" "readiness-resource")];
       };
       readiness = {
         mechanism = "successful-exit";
@@ -344,10 +299,10 @@
           (resultOf "selinux-policy-load-lifecycle" "service-resource")
           (resultOf "local-filesystems" "readiness-resource")
         ];
-        before = [(resultOf "sysinit-target" "unit-resource")];
+        before = [(resultOf "early-system" "readiness-resource")];
         requires = [(resultOf "selinux-policy-load-lifecycle" "service-resource")];
         wants = [];
-        wanted_by = [(resultOf "sysinit-target" "unit-resource")];
+        wanted_by = [(resultOf "early-system" "readiness-resource")];
       };
       readiness = {
         mechanism = "successful-exit";
@@ -360,7 +315,8 @@
   fragments = [
     localFilesystems
     policyState
-    packagedUnits
+    earlySystem
+    runtimeEntryPopulation
     selinuxConfiguration
     semanageConfiguration
     configurationFiles

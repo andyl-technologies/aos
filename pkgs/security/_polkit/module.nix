@@ -34,6 +34,26 @@
   localFilesystems = producer "local-filesystems" interfaces.filesystemReadiness {
     scope = "local-filesystems";
   };
+  systemBusAvailability = {
+    requirementTemplates.system-bus-availability =
+      lib.abilities.interfaceSelector {
+        name = "aos.dbus.system-bus-availability";
+        abi = 1;
+      }
+      // {
+        description = "Requires the configured system message bus.";
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+    requests.system-bus-availability = {
+      requirement = "system-bus-availability";
+      consumer = consumerInstance;
+      scope = ["system-bus"];
+      parameters.scope = "system-bus";
+    };
+  };
   rulesConfiguration = serviceManagement.forConfiguration {
     inherit serviceTypes consumerInstance;
     declaration = {
@@ -100,59 +120,6 @@
       }
     ];
   };
-  packagedUnits = {
-    requirementTemplates.systemd-packaged-unit =
-      lib.abilities.interfaceSelector {
-        name = "aos.systemd.packaged-unit";
-        abi = 1;
-      }
-      // {
-        description = "References message-bus and login-manager units required by polkit.";
-        methods = ["observe"];
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-    requests = builtins.listToAttrs (builtins.map (unit: {
-        name = unit.key;
-        value = {
-          requirement = "systemd-packaged-unit";
-          consumer = consumerInstance;
-          scope = [unit.key];
-          parameters = {
-            source = {
-              artifact = lib.abilities.packageOutput {package = unit.package;};
-              unit_file = "lib/systemd/system/${unit.name}";
-              unit_name = unit.name;
-            };
-            activation = "reference";
-            prerequisites = [];
-            dependencies = {
-              after = [];
-              before = [];
-              requires = [];
-              wants = [];
-            };
-            drop_in = {
-              accepted_exit_statuses = [];
-              reload_triggers = [];
-              search_path = [];
-            };
-          };
-        };
-      }) [
-        {
-          key = "dbus-socket";
-          package = "dbus";
-          name = "dbus.socket";
-        }
-        {
-          key = "login-manager";
-          package = "systemd";
-          name = "systemd-logind.service";
-        }
-      ]);
-  };
   service = serviceManagement.forService {
     inherit serviceTypes consumerInstance;
     declaration = {
@@ -186,12 +153,11 @@
       };
       dependencies = {
         after = [
-          (resultOf "dbus-socket" "unit-resource")
-          (resultOf "login-manager" "unit-resource")
+          (resultOf "system-bus-availability" "readiness-resource")
         ];
         before = [];
-        requires = [(resultOf "dbus-socket" "unit-resource")];
-        wants = [(resultOf "login-manager" "unit-resource")];
+        requires = [(resultOf "system-bus-availability" "readiness-resource")];
+        wants = [];
         prerequisites = [
           (resultOf "local-rules-file" "retained-resource")
           (resultOf "packaged-actions-file" "retained-resource")
@@ -311,9 +277,9 @@
     group
     principal
     localFilesystems
+    systemBusAvailability
     rulesConfiguration
     configurationFiles
-    packagedUnits
     service
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
