@@ -10,10 +10,10 @@
     builtins.attrNames value.inputs
     == [
       "base_lib"
-      "config_modules"
       "evaluator"
       "host_nix"
       "instance_facts"
+      "package_modules"
     ];
   ownershipNames = value:
     builtins.attrNames value.ownership
@@ -55,13 +55,15 @@
   validInputs = value:
     value.module_abi
     == value.inputs.base_lib.module_abi
-    && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.store_paths
-    && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.nar_hashes
-    && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.package_names
-    && ((value.inputs.config_modules.origins or [])
-      == []
-      || value.inputs.config_modules.count == builtins.length value.inputs.config_modules.origins)
-    && value.inputs.config_modules.count == builtins.length value.inputs.config_modules.module_abi_compat
+    && builtins.isList value.inputs.package_modules.modules
+    && builtins.all (module:
+      builtins.isString module.package
+      && builtins.isString module.document_digest
+      && builtins.isString module.store_path
+      && builtins.isString module.nar_hash
+      && builtins.isString module.entrypoint
+      && builtins.elem module.origin ["image" "registry"])
+    value.inputs.package_modules.modules
     && builtins.match "/nix/store/.*" value.inputs.base_lib.store_path != null
     && builtins.match "/nix/store/.*" value.inputs.evaluator.store_path != null
     && builtins.match "/nix/store/.*" value.inputs.host_nix.store_path != null
