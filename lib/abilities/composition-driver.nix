@@ -352,7 +352,12 @@
     authored =
       if controller.implementation.compose == null
       then fail "controller '${controller.binding.implementation}' has no selected compose constructor"
-      else controller.implementation.compose ((contextFor provision) // {resources = resourceMap;});
+      else
+        controller.implementation.compose ((contextFor provision)
+          // {
+            resources = resourceMap;
+            allResources = mergedResources;
+          });
     result =
       exactAttrs
       "compose result for '${controller.binding.implementation}'"

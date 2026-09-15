@@ -902,6 +902,7 @@
         fields = {
           schema = types.enum ["aos.systemd.native-resource-realization/v1"];
           backend = types.enum ["activation-group-target"];
+          systemd_unit = serviceUnitIdentity;
           after_units = types.list {
             element = serviceUnitIdentity;
             maxItems = 512;

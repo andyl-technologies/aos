@@ -26,6 +26,7 @@
     implementation = "mount-resource";
   };
   activationGroupEffectsKey = effectsKey "systemd:activation-group" "ready";
+  dependentGroupEffectsKey = effectsKey "systemd:activation-group" "dependent";
   evaluation = lib.evalModules {
     inherit lib;
     modules = [
@@ -74,6 +75,18 @@
               implementation = "systemd:systemd-activation-group-effects";
               providerInstance = "systemd:manager";
               slot = "ready";
+            };
+            "test:dependent-group" = {
+              request = "consumer:dependent-group";
+              implementation = "systemd:activation-group";
+              providerInstance = "systemd:manager";
+              slot = "dependent";
+            };
+            "test:dependent-group-effects" = {
+              request = dependentGroupEffectsKey;
+              implementation = "systemd:systemd-activation-group-effects";
+              providerInstance = "systemd:manager";
+              slot = "dependent";
             };
             "test:device" = {
               request = "consumer:device";
@@ -150,6 +163,19 @@
                 required_members = [];
               };
             };
+            dependent-group = {
+              requirement = "activation-group";
+              consumer = "client";
+              scope = ["dependent"];
+              parameters = {
+                name = "dependent";
+                enabled = false;
+                description = "Resources ordered after readiness";
+                after = [(lib.abilities.resultOf "activation-group" "activation-resource")];
+                members = [];
+                required_members = [];
+              };
+            };
           };
         };
       }
@@ -170,7 +196,11 @@
     builtins.head (builtins.filter (resource: resource.kind == kind) resources);
   mount = resourceByKind "aos.filesystem.mount";
   swap = resourceByKind "aos.memory.swap";
-  activationGroup = resourceByKind "aos.activation.group";
+  activationGroups = builtins.filter (resource: resource.kind == "aos.activation.group") resources;
+  activationGroupByName = name:
+    builtins.head (builtins.filter (resource: resource.value.name == name) activationGroups);
+  activationGroup = activationGroupByName "ready";
+  dependentGroup = activationGroupByName "dependent";
   declaredRoleEntryPoints = builtins.sort builtins.lessThan (lib.unique (lib.concatMap (
       implementation: let
         handler = implementation.handlerDescriptor;
@@ -181,7 +211,7 @@
     )
     (builtins.attrValues abilities.implementations)));
 in
-  assert builtins.length resources == 3;
+  assert builtins.length resources == 4;
   assert mount.realization
   == {
     schema = "aos.systemd.native-resource-realization/v1";
@@ -196,14 +226,37 @@ in
   == {
     schema = "aos.systemd.native-resource-realization/v1";
     backend = "activation-group-target";
+    systemd_unit = {
+      kind = "unit";
+      unit_name = "ready.target";
+    };
     after_units = [];
+    member_units = [];
+    required_member_units = [];
+  };
+  assert dependentGroup.realization
+  == {
+    schema = "aos.systemd.native-resource-realization/v1";
+    backend = "activation-group-target";
+    systemd_unit = {
+      kind = "unit";
+      unit_name = "dependent.target";
+    };
+    after_units = [
+      {
+        kind = "unit";
+        unit_name = "ready.target";
+      }
+    ];
     member_units = [];
     required_member_units = [];
   };
   assert abilities.compositionRequests.${mountEffectsKey}.parameters.desired == mount.value;
   assert abilities.compositionRequests.${swapEffectsKey}.parameters.desired == swap.value;
   assert abilities.compositionRequests.${activationGroupEffectsKey}.parameters.desired == activationGroup.value;
+  assert abilities.compositionRequests.${dependentGroupEffectsKey}.parameters.desired == dependentGroup.value;
   assert abilities.compositionOutputs."consumer:activation-group" ? activation-resource;
+  assert abilities.compositionOutputs."consumer:dependent-group" ? activation-resource;
   assert abilities.implementations."systemd:mount-resource".handlerDescriptor == null;
   assert builtins.isFunction abilities.implementations."systemd:mount-resource".transition;
   assert abilities.implementations."systemd:systemd-mount-effects".providerModule == null;
@@ -212,4 +265,4 @@ in
   assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "bin/aos-systemd-device-presence";
   assert declaredRoleEntryPoints == pkgs.aos-systemd-provider.roleEntryPoints;
   assert builtins.length declaredRoleEntryPoints == 16;
-  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 3; true
+  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 4; true
