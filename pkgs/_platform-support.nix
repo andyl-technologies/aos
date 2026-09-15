@@ -734,7 +734,6 @@ let
     "kubernetes/_k3s-expose-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
-    "networking/_nginx-ability-contract.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
@@ -783,8 +782,7 @@ let
     "networking/_envoy/module.nix" = "linux-only-config-source";
     "networking/_envoy/render.nix" = "linux-only-config-source";
     "networking/_envoy/types.nix" = "linux-only-config-source";
-    "networking/_nginx-ability-provider/default.nix" = "target-independent-source";
-    "networking/_nginx-config/module.nix" = "linux-only-config-source";
+    "networking/_nginx/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
