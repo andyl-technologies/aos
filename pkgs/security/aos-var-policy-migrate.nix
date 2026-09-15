@@ -1,5 +1,6 @@
 ##! aos-var-policy-migrate — recovery-authorized TPM enrollment replacement
 {
+  lib,
   mkDerivation,
   bash,
   coreutils,
@@ -10,6 +11,56 @@
 }:
 mkDerivation {
   pname = "aos-var-policy-migrate";
+  qualification.packageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "Bash accepts the installed migration program's syntax.";
+      "files" = {};
+      "input" = "The installed TPM policy migration script.";
+      "operation" = "Parse the complete script with its packaged Bash interpreter.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@bash@\", \"-n\", \"@out@/bin/aos-var-policy-migrate\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nprint(\"aos-var-policy-migrate operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "aos-var-policy-migrate operation passed\n";
+          };
+        }
+      ];
+    };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The script rejects the request with its usage status before touching a TPM.";
+      "files" = {};
+      "input" = "A migration invocation without the five required arguments.";
+      "operation" = "Validate the incomplete request.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-var-policy-migrate\"], capture_output=True, text=True)\nassert result.returncode == 2 and \"usage:\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-var-policy-migrate rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "aos-var-policy-migrate rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+
   version = "1";
   src = null;
 

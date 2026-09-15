@@ -22,6 +22,58 @@
 in
   mkDerivation {
     pname = "aos-ebpf-lsm-policy";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The loader accepts the packaged JSON schema and BPF object metadata.";
+        "files" = {};
+        "input" = "The packaged task-audit policy and matching BPF object.";
+        "operation" = "Validate the policy-object pair without loading it into the kernel.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-ebpf-lsm-policy\", \"validate\", \"--policy\", \"@out@/share/aos/ebpf-lsm/aos-task-audit.json\", \"--object\", \"@out@/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nprint(\"aos-ebpf-lsm-policy operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-ebpf-lsm-policy operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The loader rejects the malformed JSON before kernel attachment.";
+        "files" = {
+          "policy.json" = "{\"version\":\n";
+        };
+        "input" = "A truncated JSON policy paired with the packaged BPF object.";
+        "operation" = "Validate the malformed policy.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-ebpf-lsm-policy\", \"validate\", \"--policy\", \"policy.json\", \"--object\", \"@out@/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-ebpf-lsm-policy rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-ebpf-lsm-policy rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = "0";
     src = null;
 

@@ -1,10 +1,61 @@
 ##! aos-landlock — Apply package Landlock rules before exec
 {
+  lib,
   mkDerivation,
   linux-headers,
 }:
 mkDerivation {
   pname = "aos-landlock";
+  qualification.packageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "The wrapper returns success and documents its filesystem and network policy options.";
+      "files" = {};
+      "input" = "The Landlock wrapper's command-line interface.";
+      "operation" = "Request its help without creating a kernel ruleset.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-landlock\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"--fs-ro\" in result.stdout and \"--tcp-connect\" in result.stdout\nprint(\"aos-landlock operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "aos-landlock operation passed\n";
+          };
+        }
+      ];
+    };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The wrapper rejects mutually incompatible network options before execution.";
+      "files" = {};
+      "input" = "A request combining unrestricted networking with a restricted TCP bind port.";
+      "operation" = "Parse the contradictory network policy.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-landlock\", \"--network-unrestricted\", \"--tcp-bind\", \"8080\", \"--\", \"@bash@\", \"-c\", \"exit 0\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-landlock rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "aos-landlock rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+
   version = "0";
   src = null;
 

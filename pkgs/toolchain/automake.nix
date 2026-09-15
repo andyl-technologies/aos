@@ -1,5 +1,6 @@
 ##! GNU Automake — generates Makefile.in from Makefile.am templates
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,6 +13,61 @@
 in
   mkDerivation {
     pname = "automake";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Automake accepts the declarations and emits Makefile.in.";
+        "files" = {
+          "Makefile.am" = "bin_PROGRAMS = probe\nprobe_SOURCES = probe.c\n";
+          "configure.ac" = "AC_INIT([aos-probe], [1.0])\nAM_INIT_AUTOMAKE([foreign])\nAC_PROG_CC\nAC_CONFIG_FILES([Makefile])\nAC_OUTPUT\n";
+          "probe.c" = "int main(void) { return 0; }\n";
+        };
+        "input" = "A minimal foreign Automake project containing one C program.";
+        "operation" = "Generate Makefile.in and required helper scripts with automake.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/aclocal"
+              "--system-acdir=@out@/share/aclocal"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/automake"
+              "--add-missing"
+              "--foreign"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Automake rejects the invalid syntax with status 1.";
+        "files" = {
+          "Makefile.am" = "this is not automake syntax\n";
+          "configure.ac" = "AC_INIT([aos-probe], [1.0])\nAM_INIT_AUTOMAKE([foreign])\nAC_CONFIG_FILES([Makefile])\nAC_OUTPUT\n";
+        };
+        "input" = "A Makefile.am containing text that is not an assignment or rule.";
+        "operation" = "Generate Makefile.in from the malformed declaration.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/automake"
+              "--add-missing"
+              "--foreign"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

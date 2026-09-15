@@ -4,6 +4,7 @@
 ##! This opt-in host wrapper adds the emulator, firmware, and GPT tooling used
 ##! by `aos vm run` without pulling them into every system root filesystem.
 {
+  lib,
   mkDerivation,
   aos,
   edk2,
@@ -26,6 +27,56 @@
 in
   mkDerivation {
     pname = "aos-vm";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The wrapper returns success and describes its VM operations.";
+        "files" = {};
+        "input" = "The host VM wrapper's command-line interface.";
+        "operation" = "Request VM subcommand help without starting an emulator.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/aos\", \"vm\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in result.stdout\nprint(\"aos-vm operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-vm operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The wrapper rejects the operation before starting QEMU.";
+        "files" = {};
+        "input" = "A VM wrapper invocation containing an unknown operation.";
+        "operation" = "Parse the unknown operation.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos\", \"vm\", \"not-an-operation\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-vm rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-vm rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = aos.version;
     src = null;
 

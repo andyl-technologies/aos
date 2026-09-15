@@ -19,6 +19,56 @@
 }:
 mkDerivation {
   pname = "aos-test-driver";
+  qualification.packageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "The driver returns success and documents manifest and test inputs.";
+      "files" = {};
+      "input" = "The test driver's command-line interface.";
+      "operation" = "Request its help without booting a virtual machine.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-test-driver\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"--manifest\" in result.stdout and \"--test\" in result.stdout\nprint(\"aos-test-driver operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "aos-test-driver operation passed\n";
+          };
+        }
+      ];
+    };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The driver rejects the missing required arguments before VM startup.";
+      "files" = {};
+      "input" = "A driver invocation without its required manifest and test paths.";
+      "operation" = "Parse the incomplete invocation.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-test-driver\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"required\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-test-driver rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "aos-test-driver rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+
   version = "1.0";
   src = null;
 
