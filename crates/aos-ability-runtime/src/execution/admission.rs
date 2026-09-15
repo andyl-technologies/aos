@@ -817,7 +817,10 @@ impl<'plan> ExecutionTransaction<'plan> {
         }
 
         for access in accesses {
-            let expected_resource_provider = expected_provider.as_ref();
+            let expected_resource_provider = (access.resource
+                == admission.operation.target.resource)
+                .then_some(expected_provider.as_ref())
+                .flatten();
             if let Err(error) = check_admission_deadline(
                 self,
                 operation_key,

@@ -8,16 +8,12 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    AbilityValue, LocalKey, RequiredFeature, RevisionId, TransactionId, VersionedDocument,
+    LocalKey, RequiredFeature, RevisionId, TransactionId,
 };
-use aos_ability_plan::{
-    RUNTIME_OBSERVATIONS_SCHEMA, ResolutionPolicyDocument, TransitionReconciliation,
-};
-use aos_ability_runtime::adapter::{MonotonicClock, SystemMonotonicClock};
+use aos_ability_plan::{ResolutionPolicyDocument, TransitionReconciliation};
 use aos_ability_runtime::execution::TerminalResult;
 use aos_ability_runtime::journal::JournalLimits;
 use aos_contract::Sha256Digest;
@@ -25,29 +21,24 @@ use aos_contract::Sha256Digest;
 use super::ability::{AbilityEvaluationLimits, RestrictedAbilityEvaluator};
 use super::ability_activation::{
     SpecializedAbilityActivation, VerifiedAbilityActivationInputs, specialize_activation,
-    specialize_adoption_reconciliation, specialize_reconciliation, verify_generation_packages,
+    specialize_reconciliation, verify_generation_packages,
 };
 use super::ability_policy::{
     CurrentAuthorityScope, CurrentPlatformPolicyDocument, PublishingNativeAdmissionPolicy,
     validate_independent_binding_authority,
 };
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
-use super::ability_store::{
-    NativeAbilitySession, NativeObservationSession, RetainedAbilityDiagnosticSource,
-};
+use super::transaction_store::{AbilityTransactionSession, RetainedAbilityDiagnosticSource};
 use super::activation::{ActivateConfigParams, ActivationFailure};
+use super::handler_dispatch::HandlerDispatcher;
 use super::materialize::ConfigManifest;
-use super::native_boundary_observer::NativeExecutionBoundaryObserver;
-use super::native_dispatch::{
-    NativeDispatcher, NativeNoOpEvidence, OperatorAuthorizedPolicy, RetainedNativeNoOpVerifier,
-    TrustedNativeNoOpVerifier, authenticate_single_image_rollout_fragment,
-};
+use super::execution_observer::AbilityExecutionBoundaryObserver;
+use super::rollout_boot::authenticate_single_image_rollout_fragment;
 use crate::config::ApmConfig;
 use crate::types::ProfileScope;
 
 const EVALUATOR_CACHE: &str = "/var/cache/aos-ability-evaluator";
 const CURRENT_AUTHORITY_MAX_AGE_MILLIS: u64 = 60_000;
-const SYSTEMD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Activates one already parsed structured configuration manifest.
 pub(super) fn activate_config(
@@ -134,7 +125,7 @@ pub(super) fn activate_config(
         &mut evaluator,
     )
     .context("specializing the structured native transition")?;
-    NativeDispatcher::preflight(&source_activation, &packages)
+    HandlerDispatcher::preflight(&source_activation, &packages)
         .context("preflighting every native activation route")?;
     let resolution_policy = resolution_policy(&desired_inputs, &source_activation)?;
     let platform_policy = desired_inputs.policy_set().platform_policy.clone();
@@ -146,13 +137,6 @@ pub(super) fn activate_config(
     )
     .context("checking source authority before native drift classification")?;
     let supported_features = supported_native_ability_features()?;
-    let receipt_resources =
-        super::ability_store::inventory::provider_adoption_receipt_resources(&params.profile)?;
-    let settled_failed_adoptions =
-        super::ability_store::inventory::settled_failed_provider_adoption_resources(
-            &params.profile,
-            &supported_features,
-        )?;
     let transaction = pending
         .as_ref()
         .map(|pending| pending.transaction.clone())
@@ -171,13 +155,11 @@ pub(super) fn activate_config(
         &resolution_policy,
         platform_policy.as_ref(),
         &supported_features,
-        &receipt_resources,
-        &settled_failed_adoptions,
         &transaction,
         pending.as_ref(),
         Arc::clone(&switch_lock),
     )?;
-    NativeDispatcher::preflight(&activation, &packages)
+    HandlerDispatcher::preflight(&activation, &packages)
         .context("preflighting the selected native activation routes")?;
     validate_independent_binding_authority(
         activation.plan(),
@@ -186,22 +168,6 @@ pub(super) fn activate_config(
         desired_inputs.policy_set().transition_authority.as_ref(),
     )
     .context("checking independent authority for every native binding")?;
-    let linked_adoption_no_op = activation.plan().operations().is_empty()
-        && activation
-            .bundle()
-            .reconciliation()
-            .is_some_and(|reconciliation| !reconciliation.unsettled_provider_adoptions.is_empty());
-    let retained_no_op = if activation.plan().operations().is_empty() && !linked_adoption_no_op {
-        current_generation
-            .as_ref()
-            .map(|(generation, _)| {
-                load_retained_no_op_source(params, *generation, supported_features.clone())
-            })
-            .transpose()?
-    } else {
-        None
-    };
-
     let (generation, generation_id) = match pending {
         Some(pending) => (pending.generation, pending.generation_id),
         None => {
@@ -243,7 +209,6 @@ pub(super) fn activate_config(
         resolution_policy,
         platform_policy,
         supported_features,
-        retained_no_op,
         Arc::clone(&switch_lock),
     );
     let terminal = match execution {
@@ -346,8 +311,8 @@ pub(crate) fn preflight_retained_manifest(
     )
     .context("specializing retained native transition")
     .map_err(RetainedNativePreflightError::CurrentAuthority)?;
-    NativeDispatcher::preflight(&activation, &packages)
-        .context("preflighting retained native routes")
+    HandlerDispatcher::preflight(&activation, &packages)
+        .context("preflighting retained package handler routes")
         .map_err(RetainedNativePreflightError::Provider)?;
     let resolution_policy = resolution_policy(&desired_inputs, &activation)
         .map_err(RetainedNativePreflightError::CurrentAuthority)?;
@@ -360,11 +325,8 @@ pub(crate) fn preflight_retained_manifest(
     .context("checking current authority for retained native bindings")
     .map_err(RetainedNativePreflightError::CurrentAuthority)?;
 
-    let systemd = systemd_connection_for_activation(&activation)
-        .context("opening the live host provider capability")
-        .map_err(RetainedNativePreflightError::Provider)?;
-    NativeDispatcher::new(&activation, &packages, systemd)
-        .context("binding retained activation to the live host provider")
+    HandlerDispatcher::new(&activation, &packages)
+        .context("binding retained activation to authenticated package handlers")
         .map_err(RetainedNativePreflightError::Provider)?;
     Ok(())
 }
@@ -522,209 +484,49 @@ fn required_manifest_recovery<'a, T: Eq>(
 fn reconcile_native_drift(
     params: &ActivateConfigParams,
     source: SpecializedAbilityActivation,
-    current_generation: Option<u32>,
+    _current_generation: Option<u32>,
     desired_inputs: &VerifiedAbilityActivationInputs,
     current_inputs: Option<&VerifiedAbilityActivationInputs>,
     packages: &crate::ability_package::VerifiedAbilityPackageSet,
     evaluator: &mut RestrictedAbilityEvaluator,
     operator_authority: &OperatorPolicyAuthorityStore,
-    resolution_policy: &ResolutionPolicyDocument,
-    platform_policy: Option<&CurrentPlatformPolicyDocument>,
+    _resolution_policy: &ResolutionPolicyDocument,
+    _platform_policy: Option<&CurrentPlatformPolicyDocument>,
     supported_features: &std::collections::BTreeSet<RequiredFeature>,
-    receipt_resources: &std::collections::BTreeSet<aos_ability_model::ResourceId>,
-    settled_failed_adoptions: &std::collections::BTreeSet<aos_ability_model::ResourceId>,
     transaction: &TransactionId,
     pending: Option<&PendingActivation>,
-    switch_lock: Arc<super::activation::SwitchLockGuard>,
+    _switch_lock: Arc<super::activation::SwitchLockGuard>,
 ) -> Result<SpecializedAbilityActivation> {
-    let (Some(current_generation), Some(current_inputs)) = (current_generation, current_inputs)
-    else {
-        ensure!(
-            settled_failed_adoptions.is_empty(),
-            "settled provider-adoption recovery has no authenticated current generation"
-        );
-        return Ok(source);
-    };
-
-    let activation_resources = source
-        .desired_native_resources()
-        .entries
-        .iter()
-        .chain(
-            source
-                .current_native_resources()
-                .into_iter()
-                .flat_map(|resources| &resources.entries),
-        )
-        .map(|mapping| mapping.resource.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    ensure!(
-        receipt_resources.is_subset(&activation_resources),
-        "native ownership ledger contains an adoption receipt outside the selected desired/current resources"
-    );
-    ensure!(
-        settled_failed_adoptions.is_subset(&activation_resources),
-        "settled provider-adoption receipt lies outside the selected desired/current resources"
-    );
-
     let retained = pending
         .map(|pending| load_pending_reconciliation(params, pending, supported_features.clone()))
         .transpose()?
         .flatten();
     if let Some(reconciliation) = retained {
+        let current_inputs = current_inputs
+            .context("pending package-handler recovery has no authenticated current generation")?;
         ensure!(
             reconciliation.transaction == *transaction,
             "pending repair graph names another activation transaction"
         );
         source.reauthorize(operator_authority)?;
-        // The retained v2 snapshot supplies exactly the original live
-        // classification, while normal execution admission reobserves all
-        // resources before any resumed effect.
-        let linked_receipt_resources = reconciliation
-            .unsettled_provider_adoptions
-            .iter()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        ensure!(
-            linked_receipt_resources.is_subset(&receipt_resources),
-            "pending repair graph lost an unsettled provider-adoption receipt"
-        );
-        let repaired = if linked_receipt_resources.is_empty() {
-            specialize_reconciliation(
-                desired_inputs,
-                current_inputs,
-                packages,
-                evaluator,
-                &source,
-                reconciliation,
-                supported_features,
-            )
-        } else {
-            specialize_adoption_reconciliation(
-                desired_inputs,
-                current_inputs,
-                packages,
-                evaluator,
-                &source,
-                reconciliation,
-                supported_features,
-                &linked_receipt_resources,
-            )
-        }
-        .context("replaying the pending native repair graph")?;
+
+        let repaired = specialize_reconciliation(
+            desired_inputs,
+            current_inputs,
+            packages,
+            evaluator,
+            &source,
+            reconciliation,
+            supported_features,
+        )
+        .context("replaying the pending ability repair graph")?;
         repaired
             .reauthorize(operator_authority)
             .context("reauthorizing operator policy after repair replay")?;
         return Ok(repaired);
     }
-    if !source.plan().operations().is_empty() && settled_failed_adoptions.is_empty() {
-        return Ok(source);
-    }
 
-    source
-        .reauthorize(operator_authority)
-        .context("reauthorizing operator policy before drift classification")?;
-    let systemd = systemd_connection_for_activation(&source)?;
-    let mut dispatcher = NativeDispatcher::new(&source, packages, systemd)
-        .context("constructing the native drift classifier")?;
-    let observation_session = NativeObservationSession::open(
-        &params.profile.join(format!("gen-{current_generation}")),
-        transaction.clone(),
-        source.plan(),
-        supported_features.clone(),
-        switch_lock,
-    )
-    .context("opening the retained native observation boundary")?;
-    let classification = dispatcher
-        .classify_retained_resources(&observation_session, &settled_failed_adoptions)
-        .context("classifying retained native resources")?;
-    source
-        .reauthorize(operator_authority)
-        .context("reauthorizing operator policy after drift classification")?;
-    if !classification.requires_reconciliation() {
-        return Ok(source);
-    }
-
-    let policy_digest = Sha256Digest::parse(&desired_inputs.policy_sidecar().document_sha256)
-        .context("decoding drift-classification operator policy fence")?;
-    let scope = CurrentAuthorityScope {
-        plan: source.plan().id(),
-        transaction: transaction.clone(),
-    };
-    let mut current_policy = PublishingNativeAdmissionPolicy::new(
-        &scope,
-        RevisionId(policy_digest),
-        resolution_policy.clone(),
-        platform_policy.cloned(),
-        desired_inputs.policy_set().transition_authority.clone(),
-        supported_features.clone(),
-        CURRENT_AUTHORITY_MAX_AGE_MILLIS,
-        true,
-    );
-    let authority = current_policy
-        .publish_authority(
-            source.plan(),
-            classification.assignments(),
-            classification.authority_observations().to_vec(),
-        )
-        .context("publishing protected drift-classification authority")?;
-    source
-        .reauthorize(operator_authority)
-        .context("reauthorizing operator policy before repair planning")?;
-    let clock = SystemMonotonicClock::new();
-    let age = clock
-        .restart_stable_millis()
-        .checked_sub(authority.observed_at_restart_millis)
-        .context("drift-classification authority observation is in the future")?;
-    ensure!(
-        age <= authority.max_age_millis,
-        "drift-classification authority expired before repair planning"
-    );
-    let reconciliation = TransitionReconciliation {
-        schema: RUNTIME_OBSERVATIONS_SCHEMA.to_string(),
-        source_plan: source.plan().id(),
-        transaction: transaction.clone(),
-        policy_fence: authority.policy_fence,
-        authority_epoch: authority.authority_epoch,
-        sequence: authority.sequence,
-        observed_at_restart_millis: authority.observed_at_restart_millis,
-        max_age_millis: authority.max_age_millis,
-        authority_publication: authority.content_digest()?,
-        authority_document: AbilityValue::new(
-            serde_json::to_value(&authority)
-                .context("encoding protected drift-classification authority")?,
-        )
-        .context("bounding protected drift-classification authority")?,
-        unsettled_provider_adoptions: settled_failed_adoptions.iter().cloned().collect(),
-        observations: classification.runtime_observations().to_vec(),
-    };
-    let repaired = if settled_failed_adoptions.is_empty() {
-        specialize_reconciliation(
-            desired_inputs,
-            current_inputs,
-            packages,
-            evaluator,
-            &source,
-            reconciliation,
-            supported_features,
-        )
-    } else {
-        specialize_adoption_reconciliation(
-            desired_inputs,
-            current_inputs,
-            packages,
-            evaluator,
-            &source,
-            reconciliation,
-            supported_features,
-            &settled_failed_adoptions,
-        )
-    }
-    .context("constructing a linked native repair graph")?;
-    repaired
-        .reauthorize(operator_authority)
-        .context("reauthorizing operator policy after repair planning")?;
-    Ok(repaired)
+    Ok(source)
 }
 
 fn load_pending_reconciliation(
@@ -854,15 +656,13 @@ fn execute_native_transition(
     resolution_policy: ResolutionPolicyDocument,
     platform_policy: Option<CurrentPlatformPolicyDocument>,
     supported_features: std::collections::BTreeSet<RequiredFeature>,
-    retained_no_op: Option<RetainedAbilityDiagnosticSource>,
     switch_lock: Arc<super::activation::SwitchLockGuard>,
 ) -> Result<TerminalResult> {
-    let cancellation = super::native_cancellation::NativeCancellationGuard::install()
+    let cancellation = super::cancellation::AbilityCancellationGuard::install()
         .context("installing native activation cancellation listeners")?;
-    let systemd = systemd_connection_for_activation(&activation)?;
-    let mut dispatcher = NativeDispatcher::new(&activation, &packages, systemd)
-        .context("constructing native dispatcher")?;
-    let mut session = NativeAbilitySession::open_with_switch_lock(
+    let dispatcher = HandlerDispatcher::new(&activation, &packages)
+        .context("constructing package handler dispatcher")?;
+    let mut session = AbilityTransactionSession::open_with_switch_lock(
         activation.plan(),
         transaction.clone(),
         JournalLimits::default(),
@@ -880,7 +680,6 @@ fn execute_native_transition(
         transaction,
     };
     let transaction_linked = activation.bundle().reconciliation().is_some();
-    let retained_consumer_features = supported_features.clone();
     let current_policy = PublishingNativeAdmissionPolicy::new(
         &scope,
         RevisionId(policy_digest),
@@ -891,22 +690,12 @@ fn execute_native_transition(
         CURRENT_AUTHORITY_MAX_AGE_MILLIS,
         transaction_linked,
     );
-    let mut policy = OperatorAuthorizedPolicy::new(&activation, operator_authority, current_policy);
-    let mut no_op_verifier = ProductionNoOpVerifier {
-        retained: retained_no_op.map(|source| {
-            RetainedNativeNoOpVerifier::new(
-                source,
-                JournalLimits::default(),
-                retained_consumer_features,
-            )
-        }),
-    };
-    let mut boundary_observer = NativeExecutionBoundaryObserver::load()
+    let mut boundary_observer = AbilityExecutionBoundaryObserver::load()
         .context("opening protected native execution observation channel")?;
-    let terminal = dispatcher.run_to_terminal_with_observer(
+    let terminal = dispatcher.run_to_terminal(
         &mut session,
-        &mut policy,
-        &mut no_op_verifier,
+        operator_authority,
+        current_policy,
         cancellation.token(),
         &mut boundary_observer,
     )?;
@@ -981,37 +770,6 @@ fn load_successful_generation_manifest(
     load_generation_manifest(params, generation)
 }
 
-fn load_retained_no_op_source(
-    params: &ActivateConfigParams,
-    generation: u32,
-    supported_features: std::collections::BTreeSet<RequiredFeature>,
-) -> Result<RetainedAbilityDiagnosticSource> {
-    let generation_dir = params.profile.join(format!("gen-{generation}"));
-    let record_path = generation_dir.join("activation.json");
-    let record: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&record_path)
-            .with_context(|| format!("reading {}", record_path.display()))?,
-    )
-    .with_context(|| format!("parsing {}", record_path.display()))?;
-    ensure!(
-        record.get("schema").and_then(serde_json::Value::as_str)
-            == Some("aos.config-activation/v1")
-            && record.get("generation").and_then(serde_json::Value::as_u64)
-                == Some(u64::from(generation))
-            && record.get("status").and_then(serde_json::Value::as_str) == Some("complete"),
-        "retained generation lacks complete native activation evidence"
-    );
-    let transaction: TransactionId = serde_json::from_value(
-        record
-            .get("native_ability_transaction")
-            .cloned()
-            .context("retained generation has no selected native transaction")?,
-    )
-    .context("decoding retained native transaction selection")?;
-    RetainedAbilityDiagnosticSource::load(generation_dir, &transaction, supported_features)
-        .context("loading selected retained native transaction")
-}
-
 fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
     let nix_instantiate = std::env::var("AOS_NIX_INSTANTIATE")
         .context("reading AOS_NIX_INSTANTIATE for native activation")?;
@@ -1073,43 +831,6 @@ fn resolution_policy(
     Ok((*policy).clone())
 }
 
-fn systemd_connection() -> Result<Arc<aos_systemd::SystemdManagerConnection>> {
-    let runtime = tokio::runtime::Handle::try_current()
-        .context("native activation requires a Tokio runtime")?;
-    ensure!(
-        runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread,
-        "native activation requires a multi-thread Tokio runtime"
-    );
-    let connection = tokio::task::block_in_place(|| {
-        runtime.block_on(async {
-            tokio::time::timeout(
-                SYSTEMD_CONNECT_TIMEOUT,
-                aos_systemd::SystemdManagerConnection::system(),
-            )
-            .await
-        })
-    })
-    .context("timing out while connecting to systemd")?
-    .context("connecting to the host systemd manager")?;
-    Ok(Arc::new(connection))
-}
-
-fn systemd_connection_for_activation(
-    activation: &SpecializedAbilityActivation,
-) -> Result<Option<Arc<aos_systemd::SystemdManagerConnection>>> {
-    let stage = activation
-        .plan()
-        .binding_plan()
-        .environment()
-        .environment
-        .stage;
-    if stage == aos_ability_model::ExecutionStage::ApplicationContainer {
-        Ok(None)
-    } else {
-        systemd_connection().map(Some)
-    }
-}
-
 fn new_transaction_id() -> Result<TransactionId> {
     let random = rand::random::<u128>();
     let key = LocalKey::new(format!("activation-{random:032x}"))
@@ -1155,62 +876,6 @@ pub(crate) fn verify_rollout_boot_commit(
     crate::sysroot::image_rollout::NativeAbRolloutBackend::new("/var/lib/profiles/image", "/boot")
         .verify_boot_commit(&request, running)
         .context("verifying provider-owned rollout health evidence")
-}
-
-struct ProductionNoOpVerifier {
-    retained: Option<RetainedNativeNoOpVerifier>,
-}
-
-impl TrustedNativeNoOpVerifier for ProductionNoOpVerifier {
-    fn verify_no_op(&mut self, evidence: NativeNoOpEvidence<'_>) -> Result<()> {
-        ensure!(
-            evidence.plan.operations().is_empty()
-                && evidence.desired_state == evidence.current_desired_state
-                && evidence.current_resources.desired_state
-                    == evidence.desired_state.content_digest()?
-                && evidence.resources.len() == evidence.current_resources.entries.len(),
-            "native no-op evidence differs from the retained desired state"
-        );
-        ensure!(
-            evidence.current_resources.entries.iter().all(|mapping| {
-                let provider = evidence
-                    .plan
-                    .binding_plan()
-                    .binding(&mapping.binding)
-                    .map(|binding| &binding.provider)
-                    .or_else(|| {
-                        evidence
-                            .plan
-                            .binding_plan()
-                            .bindings()
-                            .iter()
-                            .find_map(|binding| {
-                                matches!(
-                                    evidence.plan.binding_plan().binding_authority(&binding.id),
-                                    Some(aos_ability_validate::BindingAuthorityKind::Teardown {
-                                        source_binding,
-                                        ..
-                                    }) if source_binding == &mapping.binding
-                                )
-                                .then_some(&binding.provider)
-                            })
-                    });
-                evidence
-                    .assignments
-                    .iter()
-                    .any(|assignment| Some(&assignment.provider) == provider)
-            }),
-            "native no-op evidence lacks a live assignment for a retained resource"
-        );
-        ensure!(
-            !evidence.transaction.0.as_str().is_empty(),
-            "native no-op transaction identity is empty"
-        );
-        self.retained
-            .as_mut()
-            .context("empty native transition has no selected retained transaction evidence")?
-            .verify_no_op(evidence)
-    }
 }
 
 #[cfg(test)]

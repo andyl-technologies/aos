@@ -20,7 +20,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use super::materialize::PinnedAbilitySidecar;
-use super::native_ability_fs::RootedDirectory;
+use super::protected_fs::RootedDirectory;
 
 /// Machine-global directory containing independently provisioned policy grants.
 pub const OPERATOR_POLICY_AUTHORITY_ROOT: &str = "/var/lib/aos/ability-authority/policy-sets";

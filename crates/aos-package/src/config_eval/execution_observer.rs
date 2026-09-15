@@ -38,7 +38,7 @@ use aos_ability_runtime::execution::{
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
-use super::native_ability_fs::RootedDirectory;
+use super::protected_fs::RootedDirectory;
 
 const CONFIG_PATH: &str = "/etc/aos/ability-execution-observer.json";
 const CONFIG_SCHEMA: &str = "aos.ability-execution-observer/v1";
@@ -53,12 +53,12 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Reports native execution boundaries through an explicitly enabled channel.
 #[derive(Debug)]
-pub(super) enum NativeExecutionBoundaryObserver {
+pub(super) enum AbilityExecutionBoundaryObserver {
     Disabled,
     Socket(SocketBoundaryObserver),
 }
 
-impl NativeExecutionBoundaryObserver {
+impl AbilityExecutionBoundaryObserver {
     /// Loads the fixed protected observer configuration when it exists.
     ///
     /// # Errors
@@ -148,7 +148,7 @@ impl NativeExecutionBoundaryObserver {
     }
 }
 
-impl ExecutionBoundaryObserver for NativeExecutionBoundaryObserver {
+impl ExecutionBoundaryObserver for AbilityExecutionBoundaryObserver {
     fn observe(
         &mut self,
         observation: ExecutionBoundaryObservation<'_>,
@@ -580,7 +580,7 @@ mod tests {
     fn absent_configuration_has_no_socket_side_effect() -> Result<()> {
         let temporary = TempDir::new()?;
         let missing = temporary.path().join("missing/config.json");
-        let observer = NativeExecutionBoundaryObserver::load_optional_from(
+        let observer = AbilityExecutionBoundaryObserver::load_optional_from(
             &missing,
             current_uid(),
             current_uid(),
@@ -589,7 +589,7 @@ mod tests {
 
         assert!(matches!(
             observer,
-            NativeExecutionBoundaryObserver::Disabled
+            AbilityExecutionBoundaryObserver::Disabled
         ));
         assert!(!temporary.path().join("missing").exists());
         assert!(!temporary.path().join("socket-root").exists());
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn protected_configuration_connects_to_the_exact_owner() -> Result<()> {
         let fixture = LoaderFixture::new()?;
-        let observer = NativeExecutionBoundaryObserver::load_from(
+        let observer = AbilityExecutionBoundaryObserver::load_from(
             &fixture.config,
             current_uid(),
             current_uid(),
@@ -623,7 +623,7 @@ mod tests {
 
         assert!(matches!(
             observer,
-            NativeExecutionBoundaryObserver::Socket(_)
+            AbilityExecutionBoundaryObserver::Socket(_)
         ));
         Ok(())
     }
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn protected_configuration_rejects_wrong_peer_credentials() -> Result<()> {
         let fixture = LoaderFixture::new()?;
-        let error = NativeExecutionBoundaryObserver::load_from(
+        let error = AbilityExecutionBoundaryObserver::load_from(
             &fixture.config,
             current_uid(),
             current_uid().saturating_add(1),
@@ -661,7 +661,7 @@ mod tests {
         let linked = safe_parent.join("linked.json");
         symlink(&target, &linked)?;
         assert!(
-            NativeExecutionBoundaryObserver::load_from(
+            AbilityExecutionBoundaryObserver::load_from(
                 &linked,
                 current_uid(),
                 current_uid(),
@@ -676,7 +676,7 @@ mod tests {
         let config = writable_parent.join("config.json");
         fs::write(&config, bytes)?;
         assert!(
-            NativeExecutionBoundaryObserver::load_from(
+            AbilityExecutionBoundaryObserver::load_from(
                 &config,
                 current_uid(),
                 current_uid(),

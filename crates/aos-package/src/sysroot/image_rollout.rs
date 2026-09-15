@@ -18,18 +18,10 @@ use super::{
 };
 
 mod ability;
-mod adapter;
 mod process;
 
 pub(super) use ability::retained_uki_entry_ids;
-pub(crate) use ability::{
-    AbilityRolloutOutcome, AbilityRolloutPhase, AbilityRolloutState, NativeAbRolloutBackend,
-    PhysicalRolloutObservation,
-};
-pub(crate) use adapter::{
-    NativeAbRolloutAdapter, NativeAbRolloutCatalog, SystemAbRolloutPlatform,
-    preflight_native_ab_rollout,
-};
+pub(crate) use ability::NativeAbRolloutBackend;
 
 const IMAGE_ROLLOUT_SCHEMA: &str = "aos.image-rollout/v1";
 
@@ -361,7 +353,7 @@ fn ensure_executor_replacement_is_settled(
     generations: impl IntoIterator<Item = (u32, PathBuf)>,
 ) -> Result<()> {
     for (number, generation_path) in generations {
-        if crate::config_eval::ability_store::generation_has_unfinished_transactions(
+        if crate::config_eval::transaction_store::generation_has_unfinished_transactions(
             &generation_path,
         )? {
             bail!(

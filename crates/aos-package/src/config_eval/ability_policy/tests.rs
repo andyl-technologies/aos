@@ -3,7 +3,7 @@
 use std::sync::{Arc, Barrier};
 
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregateId, IncarnationId, LocalKey, MethodReference,
+    AbilityValue, AccessMode, IncarnationId, LocalKey, MethodReference,
     ResourceAccess, ResourceId, RevisionId, TeardownBindingAuthorization,
 };
 use aos_ability_runtime::adapter::ResourceRevisionObservation;
@@ -13,10 +13,6 @@ use tempfile::TempDir;
 
 use super::storage::publish_authority_file;
 use super::*;
-use crate::config_eval::native_resource_map::{
-    NativeHttpConsumerObservation, NativeOutputLocator, NativeResourceMap, NativeResourceMapping,
-    NativeResourceQualification,
-};
 
 #[test]
 fn system_authority_paths_are_scoped_by_plan_and_transaction() {
@@ -237,9 +233,9 @@ impl AuthorityFixture {
             .expect("fixture binding");
         let observation =
             AbilityValue::new(serde_json::json!({"probe": "test"})).expect("bounded observation");
-        let evidence = ResourceAdmissionEvidence::new_with_revision_observation(
+        let evidence = ResourceAdmissionEvidence::new_with_provider_and_revision_observation(
             self.resource.clone(),
-            Some(self.assignment.incarnation.clone()),
+            self.assignment.clone(),
             revision,
             observation,
         );
@@ -642,113 +638,6 @@ fn expired_current_observations_fail_closed() {
 }
 
 #[test]
-fn native_no_op_requires_fresh_exact_grants_assignments_and_resource_revision() {
-    let fixture = AuthorityFixture::new();
-    let document = fixture.publish(
-        1,
-        1_000,
-        CurrentResourceState::Present {
-            revision: fixture.revision,
-        },
-    );
-    let resources = native_resource_map(&fixture);
-    let mut admission = fixture.admission_policy(&document);
-    admission
-        .authorize_native_no_op(
-            &fixture.plan,
-            std::slice::from_ref(&fixture.assignment),
-            &resources,
-        )
-        .expect("fresh exact no-op authority");
-
-    let drifted_revision = RevisionId(Sha256Digest::of_bytes("drifted revision"));
-    fixture.publish(
-        2,
-        1_000,
-        CurrentResourceState::Present {
-            revision: drifted_revision,
-        },
-    );
-    let error = admission
-        .authorize_native_no_op(
-            &fixture.plan,
-            std::slice::from_ref(&fixture.assignment),
-            &resources,
-        )
-        .expect_err("resource drift must reject a native no-op");
-    assert!(error.to_string().contains("revision differs"), "{error}");
-
-    CurrentAbilityAuthorityPublisher::for_test(
-        fixture.path.clone(),
-        fixture.trust_anchor.clone(),
-        fixture.owner,
-    )
-    .revoke()
-    .expect("revoke current no-op authority");
-    let error = admission
-        .authorize_native_no_op(
-            &fixture.plan,
-            std::slice::from_ref(&fixture.assignment),
-            &resources,
-        )
-        .expect_err("revoked grants must reject a native no-op");
-    assert!(
-        error
-            .to_string()
-            .contains("opening protected authority file")
-    );
-}
-
-#[test]
-fn linked_native_no_op_authorizes_the_exact_observed_stopped_or_absent_state() {
-    let stopped_fixture = AuthorityFixture::new();
-    let stopped = CurrentResourceState::Stopped {
-        revision: stopped_fixture.revision,
-    };
-    let document = stopped_fixture.publish(1, 1_000, stopped);
-    let mut admission = stopped_fixture.admission_policy(&document);
-    let stopped_observations = vec![CurrentResourceObservation {
-        resource: stopped_fixture.resource.clone(),
-        state: stopped,
-    }];
-    admission
-        .authorize_native_observed_no_op(
-            &stopped_fixture.plan,
-            std::slice::from_ref(&stopped_fixture.assignment),
-            &stopped_observations,
-        )
-        .expect("exact stopped union authority");
-
-    let divergent = CurrentResourceState::Divergent {
-        revision: stopped_fixture.revision,
-    };
-    stopped_fixture.publish(2, 1_000, divergent);
-    assert!(
-        admission
-            .authorize_native_observed_no_op(
-                &stopped_fixture.plan,
-                std::slice::from_ref(&stopped_fixture.assignment),
-                &stopped_observations,
-            )
-            .is_err()
-    );
-
-    let absent_fixture = AuthorityFixture::new();
-    let absent_document = absent_fixture.publish(1, 1_000, CurrentResourceState::Absent);
-    let mut absent_admission = absent_fixture.admission_policy(&absent_document);
-    absent_admission
-        .authorize_native_observed_no_op(
-            &absent_fixture.plan,
-            std::slice::from_ref(&absent_fixture.assignment),
-            &[CurrentResourceObservation {
-                resource: absent_fixture.resource.clone(),
-                state: CurrentResourceState::Absent,
-            }],
-        )
-        .expect("exact absent union authority");
-}
-
-#[test]
 fn publisher_rejects_cross_policy_binding_shadowing() {
     let fixture = AuthorityFixture::new();
     let binding = fixture.plan.binding_plan().bindings()[0].clone();
@@ -852,9 +741,9 @@ fn repair_transaction_remains_linked_after_health_converges() {
         .binding_plan()
         .binding(&operation.binding)
         .expect("fixture binding");
-    let evidence = ResourceAdmissionEvidence::new_with_revision_observation(
+    let evidence = ResourceAdmissionEvidence::new_with_provider_and_revision_observation(
         fixture.resource.clone(),
-        Some(fixture.assignment.incarnation.clone()),
+        fixture.assignment.clone(),
         ResourceRevisionObservation::Unknown,
         AbilityValue::new(serde_json::json!({"probe": "partial-effect"}))
             .expect("bounded observation"),
@@ -1106,23 +995,26 @@ fn foreign_resource_is_checked_against_its_own_provider_incarnation() {
     };
     let observation =
         AbilityValue::new(serde_json::json!({"probe": "foreign"})).expect("bounded observation");
-    let current = ResourceAdmissionEvidence::new_with_revision_observation(
+    let current = ResourceAdmissionEvidence::new_with_provider_and_revision_observation(
         foreign_resource.clone(),
-        Some(foreign_assignment.incarnation.clone()),
+        foreign_assignment.clone(),
         ResourceRevisionObservation::Absent,
         observation.clone(),
     );
 
-    require_current_resource_evidence(&document, &foreign_assignment, &access, &current)
+    require_current_resource_evidence(&document, &access, &current)
         .expect("foreign resource must use its own provider assignment");
 
-    let stale = ResourceAdmissionEvidence::new_with_revision_observation(
+    let mut stale_assignment = foreign_assignment;
+    stale_assignment.incarnation =
+        IncarnationId::new("stale-foreign-incarnation").expect("valid incarnation");
+    let stale = ResourceAdmissionEvidence::new_with_provider_and_revision_observation(
         foreign_resource,
-        Some(IncarnationId::new("stale-foreign-incarnation").expect("valid incarnation")),
+        stale_assignment,
         ResourceRevisionObservation::Absent,
         observation,
     );
-    let error = require_current_resource_evidence(&document, &foreign_assignment, &access, &stale)
+    let error = require_current_resource_evidence(&document, &access, &stale)
         .expect_err("stale foreign provider incarnation must fail closed");
     assert!(error.to_string().contains("checked handler"));
 }
@@ -1229,52 +1121,4 @@ fn competing_publishers_leave_the_highest_sequence_selected() {
 
 fn policy_fence() -> RevisionId {
     RevisionId(Sha256Digest::of_bytes("test policy fence"))
-}
-
-fn native_resource_map(fixture: &AuthorityFixture) -> NativeResourceMap {
-    let operation = &fixture.plan.operations()[0];
-    let binding = fixture
-        .plan
-        .binding_plan()
-        .binding(&operation.binding)
-        .expect("fixture binding");
-    let locator = NativeOutputLocator {
-        aggregate: AggregateId {
-            provider: fixture.resource.provider.clone(),
-            group: LocalKey::new("systemd").expect("valid aggregate group"),
-        },
-        interface: operation.interface.clone(),
-        port: LocalKey::new("unit").expect("valid output port"),
-        field_path: Vec::new(),
-    };
-    NativeResourceMap::new(
-        Sha256Digest::of_bytes("fixture desired state"),
-        vec![NativeResourceMapping {
-            resource: fixture.resource.clone(),
-            revision: fixture.revision,
-            owner_package: Sha256Digest::of_bytes("fixture package"),
-            binding: operation.binding.clone(),
-            implementation: binding.implementation.clone(),
-            qualification: NativeResourceQualification::SystemdService {
-                unit: "fixture.service".to_string(),
-                resource_reference: locator,
-                consumer_observation: Some(NativeHttpConsumerObservation {
-                    schema: NativeHttpConsumerObservation::SCHEMA.to_string(),
-                    endpoint: "127.0.0.1:18081".to_string(),
-                    authority: "fixture.invalid".to_string(),
-                    path: "/__aos/consumer".to_string(),
-                    expected_instance: binding.request.consumer.clone(),
-                    expected_controller_revision: fixture.revision,
-                    content_resource: ResourceId {
-                        provider: binding.request.consumer.clone(),
-                        key: LocalKey::new("content").expect("valid content key"),
-                    },
-                    expected_content_revision: RevisionId(Sha256Digest::of_bytes(
-                        "fixture content revision",
-                    )),
-                }),
-            },
-        }],
-    )
-    .expect("valid fixture native resource map")
 }

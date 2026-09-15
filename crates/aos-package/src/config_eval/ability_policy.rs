@@ -596,91 +596,7 @@ where
         Ok(())
     }
 
-    /// Revalidates all authority needed to retain an unchanged native mapping.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the publication is stale or revoked, its checked
-    /// bindings or live assignments changed, or any mapped resource is absent
-    /// or has a different observed revision.
-    pub(crate) fn authorize_native_no_op(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        assignments: &[ProviderAssignment],
-        resources: &super::native_resource_map::NativeResourceMap,
-    ) -> Result<(), CurrentAuthorityError> {
-        let current = self.refresh()?;
-        if plan.id() != self.commitment.plan {
-            return Err(invalid("native no-op uses another checked plan"));
-        }
-        if current.bindings != plan.binding_plan().bindings() {
-            return Err(invalid(
-                "current policy bindings differ from the checked no-op plan",
-            ));
-        }
-        if current.provider_assignments != assignments {
-            return Err(invalid(
-                "current provider assignments differ from the no-op observations",
-            ));
-        }
-        if current.resource_observations.len() != resources.entries.len() {
-            return Err(invalid(
-                "current resource observations differ from the retained native map",
-            ));
-        }
-        for mapping in &resources.entries {
-            let observation = current
-                .resource_observations
-                .binary_search_by(|observation| observation.resource.cmp(&mapping.resource))
-                .ok()
-                .map(|index| &current.resource_observations[index])
-                .ok_or_else(|| invalid("current authority lacks a retained native resource"))?;
-            if observation.state
-                != (CurrentResourceState::Present {
-                    revision: mapping.revision,
-                })
-            {
-                return Err(invalid(
-                    "current resource revision differs from the retained native map",
-                ));
-            }
-        }
-        Ok(())
-    }
 
-    /// Revalidates one exact freshly observed union for linked recovery.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the publication is stale or revoked, its checked
-    /// bindings or assignments changed, or its complete resource states differ.
-    pub(crate) fn authorize_native_observed_no_op(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        assignments: &[ProviderAssignment],
-        resources: &[CurrentResourceObservation],
-    ) -> Result<(), CurrentAuthorityError> {
-        let current = self.refresh()?;
-        if plan.id() != self.commitment.plan {
-            return Err(invalid("native no-op uses another checked plan"));
-        }
-        if current.bindings != plan.binding_plan().bindings() {
-            return Err(invalid(
-                "current policy bindings differ from the checked no-op plan",
-            ));
-        }
-        if current.provider_assignments != assignments {
-            return Err(invalid(
-                "current provider assignments differ from the no-op observations",
-            ));
-        }
-        if current.resource_observations != resources {
-            return Err(invalid(
-                "current resource observations differ from the linked recovery union",
-            ));
-        }
-        Ok(())
-    }
 }
 
 /// Holds one protected native authority publication through adapter dispatch.
@@ -814,40 +730,6 @@ where
             fence,
             expected_plan: self.commitment.plan,
         })
-    }
-}
-
-impl super::native_dispatch::NativeAuthorityRefresh for PublishingNativeAdmissionPolicy {
-    fn refresh_authority(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        assignments: &[ProviderAssignment],
-        resources: Vec<CurrentResourceObservation>,
-    ) -> Result<(), Self::Error> {
-        self.publish_authority(plan, assignments, resources)
-            .map(|_| ())
-    }
-}
-
-impl super::native_dispatch::NativeNoOpAdmissionPolicy for PublishingNativeAdmissionPolicy {
-    fn authorize_no_op(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        assignments: &[ProviderAssignment],
-        resources: &super::native_resource_map::NativeResourceMap,
-    ) -> Result<(), Self::Error> {
-        self.admission_mut()?
-            .authorize_native_no_op(plan, assignments, resources)
-    }
-
-    fn authorize_observed_no_op(
-        &mut self,
-        plan: &CheckedEffectPlan,
-        assignments: &[ProviderAssignment],
-        resources: &[CurrentResourceObservation],
-    ) -> Result<(), Self::Error> {
-        self.admission_mut()?
-            .authorize_native_observed_no_op(plan, assignments, resources)
     }
 }
 
@@ -985,21 +867,35 @@ fn authorize_current_resources(
     }
 
     for (access, evidence) in operation.accesses.iter().zip(resources) {
-        require_current_resource_evidence(current, assignment, access, evidence)?;
+        require_current_resource_evidence(current, access, evidence)?;
     }
     Ok(())
 }
 
 fn require_current_resource_evidence(
     current: &CurrentAbilityAuthorityDocument,
-    assignment: &ProviderAssignment,
     access: &ResourceAccess,
     evidence: &ResourceAdmissionEvidence,
 ) -> Result<(), CurrentAuthorityError> {
     if evidence.resource() != &access.resource {
         return Err(invalid("resource evidence names another checked resource"));
     }
-    if evidence.provider_incarnation() != Some(&assignment.incarnation) {
+    let assignment = evidence.provider_assignment().ok_or_else(|| {
+        invalid("resource evidence does not retain its exact provider assignment")
+    })?;
+    if assignment.provider != access.resource.provider
+        || evidence.provider_incarnation() != Some(&assignment.incarnation)
+        || current
+            .provider_assignments
+            .binary_search_by(|candidate| {
+                candidate
+                    .provider
+                    .cmp(&assignment.provider)
+                    .then_with(|| candidate.interface.cmp(&assignment.interface))
+            })
+            .ok()
+            .is_none_or(|index| current.provider_assignments[index] != *assignment)
+    {
         return Err(invalid(
             "resource evidence differs from the checked handler assignment",
         ));

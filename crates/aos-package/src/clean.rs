@@ -262,7 +262,7 @@ where
                 continue;
             }
             let generation_path = profile.join(format!("gen-{}", generation.number));
-            if crate::config_eval::ability_store::generation_must_be_retained(&generation_path)? {
+            if crate::config_eval::transaction_store::generation_must_be_retained(&generation_path)? {
                 continue;
             }
             removed.push(generation.number);
@@ -333,7 +333,7 @@ where
     }
     for generation in &journal.removed {
         let path = profile.join(format!("gen-{generation}"));
-        if crate::config_eval::ability_store::generation_must_be_retained(&path)? {
+        if crate::config_eval::transaction_store::generation_must_be_retained(&path)? {
             bail!(
                 "configuration generation {generation} contains unfinished ability recovery work"
             );
