@@ -313,11 +313,15 @@ pub fn kubernetes_object_interface() -> Result<InterfaceDocument> {
         .map(|name| {
             let method = LocalKey::new(name)?;
             let descriptor = MethodDescriptor {
-                semantics: MethodSemantics::ordinary(if name == "observe" {
-                    AccessMode::Read
+                semantics: if name == "delete" {
+                    MethodSemantics::provider_stop()
                 } else {
-                    AccessMode::ExclusiveWrite
-                }),
+                    MethodSemantics::ordinary(if name == "observe" {
+                        AccessMode::Read
+                    } else {
+                        AccessMode::ExclusiveWrite
+                    })
+                },
                 parameters: ValueSchema::Boolean,
                 target_resource: interface_name.clone(),
                 outputs: BTreeMap::from([(
