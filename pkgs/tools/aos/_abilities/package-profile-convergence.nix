@@ -11,6 +11,9 @@
   consumerInstance = "package-profile-convergence";
   specificationRequest = "package-profile-specification";
   evaluationReadiness = resultOf "configuration-evaluation-lifecycle" "service-resource";
+  hostStage =
+    config.aos.abilities.environment != null
+    && config.aos.abilities.environment.stage == "host";
 
   specification = serviceManagement.forConfiguration {
     inherit serviceTypes consumerInstance;
@@ -188,7 +191,7 @@ in {
         builtins.map (contribution: contribution.declarations) contributions
       );
     }
-    {
+    (lib.mkIf hostStage {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
         ++ builtins.map (contribution: contribution.configured) (
@@ -197,6 +200,6 @@ in {
           else builtins.tail contributions
         )
       );
-    }
+    })
   ];
 }
