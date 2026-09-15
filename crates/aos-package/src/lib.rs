@@ -1490,8 +1490,14 @@ pub enum AttestCommand {
         #[arg(long = "catalog-file")]
         catalog_files: Vec<PathBuf>,
         /// Expected PCR 15 value before package measurements
-        #[arg(long)]
+        #[arg(long, conflicts_with = "pcr15_baseline_file")]
         pcr15_baseline: Option<String>,
+        /// File containing the expected PCR 15 value before package measurements
+        #[arg(long, conflicts_with = "pcr15_baseline")]
+        pcr15_baseline_file: Option<PathBuf>,
+        /// Atomically replace this file with the JSON verification result
+        #[arg(long, requires = "json")]
+        result_file: Option<PathBuf>,
         /// Generation-attestation JSON record to verify after CEL replay
         #[arg(long)]
         generation_attestation: Option<PathBuf>,
@@ -4203,12 +4209,25 @@ pub async fn run(
                     quote_identity_files,
                     catalog_files,
                     pcr15_baseline,
+                    pcr15_baseline_file,
+                    result_file,
                     generation_attestation,
                     generation_policy_file,
                     rederived_manifest,
                     ..
                 },
         } => {
+            if let Some(path) = result_file.as_deref() {
+                clear_attestation_result(path)?;
+            }
+            let pcr15_baseline = match (pcr15_baseline, pcr15_baseline_file) {
+                (Some(value), None) => Some(value.clone()),
+                (None, Some(path)) => Some(read_attestation_baseline(path)?),
+                (None, None) => None,
+                (Some(_), Some(_)) => {
+                    bail!("inline and file-backed PCR 15 baselines are mutually exclusive")
+                }
+            };
             let measurement = read_attestation_measurement(
                 pcr15,
                 quote_dir,
@@ -4221,10 +4240,11 @@ pub async fn run(
                 event_log,
                 measurement,
                 catalog_files,
-                pcr15_baseline,
+                &pcr15_baseline,
                 generation_attestation.as_deref(),
                 generation_policy_file.as_deref(),
                 rederived_manifest.as_deref(),
+                result_file.as_deref(),
                 printer,
             )
         }
@@ -4312,6 +4332,7 @@ pub async fn run(
             AttestationMeasurement::Pcr15(pcr15.clone()),
             &[],
             pcr15_baseline,
+            None,
             None,
             None,
             None,
@@ -4511,6 +4532,7 @@ fn run_verify_package_attestation(
     generation_attestation: Option<&Path>,
     generation_policy_file: Option<&Path>,
     rederived_manifest: Option<&Path>,
+    result_file: Option<&Path>,
     printer: &Printer,
 ) -> Result<()> {
     let (pcr15, trust, quoted_generation_quote) = match measurement {
@@ -4614,6 +4636,9 @@ fn run_verify_package_attestation(
                 output["quote_identity_label"] = serde_json::json!(anchor);
             }
         }
+        if let Some(path) = result_file {
+            write_attestation_result(path, &output)?;
+        }
         printer.json(&output);
     } else {
         let mut message = format!(
@@ -4648,6 +4673,95 @@ fn run_verify_package_attestation(
         printer.success(&message);
     }
     Ok(())
+}
+
+fn read_attestation_baseline(path: &Path) -> Result<String> {
+    let baseline = fs::read_to_string(path)
+        .with_context(|| format!("reading package attestation baseline {}", path.display()))?;
+    let baseline = baseline.trim();
+    if baseline.is_empty() {
+        bail!(
+            "package attestation baseline file is empty: {}",
+            path.display()
+        );
+    }
+
+    Ok(baseline.to_string())
+}
+
+fn clear_attestation_result(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("package attestation result path must have a parent directory")?;
+
+    match fs::remove_file(path) {
+        Ok(()) => std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| {
+                format!(
+                    "syncing package attestation result directory {} after invalidation",
+                    parent.display()
+                )
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!("invalidating prior package attestation result {}", path.display())
+        }),
+    }
+}
+
+fn write_attestation_result(path: &Path, value: &serde_json::Value) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("package attestation result path must have a parent directory")?;
+    let mut bytes = serde_json::to_vec(value).context("encoding package attestation result")?;
+    bytes.push(b'\n');
+
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "creating package attestation result beside {}",
+            path.display()
+        )
+    })?;
+    temporary
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o644))
+        .with_context(|| {
+            format!(
+                "setting package attestation result mode for {}",
+                path.display()
+            )
+        })?;
+    temporary
+        .write_all(&bytes)
+        .with_context(|| format!("writing package attestation result for {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("syncing package attestation result for {}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| {
+            format!(
+                "atomically replacing package attestation result {}",
+                path.display()
+            )
+        })?;
+
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| {
+            format!(
+                "syncing package attestation result directory {}",
+                parent.display()
+            )
+        })
 }
 
 fn verify_generation_attestation_cli(
@@ -8060,5 +8174,45 @@ contributable = ["allowedTCPPorts"]
         fs::write(z_dir.join("zstd.toml"), "test").unwrap();
 
         assert_eq!(count_packages_in_dir(tmp.path()), 3);
+    }
+
+    #[test]
+    fn attestation_baseline_file_requires_bytes_and_trims_line_endings() {
+        let tmp = TempDir::new().unwrap();
+        let baseline = tmp.path().join("baseline");
+
+        fs::write(&baseline, "sha256:abcd\r\n").unwrap();
+        assert_eq!(read_attestation_baseline(&baseline).unwrap(), "sha256:abcd");
+
+        fs::write(&baseline, "").unwrap();
+        assert!(read_attestation_baseline(&baseline).is_err());
+
+        fs::write(&baseline, " \r\n\t").unwrap();
+        assert!(read_attestation_baseline(&baseline).is_err());
+    }
+
+    #[test]
+    fn attestation_result_atomically_replaces_complete_json() {
+        let tmp = TempDir::new().unwrap();
+        let result = tmp.path().join("result.json");
+        fs::write(&result, "stale").unwrap();
+
+        write_attestation_result(&result, &serde_json::json!({"verified": true})).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&result).unwrap(),
+            "{\"verified\":true}\n"
+        );
+    }
+
+    #[test]
+    fn attestation_result_invalidation_removes_stale_success() {
+        let tmp = TempDir::new().unwrap();
+        let result = tmp.path().join("result.json");
+        fs::write(&result, "{\"verified\":true}\n").unwrap();
+
+        clear_attestation_result(&result).unwrap();
+
+        assert!(!result.exists());
     }
 }
