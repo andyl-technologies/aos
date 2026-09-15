@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    Binding, BindingId, ImplementationKind, PROVIDER_STATE_ADOPTION_V1, PackageDocument, PlanId,
+    Binding, BindingId, PROVIDER_STATE_ADOPTION_V1, PackageDocument, PlanId,
     ProviderAdoptionEndpoint, ProviderImplementation, ResourceLifetime, RevisionId,
     TransitionAuthorizationDocument, VersionedDocument, encode_canonical,
 };
@@ -388,10 +388,7 @@ fn validate_adoption_endpoint(
         })?;
     if implementation.state_format.as_ref() != Some(&endpoint.state_format)
         || endpoint.state_format.artifact != endpoint.implementation.artifact
-        || !matches!(
-            implementation.implementation,
-            ImplementationKind::PureComposition { .. }
-        )
+        || implementation.provider_module.is_none()
         || context.interface(&endpoint.interface).is_none()
         || !implementation
             .owns_resource_kinds
@@ -416,19 +413,16 @@ fn validate_adoption_endpoint(
                 "provider adoption {label} terminal implementation is not authenticated by its package"
             ))
         })?;
-    let exact_handler = match &handler.implementation {
-        ImplementationKind::TerminalHandler { handler } => {
-            endpoint.handler_implementation.handler.as_ref() == Some(handler)
-                && handler_package
-                    .implementation
-                    .handlers
-                    .get(handler)
-                    .is_some_and(|descriptor| {
-                        descriptor.artifact == endpoint.handler_implementation.artifact
-                    })
-        }
-        ImplementationKind::PureComposition { .. } => false,
-    };
+    let exact_handler = handler.handler.as_ref().is_some_and(|handler| {
+        endpoint.handler_implementation.handler.as_ref() == Some(handler)
+            && handler_package
+                .implementation
+                .handlers
+                .get(handler)
+                .is_some_and(|descriptor| {
+                    descriptor.artifact == endpoint.handler_implementation.artifact
+                })
+    });
     let exact_resource_method = context
         .interface(&endpoint.handler_interface)
         .and_then(|document| document.interface.methods.get(&endpoint.handler_method))
@@ -712,25 +706,13 @@ fn validate_teardown_provider(
             "teardown provider is not an exact prior enabled package instance".to_string(),
         ));
     }
-    let valid_constructor = match &implementation.implementation {
-        ImplementationKind::PureComposition {
-            compose_entry,
-            transition_entry,
-        } => {
-            authorization.implementation.handler.is_none()
-                && retained_package.is_some_and(|package| {
-                    package.module_entry_points.get(compose_entry)
-                        == Some(&authorization.implementation.artifact)
-                        && package.module_entry_points.get(transition_entry)
-                            == Some(&authorization.implementation.artifact)
-                        && package.exports.iter().any(|export| {
-                            export.interface == implementation.interface
-                                && export.implementation == authorization.implementation.descriptor
-                        })
-                })
-        }
-        ImplementationKind::TerminalHandler { .. } => false,
-    };
+    let valid_constructor = implementation.provider_module.is_some()
+        && retained_package.is_some_and(|package| {
+            package.exports.iter().any(|export| {
+                export.interface == implementation.interface
+                    && export.implementation == authorization.implementation.descriptor
+            })
+        });
     if !valid_constructor {
         return Err(TransitionAuthorityError::InvalidDocument(
             "teardown provider is not an exact retained operator-enabled constructor".to_string(),
@@ -997,11 +979,11 @@ mod tests {
     use aos_ability_model::document::{DesiredInstance, PackageSubject};
     use aos_ability_model::identity::compare_request_ids;
     use aos_ability_model::{
-        AbilityActivationMode, AccessMode, AggregateId, BindingRequest, ContributionPermission,
-        ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey, PackageImplementation,
-        ProviderAdoptionAuthorization, ProviderImplementation, ProviderImplementationReference,
-        ProviderStateFormat, RequiredFeature, ResourcePermission, ScopePath,
-        TeardownBindingAuthorization, ValueSchema,
+        AbilityActivationMode, AbilityValue, AccessMode, AggregateId, BindingRequest,
+        ContributionPermission, ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey,
+        ModuleLocator, PackageImplementation, ProviderAdoptionAuthorization,
+        ProviderImplementation, ProviderImplementationReference, ProviderStateFormat, RelativePath,
+        RequiredFeature, ResourcePermission, ScopePath, TeardownBindingAuthorization, ValueSchema,
     };
 
     use super::*;
@@ -1645,9 +1627,9 @@ mod tests {
             interface: selected_interface.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
-            implementation: ImplementationKind::TerminalHandler {
-                handler: handler_key.clone(),
-            },
+            desired_schema: None,
+            provider_module: None,
+            handler: Some(handler_key.clone()),
             owns_resource_kinds: Vec::new(),
             state_format: None,
         };
@@ -1676,10 +1658,12 @@ mod tests {
             interface: owner_interface_key.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
-            implementation: ImplementationKind::PureComposition {
-                compose_entry: key("compose"),
-                transition_entry: key("transition"),
-            },
+            desired_schema: None,
+            provider_module: Some(ModuleLocator {
+                artifact: artifact.clone(),
+                path: RelativePath::new("default.nix").expect("valid module path"),
+            }),
+            handler: None,
             owns_resource_kinds: vec![selected_interface.name.clone()],
             state_format: Some(state_format.clone()),
         };
@@ -1718,10 +1702,6 @@ mod tests {
                 },
             ],
             requirements: Vec::new(),
-            module_entry_points: BTreeMap::from([
-                (key("compose"), artifact.clone()),
-                (key("transition"), artifact.clone()),
-            ]),
             implementation: PackageImplementation {
                 providers: vec![selected_implementation, owner_implementation],
                 handlers: BTreeMap::from([(
@@ -1747,6 +1727,9 @@ mod tests {
             configuration: None,
         }];
         fixture.binding_inputs.packages = vec![package];
+        fixture.binding_inputs.desired_state.child_requests[0].package =
+            key("multi-export-provider");
+        fixture.binding_plan.requests[0].package = key("multi-export-provider");
         if select_owner {
             let handler_scope = ScopePath::new(vec![provider.key.clone(), key("nested")])
                 .expect("nested owner scope");
@@ -1772,6 +1755,7 @@ mod tests {
                 revision: RevisionId(Sha256Digest::of_bytes("owner revision")),
             };
             let owner_request = BindingRequest {
+                package: key("multi-export-provider"),
                 id: aos_ability_model::RequestId {
                     consumer: provider.clone(),
                     scope: ScopePath::root(),
@@ -1781,6 +1765,8 @@ mod tests {
                 methods: vec![key("observe")],
                 guarantees: Vec::new(),
                 lifetime: aos_ability_model::ResourceLifetime::Persistent,
+                parameters: AbilityValue::new(serde_json::json!(true))
+                    .expect("owner request parameters must be bounded"),
             };
             let policy_revision = fixture.binding_plan.policy_revision;
             let owner_binding = Binding {

@@ -512,6 +512,7 @@ impl CompositionEvaluator for TransitionTranscriptEvaluator<'_> {
     fn evaluate(
         &mut self,
         implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {

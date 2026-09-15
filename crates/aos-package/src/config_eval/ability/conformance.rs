@@ -9,8 +9,8 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use aos_ability_model::value::ValueExpression;
 use aos_ability_model::{
-    AbilityValue, ArtifactReference, DiagnosticCode, ImplementationKind, InterfaceKey,
-    InterfaceName, LocalKey, ProviderImplementation, ValueSchema,
+    AbilityValue, ArtifactReference, DiagnosticCode, InterfaceKey, InterfaceName, LocalKey,
+    ModuleLocator, ProviderImplementation, RelativePath, ValueSchema,
 };
 use aos_ability_validate::validate_value;
 use aos_contract::Sha256Digest;
@@ -50,6 +50,7 @@ enum ExpectedOutcome {
 struct ConformanceFixture {
     evaluator: RestrictedAbilityEvaluator,
     implementation: ProviderImplementation,
+    module: ModuleLocator,
     corpus: Corpus,
 }
 
@@ -118,9 +119,16 @@ fn conformance_fixture() -> Result<Option<ConformanceFixture>> {
         Default::default(),
     )?;
 
+    let implementation = implementation_at(&fixture_path, fixture_nar_hash);
+    let module = ModuleLocator {
+        artifact: implementation.artifact.clone(),
+        path: RelativePath::new("default.nix")?,
+    };
+
     Ok(Some(ConformanceFixture {
         evaluator,
-        implementation: implementation_at(&fixture_path, fixture_nar_hash),
+        implementation,
+        module,
         corpus,
     }))
 }
@@ -151,6 +159,7 @@ fn run_evaluator_case(fixture: &ConformanceFixture, case: &BehaviorCase) {
     .unwrap();
     let result = fixture.evaluator.evaluate::<Value>(
         &fixture.implementation,
+        &fixture.module,
         AbilityEntryPoint::Compose,
         &arguments,
     );
@@ -223,10 +232,9 @@ fn implementation_at(store_path: &str, nar_hash: Sha256Digest) -> ProviderImplem
             closure: digest('3'),
         },
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: key("compose"),
-            transition_entry: key("transition"),
-        },
+        desired_schema: None,
+        provider_module: None,
+        handler: None,
         owns_resource_kinds: Vec::new(),
         state_format: None,
     }

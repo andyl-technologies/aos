@@ -110,15 +110,12 @@ pub(super) fn validate_package_document(
         );
     }
 
-    let declares_effects = !package.ownership.is_empty()
-        || !package.implementation.handlers.is_empty()
-        || package.implementation.providers.iter().any(|provider| {
-            !provider.owns_resource_kinds.is_empty()
-                || matches!(
-                    provider.implementation,
-                    aos_ability_model::ImplementationKind::TerminalHandler { .. }
-                )
-        });
+    let declares_effects =
+        !package.ownership.is_empty()
+            || !package.implementation.handlers.is_empty()
+            || package.implementation.providers.iter().any(|provider| {
+                !provider.owns_resource_kinds.is_empty() || provider.handler.is_some()
+            });
     if package.activation_mode == aos_ability_model::AbilityActivationMode::ContractsOnly
         && declares_effects
     {
@@ -177,10 +174,7 @@ pub(super) fn validate_package_document(
         );
         if let Some(state_format) = &provider.state_format {
             let state_format_path = provider_root.child("state_format");
-            if !matches!(
-                provider.implementation,
-                aos_ability_model::ImplementationKind::PureComposition { .. }
-            ) {
+            if provider.provider_module.is_none() {
                 push_diagnostic(
                     diagnostics,
                     diagnostic(
@@ -188,8 +182,7 @@ pub(super) fn validate_package_document(
                         DiagnosticClass::InvalidContract,
                         DiagnosticPhase::Binding,
                         state_format_path.components().to_vec(),
-                        "provider state format requires a pure-composition implementation"
-                            .to_string(),
+                        "provider state format requires a selected provider module".to_string(),
                     ),
                 );
             }

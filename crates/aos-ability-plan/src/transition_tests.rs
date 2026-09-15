@@ -41,6 +41,7 @@ impl CompositionEvaluator for EmptyTransitionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -58,6 +59,7 @@ impl CompositionEvaluator for FailingTransitionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         _input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -1118,6 +1120,7 @@ impl CompositionEvaluator for RootRetirementEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -1403,6 +1406,7 @@ impl CompositionEvaluator for LifecycleUpgradeEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -1781,16 +1785,13 @@ fn pure_service_package(
     module: ArtifactReference,
     payload: ArtifactReference,
 ) -> PackageDocument {
-    let compose_entry = key("compose");
-    let transition_entry = key("transition");
     let implementation = ProviderImplementation {
         interface: interface.clone(),
         artifact: module.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: compose_entry.clone(),
-            transition_entry: transition_entry.clone(),
-        },
+        desired_schema: None,
+        provider_module: Some(module_locator(module.clone())),
+        handler: None,
         owns_resource_kinds: Vec::new(),
         state_format: None,
     };
@@ -1817,10 +1818,6 @@ fn pure_service_package(
             implementation: descriptor,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (compose_entry, module.clone()),
-            (transition_entry, module),
-        ]),
         implementation: PackageImplementation {
             providers: vec![implementation],
             handlers: BTreeMap::new(),
@@ -1858,7 +1855,6 @@ fn terminal_package(
             implementation: descriptor,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::new(),
         implementation: PackageImplementation {
             providers: vec![provider],
             handlers: BTreeMap::from([(handler_key, handler)]),
@@ -1995,6 +1991,8 @@ fn lifecycle_planning_snapshot(
         ),
     };
     let service_request = BindingRequest {
+        package: aos_ability_model::LocalKey::new("test-package")
+            .expect("valid test package provenance"),
         id: RequestId {
             consumer: application.clone(),
             scope: ScopePath::root(),
@@ -2004,8 +2002,11 @@ fn lifecycle_planning_snapshot(
         methods: vec![key("start")],
         guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
+        parameters: ability_value(serde_json::json!({"unit": "example.service"})),
     };
     let manager_request = BindingRequest {
+        package: aos_ability_model::LocalKey::new("test-package")
+            .expect("valid test package provenance"),
         id: if operator_enabled {
             crate::child_request_id(service, manager_alias)
                 .expect("enabled root child request must be in scope")
@@ -2020,6 +2021,7 @@ fn lifecycle_planning_snapshot(
         methods: vec![key("observe"), key("start")],
         guarantees: stage_guarantees.clone(),
         lifetime: ResourceLifetime::Instance,
+        parameters: ability_value(serde_json::json!({"unit": "example.service"})),
     };
     let environment_digest = environment
         .content_digest()
@@ -2213,20 +2215,12 @@ fn lifecycle_planning_snapshot(
                 .controller_group,
             key("service")
         );
-        let ImplementationKind::PureComposition {
-            compose_entry,
-            transition_entry,
-        } = &implementation.implementation
-        else {
-            panic!("enabled root must be a pure implementation");
-        };
         assert!(selection.implementation.handler.is_none());
         assert_eq!(
-            package.module_entry_points.get(compose_entry),
-            Some(&selection.implementation.artifact)
-        );
-        assert_eq!(
-            package.module_entry_points.get(transition_entry),
+            implementation
+                .provider_module
+                .as_ref()
+                .map(|module| &module.artifact),
             Some(&selection.implementation.artifact)
         );
         assert!(selection.provider_grant.methods.iter().all(|method| {
@@ -2348,6 +2342,7 @@ impl CompositionEvaluator for PipelineTransitionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -2500,6 +2495,7 @@ impl CompositionEvaluator for LifecycleCompositionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -2530,6 +2526,7 @@ impl CompositionEvaluator for EmptyCompositionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -2564,16 +2561,13 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         .implementation
         .artifact
         .clone();
-    let compose_entry = key("compose");
-    let transition_entry = key("transition");
     let pure_implementation = ProviderImplementation {
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: compose_entry.clone(),
-            transition_entry: transition_entry.clone(),
-        },
+        desired_schema: None,
+        provider_module: Some(module_locator(artifact.clone())),
+        handler: None,
         owns_resource_kinds: Vec::new(),
         state_format: None,
     };
@@ -2602,10 +2596,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             implementation: pure_descriptor,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (compose_entry, artifact.clone()),
-            (transition_entry, artifact.clone()),
-        ]),
         implementation: PackageImplementation {
             providers: vec![pure_implementation],
             handlers: BTreeMap::new(),
@@ -2620,9 +2610,9 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::TerminalHandler {
-            handler: handler_key.clone(),
-        },
+        desired_schema: None,
+        provider_module: None,
+        handler: Some(handler_key.clone()),
         owns_resource_kinds: vec![interface.name.clone()],
         state_format: None,
     };
@@ -2652,7 +2642,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             implementation: terminal_reference.descriptor,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::new(),
         implementation: PackageImplementation {
             providers: vec![terminal_implementation],
             handlers: BTreeMap::from([(
@@ -2722,6 +2711,8 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let mut candidates = Vec::new();
     for (name, consumer, provider, pure) in request_specs {
         let request = BindingRequest {
+            package: aos_ability_model::LocalKey::new("test-package")
+                .expect("valid test package provenance"),
             id: RequestId {
                 consumer: consumer.clone(),
                 scope: ScopePath::root(),
@@ -2731,6 +2722,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             methods: vec![key("observe")],
             guarantees: Vec::new(),
             lifetime: ResourceLifetime::Instance,
+            parameters: ability_value(serde_json::json!(true)),
         };
         let permission = ResourcePermission {
             resource: resource.clone(),
@@ -2930,6 +2922,17 @@ fn transition_fragment_value(
         serde_json::to_value(fragment).map_err(|error| EvaluationError::new(error.to_string()))?,
     )
     .map_err(|error| EvaluationError::new(error.to_string()))
+}
+
+fn module_locator(artifact: ArtifactReference) -> ModuleLocator {
+    ModuleLocator {
+        artifact,
+        path: RelativePath::new("default.nix").expect("valid test module path"),
+    }
+}
+
+fn ability_value(value: serde_json::Value) -> AbilityValue {
+    AbilityValue::new(value).expect("test value must be canonical and bounded")
 }
 
 fn key(value: &str) -> LocalKey {

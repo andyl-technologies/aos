@@ -15,7 +15,7 @@ use crate::interface::{
     GuaranteeKey, OutputDescriptor, ProviderImplementationReference, ValuePhase,
 };
 use crate::value::{
-    OperationResultReference, ResourceLifetime, ResourceReference, ValueExpression,
+    AbilityValue, OperationResultReference, ResourceLifetime, ResourceReference, ValueExpression,
 };
 
 /// Identifies one binding within a canonical binding plan.
@@ -108,6 +108,8 @@ pub struct AuthorityGrant {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BindingRequest {
+    /// Identifies the package carrier that authored this request.
+    pub package: LocalKey,
     /// Identifies the consuming instance and local request.
     pub id: RequestId,
     /// Lists exact accepted public descriptors in policy order.
@@ -118,6 +120,8 @@ pub struct BindingRequest {
     pub guarantees: Vec<GuaranteeKey>,
     /// Defines the longest resource lifetime the consumer requests.
     pub lifetime: ResourceLifetime,
+    /// Carries the typed consumer value supplied to the selected provider.
+    pub parameters: AbilityValue,
 }
 
 /// Binds one request to an exact provider under separate caller/provider grants.

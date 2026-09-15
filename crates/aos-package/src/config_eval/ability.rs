@@ -15,10 +15,10 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, DiagnosticCode, ImplementationKind,
-    LocalKey, ProviderImplementation, ProviderImplementationReference,
+    ABILITY_LIMITS_V1, AbilityValue, DiagnosticCode, LocalKey, ModuleLocator,
+    ProviderImplementation, ProviderImplementationReference,
 };
 use aos_ability_plan::{CompositionEvaluator, EvaluationError};
 use base64::Engine as _;
@@ -249,6 +249,7 @@ impl RestrictedAbilityEvaluator {
     pub fn evaluate<T>(
         &self,
         implementation: &ProviderImplementation,
+        module: &ModuleLocator,
         selected: AbilityEntryPoint,
         arguments: &AbilityValue,
     ) -> Result<T>
@@ -259,14 +260,18 @@ impl RestrictedAbilityEvaluator {
             implementation.artifact.store_path.len() <= ABILITY_LIMITS_V1.max_string_bytes as usize,
             "ability artifact store path exceeds the version-1 string limit"
         );
-        let entry = selected_entry(implementation, selected)?;
+        ensure!(
+            implementation.provider_module.as_ref() == Some(module),
+            "provider module does not match the selected implementation"
+        );
+        let entry = selected_entry(selected)?;
         let implementation = ProviderImplementationReference {
             descriptor: implementation.descriptor_digest()?,
             artifact: implementation.artifact.clone(),
-            handler: None,
+            handler: implementation.handler.clone(),
         };
 
-        self.evaluate_reference(&implementation, entry, arguments)
+        self.evaluate_reference(&implementation, module, &entry, arguments)
     }
 
     /// Evaluates one exact pure implementation reference and declared entry.
@@ -285,6 +290,7 @@ impl RestrictedAbilityEvaluator {
     pub fn evaluate_reference<T>(
         &self,
         implementation: &ProviderImplementationReference,
+        module: &ModuleLocator,
         entry: &LocalKey,
         arguments: &AbilityValue,
     ) -> Result<T>
@@ -292,16 +298,16 @@ impl RestrictedAbilityEvaluator {
         T: DeserializeOwned,
     {
         ensure!(
-            implementation.handler.is_none(),
-            "terminal provider implementation references have no Nix ability entry point"
-        );
-        ensure!(
             implementation.artifact.store_path.len() <= ABILITY_LIMITS_V1.max_string_bytes as usize,
             "ability artifact store path exceeds the version-1 string limit"
         );
-        let root = store_root_and_suffix(Path::new(&implementation.artifact.store_path))?.0;
-        let allowed_uri = artifact_allowed_uri(&root, &implementation.artifact.nar_hash)?;
-        let expression = render_expression(&implementation.artifact, entry, arguments)?;
+        ensure!(
+            module.artifact.store_path.len() <= ABILITY_LIMITS_V1.max_string_bytes as usize,
+            "ability module artifact store path exceeds the version-1 string limit"
+        );
+        let root = store_root_and_suffix(Path::new(&module.artifact.store_path))?.0;
+        let allowed_uri = artifact_allowed_uri(&root, &module.artifact.nar_hash)?;
+        let expression = render_expression(module, entry, arguments)?;
         ensure!(
             expression.len() <= self.limits.expression_bytes,
             "ability expression exceeds the {} byte limit",
@@ -549,10 +555,11 @@ impl CompositionEvaluator for RestrictedAbilityEvaluator {
     fn evaluate(
         &mut self,
         implementation: &ProviderImplementationReference,
+        module: &ModuleLocator,
         entry: &LocalKey,
         input: &AbilityValue,
     ) -> std::result::Result<AbilityValue, EvaluationError> {
-        self.evaluate_reference(implementation, entry, input)
+        self.evaluate_reference(implementation, module, entry, input)
             .map_err(|error| EvaluationError::new(bounded_error_message(&error)))
     }
 }
@@ -627,33 +634,21 @@ fn encode_nix_uri_component(value: &str, additionally_allowed: &[u8]) -> String 
     encoded
 }
 
-fn selected_entry(
-    implementation: &ProviderImplementation,
-    selected: AbilityEntryPoint,
-) -> Result<&LocalKey> {
-    let ImplementationKind::PureComposition {
-        compose_entry,
-        transition_entry,
-    } = &implementation.implementation
-    else {
-        bail!("terminal provider implementations have no Nix ability entry point");
-    };
-
-    Ok(match selected {
-        AbilityEntryPoint::Compose => compose_entry,
-        AbilityEntryPoint::Transition => transition_entry,
-    })
+fn selected_entry(selected: AbilityEntryPoint) -> Result<LocalKey> {
+    Ok(LocalKey::new(match selected {
+        AbilityEntryPoint::Compose => "compose",
+        AbilityEntryPoint::Transition => "transition",
+    })?)
 }
 
 fn render_expression(
-    artifact: &ArtifactReference,
+    module: &ModuleLocator,
     entry: &LocalKey,
     arguments: &AbilityValue,
 ) -> Result<String> {
-    let artifact_input = locked_store_input(
-        Path::new(&artifact.store_path),
-        Some(&artifact.nar_hash.to_string()),
-    )?;
+    let module_path = Path::new(&module.artifact.store_path).join(module.path.as_str());
+    let artifact_input =
+        locked_store_input(&module_path, Some(&module.artifact.nar_hash.to_string()))?;
     let argument_json = aos_contract::canonical::to_vec(arguments.as_json())
         .context("encoding Nix ability arguments")?;
     let argument_json =
@@ -884,7 +879,9 @@ mod tests {
     use std::ffi::OsStr;
     use std::io::Cursor;
 
-    use aos_ability_model::{InterfaceKey, InterfaceName, RequirementDeclaration};
+    use aos_ability_model::{
+        ArtifactReference, InterfaceKey, InterfaceName, RelativePath, RequirementDeclaration,
+    };
     use aos_contract::Sha256Digest;
     use serde::Deserialize;
 
@@ -956,10 +953,9 @@ mod tests {
                 closure: digest(4),
             },
             requirements: Vec::<RequirementDeclaration>::new(),
-            implementation: ImplementationKind::PureComposition {
-                compose_entry: LocalKey::new("compose").unwrap(),
-                transition_entry: LocalKey::new("transition").unwrap(),
-            },
+            desired_schema: None,
+            provider_module: None,
+            handler: None,
             owns_resource_kinds: Vec::new(),
             state_format: None,
         }
@@ -969,11 +965,19 @@ mod tests {
         AbilityValue::new(serde_json::json!({"enabled": true})).unwrap()
     }
 
+    fn module_for(implementation: &ProviderImplementation) -> ModuleLocator {
+        ModuleLocator {
+            artifact: implementation.artifact.clone(),
+            path: RelativePath::new("default.nix").unwrap(),
+        }
+    }
+
     #[test]
     fn expression_pins_artifact_and_selects_exact_entry() {
         let entry = LocalKey::new("compose").unwrap();
+        let implementation = implementation();
         let expression =
-            render_expression(&implementation().artifact, &entry, &arguments()).unwrap();
+            render_expression(&module_for(&implementation), &entry, &arguments()).unwrap();
 
         assert!(expression.contains("builtins.fetchTree"), "{expression}");
         assert!(expression.contains("narHash = \"sha256-"), "{expression}");
@@ -1158,13 +1162,17 @@ mod tests {
     }
 
     #[test]
-    fn terminal_implementations_cannot_select_nix_entries() {
-        let mut implementation = implementation();
-        implementation.implementation = ImplementationKind::TerminalHandler {
-            handler: LocalKey::new("native").unwrap(),
-        };
-
-        assert!(selected_entry(&implementation, AbilityEntryPoint::Compose).is_err());
+    fn selected_entry_names_are_fixed_by_the_evaluator_protocol() {
+        assert_eq!(
+            selected_entry(AbilityEntryPoint::Compose).unwrap().as_str(),
+            "compose"
+        );
+        assert_eq!(
+            selected_entry(AbilityEntryPoint::Transition)
+                .unwrap()
+                .as_str(),
+            "transition"
+        );
     }
 
     #[test]
@@ -1183,6 +1191,7 @@ mod tests {
         let error = evaluator
             .evaluate::<serde_json::Value>(
                 &implementation,
+                &module_for(&implementation),
                 AbilityEntryPoint::Compose,
                 &arguments(),
             )
@@ -1212,6 +1221,7 @@ mod tests {
             let error = evaluator
                 .evaluate::<serde_json::Value>(
                     &implementation,
+                    &module_for(&implementation),
                     AbilityEntryPoint::Compose,
                     &arguments(),
                 )
@@ -1304,6 +1314,7 @@ mod tests {
         let result: EnabledResult = evaluator
             .evaluate(
                 &implementation,
+                &module_for(&implementation),
                 AbilityEntryPoint::Compose,
                 &fixture_arguments("ok", &executable),
             )
@@ -1314,6 +1325,7 @@ mod tests {
         let result: EnvironmentResult = evaluator
             .evaluate(
                 &implementation,
+                &module_for(&implementation),
                 AbilityEntryPoint::Compose,
                 &fixture_arguments("environment", &executable),
             )
@@ -1338,6 +1350,7 @@ mod tests {
                 workers.push(scope.spawn(|| {
                     evaluator.evaluate::<EnabledResult>(
                         &implementation,
+                        &module_for(&implementation),
                         AbilityEntryPoint::Compose,
                         &fixture_arguments("ok", &executable),
                     )
@@ -1371,6 +1384,7 @@ mod tests {
         evaluator
             .evaluate::<EnabledResult>(
                 &implementation,
+                &module_for(&implementation),
                 AbilityEntryPoint::Compose,
                 &fixture_arguments("ok", &executable),
             )
@@ -1380,6 +1394,7 @@ mod tests {
         evaluator
             .evaluate::<serde_json::Value>(
                 &implementation,
+                &module_for(&implementation),
                 AbilityEntryPoint::Transition,
                 &fixture_arguments("host-file", &executable),
             )
@@ -1415,6 +1430,7 @@ mod tests {
             let error = evaluator
                 .evaluate::<serde_json::Value>(
                     &implementation,
+                    &module_for(&implementation),
                     AbilityEntryPoint::Transition,
                     &fixture_arguments(mode, &executable),
                 )
@@ -1445,6 +1461,7 @@ mod tests {
         let output_error = output_evaluator
             .evaluate::<serde_json::Value>(
                 &implementation,
+                &module_for(&implementation),
                 AbilityEntryPoint::Compose,
                 &fixture_arguments("large-output", &executable),
             )
@@ -1464,6 +1481,7 @@ mod tests {
         let wall_error = wall_evaluator
             .evaluate::<serde_json::Value>(
                 &implementation,
+                &module_for(&implementation),
                 AbilityEntryPoint::Compose,
                 &fixture_arguments("slow", &executable),
             )

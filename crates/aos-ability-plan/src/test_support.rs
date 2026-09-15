@@ -6,12 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AggregationContract, AggregationScope, BindingId,
-    DeploymentObligation, ExportDeclaration, ImplementationKind, InstanceId, LocalKey,
-    ObligationKind, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
-    ProviderImplementation, ProviderImplementationReference, ProviderStateFormat, RequiredFeature,
-    ResourceLifetime, TeardownBindingAuthorization, TransitionAuthorizationDocument,
-    VersionedDocument,
+    AbilityActivationMode, AbilityValue, BindingId, DeploymentObligation, ExportDeclaration,
+    InstanceId, LocalKey, ModuleLocator, ObligationKind, PROVIDER_STATE_FORMAT_V1, PackageDocument,
+    PackageImplementation, ProviderImplementation, ProviderImplementationReference,
+    ProviderStateFormat, RelativePath, RequiredFeature, ResourceLifetime,
+    TeardownBindingAuthorization, TransitionAuthorizationDocument, VersionedDocument,
 };
 use aos_ability_validate::{
     CheckedEffectPlan, CheckedTransitionAuthority, TransitionAuthorityInputs, ValidationContext,
@@ -385,16 +384,16 @@ fn build_verified_planning_fixture(
         .implementation
         .artifact
         .clone();
-    let compose_entry = key("compose");
-    let transition_entry = key("transition");
     let provider_implementation = ProviderImplementation {
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: compose_entry.clone(),
-            transition_entry: transition_entry.clone(),
-        },
+        desired_schema: None,
+        provider_module: Some(ModuleLocator {
+            artifact: artifact.clone(),
+            path: RelativePath::new("default.nix").expect("valid module path"),
+        }),
+        handler: None,
         owns_resource_kinds: stateful
             .then(|| interface.name.clone())
             .into_iter()
@@ -437,10 +436,6 @@ fn build_verified_planning_fixture(
             implementation: descriptor,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (compose_entry, artifact.clone()),
-            (transition_entry, artifact.clone()),
-        ]),
         implementation: PackageImplementation {
             providers: vec![provider_implementation],
             handlers: BTreeMap::new(),
@@ -585,6 +580,7 @@ impl CompositionEvaluator for EmptyEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -612,6 +608,7 @@ impl CompositionEvaluator for EmptyTransitionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &ProviderImplementationReference,
+        _module: &ModuleLocator,
         _entry: &LocalKey,
         _input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {

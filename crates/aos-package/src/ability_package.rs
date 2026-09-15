@@ -33,8 +33,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::document::PlatformIdentity;
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactReference, HandlerDescriptor, ImplementationKind, LocalKey,
-    PackageDocument, ProviderImplementation, VersionedDocument,
+    AbilityActivationMode, ArtifactReference, HandlerDescriptor, LocalKey, PackageDocument,
+    ProviderImplementation, VersionedDocument,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;
@@ -424,9 +424,7 @@ impl VerifiedAbilityPackage {
             .providers
             .iter()
             .find(|provider| provider.descriptor_digest().ok() == Some(descriptor))?;
-        let ImplementationKind::TerminalHandler { handler } = &provider.implementation else {
-            return None;
-        };
+        let handler = provider.handler.as_ref()?;
         if handler != handler_key {
             return None;
         }
@@ -1135,11 +1133,11 @@ pub(crate) fn collect_distinct_artifacts(
     for artifact in &package.artifacts {
         insert(artifact)?;
     }
-    for artifact in package.module_entry_points.values() {
-        insert(artifact)?;
-    }
     for provider in &package.implementation.providers {
         insert(&provider.artifact)?;
+        if let Some(module) = &provider.provider_module {
+            insert(&module.artifact)?;
+        }
     }
     for handler in package.implementation.handlers.values() {
         insert(&handler.artifact)?;

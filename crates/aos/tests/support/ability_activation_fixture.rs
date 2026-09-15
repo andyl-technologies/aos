@@ -27,7 +27,7 @@ use aos_ability_model::document::{
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, Binding, BindingId, BindingRequest,
     ContributionPermission, DesiredStateDocument, EnvironmentDocument, EnvironmentId,
-    ExecutionStage, ImplementationKind, InstanceId, InterfaceDescriptor, InterfaceDocument,
+    ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument,
     InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, MethodDescriptor, MethodSemantics,
     OutcomeSemantics, OutputDescriptor, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, RequiredFeature, ResourceId, ResourceLifetime,
@@ -556,21 +556,18 @@ impl ReferenceFixture {
                 let name = provider.interface.name.as_str();
                 ensure_interface_matches(&interfaces, &provider.interface)?;
                 let reference = provider_reference(provider)?;
-                match provider.implementation {
-                    ImplementationKind::PureComposition { .. } => {
-                        implementations.insert(name.to_string(), reference);
-                        if name == "aos.nginx" {
-                            nginx_package = Some(package_digest);
-                        } else if name == "aos.test.systemd-manager-matrix" {
-                            systemd_manager_package = Some(package_digest);
-                        } else {
-                            lower_packages.insert(name.to_string(), package_digest);
-                        }
+                if provider.provider_module.is_some() {
+                    implementations.insert(name.to_string(), reference);
+                    if name == "aos.nginx" {
+                        nginx_package = Some(package_digest);
+                    } else if name == "aos.test.systemd-manager-matrix" {
+                        systemd_manager_package = Some(package_digest);
+                    } else {
+                        lower_packages.insert(name.to_string(), package_digest);
                     }
-                    ImplementationKind::TerminalHandler { .. } => {
-                        terminal_packages.insert(name.to_string(), package_digest);
-                        terminal_implementations.insert(name.to_string(), reference);
-                    }
+                } else if provider.handler.is_some() {
+                    terminal_packages.insert(name.to_string(), package_digest);
+                    terminal_implementations.insert(name.to_string(), reference);
                 }
             }
         }
@@ -897,13 +894,6 @@ impl ReferenceFixture {
                     "transport": "tcp",
                 }))?),
             });
-            child_requests.push(BindingRequest {
-                id: request.clone(),
-                accepted_interfaces: vec![self.interface("aos.nginx")?],
-                methods: Vec::new(),
-                guarantees: Vec::new(),
-                lifetime: ResourceLifetime::Instance,
-            });
             let mut value = serde_json::json!({
                 "host": host,
                 "response_content": content,
@@ -914,6 +904,15 @@ impl ReferenceFixture {
             if let Some(tls) = tls {
                 value["credential_version"] = serde_json::json!(tls.version);
             }
+            child_requests.push(BindingRequest {
+                package: key("ability-reference-nginx-consumer")?,
+                id: request.clone(),
+                accepted_interfaces: vec![self.interface("aos.nginx")?],
+                methods: Vec::new(),
+                guarantees: Vec::new(),
+                lifetime: ResourceLifetime::Instance,
+                parameters: AbilityValue::new(value.clone())?,
+            });
             contributions.push(Contribution {
                 request: request.clone(),
                 aggregate: AggregateId {
@@ -2270,14 +2269,10 @@ fn reference_method_semantics(name: &str) -> Vec<(&'static str, MethodSemantics)
 fn provider_reference(
     implementation: &ProviderImplementation,
 ) -> Result<ProviderImplementationReference> {
-    let handler = match &implementation.implementation {
-        ImplementationKind::PureComposition { .. } => None,
-        ImplementationKind::TerminalHandler { handler } => Some(handler.clone()),
-    };
     Ok(ProviderImplementationReference {
         descriptor: implementation.descriptor_digest()?,
         artifact: implementation.artifact.clone(),
-        handler,
+        handler: implementation.handler.clone(),
     })
 }
 

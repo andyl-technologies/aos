@@ -157,19 +157,16 @@ impl ReferenceFixture {
                 let name = provider.interface.name.as_str();
                 ensure_interface_matches(&interfaces, &provider.interface)?;
                 let reference = provider_reference(provider);
-                match provider.implementation {
-                    ImplementationKind::PureComposition { .. } => {
-                        implementations.insert(name.to_string(), reference);
-                        if name == "aos.nginx" {
-                            nginx_package = Some(package_digest);
-                        } else {
-                            lower_packages.insert(name.to_string(), package_digest);
-                        }
+                if provider.provider_module.is_some() {
+                    implementations.insert(name.to_string(), reference);
+                    if name == "aos.nginx" {
+                        nginx_package = Some(package_digest);
+                    } else {
+                        lower_packages.insert(name.to_string(), package_digest);
                     }
-                    ImplementationKind::TerminalHandler { .. } => {
-                        terminal_packages.insert(name.to_string(), package_digest);
-                        terminal_implementations.insert(name.to_string(), reference);
-                    }
+                } else if provider.handler.is_some() {
+                    terminal_packages.insert(name.to_string(), package_digest);
+                    terminal_implementations.insert(name.to_string(), reference);
                 }
             }
         }
@@ -349,13 +346,6 @@ impl Deployment<'_> {
                 enabled: true,
                 configuration: None,
             });
-            requests.push(BindingRequest {
-                id: nginx_request.clone(),
-                accepted_interfaces: vec![self.fixture.interfaces["aos.nginx"].clone()],
-                methods: Vec::new(),
-                guarantees: Vec::new(),
-                lifetime: ResourceLifetime::Instance,
-            });
             let mut contribution = serde_json::json!({
                 "host": route.host,
                 "response_content": route.response,
@@ -368,6 +358,19 @@ impl Deployment<'_> {
             if route.tls {
                 contribution["credential_version"] = serde_json::json!(reference_tls_version());
             }
+            requests.push(BindingRequest {
+                package: key(if route.proxy_backend {
+                    "ability-reference-nginx-backend-consumer"
+                } else {
+                    "ability-reference-nginx-consumer"
+                }),
+                id: nginx_request.clone(),
+                accepted_interfaces: vec![self.fixture.interfaces["aos.nginx"].clone()],
+                methods: Vec::new(),
+                guarantees: Vec::new(),
+                lifetime: ResourceLifetime::Instance,
+                parameters: value(contribution.clone()),
+            });
             contributions.push(Contribution {
                 request: nginx_request.clone(),
                 aggregate: AggregateId {
@@ -386,11 +389,17 @@ impl Deployment<'_> {
                     key: key("backend"),
                 };
                 requests.push(BindingRequest {
+                    package: key("ability-reference-nginx-backend-consumer"),
                     id: backend_request.clone(),
                     accepted_interfaces: vec![self.fixture.interfaces["aos.http-backend"].clone()],
                     methods: Vec::new(),
                     guarantees: Vec::new(),
                     lifetime: ResourceLifetime::Instance,
+                    parameters: value(serde_json::json!({
+                        "address": "127.0.0.1",
+                        "port": backend_port(route.application),
+                        "transport": "tcp",
+                    })),
                 });
                 contributions.push(Contribution {
                     request: backend_request.clone(),
@@ -2773,6 +2782,13 @@ fn interface_document(
         interface: InterfaceDescriptor {
             name: interface_name,
             abi: NonZeroU32::new(1).unwrap(),
+            aggregation: AggregationContract {
+                scope: AggregationScope::ProviderInstance,
+                key: key("resource"),
+                controller_group: key("reference"),
+                reject_slot_collisions: true,
+                merge_contract: None,
+            },
             request,
             configuration: None,
             outputs: outputs
@@ -2879,15 +2895,10 @@ fn reference_method_semantics(name: &str) -> Vec<(&'static str, MethodSemantics)
 }
 
 fn provider_reference(implementation: &ProviderImplementation) -> ProviderImplementationReference {
-    let handler = match &implementation.implementation {
-        ImplementationKind::PureComposition { .. } => None,
-        ImplementationKind::TerminalHandler { handler } => Some(handler.clone()),
-    };
-
     ProviderImplementationReference {
         descriptor: implementation.descriptor_digest().unwrap(),
         artifact: implementation.artifact.clone(),
-        handler,
+        handler: implementation.handler.clone(),
     }
 }
 

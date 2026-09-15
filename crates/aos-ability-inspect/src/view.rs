@@ -1000,7 +1000,14 @@ fn insert_package_artifacts(
     let artifacts = std::iter::once(&package.package.payload)
         .chain(std::iter::once(&package.package.source))
         .chain(package.artifacts.iter())
-        .chain(package.module_entry_points.values())
+        .chain(
+            package
+                .implementation
+                .providers
+                .iter()
+                .filter_map(|provider| provider.provider_module.as_ref())
+                .map(|module| &module.artifact),
+        )
         .chain(
             package
                 .implementation

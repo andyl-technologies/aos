@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::{
-    ArtifactReference, Binding, BindingId, ImplementationKind, InstanceId, InterfaceName, LocalKey,
-    Operation, PackageDocument, ProviderAdoptionAuthorization, ProviderImplementation, ResourceId,
+    ArtifactReference, Binding, BindingId, InstanceId, InterfaceName, LocalKey, Operation,
+    PackageDocument, ProviderAdoptionAuthorization, ProviderImplementation, ResourceId,
     ResourceLifetime, VersionedDocument,
 };
 use aos_ability_validate::{BindingAuthorityKind, CheckedEffectPlan};
@@ -201,10 +201,7 @@ fn retained_owner_handler(
     let Some(implementation) = exact_provider_implementation(package, binding)? else {
         return Ok(None);
     };
-    if !matches!(
-        implementation.implementation,
-        ImplementationKind::TerminalHandler { .. }
-    ) {
+    if implementation.handler.is_none() {
         return Ok(None);
     }
     let assignments = binding_plan
@@ -268,10 +265,8 @@ fn selected_owner_identity(
     let Some(state_format) = implementation.state_format.clone() else {
         return Ok(None);
     };
-    if !matches!(
-        implementation.implementation,
-        ImplementationKind::PureComposition { .. }
-    ) || implementation.owns_resource_kinds.is_empty()
+    if implementation.provider_module.is_none()
+        || implementation.owns_resource_kinds.is_empty()
         || state_format.artifact != implementation.artifact
     {
         return Ok(None);
@@ -321,7 +316,7 @@ fn selected_owner_handler(
     let Some(implementation) = exact_provider_implementation(package, binding)? else {
         return Ok(None);
     };
-    let ImplementationKind::TerminalHandler { handler } = &implementation.implementation else {
+    let Some(handler) = &implementation.handler else {
         return Ok(None);
     };
     if binding.implementation.handler.as_ref() != Some(handler)
@@ -553,10 +548,8 @@ pub(in crate::config_eval::ability_store::inventory) fn operation_provider_ident
         }
 
         let mut implementations = package.implementation.providers.iter().filter(|candidate| {
-            matches!(
-                candidate.implementation,
-                ImplementationKind::PureComposition { .. }
-            ) && candidate.interface == selected.interface
+            candidate.provider_module.is_some()
+                && candidate.interface == selected.interface
                 && candidate.artifact == selected.implementation.artifact
                 && candidate
                     .descriptor_digest()

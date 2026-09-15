@@ -26,14 +26,13 @@ use aos_ability_model::document::{
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, ArtifactReference, AuthorityGrant, Binding, BindingId,
     BindingRequest, BindingSource, ContributionPermission, DesiredStateDocument,
-    EnvironmentDocument, EnvironmentId, ExecutionStage, ImplementationKind, InstanceId,
-    InterfaceDescriptor, InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics,
-    LocalKey, OutputDescriptor, PackageDocument, ProviderAdoptionAuthorization,
-    ProviderAdoptionEndpoint, ProviderImplementation, ProviderImplementationReference,
-    RequiredFeature, ResourceId, ResourceLifetime, ResourcePermission, ResourceRevision,
-    RevisionId, ScopePath, StringConstraint, StringSyntax, TeardownBindingAuthorization,
-    TeardownProviderAuthorization, TransitionAuthorizationDocument, ValuePhase, ValueSchema,
-    ValueVisibility, VersionedDocument,
+    EnvironmentDocument, EnvironmentId, ExecutionStage, InstanceId, InterfaceDescriptor,
+    InterfaceDocument, InterfaceKey, InterfaceName, LifecycleSemantics, LocalKey, OutputDescriptor,
+    PackageDocument, ProviderAdoptionAuthorization, ProviderAdoptionEndpoint,
+    ProviderImplementation, ProviderImplementationReference, RequiredFeature, ResourceId,
+    ResourceLifetime, ResourcePermission, ResourceRevision, RevisionId, ScopePath,
+    StringConstraint, StringSyntax, TeardownBindingAuthorization, TeardownProviderAuthorization,
+    TransitionAuthorizationDocument, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument,
 };
 use aos_ability_plan::{
     BindingCandidate, CandidateSelection, CompositionError, EnabledProviderSelection,
@@ -426,10 +425,7 @@ fn adoption_endpoint(
         .iter()
         .find(|implementation| {
             implementation.interface.name.as_str() == PUBLIC_INTERFACE
-                && matches!(
-                    implementation.implementation,
-                    ImplementationKind::PureComposition { .. }
-                )
+                && implementation.provider_module.is_some()
                 && implementation.state_format.is_some()
                 && implementation
                     .owns_resource_kinds
@@ -945,10 +941,7 @@ impl PostgresqlFixture {
         let mut terminal_implementations = BTreeMap::<String, Vec<_>>::new();
         for (package_digest, package) in &identified {
             for implementation in &package.implementation.providers {
-                if matches!(
-                    implementation.implementation,
-                    ImplementationKind::TerminalHandler { .. }
-                ) {
+                if implementation.handler.is_some() {
                     let reference = provider_reference(implementation)?;
                     let implementations = terminal_implementations
                         .entry(implementation.interface.name.as_str().to_string())
@@ -1123,12 +1116,20 @@ impl PostgresqlFixture {
                     enabled: true,
                     configuration: None,
                 });
+                let parameters = serde_json::json!({
+                    "cluster": cluster.database,
+                    "database": cluster.database,
+                    "role": cluster.role,
+                    "credential_version": cluster.credential_version.as_deref().context("credentialed cluster has no version")?,
+                });
                 child_requests.push(BindingRequest {
+                    package: key("ability-reference-postgresql-consumer")?,
                     id: request.clone(),
                     accepted_interfaces: vec![self.interfaces[PUBLIC_INTERFACE].clone()],
                     methods: Vec::new(),
                     guarantees: Vec::new(),
                     lifetime: ResourceLifetime::Persistent,
+                    parameters: AbilityValue::new(parameters.clone())?,
                 });
                 contributions.push(Contribution {
                     request: request.clone(),
@@ -1138,12 +1139,7 @@ impl PostgresqlFixture {
                     },
                     slot: key(&cluster.database)?,
                     grant: BindingId(binding_key(&request)?),
-                    value: AbilityValue::new(serde_json::json!({
-                        "cluster": cluster.database,
-                        "database": cluster.database,
-                        "role": cluster.role,
-                        "credential_version": cluster.credential_version.as_deref().context("credentialed cluster has no version")?,
-                    }))?,
+                    value: AbilityValue::new(parameters)?,
                 });
             }
         }
@@ -1298,6 +1294,7 @@ impl PostgresqlFixture {
             key: key(&format!("{}-postgresql", cluster.database))?,
         };
         let request = BindingRequest {
+            package: self.selected_document.package.name.clone(),
             id: aos_ability_model::RequestId {
                 consumer: self.provider.clone(),
                 scope: ScopePath::root(),
@@ -1310,6 +1307,7 @@ impl PostgresqlFixture {
                 .collect::<Result<Vec<_>>>()?,
             guarantees: Vec::new(),
             lifetime: ResourceLifetime::Persistent,
+            parameters: AbilityValue::new(serde_json::json!(true))?,
         };
         let revision = RevisionId(Sha256Digest::of_canonical(
             "aos.ability.postgresql-terminal-trust-fixture/v1",
@@ -1496,14 +1494,10 @@ fn postgresql_public_interface() -> Result<InterfaceDocument> {
 fn provider_reference(
     implementation: &ProviderImplementation,
 ) -> Result<ProviderImplementationReference> {
-    let handler = match &implementation.implementation {
-        ImplementationKind::PureComposition { .. } => None,
-        ImplementationKind::TerminalHandler { handler } => Some(handler.clone()),
-    };
     Ok(ProviderImplementationReference {
         descriptor: implementation.descriptor_digest()?,
         artifact: implementation.artifact.clone(),
-        handler,
+        handler: implementation.handler.clone(),
     })
 }
 

@@ -353,7 +353,14 @@ fn required_runtime_artifacts(
         artifacts.push(package.package.payload.clone());
         artifacts.push(package.package.source.clone());
         artifacts.extend(package.artifacts.iter().cloned());
-        artifacts.extend(package.module_entry_points.values().cloned());
+        artifacts.extend(
+            package
+                .implementation
+                .providers
+                .iter()
+                .filter_map(|provider| provider.provider_module.as_ref())
+                .map(|locator| locator.artifact.clone()),
+        );
         artifacts.extend(
             package
                 .implementation

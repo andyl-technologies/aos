@@ -70,11 +70,7 @@ fn checked_materialize_lifecycle_plan(method: &str) -> aos_ability_validate::Che
         .providers
         .iter_mut()
         .find(|implementation| {
-            implementation.interface == old_interface
-                && matches!(
-                    implementation.implementation,
-                    aos_ability_model::ImplementationKind::TerminalHandler { .. }
-                )
+            implementation.interface == old_interface && implementation.handler.is_some()
         })
         .expect("stateful fixture terminal implementation");
     terminal_implementation.interface = terminal_interface.clone();

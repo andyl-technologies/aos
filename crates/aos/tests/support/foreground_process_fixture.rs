@@ -4,8 +4,8 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 use aos_ability_model::{
-    EnvironmentId, ExecutionStage, ImplementationKind, IncarnationId, InstanceId, LocalKey,
-    ProviderAssignment, ProviderImplementationReference, ResourceId, RevisionId,
+    EnvironmentId, ExecutionStage, IncarnationId, InstanceId, LocalKey, ProviderAssignment,
+    ProviderImplementationReference, ResourceId, RevisionId,
 };
 use aos_ability_runtime::adapter::RuntimeControl;
 use aos_contract::Sha256Digest;
@@ -94,15 +94,13 @@ fn foreground_assignment(
         .find(|provider| {
             provider.interface.name.as_str()
                 == aos_ability_model::builtin::FOREGROUND_PROCESS_INTERFACE_NAME
-                && matches!(
-                    provider.implementation,
-                    ImplementationKind::TerminalHandler { .. }
-                )
+                && provider.handler.is_some()
         })
         .context("verified package catalog has no foreground-process provider")?;
-    let ImplementationKind::TerminalHandler { handler } = &provider.implementation else {
-        unreachable!("selected foreground provider is terminal")
-    };
+    let handler = provider
+        .handler
+        .as_ref()
+        .context("selected foreground provider has no handler")?;
     Ok(ProviderAssignment {
         provider: spec.resource.provider.clone(),
         interface: provider.interface.clone(),

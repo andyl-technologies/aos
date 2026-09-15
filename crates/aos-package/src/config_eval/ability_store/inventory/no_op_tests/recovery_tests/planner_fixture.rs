@@ -22,6 +22,7 @@ impl CompositionEvaluator for EmptyCompositionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &aos_ability_model::ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -49,6 +50,7 @@ impl CompositionEvaluator for EmptyRecoveryTransitionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &aos_ability_model::ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -74,6 +76,7 @@ impl CompositionEvaluator for RecoveryTransitionEvaluator {
     fn evaluate(
         &mut self,
         _implementation: &aos_ability_model::ProviderImplementationReference,
+        _module: &aos_ability_model::ModuleLocator,
         _entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError> {
@@ -166,11 +169,7 @@ fn real_recovery_plan_with_options(
             .providers
             .iter_mut()
             .find(|implementation| {
-                implementation.interface == old_interface
-                    && matches!(
-                        implementation.implementation,
-                        aos_ability_model::ImplementationKind::TerminalHandler { .. }
-                    )
+                implementation.interface == old_interface && implementation.handler.is_some()
             })
             .expect("stateful recovery terminal implementation");
         terminal_implementation.interface = terminal_interface.clone();

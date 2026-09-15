@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use aos_ability_model::document::{PackageSubject, PlatformIdentity};
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactReference, ExportDeclaration, ImplementationKind,
-    InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, PROVIDER_STATE_FORMAT_V1,
-    PackageDocument, PackageImplementation, ProviderImplementation, ProviderStateFormat,
+    AbilityActivationMode, ArtifactReference, ExportDeclaration, InterfaceDocument, InterfaceKey,
+    InterfaceName, LocalKey, ModuleLocator, PROVIDER_STATE_FORMAT_V1, PackageDocument,
+    PackageImplementation, ProviderImplementation, ProviderStateFormat, RelativePath,
     RequiredFeature, VersionedDocument, encode_canonical,
 };
 use aos_contract::Sha256Digest;
@@ -69,14 +69,10 @@ fn production_nix_companion_round_trips_through_native_contracts() {
         declaration.implementation,
         provider.descriptor_digest().unwrap()
     );
-    let compose = aos_ability_model::LocalKey::new("compose").unwrap();
-    let transition = aos_ability_model::LocalKey::new("transition").unwrap();
-    assert_eq!(package.module_entry_points[&compose], provider.artifact);
-    assert_eq!(package.module_entry_points[&transition], provider.artifact);
-    assert!(matches!(
-        provider.implementation,
-        ImplementationKind::PureComposition { .. }
-    ));
+    assert_eq!(
+        provider.provider_module.as_ref().unwrap().artifact,
+        provider.artifact
+    );
 
     let interface_path = PathBuf::from(&companion)
         .join("interfaces")
@@ -196,10 +192,12 @@ fn stateful_package() -> PackageDocument {
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        implementation: ImplementationKind::PureComposition {
-            compose_entry: LocalKey::new("compose").unwrap(),
-            transition_entry: LocalKey::new("transition").unwrap(),
-        },
+        desired_schema: None,
+        provider_module: Some(ModuleLocator {
+            artifact: artifact.clone(),
+            path: RelativePath::new("default.nix").unwrap(),
+        }),
+        handler: None,
         owns_resource_kinds: vec![interface.name.clone()],
         state_format: Some(ProviderStateFormat {
             descriptor: digest('5'),
@@ -227,10 +225,6 @@ fn stateful_package() -> PackageDocument {
             implementation,
         }],
         requirements: Vec::new(),
-        module_entry_points: BTreeMap::from([
-            (LocalKey::new("compose").unwrap(), artifact.clone()),
-            (LocalKey::new("transition").unwrap(), artifact),
-        ]),
         implementation: PackageImplementation {
             providers: vec![provider],
             handlers: BTreeMap::new(),
@@ -277,7 +271,6 @@ impl TestFixture {
             artifacts: Vec::new(),
             exports: Vec::new(),
             requirements: Vec::new(),
-            module_entry_points: BTreeMap::new(),
             implementation: PackageImplementation {
                 providers: Vec::new(),
                 handlers: BTreeMap::new(),

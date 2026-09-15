@@ -44,13 +44,13 @@ pub use diagnostic::{Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhas
 pub use document::{
     AbilityActivationMode, AggregateOutput, BindingPlanDocument, BranchSelection,
     DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, ExecutionDocument,
-    InterfaceDocument, MergeRecord, PackageDocument, RequiredFeature, SkippedOperationRecord,
-    VersionedDocument, decode_canonical, encode_canonical,
+    InterfaceDocument, MergeRecord, ModuleLocator, PackageDocument, RequiredFeature,
+    SkippedOperationRecord, VersionedDocument, decode_canonical, encode_canonical,
 };
 pub use identity::{
     AggregateId, EnvironmentId, ExecutionStage, IncarnationId, InstanceId, InterfaceKey,
-    InterfaceName, LocalKey, OperationId, PlanId, RequestId, ResourceId, RevisionId, ScopePath,
-    ScopedOperationKey, TransactionId,
+    InterfaceName, LocalKey, OperationId, PlanId, RelativePath, RequestId, ResourceId, RevisionId,
+    ScopePath, ScopedOperationKey, TransactionId,
 };
 pub use interface::*;
 pub use limits::{ABILITY_LIMITS_V1, LimitProfile};
