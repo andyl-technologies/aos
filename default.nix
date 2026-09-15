@@ -2104,7 +2104,7 @@ in {
           registry-hub
           nginx-config
           k3s-config
-          integration.envoy-config-module-contract
+          integration.envoy-ability-module-contract
           integration.cloudcore-config
           integration.conntrack-tools-config
           integration.containerd-config-module-contract

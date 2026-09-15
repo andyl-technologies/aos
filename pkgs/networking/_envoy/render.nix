@@ -1,11 +1,16 @@
 ##! Pure rendering from the typed Envoy option tree to bootstrap JSON data.
 {lib}: let
   duration = seconds: "${toString seconds}s";
-  credentialFile = handle: "/run/credentials/envoy.service/${handle}";
+  # Assertions reject incomplete TLS declarations. Keep rendering total so the
+  # module can report those assertion failures instead of failing mid-render.
+  credentialFile = credentialPaths: handle:
+    if handle == null
+    then ""
+    else credentialPaths.${handle} or "";
   named = attrs: builtins.map (name: attrs.${name}) (builtins.attrNames attrs);
   optional = condition: attrs: lib.optionalAttrs condition attrs;
 
-  renderTls = direction: tls: let
+  renderTls = credentialPaths: direction: tls: let
     usingSds = tls.sdsSecret != null;
     certificate = tls.certificateCredential;
     privateKey = tls.privateKeyCredential;
@@ -22,14 +27,14 @@
       // optional (!usingSds && certificate != null) {
         tls_certificates = [
           {
-            certificate_chain.filename = credentialFile certificate;
-            private_key.filename = credentialFile privateKey;
+            certificate_chain.filename = credentialFile credentialPaths certificate;
+            private_key.filename = credentialFile credentialPaths privateKey;
           }
         ];
       }
       // optional (tls.validationCaCredential != null) {
         validation_context = {
-          trusted_ca.filename = credentialFile tls.validationCaCredential;
+          trusted_ca.filename = credentialFile credentialPaths tls.validationCaCredential;
         };
       }
       // optional (tls.validationSdsSecret != null) {
@@ -123,7 +128,7 @@
     // optional (host.requestHeaders != {}) {request_headers_to_add = headerAdds host.requestHeaders;}
     // optional (host.responseHeaders != {}) {response_headers_to_add = headerAdds host.responseHeaders;};
 
-  renderFilterChain = chain: let
+  renderFilterChain = credentialPaths: chain: let
     filterChainMatch =
       optional (chain.serverNames != []) {server_names = chain.serverNames;}
       // optional (chain.transportProtocol != null) {transport_protocol = chain.transportProtocol;}
@@ -175,20 +180,20 @@
         typed_config =
           {
             "@type" = "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext";
-            common_tls_context = renderTls "downstream" chain.tls;
+            common_tls_context = renderTls credentialPaths "downstream" chain.tls;
           }
           // optional chain.tls.requireClientCertificate {require_client_certificate = true;};
       };
     };
 
-  renderListener = listener: {
+  renderListener = credentialPaths: listener: {
     inherit (listener) name transparent;
     address.socket_address = {
       inherit (listener) address;
       port_value = listener.port;
       protocol = listener.protocol;
     };
-    filter_chains = builtins.map renderFilterChain (named listener.filterChains);
+    filter_chains = builtins.map (renderFilterChain credentialPaths) (named listener.filterChains);
   };
 
   renderEndpoint = endpoint: {
@@ -231,7 +236,7 @@
       else {tcp_health_check = {};}
     );
 
-  renderCluster = cluster:
+  renderCluster = credentialPaths: cluster:
     {
       inherit (cluster) name;
       type = cluster.discovery;
@@ -270,7 +275,7 @@
         typed_config =
           {
             "@type" = "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext";
-            common_tls_context = renderTls "upstream" cluster.tls;
+            common_tls_context = renderTls credentialPaths "upstream" cluster.tls;
           }
           // optional (cluster.tls.sni != null) {sni = cluster.tls.sni;};
       };
@@ -281,10 +286,10 @@
     static_layer = layer.values;
   };
 in
-  cfg: let
+  runtime: cfg: let
     staticResources = {
-      listeners = builtins.map renderListener (named cfg.listeners);
-      clusters = builtins.map renderCluster (named cfg.clusters);
+      listeners = builtins.map (renderListener runtime.credentialPaths) (named cfg.listeners);
+      clusters = builtins.map (renderCluster runtime.credentialPaths) (named cfg.clusters);
     };
     dynamicResources =
       optional cfg.dynamicResources.enableAds {
@@ -297,13 +302,16 @@ in
       }
       // optional cfg.dynamicResources.listenersFromAds {lds_config.ads = {};}
       // optional cfg.dynamicResources.clustersFromAds {cds_config.ads = {};};
-    admin = {
-      address.socket_address = {
-        address = cfg.admin.address;
-        port_value = cfg.admin.port;
+    admin =
+      {
+        address.socket_address = {
+          address = cfg.admin.address;
+          port_value = cfg.admin.port;
+        };
+      }
+      // optional (runtime.adminLogPath != null) {
+        access_log_path = runtime.adminLogPath;
       };
-      access_log_path = cfg.admin.accessLogPath;
-    };
     statsSinks = lib.optionals (cfg.telemetry.statsd != null) [
       {
         name = "envoy.stat_sinks.statsd";
