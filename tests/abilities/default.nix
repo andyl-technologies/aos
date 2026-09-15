@@ -546,6 +546,9 @@
   systemdNativeResources = import ./systemd-native-resources.nix {
     inherit pkgs lib;
   };
+  aosControlPlane = import ./aos-control-plane.nix {
+    inherit pkgs lib;
+  };
   systemdReadiness = import ./systemd-readiness.nix {
     inherit pkgs lib;
   };
@@ -1000,6 +1003,8 @@ in
   assert utilLinuxGetty;
   assert systemdDirectoryPreparation;
   assert systemdIdentityRealization;
+  assert systemdNativeResources;
+  assert aosControlPlane;
   assert systemdReadiness;
   assert systemdStageMilestones;
   assert baseKernelNative;

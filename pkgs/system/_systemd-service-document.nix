@@ -79,7 +79,11 @@
       ++ unitIdentityList "BindsTo" (canonicalIdentities (unitsFor "binds_to"))
       ++ unitIdentityList "PartOf" (canonicalIdentities (unitsFor "part_of"))
       ++ unitIdentityList "Upholds" (canonicalIdentities (unitsFor "upholds"))
-      ++ one "DefaultDependencies" (yesNo dependencies.implicit_dependencies);
+      ++ optional "DefaultDependencies" (
+        if dependencies ? implicit_dependencies
+        then yesNo dependencies.implicit_dependencies
+        else null
+      );
 
   activationDirectives = value: let
     bindings = (value.activation or {bindings = [];}).bindings;
@@ -278,8 +282,8 @@
     if identity == null
     then []
     else
-      lib.optional (identity.principal != null) (semantic.directive "User" (semantic.principalName {value = identity.principal;}))
-      ++ lib.optional (identity.primary_group != null) (semantic.directive "Group" (semantic.groupName {value = identity.primary_group;}))
+      lib.optional ((identity.principal or null) != null) (semantic.directive "User" (semantic.principalName {value = identity.principal;}))
+      ++ lib.optional ((identity.primary_group or null) != null) (semantic.directive "Group" (semantic.groupName {value = identity.primary_group;}))
       ++ repeated "SupplementaryGroups" (builtins.map (group: semantic.groupName {value = group;}) identity.supplementary_groups)
       ++ one "DynamicUser" (yesNo identity.ephemeral)
       ++ one "UMask" identity.file_creation_mask;
@@ -471,7 +475,7 @@
           encoding = "quoted";
         })
       isolation.devices)
-      ++ lib.optional (isolation.root_directory != null) (
+      ++ lib.optional ((isolation.root_directory or null) != null) (
         semantic.directive "RootDirectory" (quotedExecutionPath isolation.root_directory)
       )
       ++ repeated "BindReadOnlyPaths" (builtins.map (entry: quotedExecutionPath entry.source) (
@@ -511,7 +515,11 @@
       ++ one "ProtectKernelTunables" (yesNo (!isolation.kernel_tunable_access))
       ++ one "LockPersonality" (yesNo isolation.lock_personality)
       ++ one "MemoryDenyWriteExecute" (yesNo (!isolation.memory_write_execute))
-      ++ one "RemoveIPC" (yesNo isolation.remove_ipc)
+      ++ optional "RemoveIPC" (
+        if isolation ? remove_ipc
+        then yesNo isolation.remove_ipc
+        else null
+      )
       ++ one "PrivateIPC" (yesNo (namespace "ipc"))
       ++ one "PrivateMounts" (yesNo (namespace "mount"))
       ++ one "PrivateNetwork" (yesNo (namespace "network"))
@@ -575,7 +583,7 @@
       if selector.kind == "class"
       then "${deviceType selector}-${selector.class}"
       else "${deviceType selector}-${builtins.toString selector.major}:${
-        if selector.minor == null
+        if (selector.minor or null) == null
         then "*"
         else builtins.toString selector.minor
       }";
@@ -874,7 +882,7 @@
 
   serviceIdentityFor = resource: let
     value = resource.value;
-    selection = (value.instantiation or {selection.kind = "singleton";}).selection;
+    selection = value.instantiation or {kind = "singleton";};
     templateIdentity =
       if selection.kind == "template"
       then
@@ -896,7 +904,7 @@
 
   realizationFor = controllerInterface: resource: let
     value = resource.value;
-    selection = (value.instantiation or {selection.kind = "singleton";}).selection;
+    selection = value.instantiation or {kind = "singleton";};
     managerIdentity = value.manager_identity or null;
     serviceIdentity = serviceIdentityFor resource;
     serviceUnitName =
