@@ -20,6 +20,7 @@ aos-provider-protocol = { workspace = true }
 aos-remote = { workspace = true }
 aos-proto-types = { workspace = true }
 aos-systemd = { workspace = true }
+aos-storage-provisioning = { workspace = true }
 aos-registry-surface = { workspace = true }
 aos-boot-identity = { workspace = true }
 anyhow = { workspace = true }

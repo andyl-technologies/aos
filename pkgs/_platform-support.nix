@@ -469,6 +469,7 @@ let
     "aos-selinux-run"
     "aos-systemd-provider"
     "aos-storage-format-provider"
+    "aos-storage-provisioning-provider"
     "aos-zfs-provider"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
@@ -798,6 +799,8 @@ let
     "filesystem/_aos-zfs-provider/dataset-provider.nix" = "linux-only-config-source";
     "filesystem/_aos-zfs-provider/module.nix" = "linux-only-config-source";
     "filesystem/_aos-zfs-provider/pool-provider.nix" = "linux-only-config-source";
+    "system/_aos-storage-provisioning-provider/module.nix" = "linux-only-config-source";
+    "system/_aos-storage-provisioning-provider/provider.nix" = "linux-only-config-source";
     "kubernetes/_cilium-abilities/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";

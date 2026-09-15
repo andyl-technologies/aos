@@ -44,6 +44,7 @@ members = [
     "aos-systemd-provider",
     "aos-boot-preparation-provider",
     "aos-block-storage-provider",
+    "aos-storage-provisioning",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -238,6 +239,7 @@ aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-doc-model = { path = "aos-doc-model" }
 aos-package = { path = "aos-package" }
+aos-storage-provisioning = { path = "aos-storage-provisioning" }
 aos-configuration-provider = { path = "aos-configuration-provider" }
 aos-filesystem-provider = { path = "aos-filesystem-provider" }
 aos-nix-store-provider = { path = "aos-nix-store-provider" }

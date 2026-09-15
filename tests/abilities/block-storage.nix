@@ -2,6 +2,7 @@
 {lib}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   storageInterfaces = lib.abilities.interfaces.blockStorage.interfaces;
+  storageTypes = lib.abilities.interfaces.blockStorage.types;
   controllerKey = implementation: providerInstance: key:
     lib.abilities.compositionRequestKey {
       inherit implementation providerInstance key;
@@ -10,6 +11,7 @@
   formatEffects = controllerKey "aos-storage-format-provider:storage-format" "aos-storage-format-provider:manager" "format";
   poolEffects = controllerKey "aos-zfs-provider:storage-pool" "aos-zfs-provider:manager" "pool";
   datasetEffects = controllerKey "aos-zfs-provider:storage-dataset" "aos-zfs-provider:manager" "dataset";
+  provisioningEffects = controllerKey "aos-storage-provisioning-provider:storage-provisioning" "aos-storage-provisioning-provider:manager" "provisioning";
   evaluated = lib.evalModules {
     inherit lib;
     modules = [
@@ -70,6 +72,18 @@
               providerInstance = "aos-zfs-provider:manager";
               slot = "dataset";
             };
+            "test:provisioning" = {
+              request = "consumer:provisioning";
+              implementation = "aos-storage-provisioning-provider:storage-provisioning";
+              providerInstance = "aos-storage-provisioning-provider:manager";
+              slot = "provisioning";
+            };
+            "test:provisioning-effects" = {
+              request = provisioningEffects;
+              implementation = "aos-storage-provisioning-provider:storage-provisioning-effects";
+              providerInstance = "aos-storage-provisioning-provider:manager";
+              slot = "provisioning";
+            };
           };
         };
       }
@@ -108,6 +122,34 @@
                   key_size_bits = 256;
                   key.kind = "ephemeral-random";
                   prerequisites = [];
+                };
+              })
+              (serviceManagement.forProducer {
+                consumerInstance = "workload";
+                key = "provisioning";
+                interface = storageInterfaces.provisioning;
+                methods = ["commit" "observe"];
+                parameters = {
+                  name = "first-boot";
+                  enabled = true;
+                  root_device = "/dev/disk/by-partlabel/root-a";
+                  prerequisites = [];
+                  plan = {
+                    schema = "aos.storage.provisioning-plan/v1";
+                    source = "operator";
+                    marker_uuid = "01234567-89ab-cdef-8123-456789abcdef";
+                    measured_boot = false;
+                    partitions.var = {
+                      target.kind = "root-disk";
+                      label = "var";
+                      partition_type = "linux-generic";
+                      size_min = "1G";
+                      weight = 1;
+                      grow = true;
+                      grow_fs = true;
+                      priority = 1;
+                    };
+                  };
                 };
               })
               (serviceManagement.forProducer {
@@ -163,6 +205,14 @@
           {config.aos.abilities.instances.manager = {};}
         ];
       }
+      {
+        name = "aos-storage-provisioning-provider";
+        module.imports = [
+          ../../pkgs/system/_aos-storage-provisioning-provider/module.nix
+          ../../pkgs/system/_aos-storage-provisioning-provider/provider.nix
+          {config.aos.abilities.instances.manager = {};}
+        ];
+      }
     ];
   };
   abilities = evaluated.config.aos.abilities;
@@ -173,8 +223,9 @@
   format = resourceByKind "aos.storage.format";
   pool = resourceByKind "aos.storage.pool";
   dataset = resourceByKind "aos.storage.dataset";
+  provisioning = resourceByKind "aos.storage.provisioning";
 in
-  assert builtins.length resources == 4;
+  assert builtins.length resources == 5;
   assert abilities.compositionRequests.${mappingEffects}.parameters == mapping.value;
   assert abilities.compositionRequests.${formatEffects}.parameters == format.value;
   assert mapping.realization.schema == "aos.storage.encrypted-block-mapping-realization/v1";
@@ -186,6 +237,11 @@ in
   assert abilities.compositionRequests.${datasetEffects}.parameters == dataset.value;
   assert pool.realization.zpool.entry_point == "sbin/zpool";
   assert dataset.realization.zfs.entry_point == "sbin/zfs";
+  assert abilities.compositionRequests.${provisioningEffects}.parameters == provisioning.value;
+  assert provisioning.realization.systemd_repart.entry_point == "bin/systemd-repart";
+  assert provisioning.realization.sfdisk.entry_point == "sbin/sfdisk";
+  assert !storageTypes.stableDevice.check "/dev/sda";
+  assert !storageTypes.partitionType.check "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
   assert abilities.implementations."aos-cryptsetup-provider:encrypted-block-mapping".handlerDescriptor == null;
   assert builtins.isFunction abilities.implementations."aos-cryptsetup-provider:encrypted-block-mapping".transition;
   assert abilities.implementations."aos-cryptsetup-provider:encrypted-block-mapping-effects".providerModule == null;
@@ -195,4 +251,6 @@ in
   assert abilities.implementations."aos-zfs-provider:storage-pool".handlerDescriptor == null;
   assert abilities.implementations."aos-zfs-provider:storage-dataset".handlerDescriptor == null;
   assert abilities.implementations."aos-zfs-provider:storage-pool-effects".providerModule == null;
-  assert abilities.implementations."aos-zfs-provider:storage-dataset-effects".providerModule == null; true
+  assert abilities.implementations."aos-zfs-provider:storage-dataset-effects".providerModule == null;
+  assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning".handlerDescriptor == null;
+  assert abilities.implementations."aos-storage-provisioning-provider:storage-provisioning-effects".providerModule == null; true
