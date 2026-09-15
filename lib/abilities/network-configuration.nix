@@ -127,7 +127,7 @@
     unique = true;
     canonicalOrder = true;
   };
-  requestType = types.record {
+  policyType = types.record {
     fields = {
       authority = types.enum ["image" "operator"];
       links = types.list {
@@ -137,13 +137,17 @@
         canonicalOrder = false;
       };
       inherit resolver prerequisites;
-      bootstrap = optional bootstrap;
     };
   };
+  applyInputType = types.record {
+    fields.bootstrap = optional bootstrap;
+  };
+  emptyInputType = types.record {fields = {};};
   observationType = types.record {
     fields = {
       schema = types.enum ["aos.ability.network-configuration-observation/v1"];
-      expected = requestType;
+      expected = policyType;
+      applied_bootstrap = optional bootstrap;
       state = types.enum ["absent" "ready" "drifted" "unknown"];
       discrepancies = types.list {
         element = types.localKey;
@@ -160,13 +164,13 @@
     inherit phase lifetime description schema;
     visibility = "protected";
   };
-  method = name: description: access: stopsProvider: outputs: {
+  method = name: description: parameters: access: stopsProvider: outputs: {
     inherit description outputs;
     semantics = {
       requiredTargetAccess = access;
       inherit stopsProvider;
     };
-    parameters = requestType;
+    inherit parameters;
     targetResource = interfaceName;
     permittedOperations = [name];
     guarantees = [];
@@ -180,14 +184,14 @@
   observation = phase:
     output phase "attempt" "Reports the exact observed host network configuration." observationType;
   methods = {
-    apply = method "apply" "Converges the exact provider-neutral host network configuration." "exclusive-write" false {
+    apply = method "apply" "Converges the exact provider-neutral host network configuration." applyInputType "exclusive-write" false {
       observation = observation "runtime";
       retained-resource = output "runtime" "persistent" "References the retained network configuration." types.resourceReference;
     };
-    observe = method "observe" "Observes the exact host network configuration." "read" false {
+    observe = method "observe" "Observes the exact host network configuration." emptyInputType "read" false {
       observation = observation "observation";
     };
-    remove = method "remove" "Releases the exact host network configuration owned by this controller." "exclusive-write" true {
+    remove = method "remove" "Releases the exact host network configuration owned by this controller." emptyInputType "exclusive-write" true {
       observation = observation "runtime";
     };
   };
@@ -203,7 +207,8 @@
     name = interfaceName;
     description = "Converges semantic host networking without exposing a service manager or configuration-file backend.";
     abi = 1;
-    inherit requestType methods lifecycle aggregation;
+    requestType = policyType;
+    inherit methods lifecycle aggregation;
     outputs.readiness-resource =
       output "planning" "persistent" "References readiness for this exact network configuration." types.resourceReference;
     guarantees = [];
@@ -212,7 +217,13 @@
   identity = interfaceIdentity document;
 in {
   interface = {
-    inherit alias declaration document identity requestType observationType realizationType;
+    inherit alias declaration document identity observationType realizationType;
+    requestType = policyType;
+    types = {
+      policy = policyType;
+      inherit bootstrap;
+      applyInput = applyInputType;
+    };
     methods = builtins.attrNames methods;
   };
   declarations.${alias} = declaration;

@@ -11,6 +11,22 @@
     extraModules = [../../modules/base/host-facts.nix];
   };
   config = evaluated.config;
+  withStaticFacts = evaluate {
+    name = "base-networking-static-facts";
+    module = ../../modules/base/networking.nix;
+    packages = [pkgs.systemd pkgs.aos-kernel-tunable-provider];
+    extraModules = [
+      ../../modules/base/host-facts.nix
+      {
+        host.facts.static_network = {
+          mac = "02:00:00:00:00:01";
+          addresses = ["192.0.2.10/24"];
+          gateway = "192.0.2.1";
+          dns = ["192.0.2.53"];
+        };
+      }
+    ];
+  };
   requests = config.aos.abilities.requests;
   networkd = requests."system:networkd".parameters;
   resolved = requests."system:resolved".parameters;
@@ -50,6 +66,24 @@ in
       };
     }
   ];
+  assert withStaticFacts.config.aos.abilities.requests."system:host-network".parameters.links
+  == [
+    {
+      kind = "ethernet";
+      name = "provisioning-bootstrap";
+      selector = {
+        kind = "mac";
+        value = "02:00:00:00:00:01";
+      };
+      addressing = {
+        dhcp = false;
+        addresses = ["192.0.2.10/24"];
+        gateway = "192.0.2.1";
+        dns = ["192.0.2.53"];
+      };
+    }
+  ];
+  assert !(withStaticFacts.config.aos.abilities.requests."system:host-network".parameters ? bootstrap);
   assert config.systemd.services == {};
   assert !(config.environment.etc ? "systemd/network/80-dhcp.network");
   assert !(config.environment.etc ? "systemd/resolved.conf");

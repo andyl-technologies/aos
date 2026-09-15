@@ -88,7 +88,7 @@
       source = "literal";
       value = {
         kind = "network-configuration";
-        desired = desired.value;
+        bootstrap = null;
       };
     };
     preconditions = [];

@@ -64,6 +64,7 @@ pub mod bandwidth;
 pub mod hash;
 pub mod managed;
 pub mod multipart;
+pub mod network_configuration;
 pub mod pool;
 pub mod progress;
 pub mod protocol;
@@ -83,6 +84,10 @@ pub use managed::{
 pub use multipart::{
     MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
     MultipartSource, MultipartUploadRequest, MultipartUploadResult,
+};
+pub use network_configuration::{
+    Addressing, BootstrapNetwork, LinkSelector, NetworkApplyInput, NetworkAuthority,
+    NetworkConfiguration, NetworkLink, ResolverConfiguration,
 };
 pub use pool::{ConnectionPool, PoolConfig};
 pub use progress::{

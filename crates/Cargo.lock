@@ -702,6 +702,7 @@ name = "aos-net"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-ability-model",
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
@@ -1043,6 +1044,7 @@ dependencies = [
  "anyhow",
  "aos-ability-model",
  "aos-contract",
+ "aos-net",
  "aos-provider-protocol",
  "aos-systemd",
  "rustix 1.1.4",

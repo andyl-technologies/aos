@@ -103,6 +103,18 @@
     kind = "name";
     inherit value;
   };
+  staticNetwork = config.host.facts.static_network;
+  staticNetworkSelector =
+    if staticNetwork == null
+    then null
+    else if staticNetwork.mac != null
+    then {
+      kind = "mac";
+      value = staticNetwork.mac;
+    }
+    else if staticNetwork.interface_name != null
+    then namedSelector staticNetwork.interface_name
+    else throw "static network facts require an exact MAC address or interface name";
   interfaceLinks = lib.mapAttrsToList (name: value: {
       kind = "ethernet";
       inherit name;
@@ -116,7 +128,7 @@
       addressing = addressing value;
     })
     cfg.interfaces;
-  defaultLinks = lib.optional (cfg.useDHCP && cfg.interfaces == {}) {
+  defaultLinks = lib.optional (cfg.useDHCP && cfg.interfaces == {} && staticNetwork == null) {
     kind = "ethernet";
     name = "default-dhcp";
     selector.kind = "ethernet";
@@ -142,28 +154,18 @@
       addressing = addressing (value // {dns = ""; gateway = "";});
     })
     cfg.bonds;
-  bootstrap = let
-    network = config.host.facts.static_network;
-  in
-    if network == null
-    then {}
-    else if network.mac == null && network.interface_name == null
-    then throw "static network facts require an exact MAC address or interface name"
-    else {
-      bootstrap =
-        {
-          selector =
-            if network.mac != null
-            then {
-              kind = "mac";
-              value = network.mac;
-            }
-            else namedSelector network.interface_name;
-          addresses = canonicalStrings network.addresses;
-          dns = canonicalStrings network.dns;
-        }
-        // lib.optionalAttrs (network.gateway != null) {inherit (network) gateway;};
-    };
+  staticNetworkLinks = lib.optional (staticNetwork != null) {
+    kind = "ethernet";
+    name = "provisioning-bootstrap";
+    selector = staticNetworkSelector;
+    addressing =
+      {
+        dhcp = false;
+        addresses = canonicalStrings staticNetwork.addresses;
+        dns = canonicalStrings staticNetwork.dns;
+      }
+      // lib.optionalAttrs (staticNetwork.gateway != null) {gateway = staticNetwork.gateway;};
+  };
   networkConfiguration = lib.abilities.interfaces.serviceManagement.forProducer {
     inherit consumerInstance;
     key = "host-network";
@@ -172,7 +174,7 @@
     parameters = {
       inherit authority;
       links = lib.sort (left: right: left.name < right.name) (
-        interfaceLinks ++ defaultLinks ++ vlanLinks ++ bondLinks
+        interfaceLinks ++ defaultLinks ++ vlanLinks ++ bondLinks ++ staticNetworkLinks
       );
       resolver = {
         inherit (cfg.resolved) dnssec;
@@ -181,8 +183,7 @@
         enabled = cfg.resolved.enable;
       };
       prerequisites = [];
-    }
-    // bootstrap;
+    };
   };
 in {
   options.aos.networking = {
