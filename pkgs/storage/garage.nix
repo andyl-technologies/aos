@@ -54,6 +54,10 @@ in
         environment = environmentId;
         key = "credential-provider";
       };
+      qualifiedResultOf = request: output: {
+        _type = "aos-request-output-reference";
+        inherit request output;
+      };
       secret = name:
         lib.abilities.resourceReference {
           interface = serviceManagement.interfaces.credentialDelivery.identity;
@@ -107,6 +111,7 @@ in
           rootDomain = ".web.test";
         };
       };
+      disabled = evaluate {};
       evaluatedAdmin = evaluate {
         enable = true;
         rpc.secret.resource = secret "rpc-secret";
@@ -140,12 +145,16 @@ in
         };
       };
       abilities = evaluated.config.aos.abilities;
+      disabledAbilities = disabled.config.aos.abilities;
       adminAbilities = evaluatedAdmin.config.aos.abilities;
       adminWithoutMetricsTokenAbilities = evaluatedAdminWithoutMetricsToken.config.aos.abilities;
       requests = builtins.attrNames abilities.requests;
+      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
       adminRequests = builtins.attrNames adminAbilities.requests;
       adminWithoutMetricsTokenRequests = builtins.attrNames adminWithoutMetricsTokenAbilities.requests;
       configurationSource = abilities.requests."garage:server-configuration".parameters.source;
+      servicePrincipal = abilities.requests."garage:service-principal".parameters;
+      mainStorageMounts = abilities.requests."garage:main-storage".parameters.mounts;
       renderedConfig = builtins.toFile "garage-runtime-check.toml" ''
         metadata_dir = "/var/lib/aos-pkg-garage/meta"
         data_dir = "/var/lib/aos-pkg-garage/data"
@@ -162,6 +171,10 @@ in
         && !assertionsHold invalidRpc
         && !assertionsHold invalidAdmin
         && !assertionsHold invalidPeers
+        && disabledAbilities.instances == {}
+        && disabledAbilities.requests == {}
+        && builtins.elem "garage:credential-delivery" disabledRequirements
+        && builtins.elem "garage:service-lifecycle" disabledRequirements
         && builtins.elem "garage:main-lifecycle" requests
         && builtins.elem "garage:main-storage" requests
         && builtins.elem "garage:service-principal" requests
@@ -172,6 +185,14 @@ in
         && builtins.elem "garage:credential-admin-token" adminWithoutMetricsTokenRequests
         && !(builtins.elem "garage:credential-metrics-token" adminWithoutMetricsTokenRequests)
         && builtins.length (builtins.filter (name: name == "garage:credential-delivery") (builtins.attrNames adminAbilities.requirementTemplates)) == 1
+        && servicePrincipal.home_directory
+        == qualifiedResultOf "garage:home-storage" "planned-path"
+        && builtins.map (mount: mount.source) mainStorageMounts
+        == [
+          (qualifiedResultOf "garage:metadata-storage" "planned-path")
+          (qualifiedResultOf "garage:data-storage" "planned-path")
+          (qualifiedResultOf "garage:runtime-storage" "planned-path")
+        ]
         && configurationSource.kind == "structured-value"
         && configurationSource.format == "toml"
         && !(lib.hasInfix "/var/lib/aos-pkg-garage" (builtins.toJSON configurationSource))

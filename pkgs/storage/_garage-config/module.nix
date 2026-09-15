@@ -119,20 +119,6 @@
         metrics_require_token = cfg.admin.metrics.requireToken;
       };
     };
-  credentialVariants = [
-    {
-      admin = false;
-      metrics = false;
-    }
-    {
-      admin = true;
-      metrics = false;
-    }
-    {
-      admin = true;
-      metrics = true;
-    }
-  ];
   credentialsFor = variant:
     [
       {
@@ -228,7 +214,7 @@
       allocation = "managed";
       requested_id = 804;
       description = "Garage object-storage service";
-      home_directory = resultOf "home-storage" "storage-path";
+      home_directory = resultOf "home-storage" "planned-path";
       login_access = "disabled";
       primary_group = resultOf "service-group" "group-name";
       supplementary_groups = [];
@@ -301,17 +287,17 @@
         storage.mounts = [
           {
             name = "metadata";
-            source = resultOf "metadata-storage" "storage-path";
+            source = resultOf "metadata-storage" "planned-path";
             access = "read-write";
           }
           {
             name = "data";
-            source = resultOf "data-storage" "storage-path";
+            source = resultOf "data-storage" "planned-path";
             access = "read-write";
           }
           {
             name = "runtime";
-            source = resultOf "runtime-storage" "storage-path";
+            source = resultOf "runtime-storage" "planned-path";
             access = "read-write";
           }
         ];
@@ -385,6 +371,20 @@
     credentialRequests
     serviceRequest
   ];
+  staticAbilityFragments =
+    builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).declarations)
+    (abilityFragmentsFor {
+      admin = true;
+      metrics = true;
+    });
+  configuredAbilityFragments =
+    builtins.map
+    (fragment: (serviceManagement.splitContribution fragment).configured)
+    (abilityFragmentsFor {
+      admin = cfg.admin.enable;
+      metrics = cfg.admin.enable && cfg.admin.metrics.requireToken;
+    });
 in {
   options.garage = {
     enable = lib.mkEnableOption "the Garage object-storage service";
@@ -490,42 +490,35 @@ in {
     };
   };
 
-  config = lib.mkMerge (
-    [
-      {
-        assertions = [
-          {
-            assertion = !cfg.enable || cfg.rpc.secret.resource != null;
-            message = "garage.rpc.secret.resource is required when Garage is enabled";
-          }
-          {
-            assertion = !cfg.enable || !cfg.admin.enable || cfg.admin.token.resource != null;
-            message = "garage.admin.token.resource is required when the administration API is enabled";
-          }
-          {
-            assertion = !cfg.enable || !cfg.admin.enable || !cfg.admin.metrics.requireToken || cfg.admin.metrics.token.resource != null;
-            message = "garage.admin.metrics.token.resource is required when authenticated metrics are enabled";
-          }
-          {
-            assertion = builtins.length cfg.rpc.bootstrapPeers == builtins.length (lib.unique cfg.rpc.bootstrapPeers);
-            message = "garage.rpc.bootstrapPeers must not contain duplicates";
-          }
-        ];
-      }
-      (lib.mkIf cfg.enable {aos.abilities.instances.garage = {};})
-    ]
-    ++ builtins.map (variant:
-      lib.mkIf
-      (
-        cfg.enable
-        && cfg.admin.enable == variant.admin
-        && (!variant.admin || cfg.admin.metrics.requireToken == variant.metrics)
-      )
-      (lib.mkMerge (
-        builtins.map
-        (fragment: {aos.abilities = fragment;})
-        (abilityFragmentsFor variant)
-      )))
-    credentialVariants
-  );
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = !cfg.enable || cfg.rpc.secret.resource != null;
+          message = "garage.rpc.secret.resource is required when Garage is enabled";
+        }
+        {
+          assertion = !cfg.enable || !cfg.admin.enable || cfg.admin.token.resource != null;
+          message = "garage.admin.token.resource is required when the administration API is enabled";
+        }
+        {
+          assertion = !cfg.enable || !cfg.admin.enable || !cfg.admin.metrics.requireToken || cfg.admin.metrics.token.resource != null;
+          message = "garage.admin.metrics.token.resource is required when authenticated metrics are enabled";
+        }
+        {
+          assertion = builtins.length cfg.rpc.bootstrapPeers == builtins.length (lib.unique cfg.rpc.bootstrapPeers);
+          message = "garage.rpc.bootstrapPeers must not contain duplicates";
+        }
+      ];
+    }
+    (lib.mkMerge (builtins.map
+      (fragment: {aos.abilities = fragment;})
+      staticAbilityFragments))
+    (lib.mkIf cfg.enable {
+      aos.abilities = lib.mkMerge (
+        [{instances.garage = {};}]
+        ++ configuredAbilityFragments
+      );
+    })
+  ];
 }
