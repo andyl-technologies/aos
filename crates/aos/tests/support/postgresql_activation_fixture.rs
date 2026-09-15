@@ -1333,6 +1333,17 @@ impl PostgresqlFixture {
             child_requests: vec![request.clone()],
             resources: vec![ResourceRevision {
                 resource: resource.clone(),
+                kind: postgresql_effects_interface().interface.name.clone(),
+                lifetime: ResourceLifetime::Persistent,
+                value: AbilityValue::new(serde_json::json!({
+                    "cluster": cluster.database,
+                    "configuration": cluster.configuration,
+                    "database": cluster.database,
+                    "role": cluster.role,
+                }))?,
+                realization: AbilityValue::new(serde_json::json!({
+                    "cluster": cluster.database,
+                }))?,
                 revision,
             }],
             outputs: Vec::new(),

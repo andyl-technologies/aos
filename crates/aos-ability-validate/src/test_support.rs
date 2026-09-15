@@ -221,7 +221,11 @@ pub fn systemd_manager_plan_fixture() -> PlanFixture {
     let resource = fixture.effect_plan.current_revisions[0].resource.clone();
     let controller = AggregateId {
         provider: resource.provider.clone(),
-        group: key("systemd"),
+        group: fixture.interfaces[0]
+            .interface
+            .aggregation
+            .controller_group
+            .clone(),
     };
     let controller_assignment = ControllerAssignment {
         resource,
@@ -309,10 +313,19 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
     let mut owner_interface = fixture.interfaces[0].clone();
     owner_interface.interface.name =
         InterfaceName::new("test.state-owner").expect("owner interface name");
+    owner_interface.interface.aggregation.controller_group = key("stateful-owner");
     let owner_resource_kind = owner_interface.interface.name.clone();
     for method in owner_interface.interface.methods.values_mut() {
         method.target_resource = owner_resource_kind.clone();
     }
+    let mut control_method = owner_interface.interface.methods[&key("observe")].clone();
+    control_method.semantics = MethodSemantics::ordinary(AccessMode::ExclusiveWrite);
+    control_method.target_resource = terminal_interface.name.clone();
+    control_method.permitted_operations = vec![key("control")];
+    owner_interface
+        .interface
+        .methods
+        .insert(key("control"), control_method);
     let owner_interface_key = owner_interface
         .interface_key()
         .expect("owner interface digest");
@@ -320,13 +333,15 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         interface: owner_interface_key.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
-        desired_schema: None,
         provider_module: Some(ModuleLocator {
             artifact: artifact.clone(),
             path: RelativePath::new("default.nix").expect("valid module path"),
         }),
         handler: None,
         owns_resource_kinds: vec![terminal_interface.name.clone()],
+        desired_schema: Some(aos_ability_model::ValueSchema::Optional {
+            value: Box::new(aos_ability_model::ValueSchema::Boolean),
+        }),
         state_format: Some(ProviderStateFormat {
             descriptor: Sha256Digest::of_bytes("stateful owner test format"),
             artifact: artifact.clone(),
@@ -401,6 +416,17 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
     };
     let owner_revision = ResourceRevision {
         resource: owner_resource.clone(),
+        kind: owner_resource_kind,
+        lifetime: aos_ability_model::ResourceLifetime::Instance,
+        value: AbilityValue::new(serde_json::json!({
+            "_type": "aos-resource-reference",
+            "interface": owner_interface_key.clone(),
+            "resource": owner_resource.clone(),
+            "operations": ["observe"],
+            "lifetime": "instance",
+        }))
+        .unwrap(),
+        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
         revision: RevisionId(Sha256Digest::of_bytes("stateful owner metadata revision")),
     };
     for revisions in [
@@ -436,12 +462,13 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
             key: key("owner"),
         },
         accepted_interfaces: vec![owner_interface_key.clone()],
-        methods: vec![key("observe")],
+        methods: vec![key("control"), key("observe")],
         guarantees: Vec::new(),
         lifetime: ResourceLifetime::Persistent,
         parameters: AbilityValue::new(serde_json::json!(true))
             .expect("owner request parameters must be bounded"),
     };
+    let terminal_resource = fixture.effect_plan.operations[0].target.resource.clone();
     let owner_binding = Binding {
         id: BindingId(key("owner")),
         request: owner_request.id.clone(),
@@ -452,13 +479,20 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         source: BindingSource::Explicit,
         caller_grant: AuthorityGrant {
             principal: provider.clone(),
-            methods: vec![key("observe")],
+            methods: vec![key("control"), key("observe")],
             contributions: Vec::new(),
-            resources: vec![ResourcePermission {
-                resource: owner_resource,
-                access: AccessMode::Read,
-                operations: vec![key("observe")],
-            }],
+            resources: vec![
+                ResourcePermission {
+                    resource: owner_resource,
+                    access: AccessMode::Read,
+                    operations: vec![key("observe")],
+                },
+                ResourcePermission {
+                    resource: terminal_resource.clone(),
+                    access: AccessMode::ExclusiveWrite,
+                    operations: vec![key("control")],
+                },
+            ],
         },
         provider_grant: AuthorityGrant {
             principal: provider,
@@ -491,7 +525,6 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         compare_request_ids(&left.request, &right.request).then_with(|| left.id.cmp(&right.id))
     });
 
-    let terminal_resource = fixture.effect_plan.operations[0].target.resource.clone();
     let controller = AggregateId {
         provider: terminal_resource.provider.clone(),
         group: key("stateful-owner"),
@@ -568,6 +601,10 @@ pub fn plan_fixture() -> PlanFixture {
     let policy_revision = RevisionId(digest('5'));
     let resource_revision = ResourceRevision {
         resource: resource.clone(),
+        kind: interface_key.name.clone(),
+        lifetime: aos_ability_model::ResourceLifetime::Instance,
+        value: AbilityValue::new(serde_json::json!(true)).unwrap(),
+        realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
         revision: RevisionId(digest('6')),
     };
     let environment = EnvironmentDocument {
@@ -811,6 +848,10 @@ pub fn planned_provider_chain_fixture() -> PlanFixture {
     for (resource, digit) in [(&resource_b, '8'), (&resource_c, '9')] {
         let revision = ResourceRevision {
             resource: resource.clone(),
+            kind: fixture.binding_plan.bindings[0].interface.name.clone(),
+            lifetime: aos_ability_model::ResourceLifetime::Instance,
+            value: AbilityValue::new(serde_json::json!(true)).unwrap(),
+            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
             revision: RevisionId(digest(digit)),
         };
         fixture

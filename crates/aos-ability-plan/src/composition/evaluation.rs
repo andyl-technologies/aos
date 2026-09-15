@@ -8,7 +8,7 @@ use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityActivationMode, AbilityValue, AggregateOutput, ArtifactReference,
     Binding, BindingRequest, ControllerAssignment, DesiredStateDocument, InstanceId, InterfaceKey,
     LocalKey, PackageDocument, ProviderImplementation, ProviderImplementationReference,
-    ResourceRevision, RevisionId, ValuePhase, compare_resource_ids,
+    ResourceRevision, ValuePhase, compare_resource_ids,
 };
 use aos_ability_validate::{ValidationContext, validate_value};
 use aos_contract::Sha256Digest;
@@ -29,7 +29,6 @@ pub(super) struct PureProviderEvaluationInputs<'a> {
     pub(super) enabled_providers: &'a [EnabledProviderSelection],
     pub(super) packages: &'a [PackageDocument],
     pub(super) package_index: &'a BTreeMap<Sha256Digest, usize>,
-    pub(super) activation_revisions: &'a BTreeMap<Sha256Digest, RevisionId>,
 }
 
 pub(super) struct EvaluationRecorder<'a, E> {
@@ -51,7 +50,6 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
         enabled_providers,
         packages,
         package_index,
-        activation_revisions,
     } = inputs;
     let EvaluationRecorder {
         evaluator,
@@ -193,7 +191,6 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             interface: group.interface,
             implementation: reference,
             package: provider_package,
-            activation_revision: activation_revisions.get(&provider_package),
             configuration,
             requests: incoming_requests,
             bindings,
@@ -274,8 +271,6 @@ struct BorrowedCompositionContext<'a> {
     interface: &'a InterfaceKey,
     implementation: &'a ProviderImplementationReference,
     package: Sha256Digest,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    activation_revision: Option<&'a RevisionId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     configuration: Option<&'a AbilityValue>,
     requests: Vec<&'a BindingRequest>,

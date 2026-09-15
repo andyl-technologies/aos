@@ -6,11 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, BindingId, DeploymentObligation, ExportDeclaration,
-    InstanceId, LocalKey, ModuleLocator, ObligationKind, PROVIDER_STATE_FORMAT_V1, PackageDocument,
-    PackageImplementation, ProviderImplementation, ProviderImplementationReference,
-    ProviderStateFormat, RelativePath, RequiredFeature, ResourceLifetime,
-    TeardownBindingAuthorization, TransitionAuthorizationDocument, VersionedDocument,
+    AbilityActivationMode, AbilityValue, AggregationContract, AggregationScope, BindingId,
+    DeploymentObligation, ExportDeclaration, InstanceId, LocalKey, ModuleLocator, ObligationKind,
+    PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation, ProviderImplementation,
+    ProviderImplementationReference, ProviderStateFormat, RelativePath, RequiredFeature,
+    ResourceLifetime, TeardownBindingAuthorization, TransitionAuthorizationDocument,
+    VersionedDocument,
 };
 use aos_ability_validate::{
     CheckedEffectPlan, CheckedTransitionAuthority, TransitionAuthorityInputs, ValidationContext,

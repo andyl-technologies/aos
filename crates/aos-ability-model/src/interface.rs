@@ -360,11 +360,17 @@ fn consume_provider_implementation_items(
     if implementation.handler.is_some() {
         consume_items(remaining_items, 1)?;
     }
-    if implementation.desired_schema.is_some() {
-        consume_items(remaining_items, 1)?;
-    }
     consume_items(remaining_items, implementation.requirements.len())?;
     consume_items(remaining_items, implementation.owns_resource_kinds.len())?;
+    if let Some(schema) = &implementation.desired_schema {
+        consume_items(remaining_items, 1)?;
+        consume_json_value(
+            &serde_json::to_value(schema)?,
+            remaining_items,
+            2,
+            max_depth,
+        )?;
+    }
     if implementation.state_format.is_some() {
         consume_items(remaining_items, 1)?;
         consume_items(remaining_items, 2)?;

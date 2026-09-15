@@ -9,10 +9,11 @@ use std::io::{self, Write};
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::{
-    AccessMode, AuthorityGrant, Binding, BindingPlanDocument, Diagnostic, DiagnosticClass,
-    DiagnosticCode, DiagnosticPhase, InstanceId, InterfaceKey, PROVIDER_STATE_FORMAT_V1,
-    PackageDocument, PlanId, RequestId, RequirementDeclaration, RequirementStrength,
-    ResourceLifetime, ValueExpression, VersionedDocument, compare_resource_ids,
+    AccessMode, AuthorityGrant, Binding, BindingPlanDocument, BindingSource, Diagnostic,
+    DiagnosticClass, DiagnosticCode, DiagnosticPhase, InstanceId, InterfaceKey,
+    PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId, ProviderImplementation, RequestId,
+    RequirementDeclaration, RequirementStrength, ResourceLifetime, ResourceReference,
+    ValueExpression, VersionedDocument, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -23,7 +24,7 @@ use crate::graph::{
     BindingProviderState, BindingValidationInputs, CheckedBindingPlan, ValidationContext,
     check_strict_order, diagnostic,
 };
-use crate::schema::{SchemaPath, validate_value};
+use crate::schema::{SchemaPath, validate_materialized_value, validate_value};
 use package::{validate_declared_root_requests, validate_package_document};
 
 pub(crate) fn validate_package_contract(
@@ -512,6 +513,8 @@ pub(crate) fn validate_binding_document(
         }
     }
 
+    validate_desired_resource_realizations(context, &document, &inputs, &mut diagnostics);
+
     validate_contributions(
         context,
         &document,
@@ -623,6 +626,388 @@ pub(crate) fn validate_binding_document(
     } else {
         Err(ValidationErrors::new(diagnostics))
     }
+}
+
+fn validate_desired_resource_realizations(
+    context: &ValidationContext,
+    plan: &BindingPlanDocument,
+    inputs: &BindingValidationInputs,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (index, resource) in inputs.desired_state.resources.iter().enumerate() {
+        let path = vec![
+            "desired_state".to_string(),
+            "resources".to_string(),
+            index.to_string(),
+            "realization".to_string(),
+        ];
+        let Some(controller) = inputs
+            .desired_state
+            .controllers
+            .iter()
+            .find(|assignment| assignment.resource == resource.resource)
+        else {
+            validate_published_resource(context, plan, inputs, resource, path, diagnostics);
+            continue;
+        };
+        let controller_provider_bindings = plan
+            .bindings
+            .iter()
+            .filter(|binding| binding.provider == controller.controller.provider)
+            .collect::<Vec<_>>();
+        if resource.realization.as_json().is_null()
+            && controller_provider_bindings.iter().any(|binding| {
+                binding.source == BindingSource::ExistingPin && binding.provider_package.is_none()
+            })
+            && controller_provider_bindings
+                .iter()
+                .all(|binding| binding.provider_package.is_none())
+        {
+            // An unchanged existing pin has no package-backed desired
+            // realization to validate. Every newly selected controller carries
+            // an authenticated provider package and follows the strict path.
+            continue;
+        }
+        let mut controller_bindings = plan.bindings.iter().filter(|binding| {
+            binding.provider == controller.controller.provider
+                && context
+                    .interface(&binding.interface)
+                    .is_some_and(|interface| {
+                        interface.interface.aggregation.controller_group
+                            == controller.controller.group
+                    })
+        });
+        let Some(binding) = controller_bindings.next() else {
+            push_diagnostic(
+                diagnostics,
+                resource_realization_diagnostic(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    resource,
+                    "desired resource controller has no selected implementation".to_string(),
+                ),
+            );
+            continue;
+        };
+        if controller_bindings.any(|candidate| {
+            candidate.provider_package != binding.provider_package
+                || candidate.interface != binding.interface
+                || candidate.implementation != binding.implementation
+        }) {
+            push_diagnostic(
+                diagnostics,
+                resource_realization_diagnostic(
+                    DiagnosticCode::DuplicateIdentity,
+                    path,
+                    resource,
+                    "desired resource controller resolves to conflicting selected implementations"
+                        .to_string(),
+                ),
+            );
+            continue;
+        }
+        let Some(implementation) = exact_bound_implementation(inputs, binding) else {
+            push_diagnostic(
+                diagnostics,
+                resource_realization_diagnostic(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    resource,
+                    "desired resource controller implementation is absent from the authenticated package catalog"
+                        .to_string(),
+                ),
+            );
+            continue;
+        };
+        let Some(selected_interface) = context.interface(&binding.interface) else {
+            push_diagnostic(
+                diagnostics,
+                resource_realization_diagnostic(
+                    DiagnosticCode::MissingReference,
+                    path,
+                    resource,
+                    "desired resource controller interface is unavailable".to_string(),
+                ),
+            );
+            continue;
+        };
+        let authorized_write_methods = binding
+            .caller_grant
+            .methods
+            .iter()
+            .filter(|method_name| {
+                selected_interface
+                    .interface
+                    .methods
+                    .get(*method_name)
+                    .is_some_and(|method| {
+                        method.target_resource == resource.kind
+                            && method.semantics.required_target_access.is_write()
+                    })
+            })
+            .collect::<Vec<_>>();
+        let resource_write_granted = binding.caller_grant.resources.iter().any(|permission| {
+            permission.resource == resource.resource
+                && permission.access.is_write()
+                && authorized_write_methods
+                    .iter()
+                    .any(|method| permission.operations.contains(method))
+        });
+        if authorized_write_methods.is_empty() || !resource_write_granted {
+            push_diagnostic(
+                diagnostics,
+                resource_realization_diagnostic(
+                    DiagnosticCode::ResourceScopeEscape,
+                    path.clone(),
+                    resource,
+                    "desired resource lacks an exact selected write method and resource grant"
+                        .to_string(),
+                ),
+            );
+        }
+        let Some(schema) = implementation.desired_schema.as_ref() else {
+            push_diagnostic(
+                diagnostics,
+                resource_realization_diagnostic(
+                    DiagnosticCode::UnsupportedRequiredFeature,
+                    path,
+                    resource,
+                    "selected controller implementation does not declare a desired realization schema"
+                        .to_string(),
+                ),
+            );
+            continue;
+        };
+        if let Err(errors) = validate_materialized_value(schema, &resource.realization) {
+            for error in errors.into_diagnostics() {
+                let mut item = resource_realization_diagnostic(
+                    error.code,
+                    path.clone(),
+                    resource,
+                    error.message,
+                );
+                item.class = error.class;
+                push_diagnostic(diagnostics, item);
+            }
+        }
+    }
+}
+
+fn validate_published_resource(
+    context: &ValidationContext,
+    plan: &BindingPlanDocument,
+    inputs: &BindingValidationInputs,
+    resource: &aos_ability_model::ResourceRevision,
+    path: Vec<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(reference) = published_resource_reference(&resource.value) else {
+        // Existing read-only observations may retain provider-neutral values.
+        // The stricter publication contract applies when a provider publishes
+        // an explicit ResourceReference into the final catalog.
+        return;
+    };
+    if reference.resource != resource.resource
+        || reference.interface.name != resource.kind
+        || reference.lifetime != resource.lifetime
+    {
+        push_diagnostic(
+            diagnostics,
+            resource_realization_diagnostic(
+                DiagnosticCode::BindingInterfaceMismatch,
+                path.clone(),
+                resource,
+                "published ResourceReference does not match its catalog identity, interface, and lifetime"
+                    .to_string(),
+            ),
+        );
+        return;
+    }
+    let Some(interface) = context.interface(&reference.interface) else {
+        push_diagnostic(
+            diagnostics,
+            resource_realization_diagnostic(
+                DiagnosticCode::MissingReference,
+                path.clone(),
+                resource,
+                "published ResourceReference names an unavailable interface".to_string(),
+            ),
+        );
+        return;
+    };
+    if reference.operations.is_empty()
+        || reference
+            .operations
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || reference.operations.iter().any(|method| {
+            interface
+                .interface
+                .methods
+                .get(method)
+                .is_none_or(|method| method.semantics.required_target_access != AccessMode::Read)
+        })
+    {
+        push_diagnostic(
+            diagnostics,
+            resource_realization_diagnostic(
+                DiagnosticCode::ResourceScopeEscape,
+                path.clone(),
+                resource,
+                "a resource without a write controller may publish only read methods".to_string(),
+            ),
+        );
+        return;
+    }
+    let bindings = plan
+        .bindings
+        .iter()
+        .filter(|binding| {
+            binding.provider == reference.resource.provider
+                && binding.interface == reference.interface
+        })
+        .collect::<Vec<_>>();
+    let [binding] = bindings.as_slice() else {
+        let (code, message) = if bindings.is_empty() {
+            (
+                DiagnosticCode::MissingReference,
+                "published ResourceReference has no exact selected provider binding",
+            )
+        } else {
+            (
+                DiagnosticCode::DuplicateIdentity,
+                "published ResourceReference has multiple candidate provider bindings",
+            )
+        };
+        push_diagnostic(
+            diagnostics,
+            resource_realization_diagnostic(code, path.clone(), resource, message.to_string()),
+        );
+        return;
+    };
+    let request_authorizes_publication = plan
+        .requests
+        .iter()
+        .find(|request| request.id == binding.request)
+        .is_some_and(|request| {
+            request.accepted_interfaces.contains(&reference.interface)
+                && reference
+                    .operations
+                    .iter()
+                    .all(|method| request.methods.contains(method))
+        });
+    let binding_authorizes_publication = reference
+        .operations
+        .iter()
+        .all(|method| binding.caller_grant.methods.contains(method));
+    let exact_read_grant = binding.caller_grant.resources.iter().any(|permission| {
+        permission.resource == reference.resource
+            && permission.access == AccessMode::Read
+            && reference
+                .operations
+                .iter()
+                .all(|method| permission.operations.contains(method))
+    });
+    if !request_authorizes_publication || !binding_authorizes_publication || !exact_read_grant {
+        push_diagnostic(
+            diagnostics,
+            resource_realization_diagnostic(
+                DiagnosticCode::ResourceScopeEscape,
+                path.clone(),
+                resource,
+                "published ResourceReference lacks an exact request, method, and read resource grant"
+                    .to_string(),
+            ),
+        );
+    }
+    if exact_bound_implementation(inputs, binding).is_none() {
+        push_diagnostic(
+            diagnostics,
+            resource_realization_diagnostic(
+                DiagnosticCode::MissingReference,
+                path.clone(),
+                resource,
+                "published ResourceReference binding has no authenticated implementation"
+                    .to_string(),
+            ),
+        );
+    }
+    if !resource.realization.as_json().is_null() {
+        push_diagnostic(
+            diagnostics,
+            resource_realization_diagnostic(
+                DiagnosticCode::ValueTypeMismatch,
+                path,
+                resource,
+                "published read-only resource must not carry a desired backend realization"
+                    .to_string(),
+            ),
+        );
+    }
+}
+
+fn published_resource_reference(
+    value: &aos_ability_model::AbilityValue,
+) -> Option<ResourceReference> {
+    let mut object = value.as_json().as_object()?.clone();
+    if object.len() != 5
+        || object
+            .remove("_type")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .as_deref()
+            != Some("aos-resource-reference")
+    {
+        return None;
+    }
+
+    serde_json::from_value(serde_json::Value::Object(object)).ok()
+}
+
+fn exact_bound_implementation<'a>(
+    inputs: &'a BindingValidationInputs,
+    binding: &aos_ability_model::Binding,
+) -> Option<&'a ProviderImplementation> {
+    let package_digest = binding.provider_package?;
+    let mut packages = inputs.packages.iter().filter(|package| {
+        package
+            .content_digest()
+            .is_ok_and(|digest| digest == package_digest)
+    });
+    let package = packages.next()?;
+    if packages.next().is_some() {
+        return None;
+    }
+
+    let mut implementations = package
+        .implementation
+        .providers
+        .iter()
+        .filter(|implementation| {
+            implementation.interface == binding.interface
+                && implementation.artifact == binding.implementation.artifact
+                && implementation
+                    .descriptor_digest()
+                    .is_ok_and(|descriptor| descriptor == binding.implementation.descriptor)
+        });
+    let implementation = implementations.next()?;
+    implementations.next().is_none().then_some(implementation)
+}
+
+fn resource_realization_diagnostic(
+    code: DiagnosticCode,
+    path: Vec<String>,
+    resource: &aos_ability_model::ResourceRevision,
+    message: String,
+) -> Diagnostic {
+    let mut item = diagnostic(
+        code,
+        DiagnosticClass::InvalidContract,
+        DiagnosticPhase::Binding,
+        path,
+        message,
+    );
+    item.resource = Some(resource.resource.clone());
+    item
 }
 
 fn validate_binding_inputs(

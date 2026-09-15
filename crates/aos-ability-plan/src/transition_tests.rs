@@ -1901,10 +1901,18 @@ fn lifecycle_environment(
     environment.resources = vec![
         ResourceRevision {
             resource: old_resource.clone(),
+            kind: interface.name.clone(),
+            lifetime: ResourceLifetime::Instance,
+            value: AbilityValue::new(serde_json::json!(true)).unwrap(),
+            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
             revision: RevisionId(aos_contract::Sha256Digest::of_bytes("old unit revision")),
         },
         ResourceRevision {
             resource: new_resource.clone(),
+            kind: interface.name.clone(),
+            lifetime: ResourceLifetime::Instance,
+            value: AbilityValue::new(serde_json::json!(true)).unwrap(),
+            realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
             revision: RevisionId(aos_contract::Sha256Digest::of_bytes("new unit revision")),
         },
     ];

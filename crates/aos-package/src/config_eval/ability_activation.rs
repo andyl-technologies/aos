@@ -1694,34 +1694,11 @@ fn specialize_planning(
     catalog: &crate::ability_package::VerifiedAbilityPlanningCatalog,
     evaluator: &mut RestrictedAbilityEvaluator,
 ) -> Result<VerifiedPlanningSnapshot> {
-    let activation_revisions = inputs
-        .packages
-        .iter()
-        .filter(|coordinate| !coordinate.activation_revision.is_empty())
-        .map(|coordinate| {
-            let package = Sha256Digest::parse(&coordinate.package_digest).with_context(|| {
-                format!(
-                    "decoding activation package identity for {:?}",
-                    coordinate.name
-                )
-            })?;
-            let revision =
-                Sha256Digest::parse(&coordinate.activation_revision).with_context(|| {
-                    format!(
-                        "decoding activation content revision for {:?}",
-                        coordinate.name
-                    )
-                })?;
-
-            Ok((package, aos_ability_model::RevisionId(revision)))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
-    let outcome = catalog.composer().compose_with_activation_revisions(
+    let outcome = catalog.composer().compose(
         &inputs.policy_set.policies,
         inputs.desired.seed.clone(),
         inputs.desired.environment.clone(),
         catalog.packages().to_vec(),
-        activation_revisions,
         evaluator,
     )?;
     let snapshot = PlanningSnapshot::from_outcome(&outcome)?;
@@ -2047,11 +2024,11 @@ mod tests {
     use aos_ability_model::{
         AbilityActivationMode, AbilityValue, AccessMode, AggregateId, AggregateOutput,
         ArtifactReference, BindingId, EnvironmentId, ExecutionStage, ExportDeclaration,
-        HandlerDescriptor, InstanceId, InterfaceKey, InterfaceName, LocalKey,
-        MethodSemantics, OperationPhase, OutputDescriptor, PackageDocument, PackageImplementation,
-        PlanId, ProviderImplementation, ProviderImplementationReference, ResourceId,
-        ResourceLifetime, ResourceReference, RevisionId, ScopePath, TransactionId, ValueExpression,
-        ValuePhase, ValueSchema, ValueVisibility,
+        HandlerDescriptor, InstanceId, InterfaceKey, InterfaceName, LocalKey, MethodSemantics,
+        OperationPhase, OutputDescriptor, PackageDocument, PackageImplementation, PlanId,
+        ProviderImplementation, ProviderImplementationReference, ResourceId, ResourceLifetime,
+        ResourceReference, RevisionId, ScopePath, TransactionId, ValueExpression, ValuePhase,
+        ValueSchema, ValueVisibility,
     };
 
     use super::*;
@@ -2860,6 +2837,12 @@ mod tests {
             child_requests: Vec::new(),
             resources: vec![aos_ability_model::ResourceRevision {
                 resource: mapping.resource.clone(),
+                kind: candidate_locator.interface.name.clone(),
+                lifetime: ResourceLifetime::Instance,
+                value: AbilityValue::new(serde_json::json!(candidate))
+                    .expect("candidate is bounded"),
+                realization: AbilityValue::new(serde_json::json!(candidate))
+                    .expect("candidate is bounded"),
                 revision: mapping.revision,
             }],
             outputs: vec![AggregateOutput {

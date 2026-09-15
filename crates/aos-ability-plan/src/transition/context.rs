@@ -671,6 +671,10 @@ mod tests {
             .into_iter()
             .map(|resource| ResourceRevision {
                 resource: resource.clone(),
+                kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
+                lifetime: aos_ability_model::ResourceLifetime::Instance,
+                value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
+                realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
                 revision: desired_revision,
             })
             .collect::<Vec<_>>();
@@ -744,6 +748,10 @@ mod tests {
             .into_iter()
             .map(|resource| ResourceRevision {
                 resource: resource.clone(),
+                kind: aos_ability_model::InterfaceName::new("aos.test-resource").unwrap(),
+                lifetime: aos_ability_model::ResourceLifetime::Instance,
+                value: aos_ability_model::AbilityValue::new(serde_json::json!(true)).unwrap(),
+                realization: AbilityValue::new(serde_json::Value::Null).unwrap(),
                 revision: desired_revision,
             })
             .collect::<Vec<_>>();
