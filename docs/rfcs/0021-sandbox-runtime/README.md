@@ -20,11 +20,19 @@ operations for execution, inspection, snapshot, suspend, resume, fork, and
 deletion. The service is not specific to coding agents; agents use the same
 public CLI and API as every other client.
 
-The initial runtime backend is `systemd-nspawn`, launched as a transient
-systemd unit without making `systemd-machined` the source of truth. AOS owns
-desired state, capability delegation, storage lineage, mount attachment, and
-reconciliation. Backends remain pluggable: the portable API describes sandbox
-semantics and required capabilities rather than nspawn arguments.
+The planned initial production runtime backend is `systemd-nspawn`, launched as
+a transient systemd unit without making `systemd-machined` the source of truth.
+AOS owns desired state, capability delegation, storage lineage, mount
+attachment, and reconciliation. Backends remain pluggable: the portable API
+describes sandbox semantics and required capabilities rather than nspawn
+arguments.
+
+The current source tree contains the portable runtime-backend and durable
+execution contracts, a dormant Host-protocol projection, and the bounded guest
+agent protocol and reducer. It does not yet contain a concrete runtime-backend
+implementation, an active Host-to-backend call site, or a guest-local effect
+adapter. Those source foundations do not activate nspawn, the public execution
+surface, readiness, or any production service route.
 
 Dynamic filesystem attachment is part of the first architecture, not an
 afterthought. A source-neutral **filesystem view** abstraction selects among:

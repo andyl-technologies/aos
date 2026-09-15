@@ -120,6 +120,23 @@ and old plans; transient payload units are not resumed until current authority
 is reacquired. A restart reconstructs a deadline only from a still-valid
 authority-signed lease and never from a persisted monotonic counter alone.
 
+## Current runtime and guest-agent source status
+
+The portable `aos-sandbox-core` runtime-backend module defines move-only
+prepare, start, freeze, thaw, stop, destroy, execution-admission, effect, and
+recovery contracts. `aos-sandbox-host` contains a dormant projection from an
+already validated Host 1.0 request into those contracts. The projection has no
+active service call site, and no concrete runtime backend currently implements
+the portable trait.
+
+The source-only `aos-sandbox-agent` crate defines the bounded `AOSAGE01`
+incarnation handshake, stop-and-wait operation stream, execution and quiesce
+reducer, exact replay fencing, and protected checkpoint format. Its broker
+adapter is a dormant nonauthorizing projection, and no guest-local effect
+adapter or public execution data plane consumes it. These source foundations
+do not start nspawn, register a public route, advertise readiness, or authorize
+a Host or guest effect.
+
 ## `aos-viewd`
 
 The view service is unprivileged and owns:

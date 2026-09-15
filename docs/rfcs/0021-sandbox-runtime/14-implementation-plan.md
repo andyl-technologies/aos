@@ -164,7 +164,14 @@ The proposed boundaries are:
 | `aos-proto` | Public `aos.sandbox.v1` descriptors and Connect API | Linux and backend details |
 | `aos-sandbox-core` | Portable model, policy math, state machines, manifests, journal contracts, backend traits | D-Bus, syscalls, ZFS commands |
 | `aos-sandbox-linux` | Audited pidfd, namespace, path-resolution, and new-mount-API wrappers | Public parsing and policy |
+| `aos-filesystem-fuse` | FUSE worker logic and the narrow libfuse C ABI/callback boundary | Mount-namespace authority, public policy, and general Linux helpers |
 | `aos-sandbox` | Client library, unprivileged controller/node reconciler, operations, placement | Direct privileged effects |
+| `aos-sandbox-broker-session-protocol` | Canonical Broker Session artifacts, all-method durable records, and pure replay histories | Protected key custody, journal ownership, dispatch, and descriptor use |
+| `aos-sandbox-broker-session-security` | Protected Broker Session manifest/key custody and sealed recovery/currentness | Feature advertisement, public endpoints, and effect dispatch |
+| `aos-sandbox-source-provider-protocol` | Canonical SourceProvider wire objects and cryptographic verification | Journal, backend, socket, and descriptor custody |
+| `aos-sandbox-source-provider-ledger` | Pure canonical `AOSSPL01` codec, reducer, limits, and offline migration planning | Journal, keys, sockets, kernel observations, and effects |
+| `aos-sandbox-source-provider-security` | Protected provider configuration, key/process custody, verification, and authenticated migration provenance | Listener, routing, backend dispatch, and production advertisement |
+| `aos-sandbox-source-provider` | Production-inert provider-owned ledger facade, reservations, recovery, and backend-effect permits | Listener, real backend, service wiring, and feature advertisement |
 | `aos-sandbox-host` | Root-only fixed host protocol and typed systemd/freeze verbs | Storage, public/network listeners, and arbitrary properties |
 | `aos-sandbox-storage` | Root-only storage protocol and one-shot typed OpenZFS workers | PID 1 authority, public parsing, and caller-supplied names/options |
 | `aos-sandbox-mount` | Root-only descriptor mount broker and one-shot namespace helper | Source parsing, network, and arbitrary paths/options |
@@ -180,10 +187,27 @@ A backend that must evolve independently becomes a separate process with a
 versioned, capability-negotiated protocol. Privileged code never loads dynamic
 plugins with `dlopen`.
 
-The Linux crate is the sole place for any required `unsafe` and vendored UAPI.
-Each unsafe operation documents descriptor type, lifetime, namespace,
-single-threading, and generation invariants. Safe crates pass owned descriptor
-types rather than integer FDs.
+Reusable Linux syscall mechanics and vendored UAPI belong in
+`aos-sandbox-linux`. The RFC-0021 source currently has the following complete
+`unsafe` ownership table. The Host, Network, and Mount service-entry rows are
+existing activated transitional boundaries used by `run()` and the existing
+Nix services; this source tranche adds no new activation and does not constitute
+production qualification:
+
+| Owner | Permitted boundary | Status |
+| --- | --- | --- |
+| `aos-sandbox-linux` | Reusable direct syscalls, vendored UAPI, inherited-FD claiming, fixed spawning, pidfds, namespaces, and descriptor validation | Canonical reusable Linux boundary |
+| `aos-filesystem-fuse` | `abi.rs`, `callbacks.rs`, `control.rs`, and the scoped call in `lib.rs` needed for the libfuse C ABI and synchronous callback trampolines | Narrow FUSE-specific exception; not a general syscall home |
+| `aos-sandbox-host` | `activation.rs` and `main.rs` initial ownership claim for the inherited systemd listener | Existing activated transitional boundary; target migration is a safe Linux-owned startup wrapper |
+| `aos-sandbox-network` | `activation.rs` and `main.rs` initial ownership claim for the inherited systemd listener | Existing activated transitional boundary; target migration is a safe Linux-owned startup wrapper |
+| `aos-sandbox-mount` | `helper.rs`, `keeper.rs`, and the mount helper/daemon entrypoints that claim fixed inherited descriptor tables | Existing activated transitional boundaries; target migration is safe Linux-owned startup wrappers |
+
+No other RFC-0021 crate is authorized to add an unsafe boundary. Every unsafe
+operation must have a specific need that safe Rust cannot reasonably meet and
+must document descriptor type, lifetime, namespace, single-threading, and
+generation invariants in an adjacent `SAFETY` argument. After initial process
+ownership is established, crates pass owned descriptor types rather than
+integer FDs.
 
 ## Nix packages and modules
 
@@ -203,6 +227,12 @@ and CLI outputs are packaged so the ordinary CLI closure does not retain
 root-only helpers. Every dependency is an AOS source-built package. A FUSE
 userspace library selected in phase 0 is packaged hermetically rather than
 taken from the host.
+
+This paragraph describes the target package split. Source-only protocol,
+runtime, guest-agent, migration, and protected-journal modules are not thereby
+installed, enabled, advertised, or added to a production closure. Packaging
+and activation remain subject to their phase exit criteria and qualification
+gates.
 
 The first packaged candidate is libfuse 3.18.2. Its source-built AOS package
 contains the shared library, headers, and package metadata but no mount helper,

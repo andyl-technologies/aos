@@ -31,6 +31,42 @@ specification, observed status, effective policy digest, and conditions. They
 never include host paths, unit names, cgroup paths, PIDs as identity, namespace
 paths, FUSE IDs, mount IDs, ZFS dataset names, or backend command lines.
 
+The additive public observation model makes that status explicit.
+`SandboxObservedState` carries phase, optional active incarnation and placement,
+desired generation, monotone observation sequence, conditions, ownership lease
+generation and expiry, Guardian state and generation, capability generation,
+realized-root and ownership-transaction state, environment generation, typed
+attachment health and generations, active executions, pinned references,
+cache/disclosure domain observations, logical usage, an audit-event cursor, and
+the last successful reconciliation time. Conditions bind their desired
+generation and observation sequence and use closed reason and freshness values.
+Operations and the other reconciled resources likewise carry a current
+observation sequence and reconciliation time.
+
+Source-only checked projections validate the complete established protobuf
+resource, phase and placement legality, condition correlation, bounds, and
+public/operator redaction before a service or CLI may return it. The pure Get
+and watch handler is deliberately not registered with the production Connect
+router. These models define no second public schema, grant no read authority,
+and activate no point-read, watch, audit, or mutation route.
+
+### Runtime and guest-agent source status
+
+The portable runtime-backend module defines capability negotiation, move-only
+lifecycle states, durable execution admission and effect records, bounded
+codecs, and authenticated recovery inputs. A dormant Host 1.0 projection maps
+an already validated request into that model without invoking an effect. No
+concrete runtime backend implements the trait and no active Host service call
+site consumes the projection.
+
+The source-only guest-agent contract uses `AOSAGE01` frames for one exact
+incarnation handshake and a bounded stop-and-wait execution/quiesce stream. Its
+reducer owns sequence compare-and-swap, exact replay, closed transitions, and
+protected checkpoint recovery, while its broker adapter remains a
+nonauthorizing projection. There is no guest-local effect adapter, public
+execution data plane, nspawn activation, listener, readiness advertisement, or
+production service route in this source tranche.
+
 The initial method registry is explicit:
 
 - sandbox: create, get, list, list-children, plan/update policy, start, stop,
@@ -132,6 +168,30 @@ Canceling an RPC deadline does not cancel an accepted operation. An explicit
 uses portable milestones rather than backend step names, and terminal results
 distinguish pre-commit failure/cancel from committed desired state with
 residual cleanup.
+
+### Protected-domain journal adapters (source-only, inert)
+
+The dormant domain adapters share a canonical reducer envelope and materialized
+transaction-member wrapper:
+
+```text
+AOSRDP01 | version:u16 | family:u8 | kind:u8 | phase:u8 | reserved:u8 |
+companions:u16 | body-length:u32 | sorted-companion-digests |
+canonical-body | digest
+
+AOSDTX01 | version:u16 | reserved:u16 | transaction-id[16] |
+member-index:u16 | member-count:u16 | set-digest[32] |
+envelope-length:u32 | canonical-envelope | member-digest[32]
+```
+
+Closed schemas bind record kind, fixed journal namespace, transaction order,
+state/publication/effect role, reducer phase, canonical payload bound, replay,
+and postcommit capability. Current domain envelopes are hierarchy `AOSHTJ01`,
+environment `AOSEPJ01`, Git `AOSGPJ01`, lifecycle `AOSLPJ01`, cache residency
+`AOSCRJ01`, policy compilation `AOSPCJ01`, and publisher admission `AOSPAJ01`.
+The adapters cannot select arbitrary namespaces or manufacture postcommit
+authority. They remain source-only: no production route, backend, publisher,
+cache, Git, environment, or lifecycle effect is activated by their presence.
 
 ## Errors
 
@@ -733,7 +793,7 @@ route's resource namespace; selection generation/digest commits that routing
 decision independently of resource and catalog generations. Resource IDs are
 exactly 32 bytes. The provider resource commitment is SHA-256 over its versioned
 domain followed by resource-namespace digest, resource ID/generation/digest,
-selection generation/digest, and complete proof digest. Later `AOSMSA01` maps
+selection generation/digest, and complete proof digest. The current `AOSMSA02` maps
 that value into the Stage-1 `provider_resource_digest` input before Mount mints
 the realization handle; neither caller nor provider chooses that handle.
 
@@ -855,34 +915,61 @@ envelope or a claim that scalar kernel fields prove provenance.
 Mount mints
 `SHA256("aos.sandbox.mount.source-acquisition-id.v1\0" ||
 acquire-operation-id[16] || SHA256(exact Mount Acquire body))` as the 32-byte
-acquisition ID. Namespace 40 stores the version-1 `AOSMSA01` format. Acquisition
-keys are `"aos.mount.source-acquisition.v1\0" || acquisition-id`; the record
-digest domain is
-`"aos.sandbox.mount.source-acquisition-record.v1\0"`. Separate tagged
-transaction domains distinguish acquisition rows, provider-head/session
-changes, and inventory commits.
+acquisition ID. Namespace 40's normal decoder accepts only canonical
+`AOSMSA02`, version 2, with five closed record families:
 
-The closed lifecycle is `PendingQuery`, `DescriptorCustodied`, `Active`,
+- acquisition:
+  `"aos.mount.source-acquisition.v2\0" || acquisition-id[32]`, digest domain
+  `"aos.sandbox.mount.source-acquisition-record.v2\0"`;
+- provider head:
+  `"aos.mount.source-provider-head.v2\0" || holder-id[16] || provider-id[16]`,
+  digest domain `"aos.sandbox.mount.source-provider-head-record.v2\0"`;
+- holder sequence:
+  `"aos.mount.source-holder-sequence.v2\0" || holder-id[16]`, digest domain
+  `"aos.sandbox.mount.source-holder-sequence-record.v2\0"`;
+- immutable provider session:
+  `"aos.mount.source-provider-session.v2\0" || session-id[32]`, digest domain
+  `"aos.sandbox.mount.source-provider-session-record.v2\0"`; and
+- immutable provider query attempt:
+  `"aos.mount.source-provider-query-attempt.v2\0" || attempt-id[32]`, digest
+  domain `"aos.sandbox.mount.source-provider-query-attempt-record.v2\0"`.
+
+Each canonical JSON value, including its envelope and hex-encoded retained
+bytes, is bounded at four MiB; the complete materialized graph is bounded at
+512 MiB before cloning or allocation. A version-1 key is never recognized by
+the normal decoder. `AOSMSA01` remains available only to the explicit, pure,
+bounded hard-cut migration planner. That planner validates the complete legacy
+graph and requires a complete supplemental `AOSMSA02` provenance graph for
+four-key trust, executions, normalized intents, floors, attempts, and holder
+sequences. Retained legacy authority that cannot supply those facts returns
+`NeedsProvenance`; no ordinary open, implicit upgrade, installer, or authority
+is created by the migration decoder.
+
+The acquisition row retains the closed lifecycle `PendingQuery`,
+`DescriptorCustodied`, `Active`,
 `Consumed`, `Releasing`, `Released`, and `Faulted`. A first PendingQuery is
 durable before provider I/O and binds exact Mount request and semantic identity,
 plan and lease digests, pre-catalog template and binding bytes/digests,
 protected holder/node/boot/route/trust/session snapshots, signed provider
 request bytes, and sequence reservation. Each stable holder/provider pair also
-has a provider-head control row. It owns one outstanding request reservation,
-both direction-local sequence heads, current session/boot/route/key identity,
-and the stable inventory and catalog floor. The client-to-provider sequence is
-reserved atomically before I/O; a verified signed disposition consumes the
+has a provider-head control row; holder-sequence rows make acquisition identity
+nonreuse explicit, immutable session rows retain the authenticated execution
+and trust transcript, and immutable query-attempt rows own each signed request,
+sequence reservation, outcome, and recovery state. The provider head owns the
+current session and direction heads, one pending attempt, and the stable
+inventory and catalog floor. The client-to-provider sequence is reserved
+atomically before I/O; a verified signed disposition consumes the attempt
 reservation and advances the response head atomically with its acquisition row
 or inventory reconciliation. Multiple acquisition rows never infer or share a
 sequence by scanning lifecycle state. A Complete inventory's exact signed
-bytes are retained once in the stable floor; its disposition checkpoint retains
-the signed status and result digest rather than duplicating the large result.
+bytes are retained by its attempt while the stable floor retains the correlated
+disposition commitment without duplicating the large result.
 The head also advances a checked durable inventory-observation ordinal for
 every newly consumed Complete response, including a fresh authenticated query
 whose provider generation and stable content equal the preceding floor. Exact
 redelivery of an already committed checkpoint does not advance the ordinal.
 The canonical maximum SourceProvider inventory therefore remains below the
-four-MiB AOSMSA01 value ceiling. Reconciliation commits that one provider-head
+four-MiB AOSMSA02 value ceiling. Reconciliation commits that one provider-head
 record and its aggregate residual/conflict result; it does not rewrite every
 matching acquisition row in the same transaction. When a terminal inventory
 later authorizes manager-confirmed release, that row records the exact current
@@ -923,7 +1010,7 @@ only the SourceProvider resource/proof commitment into the existing AOSMSP01
 by numeric cast, and mints the realization handle. `Active` becomes `Consumed`
 only in one transaction with the exact AOSMSP01 activation and one final Create
 effect/operation admission whose field-13 projection equals the prospective
-template. AOSMSP01 itself is not folded into or silently changed by AOSMSA01.
+template. AOSMSP01 itself is not folded into or silently changed by AOSMSA02.
 
 Release retains the original signed lease and derives its provider request from
 the row and current protected session. It retains that release-time protected
@@ -981,6 +1068,43 @@ public scalar observations from activating, consuming, or releasing an
 acquisition. SourceProvider 1.0 and AOSMSP01 retain their exact wire and durable
 formats. Production Create therefore remains closed.
 
+### SourceProvider ledger and Mount-manager startup state (source-only, inert)
+
+Namespace 41's current canonical SourceProvider owner format is `AOSSPL01`,
+version 3. It has exactly seven closed bodies: authority head, catalog head,
+current holder-session head, immutable session history, provider attempt,
+provider acquisition, and release lineage. Fixed per-artifact ceilings, a
+bounded record count, and a 512-MiB aggregate recovered-graph ceiling apply
+before graph allocation. A normal version-3 open rejects version-2 records
+before materializing the graph; version 2 is not a second accepted wire shape.
+
+The separate pure version-2-to-version-3 planner first validates the complete,
+sorted canonical version-2 graph and requires externally authenticated
+supplemental projections for every identity, sequence, trust-history, and floor
+fact that version 2 omitted. The security layer authenticates the fixed
+`AOSSPMG1` manifest against the exact current namespace-41 snapshot plus current
+trust, revocation, catalog, and protected-configuration heads. The provider
+layer then applies the whole replacement under one snapshot/CAS boundary and
+returns an opaque recovery token if append durability is ambiguous. This is an
+offline migration path, not an in-place upgrade, listener, provider backend, or
+advertised production feature.
+
+Namespace 45 stores one monotone `AOSMMSTA1` Mount-manager startup-policy head
+and immutable `AOSMMCAP1` per-execution captures. Its purpose-limited protected
+authority may read namespace 40 acquisition state, namespace 39 SourcePin
+state, namespace 2 Mount resource lifecycle, and namespace 45 itself, and may
+append exactly one capture. It cannot mutate source lifecycle or grant general
+journal authority.
+
+Namespace 46 stores global capacity reservations for only two closed purposes:
+`PublisherCompletion`, whose owner is namespace 7 and whose allowed companion
+records are namespaces 6, 3, and 46, and `RuntimeExecution`, whose owner is
+namespace 3 and whose only companion namespace is 46. Each admission reserves
+exact successful-terminal and poison-terminal record and byte budgets in the
+same transaction; settlement consumes that reservation in the terminal
+transaction. This is neither generic cross-namespace capacity authority nor
+SourceProvider's internal `AOSSPL01` capacity accounting.
+
 ### Linux connection-bound record origins (source-only)
 
 The sequence-packet carrier now privately retains each connected endpoint's
@@ -1017,7 +1141,7 @@ descriptor-role semantics, atomic owner transactions, and enforcing MAC and
 delegated-writer confinement. `SBX-BPROTO-04`, `SBX-BPROTO-05`, and
 `SBX-P0-10` remain open.
 
-### Broker Session Authentication 1.0 source foundation (inert)
+### Broker Session Authentication 1.0 source foundations (inert)
 
 The exact client-required feature is
 `aos.sandbox.authentication.broker-session,1.0`. It has no alias and is never
@@ -1123,16 +1247,44 @@ exist, the receive adapter may preallocate only through the greater applicable
 retained bound, then must identify the authenticated target and apply that
 record's own bound before semantic use.
 
-Canonical projection validation is not full dispatch validation. The future
-production composite must still enforce method-body/header request ID and
-budget agreement, ancillary descriptor count and exact roles, error/body
-shape, and request-descriptor dispositions before dispatch, authority use, or
-descriptor consumption.
+The dormant all-method adapter performs canonical traffic admission and complete
+established request/outcome semantic validation for the closed 22-method
+profile: seven Host methods, eight Mount methods, four Storage methods, and
+three Network methods. It uses the existing method decoders, method-separated
+semantic commitments, required catalog bindings, exact header/request/budget
+cross-links, descriptor-role tables, errors, dispositions, and both endpoint
+directions. It retains canonical packets and replay evidence but invokes no
+service, consumes no descriptor, authorizes no effect, and writes no durable
+state. A future production composite must additionally derive and verify the
+actual ancillary descriptor identities and uses from the receiving kernel,
+recheck protected currentness, and join every effect reservation/outcome to its
+caller-owned atomic journal companions before dispatch or authority use.
 
-This adds no `AOSBSJ01`, journal API/namespace, chunks, CSPRNG, protected
-loader/private-key service, Linux evidence, descriptor-use permit, production
-advertisement/readiness, orchestration, SourceProvider/Mount acquisition
-change, Nix, or VM work. P0 activation requires request sequence reservation
+`AOSBSD01` is the method-neutral durable record for that complete profile. A
+request record and its terminal successor bind the endpoint, revision and
+predecessor, session and peer, protected context/publication/catalog, request
+ID, direction-local sequences, response ceiling, method profile, request and
+outcome semantics, fixed companions, and byte-exact signed packets. Bounded
+`AOSBSH01` full histories retain every canonical revision, enforce a gap-free
+CAS chain and exact request-to-terminal progression, and preserve the sole
+current head instead of accepting a caller-selected checkpoint. These formats
+are journal-neutral and allocate no namespace or write authority.
+
+The sealed recovery layer accepts history only through the protected
+namespace-47 `AOSBSJ01` owner, sandwiches derivation or reopen with another
+protected read, replays every retained signature and method semantic through
+the traffic machine, and alone mints move-only resend or outstanding-outcome
+state. The public dormant Mount-session owner internally selects fixed
+controller-client or Mount-broker endpoint roots, the fixed `session.journal`
+basename, root-owned opening, and closed replay limits. Raw endpoint loaders,
+journal openers, paths, basenames, and limits are not public authority inputs.
+The owner adopts an already-connected peer for each operation and creates no
+listener, route, dispatcher, or background task, so production use remains
+dormant.
+
+This adds no descriptor-use permit, production advertisement/readiness,
+orchestration, SourceProvider/Mount acquisition change, Nix, or VM work. P0
+activation requires request sequence reservation
 atomically companion to owning effect intent and signed-outcome CAS atomically
 companion to effect result, including controller sides. A future helper may
 return records for a caller-owned transaction but must never own the journal;
@@ -1147,8 +1299,8 @@ outcome head advances. Method semantics and every required signed-plan or
 feature condition are inseparable from traffic admission and must pass before
 reservation or dispatch.
 
-The next source-only layer composes this cryptographic state with the complete
-existing Network 1.0 `InventoryResources` semantics in
+The initial specialized source-only layer composes this cryptographic state
+with the complete existing Network 1.0 `InventoryResources` semantics in
 `aos-sandbox-protocol::authenticated_session`. Its opaque state can be created
 only from canonical mutual hellos and exact provisional transcript
 verification. Raw receive bounds come from that state. Request admission
@@ -1261,14 +1413,15 @@ signer, or outbound signature API is public.
 
 This foundation remains unused by Host, Storage, Mount, Network, and controller
 production code. Production peer-policy binding, external anti-rollback floors,
-protected deployment, traffic-record finalizers, sealed plans, receive
-allocation, caller-owned atomic request/result companions, every
+protected deployment, production use of the sealed traffic/recovery plans,
+receive allocation, caller-owned atomic request/result companions, every
 service/controller integration, MAC policy, readiness, and Nix remain open.
 Real fork continuation, cgroup/procfs mutation,
 cross-process flock contention, cross-UID ownership, and MAC policy qualification
-remain VM and `SBX-P0-10` activation gates. It introduces no journal,
-descriptor-use permit, or effect authority and does not close `SBX-BPROTO-04`,
-`SBX-BPROTO-05`, or `SBX-P0-10`.
+remain VM and `SBX-P0-10` activation gates. The source-only `AOSBSJ01`
+namespace-47 owner and its fixed Mount roots remain unactivated; this section
+introduces no descriptor-use permit or production effect dispatch and does not
+close `SBX-BPROTO-04`, `SBX-BPROTO-05`, or `SBX-P0-10`.
 
 ### Broker endpoint publication and sealed hello flights (source-only, inert)
 
@@ -1319,7 +1472,7 @@ or descriptor-bearing flights close the private handshake; local custody
 failure poisons custody. Completion exposes only a private non-authorizing
 Provisional transcript.
 
-A subsequent source-only sealed stage requires the first traffic exchange to
+The initial sealed bootstrap path requires the first traffic exchange to
 be Network 1.0 `InventoryResources`, NodeController, ClientRecord sequence 1,
 with no authorization quartet or descriptors. The protected client creates the
 request ID from blocking kernel entropy, selects an exclusive `CLOCK_BOOTTIME`
