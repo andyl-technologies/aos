@@ -76,6 +76,8 @@ in
     runtimeDeps = [ruby zfs coreutils mariadb postgresql];
     propagatedDeps = [];
 
+    abilities = ./_zfstools;
+
     phases = [
       {
         name = "unpack";
