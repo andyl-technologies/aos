@@ -66,12 +66,17 @@ pub(in crate::registry_ops) struct PublishProvenanceArtifact {
 pub(in crate::registry_ops) struct LocalPackageProvenanceSigner {
     pub(in crate::registry_ops) key_id: String,
     pub(in crate::registry_ops) key_path: PathBuf,
+    pub(in crate::registry_ops) trusted_key: String,
 }
 
 #[async_trait::async_trait]
 impl ProvenanceSigner for LocalPackageProvenanceSigner {
     fn key_id(&self) -> &str {
         &self.key_id
+    }
+
+    fn trusted_key_line(&self) -> Option<&str> {
+        Some(&self.trusted_key)
     }
 
     async fn sign_provenance(&mut self, payload: &[u8]) -> Result<ProvenanceSignature> {
@@ -433,6 +438,7 @@ pub(in crate::registry_ops) fn resolve_package_provenance_signer(
     Ok(LocalPackageProvenanceSigner {
         key_id: key_id.to_string(),
         key_path: PathBuf::from(signing_key.path()),
+        trusted_key: active.key.clone(),
     })
 }
 
