@@ -87,7 +87,7 @@
           completion = "command-exit";
         };
         directories.managed = [{
-          name = "dnsmasq";
+          path = "dnsmasq";
           purpose = "runtime";
           mode = "0750";
           retention = "restart";

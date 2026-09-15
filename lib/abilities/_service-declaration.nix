@@ -138,7 +138,7 @@
       == null
       || builtins.length directories.managed
       == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map (directory: {
-          name = "${directory.purpose}:${directory.name}";
+          name = "${directory.purpose}:${directory.path}";
           value = true;
         })
         directories.managed)));
@@ -252,7 +252,7 @@
     else if !memoryRangeValid
     then throw "service '${declaration.service}' finite memory high limit must not exceed its maximum"
     else if !directoriesValid
-    then throw "service '${declaration.service}' has duplicate managed directory names"
+    then throw "service '${declaration.service}' has duplicate managed directory paths"
     else if !environmentValid
     then throw "service '${declaration.service}' environment.variables cannot define PATH when search_path is non-empty"
     else if !activationValid

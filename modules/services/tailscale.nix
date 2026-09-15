@@ -85,13 +85,13 @@
         };
         directories.managed = [
           {
-            name = "tailscale";
+            path = "tailscale";
             purpose = "runtime";
             mode = "0755";
             retention = "restart";
           }
           {
-            name = "tailscale";
+            path = "tailscale";
             purpose = "state";
             mode = "0700";
             retention = "persistent";
