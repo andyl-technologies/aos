@@ -1,6 +1,6 @@
 ##! Fixed-point checks for package-owned Kubernetes service declarations.
-{lib}: let
-  evaluate = name: version: module: configuration:
+{lib, pkgs}: let
+  evaluatePackages = packageModules: configuration:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -14,10 +14,22 @@
         }
         configuration
       ];
-      packageModules = [{inherit name version module;}];
+      inherit packageModules;
     };
+  evaluate = name: version: module: configuration:
+    evaluatePackages [{inherit name version module;}] configuration;
+  evaluateIntegration = name: version: module: configuration:
+    evaluatePackages [
+      {
+        name = "k3s-combined";
+        version = pkgs.k3s-combined.version;
+        module = ../../pkgs/kubernetes/_k3s-config/module.nix;
+      }
+      {inherit name version module;}
+    ]
+    configuration;
   requests = evaluated: evaluated.config.aos.abilities.requests;
-  cloudcore = evaluate "cloudcore" "1.21.0" ../../pkgs/kubernetes/_cloudcore-config/module.nix {
+  cloudcore = evaluate "cloudcore" pkgs.cloudcore.version ../../pkgs/kubernetes/_cloudcore-config/module.nix {
     cloudcore = {
       enable = true;
       advertiseAddresses = ["192.0.2.20"];
@@ -30,7 +42,7 @@
       };
     };
   };
-  edgecore = evaluate "edgecore" "1.21.0" ../../pkgs/kubernetes/_edgecore-config/module.nix {
+  edgecore = evaluate "edgecore" pkgs.edgecore.version ../../pkgs/kubernetes/_edgecore-config/module.nix {
     edgecore = {
       enable = true;
       nodeName = "edge-01";
@@ -45,7 +57,7 @@
       };
     };
   };
-  kubelet = evaluate "kubelet" "1.34.0" ../../pkgs/kubernetes/_kubelet-config/module.nix {
+  kubelet = evaluate "kubelet" pkgs.kubelet.version ../../pkgs/kubernetes/_kubelet-config/module.nix {
     kubelet = {
       enable = true;
       nodeName = "worker-a";
@@ -54,27 +66,52 @@
       kubeconfig.ref = "system-credential:kubelet";
     };
   };
-  disabledCloudcore = evaluate "cloudcore" "1.21.0" ../../pkgs/kubernetes/_cloudcore-config/module.nix {};
-  disabledEdgecore = evaluate "edgecore" "1.21.0" ../../pkgs/kubernetes/_edgecore-config/module.nix {
+  disabledCloudcore = evaluate "cloudcore" pkgs.cloudcore.version ../../pkgs/kubernetes/_cloudcore-config/module.nix {};
+  disabledEdgecore = evaluate "edgecore" pkgs.edgecore.version ../../pkgs/kubernetes/_edgecore-config/module.nix {
     edgecore.cloudHub = {
       httpServer = "https://cloud.example.test";
       server = "cloud.example.test:10000";
     };
   };
-  disabledKubelet = evaluate "kubelet" "1.34.0" ../../pkgs/kubernetes/_kubelet-config/module.nix {};
-  k3sWorker = evaluate "k3s-worker" "1.34.1" ../../pkgs/kubernetes/_k3s-config/module.nix {
+  disabledKubelet = evaluate "kubelet" pkgs.kubelet.version ../../pkgs/kubernetes/_kubelet-config/module.nix {};
+  k3sWorker = evaluate "k3s-worker" pkgs.k3s-worker.version ../../pkgs/kubernetes/_k3s-config/module.nix {
     k3s = {
       enable = true;
       serverUrl = "https://control.example.test:6443";
       token.ref = "system-credential:k3s-token";
     };
   };
-  disabledK3sWorker = evaluate "k3s-worker" "1.34.1" ../../pkgs/kubernetes/_k3s-config/module.nix {
+  disabledK3sWorker = evaluate "k3s-worker" pkgs.k3s-worker.version ../../pkgs/kubernetes/_k3s-config/module.nix {
     k3s = {
       serverUrl = "https://control.example.test:6443";
       token.ref = "system-credential:k3s-token";
     };
   };
+  k3sCombined = evaluate "k3s-combined" pkgs.k3s-combined.version ../../pkgs/kubernetes/_k3s-config/module.nix {
+    k3s = {
+      enable = true;
+      token.ref = "system-credential:k3s-token";
+    };
+  };
+  cilium = evaluateIntegration "cilium" pkgs.cilium.version ../../pkgs/kubernetes/_cilium-abilities/module.nix {
+    cilium = {
+      enable = true;
+      kubeProxyReplacement = true;
+      operatorReplicas = 2;
+    };
+  };
+  disabledCilium = evaluateIntegration "cilium" pkgs.cilium.version ../../pkgs/kubernetes/_cilium-abilities/module.nix {};
+  longhorn = evaluateIntegration "longhorn-manager" pkgs.longhorn-manager.version ../../pkgs/storage/_longhorn-config/module.nix {
+    longhorn = {
+      enable = true;
+      defaultReplicaCount = 2;
+      nodeLabel = "true";
+    };
+  };
+  disabledLonghorn = evaluateIntegration "longhorn-manager" pkgs.longhorn-manager.version ../../pkgs/storage/_longhorn-config/module.nix {};
+  k3sPackageAbilities = pkgs.k3s-combined.abilities;
+  ciliumPackageAbilities = pkgs.cilium.abilities;
+  longhornPackageAbilities = pkgs.longhorn-manager.abilities;
   commandFor = evaluated: key: (requests evaluated).${key}.parameters.start;
   sourceFor = evaluated: package: (requests evaluated)."${package}:configuration".parameters.source;
   literalConfiguration = evaluated: package:
@@ -85,6 +122,13 @@
         else "<credential-path>"
     )
     (sourceFor evaluated package).fragments;
+  decodedObject = evaluated: package:
+    builtins.fromJSON (
+      builtins.unsafeDiscardStringContext
+      (
+        builtins.head (requests evaluated)."${package}:objects".parameters.objects
+      ).content
+    );
   containsManagerCredentialPath = source:
     builtins.any (
       fragment: fragment.kind == "literal" && lib.hasInfix "/run/credentials" fragment.text
@@ -104,7 +148,7 @@ in
   == [
     {
       executable = {
-        artifact = lib.abilities.packageOutput {};
+        artifact = lib.abilities.packageOutput {package = "cloudcore";};
         entry_point = "bin/cloudcore";
         arguments = [
           "--config"
@@ -164,23 +208,43 @@ in
   assert portableOptionTree cloudcore.options.cloudcore;
   assert portableOptionTree edgecore.options.edgecore;
   assert portableOptionTree kubelet.options.kubelet;
+  assert portableOptionTree k3sWorker.options.k3s;
+  assert portableOptionTree cilium.options.cilium;
+  assert portableOptionTree longhorn.options.longhorn;
   assert requests disabledK3sWorker == {};
   assert disabledK3sWorker.config.aos.abilities.requirementTemplates == k3sWorker.config.aos.abilities.requirementTemplates;
+  assert requests disabledCilium == {};
+  assert requests disabledLonghorn == {};
+  assert disabledCilium.config.aos.abilities.requirementTemplates == cilium.config.aos.abilities.requirementTemplates;
+  assert disabledLonghorn.config.aos.abilities.requirementTemplates == longhorn.config.aos.abilities.requirementTemplates;
   assert k3sWorker.config.k3s.role == "worker";
+  assert k3sCombined.config.k3s.role == "combined";
   assert (requests k3sWorker)."k3s-worker:kernel-modules".parameters.modules
   == [
     "br_netfilter"
     "vxlan"
     "ip_set"
   ];
+  assert (requests k3sWorker)."k3s-worker:ingress-policy".parameters.endpoints
+  == [
+    {
+      transport = "tcp";
+      port = 10250;
+    }
+    {
+      transport = "udp";
+      port = 8472;
+    }
+  ];
+  assert (requests k3sWorker)."k3s-worker:forwarding-policy".parameters.policy == "accept";
   assert (builtins.head (commandFor k3sWorker "k3s-worker:k3s-lifecycle")).executable
   == {
-    artifact = lib.abilities.packageOutput {};
+    artifact = lib.abilities.packageOutput {package = "k3s-worker";};
     entry_point = "bin/k3s-role-start";
     arguments = [
       {
         _type = "aos-request-output-reference";
-        request = "k3s-worker:addons";
+        request = "k3s-worker:configuration-base";
         output = "execution-path";
       }
       {
@@ -190,6 +254,33 @@ in
       }
     ];
   };
+  assert (requests k3sCombined)."k3s-combined:cluster-objects".parameters.cluster.prerequisites
+  == [
+    {
+      _type = "aos-request-output-reference";
+      request = "k3s-combined:lifecycle";
+      output = "retained-resource";
+    }
+  ];
+  assert builtins.any
+  (directory:
+    directory.path
+    == "rancher/k3s"
+    && directory.purpose == "configuration"
+    && directory.mode == "0755"
+    && directory.retention == "persistent")
+  (requests k3sCombined)."k3s-combined:k3s-directories".parameters.managed;
+  assert k3sCombined.config.aos.abilities.implementations."k3s-combined:kubernetes-object-set".interface
+  == lib.abilities.interfaces.kubernetesObjectManagement.controller.identity;
+  assert builtins.attrNames k3sPackageAbilities.interfaces
+  == [
+    "k3s-configuration"
+    "k3s-integration"
+  ];
+  assert k3sPackageAbilities.implementations.kubernetes-object-set.interface
+  == lib.abilities.interfaces.kubernetesObjectManagement.controller.identity;
+  assert k3sPackageAbilities.implementations.kubernetes-objects.interface
+  == lib.abilities.interfaces.kubernetesObjectManagement.contribution.identity;
   assert (requests kubelet)."kubelet:kubelet-supervision".parameters.startup_protocol == "notification";
   assert let
     configuration = builtins.fromJSON (
@@ -223,7 +314,28 @@ in
     }
   ];
   assert (builtins.head (commandFor kubelet "kubelet:kubelet-lifecycle")).executable.artifact
-  == lib.abilities.packageOutput {};
+  == lib.abilities.packageOutput {package = "kubelet";};
+  assert (cilium.config.aos.abilities.requirementTemplates."cilium:kubernetes-objects".descriptor or null) == null;
+  assert (cilium.config.aos.abilities.requirementTemplates."cilium:k3s-integration".descriptor or null) == null;
+  assert (decodedObject cilium "cilium").spec.version == "1.17.3";
+  assert builtins.fromJSON (decodedObject cilium "cilium").spec.valuesContent
+  == {
+    kubeProxyReplacement = true;
+    operator.replicas = 2;
+  };
+  assert (longhorn.config.aos.abilities.requirementTemplates."longhorn-manager:kubernetes-objects".descriptor or null) == null;
+  assert (longhorn.config.aos.abilities.requirementTemplates."longhorn-manager:k3s-integration".descriptor or null) == null;
+  assert (decodedObject longhorn "longhorn-manager").spec.version == "1.8.1";
+  assert builtins.fromJSON (decodedObject longhorn "longhorn-manager").spec.valuesContent
+  == {
+    defaultSettings.defaultReplicaCount = "2";
+    persistence.defaultClassReplicaCount = 2;
+  };
+  assert (requests longhorn)."longhorn-manager:configuration".parameters.node_labels
+  == {"node.longhorn.io/create-default-disk" = "true";};
+  assert builtins.attrNames ciliumPackageAbilities.interfaces == [];
+  assert builtins.attrNames longhornPackageAbilities.interfaces == [];
+  assert !(pkgs.longhorn-manager ? configModule);
   assert !(cloudcore.config ? systemd) && !(edgecore.config ? systemd) && !(kubelet.config ? systemd) && !(k3sWorker.config ? systemd);
   assert !(cloudcore.config.cloudcore ? config) && !(cloudcore.config.cloudcore ? credentials);
   assert !(edgecore.config.edgecore ? config) && !(edgecore.config.edgecore ? credentials);
