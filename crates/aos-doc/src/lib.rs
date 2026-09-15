@@ -1,15 +1,16 @@
 //! `aos-doc` -- Documentation browser for the AOS repository (`aos doc`).
 //!
-//! This crate builds a searchable index of everything documented in an AOS
-//! source tree and presents it either interactively (a ratatui TUI) or as
-//! plain/JSON output suitable for scripting. Documentation is gathered from
-//! several sources:
+//! This crate builds a searchable index of repository-owned Nix language and
+//! library API guidance and presents it either interactively (a ratatui TUI)
+//! or as plain/JSON output suitable for scripting. Documentation is gathered
+//! from these sources:
 //!
 //! - `##`/`##!` doc comments in `lib/*.nix` (functions and types)
-//! - `##` doc comments in `modules/**/*.nix` (module options, enriched with
-//!   type/default metadata by evaluating the module system when possible)
-//! - `pkgs/**/*.nix` package files (summaries and versions)
 //! - Compiled-in reference data for Nix builtins and the Nix language
+//!
+//! Package and option reference metadata is served by the installed-package
+//! and Hub modes from authenticated package projections. The repository mode
+//! never reconstructs that metadata by scanning Nix source.
 //!
 //! # Architecture
 //!
@@ -18,7 +19,7 @@
 //! - [`model`] -- the serializable index data model
 //! - [`cache`] -- persists the index as JSON and checks staleness via mtimes
 //! - [`search`] -- fuzzy subsequence search over index entries
-//! - [`tui`] -- the interactive four-tab terminal browser
+//! - [`tui`] -- the interactive terminal browser
 //! - [`data`] -- static builtin and language reference content
 //!
 //! The [`run`] function is the `aos doc` subcommand entry point: it resolves
@@ -86,7 +87,7 @@ pub async fn run(
     let root = resolve_source(nix, &effective_source)?;
 
     // Load or rebuild the index.
-    let index = load_or_build_index(&root, rebuild, printer, nix)?;
+    let index = load_or_build_index(&root, rebuild, printer)?;
 
     // Dispatch based on flags.
     if let Some(doc_path) = effective_path {
@@ -140,12 +141,7 @@ fn resolve_source(nix: &NixRunner, source: &Option<String>) -> Result<PathBuf> {
 /// file under the root is newer than the cache (see
 /// [`cache::is_cache_valid`]). A failure to write the rebuilt cache is
 /// reported as a warning rather than an error.
-fn load_or_build_index(
-    root: &Path,
-    force_rebuild: bool,
-    printer: &Printer,
-    nix: &NixRunner,
-) -> Result<DocIndex> {
+fn load_or_build_index(root: &Path, force_rebuild: bool, printer: &Printer) -> Result<DocIndex> {
     let cache_file = cache::cache_path_for_local(root);
 
     if !force_rebuild {
@@ -159,7 +155,7 @@ fn load_or_build_index(
         printer.info("rebuilding doc index...");
     }
 
-    let index = extract::build_index(root, Some(nix)).context("building doc index")?;
+    let index = extract::build_index(root).context("building doc index")?;
     if let Err(e) = cache::save_cache(&cache_file, &index) {
         printer.warning(&format!("could not write doc cache: {e}"));
     }

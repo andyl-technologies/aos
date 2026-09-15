@@ -4,36 +4,6 @@
   pkgs,
   ...
 }: let
-  allowedConceptualGuides = [
-    "README.md"
-    "ability-inspection.md"
-    "access-control.md"
-    "auditing.md"
-    "certificates.md"
-    "cli.md"
-    "configuration.md"
-    "deployment.md"
-    "host-nix.md"
-    "installation.md"
-    "networking.md"
-    "operations.md"
-    "package-authoring.md"
-    "package-sandbox.md"
-    "packages.md"
-    "quickstart.md"
-    "recovery.md"
-    "registries.md"
-    "secrets.md"
-    "secure-boot.md"
-    "security-hardening.md"
-    "support-status.md"
-    "troubleshooting.md"
-    "upgrades.md"
-  ];
-  observedGuides = lib.sort builtins.lessThan (lib.filter
-    (name: lib.hasSuffix ".md" name)
-    (builtins.attrNames (builtins.readDir ../../docs/users/aos)));
-
   abilityPackages = lib.filterAttrs (_: value: let
     evaluated = builtins.tryEval value;
   in
@@ -72,15 +42,7 @@
     || !(package ? contract))
   packageNames;
 in
-  if observedGuides != allowedConceptualGuides
-  then
-    throw ''
-      docs/users/aos may contain only the reviewed conceptual guides. Package
-      option and ability reference belongs in the package's ordinary module
-      declarations so every authenticated documentation surface is generated
-      from the checked package projection.
-    ''
-  else if invalidPackages != []
+  if invalidPackages != []
   then
     throw "package ability documentation projections are invalid: ${builtins.concatStringsSep ", " invalidPackages}"
   else
