@@ -695,6 +695,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-nix-store-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-ability-model",
+ "aos-contract",
+ "aos-provider-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aos-oci"
 version = "0.1.0"
 dependencies = [

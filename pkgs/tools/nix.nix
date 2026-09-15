@@ -1,5 +1,6 @@
 ##! Nix — The purely functional package manager
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -113,6 +114,7 @@ in
         else []
       );
     propagatedDeps = [];
+
 
     phases = [
       {

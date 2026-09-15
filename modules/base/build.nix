@@ -1032,6 +1032,9 @@ in {
       # Kernel-tunable effects are selected through the provider package that
       # ships both its authenticated module and handler.
       pkgs.aos-kernel-tunable-provider
+      # The package owns the Nix store-database contract, provider module, and
+      # handler while selecting the exact Nix executable symbolically.
+      pkgs.aos-nix-store-provider
       pkgs.e2fsprogs
       pkgs.less
     ];

@@ -458,6 +458,7 @@ let
     "aos-landlock"
     "aos-kubernetes-provider"
     "aos-kernel-tunable-provider"
+    "aos-nix-store-provider"
     "aos-recovery"
     "aos-registry-server"
     "aos-service-root"

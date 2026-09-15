@@ -40,6 +40,7 @@ members = [
     "aos-filesystem-provider",
     "aos-kubernetes-provider",
     "aos-kernel-tunable-provider",
+    "aos-nix-store-provider",
     "crucible-cas",
     "crucible-sim",
     "crucible-assert",
@@ -236,6 +237,7 @@ aos-doc-model = { path = "aos-doc-model" }
 aos-package = { path = "aos-package" }
 aos-configuration-provider = { path = "aos-configuration-provider" }
 aos-filesystem-provider = { path = "aos-filesystem-provider" }
+aos-nix-store-provider = { path = "aos-nix-store-provider" }
 aos-hub-console-contract = { path = "aos-hub-console-contract" }
 aos-hub-core = { path = "aos-hub-core" }
 aos-hub = { path = "aos-hub" }
