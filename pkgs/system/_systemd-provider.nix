@@ -27,7 +27,8 @@
     builtins.any (methodName:
       selected.declaration.methods.${methodName}.semantics.requiredTargetAccess == "exclusive-write")
     selected.methods;
-  serviceControllerImplementationNames = builtins.map
+  serviceControllerImplementationNames =
+    builtins.map
     (featureName: "${packageName}:${serviceInterfaces.${featureName}.alias}")
     (builtins.filter controlsService serviceImplementationNames);
   networkReadinessAlias = serviceInterfaces.networkReadiness.alias;
@@ -117,28 +118,45 @@
       realizations = builtins.mapAttrs (_: realizationFor) resources;
     };
 
-  facetNameFor = selected: let
+  facetProjectionFor = selected: let
     requestFields = builtins.removeAttrs selected.requestType._abilitySchema.fields ["service" "enabled"];
-    candidates = builtins.filter (fieldName: let
-      schema = serviceResourceFields.${fieldName};
-      unwrapped =
-        if schema.kind == "optional"
-        then schema.value
-        else schema;
-    in
-      fieldName
-      != "service"
-      && fieldName != "enabled"
-      && unwrapped.kind == "record"
-      && unwrapped.fields == requestFields)
-    (builtins.attrNames serviceResourceFields);
+    requestFieldNames = builtins.attrNames requestFields;
+    candidates =
+      builtins.concatMap (facet: let
+        schema = serviceResourceFields.${facet};
+        unwrapped =
+          if schema.kind == "optional"
+          then schema.value
+          else schema;
+        direct =
+          unwrapped.kind
+          == "record"
+          && unwrapped.fields == requestFields;
+        nested =
+          if builtins.length requestFieldNames == 1
+          then let
+            field = builtins.head requestFieldNames;
+          in
+            lib.optional (requestFields.${field} == unwrapped) {
+              inherit facet field;
+            }
+          else [];
+      in
+        lib.optional direct {
+          inherit facet;
+          field = null;
+        }
+        ++ nested)
+      (builtins.filter
+        (fieldName: fieldName != "service" && fieldName != "enabled")
+        (builtins.attrNames serviceResourceFields));
   in
     if builtins.length candidates != 1
-    then throw "systemd service interface must select exactly one canonical service resource facet"
+    then throw "systemd service interface '${selected.alias}' must select exactly one canonical service resource facet"
     else builtins.head candidates;
   provideServiceFacet = featureName: context: let
     selected = serviceInterfaces.${featureName};
-    facetName = facetNameFor selected;
+    projection = facetProjectionFor selected;
     publishesServiceResource = builtins.hasAttr "service-resource" selected.declaration.outputs;
     entries = builtins.map (requestName: let
       binding = bindingFor context.bindings requestName;
@@ -160,10 +178,12 @@
     // {
       outputs =
         if publishesServiceResource
-        then builtins.listToAttrs (builtins.map (entry: {
-          name = entry.requestName;
-          value.service-resource = entry.reference;
-        }) entries)
+        then
+          builtins.listToAttrs (builtins.map (entry: {
+              name = entry.requestName;
+              value.service-resource = entry.reference;
+            })
+            entries)
         else {};
       resourceFragments = builtins.listToAttrs (builtins.map (entry: {
           name = entry.binding.slot;
@@ -173,24 +193,23 @@
             value = {
               inherit (entry.parameters) service;
               enabled = entry.parameters.enabled or false;
-              ${facetName} = builtins.removeAttrs entry.parameters ["service" "enabled"];
+              ${projection.facet} =
+                if projection.field == null
+                then builtins.removeAttrs entry.parameters ["service" "enabled"]
+                else entry.parameters.${projection.field};
             };
           };
         })
         entries);
     };
 
-  provideReadiness = alias: outputName: context: let
-    declaration = config.aos.abilities.interfaces."${packageName}:${alias}";
-    interfaceIdentity = lib.abilities.interfaceIdentity (
-      lib.abilities.interfaceDocumentFromDeclaration declaration
-    );
+  provideReadiness = selected: outputName: context: let
     entries = builtins.map (requestName: let
       binding = bindingFor context.bindings requestName;
     in {
       inherit requestName;
       reference = {
-        interface = interfaceIdentity;
+        interface = selected.identity;
         resource = {
           provider = context.instance.id;
           key = binding.slot;
@@ -258,10 +277,12 @@
   validServiceUnitIdentity = identity:
     builtins.isAttrs identity
     && (
-      (identity.kind or null) == "unit"
+      (identity.kind or null)
+      == "unit"
       && builtins.attrNames identity == ["kind" "unit_name"]
       && validUnitName identity.unit_name
-      || (identity.kind or null) == "template-instance"
+      || (identity.kind or null)
+      == "template-instance"
       && builtins.attrNames identity == ["instance" "kind" "template_unit_name"]
       && builtins.isString identity.instance
       && identity.instance != ""
@@ -299,7 +320,8 @@
     then throw "systemd dependency has no valid systemd unit identity"
     else unitIdentity;
   concreteUnitIdentities = references: let
-    units = builtins.sort
+    units =
+      builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
       (builtins.map unitIdentityForReference references);
   in
@@ -320,7 +342,7 @@
         selected = serviceInterfaces.${featureName};
       in {
         interface = selected.identity;
-        facet = facetNameFor selected;
+        facet = (facetProjectionFor selected).facet;
         observation_schema = observationSchemaFor selected;
       })
       serviceImplementationNames);
@@ -354,25 +376,27 @@
           (identity: unitDocument.systemdUnitName {inherit identity;})
           (concreteUnitIdentities values))
       ));
-    reloadTriggers = builtins.map
-      (value: unitDocument.executionPath {
-        inherit value;
-        encoding = "escaped";
-      })
+    reloadTriggers =
+      builtins.map
+      (value:
+        unitDocument.executionPath {
+          inherit value;
+          encoding = "escaped";
+        })
       parameters.drop_in.reload_triggers;
     searchPath = joinDocuments ":" (
       builtins.concatMap (artifact: [
-          (unitDocument.artifactPath {
-            inherit artifact;
-            relativePath = "bin";
-            encoding = "escaped";
-          })
-          (unitDocument.artifactPath {
-            inherit artifact;
-            relativePath = "sbin";
-            encoding = "escaped";
-          })
-        ])
+        (unitDocument.artifactPath {
+          inherit artifact;
+          relativePath = "bin";
+          encoding = "escaped";
+        })
+        (unitDocument.artifactPath {
+          inherit artifact;
+          relativePath = "sbin";
+          encoding = "escaped";
+        })
+      ])
       parameters.drop_in.search_path
     );
     unitDirectives =
@@ -431,12 +455,13 @@
   (builtins.attrValues config.aos.abilities.resolvedResources);
   staticArtifactFor = resource: let
     realization = builtins.toJSON resource.realization;
-    rendered = pkgs.runCommand "systemd-ability-${builtins.hashString "sha256" realization}" {
-      inherit realization;
-      passAsFile = ["realization"];
-    } ''
-      ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
-    '';
+    rendered =
+      pkgs.runCommand "systemd-ability-${builtins.hashString "sha256" realization}" {
+        inherit realization;
+        passAsFile = ["realization"];
+      } ''
+        ${pkgs.buildPackages.aos-systemd-provider}/bin/aos-systemd-provider render
+      '';
   in
     rendered;
   staticArtifacts = builtins.map staticArtifactFor (selectedResources ++ selectedServiceResources);
@@ -455,9 +480,9 @@
     serviceImplementationNames);
   readinessProviderImplementations = {
     ${networkReadinessAlias}.provide =
-      provideReadiness networkReadinessAlias "readiness-resource";
+      provideReadiness serviceInterfaces.networkReadiness "readiness-resource";
     ${filesystemReadinessAlias}.provide =
-      provideReadiness filesystemReadinessAlias "readiness-resource";
+      provideReadiness serviceInterfaces.filesystemReadiness "readiness-resource";
   };
 in {
   config.aos.abilities.implementations =
