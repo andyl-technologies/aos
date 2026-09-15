@@ -47,6 +47,7 @@ pub mod fetcher;
 pub mod http;
 pub mod mount;
 pub mod offline;
+pub mod provider;
 pub mod provisioning;
 pub mod repart;
 pub mod stash;
@@ -172,6 +173,9 @@ pub async fn run_command(command: &MetadataCommand) -> Result<()> {
             measured_boot: *measured_boot,
             committed_source: committed_source.as_deref().map(str::parse).transpose()?,
             marker_uuid: marker_uuid.clone(),
+            nix_instantiate: std::env::var_os("AOS_METADATA_NIX_INSTANTIATE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("nix-instantiate")),
         }),
         MetadataCommand::VerifyBinding => {
             verify_binding_main(std::path::Path::new(stash::DEFAULT_STASH_DIR))

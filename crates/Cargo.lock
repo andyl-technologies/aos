@@ -1015,6 +1015,7 @@ name = "aos-storage-provisioning"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-ability-model",
  "serde",
  "serde_json",
  "sha2 0.10.9",

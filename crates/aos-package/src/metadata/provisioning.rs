@@ -133,6 +133,8 @@ pub struct EvalProvisioningOptions {
     pub committed_source: Option<ProvisioningSource>,
     /// Existing GPT marker UUID used as the namespace for generated UUIDs.
     pub marker_uuid: Option<String>,
+    /// Exact evaluator executable supplied by the authenticated runtime artifact.
+    pub nix_instantiate: PathBuf,
 }
 
 /// Provenance arm recorded in the durable GPT marker.
@@ -333,7 +335,7 @@ fn evaluate_provisioning(opts: &EvalProvisioningOptions) -> Result<EvaluatedProv
     );
     std::fs::write(&entry, expression).with_context(|| format!("writing {}", entry.display()))?;
 
-    let mut command = Command::new("nix-instantiate");
+    let mut command = Command::new(&opts.nix_instantiate);
     command
         .args(["--store", "dummy://", "--eval", "--strict", "--json"])
         .args(["--option", "restrict-eval", "true"])
