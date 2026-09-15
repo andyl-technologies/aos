@@ -3,7 +3,6 @@
   lib,
   pkgs,
 }: let
-  objectContract = import ../../pkgs/kubernetes/_k3s-config/object-interface.nix {inherit lib;};
   evaluatePackages = consumerModules: configuration:
     lib.evalModules {
       inherit lib;
@@ -105,6 +104,14 @@
       token.ref = "system-credential:k3s-token";
     };
   };
+  objectControllerDeclaration = k3sCombined.config.aos.abilities.interfaces."k3s-combined:kubernetes-object-set";
+  objectContributionDeclaration = k3sCombined.config.aos.abilities.interfaces."k3s-combined:kubernetes-objects";
+  identityOf = declaration:
+    lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration declaration
+    );
+  objectControllerIdentity = identityOf objectControllerDeclaration;
+  objectContributionIdentity = identityOf objectContributionDeclaration;
   cilium = evaluateIntegration "cilium" pkgs.cilium.version ../../pkgs/kubernetes/_cilium-abilities/module.nix {
     cilium = {
       enable = true;
@@ -330,7 +337,7 @@ in
     && directory.retention == "persistent")
   (requests k3sCombined)."k3s-combined:k3s-directories".parameters.managed;
   assert k3sCombined.config.aos.abilities.implementations."k3s-combined:kubernetes-object-set".interface
-  == objectContract.controller.identity;
+  == objectControllerIdentity;
   assert builtins.attrNames k3sPackageAbilities.interfaces
   == [
     "k3s-configuration"
@@ -341,17 +348,17 @@ in
     "kubernetes-objects"
   ];
   assert k3sPackageAbilities.implementations.kubernetes-object-set.interface
-  == objectContract.controller.identity;
+  == objectControllerIdentity;
   assert k3sPackageAbilities.implementations.kubernetes-objects.interface
-  == objectContract.contribution.identity;
-  assert objectContract.controller.declaration.lifecycle.releasesEphemeralOnDisable;
-  assert !objectContract.contribution.declaration.lifecycle.releasesEphemeralOnDisable;
-  assert objectContract.controller.declaration.methods.release.semantics
+  == objectContributionIdentity;
+  assert objectControllerDeclaration.lifecycle.releasesEphemeralOnDisable;
+  assert !objectContributionDeclaration.lifecycle.releasesEphemeralOnDisable;
+  assert objectControllerDeclaration.methods.release.semantics
   == {
     requiredTargetAccess = "exclusive-write";
     stopsProvider = true;
   };
-  assert builtins.attrNames objectContract.controller.declaration.outputs
+  assert builtins.attrNames objectControllerDeclaration.outputs
   == [
     "cluster-readiness-resource"
     "kubeconfig-resource"

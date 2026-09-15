@@ -5,10 +5,12 @@
   packageName,
   ...
 }: let
-  contract = import ./object-interface.nix {inherit lib;};
-  controllerAlias = contract.controller.alias;
-  contributionAlias = contract.contribution.alias;
-  controllerIdentity = contract.controller.identity;
+  controllerAlias = "kubernetes-object-set";
+  contributionAlias = "kubernetes-objects";
+  controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
+  controllerIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
+  );
   controller = config.aos.abilities.implementations."${packageName}:${controllerAlias}";
   effectsInterface = builtins.head controller.requirements.effects.accepted_interfaces;
   emptyResult = {

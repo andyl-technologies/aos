@@ -122,10 +122,6 @@ mkDerivation {
           "$out/share/${pname}/object-provider.nix"
         cp ${./_k3s-config/configuration-provider.nix} \
           "$out/share/${pname}/configuration-provider.nix"
-        cp ${./_k3s-config/configuration-interface.nix} \
-          "$out/share/${pname}/configuration-interface.nix"
-        cp ${./_k3s-config/object-interface.nix} \
-          "$out/share/${pname}/object-interface.nix"
         printf '%s\n' ${lib.escapeShellArg pname} > "$out/share/${pname}/payload.txt"
       '';
     }
