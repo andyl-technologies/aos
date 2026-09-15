@@ -314,7 +314,6 @@ in
         ]
         && !(lib.hasInfix "/etc/nginx" (builtins.toJSON cleartextAbilities.requests))
         && !(lib.hasInfix "/run/credentials" (builtins.toJSON tlsAbilities.requests))
-        && !(self ? configModule)
         && !(self ? expose);
     in
       {

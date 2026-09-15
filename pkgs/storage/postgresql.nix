@@ -639,7 +639,6 @@ in
         && requirementMethods "persistent-storage-allocation" == ["allocate" "observe" "release"]
         && requirementMethods "storage-allocation" == ["allocate" "observe" "release"]
         && requirementMethods "service-lifecycle" == ["observe" "reload" "restart" "start" "stop"]
-        && !(self ? configModule)
         && !(self ? expose);
     in {
       version = testing.mkToolCheck {
