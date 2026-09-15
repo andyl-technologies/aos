@@ -7762,6 +7762,8 @@ contributable = ["allowedTCPPorts"]
                     quote_identity_files: Vec::new(),
                     catalog_files: Vec::new(),
                     pcr15_baseline: None,
+                    pcr15_baseline_file: None,
+                    result_file: None,
                     generation_attestation: None,
                     generation_policy_file: None,
                     rederived_manifest: None,

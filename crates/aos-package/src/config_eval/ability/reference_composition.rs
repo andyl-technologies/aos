@@ -2782,13 +2782,6 @@ fn interface_document(
         interface: InterfaceDescriptor {
             name: interface_name,
             abi: NonZeroU32::new(1).unwrap(),
-            aggregation: AggregationContract {
-                scope: AggregationScope::ProviderInstance,
-                key: key("resource"),
-                controller_group: key("reference"),
-                reject_slot_collisions: true,
-                merge_contract: None,
-            },
             request,
             configuration: None,
             outputs: outputs
