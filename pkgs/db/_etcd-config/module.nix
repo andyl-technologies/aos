@@ -42,70 +42,79 @@
   clusterStateType = abilityTypes.enum ["new" "existing"];
   compactionModeType = abilityTypes.enum ["periodic" "revision"];
   metricsType = abilityTypes.enum ["basic" "extensive"];
-  secretRef = types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      resource = mkOption {
-        type = types.nullOr (abilityTypes.deferredResult abilityTypes.resourceReference);
+  secretRef = abilityTypes.record {
+    fields = {
+      resource = {
+        type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
         default = null;
         description = "Typed resource reference producing the credential without exposing secret bytes.";
       };
-      encrypted = mkOption {
-        type = types.bool;
+      encrypted = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Whether the referenced credential requires encrypted delivery.";
       };
     };
-  });
-  member = types.submodule ({name, ...}: {
-    config._module.strict = true;
-    options = {
-      name = mkOption {
-        type = memberName;
-        default = name;
-        readOnly = true;
-        description = "Member name used in the initial cluster map.";
-      };
-      peerUrls = mkOption {
-        type = types.nonEmptyListOf endpoint;
-        description = "Advertised peer endpoints for this cluster member.";
-      };
+  };
+  endpointList = abilityTypes.refined {
+    name = "non-empty etcd endpoint list";
+    description = "one or more etcd endpoints";
+    type = abilityTypes.list {
+      element = endpoint;
+      maxItems = 256;
     };
-  });
-  transport = types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      enable = mkOption {
-        type = types.bool;
+    predicate = values: values != [];
+  };
+  member = abilityTypes.record {
+    fields.peerUrls = {
+      type = endpointList;
+      description = "Advertised peer endpoints for this cluster member.";
+    };
+  };
+  members = abilityTypes.refined {
+    name = "etcd member map";
+    description = "etcd members keyed by a valid member name";
+    type = abilityTypes.map {
+      keyMaxLength = abilityTypes.limits.maxStringLength;
+      maxEntries = 256;
+      value = member;
+    };
+    predicate = values:
+      builtins.all memberName.check (builtins.attrNames values);
+  };
+  transport = abilityTypes.record {
+    fields = {
+      enable = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Require TLS on this transport.";
       };
-      certificate = mkOption {
+      certificate = {
         type = secretRef;
         default = {};
         description = "Opaque reference to the PEM certificate.";
       };
-      privateKey = mkOption {
+      privateKey = {
         type = secretRef;
         default = {};
         description = "Opaque reference to the PEM private key.";
       };
-      trustedCa = mkOption {
+      trustedCa = {
         type = secretRef;
         default = {};
         description = "Opaque reference to the trusted PEM CA bundle.";
       };
-      clientCertificateAuth = mkOption {
-        type = types.bool;
+      clientCertificateAuth = {
+        type = abilityTypes.boolean;
         default = false;
         description = "Require and verify certificates presented by remote clients or peers.";
       };
     };
-  });
+  };
   allUnique = values: builtins.length values == builtins.length (lib.unique values);
   allScheme = scheme: values:
     builtins.all (value: lib.hasPrefix "${scheme}://" value) values;
-  clusterMembers = lib.mapAttrsToList (_: value: value) cfg.cluster.members;
+  clusterMembers = lib.mapAttrsToList (name: value: value // {inherit name;}) cfg.cluster.members;
   localMembers = builtins.filter (memberValue: memberValue.name == cfg.name) clusterMembers;
   localMember =
     if builtins.length localMembers == 1
@@ -414,12 +423,12 @@ in {
     };
     client = {
       listenUrls = mkOption {
-        type = types.nonEmptyListOf endpoint;
+        type = endpointList;
         default = ["http://127.0.0.1:2379"];
         description = "Client endpoints on which etcd listens.";
       };
       advertiseUrls = mkOption {
-        type = types.nonEmptyListOf endpoint;
+        type = endpointList;
         default = ["http://127.0.0.1:2379"];
         description = "Client endpoints advertised to clients and peers.";
       };
@@ -436,12 +445,12 @@ in {
     };
     peer = {
       listenUrls = mkOption {
-        type = types.nonEmptyListOf endpoint;
+        type = endpointList;
         default = ["http://127.0.0.1:2380"];
         description = "Peer endpoints on which this member listens.";
       };
       advertiseUrls = mkOption {
-        type = types.nonEmptyListOf endpoint;
+        type = endpointList;
         default = ["http://127.0.0.1:2380"];
         description = "Peer endpoints advertised to the other members.";
       };
@@ -453,7 +462,7 @@ in {
     };
     cluster = {
       members = mkOption {
-        type = types.attrsOf member;
+        type = members;
         default.default.peerUrls = ["http://127.0.0.1:2380"];
         description = "Initial member topology keyed by stable member name.";
       };
@@ -540,11 +549,11 @@ in {
           message = "etcd peer endpoints must all use HTTP when peer TLS is disabled";
         }
         {
-          assertion = !cfg.client.tls.enable || builtins.all (value: value != null) [cfg.client.tls.certificate.resource cfg.client.tls.privateKey.resource cfg.client.tls.trustedCa.resource];
+          assertion = !cfg.client.tls.enable || builtins.all (value: value != null) [(cfg.client.tls.certificate.resource or null) (cfg.client.tls.privateKey.resource or null) (cfg.client.tls.trustedCa.resource or null)];
           message = "etcd client TLS requires certificate, private-key, and trusted-CA references";
         }
         {
-          assertion = !cfg.peer.tls.enable || builtins.all (value: value != null) [cfg.peer.tls.certificate.resource cfg.peer.tls.privateKey.resource cfg.peer.tls.trustedCa.resource];
+          assertion = !cfg.peer.tls.enable || builtins.all (value: value != null) [(cfg.peer.tls.certificate.resource or null) (cfg.peer.tls.privateKey.resource or null) (cfg.peer.tls.trustedCa.resource or null)];
           message = "etcd peer TLS requires certificate, private-key, and trusted-CA references";
         }
         {
