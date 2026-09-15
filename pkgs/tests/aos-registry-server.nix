@@ -96,10 +96,6 @@ in
       }
     ];
 
-    passthru.evidenceSources = [
-      ./aos-registry-server.nix
-      ./_aos-registry-server-config
-    ];
     abilities = ./_aos-registry-server-config/module.nix;
 
     meta = {
