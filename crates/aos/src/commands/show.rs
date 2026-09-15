@@ -1,10 +1,10 @@
 //! `aos show` — display a package's metadata.
 //!
-//! Evaluates `pkgs.<package>.meta` and the package's checked local symbolic
-//! ability projection. It pretty-prints common package fields and a compact
-//! ability summary. With `--json`, ability-aware packages include an
-//! `abilityProjection` field next to the raw metadata attrset. This local
-//! projection is not a resolved or signed publication document.
+//! Evaluates `pkgs.<package>.meta` and the package's canonical static contract
+//! projection. It pretty-prints common package fields and a compact ability
+//! summary. With `--json`, contract-bearing packages include the complete
+//! static contract as `abilityProjection` next to the raw metadata attrset.
+//! This local projection is not a resolved or signed publication.
 
 use anyhow::{Context, Result};
 
@@ -25,22 +25,8 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
         r#"let
           root = import {}/default.nix {{}};
           pkg = builtins.getAttr {} root.pkgs;
-          sanitize = value:
-            if builtins.isFunction value then null
-            else if builtins.isList value then
-              builtins.map sanitize (builtins.filter (item: !(builtins.isFunction item)) value)
-            else if builtins.isAttrs value then
-              builtins.listToAttrs (builtins.concatMap (name:
-                let field = value.${{name}}; in
-                if root.lib.hasPrefix "_" name || builtins.isFunction field
-                then []
-                else [{{ inherit name; value = sanitize field; }}]
-              ) (builtins.attrNames value))
-            else value;
         in
-          if pkg ? abilities then sanitize {{
-            inherit (pkg.abilities) interfaces implementations requirementTemplates guarantees;
-          }} else null"#,
+          if pkg ? contract then pkg.contract.value else null"#,
         nix.root().display(),
         package_name
     );
@@ -118,14 +104,20 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
         }
     }
     if let Some(projection) = ability_projection.as_ref() {
-        for (field, label) in [
-            ("interfaces", "Ability interfaces"),
-            ("implementations", "Ability implementations"),
-            ("requirementTemplates", "Ability requirement templates"),
-            ("guarantees", "Ability guarantees"),
+        for (pointer, label) in [
+            ("/interfaces", "Ability interfaces"),
+            ("/implementation/providers", "Ability implementations"),
+            ("/requirements", "Ability requirement templates"),
+            ("/guarantees", "Ability guarantees"),
         ] {
-            if let Some(entries) = projection.get(field).and_then(serde_json::Value::as_object) {
-                printer.kv(label, &entries.len().to_string());
+            if let Some(entries) = projection.pointer(pointer) {
+                let count = entries
+                    .as_array()
+                    .map(Vec::len)
+                    .or_else(|| entries.as_object().map(serde_json::Map::len));
+                if let Some(count) = count {
+                    printer.kv(label, &count.to_string());
+                }
             }
         }
     }
