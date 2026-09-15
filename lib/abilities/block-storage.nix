@@ -417,8 +417,14 @@
     fields = {
       name = types.localKey;
       enabled = types.boolean;
-      plan = types.deferredResult provisioningPlan;
       root_device = types.deferredResult types.executionPath;
+      measured_boot = types.boolean;
+      policy = types.record {
+        fields = {
+          initialize = types.enum ["if-unprovisioned"];
+          committed_divergence = types.enum ["require-factory-reset"];
+        };
+      };
       inherit prerequisites;
     };
   };
