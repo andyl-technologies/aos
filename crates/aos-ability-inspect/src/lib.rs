@@ -26,6 +26,9 @@ pub mod projection;
 pub mod query;
 pub mod reference;
 pub mod render;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
 pub mod view;
 pub mod workflow;
 

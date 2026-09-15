@@ -179,15 +179,12 @@ fn json_mode_emits_only_the_canonical_checked_view() -> Result<(), Box<dyn std::
 fn public_reference_query_emits_the_shared_golden_slice() -> Result<(), Box<dyn std::error::Error>>
 {
     let workspace = tempfile::tempdir()?;
-    let input = include_bytes!("../../../tests/abilities/fixtures/reference-inspection-input.json");
-    let query = include_bytes!("../../../tests/abilities/fixtures/reference-inspection-query.json");
-    let expected =
-        include_bytes!("../../../tests/abilities/fixtures/reference-inspection-slice.json");
+    let fixture = aos_ability_inspect::test_support::reference_inspection_fixture()?;
     let input_path = workspace.path().join("reference-inspection-input.json");
     let query_path = workspace.path().join("reference-inspection-query.json");
-    std::fs::write(&input_path, input)?;
-    std::fs::write(&query_path, query)?;
-    let digest = Sha256Digest::of_bytes(input).to_string();
+    std::fs::write(&input_path, &fixture.input)?;
+    std::fs::write(&query_path, &fixture.query)?;
+    let digest = Sha256Digest::of_bytes(&fixture.input).to_string();
 
     let output = run(
         workspace.path(),
@@ -204,7 +201,7 @@ fn public_reference_query_emits_the_shared_golden_slice() -> Result<(), Box<dyn 
     )?;
 
     assert!(output.status.success(), "{}", stderr(&output)?);
-    assert_eq!(output.stdout, [expected.as_slice(), b"\n"].concat());
+    assert_eq!(output.stdout, [fixture.slice.as_slice(), b"\n"].concat());
     assert!(output.stderr.is_empty());
     Ok(())
 }

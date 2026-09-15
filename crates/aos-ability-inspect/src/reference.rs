@@ -605,21 +605,13 @@ fn input_limits() -> JsonLimits {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
-
-    use aos_ability_model::{
-        AggregationContract, AggregationScope, ArtifactReference, InterfaceDescriptor,
-        InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey, ProviderImplementation,
-        RequiredFeature, ValueSchema,
-    };
-    use aos_doc_model::AbilityExportReference;
-
     use super::*;
+    use crate::test_support::{package_reference, reference_inspection_fixture};
 
     #[test]
     fn public_reference_query_retains_shared_identity_relations_and_limits()
     -> Result<(), Box<dyn std::error::Error>> {
-        let reference = reference();
+        let reference = package_reference();
         let input = ReferenceInspectionInput::new(reference.clone())?;
         let input_bytes = input.canonical_bytes()?;
         let digest = Sha256Digest::of_bytes(&input_bytes);
@@ -648,7 +640,7 @@ mod tests {
 
     #[test]
     fn checking_rejects_a_wrong_external_commitment() -> Result<(), Box<dyn std::error::Error>> {
-        let input = ReferenceInspectionInput::new(reference())?;
+        let input = ReferenceInspectionInput::new(package_reference())?;
         let wrong = Sha256Digest::of_bytes(b"wrong reference");
 
         assert!(matches!(
@@ -661,95 +653,14 @@ mod tests {
     #[test]
     fn canonical_reference_query_matches_the_cross_frontend_golden_slice()
     -> Result<(), Box<dyn std::error::Error>> {
-        let input_bytes =
-            include_bytes!("../../../tests/abilities/fixtures/reference-inspection-input.json");
-        let query_bytes =
-            include_bytes!("../../../tests/abilities/fixtures/reference-inspection-query.json");
-        let expected =
-            include_bytes!("../../../tests/abilities/fixtures/reference-inspection-slice.json");
-        let input = ReferenceInspectionInput::decode(input_bytes)?;
-        let digest = Sha256Digest::of_bytes(input_bytes);
+        let fixture = reference_inspection_fixture()?;
+        let input = ReferenceInspectionInput::decode(&fixture.input)?;
+        let digest = Sha256Digest::of_bytes(&fixture.input);
         let checked = input.check(Some(digest))?;
         let view = ReferenceInspectionView::from_checked(&checked)?;
-        let query = GraphQuery::decode(query_bytes)?;
+        let query = GraphQuery::decode(&fixture.query)?;
 
-        assert_eq!(view.query(&query)?.canonical_bytes()?, expected);
+        assert_eq!(view.query(&query)?.canonical_bytes()?, fixture.slice);
         Ok(())
-    }
-
-    fn reference() -> PackageAbilityReference {
-        let aggregation = AggregationContract {
-            scope: AggregationScope::ProviderInstance,
-            key: LocalKey::new("service").expect("aggregation key"),
-            controller_group: LocalKey::new("service").expect("controller group"),
-            reject_slot_collisions: true,
-            merge_contract: None,
-        };
-        let interface = InterfaceDocument {
-            schema: "aos.ability.interface/v1".to_string(),
-            required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
-            interface: InterfaceDescriptor {
-                description: "Describes this ability interface.".to_string(),
-                name: InterfaceName::new("aos.test.service").expect("interface"),
-                abi: NonZeroU32::new(1).expect("nonzero ABI"),
-                request: ValueSchema::Boolean,
-                configuration: None,
-                outputs: BTreeMap::new(),
-                methods: BTreeMap::new(),
-                lifecycle: LifecycleSemantics {
-                    stable_resource_identity: true,
-                    releases_ephemeral_on_disable: true,
-                    retains_persistent_by_default: false,
-                    persistent_delete_method: None,
-                },
-                aggregation: aggregation.clone(),
-                guarantees: Vec::new(),
-            },
-        };
-        let interface_key = interface.interface_key().expect("interface key");
-        let implementation = ProviderImplementation {
-            name: LocalKey::new("service").expect("implementation name"),
-            description: "Implements the test service interface.".to_string(),
-            interface: interface_key.clone(),
-            guarantees: Vec::new(),
-            artifact: ArtifactReference {
-                content: Sha256Digest::of_bytes(b"provider-content"),
-                store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
-                nar_hash: Sha256Digest::of_bytes(b"provider-nar"),
-                closure: Sha256Digest::of_bytes(b"provider-closure"),
-            },
-            requirements: Vec::new(),
-            desired_schema: None,
-            provider_module: None,
-            handler: None,
-            owns_resource_kinds: Vec::new(),
-            state_format: None,
-        };
-        let implementation_key = implementation
-            .descriptor_digest()
-            .expect("implementation identity");
-        PackageAbilityReference {
-            schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
-            required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
-            package: LocalKey::new("demo").expect("package"),
-            version: "1.0.0".to_string(),
-            manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
-            package_digest: Sha256Digest::of_bytes(b"package"),
-            interfaces: BTreeMap::from([(
-                LocalKey::new("service").expect("interface alias"),
-                interface.clone(),
-            )]),
-            guarantees: BTreeMap::new(),
-            option_declarations: Vec::new(),
-            implementations: vec![implementation],
-            exports: vec![AbilityExportReference {
-                name: LocalKey::new("service").expect("export"),
-                interface: interface_key,
-                implementation: implementation_key,
-                requirements: Vec::new(),
-            }],
-            requirements: Vec::new(),
-            handlers: Vec::new(),
-        }
     }
 }
