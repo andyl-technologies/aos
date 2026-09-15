@@ -30,6 +30,22 @@ def rejected(action) -> None:
     raise AssertionError("mutated cancellation evidence was accepted")
 
 
+def package_routes(cell, subject):
+    """Projects the terminal route authenticated by this semantic fixture."""
+
+    implementation = subject["provider-implementation"]
+    return [
+        {
+            "adapter": cell["adapter"],
+            "interface": cell["interface"],
+            "methods": [cell["method"]],
+            "implementation": implementation["descriptor"],
+            "handler": implementation["handler"],
+            "entry-point": "libexec/fixture-handler",
+        }
+    ]
+
+
 def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
     """Checks the image route, physical oracle, digests, and probe uniqueness."""
 
@@ -215,8 +231,11 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
     subjects, bundles, probes = builder.finish()
     subject = subjects[cell_id]
     records = probes[cell_id]
+    routes = package_routes(cell, subject)
 
-    cohort._validate_cancellation_subject(cell, subject, bundles[cell_id], matrix_spec)
+    cohort._validate_cancellation_subject(
+        cell, subject, bundles[cell_id], matrix_spec, routes
+    )
     for postcondition, record in records.items():
         cohort._validate_cancellation_probe_facts(
             postcondition, record["observations"], subject, cell
@@ -246,26 +265,26 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
         )
     )
 
-    for field in ("handler-entry-point", "cell-digest", "plan-bundle-digest"):
+    for field in ("cell-digest", "plan-bundle-digest"):
         mutation = copy.deepcopy(subject)
         mutation[field] = digest("9")
         rejected(
             lambda mutation=mutation: cohort._validate_cancellation_subject(
-                cell, mutation, bundles[cell_id], matrix_spec
+                cell, mutation, bundles[cell_id], matrix_spec, routes
             )
         )
     wrong_handler = copy.deepcopy(subject)
     wrong_handler["provider-implementation"]["handler"] = "foreign-handler"
     rejected(
         lambda: cohort._validate_cancellation_subject(
-            cell, wrong_handler, bundles[cell_id], matrix_spec
+            cell, wrong_handler, bundles[cell_id], matrix_spec, routes
         )
     )
     wrong_route = copy.deepcopy(subject)
     wrong_route["cancel-route"]["method"] = "hold"
     rejected(
         lambda: cohort._validate_cancellation_subject(
-            cell, wrong_route, bundles[cell_id], matrix_spec
+            cell, wrong_route, bundles[cell_id], matrix_spec, routes
         )
     )
     for mutation in ("kind", "filesystem"):
@@ -465,9 +484,10 @@ def main() -> None:
     )
     subjects, bundles, probes = builder.finish()
     subject = subjects[cell_id]
+    routes = package_routes(cell, subject)
 
     cohort._validate_cancellation_subject(
-        cell, subject, bundles[cell_id], matrix_spec
+        cell, subject, bundles[cell_id], matrix_spec, routes
     )
     for postcondition, record in probes[cell_id].items():
         cohort._validate_cancellation_probe_facts(
@@ -475,17 +495,17 @@ def main() -> None:
         )
 
     wrong_handler = copy.deepcopy(subject)
-    wrong_handler["handler-entry-point"] = "bin/other"
+    wrong_handler["provider-implementation"]["handler"] = "foreign-handler"
     rejected(
         lambda: cohort._validate_cancellation_subject(
-            cell, wrong_handler, bundles[cell_id], matrix_spec
+            cell, wrong_handler, bundles[cell_id], matrix_spec, routes
         )
     )
     wrong_matrix = copy.deepcopy(subject)
     wrong_matrix["matrix-spec-digest"] = digest("f")
     rejected(
         lambda: cohort._validate_cancellation_subject(
-            cell, wrong_matrix, bundles[cell_id], matrix_spec
+            cell, wrong_matrix, bundles[cell_id], matrix_spec, routes
         )
     )
     wrong_boundary = copy.deepcopy(

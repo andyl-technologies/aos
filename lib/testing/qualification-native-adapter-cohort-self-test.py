@@ -9,6 +9,14 @@ import pathlib
 import sys
 
 
+POSTGRESQL_FIXTURE_CELLS = [
+    "postgresql/aos.postgresql-effects/abi-1/materialize/adopt-compatible-state",
+    "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer",
+    "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result",
+    "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
+]
+
+
 def load(path: pathlib.Path):
     """Loads the cohort helper from the path supplied by its derivation."""
 
@@ -18,7 +26,140 @@ def load(path: pathlib.Path):
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    production_build_cells = module.build_cells
+
+    def build_cells_with_package_subject(matrix, *args, **kwargs):
+        cohort_subjects = kwargs.get(
+            "cohort_subjects", args[2] if len(args) > 2 else {}
+        )
+        provider_negative_audit = kwargs.get(
+            "provider_negative_audit", args[8] if len(args) > 8 else None
+        )
+        kwargs.setdefault(
+            "qualification_subject",
+            qualification_subject(
+                module,
+                matrix,
+                cohort_subjects=cohort_subjects,
+                provider_negative_audit=provider_negative_audit,
+            ),
+        )
+        return production_build_cells(matrix, *args, **kwargs)
+
+    module.build_cells = build_cells_with_package_subject
     return module
+
+
+def qualification_subject(
+    module, spec, *, cohort_subjects=None, provider_negative_audit=None
+):
+    """Builds a small package-route fixture from the test's matrix and evidence."""
+
+    routes = {}
+    for cell in spec["cells"]:
+        route = {
+            "adapter": cell["adapter"],
+            "interface": cell["interface"],
+            "methods": sorted(
+                {
+                    candidate["method"]
+                    for candidate in spec["cells"]
+                    if candidate["adapter"] == cell["adapter"]
+                }
+            ),
+            "provenance": [
+                {
+                    "package": "qualification-fixture",
+                    "ability-contract": "sha256:" + "01" * 32,
+                }
+            ],
+            "implementation": "sha256:" + "02" * 32,
+            "handler": "fixture-handler",
+            "artifact": "sha256:" + "03" * 32,
+            "entry-point": "libexec/fixture-handler",
+        }
+        routes[module.canonical(route)] = route
+
+    for cell_id, subject in (cohort_subjects or {}).items():
+        if not isinstance(subject, dict) or "provider-implementation" not in subject:
+            continue
+        cell = next(cell for cell in spec["cells"] if cell["id"] == cell_id)
+        implementation = subject["provider-implementation"]
+        route = {
+            "adapter": cell["adapter"],
+            "interface": cell["interface"],
+            "methods": [cell["method"]],
+            "provenance": [
+                {
+                    "package": "qualification-fixture",
+                    "ability-contract": "sha256:" + "04" * 32,
+                }
+            ],
+            "implementation": implementation["descriptor"],
+            "handler": implementation["handler"],
+            "artifact": "sha256:" + "05" * 32,
+            "entry-point": "libexec/fixture-handler",
+        }
+        routes[module.canonical(route)] = route
+
+    if isinstance(provider_negative_audit, dict):
+        for cell_id, record in provider_negative_audit.get("cells", {}).items():
+            cell = next(cell for cell in spec["cells"] if cell["id"] == cell_id)
+            observed = record["evidence"]["provider-route"]
+            route = {
+                "adapter": cell["adapter"],
+                "interface": cell["interface"],
+                "methods": [cell["method"]],
+                "provenance": [
+                    {
+                        "package": "qualification-fixture",
+                        "ability-contract": "sha256:" + "06" * 32,
+                    }
+                ],
+                "implementation": observed["implementation"],
+                "handler": observed["handler"],
+                "artifact": observed["artifact"],
+                "entry-point": "libexec/fixture-handler",
+            }
+            routes[module.canonical(route)] = route
+
+    return {
+        "schema": module.QUALIFICATION_SUBJECT_SCHEMA,
+        "matrix-spec-digest": module.sha256(spec),
+        "routes": sorted(routes.values(), key=module.canonical),
+    }
+
+
+def provider_route_fixture(cell, record):
+    """Builds the exact package route used by one provider-negative fixture."""
+
+    observed = record["evidence"]["provider-route"]
+    return {
+        "adapter": cell["adapter"],
+        "interface": cell["interface"],
+        "methods": [cell["method"]],
+        "implementation": observed["implementation"],
+        "handler": observed["handler"],
+        "artifact": observed["artifact"],
+        "entry-point": "libexec/fixture-handler",
+    }
+
+
+def provider_spec_fixture(cell):
+    """Builds the minimal interface lookup used by provider-negative tests."""
+
+    return {
+        "surface": {
+            "adapters": [
+                {
+                    "adapter": cell["adapter"],
+                    "interface_name": cell["interface"]["name"],
+                    "interface_abi": cell["interface"]["abi"],
+                    "interface_descriptor": cell["interface"]["descriptor"],
+                }
+            ]
+        }
+    }
 
 
 def classify(module, spec):
@@ -42,6 +183,19 @@ def classify(module, spec):
         adapter["adapter"]: adapter["provider_contract"]
         for adapter in spec["surface"]["adapters"]
     }
+    for adapter in spec["surface"]["adapters"]:
+        cells = [cell for cell in spec["cells"] if cell["adapter"] == adapter["adapter"]]
+        interface = cells[0]["interface"]
+        adapter.setdefault("interface_name", interface["name"])
+        adapter.setdefault("interface_abi", interface["abi"])
+        adapter.setdefault("interface_descriptor", interface["descriptor"])
+        adapter.setdefault(
+            "methods",
+            [
+                {"method": method}
+                for method in sorted({cell["method"] for cell in cells})
+            ],
+        )
 
     expected = [
         {"cell_id": cell["id"], "reason": reason}
@@ -301,8 +455,8 @@ def assert_provider_negative_validator(module, template_cell):
                 "method": cell["method"],
                 "candidate-linked": True,
                 "artifact": "sha256:" + "50" * 32,
+                "implementation": "sha256:" + "51" * 32,
                 "handler": "network-endpoint-terminal",
-                "entry-point": "libexec/aos-network-endpoint-handler",
             },
             "boundary": "after-durable-intent-before-external-effect",
             "journal": {
@@ -358,15 +512,17 @@ def assert_provider_negative_validator(module, template_cell):
             "provider-sentinel": None,
         },
     }
+    provider_spec = provider_spec_fixture(cell)
+    provider_routes = [provider_route_fixture(cell, record)]
 
     module._validated_provider_negative_cell(
-        cell, record, "sha256:" + "80" * 32, set()
+        cell, record, "sha256:" + "80" * 32, set(), provider_spec, provider_routes
     )
     forged = copy.deepcopy(record)
     forged["evidence"]["provider-route"]["candidate-linked"] = False
     try:
         module._validated_provider_negative_cell(
-            cell, forged, "sha256:" + "80" * 32, set()
+            cell, forged, "sha256:" + "80" * 32, set(), provider_spec, provider_routes
         )
     except RuntimeError:
         pass
@@ -422,7 +578,6 @@ def assert_provider_negative_validator(module, template_cell):
             "interface": foreground_cell["interface"],
             "method": foreground_cell["method"],
             "handler": "foreground-process-terminal",
-            "entry-point": "libexec/aos-foreground-process-handler",
         }
     )
     foreground_evidence["journal"]["foreign-operation"] = foreground_foreign
@@ -444,7 +599,12 @@ def assert_provider_negative_validator(module, template_cell):
     }
 
     module._validated_provider_negative_cell(
-        foreground_cell, foreground_record, "sha256:" + "81" * 32, set()
+        foreground_cell,
+        foreground_record,
+        "sha256:" + "81" * 32,
+        set(),
+        provider_spec_fixture(foreground_cell),
+        [provider_route_fixture(foreground_cell, foreground_record)],
     )
     changed_sentinel = copy.deepcopy(foreground_record)
     changed_sentinel["evidence"]["provider-sentinel"]["after"] = (
@@ -452,7 +612,12 @@ def assert_provider_negative_validator(module, template_cell):
     )
     try:
         module._validated_provider_negative_cell(
-            foreground_cell, changed_sentinel, "sha256:" + "81" * 32, set()
+            foreground_cell,
+            changed_sentinel,
+            "sha256:" + "81" * 32,
+            set(),
+            provider_spec_fixture(foreground_cell),
+            [provider_route_fixture(foreground_cell, foreground_record)],
         )
     except RuntimeError:
         pass
@@ -621,8 +786,8 @@ def assert_rollout_provider_negative_validator(module, template_cell):
                     "method": method,
                     "candidate-linked": True,
                     "artifact": "sha256:" + "50" * 32,
+                    "implementation": "sha256:" + "51" * 32,
                     "handler": "image-rollout-terminal",
-                    "entry-point": "libexec/aos-ab-image-rollout-handler",
                 },
                 "boundary": (
                     "after-durable-intent-before-external-effect"
@@ -640,13 +805,23 @@ def assert_rollout_provider_negative_validator(module, template_cell):
         }
 
         module._validated_provider_negative_cell(
-            cell, record, "sha256:" + "60" * 32, set()
+            cell,
+            record,
+            "sha256:" + "60" * 32,
+            set(),
+            provider_spec_fixture(cell),
+            [provider_route_fixture(cell, record)],
         )
         forged = copy.deepcopy(record)
         forged["evidence"]["blocked-successor"]["after"] = "sha256:" + "61" * 32
         try:
             module._validated_provider_negative_cell(
-                cell, forged, "sha256:" + "60" * 32, set()
+                cell,
+                forged,
+                "sha256:" + "60" * 32,
+                set(),
+                provider_spec_fixture(cell),
+                [provider_route_fixture(cell, record)],
             )
         except RuntimeError:
             pass
@@ -878,7 +1053,7 @@ def assert_postgresql_cohort(module):
     bundle_bytes = module.canonical(bundle)
     subject = module._postgresql_plan_subject(bundle_bytes, "materialize")
     cell = {
-        "id": module.POSTGRESQL_CELL_IDS[0],
+        "id": POSTGRESQL_FIXTURE_CELLS[0],
         "adapter": "postgresql",
         "interface": {
             **interface,
@@ -1001,7 +1176,7 @@ def assert_postgresql_cohort(module):
     rejection_subject = module._postgresql_rejection_subject(rejection_bytes)
     rejection_cell = {
         **cell,
-        "id": module.POSTGRESQL_CELL_IDS[1],
+        "id": POSTGRESQL_FIXTURE_CELLS[1],
         "failure": "transfer-rejected",
         "candidate": "unsupported-replacement",
         "predecessor": "in-flight-incompatible",
@@ -1126,13 +1301,13 @@ def assert_postgresql_cohort(module):
 
     lost_cell = {
         **cell,
-        "id": module.POSTGRESQL_CELL_IDS[2],
+        "id": POSTGRESQL_FIXTURE_CELLS[2],
         "method": "restart",
         "failure": "external-result-lost",
     }
     retained_cell = {
         **lost_cell,
-        "id": module.POSTGRESQL_CELL_IDS[3],
+        "id": POSTGRESQL_FIXTURE_CELLS[3],
         "failure": "none",
         "candidate": "retained-target",
         "predecessor": "current-authority",
@@ -1659,6 +1834,24 @@ def main() -> None:
 
     spec["cells"].sort(key=lambda cell: cell["id"])
     classify(module, spec)
+    package_subject = qualification_subject(module, spec)
+    routes = module._qualification_routes(package_subject, spec)
+    assert routes
+    for field, replacement in [
+        ("methods", ["foreign"]),
+        ("artifact", "sha256:short"),
+        ("provenance", []),
+    ]:
+        forged_subject = copy.deepcopy(package_subject)
+        forged_subject["routes"][0][field] = replacement
+        try:
+            module._qualification_routes(forged_subject, spec)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(
+                f"package qualification subject accepted forged {field}"
+            )
     cells, count = module.build_cells(
         spec,
         probes,

@@ -44,21 +44,6 @@ ORACLE_KINDS = {
     "systemd-manager": "systemd-unit",
     "service-management": "systemd-unit",
 }
-ENTRY_POINTS = {
-    "credential-delivery": "libexec/aos-credential-delivery-handler",
-    "foreground-process": "libexec/aos-foreground-process-handler",
-    "host-network-policy": "libexec/aos-host-network-policy-handler",
-    "host-storage": "libexec/aos-host-storage-handler",
-    "image-rollout": "libexec/aos-ab-image-rollout-handler",
-    "kubernetes-object": "libexec/aos-kubernetes-object-handler",
-    "managed-configuration": "bin/.aos-package-runtime-unwrapped",
-    "network-endpoint": "libexec/aos-network-endpoint-handler",
-    "nginx-validation": "bin/nginx",
-    "postgresql": "libexec/aos-postgresql-handler",
-    "systemd-bootstrap": "bin/.aos-package-runtime-unwrapped",
-    "systemd-manager": "libexec/aos-systemd-manager-handler",
-    "service-management": "bin/.aos-package-runtime-unwrapped",
-}
 
 
 def canonical(value: Any) -> bytes:
@@ -515,8 +500,8 @@ class ProviderNegativeEvidence:
                 "method": method,
                 "candidate-linked": True,
                 "artifact": implementation["artifact"]["content"],
+                "implementation": implementation["descriptor"],
                 "handler": implementation["handler"],
-                "entry-point": ENTRY_POINTS["image-rollout"],
             },
             "boundary": "native-resource-map-validation",
             "classification": {
@@ -753,6 +738,6 @@ class ProviderNegativeEvidence:
             "method": method,
             "candidate-linked": True,
             "artifact": artifact["content"],
+            "implementation": implementation["descriptor"],
             "handler": handler,
-            "entry-point": ENTRY_POINTS[adapter],
         }

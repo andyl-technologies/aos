@@ -29,57 +29,6 @@ CANCELLATION_RESULTS = {
     "cancellation-observed-completion",
     "cancellation-indeterminate",
 }
-HANDLER_ROUTES = {
-    "aos.credential-delivery-effects": (
-        "native-credential-delivery",
-        "libexec/aos-credential-delivery-handler",
-    ),
-    "aos.foreground-process": (
-        "native-foreground-process",
-        "libexec/aos-foreground-process-handler",
-    ),
-    "aos.host-network-policy-effects": (
-        "native-host-network-policy",
-        "libexec/aos-host-network-policy-handler",
-    ),
-    "aos.host-storage-effects": (
-        "native-host-storage",
-        "libexec/aos-host-storage-handler",
-    ),
-    "aos.managed-configuration-effects": (
-        "managed-configuration-terminal",
-        "bin/.aos-package-runtime-unwrapped",
-    ),
-    "aos.network-endpoint-effects": (
-        "native-network-endpoint",
-        "libexec/aos-network-endpoint-handler",
-    ),
-    "aos.nginx-validation": ("nginx-terminal", "bin/nginx"),
-    "aos.postgresql-effects": (
-        "native-postgresql",
-        "libexec/aos-postgresql-handler",
-    ),
-    "aos.kubernetes-object-effects": (
-        "native-kubernetes-object",
-        "libexec/aos-kubernetes-object-handler",
-    ),
-    "aos.systemd-provider-bootstrap": (
-        "systemd-bootstrap-terminal",
-        "bin/.aos-package-runtime-unwrapped",
-    ),
-    "aos.systemd-manager": (
-        "native-systemd-manager",
-        "libexec/aos-systemd-manager-handler",
-    ),
-    "aos.service-management": (
-        "service-management-terminal",
-        "bin/.aos-package-runtime-unwrapped",
-    ),
-    "aos.ab-image-rollout-effects": (
-        "native-ab-image-rollout",
-        "libexec/aos-ab-image-rollout-handler",
-    ),
-}
 
 
 def canonical(value: Any) -> bytes:
@@ -234,9 +183,6 @@ class CancellationEvidence:
         provider_implementation = EFFECT_EVIDENCE._provider_implementation(
             bundle, operation
         )
-        expected_handler, handler_entry_point = HANDLER_ROUTES[cell["interface"]["name"]]
-        if provider_implementation["handler"] != expected_handler:
-            raise RuntimeError("cancellation selected another terminal handler")
         native_route = EFFECT_EVIDENCE._native_route(
             bundle,
             operation,
@@ -265,7 +211,6 @@ class CancellationEvidence:
             "cancel-route": operation["recovery"]["cancel"],
             "dependent-operation": observation.dependent_operation,
             "provider-implementation": provider_implementation,
-            "handler-entry-point": handler_entry_point,
             "native-route": native_route,
         }
         disposition = "cancelled-after-reconciliation"
