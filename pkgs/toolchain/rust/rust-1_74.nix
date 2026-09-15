@@ -268,8 +268,13 @@ in
             WRAP
                           chmod +x "$f"
                         elif head -1 "$f" | grep -q '^#!'; then
-                          # Shell wrapper from run_rustc — fix LD_LIBRARY_PATH
-                          sed -i "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" "$f"
+                          # The bootstrap wrappers must run from their own
+                          # closure without relying on /bin/sh or dirname.
+                          sed -i \
+                            -e "1s|^#!.*|#!${bash}/bin/bash|" \
+                            -e 's|^d=$(dirname $0)$|d='"$out"'/bin|' \
+                            -e "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" \
+                            "$f"
                         fi
                       fi
                     done
