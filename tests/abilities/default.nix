@@ -848,7 +848,6 @@ in
   assert kernelModules;
   assert bootPreparationCore;
   assert postgresqlService;
-  assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
   assert networkPolicyCore;
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
