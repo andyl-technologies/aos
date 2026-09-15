@@ -302,6 +302,7 @@ fn foreground_process_is_explicitly_application_container_only() {
     let mut fixture = systemd_manager_plan_fixture();
     fixture.interfaces = vec![aos_ability_model::builtin::foreground_process_interface().unwrap()];
     fixture.refresh_interface();
+    use_foreground_process_request(&mut fixture);
     rewrite_execution_stage(&mut fixture, ExecutionStage::ApplicationContainer);
     set_strategy_guarantees(
         &mut fixture,
@@ -320,6 +321,7 @@ fn foreground_process_rejects_a_host_binding() {
     let mut fixture = systemd_manager_plan_fixture();
     fixture.interfaces = vec![aos_ability_model::builtin::foreground_process_interface().unwrap()];
     fixture.refresh_interface();
+    use_foreground_process_request(&mut fixture);
     set_strategy_guarantees(
         &mut fixture,
         vec![aos_ability_model::builtin::foreground_process_supervision_guarantee().unwrap()],
@@ -327,6 +329,22 @@ fn foreground_process_rejects_a_host_binding() {
     fixture.refresh_commitments();
 
     assert_diagnostic(fixture, DiagnosticCode::ExecutionStageMismatch);
+}
+
+fn use_foreground_process_request(fixture: &mut PlanFixture) {
+    let artifact = fixture.binding_plan.bindings[0]
+        .implementation
+        .artifact
+        .clone();
+    let parameters = AbilityValue::new(serde_json::json!({
+        "arguments": [],
+        "artifact": artifact,
+        "entry_point": "bin/example",
+    }))
+    .expect("foreground-process request parameters must be bounded");
+
+    fixture.binding_inputs.desired_state.child_requests[0].parameters = parameters.clone();
+    fixture.binding_plan.requests[0].parameters = parameters;
 }
 
 #[test]

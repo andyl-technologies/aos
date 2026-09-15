@@ -108,10 +108,11 @@ pub(super) fn validate_package_document(
         );
     }
 
-    let declares_effects = !package.implementation.handlers.is_empty()
-        || package.implementation.providers.iter().any(|provider| {
-            !provider.owns_resource_kinds.is_empty() || provider.handler.is_some()
-        });
+    let declares_effects =
+        !package.implementation.handlers.is_empty()
+            || package.implementation.providers.iter().any(|provider| {
+                !provider.owns_resource_kinds.is_empty() || provider.handler.is_some()
+            });
     if package.activation_mode == aos_ability_model::AbilityActivationMode::ContractsOnly
         && declares_effects
     {
@@ -122,8 +123,7 @@ pub(super) fn validate_package_document(
                 DiagnosticClass::Unauthorized,
                 DiagnosticPhase::Binding,
                 root.child("activation_mode").components().to_vec(),
-                "contracts-only package declares terminal effect handlers"
-                    .to_string(),
+                "contracts-only package declares terminal effect handlers".to_string(),
             ),
         );
     }

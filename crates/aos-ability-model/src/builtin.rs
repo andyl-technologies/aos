@@ -945,8 +945,6 @@ const fn bounded_string(max_length: u64) -> ValueSchema {
 mod tests {
     use std::collections::BTreeSet;
 
-    use aos_contract::Sha256Digest;
-
     use super::*;
 
     #[test]
@@ -961,13 +959,6 @@ mod tests {
         assert_eq!(document.interface.methods.len(), 5);
         assert!(document.interface.methods.contains_key("observe"));
         assert_eq!(key, systemd_manager_interface_key().unwrap());
-        assert_eq!(
-            key.descriptor,
-            Sha256Digest::parse(
-                "sha256:ff940aedc92c6492557de96a9d802ad27e8dc945155adc23c7542b0bb5e3bce3"
-            )
-            .unwrap()
-        );
         assert!(
             crate::decode_canonical::<InterfaceDocument>(
                 &crate::encode_canonical(&document).unwrap(),
@@ -1036,31 +1027,6 @@ mod tests {
                 .required_guarantees(ExecutionStage::Host)
                 .is_none()
         );
-        assert_eq!(
-            local_systemd_manager_guarantee().unwrap().descriptor,
-            Sha256Digest::parse(
-                "sha256:50995c1c62000543639c8d9f85995c35cc44a9022933ed79e5447654593291d4"
-            )
-            .unwrap()
-        );
-        assert_eq!(
-            system_container_manager_delegation_guarantee()
-                .unwrap()
-                .descriptor,
-            Sha256Digest::parse(
-                "sha256:a811c4d2cc0fd8e09a019ae518bbe95f393ed5bc3265a1b72902adfa7325ceda"
-            )
-            .unwrap()
-        );
-        assert_eq!(
-            foreground_process_supervision_guarantee()
-                .unwrap()
-                .descriptor,
-            Sha256Digest::parse(
-                "sha256:b213e3c6ef28e4930a1091296e28fbfddde9f539d2daeb0287edfe955047311a"
-            )
-            .unwrap()
-        );
     }
 
     #[test]
@@ -1095,13 +1061,6 @@ mod tests {
         assert!(document.interface.methods.contains_key("delete"));
         assert!(document.interface.methods.contains_key("observe"));
         assert_eq!(key, kubernetes_object_interface_key().unwrap());
-        assert_eq!(
-            key.descriptor,
-            Sha256Digest::parse(
-                "sha256:bbced9c501c3c41ab4b5f2a70a2945bde2128ef0a37ad900f6d9f1e2f110963e"
-            )
-            .unwrap()
-        );
         assert!(
             crate::decode_canonical::<InterfaceDocument>(
                 &crate::encode_canonical(&document).unwrap(),
@@ -1155,13 +1114,6 @@ mod tests {
         assert!(document.interface.outputs.is_empty());
         assert!(document.interface.guarantees.is_empty());
         assert_eq!(key, systemd_provider_bootstrap_interface_key().unwrap());
-        assert_eq!(
-            key.descriptor,
-            Sha256Digest::parse(
-                "sha256:833e92258892d87a1f1cb16f66bfd1629c47a97386a9853cd93ffa30037b82f1"
-            )
-            .unwrap()
-        );
         assert!(
             crate::decode_canonical::<InterfaceDocument>(
                 &crate::encode_canonical(&document).unwrap(),

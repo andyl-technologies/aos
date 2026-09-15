@@ -409,10 +409,13 @@ impl ProviderImplementation {
             artifact: self.artifact.identity(),
             requirements: &self.requirements,
             desired_schema: &self.desired_schema,
-            provider_module: self.provider_module.as_ref().map(|locator| SemanticModuleLocator {
-                artifact: locator.artifact.identity(),
-                path: &locator.path,
-            }),
+            provider_module: self
+                .provider_module
+                .as_ref()
+                .map(|locator| SemanticModuleLocator {
+                    artifact: locator.artifact.identity(),
+                    path: &locator.path,
+                }),
             handler: &self.handler,
             owns_resource_kinds: &self.owns_resource_kinds,
             state_format: self.state_format.as_ref().map(|state| SemanticStateFormat {
@@ -821,7 +824,12 @@ mod tests {
         );
 
         let mut changed_nar = original.clone();
-        changed_nar.provider_module.as_mut().unwrap().artifact.nar_hash = digest(44);
+        changed_nar
+            .provider_module
+            .as_mut()
+            .unwrap()
+            .artifact
+            .nar_hash = digest(44);
         assert_ne!(
             original.descriptor_digest().unwrap(),
             changed_nar.descriptor_digest().unwrap()
