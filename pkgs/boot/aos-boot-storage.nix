@@ -24,6 +24,7 @@ in
       util-linux
     ];
     propagatedDeps = [];
+    abilities = ./_aos-boot-storage;
 
     phases = [
       {
