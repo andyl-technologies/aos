@@ -332,6 +332,9 @@
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
+  compositionDriver = import ./composition-driver.nix {
+    inherit lib;
+  };
   smokeAbilityProjection = pkgs.ability-package-smoke.abilities;
   smokePublishedInterfaces = builtins.fromJSON (
     builtins.unsafeDiscardStringContext pkgs.ability-package-smoke.abilities.contract.abilityInterfacesJson
@@ -708,6 +711,7 @@ in
   assert productionKubernetes;
   assert productionPackageAdoption;
   assert serviceManagement;
+  assert compositionDriver;
   assert builtins.attrNames smokeAbilityProjection == ["contract" "documentation" "implementations" "interfaces" "module" "moduleOutputs" "optionSurface" "requirements"];
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];
   assert builtins.attrNames smokeAbilityProjection.interfaces == ["default"];
