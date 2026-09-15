@@ -110,7 +110,11 @@
     then name
     else "${package}:${name}";
   qualifyGuarantees = package: guarantees:
-    builtins.map (qualify package) guarantees;
+    builtins.map (guarantee:
+      if builtins.isString guarantee
+      then qualify package guarantee
+      else guarantee)
+    guarantees;
   qualifyRequirementGuarantees = package: requirement:
     requirement // {guarantees = qualifyGuarantees package (requirement.guarantees or []);};
   qualifyInterfaceGuarantees = package: interface:
@@ -265,6 +269,10 @@
       values)));
 
   projectedOutputType = strictSubmodule {
+    description = mkOption {
+      type = descriptionType;
+      description = "Signed output documentation excluded from semantic identity.";
+    };
     schema = mkOption {
       type = portableSchemaType;
       description = "Portable output value schema projected from its authored option type.";
@@ -323,6 +331,10 @@
     (semantics: !semantics.stops_provider || semantics.required_target_access == "exclusive-write");
 
   projectedMethodType = strictSubmodule {
+    description = mkOption {
+      type = descriptionType;
+      description = "Signed method documentation excluded from semantic identity.";
+    };
     semantics = mkOption {type = projectedMethodSemanticsType;};
     parameters = mkOption {
       type = portableSchemaType;
@@ -504,6 +516,10 @@
 
   implementationRequirementType = strictSubmodule {
     alias = mkOption {type = localKeyType;};
+    description = mkOption {
+      type = descriptionType;
+      description = "Signed requirement documentation excluded from semantic identity.";
+    };
     accepted_interfaces = mkOption {type = moduleTypes.listOf interfaceSelectorType;};
     methods = mkOption {
       type = moduleTypes.listOf localKeyType;
@@ -537,6 +553,7 @@
       type = strictSubmodule {
         name = mkOption {type = qualifiedNameType;};
         abi = mkOption {type = positiveU32Type;};
+        description = mkOption {type = descriptionType;};
         request = mkOption {type = portableSchemaType;};
         configuration = mkOption {
           type = moduleTypes.nullOr portableSchemaType;
@@ -661,8 +678,8 @@
 
   implementationBaseType = strictSubmodule {
     description = mkOption {
-      type = moduleTypes.nullOr descriptionType;
-      default = null;
+      type = descriptionType;
+      description = "Human-readable implementation documentation excluded from executable identity.";
     };
     package = mkOption {
       type = moduleTypes.nullOr packageNameType;
@@ -743,7 +760,8 @@
     };
   };
   implementationType = checkedSubmodule "ability implementation" implementationBaseType (implementation:
-    implementation.description != null
+    implementation.description
+    != null
     && (implementation.artifact == null || packageOutputType.check implementation.artifact)
     && builtins.all packageOutputType.check implementation.artifacts
     && (
@@ -806,8 +824,9 @@
   requirementGuaranteesSchema =
     abilityTypes.schemaOf "requirement guarantees" requirementGuaranteesType;
 
-  guaranteeReferenceType = moduleTypes.addCheck moduleTypes.str (value:
-    localKeyType.check value || declarationKeyType.check value);
+  guaranteeReferenceType =
+    moduleTypes.addCheck moduleTypes.str (value:
+      localKeyType.check value || declarationKeyType.check value);
 
   guaranteeDeclarationType = strictSubmodule {
     name = mkOption {
@@ -1081,9 +1100,11 @@
     declaration = name;
     package = implementation.package;
     interface = interfaceIdentity (interfaceDocumentFromDeclaration declaration);
+    requirements =
+      builtins.mapAttrs (_: requirement: builtins.removeAttrs requirement ["description"])
+      implementation.requirements;
     inherit
       (implementation)
-      requirements
       methods
       guarantees
       state_format
@@ -1231,7 +1252,8 @@
       then false
       else let
         implementation = config.aos.abilities.implementations.${binding.implementation};
-        controllerDeclaration = interfaceDeclarationForReference
+        controllerDeclaration =
+          interfaceDeclarationForReference
           "controller implementation '${binding.implementation}'"
           implementation.interface;
         resourceDeclarations = uniqueInterfaceDeclarations (builtins.filter

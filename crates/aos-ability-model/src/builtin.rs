@@ -303,6 +303,7 @@ fn foreground_execution_compatibility(
 pub fn kubernetes_object_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(KUBERNETES_OBJECT_INTERFACE_NAME)?;
     let observation_output = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: kubernetes_object_observation_schema()?,
         phase: ValuePhase::Observation,
         visibility: ValueVisibility::Protected,
@@ -313,6 +314,7 @@ pub fn kubernetes_object_interface() -> Result<InterfaceDocument> {
         .map(|name| {
             let method = LocalKey::new(name)?;
             let descriptor = MethodDescriptor {
+                description: "Describes this declaration.".to_string(),
                 semantics: if name == "delete" {
                     MethodSemantics::provider_stop()
                 } else {
@@ -345,6 +347,7 @@ pub fn kubernetes_object_interface() -> Result<InterfaceDocument> {
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         interface: InterfaceDescriptor {
+            description: "Describes this declaration.".to_string(),
             name: interface_name,
             abi: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in ABI"))?,
             request: kubernetes_object_identity_schema()?,
@@ -402,14 +405,17 @@ pub fn kubernetes_object_handler(artifact: ArtifactReference) -> Result<HandlerD
 /// Returns an error if built-in construction or canonical encoding fails.
 pub fn kubernetes_object_provider(artifact: ArtifactReference) -> Result<ProviderImplementation> {
     let interface = kubernetes_object_interface_key()?;
+    let handler = kubernetes_object_handler_key()?;
 
     Ok(ProviderImplementation {
+        name: handler.clone(),
+        description: "Applies exact Kubernetes object declarations.".to_string(),
         interface: interface.clone(),
         artifact,
         requirements: Vec::new(),
         desired_schema: None,
         provider_module: None,
-        handler: Some(kubernetes_object_handler_key()?),
+        handler: Some(handler),
         owns_resource_kinds: vec![interface.name],
         state_format: None,
     })
@@ -480,6 +486,7 @@ fn kubernetes_object_observation_schema() -> Result<ValueSchema> {
 pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(SYSTEMD_MANAGER_INTERFACE_NAME)?;
     let active_output = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: ValueSchema::Boolean,
         phase: ValuePhase::Observation,
         visibility: ValueVisibility::Protected,
@@ -509,6 +516,7 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
             outputs.insert(
                 LocalKey::new("retained-resource")?,
                 OutputDescriptor {
+                    description: "Describes this declaration.".to_string(),
                     schema: ValueSchema::ResourceReference,
                     phase: ValuePhase::Runtime,
                     visibility: ValueVisibility::Protected,
@@ -517,6 +525,7 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
             );
         }
         let descriptor = MethodDescriptor {
+            description: "Describes this declaration.".to_string(),
             semantics,
             parameters: systemd_unit_schema()?,
             target_resource: interface_name.clone(),
@@ -538,6 +547,7 @@ pub fn systemd_manager_interface() -> Result<InterfaceDocument> {
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         interface: InterfaceDescriptor {
+            description: "Describes this declaration.".to_string(),
             name: interface_name,
             abi: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in ABI"))?,
             request: systemd_unit_schema()?,
@@ -593,6 +603,7 @@ pub fn foreground_process_interface() -> Result<InterfaceDocument> {
         Ok((
             method.clone(),
             MethodDescriptor {
+                description: "Describes this declaration.".to_string(),
                 semantics,
                 parameters: ValueSchema::Boolean,
                 target_resource: interface_name.clone(),
@@ -614,6 +625,7 @@ pub fn foreground_process_interface() -> Result<InterfaceDocument> {
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         interface: InterfaceDescriptor {
+            description: "Describes this declaration.".to_string(),
             name: interface_name,
             abi: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in ABI"))?,
             request: foreground_process_request_schema()?,
@@ -675,14 +687,17 @@ pub fn foreground_process_handler(artifact: ArtifactReference) -> Result<Handler
 /// Returns an error if built-in construction or canonical encoding fails.
 pub fn foreground_process_provider(artifact: ArtifactReference) -> Result<ProviderImplementation> {
     let interface = foreground_process_interface_key()?;
+    let handler = foreground_process_handler_key()?;
 
     Ok(ProviderImplementation {
+        name: handler.clone(),
+        description: "Runs an authenticated foreground process.".to_string(),
         interface: interface.clone(),
         artifact,
         requirements: Vec::new(),
         desired_schema: None,
         provider_module: None,
-        handler: Some(foreground_process_handler_key()?),
+        handler: Some(handler),
         owns_resource_kinds: vec![interface.name],
         state_format: None,
     })
@@ -701,6 +716,7 @@ pub fn foreground_process_provider(artifact: ArtifactReference) -> Result<Provid
 pub fn systemd_provider_bootstrap_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(SYSTEMD_PROVIDER_BOOTSTRAP_INTERFACE_NAME)?;
     let assignment_output = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: ValueSchema::ProviderAssignment,
         phase: ValuePhase::Observation,
         visibility: ValueVisibility::Protected,
@@ -712,6 +728,7 @@ pub fn systemd_provider_bootstrap_interface() -> Result<InterfaceDocument> {
      -> Result<(LocalKey, MethodDescriptor)> {
         let method = LocalKey::new(name)?;
         let descriptor = MethodDescriptor {
+            description: "Describes this declaration.".to_string(),
             semantics,
             parameters: ValueSchema::Boolean,
             target_resource: interface_name.clone(),
@@ -750,6 +767,7 @@ pub fn systemd_provider_bootstrap_interface() -> Result<InterfaceDocument> {
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         interface: InterfaceDescriptor {
+            description: "Describes this declaration.".to_string(),
             name: interface_name,
             abi: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in ABI"))?,
             request: ValueSchema::Boolean,
@@ -807,14 +825,17 @@ pub fn systemd_manager_handler(artifact: ArtifactReference) -> Result<HandlerDes
 /// Returns an error if built-in construction or canonical encoding fails.
 pub fn systemd_manager_provider(artifact: ArtifactReference) -> Result<ProviderImplementation> {
     let interface = systemd_manager_interface_key()?;
+    let handler = systemd_manager_handler_key()?;
 
     Ok(ProviderImplementation {
+        name: handler.clone(),
+        description: "Controls units through an authenticated systemd manager.".to_string(),
         interface: interface.clone(),
         artifact,
         requirements: Vec::new(),
         desired_schema: None,
         provider_module: None,
-        handler: Some(systemd_manager_handler_key()?),
+        handler: Some(handler),
         owns_resource_kinds: vec![interface.name],
         state_format: None,
     })

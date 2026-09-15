@@ -191,6 +191,8 @@
   missingEntryRejected = !(builtins.tryEval (abilityModulePayload ./fixtures)).success;
   fileModuleArtifact = fileModulePayload.abilities._artifact_outputs.module;
   directoryModuleArtifact = directoryModulePayload.abilities._artifact_outputs.module;
+  fileProjectionArtifact = fileModulePayload.abilities._artifact_outputs.projection;
+  directoryProjectionArtifact = directoryModulePayload.abilities._artifact_outputs.projection;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString (builtins.path {
     path = nestedSource;
@@ -248,14 +250,10 @@ in
     }
   ];
   assert fileModulePayload.drvPath == directoryModulePayload.drvPath;
+  assert fileModuleArtifact.drvPath != directoryModuleArtifact.drvPath;
   assert missingEntryRejected;
-  assert fileModulePayload.abilities.package_module.path == "module.nix";
-  assert directoryModulePayload.abilities.package_module.path == "module.nix";
-  assert builtins.elem {
-    package = "self";
-    output = "module";
-  }
-  fileModulePayload.abilities.artifacts;
+  assert builtins.attrNames fileModulePayload.abilities.interfaces == [];
+  assert builtins.attrNames directoryModulePayload.abilities.interfaces == [];
   assert releaseSourcesComplete;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
@@ -318,6 +316,7 @@ in
             test -f ${directoryModuleArtifact}/private.nix
             test ! -e ${directoryModuleArtifact}/ability-module-directory-sibling.txt
             test "$(find ${directoryModuleArtifact} -mindepth 1 -maxdepth 1 ! -name nix-support -printf '%f\n' | sort)" = "$(printf 'module.nix\nprivate.nix')"
+            cmp ${fileProjectionArtifact} ${directoryProjectionArtifact}
             mkdir -p "$out"
             cat > "$out/result" <<'EOF'
             schema=${support.schema}

@@ -377,10 +377,7 @@ pub(super) fn page(
 }
 
 /// Renders the package overview without expanding its option reference.
-fn guide_html(
-    entry: &DocumentationTreeEntry,
-    document: &PackageDocumentation,
-) -> String {
+fn guide_html(entry: &DocumentationTreeEntry, document: &PackageDocumentation) -> String {
     let mut html = String::new();
     let _ = write!(
         html,

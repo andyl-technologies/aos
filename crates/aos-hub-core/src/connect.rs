@@ -35,14 +35,14 @@ use std::sync::Arc;
 use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 #[cfg(not(target_arch = "wasm32"))]
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use unicode_normalization::UnicodeNormalization as _;
 
 use crate::service::{ReadAuthorization, RegistryServeOutcome, RpcError, RpcService};

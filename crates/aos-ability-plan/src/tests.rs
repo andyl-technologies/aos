@@ -839,6 +839,7 @@ fn configure_oscillating_requirement(fixture: &mut PlannerFixture) -> Oscillatin
     let mut package = lower_package.clone();
     let provider_implementation = &mut package.implementation.providers[0];
     provider_implementation.requirements = vec![RequirementDeclaration {
+        description: "Describes this consumed ability.".to_string(),
         alias: lower_alias,
         accepted_interfaces: lower_request
             .accepted_interfaces
@@ -954,6 +955,7 @@ fn configure_recursive_fallback(fixture: &mut PlannerFixture) -> RecursiveFallba
     recursive_package.package.name = key("recursive-provider");
     let recursive_implementation = &mut recursive_package.implementation.providers[0];
     recursive_implementation.requirements = vec![RequirementDeclaration {
+        description: "Describes this recursive consumed ability.".to_string(),
         alias: lower_alias,
         accepted_interfaces: lower_request
             .accepted_interfaces
@@ -1254,6 +1256,8 @@ fn planner_fixture_with_contract(
         .artifact
         .clone();
     let provider_implementation = ProviderImplementation {
+        name: key("provider"),
+        description: "Shared test provider.".to_string(),
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -1293,6 +1297,7 @@ fn planner_fixture_with_contract(
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
+            implementation_name: key("provider"),
             implementation: descriptor,
         }],
         requirements: Vec::new(),

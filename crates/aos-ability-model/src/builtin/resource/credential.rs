@@ -40,6 +40,7 @@ pub const CREDENTIAL_DELIVERY_OBSERVATION_SCHEMA: &str =
 pub fn credential_delivery_effects_interface() -> Result<InterfaceDocument> {
     let interface_name = InterfaceName::new(CREDENTIAL_DELIVERY_EFFECTS_INTERFACE_NAME)?;
     let credential_output = OutputDescriptor {
+        description: "Describes this declaration.".to_string(),
         schema: credential_view_schema()?,
         phase: ValuePhase::Runtime,
         visibility: ValueVisibility::Protected,

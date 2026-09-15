@@ -3517,7 +3517,10 @@ mod tests {
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
         let release_evidence = ContainerReleaseEvidence {
-            abilities: Some(evidence(MediaType::AosContainerStaticAbilities, "abilities")),
+            abilities: Some(evidence(
+                MediaType::AosContainerStaticAbilities,
+                "abilities",
+            )),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
             license: evidence(MediaType::AosLicenseReport, "license"),
@@ -3918,7 +3921,7 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
                 semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
                 runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
                 config_module_nar_hash: Some(format!("sha256:{}", "2".repeat(64))),
-                    expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
+                expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
             options: Vec::new(),
@@ -3963,7 +3966,7 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
                 document_sha256: format!("sha256:{document_digest}"),
                 document_size: u64::try_from(contents.len()).expect("document size"),
                 semantic_schema_sha256: document.identity.semantic_schema_sha256.clone(),
-                    references: Vec::new(),
+                references: Vec::new(),
             },
         )
     }

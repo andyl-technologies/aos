@@ -137,6 +137,7 @@ pub fn service_management_interface() -> Result<InterfaceDocument> {
         Ok((
             method.clone(),
             MethodDescriptor {
+                description: "Describes this declaration.".to_string(),
                 semantics,
                 parameters: ValueSchema::Boolean,
                 target_resource: interface_name.clone(),
@@ -158,6 +159,7 @@ pub fn service_management_interface() -> Result<InterfaceDocument> {
         schema: InterfaceDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
         interface: InterfaceDescriptor {
+            description: "Describes this declaration.".to_string(),
             name: interface_name,
             abi: NonZeroU32::new(1).ok_or_else(|| anyhow::anyhow!("invalid built-in ABI"))?,
             request: ValueSchema::Boolean,

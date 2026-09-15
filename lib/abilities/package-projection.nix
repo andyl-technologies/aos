@@ -16,18 +16,23 @@
     else name;
   selector = value: builtins.removeAttrs value ["_type"];
   defaultArtifact = abilities.packageOutput {};
-  implementationNames = builtins.attrNames evaluated.implementations;
+  packageOwnedNames = values:
+    builtins.filter (name: lib.hasPrefix packagePrefix name) (builtins.attrNames values);
+  implementationNames = packageOwnedNames evaluated.implementations;
   structuredEffects = builtins.any (name: let
     implementation = evaluated.implementations.${name};
   in
-    implementation.compose != null
+    implementation.compose
+    != null
     || implementation.transition != null
     || implementation.provide != null
     || implementation.handlerDescriptor != null)
   implementationNames;
 
   guaranteeFor = reference:
-    if builtins.hasAttr reference evaluated.guarantees
+    if !builtins.isString reference
+    then throw "Ability guarantee references must be exact declaration aliases."
+    else if builtins.hasAttr reference evaluated.guarantees
     then abilities.guaranteeIdentity evaluated.guarantees.${reference}
     else throw "Ability guarantee reference '${reference}' has no exact package declaration.";
   semanticRequirement = requirement:
@@ -48,13 +53,18 @@
     };
   semanticImplementations = builtins.mapAttrs (_: semanticImplementation) evaluated.implementations;
 
-  interfaceDocuments = builtins.mapAttrs (
-    _:
-      abilities.interfaceDocumentFromDeclaration
-  ) (builtins.mapAttrs (_: semanticInterface) evaluated.interfaces);
-  ownedInterfaceDocuments = lib.filterAttrs (
-    name: _: lib.hasPrefix packagePrefix name
-  ) interfaceDocuments;
+  interfaceDocuments = builtins.mapAttrs (name: declaration:
+    abilities.interfaceDocumentFromDeclaration (
+      if lib.hasPrefix packagePrefix name
+      then semanticInterface declaration
+      else declaration
+    ))
+  evaluated.interfaces;
+  ownedInterfaceDocuments =
+    lib.filterAttrs (
+      name: _: lib.hasPrefix packagePrefix name
+    )
+    interfaceDocuments;
   interfaceFor = implementation:
     if builtins.isString implementation.interface
     then interfaceDocuments.${implementation.interface}
@@ -75,12 +85,12 @@
       name = localName name;
       value = semanticRequirement evaluated.requirementTemplates.${name};
     })
-    (builtins.attrNames evaluated.requirementTemplates)));
+    (packageOwnedNames evaluated.requirementTemplates)));
   guarantees = builtins.listToAttrs (map (name: {
       name = localName name;
       value = evaluated.guarantees.${name};
     })
-    (builtins.attrNames evaluated.guarantees));
+    (packageOwnedNames evaluated.guarantees));
   implementationArtifact = implementation:
     selector (
       if implementation.artifact == null
@@ -117,6 +127,7 @@
   in
     {
       name = localName name;
+      inherit (implementation) description;
       inherit artifact interface;
       requirements = requirementsFor implementation;
       owns_resource_kinds = ownedResourceKinds implementation;
@@ -138,12 +149,16 @@
       };
     };
   providerLessThan = left: right: let
-    leftInterface = builtins.toJSON left.interface;
-    rightInterface = builtins.toJSON right.interface;
+    leftInterface = left.interface;
+    rightInterface = right.interface;
   in
-    if leftInterface == rightInterface
-    then left.name < right.name
-    else leftInterface < rightInterface;
+    if leftInterface.name != rightInterface.name
+    then leftInterface.name < rightInterface.name
+    else if leftInterface.abi != rightInterface.abi
+    then leftInterface.abi < rightInterface.abi
+    else if leftInterface.descriptor != rightInterface.descriptor
+    then leftInterface.descriptor < rightInterface.descriptor
+    else left.name < right.name;
   providers = builtins.sort providerLessThan (map
     (name: providerFor name semanticImplementations.${name})
     implementationNames);
@@ -161,7 +176,8 @@
       };
     })
   implementationNames;
-  artifactSelectors = builtins.sort
+  artifactSelectors =
+    builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
     (lib.unique (
       lib.optional
@@ -190,7 +206,8 @@
       name = localName name;
       value = {
         conformance_families = builtins.sort builtins.lessThan implementation.qualification.conformanceFamilies;
-        observer = projectedHandler
+        observer =
+          projectedHandler
           "qualification observer"
           implementation.qualification.observer;
       };
@@ -232,9 +249,10 @@
     };
     artifacts = artifactSelectors;
     interfaces = builtins.listToAttrs (map (entry: {
-      name = localName entry.name;
-      value = abilities.interfaceIdentity entry.value;
-    }) interfaceAliases);
+        name = localName entry.name;
+        value = abilities.interfaceIdentity entry.value;
+      })
+      interfaceAliases);
     inherit guarantees;
     package_module =
       if packageModuleLocator == null
@@ -244,17 +262,21 @@
         inherit (packageModuleLocator) path;
       };
     option_declarations = optionDeclarations;
-    exports = map (name: let
-      implementation = semanticImplementations.${name};
-    in {
-      name = localName name;
-      interface = interfaceIdentityFor implementation;
-      implementation = localName name;
-    }) implementationNames;
-    interface_documents = map (entry: {
-      inherit (entry) descriptor;
-      document = entry.value;
-    }) interfaceEntries;
+    exports =
+      map (name: let
+        implementation = semanticImplementations.${name};
+      in {
+        name = localName name;
+        interface = interfaceIdentityFor implementation;
+        implementation = localName name;
+      })
+      implementationNames;
+    interface_documents =
+      map (entry: {
+        inherit (entry) descriptor;
+        document = entry.value;
+      })
+      interfaceEntries;
     requirements = packageRequirements;
     implementation = {
       inherit providers;
@@ -262,5 +284,7 @@
     };
     inherit qualification;
   };
-in
-  projectionValue
+in {
+  value = projectionValue;
+  selectors = artifactSelectors;
+}

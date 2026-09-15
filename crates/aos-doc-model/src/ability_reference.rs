@@ -539,6 +539,7 @@ mod tests {
         .expect("decode interface fixture");
         let interface_key = interface.interface_key().expect("interface key");
         let requirement = RequirementDeclaration {
+            description: "Describes this consumed ability.".to_string(),
             alias: LocalKey::new("runtime").expect("requirement alias"),
             accepted_interfaces: vec![interface_key.clone().into()],
             methods: Vec::new(),

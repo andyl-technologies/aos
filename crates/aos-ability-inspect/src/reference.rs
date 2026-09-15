@@ -690,6 +690,7 @@ mod tests {
             schema: "aos.ability.interface/v1".to_string(),
             required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
             interface: InterfaceDescriptor {
+                description: "Describes this ability interface.".to_string(),
                 name: InterfaceName::new("aos.test.service").expect("interface"),
                 abi: NonZeroU32::new(1).expect("nonzero ABI"),
                 request: ValueSchema::Boolean,

@@ -303,12 +303,16 @@ fn requirement_item(html: &mut String, consumer: &str, requirement: &Requirement
         escape(consumer),
     );
     for accepted in &requirement.accepted_interfaces {
+        let descriptor = accepted
+            .descriptor
+            .map(|digest| hash_value(&digest.to_string()))
+            .unwrap_or_else(|| "any compatible descriptor".to_string());
         let _ = write!(
             html,
             "<li>{} ABI {} · {}</li>",
             escape(accepted.name.as_str()),
             accepted.abi,
-            hash_value(&accepted.descriptor.to_string()),
+            descriptor,
         );
     }
     if !requirement.methods.is_empty() {
@@ -486,6 +490,7 @@ mod tests {
             schema: "aos.ability.interface/v1".into(),
             required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
             interface: InterfaceDescriptor {
+                description: "Describes this ability interface.".to_string(),
                 name: InterfaceName::new("aos.test.service").expect("interface name"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
                 request: ValueSchema::Boolean,
@@ -525,8 +530,9 @@ mod tests {
                 interface: interface_key.clone(),
                 implementation: Sha256Digest::of_bytes(b"implementation"),
                 requirements: vec![RequirementDeclaration {
+                    description: "Describes this consumed ability.".to_string(),
                     alias: key("service-runtime"),
-                    accepted_interfaces: vec![interface_key.clone()],
+                    accepted_interfaces: vec![interface_key.clone().into()],
                     methods: Vec::new(),
                     guarantees: Vec::new(),
                     strength: RequirementStrength::Required,
@@ -534,8 +540,9 @@ mod tests {
                 }],
             }],
             requirements: vec![RequirementDeclaration {
+                description: "Describes this consumed ability.".to_string(),
                 alias: key("network"),
-                accepted_interfaces: vec![interface_key],
+                accepted_interfaces: vec![interface_key.into()],
                 methods: Vec::new(),
                 guarantees: Vec::new(),
                 strength: RequirementStrength::Required,

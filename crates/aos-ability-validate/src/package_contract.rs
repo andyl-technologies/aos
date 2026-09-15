@@ -213,6 +213,48 @@ fn validate_local_declarations(
         .iter()
         .map(aos_ability_model::ProviderImplementation::descriptor_digest)
         .collect::<anyhow::Result<BTreeSet<_>>>()?;
+    anyhow::ensure!(
+        implementation_descriptors.len() == package.implementation.providers.len(),
+        "package implementation descriptors must be unique"
+    );
+    anyhow::ensure!(
+        package.implementation.providers.windows(2).all(|pair| {
+            pair[0].interface < pair[1].interface
+                || (pair[0].interface == pair[1].interface && pair[0].name < pair[1].name)
+        }),
+        "package implementations must be unique and in canonical interface/name order"
+    );
+    anyhow::ensure!(
+        package
+            .implementation
+            .providers
+            .iter()
+            .map(|provider| &provider.name)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == package.implementation.providers.len(),
+        "package implementation names must be unique"
+    );
+    for export in &package.exports {
+        let provider = package
+            .implementation
+            .providers
+            .iter()
+            .find(|provider| provider.name == export.implementation_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "package export '{}' names absent implementation '{}'",
+                    export.name.as_str(),
+                    export.implementation_name.as_str()
+                )
+            })?;
+        anyhow::ensure!(
+            provider.interface == export.interface
+                && provider.descriptor_digest()? == export.implementation,
+            "package export '{}' does not match its exact retained implementation",
+            export.name.as_str()
+        );
+    }
     for (implementation, qualification) in &package.implementation.qualification {
         anyhow::ensure!(
             implementation_descriptors.contains(implementation),

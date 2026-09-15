@@ -231,6 +231,8 @@ pub struct ProviderStateFormatProjection {
 pub struct ProviderImplementationProjection {
     /// Names this implementation within the package projection.
     pub name: LocalKey,
+    /// Describes this implementation in the signed package document.
+    pub description: String,
     /// Exact public interface implemented by this provider.
     pub interface: InterfaceKey,
     /// Symbolic implementation artifact.
@@ -415,7 +417,7 @@ pub fn resolve_package_projection(
         .providers
         .into_iter()
         .map(|provider| {
-            let provider_name = provider.name;
+            let provider_name = provider.name.clone();
             let artifact = resolver.select(&provider.artifact)?;
             let state_format = provider
                 .state_format
@@ -436,6 +438,8 @@ pub fn resolve_package_projection(
                 })
                 .transpose()?;
             let resolved = ProviderImplementation {
+                name: provider.name,
+                description: provider.description,
                 interface: provider.interface,
                 artifact,
                 requirements: provider.requirements,
@@ -499,6 +503,7 @@ pub fn resolve_package_projection(
         .exports
         .into_iter()
         .map(|export| {
+            let implementation_name = export.implementation.clone();
             let provider = provider_names
                 .get(&export.implementation)
                 .and_then(|position| providers.get(*position))
@@ -517,6 +522,7 @@ pub fn resolve_package_projection(
             Ok(ExportDeclaration {
                 name: export.name,
                 interface: export.interface,
+                implementation_name,
                 implementation: provider.descriptor_digest()?,
             })
         })

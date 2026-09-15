@@ -1624,6 +1624,8 @@ mod tests {
             .clone();
         let handler_key = key("observe-handler");
         let selected_implementation = ProviderImplementation {
+            name: key("selected"),
+            description: "Selected test implementation.".to_string(),
             interface: selected_interface.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
@@ -1655,6 +1657,8 @@ mod tests {
             artifact: artifact.clone(),
         };
         let owner_implementation = ProviderImplementation {
+            name: key("owner"),
+            description: "State-owning test implementation.".to_string(),
             interface: owner_interface_key.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
@@ -1701,11 +1705,13 @@ mod tests {
                 ExportDeclaration {
                     name: key("handler"),
                     interface: selected_interface.clone(),
+                    implementation_name: key("handler"),
                     implementation: selected_reference.descriptor,
                 },
                 ExportDeclaration {
                     name: key("owner"),
                     interface: owner_interface_key.clone(),
+                    implementation_name: key("owner"),
                     implementation: owner_reference.descriptor,
                 },
             ],

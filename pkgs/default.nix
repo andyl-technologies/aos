@@ -224,7 +224,8 @@
       else null;
     existingOutputs = args.outputs or ["out"];
     reservedAbilityOutputs = ["abilities" "abilityContract" "abilityModule" "module"];
-    conflictingAbilityOutputs = builtins.filter
+    conflictingAbilityOutputs =
+      builtins.filter
       (output: builtins.elem output reservedAbilityOutputs)
       existingOutputs;
     authoredConfigModule = args.configModule or null;
@@ -326,10 +327,26 @@
             packageVersion = args.version or "0";
           };
         };
-    localAbilityProjection =
+    evaluatedAbilities =
       if abilityEvaluation == null
       then null
       else abilityEvaluation.config.aos.abilities;
+    projectLocalAbilityMap = values:
+      builtins.listToAttrs (lib.concatMap (name:
+        lib.optional (lib.hasPrefix "${packageName}:" name) {
+          name = lib.removePrefix "${packageName}:" name;
+          value = values.${name};
+        })
+      (builtins.attrNames values));
+    localAbilityProjection =
+      if evaluatedAbilities == null
+      then null
+      else {
+        guarantees = projectLocalAbilityMap evaluatedAbilities.guarantees;
+        interfaces = projectLocalAbilityMap evaluatedAbilities.interfaces;
+        implementations = projectLocalAbilityMap evaluatedAbilities.implementations;
+        requirementTemplates = projectLocalAbilityMap evaluatedAbilities.requirementTemplates;
+      };
     normalizeOptionType = value:
       if builtins.isList value
       then builtins.map normalizeOptionType value
@@ -356,10 +373,10 @@
         builtins.map (declaration:
           {
             inherit (declaration) path description visibility contributable;
-          type_signature = declaration.typeSig;
+            type_signature = declaration.typeSig;
             structured_type = normalizeOptionType declaration.type;
-          read_only = declaration.readOnly;
-          source.path = sourceFor declaration;
+            read_only = declaration.readOnly;
+            source.path = sourceFor declaration;
           }
           // lib.optionalAttrs (declaration.default != null) {inherit (declaration) default;}
           // lib.optionalAttrs (declaration.example != null) {inherit (declaration) example;}
@@ -367,17 +384,33 @@
           // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;}) (builtins.filter
           (declaration: declaration.owner == packageName)
           abilityEvaluation._optionDecls);
-    abilityProjection =
+    abilityProjectionResult =
       if localAbilityProjection == null
       then null
       else
         projectPackageAbilities {
           inherit packageName;
           version = args.version or "0";
-          evaluated = localAbilityProjection;
+          evaluated = evaluatedAbilities;
           packageModuleLocator = symbolicAbilityModuleLocator;
           optionDeclarations = abilityOptionDeclarations;
         };
+    abilityProjection =
+      if abilityProjectionResult == null
+      then null
+      else abilityProjectionResult.value;
+    abilityProjectionSource =
+      if abilityProjection == null
+      then null
+      else let
+        projectionJson = builtins.unsafeDiscardStringContext (builtins.toJSON abilityProjection);
+      in
+        if builtins.hasContext projectionJson || lib.hasInfix "/nix/store/" projectionJson
+        then throw "ability projection for package '${packageName}' contains a store locator"
+        else
+          builtins.toFile
+          "${packageName}-ability-projection.json"
+          projectionJson;
     preparedAuthoredConfigModule =
       if authoredConfigModule != null
       then
@@ -604,15 +637,20 @@
       if abilityProjection != null
       then {
         abilities =
-          abilityProjection
+          localAbilityProjection
           // {
             # These handles are derived from the same authored module path as
-            # the signed fields above. Publication strips underscore fields.
+            # the checked package-local tree. Publication strips underscore
+            # fields and derives the signed wire projection separately.
             _module = retainedAbilityModule;
             _artifact_outputs =
-              lib.optionalAttrs (abilityModuleArtifact != null) {
+              (lib.optionalAttrs (abilityModuleArtifact != null) {
                 module = abilityModuleArtifact.module;
-              };
+              })
+              // (lib.optionalAttrs (abilityProjectionSource != null) {
+                projection = abilityProjectionSource;
+                selectors = abilityProjectionResult.selectors;
+              });
           };
       }
       else if hasConfigModule

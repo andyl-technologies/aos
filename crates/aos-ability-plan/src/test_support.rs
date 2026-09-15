@@ -386,6 +386,8 @@ fn build_verified_planning_fixture(
         .artifact
         .clone();
     let provider_implementation = ProviderImplementation {
+        name: key("provider"),
+        description: "Planning fixture provider.".to_string(),
         interface: interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -442,6 +444,7 @@ fn build_verified_planning_fixture(
         exports: vec![ExportDeclaration {
             name: key("provider"),
             interface: interface.clone(),
+            implementation_name: key("provider"),
             implementation: descriptor,
         }],
         requirements: Vec::new(),

@@ -133,6 +133,8 @@ pub enum ValueVisibility {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputDescriptor {
+    /// Describes the output for signed interface documentation.
+    pub description: String,
     /// Defines the exact output value shape.
     pub schema: ValueSchema,
     /// States when the output becomes available.
@@ -199,6 +201,8 @@ pub struct LifecycleSemantics {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MethodDescriptor {
+    /// Describes the method for signed interface documentation.
+    pub description: String,
     /// Declares the provider-neutral authority and scheduling semantics.
     pub semantics: MethodSemantics,
     /// Defines the closed parameter record.
@@ -251,6 +255,8 @@ pub struct InterfaceDescriptor {
     pub name: InterfaceName,
     /// Identifies the caller-visible ABI family.
     pub abi: std::num::NonZeroU32,
+    /// Describes the interface for signed package documentation.
+    pub description: String,
     /// Defines one contribution or request value.
     pub request: ValueSchema,
     /// Defines operator-owned configuration for each enabled provider instance.
@@ -308,6 +314,8 @@ pub enum RequirementStrength {
 pub struct RequirementDeclaration {
     /// Names the requirement inside the provider implementation.
     pub alias: LocalKey,
+    /// Describes the consumed ability for signed package documentation.
+    pub description: String,
     /// Lists provider-neutral accepted interface selectors in canonical order.
     pub accepted_interfaces: Vec<InterfaceSelector>,
     /// Names required methods in canonical order.
@@ -347,6 +355,10 @@ pub struct ProviderStateFormat {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderImplementation {
+    /// Names this implementation within its authenticated package.
+    pub name: LocalKey,
+    /// Describes the implementation for signed package documentation.
+    pub description: String,
     /// Identifies the exact public interface implemented.
     pub interface: InterfaceKey,
     /// Identifies the authenticated implementation artifact.
@@ -393,10 +405,20 @@ impl ProviderImplementation {
         }
 
         #[derive(Serialize)]
+        struct SemanticRequirement<'a> {
+            alias: &'a LocalKey,
+            accepted_interfaces: &'a [InterfaceSelector],
+            methods: &'a [LocalKey],
+            guarantees: &'a [GuaranteeKey],
+            strength: RequirementStrength,
+            fallback: &'a Option<RequirementFallback>,
+        }
+
+        #[derive(Serialize)]
         struct SemanticProviderImplementation<'a> {
             interface: &'a InterfaceKey,
             artifact: ArtifactIdentity,
-            requirements: &'a [RequirementDeclaration],
+            requirements: Vec<SemanticRequirement<'a>>,
             desired_schema: &'a Option<ValueSchema>,
             provider_module: Option<SemanticModuleLocator<'a>>,
             handler: &'a Option<LocalKey>,
@@ -407,7 +429,18 @@ impl ProviderImplementation {
         let semantic = SemanticProviderImplementation {
             interface: &self.interface,
             artifact: self.artifact.identity(),
-            requirements: &self.requirements,
+            requirements: self
+                .requirements
+                .iter()
+                .map(|requirement| SemanticRequirement {
+                    alias: &requirement.alias,
+                    accepted_interfaces: &requirement.accepted_interfaces,
+                    methods: &requirement.methods,
+                    guarantees: &requirement.guarantees,
+                    strength: requirement.strength,
+                    fallback: &requirement.fallback,
+                })
+                .collect(),
             desired_schema: &self.desired_schema,
             provider_module: self
                 .provider_module
@@ -435,6 +468,14 @@ fn validate_provider_implementation_limits(
     if implementation.artifact.store_path.len() as u64 > limits.max_string_bytes {
         bail!("provider implementation artifact path exceeds the version-1 string limit");
     }
+    if implementation.description.is_empty()
+        || implementation.description.len() as u64 > limits.max_string_bytes
+        || implementation.description.chars().any(char::is_control)
+    {
+        bail!(
+            "provider implementation description must be nonempty, control-free, and within the version-1 string limit"
+        );
+    }
 
     let mut remaining_items = limits.max_collection_items;
     consume_provider_implementation_items(
@@ -460,7 +501,7 @@ fn consume_provider_implementation_items(
 ) -> anyhow::Result<()> {
     // Count the fixed provider, interface-key, and artifact record members
     // alongside every dynamic collection below.
-    consume_items(remaining_items, 4)?;
+    consume_items(remaining_items, 6)?;
     consume_items(remaining_items, 3)?;
     consume_items(remaining_items, 4)?;
     if implementation.provider_module.is_some() {
@@ -488,7 +529,7 @@ fn consume_provider_implementation_items(
         consume_items(remaining_items, 4)?;
     }
     for requirement in &implementation.requirements {
-        consume_items(remaining_items, 6)?;
+        consume_items(remaining_items, 7)?;
         consume_items(remaining_items, requirement.accepted_interfaces.len())?;
         consume_items(
             remaining_items,
@@ -599,6 +640,8 @@ pub struct ExportDeclaration {
     pub name: LocalKey,
     /// Identifies the exact public interface contract.
     pub interface: InterfaceKey,
+    /// Names the retained implementation within the package.
+    pub implementation_name: LocalKey,
     /// Identifies the separate provider implementation.
     pub implementation: Sha256Digest,
 }
@@ -666,6 +709,7 @@ mod tests {
     #[test]
     fn retained_resource_output_is_derived_from_schema_phase_and_lifetime() {
         let mut output = OutputDescriptor {
+            description: "Describes this declaration.".to_string(),
             schema: ValueSchema::ResourceReference,
             phase: ValuePhase::Runtime,
             visibility: ValueVisibility::Protected,
@@ -710,6 +754,8 @@ mod tests {
         };
 
         ProviderImplementation {
+            name: LocalKey::new("provider").expect("valid implementation name"),
+            description: "Test provider implementation.".to_string(),
             interface: InterfaceKey {
                 name: InterfaceName::new("aos.test.provider").expect("valid interface name"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
@@ -722,6 +768,7 @@ mod tests {
                 closure: digest(4),
             },
             requirements: vec![RequirementDeclaration {
+                description: "Describes this declaration.".to_string(),
                 alias: LocalKey::new("lower").expect("valid requirement alias"),
                 accepted_interfaces: vec![accepted_interface.into()],
                 methods: vec![LocalKey::new("observe").expect("valid method name")],
@@ -768,8 +815,31 @@ mod tests {
     }
 
     #[test]
+    fn provider_and_requirement_prose_do_not_change_the_descriptor() {
+        let original = provider_implementation();
+        let mut edited = original.clone();
+        edited.description = "Reworded provider documentation.".to_string();
+        edited.requirements[0].description = "Reworded requirement documentation.".to_string();
+
+        assert_eq!(
+            original
+                .descriptor_digest()
+                .expect("original provider descriptor"),
+            edited
+                .descriptor_digest()
+                .expect("edited provider descriptor")
+        );
+        assert_ne!(
+            aos_contract::canonical::to_vec(&original).expect("original canonical provider"),
+            aos_contract::canonical::to_vec(&edited).expect("edited canonical provider")
+        );
+    }
+
+    #[test]
     fn stateless_provider_omits_the_state_format_from_its_canonical_encoding() {
         let stateless = ProviderImplementation {
+            name: LocalKey::new("stateless").expect("valid implementation name"),
+            description: "Stateless test provider.".to_string(),
             interface: InterfaceKey {
                 name: InterfaceName::new("aos.test.stateless").expect("valid interface name"),
                 abi: std::num::NonZeroU32::new(1).expect("nonzero ABI"),
@@ -788,7 +858,7 @@ mod tests {
             owns_resource_kinds: Vec::new(),
             state_format: None,
         };
-        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"handler":"run","interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"owns_resource_kinds":[],"requirements":[]}"#;
+        let expected = br#"{"artifact":{"closure":"sha256:0404040404040404040404040404040404040404040404040404040404040404","content":"sha256:0202020202020202020202020202020202020202020202020202020202020202","nar_hash":"sha256:0303030303030303030303030303030303030303030303030303030303030303","store_path":"/nix/store/stateless-provider"},"description":"Stateless test provider.","handler":"run","interface":{"abi":1,"descriptor":"sha256:0101010101010101010101010101010101010101010101010101010101010101","name":"aos.test.stateless"},"name":"stateless","owns_resource_kinds":[],"requirements":[]}"#;
 
         let encoded = aos_contract::canonical::to_vec(&stateless)
             .expect("stateless provider implementation encodes canonically");

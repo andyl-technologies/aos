@@ -24,6 +24,7 @@
     };
     outputs = {
       endpoint = {
+        description = "Identifies the endpoint resource produced by the test interface.";
         schema = types.resourceReference;
         phase = "planning";
         visibility = "protected";
@@ -32,6 +33,7 @@
     };
     methods = {
       observe = {
+        description = "Observes the current test interface state.";
         semantics = {
           requiredTargetAccess = "read";
           stopsProvider = false;
@@ -43,6 +45,7 @@
         targetResource = "aos.test.echo";
         outputs = {
           ready = {
+            description = "Reports whether the test resource is ready.";
             schema = types.boolean;
             phase = "observation";
             visibility = "protected";

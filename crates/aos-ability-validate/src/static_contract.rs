@@ -872,6 +872,7 @@ mod tests {
     fn requirement(alias: &str) -> Value {
         json!({
             "alias": alias,
+            "description": "Describes this consumed ability.",
             "accepted_interfaces": [
                 interface("aos.test.alpha", '1'),
                 interface("aos.test.beta", '2'),
@@ -955,6 +956,7 @@ mod tests {
             .interface_key()
             .expect("fixture interface must have an exact key");
         package.requirements = vec![RequirementDeclaration {
+            description: "Describes this declaration.".to_string(),
             alias: LocalKey::new("package-required").expect("fixture alias must be valid"),
             accepted_interfaces: vec![accepted_interface.clone().into()],
             methods: Vec::new(),
@@ -965,6 +967,7 @@ mod tests {
 
         let provider = &mut package.implementation.providers[0];
         provider.requirements = vec![RequirementDeclaration {
+            description: "Describes this declaration.".to_string(),
             alias: LocalKey::new("provider-required").expect("fixture alias must be valid"),
             accepted_interfaces: vec![accepted_interface.into()],
             methods: Vec::new(),

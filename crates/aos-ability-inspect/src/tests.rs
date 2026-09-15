@@ -93,6 +93,8 @@ fn install_package_with_feature(
     let artifact = binding.implementation.artifact.clone();
     let handler = LocalKey::new("observe-handler")?;
     let implementation = ProviderImplementation {
+        name: LocalKey::new("provider")?,
+        description: "Inspection test provider.".to_string(),
         interface: binding.interface.clone(),
         artifact: artifact.clone(),
         requirements: Vec::new(),
@@ -110,6 +112,7 @@ fn install_package_with_feature(
     let mut exports = vec![ExportDeclaration {
         name: LocalKey::new("provider")?,
         interface: binding.interface.clone(),
+        implementation_name: LocalKey::new("provider")?,
         implementation: descriptor,
     }];
     let mut providers = vec![implementation];
@@ -121,6 +124,8 @@ fn install_package_with_feature(
         }
         let owner_interface_key = owner_interface.interface_key()?;
         let owner = ProviderImplementation {
+            name: LocalKey::new("state-owner")?,
+            description: "Inspection state owner.".to_string(),
             interface: owner_interface_key.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
@@ -139,6 +144,7 @@ fn install_package_with_feature(
         exports.push(ExportDeclaration {
             name: LocalKey::new("state-owner")?,
             interface: owner_interface_key,
+            implementation_name: LocalKey::new("state-owner")?,
             implementation: owner.descriptor_digest()?,
         });
         providers.push(owner);

@@ -5,14 +5,14 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use aos_ability_model::VersionedDocument as _;
 use aos_ability_validate::{
-    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
+    validate_ability_contract, AbilityContractData, CheckedAbilityContract,
 };
 use sha2::{Digest, Sha256};
 
 use crate::db::IndexedPackageAbilityReference;
 use crate::fetch::SurfaceFetch;
 
-use super::{MAX_IMAGE_NARINFO_BYTES, parse_documentation_narinfo};
+use super::{parse_documentation_narinfo, MAX_IMAGE_NARINFO_BYTES};
 
 /// Fetches and verifies one ability companion and derives its public reference.
 ///
@@ -213,9 +213,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, ArtifactReference, ExportDeclaration, ModuleLocator,
-        PackageDocument, PackageImplementation, ProviderImplementation, RelativePath,
-        RequiredFeature, VersionedDocument, decode_canonical, encode_canonical,
+        decode_canonical, encode_canonical, AbilityActivationMode, ArtifactReference,
+        ExportDeclaration, ModuleLocator, PackageDocument, PackageImplementation,
+        ProviderImplementation, RelativePath, RequiredFeature, VersionedDocument,
     };
     use aos_contract::Sha256Digest;
 
@@ -313,6 +313,8 @@ mod tests {
             closure: Sha256Digest::from_bytes([3; 32]),
         };
         let provider = ProviderImplementation {
+            name: aos_ability_model::LocalKey::new("provider").expect("valid implementation name"),
+            description: "Hub reference test provider.".to_string(),
             interface: interface_key.clone(),
             artifact: artifact.clone(),
             requirements: Vec::new(),
@@ -352,12 +354,16 @@ mod tests {
                 ExportDeclaration {
                     name: aos_ability_model::LocalKey::new("echo").expect("valid export"),
                     interface: interface_key.clone(),
+                    implementation_name: aos_ability_model::LocalKey::new("provider")
+                        .expect("valid implementation name"),
                     implementation: provider_digest,
                 },
                 ExportDeclaration {
                     name: aos_ability_model::LocalKey::new("echo-alias")
                         .expect("valid export alias"),
                     interface: interface_key.clone(),
+                    implementation_name: aos_ability_model::LocalKey::new("provider")
+                        .expect("valid implementation name"),
                     implementation: provider_digest,
                 },
             ],
@@ -436,19 +442,17 @@ mod tests {
         let (fetch, mut ability, _) = signed_fixture();
         ability.manifest_sha256 = Sha256Digest::from_bytes([9; 32]).to_string();
 
-        assert!(
-            fetch_package_ability_reference(
-                &fetch,
-                "demo",
-                "1.0.0",
-                "x86_64-linux",
-                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo",
-                &Sha256Digest::from_bytes([2; 32]).to_string(),
-                &ability,
-            )
-            .await
-            .is_err()
-        );
+        assert!(fetch_package_ability_reference(
+            &fetch,
+            "demo",
+            "1.0.0",
+            "x86_64-linux",
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo",
+            &Sha256Digest::from_bytes([2; 32]).to_string(),
+            &ability,
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
