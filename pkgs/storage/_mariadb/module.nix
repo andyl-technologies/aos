@@ -38,21 +38,29 @@
     predicate = value: builtins.match "[A-Z0-9_,]*" value != null;
   };
   characterSet = abilityTypes.enum ["utf8mb4" "utf8mb3" "latin1"];
-  secretRef = types.submodule ({...}: {
-    config._module.strict = true;
-    options = {
-      resource = mkOption {
+  secretRef = abilityTypes.record {
+    fields = {
+      resource = {
         type = abilityTypes.optional (abilityTypes.deferredResult abilityTypes.resourceReference);
         default = null;
         description = "Typed resource reference producing the credential without exposing its bytes.";
       };
-      encrypted = mkOption {
+      encrypted = {
         type = abilityTypes.boolean;
         default = false;
         description = "Whether the referenced credential requires encrypted delivery.";
       };
     };
-  });
+  };
+  normalizeSecret = reference: {
+    resource = reference.resource or null;
+    encrypted = reference.encrypted or false;
+  };
+  tlsCertificate = normalizeSecret cfg.tls.certificate;
+  tlsPrivateKey = normalizeSecret cfg.tls.privateKey;
+  tlsCa = normalizeSecret cfg.tls.ca;
+  adminSql = normalizeSecret cfg.bootstrap.adminSql;
+  replicationSql = normalizeSecret cfg.bootstrap.replicationSql;
 
   boolValue = value:
     if value
@@ -87,25 +95,25 @@
       lib.optionals cfg.tls.enable [
         {
           name = "tls-certificate";
-          inherit (cfg.tls.certificate) resource encrypted;
+          inherit (tlsCertificate) resource encrypted;
         }
         {
           name = "tls-private-key";
-          inherit (cfg.tls.privateKey) resource encrypted;
+          inherit (tlsPrivateKey) resource encrypted;
         }
       ]
-      ++ lib.optional (cfg.tls.ca.resource != null) {
+      ++ lib.optional (tlsCa.resource != null) {
         name = "tls-ca";
-        inherit (cfg.tls.ca) resource encrypted;
+        inherit (tlsCa) resource encrypted;
       };
     bootstrapCredentials =
-      lib.optional (cfg.bootstrap.adminSql.resource != null) {
+      lib.optional (adminSql.resource != null) {
         name = "admin-bootstrap-sql";
-        inherit (cfg.bootstrap.adminSql) resource encrypted;
+        inherit (adminSql) resource encrypted;
       }
-      ++ lib.optional (cfg.bootstrap.replicationSql.resource != null) {
+      ++ lib.optional (replicationSql.resource != null) {
         name = "replication-bootstrap-sql";
-        inherit (cfg.bootstrap.replicationSql) resource encrypted;
+        inherit (replicationSql) resource encrypted;
       };
   in {
     inherit tlsCredentials bootstrapCredentials;
@@ -224,7 +232,7 @@
           (executionPath (resultOf "credential-tls-private-key" "credential-path"))
           (literal "\n")
         ]
-        ++ lib.optionals (cfg.tls.ca.resource != null) [
+        ++ lib.optionals (tlsCa.resource != null) [
           (literal "ssl-ca=")
           (executionPath (resultOf "credential-tls-ca" "credential-path"))
           (literal "\n")
@@ -587,11 +595,11 @@ in {
       aos.abilities = lib.mkMerge abilityFragments.declarations;
       assertions = [
         {
-          assertion = !cfg.enable || !cfg.tls.enable || (cfg.tls.certificate.resource != null && cfg.tls.privateKey.resource != null);
+          assertion = !cfg.enable || !cfg.tls.enable || (tlsCertificate.resource != null && tlsPrivateKey.resource != null);
           message = "mariadb TLS requires certificate and private-key credential references";
         }
         {
-          assertion = !cfg.enable || cfg.tls.enable || (cfg.tls.certificate.resource == null && cfg.tls.privateKey.resource == null && cfg.tls.ca.resource == null);
+          assertion = !cfg.enable || cfg.tls.enable || (tlsCertificate.resource == null && tlsPrivateKey.resource == null && tlsCa.resource == null);
           message = "mariadb TLS credentials require mariadb.tls.enable";
         }
       ];
