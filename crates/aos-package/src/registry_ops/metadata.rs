@@ -368,7 +368,7 @@ pub(crate) fn record_package_contract(
     version: &str,
     platform: &str,
     contract: &PackageContractMeta,
-    structured_effects: bool,
+    package_document: &aos_ability_model::PackageDocument,
 ) -> Result<String> {
     crate::package_contract::validate_package_contract_meta(contract)?;
     let mut document: toml::Value =
@@ -388,7 +388,7 @@ pub(crate) fn record_package_contract(
         .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
 
     let mut features = BTreeSet::from([FEATURE_ABILITIES_V1.to_string()]);
-    if structured_effects {
+    if aos_ability_validate::package_uses_effects(package_document) {
         features.insert(FEATURE_ABILITY_EFFECTS_V1.to_string());
     }
     merge_feature_gate(platform_entry, "requires-features", &features)?;

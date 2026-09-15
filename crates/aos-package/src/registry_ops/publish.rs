@@ -979,10 +979,7 @@ pub(crate) async fn publish_package_contract(
         version,
         platform,
         &contract,
-        package_document
-            .required_features
-            .iter()
-            .any(|feature| feature.as_str() == aos_ability_model::FEATURE_ABILITY_EFFECTS_V1),
+        &package_document,
     )?;
 
     fs::write(&toml_path, new_content)

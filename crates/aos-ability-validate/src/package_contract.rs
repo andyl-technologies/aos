@@ -306,11 +306,27 @@ pub fn package_source_supported_features()
     .map_err(PackageContractValidationError::Feature)
 }
 
+/// Reports whether a package document authors executable effect semantics.
+///
+/// Publication, validation, and runtime selection use this structural query so
+/// the `ability-effects-v1` gate cannot drift into a separately authored mode.
+pub fn package_uses_effects(package: &PackageDocument) -> bool {
+    !package.implementation.handlers.is_empty()
+        || package.implementation.providers.iter().any(|provider| {
+            provider.provider_module.is_some()
+                || !provider.owns_resource_kinds.is_empty()
+                || provider.handler.is_some()
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::{GuaranteeDeclaration, InterfaceName, LocalKey, encode_canonical};
+    use aos_ability_model::{
+        ABILITY_LIMITS_V1, FEATURE_ABILITY_EFFECTS_V1, GuaranteeDeclaration, InterfaceName,
+        LocalKey, PackageDocument, encode_canonical,
+    };
 
-    use super::validate_package_contract;
+    use super::{package_source_supported_features, validate_package_contract};
 
     #[test]
     fn accepts_the_shared_reference_package_contract() {
@@ -383,6 +399,59 @@ mod tests {
             .expect_err("unreferenced guarantee declaration must fail closed");
 
         assert!(format!("{error:?}").contains("exactly cover"));
+    }
+
+    #[test]
+    fn effect_authorship_and_reader_feature_must_match() {
+        let fixture = crate::test_support::stateful_owner_plan_fixture();
+        let interfaces = retained_interface_bytes(&fixture);
+        let mut package = fixture.binding_inputs.packages[0].clone();
+        package
+            .required_features
+            .retain(|feature| feature.as_str() != FEATURE_ABILITY_EFFECTS_V1);
+        let encoded = encode_canonical(&package).expect("effect package must encode");
+        let error = validate_package_contract(&encoded, &interfaces)
+            .expect_err("effect authorship without its reader gate must fail");
+        assert!(
+            format!("{error:?}").contains(
+                "package effect declarations and ability-effects-v1 must appear together"
+            )
+        );
+
+        package
+            .required_features
+            .push(aos_ability_model::RequiredFeature::new(FEATURE_ABILITY_EFFECTS_V1).unwrap());
+        package.required_features.sort();
+        package.implementation.providers.clear();
+        package.implementation.handlers.clear();
+        let encoded = encode_canonical(&package).expect("effect-free package must encode");
+        let error = validate_package_contract(&encoded, &interfaces)
+            .expect_err("an effect reader gate without effect authorship must fail");
+        assert!(
+            format!("{error:?}").contains(
+                "package effect declarations and ability-effects-v1 must appear together"
+            )
+        );
+    }
+
+    #[test]
+    fn package_decoder_rejects_the_obsolete_activation_mode_field() {
+        let fixture = crate::test_support::stateful_owner_plan_fixture();
+        let encoded = encode_canonical(&fixture.binding_inputs.packages[0])
+            .expect("fixture package must encode");
+        let mut value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("activation_mode".to_string(), serde_json::json!("obsolete"));
+        let encoded = serde_json::to_vec(&value).unwrap();
+
+        aos_ability_model::decode_canonical::<PackageDocument>(
+            &encoded,
+            ABILITY_LIMITS_V1,
+            &package_source_supported_features().unwrap(),
+        )
+        .expect_err("the removed field must fail closed");
     }
 
     fn retained_interface_bytes(fixture: &crate::test_support::PlanFixture) -> Vec<Vec<u8>> {

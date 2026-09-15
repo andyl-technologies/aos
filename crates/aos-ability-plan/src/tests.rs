@@ -1,6 +1,6 @@
 //! Executable resolver and fixed-point composition regressions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
@@ -9,9 +9,9 @@ use aos_ability_model::{
     AuthorityGrant, BindingRequest, DeploymentObligation, DesiredStateDocument, ExportDeclaration,
     GuaranteeDeclaration, HandlerDescriptor, InstanceId, InterfaceName, LocalKey, ModuleLocator,
     ObligationKind, PackageDocument, PackageImplementation, ProviderImplementation,
-    ProviderImplementationReference, RelativePath, RequestId, RequirementDeclaration,
-    RequirementFallback, RequirementStrength, ResourceLifetime, ResourcePermission, ScopePath,
-    ValueSchema, VersionedDocument,
+    ProviderImplementationReference, RelativePath, RequestId, RequiredFeature,
+    RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceLifetime,
+    ResourcePermission, ScopePath, ValueSchema, VersionedDocument,
 };
 use aos_ability_validate::ValidationContext;
 use aos_contract::Sha256Digest;
@@ -1243,7 +1243,10 @@ fn planner_fixture_with_contract(
         reject_slot_collisions: true,
         merge_contract: None,
     };
-    source.refresh_interface();
+    source.refresh_interface_with_features(BTreeSet::from([RequiredFeature::new(
+        aos_ability_model::FEATURE_ABILITY_EFFECTS_V1,
+    )
+    .expect("effect semantics feature")]));
     let context = source.context;
     let interface = source.binding_plan.bindings[0].interface.clone();
     let provider = source.binding_plan.bindings[0].provider.clone();
@@ -1274,7 +1277,10 @@ fn planner_fixture_with_contract(
     };
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: Vec::new(),
+        required_features: vec![
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                .expect("effect semantics feature"),
+        ],
         package: PackageSubject {
             name: key("shared-provider"),
             version: "1.0.0".to_string(),
