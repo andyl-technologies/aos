@@ -81,6 +81,23 @@
           }
         ];
       });
+  serviceIsolation = {
+    privilege = "privileged";
+    filesystem = "host";
+    home_access = "inaccessible";
+    network = "host";
+    process_visibility = "host";
+    termination_scope = "all-processes";
+    temporary_directory = "private";
+    devices = [];
+    host_paths = [];
+    permit_core_dumps = true;
+  };
+  defaultServiceIsolation = evaluateAs serviceTypes.isolation ({
+      service = "smartd";
+      enabled = true;
+    }
+    // builtins.removeAttrs serviceIsolation ["home_access"]);
 
   interfaces = serviceManagement.interfaces;
   lifecycleMethods = interfaces.lifecycle.document.interface.methods;
@@ -1155,6 +1172,18 @@ in
   assert succeedsAs serviceTypes.resourceLimit unboundedResourceLimit;
   assert validates (minimalService // {linux_isolation = linuxIsolation;});
   assert !validates (minimalService // {linux_isolation = invalidLinuxIsolation;});
+  assert succeedsAs serviceTypes.isolation ({
+      service = "smartd";
+      enabled = true;
+    }
+    // serviceIsolation);
+  assert defaultServiceIsolation.home_access == "host";
+  assert !succeedsAs serviceTypes.isolation ({
+      service = "smartd";
+      enabled = true;
+    }
+    // serviceIsolation
+    // {home_access = "hidden";});
   assert succeedsAs serviceTypes.linuxConditions {
     service = "clock";
     enabled = true;
