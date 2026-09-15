@@ -41,8 +41,7 @@ use super::ability::RestrictedAbilityEvaluator;
 use super::ability_policy::{CurrentAbilityAuthorityDocument, CurrentPlatformPolicyDocument};
 use super::ability_policy_authority::OperatorPolicyAuthorityStore;
 use super::materialize::{
-    AbilityActivationInput, ConfigManifest,
-    PackageContractCoordinate as PinnedPackageContractCoordinate, PinnedAbilitySidecar,
+    AbilityActivationInput, ConfigManifest, PinnedAbilitySidecar,
 };
 use super::runtime::{ContractOrigin, RuntimePackagePin, RuntimeResolution};
 use crate::config::ApmConfig;
@@ -195,8 +194,18 @@ pub struct VerifiedAbilityActivationInputs {
     desired: ActivationDesiredInputDocument,
     policy_set: AuthenticatedPolicySetDocument,
     policy_sidecar: PinnedAbilitySidecar,
-    packages: Vec<PinnedPackageContractCoordinate>,
+    packages: Vec<VerifiedPackageIdentity>,
     fixed_point: Option<super::ability_rounds::AbilityFixedPointProjection>,
+}
+
+/// Identifies one package from its already verified manifest contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VerifiedPackageIdentity {
+    name: String,
+    version: String,
+    platform: String,
+    manifest_sha256: String,
+    package_digest: String,
 }
 
 /// Owns one checked native effect graph and its reloadable provenance.
@@ -312,7 +321,7 @@ impl VerifiedAbilityActivationInputs {
         operator_authority
             .authorize(&activation.authenticated_policy_set)
             .context("authenticating native policy set through operator authority")?;
-        Self::load_activation(activation)
+        Self::load_activation(activation, Vec::new())
     }
 
     /// Loads and authenticates the structured activation inputs from a manifest.
@@ -340,7 +349,8 @@ impl VerifiedAbilityActivationInputs {
         operator_authority
             .authorize(&activation.authenticated_policy_set)
             .context("authenticating native policy set through operator authority")?;
-        Self::load_activation(activation)
+        let packages = verified_package_identities(manifest)?;
+        Self::load_activation(activation, packages)
     }
 
     /// Returns the original desired-state seed and target environment.
@@ -367,7 +377,10 @@ impl VerifiedAbilityActivationInputs {
         self.fixed_point.as_ref()
     }
 
-    fn load_activation(activation: &AbilityActivationInput) -> Result<Self> {
+    fn load_activation(
+        activation: &AbilityActivationInput,
+        packages: Vec<VerifiedPackageIdentity>,
+    ) -> Result<Self> {
         let desired_bytes = load_sidecar(&activation.desired_state, "desired state")?;
         let desired: ActivationDesiredInputDocument =
             decode_canonical_sidecar(&desired_bytes, ActivationDesiredInputDocument::SCHEMA)?;
@@ -386,10 +399,38 @@ impl VerifiedAbilityActivationInputs {
             desired,
             policy_set,
             policy_sidecar: activation.authenticated_policy_set.clone(),
-            packages: activation.packages.clone(),
+            packages,
             fixed_point: activation.fixed_point.clone(),
         })
     }
+}
+
+fn verified_package_identities(manifest: &ConfigManifest) -> Result<Vec<VerifiedPackageIdentity>> {
+    manifest
+        .package_outputs
+        .iter()
+        .filter_map(|(name, package)| {
+            package.contract.as_ref().map(|contract| -> Result<_> {
+                let coordinate = PackageContractCoordinate {
+                    name,
+                    version: &package.version,
+                    platform: &package.platform,
+                    store_path: &package.store_path,
+                    nar_hash: &package.nar_hash,
+                };
+                let (document, _) =
+                    crate::package_contract::resolve_pinned_package_document(coordinate, contract)?;
+
+                Ok(VerifiedPackageIdentity {
+                    name: name.clone(),
+                    version: package.version.clone(),
+                    platform: package.platform.clone(),
+                    manifest_sha256: contract.document.document_sha256.clone(),
+                    package_digest: document.content_digest()?.to_string(),
+                })
+            })
+        })
+        .collect()
 }
 
 fn validate_policy_feature_binding(
@@ -702,7 +743,7 @@ fn packages_for_inputs(
                 )
             })?;
         ensure!(
-            package.manifest_sha256().to_string() == coordinate.contract_document_sha256
+            package.manifest_sha256().to_string() == coordinate.manifest_sha256
                 && package.package_digest().to_string() == coordinate.package_digest,
             "ability package {}@{} ({}) seal differs from its generation coordinate",
             coordinate.name,
@@ -798,30 +839,17 @@ pub fn verify_generation_packages(
     let mut packages = Vec::new();
     for manifest in manifests {
         manifest.validate()?;
-        let Some(activation) = &manifest.inputs.ability_activation else {
-            continue;
-        };
-        for pinned in &activation.packages {
-            let package = manifest
-                .package_outputs
-                .get(&pinned.name)
-                .with_context(|| {
-                    format!(
-                        "generation packageOutputs omits ability package {:?}",
-                        pinned.name
-                    )
-                })?;
-            let ability = package
-                .contract
-                .as_ref()
-                .context("ability coordinate has no authenticated package metadata")?;
-            let verified = verify_runtime_package_contract(config, &pinned.name, package, ability)
-                .with_context(|| {
-                    format!(
-                        "reverifying generation ability package {}@{}",
-                        pinned.name, pinned.version
-                    )
-                })?;
+        for (name, package) in &manifest.package_outputs {
+            let Some(contract) = package.contract.as_ref() else {
+                continue;
+            };
+            let verified = verify_runtime_package_contract(config, name, package, contract)
+            .with_context(|| {
+                format!(
+                    "reverifying generation ability package {}@{}",
+                    name, package.version
+                )
+            })?;
             packages.push(verified);
         }
     }

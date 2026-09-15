@@ -785,7 +785,9 @@ fn prune_runtime_uppers(scope: ProfileScope, removed: &[u32], run_etc: &Path) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ConfigGeneration, ConfigGenerationState};
+    use crate::types::{
+        ConfigGeneration, ConfigGenerationState, PackageModule, PackageModuleOrigin,
+    };
     use std::cell::Cell;
     use tempfile::TempDir;
 
@@ -795,9 +797,14 @@ mod tests {
             image_gen_parent: if number < 4 { 1 } else { 2 },
             module_abi_pinned: if number < 4 { 1 } else { 2 },
             manifest_hash: format!("sha256:manifest-{number}"),
-            package_module_closure: format!("/nix/store/module-{number}"),
-            package_module_paths: vec![format!("/nix/store/module-{number}")],
-            package_module_packages: vec!["fixture".into()],
+            package_modules: vec![PackageModule {
+                package: "fixture".into(),
+                document_digest: format!("sha256:{}", "a".repeat(64)),
+                store_path: format!("/nix/store/module-{number}"),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                entrypoint: "module.nix".into(),
+                origin: PackageModuleOrigin::Registry,
+            }],
             host_nix_ref: format!("/nix/store/host-{number}"),
             host_nix_commit: None,
             facts_hash: format!("sha256:facts-{number}"),

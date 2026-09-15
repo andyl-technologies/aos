@@ -2952,6 +2952,34 @@ pub enum ReactivationPlan {
     CrossAbiReEval(CrossAbiReEvalInputs),
 }
 
+/// One module locator derived from an authenticated package contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageModule {
+    /// Package identity declared by the contract document.
+    pub package: String,
+    /// Domain-separated semantic digest of the complete package document.
+    pub document_digest: String,
+    /// Exact artifact root containing the module.
+    pub store_path: String,
+    /// Authenticated NAR identity of the module artifact.
+    pub nar_hash: String,
+    /// Relative module entrypoint below the artifact root.
+    pub entrypoint: String,
+    /// Authority that supplied the authenticated package contract.
+    pub origin: PackageModuleOrigin,
+}
+
+/// Trust origin of one authenticated package contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackageModuleOrigin {
+    /// Selected from one authenticated registry release.
+    Registry,
+    /// Recovered from the immutable image package catalog.
+    Image,
+}
+
 /// The retained eval inputs a cross-ABI re-activation must replay
 /// using its retained inputs.
 ///
@@ -2961,10 +2989,8 @@ pub enum ReactivationPlan {
 /// recomputation is deterministic and usually cache-hits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrossAbiReEvalInputs {
-    /// Exact ordered config-output module store paths the evaluator must read.
-    pub package_module_paths: Vec<String>,
-    /// Authenticated package identity corresponding to each ordered module.
-    pub package_module_packages: Vec<String>,
+    /// Exact ordered authenticated package modules the evaluator must read.
+    pub package_modules: Vec<PackageModule>,
     /// Store path of the exact `host.nix` the config-gen was evaluated from.
     pub host_nix_ref: String,
     /// Content-address of the resolved instance facts (`facts.json`).
@@ -3189,6 +3215,7 @@ impl ImageGenerationState {
 /// Every security-relevant binding is required: legacy bundled state must be
 /// authenticated and migrated before this type will deserialize it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigGeneration {
     /// Config-generation number (names the `gen-N/` directory; the pointer
     /// `activate.sh.in` commits).
@@ -3199,13 +3226,8 @@ pub struct ConfigGeneration {
     pub module_abi_pinned: u32,
     /// Content-address of the canonicalized manifest JSON (the *output*).
     pub manifest_hash: String,
-    /// Store path of the config-module source closure (the eval *input*), or
-    /// the canonical empty-closure hash for a host-only configuration.
-    pub package_module_closure: String,
-    /// Exact evaluator order of config-output module store paths.
-    pub package_module_paths: Vec<String>,
-    /// Authenticated package identity corresponding to each ordered module.
-    pub package_module_packages: Vec<String>,
+    /// Exact evaluator order of authenticated package modules.
+    pub package_modules: Vec<PackageModule>,
     /// Store path / content hash of the exact `host.nix` evaluated.
     pub host_nix_ref: String,
     /// Non-authoritative git commit `host.nix` came from (operator traceability).
@@ -3229,23 +3251,13 @@ impl ConfigGeneration {
     ///
     /// # Errors
     ///
-    /// Returns an error when the authenticated module/package vectors have
-    /// different lengths. Both may be empty for a host-only configuration.
+    /// Returns an error when retained inputs cannot be replayed.
     pub fn reactivation_plan(&self, running_abi: u32) -> Result<ReactivationPlan> {
         if self.module_abi_pinned == running_abi {
             return Ok(ReactivationPlan::DirectReactivate);
         }
-        if self.package_module_paths.len() != self.package_module_packages.len() {
-            anyhow::bail!(
-                "config-gen {} has {} retained modules but {} authenticated package identities",
-                self.number,
-                self.package_module_paths.len(),
-                self.package_module_packages.len()
-            );
-        }
         Ok(ReactivationPlan::CrossAbiReEval(CrossAbiReEvalInputs {
-            package_module_paths: self.package_module_paths.clone(),
-            package_module_packages: self.package_module_packages.clone(),
+            package_modules: self.package_modules.clone(),
             host_nix_ref: self.host_nix_ref.clone(),
             facts_hash: self.facts_hash.clone(),
             facts_ref: self.facts_ref.clone(),
@@ -5646,9 +5658,14 @@ pin = "v2026.02"
             image_gen_parent: 2,
             module_abi_pinned: 2,
             manifest_hash: "sha256:beef".into(),
-            package_module_closure: "/nix/store/src-cfg".into(),
-            package_module_paths: vec!["/nix/store/src-cfg".into()],
-            package_module_packages: vec!["server".into()],
+            package_modules: vec![PackageModule {
+                package: "server".into(),
+                document_digest: format!("sha256:{}", "a".repeat(64)),
+                store_path: "/nix/store/src-cfg".into(),
+                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                entrypoint: "module.nix".into(),
+                origin: PackageModuleOrigin::Registry,
+            }],
             host_nix_ref: "/nix/store/hn-host.nix".into(),
             host_nix_commit: Some("deadbeef".into()),
             facts_hash: "sha256:facts".into(),

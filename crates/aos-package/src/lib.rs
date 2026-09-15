@@ -4841,7 +4841,7 @@ fn verify_generation_attestation_cli_with<F>(
 ) -> Result<GenerationVerificationSummary>
 where
     F: FnOnce(
-        &attestation::PackageModulesAttInput,
+        &config_eval::materialize::PackageModulesInput,
     ) -> Result<(
         Vec<String>,
         Vec<String>,
@@ -5019,7 +5019,7 @@ fn verify_local_boot_commit(
 
 fn verified_generation_release(
     config: &config::ApmConfig,
-    modules: &attestation::PackageModulesAttInput,
+    modules: &config_eval::materialize::PackageModulesInput,
 ) -> Result<(
     Vec<String>,
     Vec<String>,
@@ -5035,7 +5035,7 @@ fn verified_generation_release(
 fn verified_generation_release_from_paths(
     cache_path: &Path,
     trusted_keys_dirs: Vec<PathBuf>,
-    modules: &attestation::PackageModulesAttInput,
+    modules: &config_eval::materialize::PackageModulesInput,
 ) -> Result<(
     Vec<String>,
     Vec<String>,
@@ -5075,12 +5075,12 @@ fn verified_generation_release_from_paths(
 /// store-graph verification below. Records that predate explicit `origins`
 /// are interpreted as registry-only for compatibility.
 fn registry_package_module_subset(
-    modules: &attestation::PackageModulesAttInput,
-) -> Result<Option<attestation::PackageModulesAttInput>> {
+    modules: &config_eval::materialize::PackageModulesInput,
+) -> Result<Option<config_eval::materialize::PackageModulesInput>> {
     let registry_modules = modules
         .modules
         .iter()
-        .filter(|module| module.origin == config_eval::materialize::PackageModuleOrigin::Registry)
+        .filter(|module| module.origin == types::PackageModuleOrigin::Registry)
         .cloned()
         .collect::<Vec<_>>();
     if registry_modules.is_empty() {
@@ -5097,7 +5097,7 @@ fn verify_generation_release_snapshot(
     keys: &[security::TrustedKey],
     revoked: Vec<String>,
     receipt: &registry::ReleaseTrustReceipt,
-    modules: &attestation::PackageModulesAttInput,
+    modules: &config_eval::materialize::PackageModulesInput,
 ) -> Result<(
     Vec<String>,
     Vec<String>,
@@ -5205,7 +5205,7 @@ fn ensure_release_receipt_matches(
 fn verify_signed_package_module_member(
     repo: &Path,
     commit: &str,
-    module: &attestation::PackageModuleAttInput,
+    module: &types::PackageModule,
 ) -> Result<()> {
     types::validate_package_name(&module.package)?;
     let path = format!(
@@ -7269,9 +7269,9 @@ mod tests {
 
     #[test]
     fn generation_release_selection_filters_image_origin_package_modules() {
-        use config_eval::materialize::PackageModuleOrigin;
+        use types::PackageModuleOrigin;
 
-        let package_module = |package: &str, origin| attestation::PackageModuleAttInput {
+        let package_module = |package: &str, origin| types::PackageModule {
             package: package.to_string(),
             document_digest: format!("sha256:{}", "1".repeat(64)),
             store_path: format!("/nix/store/{}-{package}-module", "a".repeat(32)),
@@ -7279,7 +7279,7 @@ mod tests {
             entrypoint: "module.nix".to_string(),
             origin,
         };
-        let mut modules = attestation::PackageModulesAttInput {
+        let mut modules = config_eval::materialize::PackageModulesInput {
             registry: Some("aos-core".to_string()),
             release_tag: Some("1.0.0".to_string()),
             tag_signer_key: Some("1234abcd".to_string()),

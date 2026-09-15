@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use aos_ability_model::{InterfaceDocument, PackageDocument, VersionedDocument};
@@ -23,47 +23,16 @@ pub struct VerifiedPackagePlanningCatalog {
 }
 
 impl VerifiedPackagePlanningCatalog {
-    /// Loads an authenticated package and interface catalog from retained companions.
+    /// Constructs a planning catalog from authenticated package contracts.
     ///
     /// # Errors
     ///
-    /// Returns an error when a retained interface is absent, malformed, or
-    /// disagrees with the package declaration, or when package validation fails.
-    pub(crate) fn from_authenticated_documents(
-        documents: impl IntoIterator<Item = (PackageDocument, PathBuf)>,
+    /// Returns an error when an interface disagrees with its package declaration,
+    /// package contracts conflict, or package validation fails.
+    pub(crate) fn from_resolved_contracts(
+        documents: impl IntoIterator<Item = (PackageDocument, Vec<InterfaceDocument>)>,
     ) -> Result<Self> {
-        let supported_features = package_source_supported_features()
-            .context("constructing supported package ability features")?;
-        let mut loaded = Vec::new();
-
-        for (package, companion) in documents {
-            let mut package_interfaces = Vec::new();
-            for interface in package.interfaces.values() {
-                let path = companion
-                    .join("interfaces")
-                    .join(format!("{}.json", interface.descriptor.hex()));
-                let bytes = read_bounded_regular_file(&path, "ability interface document")?;
-                let document = aos_ability_model::decode_canonical::<InterfaceDocument>(
-                    &bytes,
-                    aos_ability_model::ABILITY_LIMITS_V1,
-                    &supported_features,
-                )
-                .with_context(|| format!("decoding ability interface {}", path.display()))?;
-                let key = document
-                    .interface_key()
-                    .context("computing retained ability interface descriptor")?;
-                if &key != interface {
-                    bail!(
-                        "ability interface document {} does not match package declaration",
-                        path.display()
-                    );
-                }
-                package_interfaces.push(document);
-            }
-            loaded.push((package, package_interfaces));
-        }
-
-        Self::from_documents(loaded)
+        Self::from_documents(documents)
     }
 
     fn from_documents(

@@ -70,7 +70,7 @@ use aos_ability_model::VersionedDocument;
 use sha2::{Digest, Sha256};
 
 pub use classify::{ConflictDef, EvalClass, KillReason, MissingOption, MissingOptionKind};
-pub use system_roots::{PackageModuleResolver, ResolvedPackageModule};
+pub use system_roots::{PackageModuleResolver, ResolvedPackageContract, ResolvedPackageModule};
 
 use crate::types::option_path_root;
 
@@ -98,10 +98,8 @@ pub struct WorkingSetMember {
     pub package: String,
     /// Package version, when known.
     pub version: Option<String>,
-    /// Canonical signed ability document, when the package publishes one.
-    pub ability: Option<aos_ability_model::PackageDocument>,
-    /// Authenticated companion output containing the package and interface documents.
-    pub ability_store_path: Option<String>,
+    /// Resolved package contract, including its retained document source.
+    pub contract: Option<ResolvedPackageContract>,
     /// Resolver-authenticated runtime outputs exposed to this module.
     pub outputs: PackageOutputs,
 }
@@ -128,8 +126,7 @@ impl WorkingSetMember {
             config_realization: None,
             package: package.into(),
             version: None,
-            ability: None,
-            ability_store_path: None,
+            contract: None,
             outputs: PackageOutputs::default(),
         }
     }
@@ -465,8 +462,7 @@ where
         seed.config_realization = resolved.realization;
         seed.version = Some(resolved.version);
         seed.outputs.self_output = Some(resolved.runtime_output);
-        seed.ability = Some(resolved.document);
-        seed.ability_store_path = Some(resolved.ability_store_path);
+        seed.contract = Some(resolved.contract);
     }
     Ok(())
 }
@@ -807,21 +803,15 @@ fn replay_candidate_ability_plan(
         .working_set
         .iter()
         .filter_map(|member| {
-            member.ability.as_ref().map(|document| {
-                let store_path = member.ability_store_path.as_ref().with_context(|| {
-                    format!(
-                        "authenticated ability package {:?} has no retained companion path",
-                        member.package
-                    )
-                })?;
-                Ok((document.clone(), PathBuf::from(store_path)))
-            })
+            member
+                .contract
+                .as_ref()
+                .map(|contract| (contract.document.clone(), contract.interfaces.clone()))
         })
-        .collect::<Result<Vec<_>>>()?;
-    let catalog =
-        crate::package_contract::VerifiedPackagePlanningCatalog::from_authenticated_documents(
-            documents,
-        )?;
+        .collect::<Vec<_>>();
+    let catalog = crate::package_contract::VerifiedPackagePlanningCatalog::from_resolved_contracts(
+        documents,
+    )?;
     let mut evaluator = native_activation::production_evaluator()?;
     ability_activation::specialize_planning(&inputs, &catalog, &mut evaluator)
 }
@@ -938,12 +928,13 @@ fn evaluator_store_root(executable: &Path) -> Result<&Path> {
 /// Hashes the authenticated package-module-artifact set independently of evaluator order.
 fn package_module_inputs(
     working_set: &[WorkingSetMember],
-) -> Result<Vec<materialize::PackageModuleInput>> {
+) -> Result<Vec<crate::types::PackageModule>> {
     let mut modules = Vec::new();
     for member in working_set {
-        let Some(document) = member.ability.as_ref() else {
+        let Some(contract) = member.contract.as_ref() else {
             continue;
         };
+        let document = &contract.document;
         let Some(locator) = document.package_module.as_ref() else {
             continue;
         };
@@ -951,16 +942,16 @@ fn package_module_inputs(
             document.package.name.as_str() == member.package,
             "package document subject disagrees with working-set identity"
         );
-        modules.push(materialize::PackageModuleInput {
+        modules.push(crate::types::PackageModule {
             package: member.package.clone(),
             document_digest: document.content_digest()?.to_string(),
             store_path: locator.artifact.store_path.clone(),
             nar_hash: locator.artifact.nar_hash.to_string(),
             entrypoint: locator.path.as_str().to_string(),
             origin: if member.registry.is_some() {
-                materialize::PackageModuleOrigin::Registry
+                crate::types::PackageModuleOrigin::Registry
             } else {
-                materialize::PackageModuleOrigin::Image
+                crate::types::PackageModuleOrigin::Image
             },
         });
     }
@@ -980,9 +971,9 @@ fn package_module_release_identity(
         .iter()
         .filter(|member| {
             member
-                .ability
+                .contract
                 .as_ref()
-                .is_some_and(|document| document.package_module.is_some())
+                .is_some_and(|contract| contract.document.package_module.is_some())
                 && member.registry.is_some()
         })
         .collect::<Vec<_>>();
@@ -1267,38 +1258,6 @@ fn enrich_ability_activation(
         "schema".to_string(),
         serde_json::Value::String(materialize::AbilityActivationInput::SCHEMA.to_string()),
     );
-    let packages = runtime
-        .packages
-        .iter()
-        .filter_map(|(name, package)| {
-            package.contract.as_ref().map(|ability| -> Result<_> {
-                let activation_revision = materialize::package_activation_revision(name, package)?;
-                let resolved = static_packages::resolve(
-                    name,
-                    &package.version,
-                    &package.platform,
-                    &package.store_path,
-                    &package.nar_hash,
-                    ability,
-                )?;
-                Ok(serde_json::json!({
-                    "name": name,
-                    "version": package.version,
-                    "platform": package.platform,
-                    "registry": package.registry,
-                    "runtime_store_path": package.store_path,
-                    "runtime_nar_hash": package.nar_hash,
-                    "runtime_nar_size": package.nar_size,
-                    "contract_store_path": resolved.manifest_store_path,
-                    "contract_nar_hash": resolved.manifest_nar_hash,
-                    "contract_document_sha256": resolved.manifest_digest,
-                    "package_digest": resolved.document.content_digest()?,
-                    "activation_revision": activation_revision,
-                }))
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    object.insert("packages".to_string(), serde_json::Value::Array(packages));
     object.insert(
         "fixed_point".to_string(),
         serde_json::to_value(fixed_point).context("serializing final ability fixed point")?,
@@ -1822,12 +1781,10 @@ where
 
 fn retained_cross_abi_working_set(
     source: &materialize::ConfigManifest,
-    _retained: &crate::types::CrossAbiReEvalInputs,
+    retained: &crate::types::CrossAbiReEvalInputs,
 ) -> Result<Vec<WorkingSetMember>> {
-    source
-        .inputs
+    retained
         .package_modules
-        .modules
         .iter()
         .map(|module| {
             let pin = source
@@ -1863,8 +1820,10 @@ fn retained_cross_abi_working_set(
                 config_realization: None,
                 package: module.package.clone(),
                 version: Some(pin.version.clone()),
-                ability: Some(resolved.document),
-                ability_store_path: Some(resolved.manifest_store_path),
+                contract: Some(ResolvedPackageContract {
+                    document: resolved.document,
+                    interfaces: resolved.interfaces,
+                }),
                 outputs: PackageOutputs {
                     self_output: Some(pin.store_path.clone()),
                     dependencies: source
@@ -1890,22 +1849,7 @@ fn validate_retained_manifest_inputs(
     source: &materialize::ConfigManifest,
     retained: &crate::types::CrossAbiReEvalInputs,
 ) -> Result<()> {
-    let module_paths = source
-        .inputs
-        .package_modules
-        .modules
-        .iter()
-        .map(|module| module.store_path.clone())
-        .collect::<Vec<_>>();
-    let module_packages = source
-        .inputs
-        .package_modules
-        .modules
-        .iter()
-        .map(|module| module.package.clone())
-        .collect::<Vec<_>>();
-    if module_paths != retained.package_module_paths
-        || module_packages != retained.package_module_packages
+    if source.inputs.package_modules.modules != retained.package_modules
         || source.inputs.host_nix.store_path != retained.host_nix_ref
         || source.inputs.instance_facts.facts_hash != retained.facts_hash
         || source.inputs.instance_facts.store_path != retained.facts_ref
@@ -1933,9 +1877,9 @@ fn validate_cross_abi_inputs(
         )))
         .chain(
             retained
-                .package_module_paths
+                .package_modules
                 .iter()
-                .map(|path| ("package module", Path::new(path))),
+                .map(|module| ("package module", Path::new(&module.store_path))),
         )
     {
         if !path.starts_with("/nix/store/") || !path.exists() {
@@ -1984,27 +1928,19 @@ where
         );
     }
 
-    if retained.package_module_paths.len() != source.inputs.package_modules.modules.len() {
-        anyhow::bail!("retained package-module paths and authenticated NAR hashes differ in count");
-    }
-    for ((path, package), expected) in retained
-        .package_module_paths
-        .iter()
-        .zip(&retained.package_module_packages)
-        .zip(
-            source
-                .inputs
-                .package_modules
-                .modules
-                .iter()
-                .map(|module| &module.nar_hash),
-        )
-    {
-        let actual = nar_hash(Path::new(path))
-            .with_context(|| format!("hashing retained package module {package} at {path}"))?;
-        if !crate::verify::sha256_hashes_equal(&actual, expected)? {
+    for module in &retained.package_modules {
+        let actual = nar_hash(Path::new(&module.store_path)).with_context(|| {
+            format!(
+                "hashing retained package module {} at {}",
+                module.package, module.store_path
+            )
+        })?;
+        if !crate::verify::sha256_hashes_equal(&actual, &module.nar_hash)? {
             anyhow::bail!(
-                "retained package module {package} at {path} does not match authenticated NAR hash: expected {expected}, got {actual}"
+                "retained package module {} at {} does not match authenticated NAR hash: expected {}, got {actual}",
+                module.package,
+                module.store_path,
+                module.nar_hash,
             );
         }
     }
