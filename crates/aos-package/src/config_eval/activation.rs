@@ -1109,10 +1109,10 @@ fn verify_manifest_store_paths_realized(manifest: &ConfigManifest) -> Result<()>
     paths.extend(
         manifest
             .inputs
-            .config_modules
-            .store_paths
+            .package_modules
+            .modules
             .iter()
-            .map(String::as_str),
+            .map(|module| module.store_path.as_str()),
     );
     paths.extend([
         manifest.inputs.base_lib.store_path.as_str(),
@@ -1225,7 +1225,14 @@ fn prepare_generation(
     }
 
     let outputs = manifest_string_array(manifest, "storePaths");
-    let mut sources = nested_string_array(manifest, &["inputs", "config_modules", "store_paths"]);
+    let mut sources = manifest
+        .pointer("/inputs/package_modules/modules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|module| module.get("store_path").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     for pointer in [
         "/inputs/base_lib/store_path",
         "/inputs/evaluator/store_path",
@@ -1298,20 +1305,23 @@ fn config_generation_record(
         .and_then(Value::as_str)
         .context("manifest has no instance facts hash")?
         .to_string();
-    let config_module_paths =
-        nested_string_array(manifest, &["inputs", "config_modules", "store_paths"]);
-    let config_module_packages =
-        nested_string_array(manifest, &["inputs", "config_modules", "package_names"]);
-    let config_module_closure = config_module_paths
-        .first()
-        .cloned()
-        .or_else(|| {
-            manifest
-                .pointer("/inputs/config_modules/closure_hash")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .context("manifest has no config module source-closure identity")?;
+    let package_modules = manifest
+        .pointer("/inputs/package_modules/modules")
+        .and_then(Value::as_array)
+        .context("manifest has no package module records")?;
+    let config_module_paths = package_modules
+        .iter()
+        .filter_map(|module| module.get("store_path").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let config_module_packages = package_modules
+        .iter()
+        .filter_map(|module| module.get("package").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let config_module_closure = config_module_paths.first().cloned().unwrap_or_else(|| {
+        crate::graph_compile::reproject::hash_cjson(&Value::Array(package_modules.clone()))
+    });
     Ok(ConfigGeneration {
         number,
         created_at: crate::metadata::now_rfc3339(),

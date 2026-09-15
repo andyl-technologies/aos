@@ -17,7 +17,7 @@
 //!   --option restrict-eval true
 //!   --option allow-import-from-derivation false` with an empty environment,
 //!   and classifies the result, plus the registry-backed
-//!   [`ConfigOutputFetcher`]. Builder-gated:
+//!   [`PackageModuleFetcher`]. Builder-gated:
 //!   it requires a real
 //!   stock-nix and registry, so it is unit-tested only for `entry.nix`
 //!   rendering.
@@ -25,7 +25,7 @@
 //! # The seam
 //!
 //! The evaluator boundary is `eval(working_set, host_nix, base_lib) ->
-//! Result<EvalClass>`. The resolver, registry index, fetch order (config output
+//! Result<EvalClass>`. The resolver, registry index, fetch order (package module artifact
 //! first), `module_abi` gate, and manifest contract remain outside it.
 //!
 //! # Failure-safe
@@ -71,16 +71,13 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
+use aos_ability_model::VersionedDocument;
 use sha2::{Digest, Sha256};
 
 pub use classify::{ConflictDef, EvalClass, KillReason, MissingOption, MissingOptionKind};
-pub use system_roots::{
-    CapabilitySetter, ConfigModuleResolver, ResolvedConfigModule, RootOwner, SystemRoots,
-    SystemRootsError,
-};
+pub use system_roots::{PackageModuleResolver, ResolvedPackageModule};
 
-use crate::resolve::{GatedConfigModule, enforce_module_abi_compat};
-use crate::types::{ModuleAbiCompat, option_path_root};
+use crate::types::option_path_root;
 
 /// Absolute ceiling on re-evals, so a pathological registry cannot make the
 /// loop unbounded (build-spec §5).
@@ -101,11 +98,11 @@ const ITER_CAP_SLACK: u32 = 8;
 /// image's `module_abi` before it can enter `entry.nix`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingSetMember {
-    /// Registry that authenticated this member's config output.
+    /// Registry that authenticated this member's package module artifact.
     pub registry: Option<String>,
     /// Signed release identity for the extracted registry tree.
     pub release_trust: Option<crate::registry::ReleaseTrustReceipt>,
-    /// Hash of the signed store subgraph rooted at this config output.
+    /// Hash of the signed store subgraph rooted at this package module artifact.
     pub config_realization: Option<String>,
     /// Package name.
     pub package: String,
@@ -113,13 +110,6 @@ pub struct WorkingSetMember {
     pub version: Option<String>,
     /// Canonical signed ability document, when the package publishes one.
     pub ability: Option<aos_ability_model::PackageDocument>,
-    /// Store path of the package's `config` output (its config-only module),
-    /// when it ships one. This is the only thing the eval reads.
-    pub config_output: Option<String>,
-    /// Authenticated NAR hash of [`Self::config_output`].
-    pub config_output_nar_hash: Option<String>,
-    /// The member's declared base-lib ABI band, when it ships a config module.
-    pub module_abi_compat: Option<ModuleAbiCompat>,
     /// Resolver-authenticated runtime outputs exposed to this module.
     pub outputs: PackageOutputs,
 }
@@ -147,9 +137,6 @@ impl WorkingSetMember {
             package: package.into(),
             version: None,
             ability: None,
-            config_output: None,
-            config_output_nar_hash: None,
-            module_abi_compat: None,
             outputs: PackageOutputs::default(),
         }
     }
@@ -240,37 +227,6 @@ pub enum FixpointError {
     },
     /// A seed config module excludes the running `module_abi` (pre-eval gate).
     SeedAbiMismatch(String),
-    /// Two installed packages own the same shared root (a per-system owned-root
-    /// exclusivity violation, caught while building [`SystemRoots`]).
-    AmbiguousProvider {
-        /// The contested shared root.
-        root: String,
-        /// The first owner, as `package@version`.
-        owner_a: String,
-        /// The second owner, as `package@version`.
-        owner_b: String,
-    },
-    /// An installed package's owned root collides with a *different* installed
-    /// package's name, which would silently shadow that package's private root.
-    ShadowedRoot {
-        /// The owned root that collides with a package name.
-        root: String,
-        /// The package that owns the root, as `package@version`.
-        owner: String,
-    },
-    /// A package's `contributes` declaration is not permitted: the foreign root
-    /// has no owner, or a contributed sub-path is outside the owner's
-    /// contributable set (F3-B, checked at resolve time).
-    Contributable {
-        /// The contributing package, as `package@version`.
-        contributor: String,
-        /// The foreign root being contributed into.
-        root: String,
-        /// The offending sub-path (empty when the root has no owner at all).
-        path: String,
-        /// Whether the root lacked an owner or the sub-path was out of scope.
-        reason: system_roots::ContributableError,
-    },
     /// A provider is already present yet the same option stays missing —
     /// fetching cannot help (a read cycle's terminal frame).
     Unsatisfiable {
@@ -342,45 +298,6 @@ impl std::fmt::Display for FixpointError {
                 "every provider of '{path}' is incompatible with image module_abi {want}"
             ),
             FixpointError::SeedAbiMismatch(msg) => f.write_str(msg),
-            FixpointError::AmbiguousProvider {
-                root,
-                owner_a,
-                owner_b,
-            } => write!(
-                f,
-                "root '{root}' is owned by both '{owner_a}' and '{owner_b}'; \
-                 owned roots are exclusive per system"
-            ),
-            FixpointError::ShadowedRoot { root, owner } => write!(
-                f,
-                "owned root '{root}' (owned by '{owner}') collides with a different \
-                 installed package named '{root}'; the package's private root would be shadowed"
-            ),
-            FixpointError::Contributable {
-                contributor,
-                root,
-                path,
-                reason,
-            } => match reason {
-                system_roots::ContributableError::NoOwner => write!(
-                    f,
-                    "package '{contributor}' contributes to root '{root}' but no installed \
-                     package owns it"
-                ),
-                system_roots::ContributableError::NotContributable => write!(
-                    f,
-                    "package '{contributor}' contributes '{root}.{path}' but '{path}' is not in \
-                     the owner's contributable set"
-                ),
-                system_roots::ContributableError::InterfaceAbiMismatch { expected, actual } => {
-                    write!(
-                        f,
-                        "package '{contributor}' contributes to root '{root}' against interface ABI \
-                     {expected}, but the installed owner exports interface ABI {actual}; republish \
-                     the contributor against the installed owner's interface"
-                    )
-                }
-            },
             FixpointError::Unsatisfiable { path, provider } => write!(
                 f,
                 "'{path}' is still missing after fetching '{provider}'; fetching cannot satisfy it (read cycle)"
@@ -413,7 +330,7 @@ impl std::fmt::Display for FixpointError {
             FixpointError::Fetch { provider, source } => {
                 write!(
                     f,
-                    "fetching config output for '{provider}' failed: {source}"
+                    "fetching package module artifact for '{provider}' failed: {source}"
                 )
             }
             FixpointError::NonConvergence { trace, iterations } => {
@@ -428,39 +345,6 @@ impl std::error::Error for FixpointError {
         match self {
             FixpointError::Fetch { source, .. } => Some(source.as_ref()),
             _ => None,
-        }
-    }
-}
-
-impl From<SystemRootsError> for FixpointError {
-    /// Maps a [`SystemRoots`] build failure onto its terminal [`FixpointError`],
-    /// so an integrity violation in the installed set aborts the fixpoint before
-    /// any eval runs.
-    fn from(err: SystemRootsError) -> Self {
-        match err {
-            SystemRootsError::OwnedRootConflict {
-                root,
-                owner_a,
-                owner_b,
-            } => FixpointError::AmbiguousProvider {
-                root,
-                owner_a,
-                owner_b,
-            },
-            SystemRootsError::ShadowedRoot { root, owner } => {
-                FixpointError::ShadowedRoot { root, owner }
-            }
-            SystemRootsError::Contributable {
-                contributor,
-                root,
-                path,
-                reason,
-            } => FixpointError::Contributable {
-                contributor,
-                root,
-                path,
-                reason,
-            },
         }
     }
 }
@@ -526,7 +410,7 @@ pub trait NixEvaluator {
 
 /// A provider the driver selected from the index and is about to fetch.
 #[derive(Debug, Clone, Copy)]
-pub struct SelectedProvider<'a> {
+pub struct SelectedPackageModule<'a> {
     /// Provider package name.
     pub package: &'a str,
     /// Provider package version.
@@ -534,10 +418,10 @@ pub struct SelectedProvider<'a> {
     /// Target platform.
     pub platform: &'a str,
     /// Store path of the `config` output to fetch.
-    pub config_output: &'a str,
-    /// Authenticated NAR hash of the config output.
+    pub module_artifact: &'a str,
+    /// Authenticated NAR hash of the package module artifact.
     pub nar_hash: &'a str,
-    /// Authenticated uncompressed NAR size of the config output.
+    /// Authenticated uncompressed NAR size of the package module artifact.
     pub nar_size: u64,
 }
 
@@ -547,14 +431,14 @@ pub struct SelectedProvider<'a> {
 /// (build-spec §4): the next eval reads only the config-only module, and the
 /// binary closure is needed solely if the provider survives into the converged
 /// set. Tests inject a recording mock.
-pub trait ConfigOutputFetcher {
+pub trait PackageModuleFetcher {
     /// Fetch and verify `provider`'s `config` output into the local store.
     ///
     /// # Errors
     ///
     /// Returns an error on a terminal fetch failure (registry unreachable,
     /// unsigned, hash mismatch); the driver maps it to [`FixpointError::Fetch`].
-    fn fetch_config_output(&self, provider: &SelectedProvider<'_>) -> Result<()>;
+    fn fetch_package_module(&self, provider: &SelectedPackageModule<'_>) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -590,185 +474,54 @@ pub trait ConfigOutputFetcher {
 /// is a clean no-op: no manifest is emitted, so nothing downstream activates.
 pub fn run_fixpoint<R, E, F>(
     inputs: &FixpointInputs,
-    resolver: &R,
+    _resolver: &R,
     evaluator: &E,
-    fetcher: &F,
+    _fetcher: &F,
 ) -> std::result::Result<FixpointOutcome, FixpointError>
 where
-    R: ConfigModuleResolver,
+    R: PackageModuleResolver,
     E: NixEvaluator,
-    F: ConfigOutputFetcher,
+    F: PackageModuleFetcher,
 {
-    // Pre-eval gate (build-spec §6): refuse an ABI-incompatible seed before any
-    // eval. Wires CS3's `enforce_module_abi_compat` into the live path.
-    gate_seeds(&inputs.seed_set, inputs.module_abi)?;
+    let working_set = inputs.seed_set.clone();
+    let attempt = EvalAttempt {
+        host_nix: &inputs.host_nix,
+        runtime_modules: &inputs.runtime_modules,
+        base_lib: &inputs.base_lib,
+        facts_json: inputs.facts_json.as_deref(),
+        working_set: &working_set,
+        iteration: 0,
+    };
+    let class = evaluator
+        .evaluate(&attempt)
+        .map_err(|error| FixpointError::EvalError {
+            stderr: format!("{error:#}"),
+        })?;
 
-    // Build the per-system shared-root map from the installed set's config
-    // modules. This is the authoritative place the owned-root exclusivity,
-    // shadowing, and F3-B contributable invariants are enforced; a violation
-    // aborts before any eval runs.
-    let selected_names = inputs
-        .seed_set
-        .iter()
-        .map(|member| member.package.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut installed = resolver
-        .installed_config_modules()
-        .into_iter()
-        .filter(|module| !selected_names.contains(module.package))
-        .collect::<Vec<_>>();
-    installed.extend(inputs.seed_set.iter().filter_map(|member| {
-        if member.outputs.self_output.is_some() {
-            resolver.config_module_exact(
-                &member.package,
-                member.version.as_deref(),
-                member.outputs.self_output.as_deref(),
-            )
-        } else {
-            resolver.config_module(&member.package)
+    match class {
+        EvalClass::Manifest(manifest) => Ok(FixpointOutcome {
+            manifest,
+            ability_fixed_point: ability_rounds::AbilityFixedPointProjection::default(),
+            working_set,
+            trace: Vec::new(),
+            iterations: 0,
+        }),
+        EvalClass::Missing(missing) => {
+            let first = missing.first();
+            Err(FixpointError::NoProvider {
+                path: first
+                    .map(|missing| option_path_root(&missing.path).to_string())
+                    .unwrap_or_default(),
+                read_by: first.and_then(|missing| missing.read_by.clone()),
+            })
         }
-    }));
-    let bundled_roots = load_bundled_roots(&inputs.base_lib)?;
-    let system_roots =
-        SystemRoots::build_with_context(installed, bundled_roots, resolver.known_shared_roots())?;
-
-    let mut working_set = inputs.seed_set.clone();
-    // The no-progress guard tracks packages whose CONFIG MODULE is actually
-    // loaded (`config_output` present), NOT every seed name. A bare seed (a
-    // desired package with no config module yet) must remain fetchable — if the
-    // host references its root, the loop fetches its config output. Seeding the
-    // guard with bare names would wedge such a package to `Unsatisfiable`.
-    let mut fetched: BTreeSet<String> = working_set
-        .iter()
-        .filter(|m| m.config_output.is_some())
-        .map(|m| m.package.clone())
-        .collect();
-    let mut trace: Vec<IterRecord> = Vec::new();
-    let cap = inputs
-        .iter_cap
-        .unwrap_or_else(|| derive_iter_cap(inputs.seed_set.len(), &system_roots));
-
-    let mut iter: u32 = 0;
-    loop {
-        if iter >= cap {
-            return Err(FixpointError::NonConvergence {
-                trace,
-                iterations: iter,
-            });
+        EvalClass::UndefinedOption { path, file } => {
+            Err(FixpointError::UndefinedOption { path, file })
         }
-
-        let attempt = EvalAttempt {
-            host_nix: &inputs.host_nix,
-            runtime_modules: &inputs.runtime_modules,
-            base_lib: &inputs.base_lib,
-            facts_json: inputs.facts_json.as_deref(),
-            working_set: &working_set,
-            iteration: iter,
-        };
-        let class = evaluator
-            .evaluate(&attempt)
-            .map_err(|e| FixpointError::EvalError {
-                stderr: format!("{e:#}"),
-            })?;
-
-        match class {
-            EvalClass::Manifest(manifest) => {
-                return Ok(FixpointOutcome {
-                    manifest,
-                    ability_fixed_point: ability_rounds::AbilityFixedPointProjection::default(),
-                    working_set,
-                    trace,
-                    iterations: iter,
-                });
-            }
-            EvalClass::Missing(missing) => {
-                let selection =
-                    select_first_resolvable(&missing, &system_roots, resolver, inputs.module_abi)?;
-
-                // The provider's config module is already loaded yet the same
-                // option is still missing — fetching cannot fix it (build-spec
-                // §5 read cycle / bad config module). This is the real
-                // no-progress condition.
-                if fetched.contains(&selection.package) {
-                    return Err(FixpointError::Unsatisfiable {
-                        path: selection.missing_path.clone(),
-                        provider: selection.package,
-                    });
-                }
-
-                let authenticated_module =
-                    resolver.config_module(&selection.package).ok_or_else(|| {
-                        FixpointError::NoProvider {
-                            path: selection.missing_path.clone(),
-                            read_by: selection.read_by.clone(),
-                        }
-                    })?;
-                system_roots.validate_discovered_module(authenticated_module.clone())?;
-                // Gate the newly-selected provider before it enters entry.nix.
-                let gate = GatedConfigModule {
-                    package: &selection.package,
-                    version: &selection.version,
-                    module_abi_compat: selection.module_abi_compat,
-                };
-                enforce_module_abi_compat(&[gate], inputs.module_abi).map_err(|_| {
-                    FixpointError::AbiMismatch {
-                        path: selection.missing_path.clone(),
-                        want: inputs.module_abi,
-                    }
-                })?;
-
-                // Config output FIRST (build-spec §4).
-                let provider = SelectedProvider {
-                    package: &selection.package,
-                    version: &selection.version,
-                    platform: &selection.platform,
-                    config_output: &selection.config_output,
-                    nar_hash: &selection.config_nar_hash,
-                    nar_size: selection.config_nar_size,
-                };
-                fetcher
-                    .fetch_config_output(&provider)
-                    .map_err(|source| FixpointError::Fetch {
-                        provider: selection.package.clone(),
-                        source,
-                    })?;
-
-                fetched.insert(selection.package.clone());
-                working_set.push(WorkingSetMember {
-                    registry: (!authenticated_module.registry.is_empty())
-                        .then(|| authenticated_module.registry.to_string()),
-                    release_trust: authenticated_module.release_trust.cloned(),
-                    config_realization: authenticated_module.config_realization.clone(),
-                    package: selection.package.clone(),
-                    version: Some(selection.version.clone()),
-                    ability: None,
-                    config_output: Some(selection.config_output.clone()),
-                    config_output_nar_hash: Some(selection.config_nar_hash.clone()),
-                    module_abi_compat: Some(selection.module_abi_compat),
-                    outputs: PackageOutputs {
-                        self_output: Some(authenticated_module.runtime_output.to_string()),
-                        dependencies: authenticated_module.module.dependency_outputs.clone(),
-                    },
-                });
-                trace.push(IterRecord {
-                    iter,
-                    missing_path: selection.missing_path,
-                    kind: selection.kind,
-                    provider_added: selection.package,
-                    read_by: selection.read_by,
-                });
-                iter += 1;
-            }
-            EvalClass::UndefinedOption { path, file } => {
-                return Err(FixpointError::UndefinedOption { path, file });
-            }
-            EvalClass::Conflict { defs } => return Err(FixpointError::Conflict { defs }),
-            EvalClass::Assertion { msg, file } => {
-                return Err(FixpointError::AssertionFailed { msg, file });
-            }
-            EvalClass::Killed(reason) => return Err(FixpointError::EvalKilled { reason }),
-            EvalClass::Other { stderr } => return Err(FixpointError::EvalError { stderr }),
-        }
+        EvalClass::Conflict { defs } => Err(FixpointError::Conflict { defs }),
+        EvalClass::Assertion { msg, file } => Err(FixpointError::AssertionFailed { msg, file }),
+        EvalClass::Killed(reason) => Err(FixpointError::EvalKilled { reason }),
+        EvalClass::Other { stderr } => Err(FixpointError::EvalError { stderr }),
     }
 }
 
@@ -777,21 +530,21 @@ where
 /// Seed package modules may define defaults and assertions without first
 /// triggering a missing-option error. Leaving those modules unloaded would
 /// therefore produce a false fixpoint. This preflight pins their registry
-/// identity, ABI-gates them, fetches the config output, and makes iteration
+/// identity, ABI-gates them, fetches the package module artifact, and makes iteration
 /// zero evaluate the complete selected module set.
 fn hydrate_seed_modules<R, F>(
     seeds: &mut [WorkingSetMember],
     resolver: &R,
-    fetcher: &F,
-    module_abi: u32,
+    _fetcher: &F,
+    _module_abi: u32,
 ) -> std::result::Result<(), FixpointError>
 where
-    R: ConfigModuleResolver,
-    F: ConfigOutputFetcher,
+    R: PackageModuleResolver,
+    F: PackageModuleFetcher,
 {
     for seed in seeds {
-        let ability = resolver
-            .ability_module_exact(
+        let Some(resolved) = resolver
+            .package_module_exact(
                 &seed.package,
                 seed.version.as_deref(),
                 seed.outputs.self_output.as_deref(),
@@ -799,65 +552,16 @@ where
             .map_err(|source| FixpointError::Fetch {
                 provider: seed.package.clone(),
                 source,
-            })?;
-        if let Some(resolved) = ability {
-            if seed.config_output.is_some() {
-                return Err(FixpointError::Fetch {
-                    provider: seed.package.clone(),
-                    source: anyhow::anyhow!(
-                        "package carries both current ability and legacy config-module authority"
-                    ),
-                });
-            }
-            seed.registry = (!resolved.registry.is_empty()).then_some(resolved.registry);
-            seed.release_trust = resolved.release_trust;
-            seed.config_realization = resolved.realization;
-            seed.version = Some(resolved.version);
-            seed.outputs.self_output = Some(resolved.runtime_output);
-            seed.ability = Some(resolved.document);
-            continue;
-        }
-
-        let Some(resolved) = resolver.config_module(&seed.package) else {
+            })?
+        else {
             continue;
         };
-        seed.registry = (!resolved.registry.is_empty()).then(|| resolved.registry.to_string());
-        seed.release_trust = resolved.release_trust.cloned();
-        seed.config_realization = resolved.config_realization.clone();
-        seed.outputs.self_output = Some(resolved.runtime_output.to_string());
-        seed.outputs.dependencies = resolved.module.dependency_outputs.clone();
-        if seed.config_output_nar_hash.is_none() {
-            seed.config_output_nar_hash = Some(resolved.module.config_output.nar_hash.clone());
-        }
-        if seed.config_output.is_some() {
-            continue;
-        }
-        enforce_module_abi_compat(
-            &[GatedConfigModule {
-                package: resolved.package,
-                version: resolved.version,
-                module_abi_compat: resolved.module.module_abi_compat,
-            }],
-            module_abi,
-        )
-        .map_err(|error| FixpointError::SeedAbiMismatch(format!("{error:#}")))?;
-        fetcher
-            .fetch_config_output(&SelectedProvider {
-                package: resolved.package,
-                version: resolved.version,
-                platform: resolved.platform,
-                config_output: &resolved.module.config_output.store_path,
-                nar_hash: &resolved.module.config_output.nar_hash,
-                nar_size: resolved.module.config_output.nar_size,
-            })
-            .map_err(|source| FixpointError::Fetch {
-                provider: resolved.package.to_string(),
-                source,
-            })?;
-        seed.version = Some(resolved.version.to_string());
-        seed.config_output = Some(resolved.module.config_output.store_path.clone());
-        seed.config_output_nar_hash = Some(resolved.module.config_output.nar_hash.clone());
-        seed.module_abi_compat = Some(resolved.module.module_abi_compat);
+        seed.registry = (!resolved.registry.is_empty()).then_some(resolved.registry);
+        seed.release_trust = resolved.release_trust;
+        seed.config_realization = resolved.realization;
+        seed.version = Some(resolved.version);
+        seed.outputs.self_output = Some(resolved.runtime_output);
+        seed.ability = Some(resolved.document);
     }
     Ok(())
 }
@@ -867,7 +571,7 @@ fn assign_runtime_outputs(members: &mut [WorkingSetMember], runtime: &runtime::R
     for member in members {
         if let Some(package) = runtime.packages.get(&member.package) {
             member.outputs.self_output = Some(package.store_path.clone());
-            member.outputs.dependencies = package.config_dependency_outputs.clone();
+            member.outputs.dependencies.clear();
             for dependency in runtime.edges.get(&member.package).into_iter().flatten() {
                 if let Some(pin) = runtime.packages.get(dependency) {
                     member
@@ -883,243 +587,6 @@ fn assign_runtime_outputs(members: &mut [WorkingSetMember], runtime: &runtime::R
     }
 }
 
-/// Adds structurally named providers discovered by the conservative
-/// publish-time option-access scan before the first evaluation.
-fn preclose_config_requires<R>(seeds: &mut Vec<WorkingSetMember>, resolver: &R)
-where
-    R: ConfigModuleResolver,
-{
-    loop {
-        let installed_owners = seeds
-            .iter()
-            .filter_map(|seed| resolver.config_module(&seed.package))
-            .flat_map(|resolved| resolved.module.owns_roots.iter())
-            .map(|owned| owned.root.as_str())
-            .collect::<BTreeSet<_>>();
-        let existing = seeds
-            .iter()
-            .map(|seed| seed.package.as_str())
-            .collect::<BTreeSet<_>>();
-        let additions = seeds
-            .iter()
-            .filter_map(|seed| resolver.config_module(&seed.package))
-            .flat_map(|resolved| resolved.module.requires.iter())
-            .filter_map(|path| path.split('.').next())
-            .filter(|root| {
-                *root != "system"
-                    && !existing.contains(root)
-                    && !installed_owners.contains(root)
-                    && resolver.config_module(root).is_some()
-            })
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>();
-        if additions.is_empty() {
-            return;
-        }
-        seeds.extend(additions.into_iter().map(WorkingSetMember::seed));
-    }
-}
-
-/// Gate every seed that carries config-module metadata (build-spec §6).
-fn gate_seeds(
-    seeds: &[WorkingSetMember],
-    image_abi: u32,
-) -> std::result::Result<(), FixpointError> {
-    let gates: Vec<GatedConfigModule<'_>> = seeds
-        .iter()
-        .filter_map(|m| {
-            m.module_abi_compat.map(|compat| GatedConfigModule {
-                package: m.package.as_str(),
-                version: m.version.as_deref().unwrap_or(""),
-                module_abi_compat: compat,
-            })
-        })
-        .collect();
-    enforce_module_abi_compat(&gates, image_abi)
-        .map_err(|e| FixpointError::SeedAbiMismatch(format!("{e:#}")))
-}
-
-/// Derive the iteration cap from local state, capped at the ceiling.
-///
-/// With the registry-wide index gone there is no closed provider universe to
-/// count, so the cap is derived from what is known locally: the seed set size
-/// plus the number of owned shared roots, plus [`ITER_CAP_SLACK`] headroom for
-/// providers discovered by absent-root reads. Each iteration fetches one new
-/// distinct package, so this bounds the loop in the same spirit as the old
-/// provider count. The result is clamped to [`ITER_CAP_CEILING`] so no local
-/// state can push the loop unbounded.
-fn derive_iter_cap(seed_len: usize, system_roots: &SystemRoots) -> u32 {
-    let base = seed_len.saturating_add(system_roots.len());
-    let count = u32::try_from(base).unwrap_or(ITER_CAP_CEILING);
-    count.saturating_add(ITER_CAP_SLACK).min(ITER_CAP_CEILING)
-}
-
-/// Loads image/base-lib shared-root ownership metadata.
-///
-/// Older base libraries legitimately omit `system-roots.json`; that is the
-/// only compatibility fallback. A present but malformed file is terminal so
-/// ownership cannot silently disappear after image corruption.
-fn load_bundled_roots(
-    base_lib: &Path,
-) -> std::result::Result<Vec<crate::types::OwnedRoot>, FixpointError> {
-    let path = base_lib.join("system-roots.json");
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(FixpointError::EvalError {
-                stderr: format!("reading bundled root metadata {}: {error}", path.display()),
-            });
-        }
-    };
-    serde_json::from_slice(&bytes).map_err(|error| FixpointError::EvalError {
-        stderr: format!("parsing bundled root metadata {}: {error}", path.display()),
-    })
-}
-
-/// A concrete provider choice the driver resolved from a missing-option signal.
-struct Selection {
-    package: String,
-    version: String,
-    platform: String,
-    config_output: String,
-    config_nar_hash: String,
-    config_nar_size: u64,
-    module_abi_compat: ModuleAbiCompat,
-    missing_path: String,
-    kind: MissingOptionKind,
-    read_by: Option<String>,
-}
-
-/// Pick the first missing option that resolves to a provider, recording the
-/// terminal error if none do (build-spec §2: "picks the first whose lookup
-/// resolves").
-fn select_first_resolvable<R: ConfigModuleResolver>(
-    missing: &[MissingOption],
-    system_roots: &SystemRoots,
-    resolver: &R,
-    abi: u32,
-) -> std::result::Result<Selection, FixpointError> {
-    let mut deferred: Option<FixpointError> = None;
-    for item in missing {
-        match resolve_one(item, system_roots, resolver, abi) {
-            Ok(selection) => return Ok(selection),
-            Err(err) => {
-                // Keep the most informative terminal error: an ABI mismatch
-                // outranks a plain "no provider", which is the fallback when
-                // nothing resolved.
-                if deferred
-                    .as_ref()
-                    .map(|d| matches!(d, FixpointError::NoProvider { .. }))
-                    .unwrap_or(true)
-                {
-                    deferred = Some(err);
-                }
-            }
-        }
-    }
-    Err(deferred.unwrap_or_else(|| FixpointError::NoProvider {
-        path: missing
-            .first()
-            .map(|m| option_path_root(&m.path).to_string())
-            .unwrap_or_default(),
-        read_by: missing.first().and_then(|m| m.read_by.clone()),
-    }))
-}
-
-/// Resolve a single missing option to a provider by its root (build-spec §4).
-///
-/// Both Case A (an undeclared write, whose `path` is a full leaf) and Case B (an
-/// absent-root read, whose `path` is the bare root) collapse to the same
-/// root-based dispatch; the full Case-A path is retained only for error text.
-/// The root is dispatched in order:
-///
-/// 1. **Shared root** — a [`SystemRoots`] hit selects the single owning package,
-///    ABI-gated by the owner's pinned `module_abi_compat`.
-/// 2. **Private root** — the structural fallback treats the root as a package
-///    name and resolves its config module by name through `resolver`, ABI-gated.
-/// 3. Neither — a terminal [`FixpointError::NoProvider`].
-///
-/// # Errors
-///
-/// Returns [`FixpointError::AbiMismatch`] when the owning/named package exists
-/// but its ABI band excludes `abi`, and [`FixpointError::NoProvider`] when no
-/// installed package owns the root and no package named the root exists in the
-/// registry.
-fn resolve_one<R: ConfigModuleResolver>(
-    item: &MissingOption,
-    system_roots: &SystemRoots,
-    resolver: &R,
-    abi: u32,
-) -> std::result::Result<Selection, FixpointError> {
-    let root = option_path_root(&item.path);
-
-    // 1. Shared root owned by an installed package (per-system ownership).
-    if let Some(owner) = system_roots.owner(root) {
-        if system_roots.is_bundled_root(root) {
-            return Err(FixpointError::NoProvider {
-                path: item.path.clone(),
-                read_by: item.read_by.clone(),
-            });
-        }
-        if !owner.module_abi_compat.admits(abi) {
-            return Err(FixpointError::AbiMismatch {
-                path: item.path.clone(),
-                want: abi,
-            });
-        }
-        return Ok(Selection {
-            package: owner.package.clone(),
-            version: owner.version.clone(),
-            platform: owner.platform.clone(),
-            config_output: owner.config_output.clone(),
-            config_nar_hash: owner.config_nar_hash.clone(),
-            config_nar_size: owner.config_nar_size,
-            module_abi_compat: owner.module_abi_compat,
-            missing_path: item.path.clone(),
-            kind: item.kind,
-            read_by: item.read_by.clone(),
-        });
-    }
-
-    if system_roots.is_known_shared_root(root) {
-        return Err(FixpointError::NoProvider {
-            path: item.path.clone(),
-            read_by: item.read_by.clone(),
-        });
-    }
-
-    // 2. Private root: the root segment IS the package name. Resolve it by name
-    //    from registry metadata and ABI-gate its config module.
-    if let Some(resolved) = resolver.config_module(root) {
-        if !resolved.module.module_abi_compat.admits(abi) {
-            return Err(FixpointError::AbiMismatch {
-                path: item.path.clone(),
-                want: abi,
-            });
-        }
-        return Ok(Selection {
-            package: resolved.package.to_string(),
-            version: resolved.version.to_string(),
-            platform: resolved.platform.to_string(),
-            config_output: resolved.module.config_output.store_path.clone(),
-            config_nar_hash: resolved.module.config_output.nar_hash.clone(),
-            config_nar_size: resolved.module.config_output.nar_size,
-            module_abi_compat: resolved.module.module_abi_compat,
-            missing_path: item.path.clone(),
-            kind: item.kind,
-            read_by: item.read_by.clone(),
-        });
-    }
-
-    // 3. Terminal: no owner and no package named the root.
-    Err(FixpointError::NoProvider {
-        path: root.to_string(),
-        read_by: item.read_by.clone(),
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Private runtime driver (`aos-package-runtime __eval`)
 // ---------------------------------------------------------------------------
 
@@ -1221,7 +688,7 @@ fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
 
 /// Runs the on-host fixpoint with the production stock Nix evaluator and fetcher.
 ///
-/// Loads the on-host registries (as the by-name [`ConfigModuleResolver`]) and
+/// Loads the on-host registries (as the by-name [`PackageModuleResolver`]) and
 /// seed set from disk, drives [`run_fixpoint`], and — **only on convergence** —
 /// writes the manifest to [`EvalCommand::out`]. Any terminal failure prints a
 /// legible diagnostic and returns an error *without* writing a manifest, so the
@@ -1282,7 +749,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // the removed registry-wide provides index. When apm config is
     // unavailable or corrupt, fail closed before selecting or fetching any
     // package. Off-host callers inject an explicit resolver instead.
-    let resolver = stock::RegistryConfigModules::load_system()
+    let resolver = stock::RegistryPackageModules::load_system()
         .context("loading authenticated system registry snapshot for config evaluation")?;
 
     let mut seed_set = load_host_selection(cmd)?;
@@ -1306,7 +773,6 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     // Resolve the selected names before evaluation. This both pins the exact
     // runtime outputs and adds signed package-level dependencies (`requires`
     // and capability providers) to the module working set.
-    preclose_config_requires(&mut seed_set, &resolver);
     let initially_selected: Vec<String> = seed_set
         .iter()
         .map(|member| member.package.clone())
@@ -1322,7 +788,6 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             seed_set.push(WorkingSetMember::seed(package.clone()));
         }
     }
-    preclose_config_requires(&mut seed_set, &resolver);
     hydrate_seed_modules(&mut seed_set, &resolver, &fetcher, cmd.module_abi)
         .map_err(eval_command_failure)?;
     assign_runtime_outputs(&mut seed_set, &runtime);
@@ -1393,7 +858,6 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         if next == candidate.working_set {
             break candidate;
         }
-        preclose_config_requires(&mut next, &resolver);
         hydrate_seed_modules(&mut next, &resolver, &fetcher, cmd.module_abi)
             .map_err(eval_command_failure)?;
         seed_set = next;
@@ -1531,85 +995,40 @@ fn evaluator_store_root(executable: &Path) -> Result<&Path> {
         })
 }
 
-/// Hashes the authenticated config-output set independently of evaluator order.
-fn config_module_closure_hash(store_paths: &[String], nar_hashes: &[String]) -> Result<String> {
-    if store_paths.len() != nar_hashes.len() {
-        anyhow::bail!("config module store-path and NAR-hash counts differ");
-    }
-    let mut members = store_paths
-        .iter()
-        .zip(nar_hashes)
-        .map(|(path, nar_hash)| serde_json::json!([path, nar_hash]))
-        .collect::<Vec<_>>();
-    members.sort_by(|left, right| {
-        left[0]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right[0].as_str().unwrap_or_default())
-    });
-    Ok(crate::graph_compile::reproject::hash_cjson(
-        &serde_json::Value::Array(members),
-    ))
-}
-
-fn config_module_inputs(
+/// Hashes the authenticated package-module-artifact set independently of evaluator order.
+fn package_module_inputs(
     working_set: &[WorkingSetMember],
-) -> Result<(
-    Vec<String>,
-    Vec<String>,
-    Vec<String>,
-    Vec<ModuleAbiCompat>,
-    Vec<String>,
-)> {
-    let mut seen = BTreeMap::<String, String>::new();
-    let mut paths = Vec::new();
-    let mut nar_hashes = Vec::new();
-    let mut packages = Vec::new();
-    let mut abi_compat = Vec::new();
-    let mut origins = Vec::new();
+) -> Result<Vec<materialize::PackageModuleInput>> {
+    let mut modules = Vec::new();
     for member in working_set {
-        let Some(path) = member.config_output.as_deref() else {
+        let Some(document) = member.ability.as_ref() else {
             continue;
         };
-        if let Some(existing_package) = seen.get(path) {
-            if existing_package != &member.package {
-                anyhow::bail!(
-                    "config output {path} is authenticated for both package identities {} and {}; shared config-output identity is forbidden",
-                    existing_package,
-                    member.package
-                );
-            }
+        let Some(locator) = document.package_module.as_ref() else {
             continue;
-        }
-        seen.insert(path.to_string(), member.package.clone());
-        let compat = member.module_abi_compat.with_context(|| {
-            format!(
-                "config module {} at {path} has no authenticated module_abi_compat",
-                member.package
-            )
-        })?;
-        let nar_hash = member.config_output_nar_hash.as_deref().with_context(|| {
-            format!(
-                "config module {} at {path} has no authenticated NAR hash",
-                member.package
-            )
-        })?;
-        let canonical_nar_hash =
-            crate::registry::store::NarBytes::from_hash(nar_hash, 0)?.nar_hash();
-        paths.push(path.to_string());
-        nar_hashes.push(canonical_nar_hash);
-        packages.push(member.package.clone());
-        abi_compat.push(compat);
-        origins.push(if member.registry.is_some() {
-            "registry".to_string()
-        } else {
-            "image".to_string()
+        };
+        anyhow::ensure!(
+            document.package.name.as_str() == member.package,
+            "package document subject disagrees with working-set identity"
+        );
+        modules.push(materialize::PackageModuleInput {
+            package: member.package.clone(),
+            document_digest: document.content_digest()?.to_string(),
+            store_path: locator.artifact.store_path.clone(),
+            nar_hash: locator.artifact.nar_hash.to_string(),
+            entrypoint: locator.path.as_str().to_string(),
+            origin: if member.registry.is_some() {
+                materialize::PackageModuleOrigin::Registry
+            } else {
+                materialize::PackageModuleOrigin::Image
+            },
         });
     }
-    Ok((paths, nar_hashes, packages, abi_compat, origins))
+    modules.sort_by(|left, right| left.package.cmp(&right.package));
+    Ok(modules)
 }
 
-fn config_module_release_identity(
+fn package_module_release_identity(
     working_set: &[WorkingSetMember],
 ) -> Result<(
     Option<String>,
@@ -1619,7 +1038,13 @@ fn config_module_release_identity(
 )> {
     let modules = working_set
         .iter()
-        .filter(|member| member.config_output.is_some() && member.registry.is_some())
+        .filter(|member| {
+            member
+                .ability
+                .as_ref()
+                .is_some_and(|document| document.package_module.is_some())
+                && member.registry.is_some()
+        })
         .collect::<Vec<_>>();
     if modules.is_empty() {
         return Ok((None, None, None, None));
@@ -1650,14 +1075,11 @@ fn config_module_release_identity(
             anyhow::bail!("one configuration generation cannot mix signed registry releases");
         }
         realization_members.push(serde_json::json!([
-            member
-                .config_output
-                .as_deref()
-                .context("config module output disappeared")?,
+            member.package,
             member
                 .config_realization
                 .as_deref()
-                .context("config module has no authenticated store realization")?,
+                .context("package module has no authenticated store realization")?,
         ]));
     }
     realization_members.sort_by(|left, right| {
@@ -1692,15 +1114,7 @@ fn enrich_manifest(
         .and_then(|inputs| inputs.remove("ability_activation"));
 
     enrich_runtime_projection(object, runtime)?;
-    let config_projections = serde_json::from_value(
-        object
-            .get("configProjections")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})),
-    )
-    .context("decoding enriched package config projections")?;
-    let ability_activation =
-        enrich_ability_activation(ability_activation, runtime, &config_projections)?;
+    let ability_activation = enrich_ability_activation(ability_activation, runtime)?;
     if let Some(activation) = &ability_activation {
         retain_ability_sidecar_roots(object, activation)?;
     }
@@ -1709,8 +1123,7 @@ fn enrich_manifest(
         .with_context(|| format!("reading host input {}", cmd.host_nix.display()))?;
     let evaluator = std::env::current_exe().context("resolving evaluator executable")?;
     let evaluator_store_path = evaluator_store_root(&evaluator)?;
-    let (config_outputs, config_nar_hashes, config_packages, config_abi_compat, config_origins) =
-        config_module_inputs(&outcome.working_set)?;
+    let package_modules = package_module_inputs(&outcome.working_set)?;
 
     let (facts, retained_facts_bytes, facts_input_path) =
         match cmd.facts_json.as_deref().filter(|path| path.is_file()) {
@@ -1779,9 +1192,8 @@ fn enrich_manifest(
     };
     let base_abi_hash = read_base_lib_abi_hash(&cmd.base_lib, cmd.module_abi)?;
     let evaluator_store_hash = evaluator_store_hash(&evaluator)?;
-    let config_closure_hash = config_module_closure_hash(&config_outputs, &config_nar_hashes)?;
     let (config_registry, config_release_tag, config_tag_signer_key, config_realization) =
-        config_module_release_identity(&outcome.working_set)?;
+        package_module_release_identity(&outcome.working_set)?;
     let host_store_path = add_fixed_input_to_store(&cmd.host_nix)?;
     let runtime_modules =
         runtime_module_manifest_input(&cmd.runtime_modules, cmd.runtime_module_root.as_deref())?;
@@ -1834,18 +1246,12 @@ fn enrich_manifest(
             "store_path": evaluator_store_path,
             "store_hash": evaluator_store_hash,
         },
-        "config_modules": {
+        "package_modules": {
             "registry": config_registry,
             "release_tag": config_release_tag,
             "tag_signer_key": config_tag_signer_key,
             "realization": config_realization,
-            "closure_hash": config_closure_hash,
-            "count": config_outputs.len(),
-            "store_paths": config_outputs,
-            "nar_hashes": config_nar_hashes,
-            "package_names": config_packages,
-            "origins": config_origins,
-            "module_abi_compat": config_abi_compat,
+            "modules": package_modules,
         },
         "host_nix": host_input,
         "instance_facts": facts_input,
@@ -1884,7 +1290,6 @@ fn enrich_manifest(
 fn enrich_ability_activation(
     input: Option<serde_json::Value>,
     runtime: &runtime::RuntimeResolution,
-    config_projections: &BTreeMap<String, materialize::ProjectedPackageConfig>,
 ) -> Result<Option<serde_json::Value>> {
     let structured_packages = runtime
         .packages
@@ -1909,11 +1314,7 @@ fn enrich_ability_activation(
         .iter()
         .filter_map(|(name, package)| {
             package.ability.as_ref().map(|ability| -> Result<_> {
-                let activation_revision = materialize::package_activation_revision(
-                    name,
-                    package,
-                    config_projections.get(name),
-                )?;
+                let activation_revision = materialize::package_activation_revision(name, package)?;
                 Ok(serde_json::json!({
                     "name": name,
                     "version": package.version,
@@ -2069,7 +1470,6 @@ fn enrich_runtime_projection(
     object
         .entry("credentials")
         .or_insert_with(|| serde_json::json!({}));
-    enrich_expose_config_projections(object, runtime)?;
     enrich_exposed_units(object, runtime)?;
     let packages: Vec<String> = runtime.packages.keys().cloned().collect();
     object.insert("packages".into(), serde_json::to_value(&packages)?);
@@ -2366,123 +1766,6 @@ fn enrich_exposed_units(
     Ok(())
 }
 
-fn enrich_expose_config_projections(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    runtime: &runtime::RuntimeResolution,
-) -> Result<()> {
-    let bindings = object
-        .remove("configProjectionBindings")
-        .unwrap_or_else(|| serde_json::json!({}));
-    let bindings = bindings
-        .as_object()
-        .context("evaluated configProjectionBindings must be an object")?;
-    let bindings = bindings.clone();
-    let expected = runtime
-        .packages
-        .iter()
-        .filter_map(|(package, pin)| pin.config_projection.is_some().then_some(package.as_str()))
-        .collect::<BTreeSet<_>>();
-    let actual = bindings.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    if expected != actual {
-        anyhow::bail!(
-            "evaluated expose config bindings do not exactly cover authenticated migrated packages"
-        );
-    }
-
-    let desired = object
-        .get("config")
-        .and_then(serde_json::Value::as_object)
-        .context("evaluated manifest config must be an object")?;
-    let mut projections = BTreeMap::new();
-    for package in expected {
-        let package_pin = &runtime.packages[package];
-        let pin = package_pin
-            .config_projection
-            .as_ref()
-            .context("migrated package lost projection metadata")?;
-        let expected_schema_hash = materialize::expose_config_schema_hash(&pin.config)?;
-        let binding = bindings[package].as_object().with_context(|| {
-            format!("config projection binding for {package:?} is not an object")
-        })?;
-        let binding_fields = binding.keys().map(String::as_str).collect::<BTreeSet<_>>();
-        if binding_fields != BTreeSet::from(["schema", "schema_hash"]) {
-            anyhow::bail!("config projection binding for {package:?} contains unexpected fields");
-        }
-        if binding.get("schema").and_then(serde_json::Value::as_str)
-            != Some("aos.expose-config-binding/v1")
-            || binding
-                .get("schema_hash")
-                .and_then(serde_json::Value::as_str)
-                != Some(expected_schema_hash.as_str())
-        {
-            anyhow::bail!("config projection binding for {package:?} is missing or tampered");
-        }
-        let desired_package = desired
-            .get(package)
-            .map(json_desired_package)
-            .transpose()?
-            .unwrap_or_default();
-        let rendered =
-            crate::render_package_config(package, &pin.config.artifacts, Some(&desired_package))?;
-        let artifacts = rendered
-            .into_iter()
-            .map(|(artifact, bytes)| {
-                let text = String::from_utf8(bytes).with_context(|| {
-                    format!("rendered config artifact {} is not UTF-8", artifact.path)
-                })?;
-                Ok(materialize::ProjectedConfigArtifact {
-                    path: artifact.path.clone(),
-                    sha256: format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes()))),
-                    mode: "0644".to_string(),
-                    text,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        projections.insert(
-            package.to_string(),
-            materialize::ProjectedPackageConfig {
-                schema: materialize::ProjectedPackageConfig::SCHEMA.to_string(),
-                schema_hash: expected_schema_hash,
-                artifacts,
-                units: materialize::projected_unit_actions_for_package(
-                    package_pin,
-                    &pin.config.artifacts,
-                ),
-            },
-        );
-    }
-    object.insert(
-        "configProjections".into(),
-        serde_json::to_value(projections).context("serializing rendered config projections")?,
-    );
-    Ok(())
-}
-
-fn json_desired_package(
-    value: &serde_json::Value,
-) -> Result<BTreeMap<String, BTreeMap<String, toml::Value>>> {
-    let artifacts = value
-        .as_object()
-        .context("desired package config must be an object")?;
-    artifacts
-        .iter()
-        .map(|(artifact, fields)| {
-            let fields = fields.as_object().with_context(|| {
-                format!("desired config artifact {artifact:?} must be an object")
-            })?;
-            let fields = fields
-                .iter()
-                .map(|(field, value)| {
-                    let value = serde_json::from_value::<toml::Value>(value.clone())
-                        .with_context(|| format!("converting desired config field {field:?}"))?;
-                    Ok((field.clone(), value))
-                })
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            Ok((artifact.clone(), fields))
-        })
-        .collect()
-}
-
 fn add_fixed_input_to_store(path: &Path) -> Result<PathBuf> {
     if let Some(root) = manifest_store_root(path.to_string_lossy().as_ref()) {
         let root = Path::new(root);
@@ -2730,80 +2013,89 @@ where
 
 fn retained_cross_abi_working_set(
     source: &materialize::ConfigManifest,
-    retained: &crate::types::CrossAbiReEvalInputs,
+    _retained: &crate::types::CrossAbiReEvalInputs,
 ) -> Result<Vec<WorkingSetMember>> {
-    let modules = &source.inputs.config_modules;
-    Ok(retained
-        .config_module_paths
+    source
+        .inputs
+        .package_modules
+        .modules
         .iter()
-        .zip(&modules.nar_hashes)
-        .zip(&retained.config_module_packages)
-        .zip(&modules.module_abi_compat)
-        .map(|(((path, nar_hash), package), compat)| WorkingSetMember {
-            registry: None,
-            release_trust: None,
-            config_realization: None,
-            package: package.clone(),
-            version: source
+        .map(|module| {
+            let pin = source
                 .package_outputs
-                .get(package)
-                .map(|pin| pin.version.clone()),
-            ability: None,
-            config_output: Some(path.clone()),
-            config_output_nar_hash: Some(nar_hash.clone()),
-            module_abi_compat: Some(*compat),
-            outputs: PackageOutputs {
-                self_output: source
-                    .package_outputs
-                    .get(package)
-                    .map(|pin| pin.store_path.clone()),
-                dependencies: source
-                    .graph
-                    .edges
-                    .get(package)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|dependency| {
-                        source
-                            .package_outputs
-                            .get(dependency)
-                            .map(|pin| (dependency.clone(), pin.store_path.clone()))
-                    })
-                    .collect(),
-            },
+                .get(&module.package)
+                .with_context(|| {
+                    format!(
+                        "retained package module {} has no runtime pin",
+                        module.package
+                    )
+                })?;
+            let contract = pin.ability.as_ref().with_context(|| {
+                format!(
+                    "retained package module {} has no package contract",
+                    module.package
+                )
+            })?;
+            let bytes = crate::ability_package::read_package_manifest(&contract.store_path)?;
+            let document = crate::ability_package::decode_package_manifest(&bytes)?;
+            anyhow::ensure!(
+                document.content_digest()?.to_string() == module.document_digest,
+                "retained package document digest disagrees with its manifest identity"
+            );
+            Ok(WorkingSetMember {
+                registry: None,
+                release_trust: None,
+                config_realization: None,
+                package: module.package.clone(),
+                version: Some(pin.version.clone()),
+                ability: Some(document),
+                outputs: PackageOutputs {
+                    self_output: Some(pin.store_path.clone()),
+                    dependencies: source
+                        .graph
+                        .edges
+                        .get(&module.package)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|dependency| {
+                            source
+                                .package_outputs
+                                .get(dependency)
+                                .map(|pin| (dependency.clone(), pin.store_path.clone()))
+                        })
+                        .collect(),
+                },
+            })
         })
-        .collect())
+        .collect()
 }
 
 fn validate_retained_manifest_inputs(
     source: &materialize::ConfigManifest,
     retained: &crate::types::CrossAbiReEvalInputs,
 ) -> Result<()> {
-    if source.inputs.config_modules.store_paths != retained.config_module_paths
-        || source.inputs.config_modules.package_names != retained.config_module_packages
+    let module_paths = source
+        .inputs
+        .package_modules
+        .modules
+        .iter()
+        .map(|module| module.store_path.clone())
+        .collect::<Vec<_>>();
+    let module_packages = source
+        .inputs
+        .package_modules
+        .modules
+        .iter()
+        .map(|module| module.package.clone())
+        .collect::<Vec<_>>();
+    if module_paths != retained.config_module_paths
+        || module_packages != retained.config_module_packages
         || source.inputs.host_nix.store_path != retained.host_nix_ref
         || source.inputs.instance_facts.facts_hash != retained.facts_hash
         || source.inputs.instance_facts.store_path != retained.facts_ref
     {
         anyhow::bail!(
             "retained generation inputs disagree with its manifest; cross-ABI rollback refused"
-        );
-    }
-    if let Some((package, compat)) = source
-        .inputs
-        .config_modules
-        .package_names
-        .iter()
-        .zip(&source.inputs.config_modules.module_abi_compat)
-        .find(|(_, compat)| {
-            retained.to_module_abi < compat.min || retained.to_module_abi > compat.max
-        })
-    {
-        anyhow::bail!(
-            "retained config module {package} does not admit running module ABI {}; admitted range is {}..={}; cross-ABI rollback refused",
-            retained.to_module_abi,
-            compat.min,
-            compat.max,
         );
     }
     Ok(())
@@ -2876,14 +2168,21 @@ where
         );
     }
 
-    if retained.config_module_paths.len() != source.inputs.config_modules.nar_hashes.len() {
+    if retained.config_module_paths.len() != source.inputs.package_modules.modules.len() {
         anyhow::bail!("retained config-module paths and authenticated NAR hashes differ in count");
     }
     for ((path, package), expected) in retained
         .config_module_paths
         .iter()
         .zip(&retained.config_module_packages)
-        .zip(&source.inputs.config_modules.nar_hashes)
+        .zip(
+            source
+                .inputs
+                .package_modules
+                .modules
+                .iter()
+                .map(|module| &module.nar_hash),
+        )
     {
         let actual = nar_hash(Path::new(path))
             .with_context(|| format!("hashing retained config module {package} at {path}"))?;
@@ -3047,8 +2346,8 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
 /// Load seed package names from a `desired.toml`, as bare working-set members.
 ///
 /// Only the top-level `packages` array is read; seed config-module metadata
-/// (config outputs, ABI bands) is discovered by the loop, so seeds carry no
-/// config output here.
+/// (package module artifacts, ABI bands) is discovered by the loop, so seeds carry no
+/// package module artifact here.
 fn load_seed_set(desired: Option<&Path>) -> Result<Vec<WorkingSetMember>> {
     let Some(path) = desired else {
         return Ok(Vec::new());
