@@ -41,6 +41,7 @@ pub mod ability_policy;
 pub mod ability_policy_authority;
 pub mod ability_rounds;
 pub(crate) mod transaction_store;
+pub use transaction_store::RetainedAbilityDiagnosticSource;
 pub mod activation;
 pub mod classify;
 mod command_handler;
