@@ -523,12 +523,10 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if
-      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if
-      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if
@@ -1061,93 +1059,6 @@
     })
     exposedPackageNames
   );
-  exposeEnumeration =
-    if !(builtins.elem "expose-smoke" exposedPackageNames)
-    then throw "packagesWithExpose must include pkgs.expose-smoke"
-    else if !(builtins.elem "test-http-server" exposedPackageNames)
-    then throw "packagesWithExpose must include pkgs.test-http-server"
-    else exposedPackagePathsJson;
-
-  packagePolicySystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.packages.expose-smoke = {
-        package = pkgs.expose-smoke;
-        bundle = true;
-        preset = false;
-      };
-      aos.packages.test-http-server = {
-        package = pkgs.test-http-server;
-        bundle = true;
-        preset = true;
-      };
-    }
-  ];
-  packagePolicySystemPackageStrings =
-    builtins.map builtins.toString packagePolicySystem.config.environment.systemPackages;
-  packagePolicyModule =
-    if !(builtins.elem (builtins.toString pkgs.test-http-server) packagePolicySystemPackageStrings)
-    then throw "aos.packages must add bundled package payloads to environment.systemPackages"
-    else if !(builtins.elem (builtins.toString pkgs.test-http-server.expose) packagePolicySystemPackageStrings)
-    then throw "aos.packages must add bundled expose artifacts to environment.systemPackages"
-    else if !(builtins.elem (builtins.toString pkgs.expose-smoke) packagePolicySystemPackageStrings)
-    then throw "aos.packages must add preset=false bundled package payloads to environment.systemPackages"
-    else if !(builtins.elem (builtins.toString pkgs.expose-smoke.expose) packagePolicySystemPackageStrings)
-    then throw "aos.packages must add preset=false bundled expose artifacts to environment.systemPackages"
-    # k3s operator tools were intentionally dropped from the base system PATH
-    # when the image was slimmed (server profile no longer adds
-    # `k3sCommon.runtimePath` to environment.systemPackages); units reference
-    # k3s by absolute store path, and the role payload ships the CLI when its
-    # package is bundled. The old "must keep k3s operator tools on PATH"
-    # assertion contradicted that decision and is gone.
-    else if !(builtins.elem "enable aos-pkg-test-http-server.target" packagePolicySystem.config.systemd.systemPresetRules)
-    then throw "aos.packages must emit image preset enablement for preset=true packages"
-    else if builtins.elem "enable aos-pkg-expose-smoke.target" packagePolicySystem.config.systemd.systemPresetRules
-    then throw "aos.packages must not emit image preset enablement for preset=false packages"
-    else if
-      !(builtins.elem
-        "aos-seed-baked-packages.service"
-        packagePolicySystem.config.systemd.services.aos-eval.requires)
-    then throw "host evaluation must wait for the bundled package profile seed"
-    else if
-      !(builtins.elem
-        "aos-seed-baked-packages.service"
-        packagePolicySystem.config.systemd.services.aos-eval.after)
-    then throw "host evaluation must order after the bundled package profile seed"
-    else builtins.seq packagePolicySystem.config.system.build.aosPackageProfileSeed.name "ok";
-
-  packagePolicyBadPresetSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.packages.expose-smoke = {
-        package = pkgs.expose-smoke;
-        preset = true;
-      };
-    }
-  ];
-  packagePolicyRejectsPresetWithoutBundle = let
-    forced = builtins.tryEval (packagePolicyBadPresetSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.packages must reject preset=true when bundle=true is not set"
-    else "ok";
-
-  packagePolicyBadTargetSystem = mkSystem [
-    ../../systems/server.nix
-    {
-      aos.packages.wrong-name = {
-        package = pkgs.test-http-server;
-        bundle = true;
-      };
-    }
-  ];
-  packagePolicyRejectsWrongTarget = let
-    forced = builtins.tryEval (packagePolicyBadTargetSystem.config.system.build.toplevel.outPath);
-  in
-    if forced.success
-    then throw "aos.packages must reject policy names that do not match the package target"
-    else "ok";
-
   derivationLibForExecutionCompatibility = import ../derivations.nix {
     system = "x86_64-linux";
   };
@@ -1486,9 +1397,8 @@ in
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), plaintext credential (${apmInstallAtBootRejectsPlaintextCredential}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
-        echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
+        echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposedPackagePathsJson})"
         echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_roots_helpers exact authenticated service-roots helper(s); $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
-        echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
         echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
         echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"

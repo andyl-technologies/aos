@@ -441,7 +441,6 @@ let
     "crucible-fixtures"
     "desired-config-test"
     "desired-prune-test"
-    "expose-smoke"
     "landlock-argv-test"
     "nuke-references"
   ];
