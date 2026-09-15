@@ -208,7 +208,16 @@
     description = "Materializes immutable package-authored configuration for one runtime instance.";
     abi = 1;
     requestType = serviceTypes.configurationMaterialization;
-    outputs = {};
+    outputs = {
+      planned-path =
+        output "planning" "instance"
+        "Returns the deterministic runtime path selected for this configuration."
+        serviceTypes.executionPath;
+      configuration-resource =
+        output "planning" "instance"
+        "References the exact managed configuration resource selected for this request."
+        serviceTypes.resourceReference;
+    };
     methods = managedConfigurationMethods;
     lifecycle = ephemeralLifecyclePolicy;
     guarantees = [];

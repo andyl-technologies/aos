@@ -33,6 +33,23 @@
     if builtins.length matches == 1
     then builtins.head matches
     else throw "configuration provider request must have one exact incoming binding";
+  pathForResource = resource: let
+    digest = builtins.hashString "sha256" (builtins.toJSON resource);
+  in "/run/aos/configurations/${resource.key}-${digest}";
+  providerIdentity = instance: binding:
+    if instance == null
+    then config.aos.abilities.instanceIdentities.${binding.providerInstance}
+    else instance.id;
+  resourceReference = instance: binding: {
+    _type = "aos-resource-reference";
+    interface = interface.identity;
+    resource = {
+      provider = providerIdentity instance binding;
+      key = binding.slot;
+    };
+    operations = ["observe"];
+    lifetime = "instance";
+  };
   terminalRequests = bindings: requests:
     builtins.listToAttrs (builtins.map (requestName: let
         request = requests.${requestName};
@@ -48,12 +65,24 @@
       })
       (builtins.attrNames requests));
   provide = {
+    instance ? null,
     requests,
     bindings,
     ...
   }:
     emptyProvision
     // {
+      outputs = builtins.listToAttrs (builtins.map (requestName: let
+          binding = parentBinding bindings requestName;
+          reference = resourceReference instance binding;
+        in {
+          name = requestName;
+          value = {
+            planned-path = pathForResource reference.resource;
+            configuration-resource = reference;
+          };
+        })
+        (builtins.attrNames requests));
       requests = terminalRequests bindings requests;
       resourceFragments = builtins.listToAttrs (builtins.map (requestName: let
           request = requests.${requestName};
@@ -68,14 +97,11 @@
         })
         (builtins.attrNames requests));
     };
-  pathFor = resource: let
-    digest = builtins.hashString "sha256" (builtins.toJSON resource.resource);
-  in "/run/aos/configurations/${resource.resource.key}-${digest}";
   compose = {resources, ...}: let
     realizations =
       builtins.mapAttrs (_: resource: {
         schema = "aos.configuration.materializer-realization/v1";
-        path = pathFor resource;
+        path = pathForResource resource.resource;
       })
       resources;
     paths = builtins.map (realization: realization.path) (builtins.attrValues realizations);

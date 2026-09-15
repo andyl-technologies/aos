@@ -17,13 +17,8 @@
   controllerIdentity = lib.abilities.interfaceIdentity controllerDocument;
   controllerMethods = builtins.attrNames controllerDeclaration.methods;
   packageArtifact = lib.abilities.packageOutput {};
-  registrationImplementation = "${packageName}:${controllerAlias}";
-  registrationProviderInstance = "${packageName}:registration";
-  registrationConfigurationRequest = lib.abilities.compositionRequestKey {
-    implementation = registrationImplementation;
-    providerInstance = registrationProviderInstance;
-    key = "configuration";
-  };
+  registrationConfigurationPath = resultOf "system-registration" "configuration-path";
+  registrationConfigurationResource = resultOf "system-registration" "configuration-resource";
 
   producer = key: interface: parameters:
     serviceManagement.forProducer {
@@ -126,7 +121,7 @@
               "--nopidfile"
               "--systemd-activation"
               "--config-file"
-              (resultOf registrationConfigurationRequest "execution-path")
+              registrationConfigurationPath
             ])
           ];
           post_start = [];
@@ -144,7 +139,7 @@
             (resultOf "runtime-storage" "retained-resource")
             (resultOf "state-storage" "retained-resource")
             (resultOf "system-registration" "registration-resource")
-            (resultOf registrationConfigurationRequest "retained-resource")
+            registrationConfigurationResource
           ];
           after = [];
           before = [];
@@ -168,7 +163,7 @@
         configuration.views = [
           {
             name = "system";
-            source = resultOf registrationConfigurationRequest "execution-path";
+            source = registrationConfigurationPath;
             optional = false;
           }
         ];

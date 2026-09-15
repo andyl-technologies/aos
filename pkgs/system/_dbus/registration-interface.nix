@@ -110,12 +110,20 @@
     name = resourceKind;
     description = "Owns one system-bus configuration assembled from authorized package registrations.";
     abi = 1;
-    requestType = aggregateRequest;
+    requestType = baseRequest;
     methods = controllerMethods;
     inherit lifecycle aggregation;
     outputs.registration-resource =
       output "planning" "instance"
       "References the exact aggregate system-bus registration resource."
+      types.resourceReference;
+    outputs.configuration-path =
+      output "planning" "instance"
+      "Returns the generated system-bus configuration path."
+      types.executionPath;
+    outputs.configuration-resource =
+      output "planning" "instance"
+      "References the exact generated system-bus configuration resource."
       types.resourceReference;
     guarantees = [];
   };
