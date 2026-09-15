@@ -62,6 +62,10 @@ in
       );
     runtimeDeps =
       [
+        # Standard-library extension modules remain part of the interpreter's
+        # public runtime and must retain every library they load.
+        bzip2
+        ncurses
         zlib
         openssl
         xz
@@ -73,18 +77,8 @@ in
         libffi
         sqlite
         readline
-      ]
-      ++ (
-        # Native bootstrap dependencies happen to expose these headers and
-        # libraries. Cross interpreters need the target variants explicitly.
-        if stdenv.isCross
-        then [
-          bzip2
-          ncurses
-          zstd
-        ]
-        else []
-      );
+        zstd
+      ];
     propagatedDeps = [];
 
     # CPython models PyTupleObject's variable-length ob_item storage as a
