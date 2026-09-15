@@ -48,6 +48,60 @@
       abi_hash = abilityTypes.digest;
     };
   };
+  factText = maxLength:
+    abilityTypes.string {
+      inherit maxLength;
+      syntax = null;
+    };
+  staticNetworkFacts = abilityTypes.record {
+    fields = {
+      mac = abilityTypes.optional (factText 32);
+      interface_name = abilityTypes.optional (factText 64);
+      addresses = abilityTypes.list {
+        element = factText 128;
+        maxItems = 64;
+      };
+      gateway = abilityTypes.optional (factText 128);
+      dns = abilityTypes.list {
+        element = factText 128;
+        maxItems = 32;
+      };
+    };
+  };
+  instanceFactsValue = abilityTypes.record {
+    fields = {
+      hostname = abilityTypes.optional (factText 253);
+      ssh_authorized_keys = abilityTypes.list {
+        element = factText 16384;
+        maxItems = 64;
+      };
+      instance_id = abilityTypes.optional (factText 1024);
+      region = abilityTypes.optional (factText 256);
+      availability_zone = abilityTypes.optional (factText 256);
+      mac_to_iface = abilityTypes.list {
+        element = abilityTypes.record {
+          fields = {
+            mac = factText 32;
+            iface = factText 64;
+          };
+        };
+        maxItems = 64;
+      };
+      disk_ids = abilityTypes.list {
+        element = factText 512;
+        maxItems = 256;
+      };
+      network = abilityTypes.optional staticNetworkFacts;
+    };
+  };
+  observedInstanceFacts = abilityTypes.record {
+    fields = {
+      schema = abilityTypes.enum ["aos.metadata.observed-instance-facts/v1"];
+      trust = abilityTypes.enum ["unauthenticated-observational"];
+      value = instanceFactsValue;
+      sha256 = abilityTypes.digest;
+    };
+  };
   authorizationConfiguration = abilityTypes.record {
     fields = {
       schema = abilityTypes.enum ["aos.metadata.provisioning-authorization-configuration/v1"];
@@ -112,6 +166,7 @@
           });
         };
       };
+      facts = observedInstanceFacts;
       base_library = baseLibraryIdentity;
     };
   };

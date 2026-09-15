@@ -27,7 +27,8 @@ use aos_provider_protocol::{
 use aos_storage_provisioning::{
     AuthorizedProvisioningInput, BaseLibraryIdentity, CanonicalProvisioningPlan,
     CanonicalProvisioningSource, ProvisioningAuthorization, ProvisioningIntent,
-    ProvisioningTrustMode, validate_authorized_provisioning_input, validate_provisioning_intent,
+    ProvisioningTrustMode, observed_instance_facts, validate_authorized_provisioning_input,
+    validate_provisioning_intent,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
@@ -417,6 +418,7 @@ async fn authorize(
         })
         .await?;
         let network_seed = read_network_seed(&stash_dir)?;
+        let facts = read_observed_instance_facts(&stash_dir)?;
 
         let trusted_key_files = trusted_key_files(&configuration.trusted_config_keys)?;
         let trusted_key_dir = scratch.path().join("trusted-config-keys");
@@ -444,6 +446,7 @@ async fn authorize(
                         platform_id: actual_platform.platform_id.clone(),
                         signer: result.signer,
                     },
+                    facts: facts.clone(),
                     base_library: configuration.base_library.clone(),
                 }
             }
@@ -457,6 +460,7 @@ async fn authorize(
                     platform_id: actual_platform.platform_id.clone(),
                     signer: None,
                 },
+                facts,
                 base_library: configuration.base_library.clone(),
             },
         };
@@ -529,6 +533,16 @@ fn finish_config_drive<T>(
             "config-drive cleanup also failed: {cleanup_error:#}"
         ))),
     }
+}
+
+fn read_observed_instance_facts(
+    stash_dir: &Path,
+) -> Result<aos_storage_provisioning::ObservedInstanceFacts> {
+    let bytes =
+        fs::read(stash_dir.join("facts.json")).context("reading normalized instance facts")?;
+    let facts: super::fetcher::Facts =
+        serde_json::from_slice(&bytes).context("decoding normalized instance facts")?;
+    observed_instance_facts(serde_json::to_value(facts)?)
 }
 
 fn read_network_seed(stash_dir: &Path) -> Result<Option<String>> {

@@ -91,8 +91,32 @@ pub struct AuthorizedProvisioningInput {
     pub host_module_sha256: Option<String>,
     /// Records the authorization decision and source platform.
     pub authorization: ProvisioningAuthorization,
+    /// Carries normalized platform facts as explicitly unauthenticated observations.
+    pub facts: ObservedInstanceFacts,
     /// Pins the exact module library used for restricted evaluation.
     pub base_library: BaseLibraryIdentity,
+}
+
+/// Carries normalized platform facts without granting them authorization authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedInstanceFacts {
+    /// Must equal `aos.metadata.observed-instance-facts/v1`.
+    pub schema: String,
+    /// Explicitly classifies every contained value as observational input.
+    pub trust: InstanceFactsTrust,
+    /// Carries the normalized metadata facts value.
+    pub value: serde_json::Value,
+    /// Authenticates the canonical facts value without making it trusted.
+    pub sha256: String,
+}
+
+/// Classifies the authority of metadata-derived instance facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstanceFactsTrust {
+    /// Allows facts to inform configuration while denying authorization use.
+    UnauthenticatedObservational,
 }
 
 /// Records how one metadata input was authorized.
@@ -177,6 +201,7 @@ pub fn validate_authorized_provisioning_input(input: &AuthorizedProvisioningInpu
     if !input.base_library.store_path.starts_with("/nix/store/") {
         bail!("base library must use an immutable store path");
     }
+    validate_observed_instance_facts(&input.facts)?;
 
     match (
         input.source,
@@ -213,6 +238,46 @@ pub fn validate_authorized_provisioning_input(input: &AuthorizedProvisioningInpu
             bail!("signed operator input must identify its matching signer");
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// Constructs normalized instance facts with a domain-separated canonical digest.
+///
+/// # Errors
+///
+/// Returns an error when the facts value cannot be encoded in canonical AOS JSON.
+pub fn observed_instance_facts(value: serde_json::Value) -> Result<ObservedInstanceFacts> {
+    let sha256 = aos_contract::Sha256Digest::of_canonical(
+        "aos.metadata.observed-instance-facts/v1",
+        &value,
+    )?
+    .to_string();
+    Ok(ObservedInstanceFacts {
+        schema: "aos.metadata.observed-instance-facts/v1".into(),
+        trust: InstanceFactsTrust::UnauthenticatedObservational,
+        value,
+        sha256,
+    })
+}
+
+/// Validates normalized facts without promoting them into authorization state.
+///
+/// # Errors
+///
+/// Returns an error when the schema or canonical digest differs from the value.
+pub fn validate_observed_instance_facts(facts: &ObservedInstanceFacts) -> Result<()> {
+    if facts.schema != "aos.metadata.observed-instance-facts/v1" {
+        bail!("unsupported observed instance facts schema");
+    }
+    validate_digest(&facts.sha256, "observed instance facts digest")?;
+    let actual = aos_contract::Sha256Digest::of_canonical(
+        "aos.metadata.observed-instance-facts/v1",
+        &facts.value,
+    )?
+    .to_string();
+    if actual != facts.sha256 {
+        bail!("observed instance facts differ from their canonical digest");
     }
     Ok(())
 }
@@ -766,6 +831,20 @@ fn validate_uuid(value: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn empty_observed_facts() -> ObservedInstanceFacts {
+        observed_instance_facts(serde_json::json!({
+            "hostname": null,
+            "ssh_authorized_keys": [],
+            "instance_id": null,
+            "region": null,
+            "availability_zone": null,
+            "mac_to_iface": [],
+            "disk_ids": [],
+            "network": null,
+        }))
+        .expect("canonical empty facts")
+    }
+
     fn evaluated_plan() -> ProvisioningPlan {
         ProvisioningPlan {
             schema: "aos.provisioning-plan/v1".into(),
@@ -866,6 +945,7 @@ mod tests {
                 platform_id: "aos-metadata".into(),
                 signer: Some("ops:01234567".into()),
             },
+            facts: empty_observed_facts(),
             base_library: BaseLibraryIdentity {
                 store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
                 abi_hash: format!("sha256:{}", "a".repeat(64)),
@@ -887,6 +967,7 @@ mod tests {
                 platform_id: "metal".into(),
                 signer: None,
             },
+            facts: empty_observed_facts(),
             base_library: BaseLibraryIdentity {
                 store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
                 abi_hash: format!("sha256:{}", "b".repeat(64)),
@@ -894,5 +975,49 @@ mod tests {
         };
 
         assert!(validate_authorized_provisioning_input(&input).is_err());
+    }
+
+    #[test]
+    fn observed_facts_digest_does_not_grant_authorization() {
+        let mut facts = empty_observed_facts();
+        facts.value["instance_id"] = serde_json::Value::String("changed".into());
+
+        let error = validate_observed_instance_facts(&facts)
+            .expect_err("changed observational facts require a new digest");
+
+        assert!(error.to_string().contains("canonical digest"));
+    }
+
+    #[test]
+    fn observed_facts_cannot_fill_authorization_fields() {
+        let host_module = "{}";
+        let input = AuthorizedProvisioningInput {
+            schema: "aos.metadata.authorized-provisioning-input/v1".into(),
+            source: CanonicalProvisioningSource::Operator,
+            host_module: Some(host_module.into()),
+            host_module_sha256: Some(format!("sha256:{}", hex_digest(host_module.as_bytes()))),
+            authorization: ProvisioningAuthorization {
+                trust_mode: ProvisioningTrustMode::Signed,
+                platform_id: "aos-metadata".into(),
+                signer: None,
+            },
+            facts: observed_instance_facts(serde_json::json!({
+                "signer": "untrusted:01234567",
+            }))
+            .expect("canonical observational facts"),
+            base_library: BaseLibraryIdentity {
+                store_path: "/nix/store/00000000000000000000000000000000-base-lib".into(),
+                abi_hash: format!("sha256:{}", "c".repeat(64)),
+            },
+        };
+
+        let error = validate_authorized_provisioning_input(&input)
+            .expect_err("observational fields cannot satisfy a missing signer");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must identify its matching signer")
+        );
     }
 }
