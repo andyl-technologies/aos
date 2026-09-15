@@ -546,6 +546,17 @@
     };
   };
 
+  qualificationType = strictSubmodule {
+    conformanceFamilies = mkOption {
+      type = moduleTypes.listOf localKeyType;
+      description = "Semantic conformance families required by this implementation.";
+    };
+    observer = mkOption {
+      type = handlerType;
+      description = "Package-owned executable that independently observes provider state.";
+    };
+  };
+
   providerModuleType = strictSubmodule {
     artifact = mkOption {
       type = packageOutputType;
@@ -639,6 +650,11 @@
       default = [];
       description = "Runtime features required to admit this implementation.";
     };
+    qualification = mkOption {
+      type = moduleTypes.nullOr qualificationType;
+      default = null;
+      description = "Package-owned native conformance and observation claim.";
+    };
   };
   implementationType = checkedSubmodule "ability implementation" implementationBaseType (implementation:
     (implementation._legacy || implementation.description != null)
@@ -660,6 +676,14 @@
       || (
         packageOutputType.check implementation.providerModule.artifact
         && relativePathType.check implementation.providerModule.path
+      )
+    )
+    && (
+      implementation.qualification
+      == null
+      || (
+        implementation.qualification.conformanceFamilies != []
+        && uniqueValues implementation.qualification.conformanceFamilies
       )
     )
     && (
