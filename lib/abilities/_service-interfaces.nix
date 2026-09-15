@@ -218,6 +218,48 @@
     methods = builtins.attrNames methods;
   };
 
+  observer = {
+    alias,
+    name,
+    description,
+    requestType,
+    observationType,
+    outputName,
+    outputType,
+    outputDescription,
+    observationDescription,
+  }: let
+    observeMethod = method requestType observationType name "observe" observationDescription read;
+    methods.observe =
+      observeMethod
+      // {
+        outputs =
+          observeMethod.outputs
+          // {
+            ${outputName} = output "runtime" "attempt" outputDescription outputType;
+          };
+      };
+    declaration = declareInterface {
+      inherit name description requestType methods;
+      abi = 1;
+      outputs = {};
+      lifecycle = lifecyclePolicy;
+      guarantees = [];
+      aggregation = {
+        scope = "provider-instance";
+        key = "slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = alias;
+      };
+    };
+    document = interfaceDocumentFromDeclaration declaration;
+  in {
+    inherit alias declaration document requestType observationType;
+    identity = interfaceIdentity document;
+    methods = ["observe"];
+  };
+
   declarations = rec {
     serviceInstance =
       canonical "service-instance" "aos.service.instance"
@@ -263,6 +305,39 @@
           "Observes the service's exact bound dependency relationships."
           read;
       });
+    conditions =
+      canonical "service-conditions" "aos.service.conditions"
+      "Contributes declarative environment conditions to a service resource."
+      serviceTypes.conditions
+      serviceTypes.observations.conditions
+      (targetResource: {
+        observe =
+          method serviceTypes.conditions serviceTypes.observations.conditions targetResource "observe"
+          "Observes the service's exact environment conditions."
+          read;
+      });
+    instantiation =
+      canonical "service-instantiation" "aos.service.instantiation"
+      "Contributes singleton, template, or bound-instance identity to a service resource."
+      serviceTypes.instantiation
+      serviceTypes.observations.instantiation
+      (targetResource: {
+        observe =
+          method serviceTypes.instantiation serviceTypes.observations.instantiation targetResource "observe"
+          "Observes the service's exact instantiation identity."
+          read;
+      });
+    supervision =
+      canonical "service-supervision" "aos.service.supervision"
+      "Contributes startup notification and named-bus supervision semantics to a service resource."
+      serviceTypes.supervision
+      serviceTypes.observations.supervision
+      (targetResource: {
+        observe =
+          method serviceTypes.supervision serviceTypes.observations.supervision targetResource "observe"
+          "Observes the service's exact supervision protocol."
+          read;
+      });
     readiness =
       canonical "service-readiness" "aos.service.readiness"
       "Contributes and observes a provider-neutral service readiness contract."
@@ -283,6 +358,94 @@
         observe =
           method serviceTypes.reload serviceTypes.observations.reload targetResource "observe"
           "Observes whether the declared reload strategy is available."
+          read;
+      });
+    termination =
+      canonical "service-termination" "aos.service.termination"
+      "Contributes process tracking and termination semantics to a service resource."
+      serviceTypes.termination
+      serviceTypes.observations.termination
+      (targetResource: {
+        observe =
+          method serviceTypes.termination serviceTypes.observations.termination targetResource "observe"
+          "Observes the service's exact process tracking and termination policy."
+          read;
+      });
+    watchdog =
+      canonical "service-watchdog" "aos.service.watchdog"
+      "Contributes a liveness deadline and failure action to a service resource."
+      serviceTypes.watchdog
+      serviceTypes.observations.watchdog
+      (targetResource: {
+        observe =
+          method serviceTypes.watchdog serviceTypes.observations.watchdog targetResource "observe"
+          "Observes the service's exact liveness policy."
+          read;
+      });
+    startPolicy =
+      canonical "service-start-policy" "aos.service.start-policy"
+      "Contributes start admission, exit classification, and restart suppression policy to a service resource."
+      serviceTypes.startPolicy
+      serviceTypes.observations.startPolicy
+      (targetResource: {
+        observe =
+          method serviceTypes.startPolicy serviceTypes.observations.startPolicy targetResource "observe"
+          "Observes the service's exact start and exit policy."
+          read;
+      });
+    failurePolicy =
+      canonical "service-failure-policy" "aos.service.failure-policy"
+      "Contributes failure dispatch and replacement semantics to a service resource."
+      serviceTypes.failurePolicy
+      serviceTypes.observations.failurePolicy
+      (targetResource: {
+        observe =
+          method serviceTypes.failurePolicy serviceTypes.observations.failurePolicy targetResource "observe"
+          "Observes the service's exact failure dispatch policy."
+          read;
+      });
+    scheduling =
+      canonical "service-scheduling" "aos.service.scheduling"
+      "Contributes processor and input-output scheduling intent to a service resource."
+      serviceTypes.scheduling
+      serviceTypes.observations.scheduling
+      (targetResource: {
+        observe =
+          method serviceTypes.scheduling serviceTypes.observations.scheduling targetResource "observe"
+          "Observes the service's exact scheduling intent."
+          read;
+      });
+    resources =
+      canonical "service-resources" "aos.service.resources"
+      "Contributes finite or unbounded runtime resource limits to a service resource."
+      serviceTypes.resources
+      serviceTypes.observations.resources
+      (targetResource: {
+        observe =
+          method serviceTypes.resources serviceTypes.observations.resources targetResource "observe"
+          "Observes the service's exact runtime resource limits."
+          read;
+      });
+    directories =
+      canonical "service-directories" "aos.service.directories"
+      "Contributes managed runtime, state, cache, and log directories to a service resource."
+      serviceTypes.directories
+      serviceTypes.observations.directories
+      (targetResource: {
+        observe =
+          method serviceTypes.directories serviceTypes.observations.directories targetResource "observe"
+          "Observes the service's exact managed directory set."
+          read;
+      });
+    activation =
+      canonical "service-activation" "aos.service.activation"
+      "Binds independently retained trigger, membership, and dependency resources to a service resource."
+      serviceTypes.activation
+      serviceTypes.observations.activation
+      (targetResource: {
+        observe =
+          method serviceTypes.activation serviceTypes.observations.activation targetResource "observe"
+          "Observes the service's exact activation resource bindings."
           read;
       });
     credentials =
@@ -508,6 +671,95 @@
       outputName = "group-name";
       outputDescription = "Returns the provider-resolved runtime group name.";
       outputType = serviceTypes.groupName;
+    };
+    scheduledActivation = producer {
+      alias = "scheduled-activation";
+      name = "aos.activation.schedule";
+      description = "Retains one provider-neutral scheduled activation resource.";
+      requestType = serviceTypes.scheduledActivation;
+      observationType = serviceTypes.producerObservations.scheduledActivation;
+      action = "realize";
+      actionDescription = "Realizes the requested scheduled activation resource.";
+      observationDescription = "Observes whether the exact scheduled activation resource is retained.";
+      outputName = "activation-resource";
+      outputDescription = "References the retained scheduled activation resource.";
+      outputType = serviceTypes.resourceReference;
+    };
+    pathActivation = producer {
+      alias = "path-activation";
+      name = "aos.activation.path";
+      description = "Retains one provider-neutral path activation resource.";
+      requestType = serviceTypes.pathActivation;
+      observationType = serviceTypes.producerObservations.pathActivation;
+      action = "realize";
+      actionDescription = "Realizes the requested path activation resource.";
+      observationDescription = "Observes whether the exact path activation resource is retained.";
+      outputName = "activation-resource";
+      outputDescription = "References the retained path activation resource.";
+      outputType = serviceTypes.resourceReference;
+    };
+    mountResource = producer {
+      alias = "mount-resource";
+      name = "aos.filesystem.mount";
+      description = "Retains one provider-neutral filesystem mount resource.";
+      requestType = serviceTypes.mountResource;
+      observationType = serviceTypes.producerObservations.mountResource;
+      action = "mount";
+      actionDescription = "Realizes the requested filesystem mount resource.";
+      observationDescription = "Observes whether the exact filesystem mount resource is retained.";
+      outputName = "mount-resource";
+      outputDescription = "References the retained filesystem mount resource.";
+      outputType = serviceTypes.resourceReference;
+    };
+    automountResource = producer {
+      alias = "automount-resource";
+      name = "aos.filesystem.automount";
+      description = "Retains one provider-neutral demand-mounted filesystem resource.";
+      requestType = serviceTypes.automountResource;
+      observationType = serviceTypes.producerObservations.automountResource;
+      action = "realize";
+      actionDescription = "Realizes the requested demand-mounted filesystem resource.";
+      observationDescription = "Observes whether the exact demand-mounted filesystem resource is retained.";
+      outputName = "automount-resource";
+      outputDescription = "References the retained demand-mounted filesystem resource.";
+      outputType = serviceTypes.resourceReference;
+    };
+    swapResource = producer {
+      alias = "swap-resource";
+      name = "aos.memory.swap";
+      description = "Retains one provider-neutral swap resource.";
+      requestType = serviceTypes.swapResource;
+      observationType = serviceTypes.producerObservations.swapResource;
+      action = "enable";
+      actionDescription = "Realizes and enables the requested swap resource.";
+      observationDescription = "Observes whether the exact swap resource is retained.";
+      outputName = "swap-resource";
+      outputDescription = "References the retained swap resource.";
+      outputType = serviceTypes.resourceReference;
+    };
+    activationGroup = producer {
+      alias = "activation-group";
+      name = "aos.activation.group";
+      description = "Retains one provider-neutral activation membership group.";
+      requestType = serviceTypes.activationGroup;
+      observationType = serviceTypes.producerObservations.activationGroup;
+      action = "realize";
+      actionDescription = "Realizes the requested activation membership group.";
+      observationDescription = "Observes whether the exact activation membership group is retained.";
+      outputName = "activation-resource";
+      outputDescription = "References the retained activation membership group.";
+      outputType = serviceTypes.resourceReference;
+    };
+    devicePresence = observer {
+      alias = "device-presence";
+      name = "aos.device.presence";
+      description = "Publishes and observes availability of one provider-neutral device resource.";
+      requestType = serviceTypes.devicePresence;
+      observationType = serviceTypes.producerObservations.devicePresence;
+      observationDescription = "Observes whether the requested device resource is present.";
+      outputName = "device-node";
+      outputDescription = "Returns the available provider-resolved device node.";
+      outputType = serviceTypes.deviceNode;
     };
   };
 in

@@ -3,8 +3,19 @@
   featureInterfaces = {
     lifecycle = serviceInterfaces.lifecycle;
     dependencies = serviceInterfaces.dependencies;
+    conditions = serviceInterfaces.conditions;
+    instantiation = serviceInterfaces.instantiation;
+    supervision = serviceInterfaces.supervision;
     readiness = serviceInterfaces.readiness;
     reload = serviceInterfaces.reload;
+    termination = serviceInterfaces.termination;
+    watchdog = serviceInterfaces.watchdog;
+    start_policy = serviceInterfaces.startPolicy;
+    failure_policy = serviceInterfaces.failurePolicy;
+    scheduling = serviceInterfaces.scheduling;
+    resources = serviceInterfaces.resources;
+    directories = serviceInterfaces.directories;
+    activation = serviceInterfaces.activation;
     credentials = serviceInterfaces.credentials;
     configuration = serviceInterfaces.configuration;
     storage = serviceInterfaces.storage;
@@ -27,6 +38,12 @@
     lifecycle = declaration.lifecycle;
     startCommandCount = builtins.length lifecycle.start;
     reload = declaration.reload or null;
+    instantiation = declaration.instantiation or null;
+    supervision = declaration.supervision or null;
+    startPolicy = declaration.start_policy or null;
+    resources = declaration.resources or null;
+    directories = declaration.directories or null;
+    activation = declaration.activation or null;
     readiness = declaration.readiness or null;
     identity = declaration.identity or null;
     credentials = declaration.credentials or null;
@@ -40,9 +57,53 @@
       == null
       || (
         if reload.strategy == "command"
-        then reload.commands != []
-        else reload.commands == []
+        then reload.commands != [] && (reload.signal or null) == null
+        else if reload.strategy == "signal"
+        then reload.commands == [] && (reload.signal or null) != null
+        else reload.commands == [] && (reload.signal or null) == null
       );
+    instantiationValid =
+      instantiation
+      == null
+      || (
+        if instantiation.kind == "singleton"
+        then (instantiation.template or null) == null && (instantiation.instance or null) == null
+        else if instantiation.kind == "template"
+        then (instantiation.template or null) != null && (instantiation.instance or null) == null
+        else (instantiation.template or null) != null && (instantiation.instance or null) != null
+      );
+    supervisionValid =
+      supervision
+      == null
+      || (
+        (supervision.startup_protocol != "notification" || supervision.notification_access != "none")
+        && (supervision.startup_protocol != "bus-name" || (supervision.bus_name or null) != null)
+        && (supervision.startup_protocol != "process" || supervision.notification_access == "none")
+      );
+    startPolicyValid =
+      startPolicy
+      == null
+      || ((startPolicy.rate_interval_millis or null) == null) == ((startPolicy.rate_burst or null) == null);
+    finiteResourceValue = quantity:
+      if quantity.kind == "finite"
+      then quantity.value
+      else null;
+    memoryRangeValid =
+      resources
+      == null
+      || (let
+        high = finiteResourceValue resources.memory_high_bytes;
+        maximum = finiteResourceValue resources.memory_max_bytes;
+      in
+        high == null || maximum == null || high <= maximum);
+    directoriesValid =
+      directories
+      == null
+      || uniqueBy "name" directories.managed;
+    activationValid =
+      activation
+      == null
+      || uniqueBy "name" activation.bindings;
     readinessValid =
       readiness
       == null
@@ -133,7 +194,19 @@
     else if lifecycle.execution_model != "oneshot" && startCommandCount != 1
     then throw "service '${declaration.service}' must declare exactly one start command unless it is oneshot"
     else if !reloadValid
-    then throw "service '${declaration.service}' command reload strategy must have commands, and other strategies must not"
+    then throw "service '${declaration.service}' reload strategy has inconsistent commands or signal"
+    else if !instantiationValid
+    then throw "service '${declaration.service}' instantiation kind has inconsistent template or instance fields"
+    else if !supervisionValid
+    then throw "service '${declaration.service}' supervision protocol has inconsistent notification access or bus name"
+    else if !startPolicyValid
+    then throw "service '${declaration.service}' start rate interval and burst must be declared together"
+    else if !memoryRangeValid
+    then throw "service '${declaration.service}' finite memory high limit must not exceed its maximum"
+    else if !directoriesValid
+    then throw "service '${declaration.service}' has duplicate managed directory names"
+    else if !activationValid
+    then throw "service '${declaration.service}' has duplicate activation binding names"
     else if !readinessValid
     then throw "service '${declaration.service}' process-signal readiness requires a signaling scope, and other mechanisms must not set one"
     else if !readinessExecutionValid

@@ -67,6 +67,10 @@
     lib.abilities.types.schemaOf
     "service execution path"
     serviceTypes.executionPath;
+  resourceReferenceSchema =
+    lib.abilities.types.schemaOf
+    "activation resource reference"
+    serviceTypes.resourceReference;
   requestSchemas =
     builtins.mapAttrs
     (_: interface: interface.document.interface.request)
@@ -86,6 +90,14 @@
     == requestSchemas.isolation.fields.root_directory.value
     && outputSchema "groupResolution" "resolve" "group-name"
     == requestSchemas.identity.fields.supplementary_groups.element;
+  activationOutputsAreReferences =
+    outputSchema "scheduledActivation" "realize" "activation-resource"
+    == resourceReferenceSchema
+    && outputSchema "pathActivation" "realize" "activation-resource" == resourceReferenceSchema
+    && outputSchema "mountResource" "mount" "mount-resource" == resourceReferenceSchema
+    && outputSchema "automountResource" "realize" "automount-resource" == resourceReferenceSchema
+    && outputSchema "swapResource" "enable" "swap-resource" == resourceReferenceSchema
+    && outputSchema "activationGroup" "realize" "activation-resource" == resourceReferenceSchema;
 
   expanded = serviceManagement.forService {
     inherit serviceTypes;
@@ -112,6 +124,174 @@
       // {
         lifecycle = minimalService.lifecycle // {restart_token = "operator-requested-restart";};
       };
+  };
+  resultOf = request: output: lib.abilities.resultOf request output;
+  extendedService =
+    minimalService
+    // {
+      lifecycle =
+        minimalService.lifecycle
+        // {
+          start_timeout_unbounded = true;
+          stop_timeout_unbounded = true;
+        };
+      dependencies = {
+        after = [];
+        before = [];
+        requires = [];
+        wants = [];
+        requisite = [(resultOf "dependency" "retained-resource")];
+        conflicts = [];
+        binds_to = [];
+        part_of = [];
+        upholds = [];
+        required_by = [];
+        wanted_by = [];
+        required_mounts = [(resultOf "mount" "mount-resource")];
+        implicit_dependencies = false;
+      };
+      conditions.all = [
+        {
+          kind = "path";
+          predicate = "exists";
+          path = resultOf "configuration" "execution-path";
+          negated = false;
+        }
+        {
+          kind = "kernel-argument";
+          argument = "example.mode=enabled";
+          negated = false;
+        }
+        {
+          kind = "facility";
+          facility = "mandatory-access-control";
+          negated = true;
+        }
+      ];
+      instantiation = {
+        kind = "instance";
+        template = "worker";
+        instance = "blue";
+      };
+      supervision = {
+        startup_protocol = "notification";
+        notification_access = "all-processes";
+        bus_name = "org.example.Worker";
+      };
+      reload = {
+        strategy = "signal";
+        commands = [];
+        signal = "HUP";
+        completion = "notification";
+      };
+      termination = {
+        signal = "TERM";
+        final_signal = "KILL";
+        process_id_file = resultOf "runtime-directory" "storage-path";
+        send_to_all_processes = true;
+      };
+      watchdog = {
+        timeout_millis = 30000;
+        action = "restart";
+      };
+      start_policy = {
+        accepted_exit_statuses = [0 1];
+        restart_preventing_exit_statuses = [4];
+        rate_interval_millis = 120000;
+        rate_burst = 5;
+      };
+      failure_policy = {
+        handlers = [(resultOf "recovery" "activation-resource")];
+        dispatch = "replace-active-goal";
+      };
+      scheduling = {
+        nice = 10;
+        io_class = "idle";
+        io_priority = 7;
+      };
+      resources = {
+        open_files = {
+          kind = "finite";
+          value = 1048576;
+        };
+        processes.kind = "unbounded";
+        tasks.kind = "unbounded";
+        locked_memory_bytes.kind = "unbounded";
+        memory_high_bytes = {
+          kind = "finite";
+          value = 1073741824;
+        };
+        memory_max_bytes = {
+          kind = "finite";
+          value = 2147483648;
+        };
+      };
+      directories.managed = [
+        {
+          name = "worker-runtime";
+          purpose = "runtime";
+          mode = "0750";
+          retention = "restart";
+        }
+        {
+          name = "worker-state";
+          purpose = "state";
+          mode = "0700";
+          retention = "persistent";
+        }
+      ];
+      activation.bindings = [
+        {
+          name = "periodic";
+          resource = resultOf "schedule" "activation-resource";
+          relationship = "trigger";
+        }
+      ];
+    };
+  expandedExtended = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration = extendedService;
+  };
+  expandedDisabledSubservice = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration =
+      minimalService
+      // {
+        service = "administration";
+        enabled = false;
+      };
+  };
+  scheduledActivation = {
+    name = "periodic";
+    enabled = true;
+    schedule = {
+      kind = "interval";
+      initial_delay_millis = 1000;
+      interval_millis = 60000;
+    };
+    persistent = true;
+    randomized_delay_millis = 5000;
+  };
+  pathActivation = {
+    name = "configuration-change";
+    enabled = true;
+    paths = [
+      {
+        path = resultOf "configuration" "execution-path";
+        event = "changed";
+      }
+    ];
+  };
+  mountResource = {
+    name = "state-mount";
+    enabled = true;
+    source = resultOf "state-storage" "storage-path";
+    destination = resultOf "mount-point" "execution-path";
+    filesystem = "ext4";
+    options = ["nodev" "nosuid"];
+    timeout_millis = 30000;
   };
   structuredConfiguration = {
     name = "structured";
@@ -267,6 +447,7 @@ in
   assert lifecycleMethods.start.outputs.retained-resource.lifetime == "instance";
   assert materializedPathSchema == executionPathSchema;
   assert producerOutputsMatchConsumers;
+  assert activationOutputsAreReferences;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "persistent";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
@@ -275,6 +456,79 @@ in
   assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
   assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
   assert expandedWithRestartToken.requests.main-lifecycle.parameters.restart_token == "operator-requested-restart";
+  assert validates extendedService;
+  assert builtins.attrNames expandedExtended.requests
+  == [
+    "main-activation"
+    "main-conditions"
+    "main-dependencies"
+    "main-directories"
+    "main-failure_policy"
+    "main-instantiation"
+    "main-lifecycle"
+    "main-reload"
+    "main-resources"
+    "main-scheduling"
+    "main-start_policy"
+    "main-supervision"
+    "main-termination"
+    "main-watchdog"
+  ];
+  assert expandedDisabledSubservice.requests.administration-lifecycle.parameters.enabled == false;
+  assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
+  assert succeedsAs serviceTypes.scheduledActivation scheduledActivation;
+  assert succeedsAs serviceTypes.pathActivation pathActivation;
+  assert succeedsAs serviceTypes.mountResource mountResource;
+  assert succeedsAs serviceTypes.automountResource {
+    name = "state-automount";
+    enabled = true;
+    destination = resultOf "mount-point" "execution-path";
+    idle_timeout_millis = 60000;
+  };
+  assert succeedsAs serviceTypes.swapResource {
+    name = "swap";
+    enabled = true;
+    source = resultOf "swap-storage" "storage-path";
+    priority = 10;
+  };
+  assert succeedsAs serviceTypes.activationGroup {
+    name = "ready";
+    enabled = true;
+    description = "Ready resources";
+    members = [(resultOf "mount" "mount-resource")];
+  };
+  assert succeedsAs serviceTypes.devicePresence {
+    name = "accelerator";
+    device = resultOf "device" "device-node";
+    timeout_millis = 30000;
+  };
+  assert !validates (minimalService
+    // {
+      instantiation = {
+        kind = "template";
+        template = "worker";
+        instance = "unexpected";
+      };
+    });
+  assert !validates (minimalService
+    // {
+      start_policy = {
+        accepted_exit_statuses = [0];
+        restart_preventing_exit_statuses = [];
+        rate_interval_millis = 1000;
+      };
+    });
+  assert !validates (extendedService
+    // {
+      resources =
+        extendedService.resources
+        // {
+          memory_high_bytes = {
+            kind = "finite";
+            value = 4294967296;
+          };
+        };
+    });
   assert expanded.requests.main-lifecycle.consumer == "consumer";
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
