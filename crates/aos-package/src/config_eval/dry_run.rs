@@ -346,7 +346,8 @@ pub struct SwitchParams {
 /// [`super::run_eval_command`], diffs it against the loaded base, and prints the
 /// result. For `--dry-run` it stops there — a clean no-op on the live system.
 /// For a real switch it atomically publishes the candidate and its exact graph,
-/// compiles the transaction, and waits for the fetch/render/activate target.
+/// then enters the checked native activation boundary. That boundary executes
+/// the selected binding/effect plan and commits the resulting generation.
 /// The active generation's retained source manifest is never overwritten.
 ///
 /// Returns the computed [`ManifestDiff`] so a fleet test can assert the realized
@@ -375,18 +376,21 @@ pub async fn run_switch(params: &SwitchParams) -> Result<ManifestDiff> {
     }
 
     // 3. Publish graph first and manifest second. A crash between the two is
-    // fail-closed: strict graph compilation rejects the mismatched pair. The
-    // next switch replaces both before starting any transaction.
+    // fail-closed: native activation authenticates the matched pair. The next
+    // switch replaces both before starting any transaction.
     let candidate_graph = params.eval.out.with_file_name("graph.json");
     let live_graph = params.live_manifest.with_file_name("graph.json");
     publish_file_atomic(&candidate_graph, &live_graph)?;
     publish_file_atomic(&params.eval.out, &params.live_manifest)?;
 
-    // 4. Compile and synchronously await the systemd transaction. The compiler
-    // resets stale RemainAfterExit state, starts the package wings, and waits
-    // for aos-activate.service, so success here means activation committed.
-    crate::graph_compile::run_graph_compile_command(&params.live_manifest, &live_graph, None)
-        .await?;
+    // 4. Enter the backend-neutral native activation boundary. It holds the
+    // system switch lock across exact-plan execution, /etc publication, and
+    // generation commit; selected package terminals own all backend effects.
+    super::activation::activate_config(&super::activation::ActivateConfigParams {
+        manifest: params.live_manifest.clone(),
+        graph: live_graph,
+        ..super::activation::ActivateConfigParams::default()
+    })?;
     Ok(diff)
 }
 
