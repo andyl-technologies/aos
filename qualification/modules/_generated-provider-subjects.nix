@@ -1,12 +1,8 @@
-##! Derives and expands the RFC-0022 native-adapter qualification matrix.
+##! Derives provider qualification subjects from selected package contracts.
 {
   lib,
-  packages ? null,
+  packages,
   scenarioPolicy ? builtins.fromJSON (builtins.readFile ../native-adapter-scenarios.json),
-  surface ? null,
-  cells ? null,
-  subject ? null,
-  applicability ? null,
   invalidatedBy ? ["subject" "policy" "executor" "environment"],
   regressions ? [
     "checks.fleet.ability-native-activation"
@@ -63,10 +59,7 @@
         inherit name;
       }) (postconditionsFor scenario);
     };
-  selectedPackages =
-    if packages == null
-    then []
-    else builtins.filter (package: package ? abilities) packages;
+  selectedPackages = builtins.filter (package: package ? abilities) packages;
   selectExact = context: predicate: values: let
     matches = builtins.filter predicate values;
   in
@@ -202,10 +195,7 @@
       max_scenarios = builtins.length scenarioPolicy.scenarios;
     };
   };
-  selectedSurface =
-    if surface == null
-    then derivedSurface
-    else surface;
+  selectedSurface = derivedSurface;
   surfaceDigest = builtins.hashString "sha256" (builtins.toJSON selectedSurface);
   adapterMethods = builtins.concatMap (adapter:
     map (method: {
@@ -221,10 +211,6 @@
     method_count = builtins.length adapterMethods;
     scenario_count = builtins.length selectedSurface.scenarios;
   };
-  selectedSubject =
-    if subject == null
-    then canonicalSubject
-    else subject;
   cellFor = pair: scenario: {
     id = "${pair.adapter.adapter}/${pair.adapter.interface_name}/abi-${toString pair.adapter.interface_abi}/${pair.method.method}/${scenario.id}";
     matrix_schema = selectedSurface.matrix_schema;
@@ -292,15 +278,9 @@
     required_production_vm_cells = builtins.length applicableCells;
     inapplicable_cells = inapplicableCells;
   };
-  selectedApplicability =
-    if applicability == null
-    then canonicalApplicability
-    else applicability;
+  selectedApplicability = canonicalApplicability;
   applicabilityDigest = builtins.hashString "sha256" (builtins.toJSON canonicalApplicability);
-  selectedCells =
-    if cells == null
-    then expectedCells
-    else cells;
+  selectedCells = expectedCells;
   matrixSpec = {
     schema = "aos.qualification.native-adapter-matrix-spec/v1";
     surface = selectedSurface;
@@ -310,11 +290,6 @@
   };
   matrixDigest = builtins.hashString "sha256" (builtins.toJSON matrixSpec);
   selectedIds = map (cell: cell.id or "") selectedCells;
-  exactCells =
-    builtins.length selectedCells
-    == builtins.length expectedCells
-    && unique selectedIds
-    && selectedCells == expectedCells;
   validMethod = method:
     builtins.attrNames method
     == expectedMethodKeys
@@ -419,7 +394,7 @@
     && builtins.all validScenario selectedSurface.scenarios;
   check = "native-adapter-matrix-v1-sha256-${matrixDigest}";
 in
-  assert surface != null || packages != null;
+  assert packages != [];
   assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
   assert scenarioPolicy.baseline_postconditions != [];
   assert unique scenarioPolicy.baseline_postconditions;
@@ -435,11 +410,9 @@ in
     && builtins.all (name: builtins.hasAttr name scenarioPolicy.postcondition_kinds) (postconditionsFor scenario))
   scenarioPolicy.scenarios;
   assert validSurface;
-  assert selectedSubject == canonicalSubject;
   assert invalidatedBy == requiredInvalidation;
   assert regressions == allowedRegressions;
-  assert exactCells;
-  assert selectedApplicability == canonicalApplicability;
+  assert unique selectedIds;
   assert unique inapplicableCellIds;
   assert builtins.all (cell: !builtins.elem cell.id inapplicableCellIds) applicableCells;
   assert builtins.sort builtins.lessThan (applicableCellIds ++ inapplicableCellIds)

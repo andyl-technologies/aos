@@ -30,7 +30,7 @@
     })
     selectedPackageEntries));
   authorityInterfaceRoots = map (package: package.contract.document) selectedPackages;
-  authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
+  authorityMatrix = import ../../qualification/modules/_generated-provider-subjects.nix {
     inherit lib;
     packages = selectedPackages;
   };
