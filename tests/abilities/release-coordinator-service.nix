@@ -45,7 +45,7 @@
       packageModules = [
         {
           name = "aos";
-          module = ../../pkgs/tools/aos/_release-coordinator/module.nix;
+          module = ../../pkgs/tools/aos/_abilities/release-coordinator/module.nix;
         }
       ];
     };

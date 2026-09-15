@@ -463,6 +463,7 @@ let
     "aos-registry-server"
     "aos-service-root"
     "aos-selinux-run"
+    "aos-systemd-provider"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "attr"
@@ -713,7 +714,6 @@ let
     "build-support/_github-upstream.nix" = "native-build-helper";
     "build-support/_manual-upstream.nix" = "native-build-helper";
     "build-support/_perl-module.nix" = "native-build-helper";
-    "build-support/_service-ability-module.nix" = "native-build-helper";
     "build-support/_upstream.nix" = "native-build-helper";
     "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
@@ -732,7 +732,11 @@ let
     "kubernetes/_source.nix" = "mixed-source";
     "system/_kmod-abilities.nix" = "target-independent-source";
     "system/_kmod-provider.nix" = "target-independent-source";
+    "system/_systemd-abilities.nix" = "target-independent-source";
+    "system/_systemd-provider.nix" = "target-independent-source";
+    "system/_systemd-service-document.nix" = "target-independent-source";
     "system/_systemd-service-provider-lib.nix" = "target-independent-source";
+    "system/_systemd-unit-document.nix" = "target-independent-source";
     "tests/_ability-package-smoke-module.nix" = "target-independent-source";
     "tests/_ability-package-smoke-provider.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
@@ -749,6 +753,10 @@ let
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
     "toolchain/rust/_rust-linux-hosted.nix" = "cross-build-helper";
+    "tools/_aos-kernel-tunable-provider-module.nix" = "target-independent-source";
+    "tools/_aos-nix-store-provider-module.nix" = "target-independent-source";
+    "tools/_kernel-tunable-provider.nix" = "target-independent-source";
+    "tools/_nix-store-provider.nix" = "target-independent-source";
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
@@ -773,6 +781,8 @@ let
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
     "db/_etcd-config/module.nix" = "linux-only-config-source";
+    "filesystem/_aos-filesystem-provider/module.nix" = "linux-only-config-source";
+    "filesystem/_aos-filesystem-provider/provider.nix" = "linux-only-config-source";
     "kubernetes/_cilium-abilities/module.nix" = "linux-only-config-source";
     "kubernetes/_cloudcore-config/module.nix" = "linux-only-config-source";
     "kubernetes/_edgecore-config/module.nix" = "linux-only-config-source";
@@ -781,18 +791,19 @@ let
     "kubernetes/_k3s-config/configuration-interface.nix" = "target-independent-source";
     "kubernetes/_k3s-config/configuration-provider.nix" = "linux-only-config-source";
     "kubernetes/_k3s-config/object-provider.nix" = "linux-only-config-source";
+    "kubernetes/_k3s-config/roles.nix" = "linux-only-config-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
+    "networking/_bind/module.nix" = "linux-only-config-source";
     "networking/_chrony-abilities/module.nix" = "linux-only-config-source";
+    "networking/_dnsmasq/module.nix" = "linux-only-config-source";
     "networking/_envoy/module.nix" = "linux-only-config-source";
     "networking/_envoy/render.nix" = "linux-only-config-source";
     "networking/_envoy/types.nix" = "linux-only-config-source";
     "networking/_nginx/module.nix" = "linux-only-config-source";
     "networking/_openldap/module.nix" = "linux-only-config-source";
-    "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
+    "security/_krb5-kdc/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "tools/_rsyncd/module.nix" = "linux-only-config-source";
-    "tools/aos/_configuration-provider/module.nix" = "target-independent-source";
-    "tools/aos/_configuration-provider/provider.nix" = "target-independent-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_longhorn-config/module.nix" = "linux-only-config-source";
     "storage/_mariadb/module.nix" = "linux-only-config-source";
@@ -811,6 +822,12 @@ let
     "tests/_test-http-server/module.nix" = "linux-only-config-source";
     "tests/_test-static-cache-server/module.nix" = "linux-only-config-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
+    "tools/_smartmontools/module.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/configuration-provider/module.nix" = "target-independent-source";
+    "tools/aos/_abilities/configuration-provider/provider.nix" = "target-independent-source";
+    "tools/aos/_abilities/module.nix" = "linux-only-config-source";
+    "tools/aos/_abilities/release-coordinator/module.nix" = "linux-only-config-source";
+    "tools/aos-hub/_aos-hub/module.nix" = "linux-only-config-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
