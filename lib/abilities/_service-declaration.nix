@@ -86,16 +86,16 @@
       startPolicy
       == null
       || ((startPolicy.rate_interval_millis or null) == null) == ((startPolicy.rate_burst or null) == null);
-    finiteResourceValue = quantity:
-      if quantity.kind == "finite"
+    maximumResourceValue = quantity:
+      if quantity != null && quantity.kind == "maximum"
       then quantity.value
       else null;
     memoryRangeValid =
       resources
       == null
       || (let
-        high = finiteResourceValue resources.memory_high_bytes;
-        maximum = finiteResourceValue resources.memory_max_bytes;
+        high = maximumResourceValue (resources.memory_high_bytes or null);
+        maximum = maximumResourceValue (resources.memory_max_bytes or null);
       in
         high == null || maximum == null || high <= maximum);
     directoriesValid =
@@ -189,8 +189,9 @@
     capabilityBoundsValid =
       linuxIsolation
       == null
+      || linuxIsolation.capability_bounds.kind == "unrestricted"
       || builtins.all
-      (capability: builtins.elem capability linuxIsolation.bounding_capabilities)
+      (capability: builtins.elem capability linuxIsolation.capability_bounds.capabilities)
       linuxIsolation.ambient_capabilities;
     syscallSetsDisjoint =
       linuxIsolation
@@ -244,7 +245,7 @@
     else if !linuxIsolationValid
     then throw "service '${declaration.service}' Linux isolation lists must not contain duplicate namespace or address-family entries"
     else if !capabilityBoundsValid
-    then throw "service '${declaration.service}' ambient capabilities must be included in its bounding capability set"
+    then throw "service '${declaration.service}' ambient capabilities must be included in its restricted capability bounds"
     else if !syscallSetsDisjoint
     then throw "service '${declaration.service}' syscall allow and deny sets must be disjoint"
     else

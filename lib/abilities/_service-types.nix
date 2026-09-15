@@ -17,6 +17,20 @@
     element = types.capabilityName;
     maxItems = 256;
   };
+  capabilityBounds = types.taggedUnion {
+    tag = "kind";
+    variants = {
+      restricted = types.record {
+        fields = {
+          kind = types.enum ["restricted"];
+          capabilities = capabilityNames;
+        };
+      };
+      unrestricted = types.record {
+        fields.kind = types.enum ["unrestricted"];
+      };
+    };
+  };
   executionPath = types.executionPath;
   configurationPath = executionPath;
   credentialPath = executionPath;
@@ -40,12 +54,12 @@
     minimum = 1;
     maximum = 9007199254740991;
   };
-  resourceQuantity = types.taggedUnion {
+  resourceLimit = types.taggedUnion {
     tag = "kind";
     variants = {
-      finite = types.record {
+      maximum = types.record {
         fields = {
-          kind = types.enum ["finite"];
+          kind = types.enum ["maximum"];
           value = types.integer {
             minimum = 0;
             maximum = 9007199254740991;
@@ -378,14 +392,22 @@
   } [];
   scheduling = request schedulingFeature;
 
-  resourcesFeature = feature {
-    open_files = resourceQuantity;
-    processes = resourceQuantity;
-    tasks = resourceQuantity;
-    locked_memory_bytes = resourceQuantity;
-    memory_high_bytes = resourceQuantity;
-    memory_max_bytes = resourceQuantity;
-  } [];
+  resourcesFeature =
+    feature {
+      open_files = resourceLimit;
+      processes = resourceLimit;
+      tasks = resourceLimit;
+      locked_memory_bytes = resourceLimit;
+      memory_high_bytes = resourceLimit;
+      memory_max_bytes = resourceLimit;
+    } [
+      "open_files"
+      "processes"
+      "tasks"
+      "locked_memory_bytes"
+      "memory_high_bytes"
+      "memory_max_bytes"
+    ];
   resources = request resourcesFeature;
 
   environmentFeature = feature {
@@ -586,27 +608,6 @@
       element = hostPathAccess;
       maxItems = 256;
     };
-    maximum_open_files = {
-      type = types.optional (types.integer {
-        minimum = 1;
-        maximum = 2147483647;
-      });
-      optional = true;
-    };
-    maximum_processes = {
-      type = types.optional (types.integer {
-        minimum = 1;
-        maximum = 2147483647;
-      });
-      optional = true;
-    };
-    maximum_tasks = {
-      type = types.optional (types.integer {
-        minimum = 1;
-        maximum = 2147483647;
-      });
-      optional = true;
-    };
     permit_core_dumps = types.boolean;
     root_directory = {
       type = types.optional (types.deferredResult rootDirectoryPath);
@@ -618,7 +619,7 @@
   linuxIsolationFeature = feature {
     allow_privilege_escalation = types.boolean;
     ambient_capabilities = capabilityNames;
-    bounding_capabilities = capabilityNames;
+    capability_bounds = capabilityBounds;
     control_group_delegation = types.boolean;
     control_group_access = types.enum ["host" "private" "read-only"];
     device_namespace = types.enum ["private" "shared"];
@@ -1013,6 +1014,10 @@
       name = localKey;
       purpose = types.enum ["cache" "logs" "runtime" "state" "temporary"];
       mode = types.fileMode;
+      requested_path = {
+        type = types.optional (types.deferredResult storagePath);
+        optional = true;
+      };
     };
   };
   hostPathView = types.record {
@@ -1330,6 +1335,8 @@ in {
     principalName
     groupName
     restartToken
+    resourceLimit
+    capabilityBounds
     configurationMaterialization
     configurationMaterializationObservation
     networkReadiness
