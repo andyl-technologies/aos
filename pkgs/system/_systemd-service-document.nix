@@ -804,7 +804,7 @@
       ++ targets "requires" (dependencies.required_by or []);
 
   socketDocument = serviceUnitName: resource: socket: let
-    unitName = providerLib.socketUnitNameForResource resource.resource socket.name;
+    unitName = providerLib.socketUnitNameForResource resource.resource socket.name (socket.manager_name or null);
     endpoint = endpoint:
       if endpoint.kind == "unix"
       then semantic.directive "ListenStream" (quotedExecutionPath endpoint.path)
@@ -814,11 +814,23 @@
   in {
     systemd_unit.unit_name = unitName;
     sections = [
-      (semantic.section "Unit" [
-        (semantic.directive "Description" (semantic.quotedLiteral "${resource.value.lifecycle.description} (${socket.name})"))
-      ])
+      (semantic.section "Unit" (
+        [(semantic.directive "Description" (semantic.quotedLiteral "${resource.value.lifecycle.description} (${socket.name})"))]
+        ++ unitIdentityList "After" (dependencyIdentities (socket.prerequisites or []))
+        ++ unitIdentityList "Requires" (dependencyIdentities (socket.prerequisites or []))
+      ))
       (semantic.section "Socket" (
-        [(semantic.directive "Service" serviceUnitName)]
+        [
+          (semantic.directive "Service" serviceUnitName)
+          (semantic.directive "SocketMode" socket.mode)
+          (semantic.directive "RemoveOnStop" (yesNo socket.remove_on_stop))
+        ]
+        ++ lib.optional ((socket.owner or null) != null) (
+          semantic.directive "SocketUser" (semantic.principalName {value = socket.owner;})
+        )
+        ++ lib.optional ((socket.group or null) != null) (
+          semantic.directive "SocketGroup" (semantic.groupName {value = socket.group;})
+        )
         ++ builtins.map endpoint socket.endpoints
       ))
     ];
@@ -833,11 +845,14 @@
       else if selection.kind == "instance"
       then unitNameForReference selection.template_resource
       else null;
+    managerIdentity = value.manager_identity or null;
     serviceIdentity =
       if selection.kind == "template"
       then templateIdentity
       else if selection.kind == "instance"
       then providerLib.templateInstanceIdentity templateIdentity selection.instance
+      else if managerIdentity != null
+      then providerLib.publicUnitIdentity managerIdentity.name
       else providerLib.unitIdentityForResource resource.resource;
     serviceUnitName =
       if serviceIdentity.kind == "unit"
@@ -883,7 +898,7 @@
             unit_name = socket.systemd_unit.unit_name;
           };
         in
-          if value.enabled
+          if value.enabled && (socket.enabled or true)
           then [
             {
               parent = {
@@ -896,10 +911,19 @@
           ]
           else [])
         auxiliary);
+    aliases =
+      if managerIdentity == null
+      then []
+      else
+        builtins.map (name: {
+          alias = providerLib.publicUnitIdentity name;
+          target = serviceIdentity;
+        })
+        managerIdentity.aliases;
   in {
     schema = "aos.systemd.service-realization/v2";
     systemd_unit = serviceIdentity;
-    inherit facets links;
+    inherit aliases facets links;
     inherit units;
     enabled = value.enabled;
   };

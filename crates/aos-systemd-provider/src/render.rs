@@ -151,15 +151,27 @@ pub(crate) fn render_service(realization: &ServiceRealization) -> Result<Rendere
         .links
         .iter()
         .map(checked_link)
+        .chain(realization.aliases.iter().map(checked_alias))
         .collect::<Result<Vec<_>>>()?;
     links.sort_by(|left, right| left.path.cmp(&right.path));
     if links.windows(2).any(|pair| pair[0].path == pair[1].path) {
         bail!("systemd service realization contains duplicate installation links");
     }
     if links.iter().any(|link| {
-        let child = link.path.rsplit('/').next();
-        child != Some(primary_unit.as_str())
-            && !units.iter().any(|unit| Some(unit.name.as_str()) == child)
+        !link.path.contains('/')
+            && (link.path == primary_unit || units.iter().any(|unit| unit.name == link.path))
+    }) {
+        bail!("systemd service alias collides with a materialized unit");
+    }
+    if links.iter().any(|link| {
+        if link.path.contains('/') {
+            let child = link.path.rsplit('/').next();
+            child != Some(primary_unit.as_str())
+                && !units.iter().any(|unit| Some(unit.name.as_str()) == child)
+        } else {
+            let target = link.target.strip_prefix("../").unwrap_or(&link.target);
+            target != primary_unit && !units.iter().any(|unit| unit.name == target)
+        }
     }) {
         bail!("systemd service link names a unit outside its realization");
     }
@@ -168,6 +180,22 @@ pub(crate) fn render_service(realization: &ServiceRealization) -> Result<Rendere
         primary_unit,
         units,
         links,
+    })
+}
+
+fn checked_alias(alias: &crate::model::RealizedServiceAlias) -> Result<RenderedServiceLink> {
+    let (alias_name, alias_source) = resolve_unit_identity(&alias.alias)?;
+    let (target_name, target_source) = resolve_unit_identity(&alias.target)?;
+    if alias_name != alias_source || target_name != target_source {
+        bail!("systemd service aliases require concrete unit identities");
+    }
+    if alias_name == target_name {
+        bail!("systemd service alias cannot equal its target");
+    }
+
+    Ok(RenderedServiceLink {
+        path: alias_name,
+        target: target_name,
     })
 }
 
@@ -217,8 +245,9 @@ mod tests {
 
     use super::{render_service, validate_relative_path, validate_unit_name};
     use crate::model::{
-        SERVICE_REALIZATION_SCHEMA, ServiceFacetIdentity, ServiceRealization, ServiceUnitIdentity,
-        SystemdUnitDocument, SystemdUnitIdentity,
+        RealizedServiceAlias, SERVICE_REALIZATION_SCHEMA, ServiceFacetIdentity, ServiceRealization,
+        ServiceUnitIdentity, SystemdSection, SystemdSectionName, SystemdUnitDocument,
+        SystemdUnitIdentity,
     };
 
     #[test]
@@ -265,9 +294,55 @@ mod tests {
             }],
             links: Vec::new(),
             prerequisites: Vec::new(),
+            aliases: Vec::new(),
             enabled: true,
         };
 
         assert!(render_service(&realization).is_err());
+    }
+
+    #[test]
+    fn service_realization_materializes_public_aliases() {
+        let interface = serde_json::from_value(serde_json::json!({
+            "name": "aos.service.lifecycle",
+            "abi": 1,
+            "descriptor": format!("sha256:{}", "1".repeat(64)),
+        }))
+        .expect("interface identity is valid");
+        let realization = ServiceRealization {
+            schema: SERVICE_REALIZATION_SCHEMA.to_string(),
+            systemd_unit: ServiceUnitIdentity::Unit {
+                unit_name: "example.service".to_string(),
+            },
+            units: vec![SystemdUnitDocument {
+                systemd_unit: SystemdUnitIdentity {
+                    unit_name: "example.service".to_string(),
+                },
+                sections: vec![SystemdSection {
+                    name: SystemdSectionName::Unit,
+                    directives: Vec::new(),
+                }],
+            }],
+            facets: vec![ServiceFacetIdentity {
+                interface,
+                facet: LocalKey::new("lifecycle").expect("facet parses"),
+                observation_schema: "aos.ability.service-lifecycle-observation/v1".to_string(),
+            }],
+            links: Vec::new(),
+            aliases: vec![RealizedServiceAlias {
+                alias: ServiceUnitIdentity::Unit {
+                    unit_name: "example-compat.service".to_string(),
+                },
+                target: ServiceUnitIdentity::Unit {
+                    unit_name: "example.service".to_string(),
+                },
+            }],
+            enabled: true,
+        };
+
+        let rendered = render_service(&realization).expect("public alias renders");
+        assert_eq!(rendered.links.len(), 1);
+        assert_eq!(rendered.links[0].path, "example-compat.service");
+        assert_eq!(rendered.links[0].target, "example.service");
     }
 }

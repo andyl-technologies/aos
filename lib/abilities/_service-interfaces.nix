@@ -614,6 +614,17 @@
           "Observes the service's exact instantiation identity."
           read;
       });
+    managerIdentity =
+      canonical "service-manager-identity" "aos.service.manager-identity"
+      "Contributes a stable public manager name and aliases for integrations that address a service directly."
+      serviceTypes.managerIdentity
+      serviceTypes.observations.managerIdentity
+      (targetResource: {
+        observe =
+          method serviceTypes.managerIdentity serviceTypes.observations.managerIdentity targetResource "observe"
+          "Observes the service's exact public manager identity."
+          read;
+      });
     supervision =
       canonical "service-supervision" "aos.service.supervision"
       "Contributes startup notification and named-bus supervision semantics to a service resource."

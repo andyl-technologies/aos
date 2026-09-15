@@ -23,14 +23,14 @@
     };
   maximumKey = builtins.concatStringsSep "" (builtins.genList (_: "a") 128);
   maximumResource = resource // {key = maximumKey;};
-  maximumSocketName = provider.socketUnitNameForResource resource maximumKey;
+  maximumSocketName = provider.socketUnitNameForResource resource maximumKey null;
   maximumServiceName = provider.unitNameForResource maximumResource;
   rejects = value: !(builtins.tryEval value).success;
 in
   assert provider.normalizedResourceId (resource // {ignored = true;}) == resource;
   assert provider.unitNameForResource resource == "aos-main-def11be2fcaeade5486a6a7aa900a108ff3b1734b6c4ebe6a58901d03e505d98.service";
   assert provider.unitNameForResource resource != provider.unitNameForResource alternateResource;
-  assert provider.socketUnitNameForResource resource "http" != provider.socketUnitNameForResource resource "https";
+  assert provider.socketUnitNameForResource resource "http" null != provider.socketUnitNameForResource resource "https" null;
   assert builtins.stringLength maximumServiceName <= 255;
   assert builtins.stringLength maximumSocketName <= 255;
   assert rejects (provider.unitNameForResource (resource // {key = "";}));

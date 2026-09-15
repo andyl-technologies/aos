@@ -261,6 +261,12 @@
       relationship = types.enum ["requires" "wants"];
     };
   };
+  realizedServiceAlias = types.record {
+    fields = {
+      alias = serviceUnitIdentity;
+      target = serviceUnitIdentity;
+    };
+  };
   serviceFacetIdentity = types.record {
     fields = {
       interface = types.interfaceKey;
@@ -294,6 +300,12 @@
         canonicalOrder = true;
       };
       prerequisites = resourceReferenceList;
+      aliases = types.list {
+        element = realizedServiceAlias;
+        maxItems = 256;
+        unique = true;
+        canonicalOrder = true;
+      };
       enabled = types.boolean;
     };
   };

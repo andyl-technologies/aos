@@ -36,6 +36,8 @@
         logging = requirement serviceManagement.interfaces.logging ["observe"];
         start-policy = requirement serviceManagement.interfaces.startPolicy ["observe"];
         watchdog = requirement serviceManagement.interfaces.watchdog ["observe"];
+        manager-identity = requirement serviceManagement.interfaces.managerIdentity ["observe"];
+        socket-activation = requirement serviceManagement.interfaces.socketActivation ["observe"];
       };
       requests = {
         lifecycle = {
@@ -107,6 +109,43 @@
             action = "stop";
           };
         };
+        manager-identity = {
+          requirement = "manager-identity";
+          consumer = "application";
+          scope = ["main"];
+          parameters = {
+            service = "main";
+            enabled = true;
+            name = "example";
+            aliases = ["example-compat"];
+          };
+        };
+        socket-activation = {
+          requirement = "socket-activation";
+          consumer = "application";
+          scope = ["main"];
+          parameters = {
+            service = "main";
+            enabled = true;
+            sockets = [
+              {
+                name = "api";
+                manager_name = "example-api";
+                enabled = true;
+                endpoints = [
+                  {
+                    kind = "unix";
+                    path = "/run/example/api.sock";
+                  }
+                ];
+                mode = "0660";
+                group = "operators";
+                remove_on_stop = true;
+                prerequisites = [];
+              }
+            ];
+          };
+        };
       };
     };
   };
@@ -147,6 +186,18 @@
               providerInstance = "systemd:manager";
               slot = "main";
             };
+            "test:manager-identity" = {
+              request = "consumer:manager-identity";
+              implementation = "systemd:service-manager-identity";
+              providerInstance = "systemd:manager";
+              slot = "main";
+            };
+            "test:socket-activation" = {
+              request = "consumer:socket-activation";
+              implementation = "systemd:service-socket-activation";
+              providerInstance = "systemd:manager";
+              slot = "main";
+            };
           };
         };
       }
@@ -176,13 +227,20 @@
   resources = builtins.attrValues evaluation.config.aos.abilities.desiredResources;
   resource = builtins.head resources;
   unitName = resource.realization.systemd_unit.unit_name;
-  primary = builtins.head resource.realization.units;
-  section = name:
-    builtins.head (builtins.filter (candidate: candidate.name == name) primary.sections);
+  primary = builtins.head (builtins.filter
+    (unit: unit.systemd_unit.unit_name == unitName)
+    resource.realization.units);
+  socketUnit = builtins.head (builtins.filter
+    (unit: unit.systemd_unit.unit_name == "example-api.socket")
+    resource.realization.units);
+  sectionFor = unit: name:
+    builtins.head (builtins.filter (candidate: candidate.name == name) unit.sections);
+  section = sectionFor primary;
   directives = name: selected:
     builtins.filter (directive: directive.name == name) selected.directives;
   unitSection = section "Unit";
   serviceSection = section "Service";
+  socketSection = sectionFor socketUnit "Socket";
   execStart = builtins.head (directives "ExecStart" serviceSection);
   execStartSubstitutions = builtins.attrValues execStart.value.substitutions;
   executable = builtins.head (builtins.filter
@@ -240,6 +298,7 @@ in
   assert resource.value.logging.standard_output == "structured";
   assert resource.realization.schema == "aos.systemd.service-realization/v2";
   assert primary.systemd_unit.unit_name == unitName;
+  assert unitName == "example.service";
   assert builtins.length (directives "StartLimitIntervalSec" unitSection) == 1;
   assert builtins.length (directives "StartLimitBurst" unitSection) == 1;
   assert templates "StandardOutput" serviceSection == ["journal"];
@@ -254,12 +313,36 @@ in
     {
       parent = {
         kind = "unit";
+        unit_name = "sockets.target";
+      };
+      child = {
+        kind = "unit";
+        unit_name = "example-api.socket";
+      };
+      relationship = "wants";
+    }
+    {
+      parent = {
+        kind = "unit";
         unit_name = "multi-user.target";
       };
       child = resource.realization.systemd_unit;
       relationship = "wants";
     }
   ];
+  assert resource.realization.aliases
+  == [
+    {
+      alias = {
+        kind = "unit";
+        unit_name = "example-compat.service";
+      };
+      target = resource.realization.systemd_unit;
+    }
+  ];
+  assert templates "SocketMode" socketSection == ["0660"];
+  assert templates "SocketGroup" socketSection != [];
+  assert templates "RemoveOnStop" socketSection == ["yes"];
   assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 1;
   assert guarantees."core:service-template-exact-reuse".name == "aos.guarantee.service-template-exact-reuse";
   assert lifecycleImplementation.guarantees == ["core:service-template-exact-reuse"];
@@ -268,5 +351,5 @@ in
     "core:service-condition-kernel-argument"
     "core:service-condition-path"
   ];
-  assert builtins.length matchedOwnership.units == 1;
+  assert builtins.length matchedOwnership.units == 2;
   assert !mismatchedOwnership.success; true

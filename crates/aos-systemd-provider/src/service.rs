@@ -764,6 +764,7 @@ mod tests {
             ],
             links: Vec::new(),
             prerequisites: Vec::new(),
+            aliases: Vec::new(),
             enabled: true,
         }
     }
