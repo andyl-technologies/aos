@@ -11,6 +11,7 @@
     conditions = serviceInterfaces.conditions;
     linux_conditions = serviceInterfaces.linuxConditions;
     instantiation = serviceInterfaces.instantiation;
+    manager_identity = serviceInterfaces.managerIdentity;
     supervision = serviceInterfaces.supervision;
     readiness = serviceInterfaces.readiness;
     reload = serviceInterfaces.reload;
@@ -83,6 +84,7 @@
     startCommandCount = builtins.length lifecycle.start;
     reload = declaration.reload or null;
     instantiation = declaration.instantiation or null;
+    managerIdentity = declaration.manager_identity or null;
     supervision = declaration.supervision or null;
     startPolicy = declaration.start_policy or null;
     resources = declaration.resources or null;
@@ -220,7 +222,34 @@
     socketsValid =
       socketActivation
       == null
-      || uniqueBy "name" socketActivation.sockets;
+      || (
+        uniqueBy "name" socketActivation.sockets
+        && builtins.length (builtins.filter
+          (socket: (socket.manager_name or null) != null)
+          socketActivation.sockets)
+        == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map
+          (socket: {
+            name = socket.manager_name;
+            value = true;
+          })
+          (builtins.filter
+            (socket: (socket.manager_name or null) != null)
+            socketActivation.sockets))))
+      );
+    managerIdentityValid =
+      managerIdentity
+      == null
+      || (
+        (instantiation == null || instantiation.kind == "singleton")
+        && !(builtins.elem managerIdentity.name managerIdentity.aliases)
+        && builtins.length managerIdentity.aliases
+        == builtins.length (builtins.attrNames (builtins.listToAttrs (builtins.map
+          (name: {
+            inherit name;
+            value = true;
+          })
+          managerIdentity.aliases)))
+      );
     loggingValid =
       logging
       == null
@@ -302,7 +331,9 @@
     else if !storageValid
     then throw "service '${declaration.service}' has duplicate storage mount names"
     else if !socketsValid
-    then throw "service '${declaration.service}' has duplicate socket names"
+    then throw "service '${declaration.service}' has duplicate socket names or public manager names"
+    else if !managerIdentityValid
+    then throw "service '${declaration.service}' has an invalid public manager identity"
     else if !loggingValid
     then throw "service '${declaration.service}' has duplicate log directory names"
     else if !linuxIsolationValid

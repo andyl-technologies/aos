@@ -27,6 +27,11 @@
     unit_name = unitNameForResource resource;
   };
 
+  publicUnitIdentity = name: {
+    kind = "unit";
+    unit_name = "${checkedLocalKey "systemd public service name" name}.service";
+  };
+
   templateUnitIdentityForResource = resource: template: let
     normalized = normalizedResourceId resource;
     readableTemplate = checkedLocalKey "systemd service template key" template;
@@ -45,17 +50,21 @@
     inherit instance;
   };
 
-  socketUnitNameForResource = resource: socketKey: let
+  socketUnitNameForResource = resource: socketKey: managerName: let
     normalized = normalizedResourceId resource;
     readableKey = checkedLocalKey "systemd socket key" socketKey;
     identity = {
       resource = normalized;
       socket = readableKey;
     };
-  in "aos-${readableKey}-${hash identity}.socket";
+  in
+    if managerName == null
+    then "aos-${readableKey}-${hash identity}.socket"
+    else "${checkedLocalKey "systemd public socket name" managerName}.socket";
 in {
   inherit
     normalizedResourceId
+    publicUnitIdentity
     socketUnitNameForResource
     templateInstanceIdentity
     templateUnitIdentityForResource

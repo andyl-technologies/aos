@@ -203,6 +203,13 @@ pub(crate) struct RealizedServiceLink {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct RealizedServiceAlias {
+    pub(crate) alias: ServiceUnitIdentity,
+    pub(crate) target: ServiceUnitIdentity,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ServiceRealization {
     pub(crate) schema: String,
     pub(crate) systemd_unit: ServiceUnitIdentity,
@@ -210,6 +217,7 @@ pub(crate) struct ServiceRealization {
     pub(crate) facets: Vec<ServiceFacetIdentity>,
     pub(crate) links: Vec<RealizedServiceLink>,
     pub(crate) prerequisites: Vec<ResourceReference>,
+    pub(crate) aliases: Vec<RealizedServiceAlias>,
     pub(crate) enabled: bool,
 }
 

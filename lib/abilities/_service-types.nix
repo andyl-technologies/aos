@@ -327,6 +327,12 @@
   instantiationFeature = feature {selection = instantiationSelection;} [];
   instantiation = request instantiationFeature;
 
+  managerIdentityFeature = feature {
+    name = localKey;
+    aliases = localKeys;
+  } [];
+  managerIdentity = request managerIdentityFeature;
+
   supervisionFeature = feature {
     startup_protocol = types.enum ["process" "notification" "bus-name"];
     notification_access = types.enum ["none" "main-process" "all-processes"];
@@ -600,9 +606,42 @@
   socket = types.record {
     fields = {
       name = localKey;
+      manager_name = {
+        type = types.optional localKey;
+        optional = true;
+      };
+      enabled = {
+        type = types.boolean;
+        default = true;
+      };
       endpoints = types.list {
         element = socketEndpoint;
         maxItems = 64;
+      };
+      mode = {
+        type = types.fileMode;
+        default = "0666";
+      };
+      owner = {
+        type = types.optional (types.deferredResult principalName);
+        optional = true;
+      };
+      group = {
+        type = types.optional (types.deferredResult groupName);
+        optional = true;
+      };
+      remove_on_stop = {
+        type = types.boolean;
+        default = false;
+      };
+      prerequisites = {
+        type = types.list {
+          element = types.deferredResult types.resourceReference;
+          maxItems = 256;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
       };
     };
   };
@@ -1483,6 +1522,10 @@
           type = types.optional instantiationSelection;
           optional = true;
         };
+        manager_identity = {
+          type = types.optional managerIdentityFeature;
+          optional = true;
+        };
         supervision = {
           type = types.optional supervisionFeature;
           optional = true;
@@ -1607,6 +1650,7 @@
     conditions = observationFor "conditions" conditions featureState {};
     linuxConditions = observationFor "linux-conditions" linuxConditions featureState {};
     instantiation = observationFor "instantiation" instantiation featureState {};
+    managerIdentity = observationFor "manager-identity" managerIdentity featureState {};
     supervision = observationFor "supervision" supervision featureState {};
     readiness = observationFor "readiness" readiness lifecycleState {};
     reload = observationFor "reload" reload featureState {available = types.boolean;};
@@ -1682,6 +1726,7 @@ in {
     conditions
     linuxConditions
     instantiation
+    managerIdentity
     supervision
     readiness
     reload

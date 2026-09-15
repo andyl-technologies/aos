@@ -214,6 +214,7 @@ mod tests {
                 "relationship": "wants"
             }],
             "prerequisites": [],
+            "aliases": [],
             "enabled": true
         });
         let realization: ServiceRealization =
