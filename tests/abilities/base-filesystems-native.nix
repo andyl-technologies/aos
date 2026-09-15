@@ -43,8 +43,16 @@ in
   == resultOf "cryptsetup:encrypted-swap-format" "formatted-path";
   assert !(config.systemd.services ? cryptswap);
   assert requests ? "aos-zfs-provider:pool";
+  assert requests ? "aos-zfs-provider:zfs-kernel-module";
+  assert requests ? "aos-zfs-provider:zfs-kernel-tunables";
+  assert requests ? "aos-zfs-provider:zfs-memory-policy-lifecycle";
+  assert requests ? "aos-zfs-provider:zfs-verify-parameters-lifecycle";
   assert requests ? "aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}";
   assert requests."aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}".parameters.properties.quota == "16G";
   assert lib.hasInfix "/dev/disk/by-partlabel/var  /var  ext4" config.environment.etc.fstab.text;
+  assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" config.aos.boot.kernelParams;
+  assert requests."aos-zfs-provider:zfs-kernel-tunables".parameters.values."vm.defrag_mode" == "1";
+  assert !(config.systemd.services ? "aos-zfs-memory-policy");
+  assert !(config.systemd.services ? "aos-zfs-verify-parameters");
   assert !(config.systemd.services ? "zfs-import");
   assert !(config.systemd.services ? "zfs-mount"); true

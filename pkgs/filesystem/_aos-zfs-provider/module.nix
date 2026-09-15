@@ -211,7 +211,7 @@
     properties = lib.optionalAttrs (cfg.deduplicationTableQuota != null) {
       dedup_table_quota = cfg.deduplicationTableQuota;
     };
-    prerequisites = [];
+    prerequisites = [(resultOf "memory-policy" "readiness-resource")];
   };
   datasetKey = name: "dataset-${builtins.substring 0 32 (builtins.hashString "sha256" name)}";
   reservedDatasetName = builtins.unsafeDiscardStringContext cfg.reservedSpace.dataset;
@@ -280,6 +280,8 @@
   fragments = [pool] ++ datasets;
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
+  imports = [./policy.nix];
+
   options.aos.filesystems.zfs = {
     enable = lib.mkOption {
       type = abilityTypes.boolean;
