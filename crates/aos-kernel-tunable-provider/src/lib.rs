@@ -28,7 +28,7 @@ use aos_provider_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const INTERFACE_NAME: &str = "aos.kernel.tunables";
+const INTERFACE_NAME: &str = "aos.kernel.tunable-effects";
 const REALIZATION_SCHEMA: &str = "aos.kernel.tunables-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.kernel-tunables-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.kernel.tunables-context/v1";

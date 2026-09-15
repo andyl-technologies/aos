@@ -2,24 +2,60 @@
 {lib, ...}: let
   interface = lib.abilities.interfaces.kernelTunables.interface;
   artifact = lib.abilities.packageOutput {};
-in {
-  config.aos.abilities.implementations.kernel-tunables = {
-    description = "Converges Linux kernel tunables through the checked procfs ABI.";
-    interface = interface.identity;
-    inherit artifact;
-    inherit (interface) methods;
+  effectsAlias = "kernel-tunable-effects";
+  effectsDeclaration = lib.abilities.declareInterface {
+    name = "aos.kernel.tunable-effects";
+    description = "Executes admitted kernel-tunable operations for one exact controller-owned resource.";
+    abi = 1;
+    inherit (interface.declaration) requestType methods lifecycle;
+    outputs = {};
     guarantees = [];
-    providerModule = {
+    aggregation = interface.declaration.aggregation // {controllerGroup = effectsAlias;};
+  };
+  effectsIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration effectsDeclaration
+  );
+in {
+  config.aos.abilities = {
+    interfaces.${effectsAlias} = effectsDeclaration;
+
+    implementations.kernel-tunables = {
+      description = "Converges Linux kernel tunables through the checked procfs controller.";
+      interface = interface.identity;
       inherit artifact;
-      path = "share/aos/providers/kernel-tunables.nix";
+      inherit (interface) methods;
+      guarantees = [];
+      requirements.effects = {
+        alias = "effects";
+        description = "Invokes the package-owned terminal kernel-tunable handler.";
+        accepted_interfaces = [effectsIdentity];
+        inherit (interface) methods;
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+      providerModule = {
+        inherit artifact;
+        path = "share/aos/providers/kernel-tunables.nix";
+      };
+      desiredType = interface.realizationType;
+      requiredFeatures = [];
     };
-    handlerDescriptor = {
+
+    implementations.${effectsAlias} = {
+      description = "Executes authorized kernel-tunable operations through the package-owned procfs handler.";
+      interface = effectsAlias;
       inherit artifact;
-      entryPoint = "bin/aos-kernel-tunable-provider";
-      arguments = interface.requestType;
-      result = interface.observationType;
+      inherit (interface) methods;
+      guarantees = [];
+      handlerDescriptor = {
+        inherit artifact;
+        entryPoint = "bin/aos-kernel-tunable-provider";
+        arguments = interface.requestType;
+        result = interface.observationType;
+      };
+      desiredType = null;
+      requiredFeatures = [];
     };
-    desiredType = interface.realizationType;
-    requiredFeatures = [];
   };
 }
