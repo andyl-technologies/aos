@@ -175,6 +175,7 @@ fn install_package_with_feature(
                     result: ValueSchema::Boolean,
                 },
             )]),
+            qualification: BTreeMap::new(),
         },
     };
     binding.provider_package = Some(package.content_digest()?);

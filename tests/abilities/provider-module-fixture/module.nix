@@ -1,3 +1,7 @@
-{outputs, ...}: {
-  config.test.provider = "${outputs.self}:${outputs.dependencies.helper}";
+{
+  outputs,
+  packageVersion,
+  ...
+}: {
+  config.test.provider = "${packageVersion}:${outputs.self}:${outputs.dependencies.helper}";
 }

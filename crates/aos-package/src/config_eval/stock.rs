@@ -615,8 +615,9 @@ fn render_selected_provider_module_list(
             .join(" ");
 
         items.push(format!(
-            "    (let configRoot = {authenticated_root}; in {{ name = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; artifactLocators = {{ {artifact_locators} }}; }})",
+            "    (let configRoot = {authenticated_root}; in {{ name = {}; packageVersion = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; artifactLocators = {{ {artifact_locators} }}; }})",
             nix_string(&selected.package),
+            nix_string(&selected.version),
             nix_string(&format!("/{}", selected.locator.path.as_str())),
         ));
     }
@@ -1801,6 +1802,7 @@ max = 1
         };
         let module = SelectedProviderModule {
             package: "provider".to_string(),
+            version: "1.0.0".to_string(),
             locator: ModuleLocator {
                 artifact: ArtifactReference {
                     content: Sha256Digest::from_bytes([1; 32]),

@@ -30,12 +30,14 @@
     selectedProviderModules = [
       {
         name = "provider";
+        packageVersion = "1.0.0";
         configRoot = ./provider-module-fixture;
         module = ./provider-module-fixture/module.nix;
         outputs = {
           self = "/nix/store/00000000000000000000000000000000-provider";
           dependencies.helper = "/nix/store/11111111111111111111111111111111-helper";
         };
+        artifactLocators = {};
       }
     ];
     operatorModules = [{test.operator = true;}];
@@ -48,5 +50,5 @@ in
     binding = true;
     operator = true;
     package = true;
-    provider = "/nix/store/00000000000000000000000000000000-provider:/nix/store/11111111111111111111111111111111-helper";
+    provider = "1.0.0:/nix/store/00000000000000000000000000000000-provider:/nix/store/11111111111111111111111111111111-helper";
   }; true

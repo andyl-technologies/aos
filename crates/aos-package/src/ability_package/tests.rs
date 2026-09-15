@@ -261,6 +261,7 @@ fn stateful_package() -> PackageDocument {
         implementation: PackageImplementation {
             providers: vec![provider],
             handlers: BTreeMap::new(),
+            qualification: BTreeMap::new(),
         },
     }
 }
@@ -321,6 +322,7 @@ impl TestFixture {
             implementation: PackageImplementation {
                 providers: Vec::new(),
                 handlers: BTreeMap::new(),
+                qualification: BTreeMap::new(),
             },
         };
         let manifest_bytes = encode_canonical(&package).unwrap();

@@ -356,6 +356,7 @@ mod tests {
             implementation: PackageImplementation {
                 providers: vec![provider],
                 handlers: BTreeMap::new(),
+                qualification: BTreeMap::new(),
             },
         };
         let package_bytes = encode_canonical(&package).expect("encode package");

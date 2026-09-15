@@ -1288,6 +1288,7 @@ fn planner_fixture_with_contract(
         implementation: PackageImplementation {
             providers: vec![provider_implementation],
             handlers: BTreeMap::new(),
+            qualification: BTreeMap::new(),
         },
     };
     let package_digest = package

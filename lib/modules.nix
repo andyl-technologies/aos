@@ -994,8 +994,8 @@
       in
         if
           !builtins.isAttrs record
-          || keys != ["artifactLocators" "configRoot" "module" "name" "outputs"]
-        then throw "evalModules: selectedProviderModules entries must contain exactly artifactLocators/configRoot/module/name/outputs"
+          || keys != ["artifactLocators" "configRoot" "module" "name" "outputs" "packageVersion"]
+        then throw "evalModules: selectedProviderModules entries must contain exactly artifactLocators/configRoot/module/name/outputs/packageVersion"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied provider package provenance name"
         else if
@@ -1007,6 +1007,8 @@
         then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
         else if !validPackageOutputs record.outputs
         then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
+        else if !builtins.isString record.packageVersion || record.packageVersion == ""
+        then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
         else if !validArtifactLocators record.artifactLocators
         then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied artifact locators"
         else record)
@@ -1032,7 +1034,7 @@
         record.outputs
         {
           inherit (record) name;
-          version = record.version or "0";
+          version = record.packageVersion;
           artifactLocatorFor = artifactLocatorFor record.name record.artifactLocators;
         }
         true
