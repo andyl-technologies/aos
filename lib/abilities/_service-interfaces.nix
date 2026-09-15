@@ -248,6 +248,8 @@
     outputType,
     outputLifetime ? "instance",
     interfaceOutputs ? {},
+    lifecycle ? lifecyclePolicy,
+    releaseDescription ? "Releases the exact active resource ownership established by this request.",
     actionDescription,
     observationDescription,
     outputDescription,
@@ -271,14 +273,14 @@
       observe = method requestType observationType name "observe" observationDescription read;
       release =
         method requestType observationType name "release"
-        "Releases the exact ephemeral resource controlled by this request."
+        releaseDescription
         stopSemantics;
     };
     declaration = declareInterface {
       inherit name description requestType methods;
       abi = 1;
       outputs = interfaceOutputs;
-      lifecycle = lifecyclePolicy;
+      inherit lifecycle;
       guarantees = [];
       aggregation = {
         scope = "provider-instance";
@@ -720,6 +722,11 @@
         output "planning" "persistent"
         "Returns the deterministic path selected for this persistent storage resource before materialization."
         serviceTypes.storagePath;
+      lifecycle = lifecyclePolicy // {
+        releasesEphemeralOnDisable = false;
+        retainsPersistentByDefault = true;
+      };
+      releaseDescription = "Detaches the exact active ownership of this persistent allocation while preserving its retained data.";
     };
     hostPathView = producer {
       alias = "host-path-view";
