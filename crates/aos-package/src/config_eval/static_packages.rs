@@ -23,6 +23,7 @@ use super::runtime::{ContractOrigin, LocalRuntimePackage};
 
 const HOST_STATIC_CONTRACT_LINK: &str = "/etc/aos/static-ability-contract.json";
 const IMMUTABLE_STORE_ROOT: &str = "/nix.lower/store";
+const INITRD_STORE_ROOT: &str = "/nix/store";
 const STATIC_CONTRACT_FILE: &str = "contract.json";
 const MAX_STATIC_CONTRACT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -195,6 +196,12 @@ pub(super) fn resolve(
 }
 
 fn host_expectation() -> Result<StaticAbilityContractExpectation> {
+    boot_expectation(StaticAbilityExecutionStage::Host)
+}
+
+fn boot_expectation(
+    execution_stage: StaticAbilityExecutionStage,
+) -> Result<StaticAbilityContractExpectation> {
     let architecture = match std::env::consts::ARCH {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
@@ -202,13 +209,79 @@ fn host_expectation() -> Result<StaticAbilityContractExpectation> {
     };
     Ok(StaticAbilityContractExpectation {
         artifact_class: StaticAbilityArtifactClass::Bootable,
-        execution_stage: Some(StaticAbilityExecutionStage::Host),
+        execution_stage: Some(execution_stage),
         platform: Some(StaticAbilityPlatform {
             os: "linux".to_string(),
             architecture: architecture.to_string(),
             variant: None,
         }),
     })
+}
+
+/// Authenticates every package selected by an embedded initrd contract.
+///
+/// The static contract fixes package documents and companion identities. This
+/// function additionally rechecks their live store objects before returning
+/// the opaque runtime package set used by handler dispatch.
+///
+/// # Errors
+///
+/// Returns an error when the contract, package companion, interface catalog,
+/// or any selected package artifact differs from the embedded selection.
+pub(super) fn verified_initrd_packages(
+    contract_bytes: &[u8],
+) -> Result<crate::package_contract::VerifiedPackageContractSet> {
+    let checked = validate_static_ability_artifacts_at_store_root(
+        contract_bytes,
+        &boot_expectation(StaticAbilityExecutionStage::Initrd)?,
+        Path::new(INITRD_STORE_ROOT),
+    )?;
+    let platform = runtime_platform()?;
+    let mut packages = Vec::with_capacity(checked.packages().len());
+
+    for selected in checked.packages() {
+        let document = selected
+            .package_document()
+            .cloned()
+            .context("checked initrd package has no artifact-backed document")?;
+        ensure!(
+            document.package.name == *selected.name()
+                && document.package.version == selected.version()
+                && document.package.payload == *selected.payload(),
+            "checked initrd package selection differs from its package document"
+        );
+        let manifest = crate::registry_ops::resolve_store_artifact_reference(
+            selected.manifest().store_path(),
+        )?;
+        let resolved = ResolvedContract {
+            document,
+            interfaces: selected.retained_interfaces().to_vec(),
+            manifest_store_path: selected.manifest().store_path().to_string(),
+            manifest_nar_hash: manifest.nar_hash.to_string(),
+            manifest_digest: selected.manifest().digest(),
+        };
+        let coordinate = crate::package_contract::PackageContractCoordinate {
+            name: selected.name().as_str(),
+            version: selected.version(),
+            platform: &platform,
+            store_path: &selected.payload().store_path,
+            nar_hash: &selected.payload().nar_hash.to_string(),
+        };
+        packages.push(crate::package_contract::verify_embedded_static_package(
+            coordinate, resolved,
+        )?);
+    }
+
+    crate::package_contract::VerifiedPackageContractSet::from_verified(packages)
+}
+
+fn runtime_platform() -> Result<String> {
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        architecture => bail!("unsupported initrd package architecture {architecture}"),
+    };
+    Ok(format!("{architecture}-linux"))
 }
 
 pub(crate) fn checked_host_selection() -> Result<(

@@ -179,6 +179,18 @@ impl ReloadablePlanBundle {
         self.desired.snapshot_digest
     }
 
+    /// Returns the independently retained desired-policy-set commitment.
+    #[must_use]
+    pub const fn desired_policy_digest(&self) -> Sha256Digest {
+        self.desired.authenticated_policy_digest
+    }
+
+    /// Returns the authenticated resolution policies replayed for desired state.
+    #[must_use]
+    pub fn desired_policies(&self) -> &[ResolutionPolicyDocument] {
+        &self.desired.authenticated_policies
+    }
+
     /// Returns the independently retained prior planning commitment, when present.
     #[must_use]
     pub fn current_planning_digest(&self) -> Option<Sha256Digest> {
@@ -305,6 +317,24 @@ impl ReloadablePlanBundle {
         self,
         supported_features: BTreeSet<RequiredFeature>,
     ) -> Result<CheckedEffectPlan, PlanBundleError> {
+        self.revalidate_with_desired(supported_features)
+            .map(|(plan, _)| plan)
+    }
+
+    /// Structurally replays the bundle and returns its desired planning state.
+    ///
+    /// Static stage runners use the independently replayed planning state to
+    /// bind the embedded fixed-point projection before admitting any effect.
+    /// Returning it from the same replay prevents callers from decoding or
+    /// reconstructing a second planning vocabulary beside the bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::revalidate`].
+    pub fn revalidate_with_desired(
+        self,
+        supported_features: BTreeSet<RequiredFeature>,
+    ) -> Result<(CheckedEffectPlan, VerifiedPlanningSnapshot), PlanBundleError> {
         let retained = self.clone();
         let (desired, desired_context) = self.desired.verify(&supported_features)?;
         let current = self
@@ -355,7 +385,7 @@ impl ReloadablePlanBundle {
         if reconstructed != retained {
             return Err(PlanBundleError::NoncanonicalInputs);
         }
-        Ok(transition.into_checked_effect())
+        Ok((transition.into_checked_effect(), desired))
     }
 
     fn validate_linkage(&self) -> Result<(), PlanBundleError> {

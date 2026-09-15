@@ -12,7 +12,11 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use aos_ability_model::{ExecutionStage, LocalKey, TransactionId};
+use aos_ability_model::document::TerminalResult;
+use aos_ability_model::{
+    ExecutionStage, LocalKey, OperationId, PlanId, ResourceReference, RevisionId, TransactionId,
+};
+use aos_ability_plan::ResolutionPolicyDocument;
 use aos_ability_runtime::journal::{FileJournal, JournalLimits, JournalPayload, JournalRecord};
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
@@ -20,22 +24,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::types::ImageGeneration;
 
-mod activation;
-
-#[cfg(test)]
-use activation::{
-    ACTIVATION_SCHEMA, HostResourceEvidence, InitrdManagerIdentity, InitrdManagerKind,
-    InitrdOperation, InitrdOperationCompletion,
-};
-use activation::{
-    HostContinuationEvidence, HostStageManager, InitrdActivation, InitrdActivationCompletion,
-    InitrdStageManager,
-};
-
-const SELECTION_SCHEMA: &str = "aos.ability.initrd-activation-selection/v1";
 const CHECKPOINT_SCHEMA: &str = "aos.ability.stage-handoff-checkpoint/v1";
 const JOURNAL_EVENT_SCHEMA: &str = "aos.ability.stage-handoff-event/v1";
-const STATIC_CONTRACT_SCHEMA: &str = "aos.boot.static-abilities/v1";
 const TRANSACTION_ROOT: &str = "ability-stage-transactions";
 const INITRD_TRANSACTION_ROOT: &str = "initrd";
 const JOURNAL_FILE: &str = "execution.journal";
@@ -47,8 +37,8 @@ const DOCUMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// Runs the initrd side of the stage handoff.
 ///
 /// `root` is the mounted host root (normally `/sysroot`), while
-/// `image_profile` names its durable image profile. The signed selection and
-/// static contract are read from the current initrd.
+/// `image_profile` names its durable image profile. The checked resolved stage
+/// and static contract are read from the current initrd.
 ///
 /// # Errors
 ///
@@ -60,7 +50,7 @@ pub fn run_initrd_stage(
     stage: &str,
     root: &Path,
     image_profile: &Path,
-    input: &Path,
+    resolved_stage: &Path,
 ) -> Result<()> {
     ensure!(
         stage == "initrd",
@@ -71,21 +61,24 @@ pub fn run_initrd_stage(
     let image = crate::sysroot::running_image_generation_beneath(image_profile, root)
         .context("authenticating the initrd target image")?;
     let boot_id = read_boot_id(Path::new(BOOT_ID_PATH))?;
-    let selection_bytes =
-        read_trusted_file(input, DOCUMENT_MAX_BYTES, "initrd activation selection")?;
     let contract_bytes = read_trusted_file(
         Path::new(INITRD_STATIC_CONTRACT_PATH),
         DOCUMENT_MAX_BYTES,
         "initrd static ability contract",
     )?;
+    let resolved_stage_bytes = read_trusted_file(
+        resolved_stage,
+        DOCUMENT_MAX_BYTES,
+        "resolved initrd ability stage",
+    )?;
 
     run_initrd_stage_with(
         image_profile,
         Path::new(INITRD_CHECKPOINT_PATH),
-        &selection_bytes,
         &contract_bytes,
         &boot_id,
         ImageIdentity::from_generation(&image),
+        &resolved_stage_bytes,
     )
 }
 
@@ -159,96 +152,6 @@ pub fn validate_initrd_stage(from_stage: &str, root: &Path, image_profile: &Path
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ActivationSelection {
-    schema: String,
-    execution_stage: ExecutionStage,
-    disposition: ActivationDisposition,
-    static_ability_contract_sha256: Sha256Digest,
-    activation: Option<InitrdActivation>,
-}
-
-impl ActivationSelection {
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        let selection: Self =
-            serde_json::from_slice(bytes).context("decoding initrd activation selection")?;
-        ensure!(
-            selection.schema == SELECTION_SCHEMA,
-            "unsupported initrd activation selection schema"
-        );
-        ensure!(
-            selection.execution_stage == ExecutionStage::Initrd,
-            "initrd activation selection names another execution stage"
-        );
-        ensure!(
-            matches!(
-                (&selection.disposition, &selection.activation),
-                (ActivationDisposition::None, None) | (ActivationDisposition::Required, Some(_))
-            ),
-            "initrd activation disposition does not match its activation payload"
-        );
-        ensure!(
-            aos_contract::canonical::to_vec(&selection)? == bytes,
-            "initrd activation selection is not canonical JSON"
-        );
-        Ok(selection)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum ActivationDisposition {
-    None,
-    Required,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct StaticAbilityContract {
-    schema: String,
-    platforms: Vec<StaticAbilityPlatform>,
-    runtime_grants: Vec<serde_json::Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct StaticAbilityPlatform {
-    platform: serde_json::Value,
-    execution_stage: ExecutionStage,
-    packages: Vec<serde_json::Value>,
-    abilities: Vec<serde_json::Value>,
-    unresolved_launch_obligations: Vec<serde_json::Value>,
-}
-
-impl StaticAbilityContract {
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        let contract: Self =
-            serde_json::from_slice(bytes).context("decoding initrd static ability contract")?;
-        ensure!(
-            contract.schema == STATIC_CONTRACT_SCHEMA,
-            "unsupported initrd static ability contract schema"
-        );
-        ensure!(
-            !contract.platforms.is_empty()
-                && contract
-                    .platforms
-                    .iter()
-                    .all(|platform| platform.execution_stage == ExecutionStage::Initrd),
-            "initrd static ability contract contains another execution stage"
-        );
-        ensure!(
-            contract.runtime_grants.is_empty(),
-            "static ability contract must not carry runtime grants"
-        );
-        ensure!(
-            aos_contract::canonical::to_vec(&contract)? == bytes,
-            "initrd static ability contract is not canonical JSON"
-        );
-        Ok(contract)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 struct ImageIdentity {
     generation: u32,
     toplevel: String,
@@ -278,11 +181,9 @@ struct StageCheckpoint {
     boot_id: String,
     transaction: TransactionId,
     image: ImageIdentity,
-    selection_sha256: Sha256Digest,
     static_ability_contract_sha256: Sha256Digest,
-    disposition: ActivationDisposition,
-    activation_sha256: Option<Sha256Digest>,
-    completion_sha256: Option<Sha256Digest>,
+    resolved_stage_sha256: Sha256Digest,
+    execution_sha256: Sha256Digest,
     journal_head: Sha256Digest,
     status: CheckpointStatus,
 }
@@ -302,18 +203,6 @@ impl StageCheckpoint {
         ensure!(
             self.transaction == transaction_for_boot(&self.boot_id)?,
             "stage checkpoint transaction differs from its boot identity"
-        );
-        ensure!(
-            matches!(
-                (
-                    self.disposition,
-                    self.activation_sha256,
-                    self.completion_sha256
-                ),
-                (ActivationDisposition::None, None, None)
-                    | (ActivationDisposition::Required, Some(_), Some(_))
-            ),
-            "stage checkpoint disposition differs from its activation commitment"
         );
         ensure!(
             self.status == CheckpointStatus::OwnershipReleased,
@@ -339,16 +228,13 @@ enum StageEvent {
         boot_id: String,
         transaction: TransactionId,
         image: ImageIdentity,
-        selection_sha256: Sha256Digest,
         static_ability_contract_sha256: Sha256Digest,
-        disposition: ActivationDisposition,
-        activation_sha256: Option<Sha256Digest>,
+        resolved_stage_sha256: Sha256Digest,
     },
     SourceCompleted {
         schema: String,
         transaction: TransactionId,
-        outcome: SourceOutcome,
-        completion: Option<InitrdActivationCompletion>,
+        execution: StageExecutionEvidence,
     },
     HostReceived {
         schema: String,
@@ -357,16 +243,16 @@ enum StageEvent {
         released_journal_head: Sha256Digest,
         image: ImageIdentity,
         static_ability_contract_sha256: Sha256Digest,
-        continuation: Option<HostContinuationEvidence>,
+        execution: StageExecutionEvidence,
     },
 }
 
 impl StageEvent {
-    fn completion_digest(&self) -> Result<Option<Sha256Digest>> {
-        let Self::SourceCompleted { completion, .. } = self else {
+    fn execution_digest(&self) -> Result<Sha256Digest> {
+        let Self::SourceCompleted { execution, .. } = self else {
             bail!("stage event is not an initrd completion")
         };
-        completion.as_ref().map(canonical_value_digest).transpose()
+        canonical_value_digest(execution)
     }
 }
 
@@ -382,8 +268,6 @@ impl JournalPayload for StageEvent {
                 receiver_stage,
                 boot_id,
                 transaction,
-                disposition,
-                activation_sha256,
                 ..
             } => {
                 schema == JOURNAL_EVENT_SCHEMA
@@ -391,38 +275,13 @@ impl JournalPayload for StageEvent {
                     && *receiver_stage == ExecutionStage::Host
                     && validate_boot_id(boot_id).is_ok()
                     && transaction_for_boot(boot_id).is_ok_and(|expected| &expected == transaction)
-                    && matches!(
-                        (disposition, activation_sha256),
-                        (ActivationDisposition::None, None)
-                            | (ActivationDisposition::Required, Some(_))
-                    )
             }
             Self::SourceCompleted {
-                schema,
-                outcome,
-                completion,
-                ..
-            } => {
-                schema == JOURNAL_EVENT_SCHEMA
-                    && matches!(
-                        (outcome, completion),
-                        (SourceOutcome::NoActivationRequired, None)
-                            | (SourceOutcome::ActivationSucceeded, Some(_))
-                    )
-                    && completion
-                        .as_ref()
-                        .is_none_or(|evidence| evidence.validate().is_ok())
-            }
+                schema, execution, ..
+            } => schema == JOURNAL_EVENT_SCHEMA && execution.validate().is_ok(),
             Self::HostReceived {
-                schema,
-                continuation,
-                ..
-            } => {
-                schema == JOURNAL_EVENT_SCHEMA
-                    && continuation
-                        .as_ref()
-                        .is_none_or(|evidence| evidence.validate().is_ok())
-            }
+                schema, execution, ..
+            } => schema == JOURNAL_EVENT_SCHEMA && execution.validate().is_ok(),
         };
         if valid {
             Ok(())
@@ -434,11 +293,63 @@ impl JournalPayload for StageEvent {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum SourceOutcome {
-    NoActivationRequired,
-    ActivationSucceeded,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StageExecutionEvidence {
+    plan: PlanId,
+    bundle: Sha256Digest,
+    terminal: TerminalResult,
+    retained_resources: Vec<StageRetainedResource>,
+}
+
+impl StageExecutionEvidence {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.terminal == TerminalResult::Succeeded,
+            "initrd ability stage did not establish its target state"
+        );
+        ensure!(
+            self.retained_resources.windows(2).all(|pair| {
+                pair[0]
+                    .operation
+                    .cmp(&pair[1].operation)
+                    .then_with(|| pair[0].output.cmp(&pair[1].output))
+                    .is_lt()
+            }),
+            "initrd stage retained resources are not strictly canonical"
+        );
+        Ok(())
+    }
+
+    /// Returns the exact retained resource published by one checked operation.
+    pub(crate) fn retained_resource(
+        &self,
+        operation_key: &str,
+        output: &str,
+    ) -> Result<&ResourceReference> {
+        let matches = self
+            .retained_resources
+            .iter()
+            .filter(|retained| {
+                retained.operation.operation.key.as_str() == operation_key
+                    && retained.output.as_str() == output
+            })
+            .collect::<Vec<_>>();
+        let [retained] = matches.as_slice() else {
+            bail!(
+                "initrd stage execution does not retain exactly one {operation_key}.{output} output"
+            )
+        };
+        Ok(&retained.resource)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StageRetainedResource {
+    operation: OperationId,
+    output: LocalKey,
+    resource: ResourceReference,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -454,37 +365,21 @@ struct ValidatedRelease {
     journal_path: PathBuf,
 }
 
-struct SourceExecution {
-    outcome: SourceOutcome,
-    completion: Option<InitrdActivationCompletion>,
-}
-
 fn run_initrd_stage_with(
     image_profile: &Path,
     checkpoint_path: &Path,
-    selection_bytes: &[u8],
     contract_bytes: &[u8],
     boot_id: &str,
     image: ImageIdentity,
+    resolved_stage_bytes: &[u8],
 ) -> Result<()> {
     validate_boot_id(boot_id)?;
-    let selection = ActivationSelection::decode(selection_bytes)?;
-    StaticAbilityContract::decode(contract_bytes)?;
+    super::static_packages::verified_initrd_packages(contract_bytes)
+        .context("authenticating initrd static ability contract")?;
     let contract_digest = sha256_digest(contract_bytes);
-    ensure!(
-        selection.static_ability_contract_sha256 == contract_digest,
-        "initrd activation selection names another static ability contract"
-    );
-    if let Some(activation) = &selection.activation {
-        activation.check()?;
-    }
 
     let transaction = transaction_for_boot(boot_id)?;
-    let activation_sha256 = selection
-        .activation
-        .as_ref()
-        .map(canonical_value_digest)
-        .transpose()?;
+    let resolved_stage_sha256 = sha256_digest(resolved_stage_bytes);
     let prepared = StageEvent::Prepared {
         schema: JOURNAL_EVENT_SCHEMA.to_string(),
         source_stage: ExecutionStage::Initrd,
@@ -492,10 +387,8 @@ fn run_initrd_stage_with(
         boot_id: boot_id.to_string(),
         transaction: transaction.clone(),
         image: image.clone(),
-        selection_sha256: sha256_digest(selection_bytes),
         static_ability_contract_sha256: contract_digest,
-        disposition: selection.disposition,
-        activation_sha256,
+        resolved_stage_sha256,
     };
     let transaction_dir = prepare_transaction_directory(image_profile, &transaction)?;
     let journal_path = transaction_dir.join(JOURNAL_FILE);
@@ -503,58 +396,67 @@ fn run_initrd_stage_with(
         .context("opening initrd stage handoff journal")?;
     let mut journal = opened.journal;
     let records = opened.recovery.records();
-    let execute = || -> Result<StageEvent> {
-        let execution = match &selection.activation {
-            None => SourceExecution {
-                outcome: SourceOutcome::NoActivationRequired,
-                completion: None,
-            },
-            Some(activation) => SourceExecution {
-                outcome: SourceOutcome::ActivationSucceeded,
-                completion: Some(
-                    InitrdStageManager::new(&image, contract_digest)
-                        .execute(activation)
-                        .context("executing checked initrd activation")?,
-                ),
-            },
-        };
-        Ok(StageEvent::SourceCompleted {
-            schema: JOURNAL_EVENT_SCHEMA.to_string(),
-            transaction: transaction.clone(),
-            outcome: execution.outcome,
-            completion: execution.completion,
-        })
-    };
     let (released_head, completed) = match records {
         [] => {
             journal.ensure_capacity(2)?;
             journal.append(&prepared)?;
-            let completed = execute()?;
+            let completed = source_completion_for_run(
+                None,
+                &transaction,
+                || {
+                    execute_resolved_initrd_stage(
+                        resolved_stage_bytes,
+                        contract_bytes,
+                        image_profile,
+                        transaction.clone(),
+                    )
+                },
+                |_| Ok(()),
+            )?;
             let head = journal.append(&completed)?.digest();
             (head, completed)
         }
         [first] if first.body() == &prepared => {
             journal.ensure_capacity(1)?;
-            let completed = execute()?;
+            let completed = source_completion_for_run(
+                None,
+                &transaction,
+                || {
+                    execute_resolved_initrd_stage(
+                        resolved_stage_bytes,
+                        contract_bytes,
+                        image_profile,
+                        transaction.clone(),
+                    )
+                },
+                |_| Ok(()),
+            )?;
             let head = journal.append(&completed)?.digest();
             (head, completed)
         }
         [first, second] if first.body() == &prepared => {
-            let completed = execute()?;
-            ensure!(
-                second.body() == &completed,
-                "initrd stage completion differs from the checked activation result"
-            );
+            let completed = source_completion_for_run(
+                Some(second.body()),
+                &transaction,
+                || bail!("settled initrd stage attempted to invoke handlers again"),
+                |execution| {
+                    validate_resolved_initrd_stage_evidence(resolved_stage_bytes, execution)
+                },
+            )?;
             (second.digest(), completed)
         }
         [first, second, _] if first.body() == &prepared => {
-            let completed = execute()?;
-            if second.body() == &completed {
-                bail!("initrd stage journal ownership was already received by the host")
-            }
-            bail!("initrd stage completion differs from the checked activation result")
+            source_completion_for_run(
+                Some(second.body()),
+                &transaction,
+                || bail!("received initrd stage attempted to invoke handlers again"),
+                |execution| {
+                    validate_resolved_initrd_stage_evidence(resolved_stage_bytes, execution)
+                },
+            )?;
+            bail!("initrd stage journal ownership was already received by the host")
         }
-        _ => bail!("initrd stage journal differs from the authenticated boot selection"),
+        _ => bail!("initrd stage journal differs from the authenticated resolved plan"),
     };
     drop(journal);
 
@@ -565,11 +467,9 @@ fn run_initrd_stage_with(
         boot_id: boot_id.to_string(),
         transaction,
         image,
-        selection_sha256: sha256_digest(selection_bytes),
         static_ability_contract_sha256: contract_digest,
-        disposition: selection.disposition,
-        activation_sha256,
-        completion_sha256: completed.completion_digest()?,
+        resolved_stage_sha256,
+        execution_sha256: completed.execution_digest()?,
         journal_head: released_head,
         status: CheckpointStatus::OwnershipReleased,
     };
@@ -577,6 +477,197 @@ fn run_initrd_stage_with(
     let checkpoint_bytes = aos_contract::canonical::to_vec(&checkpoint)?;
     publish_atomic(checkpoint_path, &checkpoint_bytes)
         .context("publishing preserved initrd stage checkpoint")
+}
+
+fn source_completion_for_run<Execute, Validate>(
+    existing: Option<&StageEvent>,
+    transaction: &TransactionId,
+    execute: Execute,
+    validate_existing: Validate,
+) -> Result<StageEvent>
+where
+    Execute: FnOnce() -> Result<StageExecutionEvidence>,
+    Validate: FnOnce(&StageExecutionEvidence) -> Result<()>,
+{
+    if let Some(existing) = existing {
+        let StageEvent::SourceCompleted {
+            transaction: completed_transaction,
+            execution,
+            ..
+        } = existing
+        else {
+            bail!("initrd stage journal does not record source execution")
+        };
+        ensure!(
+            completed_transaction == transaction,
+            "initrd stage completion names another transaction"
+        );
+        execution.validate()?;
+        validate_existing(execution)?;
+        return Ok(existing.clone());
+    }
+
+    let execution = execute()?;
+    execution.validate()?;
+    Ok(StageEvent::SourceCompleted {
+        schema: JOURNAL_EVENT_SCHEMA.to_string(),
+        transaction: transaction.clone(),
+        execution,
+    })
+}
+
+fn validate_resolved_initrd_stage_evidence(
+    resolved_stage_bytes: &[u8],
+    execution: &StageExecutionEvidence,
+) -> Result<()> {
+    let checked = super::build_stage::decode_resolved_stage(resolved_stage_bytes)?;
+    ensure!(
+        checked.environment.stage == ExecutionStage::Initrd,
+        "resolved ability stage does not select the initrd environment"
+    );
+    ensure!(
+        checked.bundle.transition_authority_digest().is_none(),
+        "fresh initrd execution unexpectedly carries teardown authority"
+    );
+    ensure!(
+        execution.plan == checked.plan.id() && execution.bundle == checked.bundle.digest()?,
+        "retained initrd execution differs from the checked plan bundle"
+    );
+    for retained in &execution.retained_resources {
+        ensure!(
+            retained.operation.plan == checked.plan.id(),
+            "retained initrd resource names another plan"
+        );
+        let operation = checked
+            .plan
+            .operation(&retained.operation.operation)
+            .context("retained initrd resource names an unknown operation")?;
+        let method = checked
+            .plan
+            .operation_method(operation)
+            .context("retained initrd resource has no checked method")?;
+        let output = method
+            .outputs
+            .get(&retained.output)
+            .context("retained initrd resource names an unknown output")?;
+        ensure!(
+            output.is_retained_resource(),
+            "retained initrd resource names a non-retained output"
+        );
+    }
+    execution.validate()
+}
+
+fn execute_resolved_initrd_stage(
+    resolved_stage_bytes: &[u8],
+    contract_bytes: &[u8],
+    image_profile: &Path,
+    transaction: TransactionId,
+) -> Result<StageExecutionEvidence> {
+    let checked = super::build_stage::decode_resolved_stage(resolved_stage_bytes)?;
+    ensure!(
+        checked.environment.stage == ExecutionStage::Initrd,
+        "resolved ability stage does not select the initrd environment"
+    );
+    ensure!(
+        checked.bundle.transition_authority_digest().is_none(),
+        "fresh initrd execution unexpectedly carries teardown authority"
+    );
+
+    let supported_features = super::native_activation::supported_native_ability_features()?;
+    let packages = super::static_packages::verified_initrd_packages(contract_bytes)
+        .context("authenticating initrd handler packages")?;
+    let dispatcher =
+        super::handler_dispatch::HandlerDispatcher::for_static_plan(&checked.plan, &packages)
+            .context("constructing initrd handler dispatcher")?;
+    let stage_directory = image_profile.join("ability-stage-runtime").join("initrd");
+    let mut session = super::transaction_store::AbilityTransactionSession::open_stage(
+        &checked.plan,
+        transaction.clone(),
+        JournalLimits::default(),
+        stage_directory,
+        supported_features.clone(),
+        checked.bundle.clone(),
+        packages.clone(),
+    )
+    .context("opening durable initrd ability transaction")?;
+
+    let resolution_policy = selected_resolution_policy(&checked)?;
+    let scope = super::ability_policy::CurrentAuthorityScope {
+        plan: checked.plan.id(),
+        transaction,
+    };
+    let current_policy = super::ability_policy::PublishingNativeAdmissionPolicy::new(
+        &scope,
+        RevisionId(checked.bundle.desired_policy_digest()),
+        resolution_policy,
+        None,
+        None,
+        supported_features,
+        60_000,
+        false,
+    );
+    let cancellation = super::cancellation::AbilityCancellationGuard::install()
+        .context("installing initrd ability cancellation listeners")?;
+    let mut observer = super::execution_observer::AbilityExecutionBoundaryObserver::load(
+        checked.fixed_point.execution_observer.as_ref(),
+    )
+    .context("opening initrd execution observation channel")?;
+    let terminal = dispatcher.run_static_to_terminal(
+        &mut session,
+        current_policy,
+        cancellation.token(),
+        &mut observer,
+    )?;
+
+    let summary = session.transaction().summary();
+    let mut retained_resources = summary
+        .operations()
+        .iter()
+        .flat_map(|operation| {
+            operation
+                .retained_resources()
+                .iter()
+                .map(move |(output, resource)| StageRetainedResource {
+                    operation: operation.operation().clone(),
+                    output: output.clone(),
+                    resource: resource.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    retained_resources.sort_by(|left, right| {
+        left.operation
+            .cmp(&right.operation)
+            .then_with(|| left.output.cmp(&right.output))
+    });
+    let evidence = StageExecutionEvidence {
+        plan: checked.plan.id(),
+        bundle: checked.bundle.digest()?,
+        terminal,
+        retained_resources,
+    };
+    evidence.validate()?;
+    Ok(evidence)
+}
+
+fn selected_resolution_policy(
+    checked: &super::build_stage::CheckedResolvedBuildStage,
+) -> Result<ResolutionPolicyDocument> {
+    let binding = checked.plan.binding_plan().document();
+    let matching = checked
+        .bundle
+        .desired_policies()
+        .iter()
+        .filter(|policy| {
+            policy.desired_state == binding.desired_state
+                && policy.environment == binding.environment
+                && policy.policy_revision == binding.policy_revision
+        })
+        .collect::<Vec<_>>();
+    let [policy] = matching.as_slice() else {
+        bail!("initrd binding plan does not select exactly one authenticated resolution policy")
+    };
+    Ok((*policy).clone())
 }
 
 fn receive_initrd_stage_with(
@@ -615,13 +706,7 @@ fn receive_initrd_stage_with(
     if ownership == JournalOwnership::Received {
         return Ok(());
     }
-    let continuation = source_completion(opened.recovery.records())?
-        .map(|completion| {
-            HostStageManager::new(&image, release.contract_digest)
-                .continue_from(completion)
-                .context("reauthorizing and reacquiring initrd continuation resources")
-        })
-        .transpose()?;
+    let execution = source_execution(opened.recovery.records())?.clone();
     let received = StageEvent::HostReceived {
         schema: JOURNAL_EVENT_SCHEMA.to_string(),
         transaction: release.checkpoint.transaction.clone(),
@@ -629,7 +714,7 @@ fn receive_initrd_stage_with(
         released_journal_head: release.checkpoint.journal_head,
         image,
         static_ability_contract_sha256: release.contract_digest,
-        continuation,
+        execution,
     };
     journal.ensure_capacity(1)?;
     journal.append(&received)?;
@@ -688,7 +773,8 @@ fn load_validated_release(
     image: &ImageIdentity,
 ) -> Result<ValidatedRelease> {
     validate_boot_id(boot_id)?;
-    StaticAbilityContract::decode(contract_bytes)?;
+    super::static_packages::verified_initrd_packages(contract_bytes)
+        .context("reauthenticating initrd static ability contract")?;
     let checkpoint_bytes = read_trusted_file(
         checkpoint_path,
         DOCUMENT_MAX_BYTES,
@@ -761,16 +847,15 @@ fn validate_journal_sequence(
     }
 }
 
-fn source_completion(
-    records: &[JournalRecord<StageEvent>],
-) -> Result<Option<&InitrdActivationCompletion>> {
+fn source_execution(records: &[JournalRecord<StageEvent>]) -> Result<&StageExecutionEvidence> {
     let Some(record) = records.get(1) else {
-        bail!("released initrd stage journal has no source completion")
+        bail!("released initrd stage journal has no source execution")
     };
-    let StageEvent::SourceCompleted { completion, .. } = record.body() else {
-        bail!("initrd stage journal does not record source completion")
+    let StageEvent::SourceCompleted { execution, .. } = record.body() else {
+        bail!("initrd stage journal does not record source execution")
     };
-    Ok(completion.as_ref())
+    execution.validate()?;
+    Ok(execution)
 }
 
 fn validate_source_records(
@@ -784,10 +869,8 @@ fn validate_source_records(
         boot_id,
         transaction,
         image,
-        selection_sha256,
         static_ability_contract_sha256,
-        disposition,
-        activation_sha256,
+        resolved_stage_sha256,
         ..
     } = prepared
     else {
@@ -799,16 +882,13 @@ fn validate_source_records(
             && boot_id == &checkpoint.boot_id
             && transaction == &checkpoint.transaction
             && image == &checkpoint.image
-            && *selection_sha256 == checkpoint.selection_sha256
             && *static_ability_contract_sha256 == checkpoint.static_ability_contract_sha256
-            && *disposition == checkpoint.disposition
-            && *activation_sha256 == checkpoint.activation_sha256,
+            && *resolved_stage_sha256 == checkpoint.resolved_stage_sha256,
         "initrd stage journal preparation differs from the released checkpoint"
     );
     let StageEvent::SourceCompleted {
         transaction,
-        outcome,
-        completion,
+        execution,
         ..
     } = source_completed
     else {
@@ -816,28 +896,10 @@ fn validate_source_records(
     };
     ensure!(
         transaction == &checkpoint.transaction
-            && matches!(
-                (checkpoint.disposition, outcome, completion),
-                (
-                    ActivationDisposition::None,
-                    SourceOutcome::NoActivationRequired,
-                    None
-                ) | (
-                    ActivationDisposition::Required,
-                    SourceOutcome::ActivationSucceeded,
-                    Some(_)
-                )
-            )
-            && completion
-                .as_ref()
-                .map(canonical_value_digest)
-                .transpose()?
-                == checkpoint.completion_sha256,
+            && canonical_value_digest(execution)? == checkpoint.execution_sha256,
         "initrd stage completion differs from the released checkpoint"
     );
-    if let Some(completion) = completion {
-        completion.validate()?;
-    }
+    execution.validate()?;
     Ok(())
 }
 
@@ -857,7 +919,7 @@ fn validate_received_record(
         released_journal_head,
         image: received_image,
         static_ability_contract_sha256,
-        continuation,
+        execution,
         ..
     } = received
     else {
@@ -871,17 +933,18 @@ fn validate_received_record(
             && *static_ability_contract_sha256 == contract_digest,
         "retained host receipt differs from the current handoff evidence"
     );
-    let completion = match source_completed {
-        StageEvent::SourceCompleted { completion, .. } => completion.as_ref(),
-        _ => None,
+    let StageEvent::SourceCompleted {
+        execution: source_execution,
+        ..
+    } = source_completed
+    else {
+        bail!("initrd stage journal does not record source execution")
     };
-    let expected_continuation = completion
-        .map(|completion| HostStageManager::new(image, contract_digest).continue_from(completion))
-        .transpose()?;
     ensure!(
-        continuation == &expected_continuation,
-        "retained host receipt lacks fresh continuation authority evidence"
+        execution == source_execution,
+        "retained host receipt differs from the checked source execution"
     );
+    execution.validate()?;
     Ok(())
 }
 
@@ -1056,12 +1119,12 @@ fn sha256_digest(bytes: &[u8]) -> Sha256Digest {
 
 fn stage_journal_limits() -> JournalLimits {
     JournalLimits {
-        max_body_bytes: 64 * 1024,
+        max_body_bytes: DOCUMENT_MAX_BYTES as usize,
         max_depth: 16,
-        max_items: 256,
-        max_string_bytes: 4096,
+        max_items: aos_ability_model::ABILITY_LIMITS_V1.max_collection_items as usize,
+        max_string_bytes: aos_ability_model::ABILITY_LIMITS_V1.max_string_bytes as usize,
         max_records: 3,
-        max_file_bytes: 256 * 1024,
+        max_file_bytes: DOCUMENT_MAX_BYTES.saturating_mul(4),
     }
 }
 
@@ -1075,348 +1138,115 @@ fn require_privileged_runtime() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
-    const BOOT_ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
-
-    fn image() -> ImageIdentity {
-        ImageIdentity {
-            generation: 7,
-            toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-system".to_string(),
-            module_abi: 3,
-            base_lib_abi_hash: format!("sha256:{}", "b".repeat(64)),
-            root_verity_roothash: Some("c".repeat(64)),
-        }
+    #[test]
+    fn accepts_only_lowercase_canonical_boot_identities() {
+        assert!(validate_boot_id("01234567-89ab-cdef-0123-456789abcdef").is_ok());
+        assert!(validate_boot_id("01234567-89AB-CDEF-0123-456789ABCDEF").is_err());
+        assert!(validate_boot_id("0123456789abcdef0123456789abcdef").is_err());
     }
 
-    fn contract() -> Result<Vec<u8>> {
-        Ok(aos_contract::canonical::to_vec(&StaticAbilityContract {
-            schema: STATIC_CONTRACT_SCHEMA.to_string(),
-            platforms: vec![StaticAbilityPlatform {
-                platform: serde_json::json!({"architecture":"amd64","os":"linux"}),
-                execution_stage: ExecutionStage::Initrd,
-                packages: Vec::new(),
-                abilities: Vec::new(),
-                unresolved_launch_obligations: Vec::new(),
-            }],
-            runtime_grants: Vec::new(),
-        })?)
-    }
-
-    fn none_selection(contract: &[u8]) -> Result<Vec<u8>> {
-        Ok(aos_contract::canonical::to_vec(&ActivationSelection {
-            schema: SELECTION_SCHEMA.to_string(),
-            execution_stage: ExecutionStage::Initrd,
-            disposition: ActivationDisposition::None,
-            static_ability_contract_sha256: sha256_digest(contract),
-            activation: None,
-        })?)
-    }
-
-    fn required_selection(contract: &[u8]) -> Result<Vec<u8>> {
-        Ok(aos_contract::canonical::to_vec(&ActivationSelection {
-            schema: SELECTION_SCHEMA.to_string(),
-            execution_stage: ExecutionStage::Initrd,
-            disposition: ActivationDisposition::Required,
-            static_ability_contract_sha256: sha256_digest(contract),
-            activation: Some(InitrdActivation {
-                schema: ACTIVATION_SCHEMA.to_string(),
-                manager: InitrdManagerIdentity {
-                    stage: ExecutionStage::Initrd,
-                    kind: InitrdManagerKind::BootSubstrate,
+    #[test]
+    fn stage_execution_requires_success_and_canonical_retained_outputs() -> Result<()> {
+        let plan = PlanId(sha256_digest(b"plan"));
+        let operation = |key: &str| -> Result<OperationId> {
+            Ok(OperationId {
+                plan,
+                operation: aos_ability_model::ScopedOperationKey {
+                    scope: aos_ability_model::ScopePath::root(),
+                    key: LocalKey::new(key)?,
                 },
-                operations: vec![
-                    InitrdOperation::AuthenticateTargetImage {
-                        id: LocalKey::new("authenticate-image")?,
-                    },
-                    InitrdOperation::VerifyStaticAbilityContract {
-                        id: LocalKey::new("verify-static-contract")?,
-                    },
-                ],
-            }),
-        })?)
-    }
-
-    #[test]
-    fn transfers_none_disposition_through_durable_journal() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let profile = temporary.path().join("image");
-        let checkpoint = temporary
-            .path()
-            .join("run/aos/ability-stage-handoff/initrd.json");
-        fs::create_dir(&profile)?;
-        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
-        let contract = contract()?;
-        let selection = none_selection(&contract)?;
-
-        run_initrd_stage_with(
-            &profile,
-            &checkpoint,
-            &selection,
-            &contract,
-            BOOT_ID,
-            image(),
-        )?;
-        let transaction = transaction_for_boot(BOOT_ID)?;
-        let journal = profile
-            .join(TRANSACTION_ROOT)
-            .join(INITRD_TRANSACTION_ROOT)
-            .join(transaction.0.as_str())
-            .join(JOURNAL_FILE);
-        let released_journal = fs::read(&journal)?;
-        let released_checkpoint = fs::read(&checkpoint)?;
-        validate_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())?;
-        assert_eq!(fs::read(&journal)?, released_journal);
-        assert_eq!(fs::read(&checkpoint)?, released_checkpoint);
-
-        receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())?;
-        receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())?;
-
-        let snapshot =
-            FileJournal::<StageEvent>::read_only_snapshot(journal, stage_journal_limits())?;
-        assert_eq!(snapshot.records().len(), 3);
-        assert!(matches!(
-            snapshot.records()[0].body(),
-            StageEvent::Prepared { .. }
-        ));
-        assert!(matches!(
-            snapshot.records()[1].body(),
-            StageEvent::SourceCompleted { .. }
-        ));
-        assert!(matches!(
-            snapshot.records()[2].body(),
-            StageEvent::HostReceived { .. }
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn executes_typed_initrd_operations_and_reacquires_them_on_the_host() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let profile = temporary.path().join("image");
-        let checkpoint = temporary
-            .path()
-            .join("run/aos/ability-stage-handoff/initrd.json");
-        fs::create_dir(&profile)?;
-        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
-        let contract = contract()?;
-
-        run_initrd_stage_with(
-            &profile,
-            &checkpoint,
-            &required_selection(&contract)?,
-            &contract,
-            BOOT_ID,
-            image(),
-        )?;
-        validate_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())?;
-        receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())?;
-
-        let transaction = transaction_for_boot(BOOT_ID)?;
-        let journal = profile
-            .join(TRANSACTION_ROOT)
-            .join(INITRD_TRANSACTION_ROOT)
-            .join(transaction.0.as_str())
-            .join(JOURNAL_FILE);
-        let snapshot =
-            FileJournal::<StageEvent>::read_only_snapshot(journal, stage_journal_limits())?;
-        let StageEvent::SourceCompleted {
-            outcome,
-            completion: Some(completion),
-            ..
-        } = snapshot.records()[1].body()
-        else {
-            panic!("required selection did not retain typed completion evidence")
+            })
         };
-        assert_eq!(*outcome, SourceOutcome::ActivationSucceeded);
-        assert!(matches!(
-            completion.operations.as_slice(),
-            [
-                InitrdOperationCompletion::TargetImageAuthenticated { .. },
-                InitrdOperationCompletion::StaticAbilityContractVerified { .. }
-            ]
-        ));
-        let StageEvent::HostReceived {
-            continuation: Some(continuation),
-            ..
-        } = snapshot.records()[2].body()
-        else {
-            panic!("host receiver did not retain continuation evidence")
+        let resource = |key: &str| -> Result<ResourceReference> {
+            Ok(serde_json::from_value(serde_json::json!({
+                "interface": {
+                    "name": "aos.test.resource",
+                    "abi": 1,
+                    "descriptor": format!("sha256:{}", "0".repeat(64)),
+                },
+                "resource": {
+                    "provider": {
+                        "environment": {
+                            "authority": "test",
+                            "key": "host",
+                            "stage": "host",
+                        },
+                        "key": "provider",
+                    },
+                    "key": key,
+                },
+                "operations": ["observe", "remove"],
+                "lifetime": "persistent",
+            }))?)
         };
-        assert!(matches!(
-            continuation.resources.as_slice(),
-            [
-                HostResourceEvidence::TargetImageReauthenticated { .. },
-                HostResourceEvidence::StaticAbilityContractReacquired { .. }
-            ]
-        ));
+        let first = StageRetainedResource {
+            operation: operation("commit-authorized-input")?,
+            output: LocalKey::new("artifact-resource")?,
+            resource: resource("authorized-provisioning-input")?,
+        };
+        let second = StageRetainedResource {
+            operation: operation("observe-authorized-input")?,
+            output: LocalKey::new("artifact-resource")?,
+            resource: resource("authorized-provisioning-input")?,
+        };
+        let evidence = StageExecutionEvidence {
+            plan,
+            bundle: sha256_digest(b"bundle"),
+            terminal: TerminalResult::Succeeded,
+            retained_resources: vec![first.clone(), second],
+        };
+
+        evidence.validate()?;
+        assert_eq!(
+            evidence.retained_resource("commit-authorized-input", "artifact-resource")?,
+            &first.resource
+        );
+
+        let mut noncanonical = evidence.clone();
+        noncanonical.retained_resources.reverse();
+        assert!(noncanonical.validate().is_err());
+
+        let mut failed = evidence;
+        failed.terminal = TerminalResult::SettledFailure;
+        assert!(failed.validate().is_err());
         Ok(())
     }
 
     #[test]
-    fn initrd_barrier_rejects_a_missing_or_tampered_checkpoint() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let profile = temporary.path().join("image");
-        let checkpoint = temporary
-            .path()
-            .join("run/aos/ability-stage-handoff/initrd.json");
-        fs::create_dir(&profile)?;
-        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
-        let contract = contract()?;
+    fn restart_after_source_completion_never_invokes_handlers() -> Result<()> {
+        let transaction = transaction_for_boot("01234567-89ab-cdef-0123-456789abcdef")?;
+        let execution = StageExecutionEvidence {
+            plan: PlanId(sha256_digest(b"plan")),
+            bundle: sha256_digest(b"bundle"),
+            terminal: TerminalResult::Succeeded,
+            retained_resources: Vec::new(),
+        };
+        let completed = StageEvent::SourceCompleted {
+            schema: JOURNAL_EVENT_SCHEMA.to_string(),
+            transaction: transaction.clone(),
+            execution: execution.clone(),
+        };
+        let handler_invocations = AtomicUsize::new(0);
 
-        assert!(
-            validate_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image())
-                .expect_err("missing checkpoint must block switch-root")
-                .to_string()
-                .contains("opening preserved initrd stage checkpoint")
-        );
-
-        run_initrd_stage_with(
-            &profile,
-            &checkpoint,
-            &none_selection(&contract)?,
-            &contract,
-            BOOT_ID,
-            image(),
-        )?;
-        let mut bytes = fs::read(&checkpoint)?;
-        let midpoint = bytes.len() / 2;
-        bytes[midpoint] ^= 1;
-        fs::write(&checkpoint, bytes)?;
-        assert!(
-            validate_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image()).is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn untyped_required_activation_fails_before_durable_state_or_checkpoint() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let profile = temporary.path().join("image");
-        let checkpoint = temporary.path().join("run/initrd.json");
-        fs::create_dir(&profile)?;
-        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
-        let contract = contract()?;
-        let selection = aos_contract::canonical::to_vec(&serde_json::json!({
-            "activation": {"untyped":"rejected"},
-            "disposition": "required",
-            "execution_stage": "initrd",
-            "schema": SELECTION_SCHEMA,
-            "static_ability_contract_sha256": sha256_digest(&contract),
-        }))?;
-
-        let error = run_initrd_stage_with(
-            &profile,
-            &checkpoint,
-            &selection,
-            &contract,
-            BOOT_ID,
-            image(),
-        )
-        .expect_err("untyped execution must fail closed");
-        assert!(
-            format!("{error:#}").contains("decoding initrd activation selection"),
-            "{error:#}"
-        );
-        assert!(!profile.join(TRANSACTION_ROOT).exists());
-        assert!(!checkpoint.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn receiver_rejects_changed_boot_image_contract_and_checkpoint() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let profile = temporary.path().join("image");
-        let checkpoint = temporary
-            .path()
-            .join("run/aos/ability-stage-handoff/initrd.json");
-        fs::create_dir(&profile)?;
-        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
-        let contract = contract()?;
-        let selection = none_selection(&contract)?;
-        run_initrd_stage_with(
-            &profile,
-            &checkpoint,
-            &selection,
-            &contract,
-            BOOT_ID,
-            image(),
+        let recovered = source_completion_for_run(
+            Some(&completed),
+            &transaction,
+            || {
+                handler_invocations.fetch_add(1, Ordering::SeqCst);
+                Ok(execution.clone())
+            },
+            |retained| {
+                ensure!(retained == &execution, "retained execution changed");
+                Ok(())
+            },
         )?;
 
-        let other_boot = "fedcba98-7654-3210-fedc-ba9876543210";
-        assert!(
-            receive_initrd_stage_with(&profile, &checkpoint, &contract, other_boot, image())
-                .expect_err("other boot must fail")
-                .to_string()
-                .contains("another boot")
-        );
-        let mut other_image = image();
-        other_image.generation += 1;
-        assert!(
-            receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, other_image)
-                .expect_err("other image must fail")
-                .to_string()
-                .contains("another image")
-        );
-        let mut other_contract: StaticAbilityContract = serde_json::from_slice(&contract)?;
-        other_contract.platforms[0].platform =
-            serde_json::json!({"architecture":"arm64","os":"linux"});
-        let other_contract = aos_contract::canonical::to_vec(&other_contract)?;
-        assert!(
-            receive_initrd_stage_with(&profile, &checkpoint, &other_contract, BOOT_ID, image())
-                .expect_err("other contract must fail")
-                .to_string()
-                .contains("another initrd static ability contract")
-        );
-
-        let mut bytes = fs::read(&checkpoint)?;
-        let midpoint = bytes.len() / 2;
-        bytes[midpoint] ^= 1;
-        fs::write(&checkpoint, bytes)?;
-        assert!(
-            receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image()).is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn receiver_rejects_a_torn_or_mutated_released_journal() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let profile = temporary.path().join("image");
-        let checkpoint = temporary
-            .path()
-            .join("run/aos/ability-stage-handoff/initrd.json");
-        fs::create_dir(&profile)?;
-        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
-        let contract = contract()?;
-        run_initrd_stage_with(
-            &profile,
-            &checkpoint,
-            &none_selection(&contract)?,
-            &contract,
-            BOOT_ID,
-            image(),
-        )?;
-        let transaction = transaction_for_boot(BOOT_ID)?;
-        let journal = profile
-            .join(TRANSACTION_ROOT)
-            .join(INITRD_TRANSACTION_ROOT)
-            .join(transaction.0.as_str())
-            .join(JOURNAL_FILE);
-        let pristine = fs::read(&journal)?;
-
-        let mut mutated = pristine.clone();
-        let index = mutated.len() / 2;
-        mutated[index] ^= 1;
-        fs::write(&journal, &mutated)?;
-        assert!(
-            receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image()).is_err()
-        );
-
-        fs::write(&journal, &pristine[..pristine.len() - 7])?;
-        assert!(
-            receive_initrd_stage_with(&profile, &checkpoint, &contract, BOOT_ID, image()).is_err()
-        );
+        assert_eq!(recovered, completed);
+        assert_eq!(handler_invocations.load(Ordering::SeqCst), 0);
         Ok(())
     }
 }
