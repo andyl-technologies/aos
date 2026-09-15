@@ -51,7 +51,6 @@
       ${builtins.readFile ./ability-boundary-observer.py}
     '';
   };
-  observerConfiguration = ''{"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}'';
   observerRequires = lib.optional (observerForwardSocket != null) "aos-ability-crucible.service";
   observerAfter = ["local-fs.target"] ++ observerRequires;
   observerService = {
@@ -75,10 +74,8 @@
       };
   };
   observerModule = {
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = observerConfiguration;
-      mode = "0600";
-    };
+    imports = [./_ability-execution-observer.nix];
+    aos.tests.executionObserver.enable = true;
     systemd.services.aos-ability-boundary-controller = observerService;
   };
   observerSystem = mkSystem (fixture.runtimeModules ++ [observerModule] ++ extraRuntimeModules);
@@ -93,10 +90,8 @@
   # Every switched generation must retain the opt-in and controller because
   # native execution begins only after that generation replaces /etc.
   observerHostModule = ''
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = ${builtins.toJSON observerConfiguration};
-      mode = "0600";
-    };
+    imports = [ ${./_ability-execution-observer.nix} ];
+    aos.tests.executionObserver.enable = true;
     systemd.services.aos-ability-boundary-controller = {
       description = "AOS native ability boundary test controller";
       wantedBy = [ "multi-user.target" ];

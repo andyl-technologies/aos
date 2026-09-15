@@ -11,23 +11,6 @@
   ...
 }: let
   cfg = config.aos.profiles.abilityCrucible;
-  socket = "/run/aos-instrumentation/controller.sock";
-  observerConfig = builtins.toJSON {
-    schema = "aos.ability-execution-observer/v1";
-    inherit socket;
-  };
-  adapterConfig = builtins.toJSON {
-    schema = "aos.ability-crucible-adapter/v1";
-    inherit socket;
-    ready_command = "${pkgs.systemd}/bin/systemd-notify";
-    required_instruction_abi = 1;
-    required_marker_kinds = [
-      "assertion"
-      "coverage"
-      "event"
-      "lifecycle"
-    ];
-  };
 in {
   options.aos.profiles.abilityCrucible.enable = lib.mkOption {
     type = lib.types.bool;
@@ -42,47 +25,17 @@ in {
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [pkgs.aos-ability-crucible];
-
-    environment.etc = {
-      "aos/ability-crucible-adapter.json" = {
-        text = adapterConfig;
-        mode = "0444";
-      };
-      "aos/ability-execution-observer.json" = {
-        text = observerConfig;
-        mode = "0444";
-      };
+    aos.services.abilityCrucible.enable = true;
+    aos.abilities.bindings."ability-crucible:observer-endpoint" = {
+      request = "aos-ability-crucible:observer-endpoint";
+      implementation = "aos-ability-crucible:execution-observer-endpoint";
+      providerInstance = "aos-ability-crucible:ability-crucible";
+      slot = "observer";
     };
-
-    systemd.services = {
-      aos-ability-crucible = {
-        description = "Publish AOS ability boundaries to Crucible";
-        requiredBy = ["aos-activate.service"];
-        before = ["aos-activate.service"];
-        serviceConfig = {
-          Type = "notify";
-          NotifyAccess = "all";
-          RuntimeDirectory = "aos-instrumentation";
-          RuntimeDirectoryMode = "0700";
-          Restart = "on-failure";
-          RestartSec = "1s";
-          TimeoutStartSec = "30s";
-          ProtectSystem = "strict";
-          ProtectHome = true;
-          PrivateTmp = true;
-          UMask = "0077";
-          ReadWritePaths = ["/run/aos-instrumentation"];
-        };
-        script = ''
-          exec ${pkgs.aos-ability-crucible}/bin/aos-ability-crucible \
-            --config /etc/aos/ability-crucible-adapter.json
-        '';
-      };
-
-      aos-activate = {
-        requires = ["aos-ability-crucible.service"];
-        after = ["aos-ability-crucible.service"];
-      };
+    aos.abilities.executionObserver = lib.mkDefault {
+      request = "aos-ability-crucible:observer-endpoint";
+      resourceOutput = "retained-resource";
+      socketOutput = "socket-path";
     };
   };
 }

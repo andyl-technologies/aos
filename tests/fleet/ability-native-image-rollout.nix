@@ -15,7 +15,6 @@
       ${builtins.readFile ./ability-boundary-observer.py}
     '';
   };
-  observerConfiguration = ''{"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}'';
   observerService = {
     description = "AOS image rollout execution-boundary controller";
     wantedBy = ["multi-user.target"];
@@ -32,17 +31,13 @@
     };
   };
   observerModule = {
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = observerConfiguration;
-      mode = "0600";
-    };
+    imports = [./_ability-execution-observer.nix];
+    aos.tests.executionObserver.enable = true;
     systemd.services.aos-ability-boundary-controller = observerService;
   };
   observerHostModule = ''
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = ${builtins.toJSON observerConfiguration};
-      mode = "0600";
-    };
+    imports = [ ${./_ability-execution-observer.nix} ];
+    aos.tests.executionObserver.enable = true;
     systemd.services.aos-ability-boundary-controller = {
       description = "AOS image rollout execution-boundary controller";
       wantedBy = [ "multi-user.target" ];

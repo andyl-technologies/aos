@@ -36,12 +36,9 @@
       ${builtins.readFile ./ability-boundary-observer.py}
     '';
   };
-  observerConfiguration = ''{"schema":"aos.ability-execution-observer/v1","socket":"/run/aos-instrumentation/controller.sock"}'';
   observerModule = {
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = observerConfiguration;
-      mode = "0600";
-    };
+    imports = [./_ability-execution-observer.nix];
+    aos.tests.executionObserver.enable = true;
     systemd.services.aos-ability-boundary-controller = {
       description = "AOS rollout provider-state boundary controller";
       wantedBy = ["multi-user.target"];
@@ -67,10 +64,8 @@
     };
   };
   observerHostModule = ''
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = ${builtins.toJSON observerConfiguration};
-      mode = "0600";
-    };
+    imports = [ ${./_ability-execution-observer.nix} ];
+    aos.tests.executionObserver.enable = true;
     systemd.services.aos-ability-boundary-controller = {
       description = "AOS rollout provider-state boundary controller";
       wantedBy = [ "multi-user.target" ];
@@ -96,10 +91,8 @@
     };
   '';
   setupBody = ''
-    environment.etc."aos/ability-execution-observer.json" = {
-      text = ${builtins.toJSON observerConfiguration};
-      mode = "0600";
-    };
+    imports = [ ${./_ability-execution-observer.nix} ];
+    aos.tests.executionObserver.enable = true;
     systemd.services.aos-ability-boundary-controller = {
       description = "AOS rollout effect-boundary controller";
       wantedBy = [ "multi-user.target" ];

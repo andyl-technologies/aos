@@ -1,0 +1,202 @@
+##! Package-owned Ability Crucible endpoint and service declaration.
+{
+  config,
+  lib,
+  packageName,
+  packageVersion,
+  ...
+}: let
+  cfg = config.aos.services.abilityCrucible;
+  abilityTypes = lib.abilities.types;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceTypes = serviceManagement.types;
+  resultOf = lib.abilities.resultOf;
+  packageArtifact = lib.abilities.packageOutput {};
+  runtimePath = "/run/aos/ability-crucible";
+
+  producer = key: interface: parameters:
+    serviceManagement.forProducer {
+      consumerInstance = "ability-crucible";
+      inherit key interface parameters;
+    };
+  runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
+    name = "ability-crucible";
+    purpose = "runtime";
+    mode = "0700";
+    requested_path = runtimePath;
+  };
+  socketPath = "${runtimePath}/${cfg.socketName}";
+  adapterConfiguration = serviceManagement.forConfiguration {
+    inherit serviceTypes;
+    consumerInstance = "ability-crucible";
+    declaration = {
+      name = "configuration-file";
+      source = {
+        kind = "interpolated-text";
+        fragments = [
+          {
+            kind = "literal";
+            text = ''{"ready_command":"'';
+          }
+          {
+            kind = "artifact-file-path";
+            reference = {
+              artifact = lib.abilities.packageOutput {package = "systemd";};
+              path = "bin/systemd-notify";
+            };
+          }
+          {
+            kind = "literal";
+            text = ''","required_instruction_abi":1,"required_marker_kinds":["assertion","coverage","event","lifecycle"],"schema":"aos.ability-crucible-adapter/v1","socket":"'';
+          }
+          {
+            kind = "execution-path";
+            value = socketPath;
+          }
+          {
+            kind = "literal";
+            text = ''"}'';
+          }
+        ];
+        maximum_size_bytes = abilityTypes.limits.maxDocumentBytes;
+      };
+      mode = "0400";
+    };
+  };
+  command = arguments: {
+    executable = {
+      artifact = packageArtifact;
+      entry_point = "bin/aos-ability-crucible";
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  service = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "ability-crucible";
+    declaration = {
+      service = "adapter";
+      enabled = true;
+      lifecycle = {
+        description = "AOS ability boundary adapter (${packageName} ${packageVersion})";
+        execution_model = "foreground";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command ["--config" (resultOf "configuration-file" "planned-path")])];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "on-failure";
+        restart_delay_millis = 1000;
+        configuration_change_action = "restart";
+        remain_after_exit = false;
+        start_timeout_millis = 30000;
+        stop_timeout_millis = 90000;
+      };
+      dependencies = {
+        prerequisites = [
+          (resultOf "runtime-storage" "retained-resource")
+          (resultOf "configuration-file" "retained-resource")
+        ];
+        after = [];
+        before = [];
+        requires = [];
+        wants = [];
+      };
+      supervision = {
+        startup_protocol = "notification";
+        notification_access = "all-processes";
+      };
+      manager_identity = {
+        name = "aos-ability-crucible";
+        aliases = [];
+      };
+      readiness = {
+        mechanism = "process-signal";
+        signal_scope = "all-processes";
+        timeout_millis = 30000;
+      };
+      configuration.views = [
+        {
+          name = "adapter";
+          source = resultOf "configuration-file" "planned-path";
+          optional = false;
+        }
+      ];
+      storage.mounts = [
+        {
+          name = "runtime";
+          source = resultOf "runtime-storage" "planned-path";
+          access = "read-write";
+        }
+      ];
+      logging = {
+        standard_output = "structured";
+        standard_error = "structured";
+        directories = [];
+        directory_mode = "0700";
+      };
+      identity = {
+        supplementary_groups = [];
+        ephemeral = false;
+        file_creation_mask = "0077";
+      };
+      isolation = {
+        privilege = "privileged";
+        filesystem = "read-only-system";
+        network = "host";
+        process_visibility = "host";
+        termination_scope = "all-processes";
+        temporary_directory = "private";
+        devices = [];
+        host_paths = [];
+        permit_core_dumps = false;
+      };
+    };
+  };
+  endpointInterface = {
+    alias = "execution-observer-endpoint";
+    declaration = config.aos.abilities.interfaces."${packageName}:execution-observer-endpoint";
+  };
+  endpoint = producer "observer-endpoint" endpointInterface {
+    service_resource = resultOf "adapter-lifecycle" "service-resource";
+    socket_path = socketPath;
+  };
+  fragments = [runtimeStorage adapterConfiguration service endpoint];
+  contributions = builtins.map serviceManagement.splitContribution fragments;
+in {
+  imports = [
+    ./endpoint-interface.nix
+    ./endpoint-provider.nix
+  ];
+
+  options.aos.services.abilityCrucible = {
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = true;
+      description = "Run the protected Ability Crucible execution-boundary adapter.";
+    };
+    socketName = lib.mkOption {
+      type = abilityTypes.localKey;
+      default = "controller.sock";
+      description = "Runtime-directory entry used for the protected observer socket.";
+    };
+  };
+
+  config = lib.mkMerge [
+    {
+      aos.abilities = lib.mkMerge (
+        builtins.map (contribution: contribution.declarations) contributions
+      );
+    }
+    (lib.mkIf cfg.enable {
+      aos.abilities = lib.mkMerge (
+        [
+          {instances.ability-crucible = {};}
+        ]
+        ++ builtins.map (contribution: contribution.configured) contributions
+      );
+    })
+  ];
+}
