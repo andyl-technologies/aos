@@ -1364,7 +1364,12 @@ in
       disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
       configuration = (abilities.requests."envoy:bootstrap-configuration" or {parameters = {};}).parameters;
       mainLifecycle = (abilities.requests."envoy:main-lifecycle" or {parameters = {};}).parameters;
+      mainStorage = (abilities.requests."envoy:main-storage" or {parameters = {};}).parameters;
       mainResources = (abilities.requests."envoy:main-resources" or {parameters = {};}).parameters;
+      qualifiedResultOf = request: output: {
+        _type = "aos-request-output-reference";
+        inherit request output;
+      };
       contractHolds =
         assertionsHoldFor evaluatedConfig
         && assertionsHoldFor validSds
@@ -1393,6 +1398,11 @@ in
         configuration.source.document
         && mainLifecycle.restart == "on-failure"
         && mainLifecycle.restart_delay_millis == 2000
+        && builtins.map (mount: mount.source) mainStorage.mounts
+        == [
+          (qualifiedResultOf "envoy:state-storage" "planned-path")
+          (qualifiedResultOf "envoy:log-storage" "planned-path")
+        ]
         && (let
           arguments = (builtins.head mainLifecycle.pre_start).executable.arguments;
           configurationArgument = builtins.elemAt arguments 3;

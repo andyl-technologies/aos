@@ -334,12 +334,12 @@
       storage.mounts = [
         {
           name = "state";
-          source = resultOf "state-storage" "storage-path";
+          source = resultOf "state-storage" "planned-path";
           access = "read-write";
         }
         {
           name = "logs";
-          source = resultOf "log-storage" "storage-path";
+          source = resultOf "log-storage" "planned-path";
           access = "read-write";
         }
       ];
