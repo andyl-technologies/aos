@@ -132,7 +132,14 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             compose_entry,
             aggregation_group,
             activation_mode,
-        }) = pure_implementation(&provider, reference, group.package, packages, package_index)?
+        }) = pure_implementation(
+            context,
+            &provider,
+            reference,
+            group.package,
+            packages,
+            package_index,
+        )?
         else {
             continue;
         };
@@ -315,6 +322,7 @@ struct PureImplementation<'a> {
 }
 
 fn pure_implementation<'a>(
+    context: &'a ValidationContext,
     provider: &InstanceId,
     reference: &ProviderImplementationReference,
     provider_package: Option<Sha256Digest>,
@@ -362,8 +370,8 @@ fn pure_implementation<'a>(
             export.interface == implementation.interface
                 && export.implementation == reference.descriptor
         })
-        .and_then(|export| export.aggregation.as_ref())
-        .map(|aggregation| &aggregation.controller_group);
+        .and_then(|export| context.interface(&export.interface))
+        .map(|interface| &interface.interface.aggregation.controller_group);
     match &implementation.implementation {
         ImplementationKind::PureComposition {
             compose_entry,
@@ -747,7 +755,6 @@ pub(super) fn validate_enabled_providers(
                     package.exports.iter().any(|export| {
                         export.interface == implementation.interface
                             && export.implementation == descriptor
-                            && export.aggregation.is_some()
                     })
                 })
             });
@@ -794,7 +801,6 @@ pub(super) fn validate_enabled_providers(
         let exported = package.exports.iter().any(|export| {
             export.interface == selection.interface
                 && export.implementation == selection.implementation.descriptor
-                && export.aggregation.is_some()
         });
         let valid_entry = match &implementation.implementation {
             ImplementationKind::PureComposition {

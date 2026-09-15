@@ -176,7 +176,7 @@ impl PackageAbilityReference {
             exports.push(AbilityExportReference {
                 name: export.name.clone(),
                 interface: interface.clone(),
-                aggregation: export.aggregation.clone(),
+                aggregation: Some(interface.interface.aggregation.clone()),
                 implementation: export.implementation,
                 requirements: provider.requirements.clone(),
             });
