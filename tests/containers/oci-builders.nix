@@ -141,7 +141,7 @@
     };
   amd64AbilityContract = abilityContractFor {architecture = "amd64";};
   resolvedSmokePackageDocument =
-    builtins.head amd64AbilityContract.packageAbilityContracts;
+    builtins.head amd64AbilityContract.retainedPackageContractArtifacts;
   changedAmd64AbilityContract = abilityContractFor {
     architecture = "amd64";
     applicationRoot = changedApplication;
@@ -160,7 +160,7 @@
       } ''
         mkdir -p "$out"
         jq -cS ${lib.escapeShellArg filter} \
-          ${sourceContract}/contract.json > "$out/contract.with-newline.json"
+          ${sourceContract.artifact}/contract.json > "$out/contract.with-newline.json"
         size=$(stat -c %s "$out/contract.with-newline.json")
         truncate -s "$((size - 1))" "$out/contract.with-newline.json"
         mv "$out/contract.with-newline.json" "$out/contract.json"
@@ -176,7 +176,6 @@
       '';
   in
     sourceContract
-    // rewrittenArtifact
     // {artifact = rewrittenArtifact;};
   forgeStaticAbilityContract = pname: sourceContract:
     rewriteStaticAbilityContract
@@ -193,8 +192,8 @@
       multiPlatformAbilityContract)
     // {
       inputContractPaths = map builtins.toString [
-        arm64AbilityContract
-        forgedPlatformAbilityContract
+        arm64AbilityContract.artifact
+        forgedPlatformAbilityContract.artifact
       ];
     };
   reorderedPlatformAbilityContract =
@@ -361,11 +360,11 @@
       } ''
         cp -a ${amd64Image}/. "$out"
         chmod -R u+w "$out"
-        cp ${forgedPlatformAbilityContract}/contract.json "$out/static-ability-contract.json"
-        cp ${forgedPlatformAbilityContract}/descriptor.json \
+        cp ${forgedPlatformAbilityContract.artifact}/contract.json "$out/static-ability-contract.json"
+        cp ${forgedPlatformAbilityContract.artifact}/descriptor.json \
           "$out/static-ability-contract.descriptor.json"
 
-        contract_digest=$(jq -r .digest ${forgedPlatformAbilityContract}/descriptor.json)
+        contract_digest=$(jq -r .digest ${forgedPlatformAbilityContract.artifact}/descriptor.json)
         jq -cS \
           --arg digest "$contract_digest" \
           '.annotations."dev.andyl.aos.ability-contract.digest" = $digest' \
@@ -548,6 +547,13 @@
   );
   accepts = validator: value: (builtins.tryEval (validator "test vector" value)).success;
   evalContracts = assert validStickyMode.success;
+  assert !(amd64AbilityContract ? outPath);
+  assert builtins.isAttrs amd64AbilityContract.artifact;
+  assert amd64AbilityContract.artifact ? outPath;
+  assert builtins.all (
+    contractArtifact: builtins.isAttrs contractArtifact && contractArtifact ? outPath
+  )
+  amd64AbilityContract.retainedPackageContractArtifacts;
   assert !(builtins.elem
     (builtins.toString abilityPackageSmokeProvider)
     amd64AbilityContract.runtimeRootPaths);
@@ -593,14 +599,14 @@ in
       changedAmd64Image
       arm64Image
       multiPlatform
-      forgedPlatformAbilityContract
-      forgedAggregateAbilityContract
-      reorderedPlatformAbilityContract
-      reorderedRequirementAbilityContract
-      duplicateRequirementAbilityContract
-      changedPackageIdentityAbilityContract
-      changedProviderIdentityAbilityContract
-      changedRequiredRequirementAbilityContract
+      forgedPlatformAbilityContract.artifact
+      forgedAggregateAbilityContract.artifact
+      reorderedPlatformAbilityContract.artifact
+      reorderedRequirementAbilityContract.artifact
+      duplicateRequirementAbilityContract.artifact
+      changedPackageIdentityAbilityContract.artifact
+      changedProviderIdentityAbilityContract.artifact
+      changedRequiredRequirementAbilityContract.artifact
       forgedAmd64Image
       forgedMarkerImageProbe
       forgedMarkerIndexProbe
@@ -626,42 +632,42 @@ in
           test -f ${forgedMarkerIndexProbe}/semantic-validator-observed-forged-marker \
             || fail "multi-platform index bypassed static ability semantic validation"
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${forgedPlatformAbilityContract}/contract.json \
+            static-contract ${forgedPlatformAbilityContract.artifact}/contract.json \
             container - linux amd64 - 2>/dev/null; then
             fail "forged image-layout static ability contract passed semantic validation"
           fi
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${forgedAggregateAbilityContract}/contract.json \
+            static-contract ${forgedAggregateAbilityContract.artifact}/contract.json \
             container - 2>/dev/null; then
             fail "forged aggregate static ability contract passed semantic validation"
           fi
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${reorderedPlatformAbilityContract}/contract.json \
+            static-contract ${reorderedPlatformAbilityContract.artifact}/contract.json \
             container - 2>/dev/null; then
             fail "rehashed contract with reordered platforms passed semantic validation"
           fi
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${reorderedRequirementAbilityContract}/contract.json \
+            static-contract ${reorderedRequirementAbilityContract.artifact}/contract.json \
             container - linux amd64 - 2>/dev/null; then
             fail "rehashed contract with reordered requirement members passed semantic validation"
           fi
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${duplicateRequirementAbilityContract}/contract.json \
+            static-contract ${duplicateRequirementAbilityContract.artifact}/contract.json \
             container - linux amd64 - 2>/dev/null; then
             fail "rehashed contract with duplicate requirement members passed semantic validation"
           fi
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${changedPackageIdentityAbilityContract}/contract.json \
+            static-contract ${changedPackageIdentityAbilityContract.artifact}/contract.json \
             container - linux amd64 - 2>/dev/null; then
             fail "rehashed contract with changed package identity passed artifact validation"
           fi
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${changedProviderIdentityAbilityContract}/contract.json \
+            static-contract ${changedProviderIdentityAbilityContract.artifact}/contract.json \
             container - linux amd64 - 2>/dev/null; then
             fail "rehashed contract with changed provider identity passed artifact validation"
           fi
           if ${pkgs.aos-ability-contract-validator}/bin/aos-ability-contract-validator \
-            static-contract ${changedRequiredRequirementAbilityContract}/contract.json \
+            static-contract ${changedRequiredRequirementAbilityContract.artifact}/contract.json \
             container - linux amd64 - 2>/dev/null; then
             fail "rehashed contract with changed required requirement passed artifact validation"
           fi

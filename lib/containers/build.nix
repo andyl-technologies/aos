@@ -318,7 +318,7 @@
       {
         path = "/usr/lib/aos-container/static-ability-contract.json";
         mode = "0444";
-        source = "${staticAbilityContract}/contract.json";
+        source = "${staticAbilityContract.artifact}/contract.json";
       }
       {
         path = "/usr/lib/aos-container/store-paths";

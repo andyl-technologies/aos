@@ -121,7 +121,7 @@
     src = null;
     buildDeps =
       [abilityContractValidator coreutils findutils gzip jq tar]
-      ++ checkedAbilityContract.packageAbilityContracts;
+      ++ checkedAbilityContract.retainedPackageContractArtifacts;
 
     outputChecks.out = {};
     inherit indexSpec;
@@ -144,18 +144,18 @@
 
           mkdir -p "$out/layout/blobs/sha256"
           jq '.indexSpec' "$NIX_ATTRS_JSON_FILE" > index-spec.input.json
-          test -f ${checkedAbilityContract}/contract.json
-          test -f ${checkedAbilityContract}/descriptor.json
+          test -f ${checkedAbilityContract.artifact}/contract.json
+          test -f ${checkedAbilityContract.artifact}/descriptor.json
           ${abilityContractValidator}/bin/aos-ability-contract-validator \
-            static-contract ${checkedAbilityContract}/contract.json container -
-          contract_digest=$(jq -r .digest ${checkedAbilityContract}/descriptor.json)
-          contract_media_type=$(jq -r .mediaType ${checkedAbilityContract}/descriptor.json)
-          contract_size=$(jq -r .size ${checkedAbilityContract}/descriptor.json)
+            static-contract ${checkedAbilityContract.artifact}/contract.json container -
+          contract_digest=$(jq -r .digest ${checkedAbilityContract.artifact}/descriptor.json)
+          contract_media_type=$(jq -r .mediaType ${checkedAbilityContract.artifact}/descriptor.json)
+          contract_size=$(jq -r .size ${checkedAbilityContract.artifact}/descriptor.json)
           contract_hex=''${contract_digest#sha256:}
-          test "$(sha256sum ${checkedAbilityContract}/contract.json | cut -d ' ' -f 1)" = "$contract_hex"
-          test "$(stat -c %s ${checkedAbilityContract}/contract.json)" -eq "$contract_size"
+          test "$(sha256sum ${checkedAbilityContract.artifact}/contract.json | cut -d ' ' -f 1)" = "$contract_hex"
+          test "$(stat -c %s ${checkedAbilityContract.artifact}/contract.json)" -eq "$contract_size"
           jq -e '.schema == "aos.container.static-abilities/v1" and .runtime_grants == []' \
-            ${checkedAbilityContract}/contract.json >/dev/null
+            ${checkedAbilityContract.artifact}/contract.json >/dev/null
           jq -S \
             --arg digest "$contract_digest" \
             --arg mediaType "$contract_media_type" '
@@ -167,8 +167,8 @@
               | .descriptorAnnotations = .annotations
             ' index-spec.input.json > index-spec.with-contract.json
           mv index-spec.with-contract.json index-spec.input.json
-          cp --reflink=auto ${checkedAbilityContract}/contract.json "$out/static-ability-contract.json"
-          cp --reflink=auto ${checkedAbilityContract}/descriptor.json "$out/static-ability-contract.descriptor.json"
+          cp --reflink=auto ${checkedAbilityContract.artifact}/contract.json "$out/static-ability-contract.json"
+          cp --reflink=auto ${checkedAbilityContract.artifact}/descriptor.json "$out/static-ability-contract.descriptor.json"
           : > manifests.jsonl
           : > child-contract-platforms.jsonl
 
@@ -274,7 +274,7 @@
               }
             ' > expected-contract.pretty.json
           write_compact_json expected-contract.pretty.json expected-contract.json
-          cmp expected-contract.json ${checkedAbilityContract}/contract.json || {
+          cmp expected-contract.json ${checkedAbilityContract.artifact}/contract.json || {
             echo "aggregate static ability contract differs from the platform image contracts" >&2
             exit 1
           }
@@ -282,7 +282,7 @@
             --slurpfile manifests manifests.json '
               [.platforms[].platform]
               == [$manifests[0][].platform]
-            ' ${checkedAbilityContract}/contract.json >/dev/null || {
+            ' ${checkedAbilityContract.artifact}/contract.json >/dev/null || {
               echo "aggregate static ability contract platform set differs from the image index" >&2
               exit 1
             }

@@ -195,10 +195,10 @@
       contracts
     then contractPaths
     else common.fail "static ability contract inputs must be produced by mkStaticAbilityContract";
-  packageAbilityContracts =
+  retainedPackageContractArtifacts =
     if platformMode
     then resolvedPackageContracts
-    else lib.unique (lib.concatMap (contract: contract.packageAbilityContracts) contracts);
+    else lib.unique (lib.concatMap (contract: contract.retainedPackageContractArtifacts) contracts);
   runtimeRootPaths = map builtins.toString runtimeRoots;
   checkedRuntimeRoots =
     if
@@ -242,7 +242,7 @@
     src = null;
     buildDeps =
       [abilityContractValidator]
-      ++ packageAbilityContracts
+      ++ retainedPackageContractArtifacts
       ++ map (contract: contract.artifact) contracts;
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
@@ -267,12 +267,11 @@
     meta.description = "Closed static ability contract for an AOS OCI artifact";
   };
 in
-  builtins.deepSeq validated (contractArtifact
-    // {
-      _type = "aos-oci-static-ability-contract";
-      artifact = contractArtifact;
-      inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
-      inherit packageAbilityContracts;
-      inputContractPaths = contractPaths;
-      selectedPayloadPaths = payloadPaths;
-    })
+  builtins.deepSeq validated {
+    _type = "aos-oci-static-ability-contract";
+    artifact = contractArtifact;
+    inherit mediaType schema artifactClass executionStage checkedPlatform runtimeRootPaths;
+    inherit retainedPackageContractArtifacts;
+    inputContractPaths = contractPaths;
+    selectedPayloadPaths = payloadPaths;
+  }
