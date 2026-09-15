@@ -3,10 +3,14 @@
   lib,
   pkgs,
 }: let
-  packageModule = module: {
+  packageModule = {
     name = "aos-ability-crucible";
     version = pkgs.aos-ability-crucible.version;
-    inherit module;
+    module = pkgs.aos-ability-crucible.module + "/module.nix";
+    outputs = {
+      self = builtins.toString pkgs.aos-ability-crucible;
+      dependencies = {};
+    };
   };
   evaluate = enabled:
     lib.evalModules {
@@ -22,7 +26,7 @@
           aos.services.abilityCrucible.enable = enabled;
         }
       ];
-      packageModules = [(packageModule ../../pkgs/tools/_aos-ability-crucible/module.nix)];
+      packageModules = [packageModule];
     };
   disabled = evaluate false;
   enabled = evaluate true;
@@ -74,9 +78,7 @@
         };
       }
     ];
-    packageModules = [
-      (packageModule ../../pkgs/tools/_aos-ability-crucible/module.nix)
-    ];
+    packageModules = [packageModule];
   };
   composedAbilities = composed.config.aos.abilities;
   resolvedResources = builtins.attrValues composedAbilities.resolvedResources;
