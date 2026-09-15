@@ -19,8 +19,8 @@ use crucible::{Configuration, Decision, ScenarioDefForm, Schedule};
 use crucible_campaign::ChoiceValue;
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
-    CampaignRepositoryError, ChoiceDomain, ChoiceOpportunity, SelectableDeclaration, Selection,
-    SelectionId, SelectionOrigin,
+    CampaignRepositoryError, ChoiceDomain, ChoiceOpportunity, ResolvedSelection,
+    SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
 };
 use thiserror::Error;
 
@@ -71,6 +71,25 @@ impl GuardedCampaignReplayClosure {
             });
         }
 
+        let closure = Self::new(records)?;
+        closure.validate_for_schedule(scenario, schedule)?;
+        Ok(closure)
+    }
+
+    pub(crate) fn from_resolved_selections(
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+        selections: &[ResolvedSelection],
+    ) -> Result<Self, GuardedCampaignReplayClosureError> {
+        let records = selections
+            .iter()
+            .map(|resolved| GuardedCampaignReplaySelection {
+                domain: resolved.domain().clone(),
+                declaration: resolved.declaration().clone(),
+                opportunity: resolved.opportunity().clone(),
+                selection: resolved.selection().clone(),
+            })
+            .collect();
         let closure = Self::new(records)?;
         closure.validate_for_schedule(scenario, schedule)?;
         Ok(closure)

@@ -12,10 +12,11 @@ use crucible_daemon::campaign_store_composition::{
 };
 use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
-    CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcPlan,
-    CampaignLocalServiceConfig, CampaignLocalServiceMode, CampaignLoopbackEndpointConfig,
-    CampaignLoopbackServerConfig, DirectoryAssignmentLedger, DirectoryCampaignGcJournal,
-    DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
+    CampaignGcJournalCreateDisposition, CampaignGcJournalPhase, CampaignGcJournalTransition,
+    CampaignGcPlan, CampaignLocalServiceConfig, CampaignLocalServiceMode,
+    CampaignLoopbackEndpointConfig, CampaignLoopbackServerConfig, DirectoryAssignmentLedger,
+    DirectoryCampaignGcJournal, DirectoryExactPinMaterializationStore,
+    EXACT_PIN_MATERIALIZATION_DIRECTORY,
 };
 use serde::Serialize;
 
@@ -378,6 +379,55 @@ pub(super) fn run_campaign_store_gc(
                 physical,
             }
         }
+        CampaignStoreGcCommand::Cancel => {
+            let mut journal = DirectoryCampaignGcJournal::open(&args.journal).map_err(|error| {
+                maintenance_error(format!("campaign GC journal open failed: {error}"))
+            })?;
+            let plan_id = journal.plan().id().map_err(|error| {
+                maintenance_error(format!("campaign GC plan identity failed: {error}"))
+            })?;
+            let roots = journal.roots().len();
+            let physical = physical_report(journal.plan());
+            let required_copies = cache_required_copy_report(journal.plan(), journal.candidates())?;
+            let transition = journal.cancel().map_err(|error| {
+                maintenance_error(format!("campaign GC cancellation failed: {error}"))
+            })?;
+            let unreachable_candidates = journal
+                .candidates()
+                .iter()
+                .filter(|candidate| {
+                    matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
+                })
+                .count();
+            let unreachable_candidates = u64::try_from(unreachable_candidates)
+                .map_err(|_| maintenance_error("campaign GC candidate count overflow"))?;
+            CampaignStoreGcReport {
+                schema: CAMPAIGN_GC_REPORT_SCHEMA,
+                operation: "cancel",
+                plan_version: CAMPAIGN_GC_PLAN_VERSION,
+                plan: plan_id.to_hex(),
+                journal: journal.root().display().to_string(),
+                journal_disposition: match transition {
+                    CampaignGcJournalTransition::Advanced => "cancelled",
+                    CampaignGcJournalTransition::Existing => "already-cancelled",
+                },
+                phase: journal_phase(journal.phase()),
+                apply_status: None,
+                roots,
+                reachable_objects: None,
+                candidates: journal.candidates().summary().candidates(),
+                unreachable_candidates,
+                reachable_cache_candidates: journal
+                    .candidates()
+                    .summary()
+                    .candidates()
+                    .checked_sub(unreachable_candidates)
+                    .ok_or_else(|| maintenance_error("campaign GC candidate count underflow"))?,
+                candidate_logical_bytes: journal.candidates().logical_bytes(),
+                cache_required_copies: required_copies,
+                physical,
+            }
+        }
     };
 
     render_campaign_store_gc(&report, format)
@@ -390,8 +440,7 @@ fn cache_required_copy_report(
     candidates
         .iter()
         .filter_map(|candidate| {
-            let CampaignGcCandidateReason::ReachableReadThroughCache { required_backend } =
-                candidate.reason()
+            let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
             else {
                 return None;
             };
@@ -594,6 +643,7 @@ const fn journal_phase(phase: CampaignGcJournalPhase) -> &'static str {
         CampaignGcJournalPhase::Planned => "planned",
         CampaignGcJournalPhase::Applying => "applying",
         CampaignGcJournalPhase::Complete => "complete",
+        CampaignGcJournalPhase::Cancelled => "cancelled",
     }
 }
 
@@ -923,6 +973,37 @@ mod tests {
         let replayed: serde_json::Value =
             serde_json::from_str(&replayed).expect("decode apply replay report");
         assert_eq!(replayed["apply_status"], "already-complete");
+    }
+
+    #[test]
+    fn offline_gc_cancellation_is_durable_and_apply_refuses_it() {
+        let fixture = GcFixture::new();
+        let mut args = fixture.args(CampaignStoreGcCommand::Plan);
+        let planned =
+            run_campaign_store_gc(&args, OutputFormat::Jsonl).expect("plan empty repository GC");
+        let planned: serde_json::Value =
+            serde_json::from_str(&planned).expect("decode planning report");
+
+        args.operation = CampaignStoreGcCommand::Cancel;
+        let cancelled = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+            .expect("cancel planned repository GC");
+        let cancelled: serde_json::Value =
+            serde_json::from_str(&cancelled).expect("decode cancellation report");
+        assert_eq!(cancelled["plan"], planned["plan"]);
+        assert_eq!(cancelled["operation"], "cancel");
+        assert_eq!(cancelled["phase"], "cancelled");
+        assert_eq!(cancelled["journal_disposition"], "cancelled");
+
+        let replayed = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+            .expect("replay repository GC cancellation");
+        let replayed: serde_json::Value =
+            serde_json::from_str(&replayed).expect("decode cancellation replay report");
+        assert_eq!(replayed["journal_disposition"], "already-cancelled");
+
+        args.operation = CampaignStoreGcCommand::Apply;
+        let error = run_campaign_store_gc(&args, OutputFormat::Jsonl)
+            .expect_err("cancelled repository GC must not apply");
+        assert!(error.to_string().contains("records a cancelled plan"));
     }
 
     #[test]

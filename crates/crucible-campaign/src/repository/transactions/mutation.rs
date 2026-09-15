@@ -98,39 +98,39 @@ impl CampaignRepository {
                 .merkle
                 .insert(exploration.content_id(), key, proposal_content)?;
         }
-        if let Some(frontier_index) = self.merkle.get(
+        let frontier_index = self
+            .merkle
+            .get(
+                current.snapshot.roots().exploration,
+                frontier_index_anchor_key(),
+            )?
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
+        let request = self.read_branch_request(proposal.request().content_id())?;
+        let prior_state = self.continuation_state(
+            super::projection::CandidateViewRoots::from_roots(current.snapshot.roots()),
+            proposal.request(),
+            &request,
+        )?;
+        self.validate_frontier_projection(
+            frontier_index,
+            proposal.request(),
+            proposal.branch_point(),
+            prior_state,
+        )?;
+        let next_frontier = self.frontier_index_after(
             current.snapshot.roots().exploration,
-            frontier_index_anchor_key(),
-        )? {
-            let request = self.read_branch_request(proposal.request().content_id())?;
-            let prior_state = self.continuation_state(
-                super::projection::CandidateViewRoots::from_roots(current.snapshot.roots()),
-                proposal.request(),
-                &request,
-            )?;
-            self.validate_frontier_projection(
-                frontier_index,
+            &[(
                 proposal.request(),
                 proposal.branch_point(),
-                prior_state,
-            )?;
-            let next_frontier = self
-                .frontier_index_after(
-                    current.snapshot.roots().exploration,
-                    &[(
-                        proposal.request(),
-                        proposal.branch_point(),
-                        crate::ContinuationState::Open,
-                    )],
-                    true,
-                )?
-                .ok_or_else(|| integrity("proposal-frontier-index-disappeared"))?;
-            exploration = self.merkle.insert(
-                exploration.content_id(),
-                frontier_index_anchor_key(),
-                next_frontier,
-            )?;
-        }
+                crate::ContinuationState::Open,
+            )],
+            true,
+        )?;
+        exploration = self.merkle.insert(
+            exploration.content_id(),
+            frontier_index_anchor_key(),
+            next_frontier,
+        )?;
 
         let fact = CampaignFact::ProposalIssued(proposal_id);
         let transition_content = self.put_fact(&fact)?;
@@ -296,51 +296,51 @@ impl CampaignRepository {
         }
 
         let mut exploration = current.snapshot.roots().exploration;
-        if let Some(frontier_index) = self.merkle.get(exploration, frontier_index_anchor_key())? {
-            let proposal_record = self.read_proposal(proposal.content_id())?;
-            let request = self.read_branch_request(proposal_record.request().content_id())?;
-            let prior_state = self.continuation_state(
-                super::projection::CandidateViewRoots::new(
-                    exploration,
-                    current.snapshot.roots().observations,
-                    current.snapshot.roots().corpus,
-                    current.snapshot.roots().accounting,
-                ),
-                proposal_record.request(),
-                &request,
-            )?;
-            self.validate_frontier_projection(
-                frontier_index,
+        let frontier_index = self
+            .merkle
+            .get(exploration, frontier_index_anchor_key())?
+            .ok_or_else(|| integrity("current-campaign-frontier-index-is-missing"))?;
+        let proposal_record = self.read_proposal(proposal.content_id())?;
+        let request = self.read_branch_request(proposal_record.request().content_id())?;
+        let prior_state = self.continuation_state(
+            super::projection::CandidateViewRoots::new(
+                exploration,
+                current.snapshot.roots().observations,
+                current.snapshot.roots().corpus,
+                current.snapshot.roots().accounting,
+            ),
+            proposal_record.request(),
+            &request,
+        )?;
+        self.validate_frontier_projection(
+            frontier_index,
+            proposal_record.request(),
+            proposal_record.branch_point(),
+            prior_state,
+        )?;
+        let next_state = self.continuation_state(
+            super::projection::CandidateViewRoots::new(
+                exploration,
+                current.snapshot.roots().observations,
+                current.snapshot.roots().corpus,
+                accounting,
+            ),
+            proposal_record.request(),
+            &request,
+        )?;
+        let next_frontier = self.frontier_index_after(
+            exploration,
+            &[(
                 proposal_record.request(),
                 proposal_record.branch_point(),
-                prior_state,
-            )?;
-            let next_state = self.continuation_state(
-                super::projection::CandidateViewRoots::new(
-                    exploration,
-                    current.snapshot.roots().observations,
-                    current.snapshot.roots().corpus,
-                    accounting,
-                ),
-                proposal_record.request(),
-                &request,
-            )?;
-            let next_frontier = self
-                .frontier_index_after(
-                    exploration,
-                    &[(
-                        proposal_record.request(),
-                        proposal_record.branch_point(),
-                        next_state,
-                    )],
-                    true,
-                )?
-                .ok_or_else(|| integrity("attempt-admission-frontier-index-disappeared"))?;
-            exploration = self
-                .merkle
-                .insert(exploration, frontier_index_anchor_key(), next_frontier)?
-                .content_id();
-        }
+                next_state,
+            )],
+            true,
+        )?;
+        exploration = self
+            .merkle
+            .insert(exploration, frontier_index_anchor_key(), next_frontier)?
+            .content_id();
 
         let fact = CampaignFact::AttemptAdmitted(admission_id);
         let transition_content = self.put_fact(&fact)?;

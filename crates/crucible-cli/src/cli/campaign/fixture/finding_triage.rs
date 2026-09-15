@@ -849,59 +849,11 @@ where
 mod segmented_replay_tests {
     use super::*;
 
-    #[derive(Clone, Copy)]
-    enum VerificationReplayPayload {
-        ExactInlineEnvelope,
-        Maximum,
-    }
-
-    fn verification_payload(
-        native: &NativeFindingFixture,
-        kind: VerificationReplayPayload,
-    ) -> Result<Vec<u8>, CliError> {
-        if matches!(kind, VerificationReplayPayload::Maximum) {
-            return Ok(vec![
-                b'm';
-                crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES
-            ]);
-        }
-
-        let ordinary = fixture_step(
-            "encode inline sizing replay",
-            native
-                .verification_selected_native_replay
-                .to_compact_binary(),
-        )?;
-        let sizing_campaign = start_fixture_campaign(&native.form)?;
-        let (sizing, _, sizing_verification_selected) =
-            publish_campaign_finding_fixture_with_verification_payload(
-                native,
-                sizing_campaign,
-                ordinary.clone(),
-            )?;
-        let description = fixture_step(
-            "describe inline sizing replay",
-            sizing
-                .repository
-                .describe_finding_triage_replay_storage(sizing_verification_selected),
-        )?;
-        let stored_bytes = usize::try_from(description.objects()[0].stored_envelope_bytes())
-            .map_err(|_| fixture_error("inline replay size exceeds platform limits"))?;
-        let fixed_bytes = stored_bytes
-            .checked_sub(ordinary.len())
-            .ok_or_else(|| fixture_error("inline replay sizing is inconsistent"))?;
-        let target_payload_bytes = (64 * 1024 * 1024_usize)
-            .checked_sub(fixed_bytes)
-            .ok_or_else(|| fixture_error("inline replay metadata exceeds its envelope"))?;
-
-        Ok(vec![b'i'; target_payload_bytes])
-    }
-
-    fn capture_fixture(
-        payload_kind: VerificationReplayPayload,
-    ) -> Result<(PublishedFindingFixture, CampaignFindingTriageReplayProof), CliError> {
+    fn capture_fixture()
+    -> Result<(PublishedFindingFixture, CampaignFindingTriageReplayProof), CliError> {
         let native = build_native_finding_fixture()?;
-        let verification_payload = verification_payload(&native, payload_kind)?;
+        let verification_payload =
+            vec![b'm'; crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES];
         let campaign = start_fixture_campaign(&native.form)?;
         let (published, bundle, verification_selected) =
             publish_campaign_finding_fixture_with_verification_payload(
@@ -932,65 +884,9 @@ mod segmented_replay_tests {
     }
 
     #[test]
-    fn exact_inline_envelope_uses_segments_when_the_ordinary_response_overflows() {
-        let (published, proof) = capture_fixture(VerificationReplayPayload::ExactInlineEnvelope)
-            .unwrap_or_else(|error| panic!("capture exact-fitting inline replay: {error}"));
-        let first = proof
-            .segments
-            .first()
-            .unwrap_or_else(|| panic!("missing root segment"));
-        let description = first.response.description();
-        assert_eq!(description.storage_schema_version(), 1);
-        assert_eq!(description.objects().len(), 1);
-        assert_eq!(
-            description.objects()[0].stored_envelope_bytes(),
-            64 * 1024 * 1024
-        );
-        assert_eq!(proof.segments.len(), 2);
-
-        let client = CampaignClient::new(RepositoryCampaignService::new(
-            &published.repository,
-            PermitFindingExport,
-        ));
-        let ordinary_request = crucible_campaign::GetCampaignFindingOccurrenceObjectRequest::new(
-            first.request.principal().clone(),
-            first.request.campaign().clone(),
-            first.request.snapshot(),
-            first.request.finding(),
-            first.request.bundle(),
-            crucible_campaign::CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence,
-        )
-        .unwrap_or_else(|error| panic!("build ordinary replay request: {error}"));
-        let ordinary_error = client
-            .get_campaign_finding_occurrence_object(&ordinary_request)
-            .err()
-            .unwrap_or_else(|| panic!("the proof-bearing ordinary response must exceed 64 MiB"));
-        assert!(matches!(
-            ordinary_error,
-            crucible_campaign::CampaignClientError::Service(
-                crucible_campaign::CampaignServiceFailure::IntegrityFailure
-            )
-        ));
-
-        let mut reordered = proof.clone();
-        reordered.segments.swap(0, 1);
-        let reorder_error =
-            crate::cli_triage_debug::campaign_evidence::reassemble_campaign_triage_replay_proof(
-                &reordered,
-            )
-            .err()
-            .unwrap_or_else(|| panic!("reordered replay segments must be rejected"));
-        assert!(
-            reorder_error
-                .to_string()
-                .contains("reordered or substituted")
-        );
-    }
-
-    #[test]
     fn maximum_replay_uses_three_chunks_and_fits_the_campaign_aggregate_bound() {
-        let (_published, proof) = capture_fixture(VerificationReplayPayload::Maximum)
-            .unwrap_or_else(|error| panic!("capture maximum replay: {error}"));
+        let (_published, proof) =
+            capture_fixture().unwrap_or_else(|error| panic!("capture maximum replay: {error}"));
         let description = proof.segments[0].response.description();
         assert_eq!(description.storage_schema_version(), 2);
         assert_eq!(

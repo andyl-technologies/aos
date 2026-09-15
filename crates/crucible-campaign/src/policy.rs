@@ -20,9 +20,6 @@ pub use smc::{
 };
 pub use statistical::{StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign};
 
-const BASE_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 1;
-const INTERVENTION_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 2;
-const FINITE_STATISTICAL_CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 3;
 const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 4;
 pub(crate) const MAX_POLICY_ENTRIES: usize = 4_096;
 const MAX_CAMPAIGN_POLICY_BYTES: usize = 16 * 1024 * 1024;
@@ -80,26 +77,13 @@ pub const LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 5;
 /// 64 powers plus a distinct inclusive maximum.
 pub const LOG_INTEGER_GENERATOR_MAX_CANDIDATES: usize = 65;
 
-/// Generator implementation version for keyed finite-integer permutation.
-///
-/// This version derives a four-round bounded permutation from the immutable
-/// branch-request identity and maps it onto exact stepped-domain offsets.
-/// Unknown versions fail closed.
-pub const PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 6;
-
-/// Maximum cardinality admitted by permuted-integer implementation version 6.
-///
-/// Proposal ordinals are 64-bit and one-based, so a domain with `2^64` legal
-/// values cannot be named completely and fails closed.
-pub const PERMUTED_INTEGER_GENERATOR_MAX_CARDINALITY: u128 = u64::MAX as u128;
-
 /// Generator implementation version for modeled uniform-integer permutation.
 ///
 /// This version resolves a uniform integer probability model into a
 /// request-keyed permutation of its exact stepped domain. It admits the full
 /// `2^64` unsigned domain while one request still emits at most its explicit
 /// 64-bit proposal budget. Unknown versions fail closed.
-pub const MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 17;
+pub const PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 17;
 
 /// Generator implementation version for weighted categorical enumeration.
 ///
@@ -131,63 +115,13 @@ pub const ORDERED_MIXTURE_GENERATOR_MAX_WORK_ITEMS: usize = 8_192;
 /// Maximum nested executable-mixture depth.
 pub const ORDERED_MIXTURE_GENERATOR_MAX_DEPTH: usize = 64;
 
-/// Generator implementation version for feedback-gated integer refinement.
-///
-/// This version emits an initial exact stratification, then repeatedly bisects
-/// the largest remaining legal-offset interval. Refinement `r` requires the
-/// branch point's cumulative completed-visit count to reach `r` times the
-/// declared interval. Version 11 retains these gates with a distinct
-/// feedback-scored interval order; unknown versions fail closed.
-pub const PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 9;
-
-/// Generator implementation version for feedback-scored integer refinement.
-///
-/// This version retains version 9's exact stratified prefix and visit gates,
-/// then scores every remaining interval by the absolute difference between its
-/// owner-derived endpoint PUCT scores. Equal scores prefer the largest interval
-/// and then its lowest legal offset. Each listed current version retains its
-/// defined behavior, while unknown versions fail closed.
-pub const FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 11;
-
-/// Generator implementation version for landmark-aware integer refinement.
-///
-/// This version retains version 11's exact prefix, visit gates, and endpoint
-/// PUCT-score basis. Intervals sort by the count of unproposed producer
-/// landmarks before the version-11 terms; the selected interval emits the
-/// landmark nearest to its lower midpoint before ordinary refinement resumes.
-pub const LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 12;
-
-/// Generator implementation version for measurement-sensitive integer refinement.
-///
-/// This version retains version 12's exact landmark and PUCT terms, preceded by
-/// the exact discontinuity between the endpoint edges' mean owner-verified
-/// objective rewards. Each listed current version retains its own interval order.
-pub const MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 13;
-
-/// Generator implementation version for coverage-sensitive integer refinement.
-///
-/// This version retains version 13's exact objective, landmark, and PUCT terms,
-/// preceded by the exact discontinuity between the endpoint edges' mean counts
-/// of globally unique owner-verified coverage identities. Each listed current
-/// version retains its own interval order.
-pub const COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 14;
-
-/// Generator implementation version for finding-sensitive integer refinement.
-///
-/// This version retains version 14's exact coverage, objective, landmark, and
-/// PUCT terms, preceded by the exact discontinuity between the endpoint edges'
-/// mean active-policy-weighted owner-verified finding rewards. Each listed
-/// current version retains its own interval order.
-pub const FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 15;
-
 /// Implementation version for rarity-sensitive progressive integer refinement.
 ///
-/// Version 16 retains version 15's finding, coverage, objective, landmark, and
-/// PUCT terms but first compares the exact mean inverse-frequency coverage
-/// rarity mass at the two interval endpoints.
-pub const RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 16;
+/// The current algorithm compares exact mean inverse-frequency coverage rarity
+/// mass before finding, coverage, objective, landmark, and PUCT interval terms.
+pub const PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION: u32 = 16;
 
-/// Maximum initial strata admitted by executable progressive-integer versions.
+/// Maximum initial strata admitted by the progressive-integer implementation.
 pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA: u32 = 4_096;
 
 /// Maximum proposals admitted by one executable progressive-integer request.
@@ -723,21 +657,12 @@ impl CandidateGeneratorAlgorithm {
             Self::LogInteger { .. } => {
                 implementation_version == LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
             }
-            Self::PermutedInteger => matches!(
-                implementation_version,
-                PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | MODELED_UNIFORM_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            ),
-            Self::ProgressiveInteger { .. } => matches!(
-                implementation_version,
-                PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | FEEDBACK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | LANDMARK_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | MEASUREMENT_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | COVERAGE_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | FINDING_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-                    | RARITY_PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            ),
+            Self::PermutedInteger => {
+                implementation_version == PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            }
+            Self::ProgressiveInteger { .. } => {
+                implementation_version == PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+            }
             Self::MutateNearCorpus { .. } => {
                 implementation_version == CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION
             }

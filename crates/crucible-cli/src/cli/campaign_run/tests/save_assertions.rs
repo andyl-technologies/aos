@@ -67,8 +67,8 @@ pub(super) fn assert_campaign_save_exports_closure(
                 marker_entry.event_payload().string("marker"),
                 Some(proved_marker.name.as_str())
             );
-            let handle = std::fs::read_to_string(&output).or_panic("marker v5 handle");
-            assert!(handle.contains("schema\tcrucible.savepoint-handle.v5\n"));
+            let handle = std::fs::read_to_string(&output).or_panic("marker v6 handle");
+            assert!(handle.contains("schema\tcrucible.savepoint-handle.v6\n"));
             assert!(handle.contains("campaign-replay-closure\tcrucible-hash:"));
             assert!(handle.contains("boundary-proof\tcampaign-marker-event\t"));
             assert!(handle.contains("boundary-predicate\t"));
@@ -99,7 +99,7 @@ pub(super) fn assert_campaign_save_exports_closure(
                 &format_content_hash_ref(crucible::ContentHash::default()),
             );
             let error = decode_savepoint_handle(wrong_hash.as_bytes())
-                .error_or_panic("v5 campaign marker hash must bind its canonical event");
+                .error_or_panic("campaign marker hash must bind its canonical event");
             assert!(error.to_string().contains("canonical event"));
 
             let wrong_predicate = handle
@@ -166,9 +166,9 @@ pub(super) fn assert_campaign_save_exports_closure(
                 .join("\n")
                 + "\n";
             let missing_source = decode_savepoint_handle(missing_source.as_bytes())
-                .or_panic("structurally valid v5 event record");
+                .or_panic("structurally valid v6 event record");
             let error = savepoint_handle_evidence("resume", &missing_source)
-                .error_or_panic("v5 source node must belong to the embedded scenario");
+                .error_or_panic("v6 source node must belong to the embedded scenario");
             assert!(error.to_string().contains("not declared"));
         }
         StopCondition::VirtualTimeNanoseconds(_) => {
@@ -180,11 +180,11 @@ pub(super) fn assert_campaign_save_exports_closure(
                     .proof,
                 SaveBoundaryProof::Coordinate
             );
-            let handle = std::fs::read_to_string(&output).or_panic("virtual-time v5 handle");
-            assert!(handle.contains("schema\tcrucible.savepoint-handle.v5\n"));
+            let handle = std::fs::read_to_string(&output).or_panic("virtual-time v6 handle");
+            assert!(handle.contains("schema\tcrucible.savepoint-handle.v6\n"));
             assert!(handle.contains("campaign-replay-closure\tcrucible-hash:"));
             decode_savepoint_handle(handle.as_bytes())
-                .or_panic("v5 decoder accepts campaign coordinate proof");
+                .or_panic("v6 decoder accepts campaign coordinate proof");
         }
         StopCondition::Observation(condition) => {
             let boundary = outcome
@@ -232,11 +232,11 @@ pub(super) fn assert_campaign_save_exports_closure(
                 Some(&retained_evidence)
             );
 
-            let mislabeled = handle.replace(
+            let unsupported = handle.replace(
                 "schema\tcrucible.savepoint-handle.v6",
-                "schema\tcrucible.savepoint-handle.v5",
+                "schema\tunsupported.savepoint-handle",
             );
-            assert!(decode_savepoint_handle(mislabeled.as_bytes()).is_err());
+            assert!(decode_savepoint_handle(unsupported.as_bytes()).is_err());
 
             let wrong_checkpoint = handle
                 .lines()

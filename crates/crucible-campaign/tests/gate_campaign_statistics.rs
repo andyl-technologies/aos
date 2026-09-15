@@ -529,7 +529,7 @@ fn finite_static_policy_rejects_support_drift_and_unmodeled_probability_claims()
         1,
         1,
     )?;
-    let legacy = CampaignPolicy::new(
+    let unmodeled = CampaignPolicy::new(
         CampaignPolicy::identity(
             scenario,
             CampaignSeed::from_bytes([0x51; 32]),
@@ -548,8 +548,12 @@ fn finite_static_policy_rejects_support_drift_and_unmodeled_probability_claims()
             true,
         ),
     )?;
-    let created =
-        repository.create("unmodeled-statistical", &lineage, &legacy, &BTreeMap::new())?;
+    let created = repository.create(
+        "unmodeled-statistical",
+        &lineage,
+        &unmodeled,
+        &BTreeMap::new(),
+    )?;
     assert!(matches!(
         repository.project_statistical_estimate("unmodeled-statistical", created.snapshot_id()),
         Err(CampaignRepositoryError::Integrity {

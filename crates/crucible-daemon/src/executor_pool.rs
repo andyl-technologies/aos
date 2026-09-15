@@ -8,7 +8,6 @@
 
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
@@ -37,16 +36,18 @@ use crate::{
     AttemptWorkerFailure, AttemptWorkerReconcileError, CapturedAttemptCheckpoint,
     CheckpointHandoffFailure, CheckpointPublicationOutcome, CheckpointResultAbortToken,
     CheckpointResultStageOutcome, CompletionValidationFailure, DirectoryPreparedResultJournal,
-    ExactCheckpointStore, LocalAttemptWorker, LocalExecutorCapabilityService, LocalExecutorError,
-    LocalExecutorSupervisor, PreparedAttemptCheckpoint, PreparedAttemptRecoveryOutcome,
-    PreparedAttemptResult, PreparedAttemptWorkResult, PreparedCheckpointResult,
-    PreparedResultJournalError, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
+    ExactCheckpointStore, FindingReplayCaptureStore, LocalAttemptWorker,
+    LocalExecutorCapabilityService, LocalExecutorError, LocalExecutorSupervisor,
+    PreparedAttemptCheckpoint, PreparedAttemptRecoveryOutcome, PreparedAttemptResult,
+    PreparedAttemptWorkResult, PreparedCheckpointResult, PreparedResultJournalError,
+    PreparedResultJournalNamespace, PublishedAttemptResult, QueuedAttempt, StagedAttemptResult,
     abort_checkpoint_result, abort_prepared_attempt_result, abort_published_attempt_result,
     abort_staged_attempt_result, journal_prepared_attempt_result, prepare_attempt_result,
     publish_prepared_attempt_result, publish_staged_checkpoint_result, reconcile_attempt_failure,
     reconcile_published_attempt_result, reconcile_published_checkpoint_result,
     recover_prepared_attempt_result, retry_pending_attempt_result, retry_pending_checkpoint_result,
-    stage_prepared_attempt_result, stage_prepared_checkpoint_result,
+    stage_prepared_attempt_result, stage_prepared_attempt_result_journal,
+    stage_prepared_checkpoint_result,
 };
 
 mod completion;
@@ -68,12 +69,15 @@ const POOL_POISONED: u8 = 2;
 /// Durable prepared-result location used by production semantic workers.
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedResultJournalConfig {
-    namespace: PathBuf,
+    namespace: PreparedResultJournalNamespace,
     maximum_payload_bytes: usize,
 }
 
 impl PreparedResultJournalConfig {
-    pub(crate) fn new(namespace: PathBuf, maximum_payload_bytes: usize) -> Self {
+    pub(crate) fn new(
+        namespace: PreparedResultJournalNamespace,
+        maximum_payload_bytes: usize,
+    ) -> Self {
         Self {
             namespace,
             maximum_payload_bytes,
@@ -1396,6 +1400,9 @@ where
             reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
             return RecoveryDisposition::Stopped;
         }
+        if !recover_or_remove_staged_journal(shared, config, &queued) {
+            return RecoveryDisposition::Stopped;
+        }
         match recover_prepared_attempt_result(
             store,
             &config.namespace,
@@ -1425,13 +1432,112 @@ where
     }
 }
 
+fn recover_or_remove_staged_journal<L, V>(
+    shared: &SharedExecutor<L, V>,
+    config: &PreparedResultJournalConfig,
+    queued: &QueuedAttempt,
+) -> bool
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let key = AttemptExecutionKey::for_request(queued.request());
+    loop {
+        let state = {
+            let executor = match shared.executor.lock() {
+                Ok(executor) => executor,
+                Err(poisoned) => {
+                    drop(poisoned.into_inner());
+                    shared.poison();
+                    return false;
+                }
+            };
+            match executor.supervisor().ledger().load_attempt(key) {
+                Ok(state) => state,
+                Err(_) => {
+                    increment(&shared.counters.publication_retries);
+                    drop(executor);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                    continue;
+                }
+            }
+        };
+        let staged = match DirectoryPreparedResultJournal::open_staged_for_recovery(
+            &config.namespace,
+            key,
+            config.maximum_payload_bytes,
+        ) {
+            Ok(staged) => staged,
+            Err(PreparedResultJournalError::Io { .. }) => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+                continue;
+            }
+            Err(_) => {
+                shared.poison();
+                return false;
+            }
+        };
+        let Some(mut staged) = staged else {
+            return true;
+        };
+
+        let Some(AttemptRuntimeState::Publishing {
+            observation,
+            finding_candidate,
+            ..
+        }) = state
+        else {
+            drop(staged);
+            match DirectoryPreparedResultJournal::cleanup_orphans_after_ledger_check(
+                &config.namespace,
+                key,
+            ) {
+                Ok(_) => return true,
+                Err(PreparedResultJournalError::Io { .. }) => {
+                    increment(&shared.counters.publication_retries);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                    continue;
+                }
+                Err(_) => {
+                    shared.poison();
+                    return false;
+                }
+            }
+        };
+        let journal_observation = staged.result().observation().observation().id();
+        let journal_candidate = staged
+            .result()
+            .finding()
+            .map(crate::PreparedCrucibleFindingCandidate::id)
+            .transpose();
+        if journal_observation != Ok(observation) || journal_candidate != Ok(finding_candidate) {
+            shared.poison();
+            return false;
+        }
+        match staged.commit_staged() {
+            Ok(()) => return true,
+            Err(PreparedResultJournalError::Io { .. }) => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => {
+                shared.poison();
+                return false;
+            }
+        }
+    }
+}
+
 fn recovery_failure_is_retryable(source: &AttemptResultRecoveryFailure) -> bool {
     match source {
         AttemptResultRecoveryFailure::Journal(PreparedResultJournalError::Io { .. }) => true,
         AttemptResultRecoveryFailure::Preparation(source) => {
             source.executor_rejection() == ExecutorRejection::UnavailableInput
         }
-        AttemptResultRecoveryFailure::Journal(_) => false,
+        AttemptResultRecoveryFailure::CaptureStore(source) => source.is_retryable(),
+        AttemptResultRecoveryFailure::Journal(_)
+        | AttemptResultRecoveryFailure::ProductionReplay(_) => false,
     }
 }
 
@@ -1584,12 +1690,223 @@ where
         }
     };
 
-    let prepared = match journal_before_stage(shared, prepared) {
-        Some(prepared) => prepared,
-        None => return Some(AttemptExecutionDisposition::Failed),
+    let (prepared, journaled) =
+        match stage_finding_replay_captures_before_journal(shared, store, prepared) {
+            CaptureRootDisposition::Prepared {
+                prepared,
+                journaled,
+            } => (*prepared, journaled),
+            CaptureRootDisposition::Finished(disposition) => return Some(disposition),
+        };
+
+    let prepared = if journaled {
+        prepared
+    } else {
+        match journal_before_stage(shared, prepared) {
+            Some(prepared) => prepared,
+            None => return Some(AttemptExecutionDisposition::Failed),
+        }
     };
 
     Some(reconcile_prepared_result(shared, store, prepared))
+}
+
+enum CaptureRootDisposition {
+    Prepared {
+        prepared: Box<PreparedAttemptResult>,
+        journaled: bool,
+    },
+    Finished(AttemptExecutionDisposition),
+}
+
+fn stage_finding_replay_captures_before_journal<L, V>(
+    shared: &SharedExecutor<L, V>,
+    store: &CampaignExecutorStore,
+    mut prepared: PreparedAttemptResult,
+) -> CaptureRootDisposition
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let capture_inputs = match prepared.production_replay_capture_inputs() {
+        Ok(inputs) => inputs,
+        Err(source) => return stop_capture_handoff(shared, prepared, source),
+    };
+    let captures = match capture_inputs.map(FindingReplayCaptureStore::prepare_set) {
+        Some(Ok(captures)) => Some(captures),
+        Some(Err(source)) => return stop_capture_handoff(shared, prepared, source),
+        None => None,
+    };
+    let Some(config) = &shared.prepared_results else {
+        if captures.is_none() {
+            return CaptureRootDisposition::Prepared {
+                prepared: Box::new(prepared),
+                journaled: false,
+            };
+        }
+        return stop_capture_handoff(
+            shared,
+            prepared,
+            crate::PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding replay capture requires prepared-result journal",
+            },
+        );
+    };
+
+    let guard = if captures.is_some() {
+        Some(loop {
+            if prepared.queued().cancellation().is_canceled() {
+                abort_prepared(shared, prepared);
+                return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
+            }
+            match store.acquire_finding_replay_publication_guard() {
+                Ok(guard) => break guard,
+                Err(source)
+                    if source.executor_rejection() == ExecutorRejection::UnavailableInput =>
+                {
+                    increment(&shared.counters.publication_retries);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                }
+                Err(source) => return stop_capture_handoff(shared, prepared, source),
+            }
+        })
+    } else {
+        None
+    };
+
+    if let (Some(guard), Some(captures)) = (&guard, &captures) {
+        loop {
+            if prepared.queued().cancellation().is_canceled() {
+                abort_prepared(shared, prepared);
+                return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
+            }
+            match FindingReplayCaptureStore::publish_set(guard, captures) {
+                Ok(()) => break,
+                Err(source) if source.is_retryable() => {
+                    increment(&shared.counters.publication_retries);
+                    thread::sleep(WORKER_RETRY_INTERVAL);
+                }
+                Err(source) => {
+                    return stop_capture_handoff(shared, prepared, source);
+                }
+            }
+        }
+    }
+
+    if let Some(captures) = &captures
+        && let Err(source) = prepared.bind_production_replay_captures(captures.references())
+    {
+        drop(guard);
+        return stop_capture_handoff(shared, prepared, source);
+    }
+
+    let mut prepared = loop {
+        if prepared.queued().cancellation().is_canceled() {
+            drop(guard);
+            abort_prepared(shared, prepared);
+            return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
+        }
+        match stage_prepared_attempt_result_journal(
+            &config.namespace,
+            config.maximum_payload_bytes,
+            prepared,
+        ) {
+            Ok((journaled, _)) => break journaled,
+            Err(error)
+                if matches!(error.source.as_ref(), PreparedResultJournalError::Io { .. }) =>
+            {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                drop(guard);
+                match (*error.prepared).into_queued_without_journal() {
+                    Ok(queued) => reconcile_worker_failure(
+                        shared,
+                        queued,
+                        AttemptWorkerFailure::Terminal(*error.source),
+                    ),
+                    Err(prepared) => retain_forever(shared, prepared),
+                }
+                return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Failed);
+            }
+        }
+    };
+
+    loop {
+        if prepared.queued().cancellation().is_canceled() {
+            drop(guard);
+            abort_prepared(shared, prepared);
+            return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
+        }
+        let mut executor = lock_or_retain(shared, &prepared);
+        match stage_prepared_attempt_result(executor.supervisor_mut(), prepared) {
+            Ok(AttemptResultStageOutcome::Publish(staged)) => {
+                drop(executor);
+                prepared = (*staged).into_prepared();
+                break;
+            }
+            Ok(AttemptResultStageOutcome::Finished { prepared, outcome }) => {
+                drop(executor);
+                drop(guard);
+                cleanup_prepared_journal(shared, *prepared);
+                record_outcome(shared, outcome);
+                return CaptureRootDisposition::Finished(worker_reconcile_disposition(outcome));
+            }
+            Err(error) if supervisor_error_is_retryable(&error.source) => {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                prepared = *error.prepared;
+                drop(executor);
+                drop(guard);
+                abort_prepared(shared, prepared);
+                return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Failed);
+            }
+        }
+    }
+
+    loop {
+        match prepared.commit_staged_journal() {
+            Ok(journaled) => {
+                drop(guard);
+                return CaptureRootDisposition::Prepared {
+                    prepared: Box::new(journaled),
+                    journaled: true,
+                };
+            }
+            Err(error)
+                if matches!(error.source.as_ref(), PreparedResultJournalError::Io { .. }) =>
+            {
+                prepared = *error.prepared;
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => retain_forever(shared, (error.prepared, guard)),
+        }
+    }
+}
+
+fn stop_capture_handoff<L, V, E>(
+    shared: &SharedExecutor<L, V>,
+    prepared: PreparedAttemptResult,
+    source: E,
+) -> CaptureRootDisposition
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    match prepared.into_queued_without_journal() {
+        Ok(queued) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+        }
+        Err(prepared) => retain_forever(shared, prepared),
+    }
+    CaptureRootDisposition::Finished(AttemptExecutionDisposition::Failed)
 }
 
 fn journal_before_stage<L, V>(

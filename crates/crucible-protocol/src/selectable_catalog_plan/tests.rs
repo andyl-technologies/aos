@@ -50,6 +50,8 @@ fn restored_plan() -> Result<SelectableCatalogPlan, Box<dyn std::error::Error>> 
 #[test]
 fn cold_and_restored_plans_round_trip_with_frozen_header() -> Result<(), Box<dyn std::error::Error>>
 {
+    assert_eq!(SELECTABLE_CATALOG_PLAN_VERSION, 3);
+
     let cold = SelectableCatalogPlan::new(
         limits()?,
         vec![declaration(

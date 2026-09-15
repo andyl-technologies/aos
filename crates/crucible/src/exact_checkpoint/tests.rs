@@ -7,6 +7,12 @@ use std::io::Cursor;
 
 use crucible_cas::content_envelope::ContentChild;
 
+#[test]
+fn production_exact_closure_schema_matches_current_magic() {
+    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 9);
+    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v9\0");
+}
+
 fn hash(label: &[u8]) -> ContentHash {
     ContentHash::from_bytes(label)
 }

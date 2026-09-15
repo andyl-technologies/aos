@@ -1300,7 +1300,7 @@ fn finding_candidate_root_is_staged_atomically_and_preserved_by_completion() {
     assert_eq!(
         supervisor
             .stage_observation_publication(&queued, observation, None)
-            .expect("legacy observation staging preserves stronger root"),
+            .expect("weaker observation staging preserves stronger root"),
         ObservationPublicationOutcome::AlreadyStaged
     );
     assert_eq!(
@@ -2437,7 +2437,7 @@ fn observation(byte: u8) -> ObservationId {
 
 fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
     FindingCandidateBundleId::parse(&format!(
-        "crucible.campaign.finding-candidate-bundle@finding.5.{}",
+        "crucible.campaign.finding-candidate-bundle@finding.6.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("finding candidate")

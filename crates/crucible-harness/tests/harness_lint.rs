@@ -145,9 +145,6 @@ fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths(
 
     let mut findings = Vec::new();
     for file in files {
-        if file.ends_with("fault-model-migration.md") {
-            continue;
-        }
         let content = fs::read_to_string(&file)?;
         for (line_index, line) in content.lines().enumerate() {
             for token in line
@@ -166,7 +163,7 @@ fn retired_fault_surfaces_cannot_reenter_executable_or_user_documentation_paths(
 
     assert!(
         findings.is_empty(),
-        "retired fault surfaces remain outside historical RFCs or the migration guide:\n{}",
+        "retired fault surfaces remain outside historical RFCs:\n{}",
         findings.join("\n")
     );
     Ok(())

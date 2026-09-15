@@ -87,9 +87,9 @@ Replay requires the engine, artifact ABI, QEMU build, atomic patch, shared-memor
 ABI, guest-host protocol, RPC ABI, and plugin ABI recorded by the producer.
 Rebuild or recover the exact package revision that created the artifact.
 
-Production replay accepts the v3 live-QEMU artifact contract only. A v2 or
-model-only artifact must be reproduced with the older matching Crucible build;
-the current CLI will not silently reinterpret it.
+Production replay accepts only the v4 live-QEMU artifact contract. Any other
+contract fails closed before execution; the current CLI has no compatibility
+decoder.
 
 Do not bypass this check: replay under a different deterministic substrate is a
 different experiment.

@@ -63,7 +63,7 @@ session owner.
 A campaign-backed virtual-time save executes the semantic attempt and then
 replays that attempt once to capture and authenticate the exact reached
 boundary. Its temporary physical checkpoint closure is removed before the CLI
-reports success. The durable output is a version-5 savepoint handle and a
+reports success. The durable output is a version-6 savepoint handle and a
 version-3 logical `LocalDagStore` closure index. Both retain the authenticated
 campaign replay closure needed by standard resume, including
 typed guest selections. The extra capture replay has real QEMU execution and

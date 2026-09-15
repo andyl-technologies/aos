@@ -212,7 +212,7 @@ mod tests {
             .expect("lineage"),
             CampaignPolicyId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Policy,
-                1,
+                4,
                 b"snapshot-policy",
             ))
             .expect("policy"),
@@ -263,8 +263,8 @@ mod tests {
                     .to_string(),
             ],
             [
-                String::from("11d565f7c00633ce3fb72e5234ce9371218b8ed1a64b6da9511fd23cd509c0ec"),
-                String::from("406ba2e038f5fd3b1f16936deae246ea61aad6e736f93fd8e2114bceca4e195f"),
+                String::from("01843c768919e715e4bc9a2c3d4d09cfc7058da77fa1ed2528832fee7ede7f2b"),
+                String::from("98737b1ddc3b8c4228638b24986242f04581852eb7f06e7b3993775d6d565254"),
             ]
         );
 

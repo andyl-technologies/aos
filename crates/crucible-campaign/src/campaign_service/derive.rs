@@ -282,7 +282,7 @@ mod tests {
     fn policy(label: &str) -> CampaignPolicyId {
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            1,
+            4,
             label.as_bytes(),
         ))
         .expect("policy")
@@ -340,7 +340,7 @@ mod tests {
             ],
             [
                 String::from("9f2affae5cc034f5e6ae2710d00e708e91d7000c1758cd520f7830aeb031995e"),
-                String::from("9fa04d81a1711a0652af10ea9951c344ade6bef252fb5d4f98d5c11b03c63e41"),
+                String::from("c4b0ad8b0b3e673b1c60ae23ced92b67ac343bcba5333af01f68b213d47e0e4e"),
             ]
         );
     }

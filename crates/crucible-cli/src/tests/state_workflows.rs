@@ -269,34 +269,12 @@ pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inp
     assert_eq!(handle.oracle_status, "fat==thin-passed");
     assert_eq!(handle.canonical_log_digest, canonical_log);
 
-    let v3_text = fs::read_to_string(&handle_path)?;
-    let mismatched_proof = v3_text.replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n");
+    let current_text = fs::read_to_string(&handle_path)?;
+    let mismatched_proof = current_text.replace("\tsuspend\t1\t1\n", "\tsuspend\t8\t1\n");
     let error = decode_savepoint_handle(mismatched_proof.as_bytes())
-        .expect_err("v3 boundary proof must match the top-level frontier");
+        .expect_err("boundary proof must match the top-level frontier");
     assert!(matches!(error, CliError::Artifact(_)));
     assert!(error.to_string().contains("did not match handle frontier"));
-
-    let retired_v2_text = v3_text
-        .lines()
-        .filter(|line| {
-            !line.starts_with("selector\t")
-                && !line.starts_with("boundary-proof\t")
-                && !line.starts_with("boundary-predicate\t")
-        })
-        .map(|line| {
-            if line == format!("schema\t{REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA}") {
-                String::from("schema\tcrucible.savepoint-handle.v2")
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    let error = decode_savepoint_handle(retired_v2_text.as_bytes())
-        .expect_err("retired v2 savepoint handles must fail closed");
-    let message = error.to_string();
-    assert!(message.contains("unsupported savepoint handle schema"));
 
     let reference = format_content_hash_ref(checkpoint);
     let hash_cli = Cli::parse_from([

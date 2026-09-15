@@ -702,6 +702,8 @@ pub enum QemuFreshDriveOutcome<P> {
 pub(crate) struct QemuFreshExecutionRunner<F, D> {
     lifecycles: F,
     driver: D,
+    finding_replay_capture:
+        Option<crate::automatic_finding_runner::QemuFindingReplayCaptureProducer>,
 }
 
 /// Stable reasons an exact finding candidate cannot be reconstructed.
@@ -723,7 +725,25 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
     /// Creates a genesis-start runner from its guarded lifecycle factory and modeled driver.
     #[must_use]
     pub const fn new(lifecycles: F, driver: D) -> Self {
-        Self { lifecycles, driver }
+        Self {
+            lifecycles,
+            driver,
+            finding_replay_capture: None,
+        }
+    }
+
+    pub(crate) fn with_finding_replay_capture(
+        mut self,
+        producer: crate::automatic_finding_runner::QemuFindingReplayCaptureProducer,
+    ) -> Self {
+        self.finding_replay_capture = Some(producer);
+        self
+    }
+
+    pub(crate) fn finding_replay_capture_mut(
+        &mut self,
+    ) -> Option<&mut crate::automatic_finding_runner::QemuFindingReplayCaptureProducer> {
+        self.finding_replay_capture.as_mut()
     }
 
     /// Reconstructs and evaluates one exact candidate without publishing an observation.
@@ -931,6 +951,12 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// Exact terminal execution fingerprint capture failed before teardown.
     #[error("fresh production QEMU terminal fingerprint capture failed: {0}")]
     TerminalFingerprintCapture(#[source] SchedulerError),
+    /// Producer-side replay content failed authentication or bounded capture.
+    #[error("capture private finding production replay: {0}")]
+    FindingReplayCapture(#[source] crate::FindingProductionReplayCaptureError),
+    /// Completed process-local replay evidence could not be read.
+    #[error("read private finding production replay evidence: {0}")]
+    FindingReplayEvidence(#[source] SchedulerError),
     /// The prepared exact root could not be handed to the durable supervisor phase.
     #[error("fresh production QEMU checkpoint handoff failed: {0}")]
     CheckpointHandoff(#[source] CheckpointHandoffFailure),

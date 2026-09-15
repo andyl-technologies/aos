@@ -19,11 +19,6 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const SCENARIO_FAILURE_OBSERVATION_SCHEMA_VERSION: u32 = 2;
-const PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 3;
-const SCENARIO_FAILURE_PRODUCED_SELECTION_OBSERVATION_SCHEMA_VERSION: u32 = 4;
-const EXTENDED_STOP_OBSERVATION_SCHEMA_OFFSET: u32 = 4;
-const OBSERVATION_STOP_SCHEMA_OFFSET: u32 = 8;
 const OBSERVATION_SCHEMA_VERSION: u32 = 12;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
@@ -1002,14 +997,6 @@ impl StopOutcome {
             Self::ObservationReached(proof) => proof.condition().validate(),
             Self::TerminalSuccess => Ok(()),
         }
-    }
-
-    const fn uses_extended_stop_schema(&self) -> bool {
-        matches!(self, Self::Reached(stop) if stop.uses_extended_wire_schema())
-    }
-
-    const fn uses_observation_stop_schema(&self) -> bool {
-        matches!(self, Self::ObservationReached(_))
     }
 
     /// Returns whether this outcome proves the attempt's requested stop.

@@ -14,20 +14,21 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use super::*;
+use crate::executor_supervisor::AllowAllAttemptAdmission;
 use crate::executor_worker::publish_prepared_semantic_attempt_result;
 use crate::{
-    AllowAllAttemptAdmission, AttemptAdmissionValidator, AttemptExecutionContext,
-    AttemptExecutionDisposition, AttemptExecutionInput, AttemptExecutionKey, AttemptExecutionModel,
-    AttemptExecutionOrigin, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
-    AttemptExecutionRuntimeBasis, AttemptRuntimeState, AttemptStateCas, AttemptWorkResult,
-    AttemptWorkerFailure, CheckpointPromotionExecutionBasis, CheckpointPromotionRestartWork,
-    CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointStore,
-    ExecutionCancellation, ExecutorCapacity, ExecutorLocalService, ExecutorLocalServiceError,
-    ExecutorLoopbackEndpointConfig, ExecutorLoopbackServerConfig, LoopbackExecutorService,
-    MemoryAssignmentLedger, PausedCheckpointPromotionRecoveryResolutionError,
-    PreparedSemanticAttemptResult, ProductionPausedCheckpointReplayFactory,
-    ProductionPausedCheckpointReplaySession, RepositoryAttemptAdmission, RepositoryAttemptWorker,
-    RepositoryAttemptWorkerError, UnixPeerExecutorIdentity, encode_crucible_configuration_artifact,
+    AttemptAdmissionValidator, AttemptExecutionContext, AttemptExecutionDisposition,
+    AttemptExecutionInput, AttemptExecutionKey, AttemptExecutionModel, AttemptExecutionOrigin,
+    AttemptExecutionProduct, AttemptExecutionReconciliationStep, AttemptExecutionRuntimeBasis,
+    AttemptRuntimeState, AttemptStateCas, AttemptWorkResult, AttemptWorkerFailure,
+    CheckpointPromotionExecutionBasis, CheckpointPromotionRestartWork, CompletedFindingCandidate,
+    DirectoryAssignmentLedger, ExactCheckpointStore, ExecutionCancellation, ExecutorCapacity,
+    ExecutorLocalService, ExecutorLocalServiceError, ExecutorLoopbackEndpointConfig,
+    ExecutorLoopbackServerConfig, LoopbackExecutorService, MemoryAssignmentLedger,
+    PausedCheckpointPromotionRecoveryResolutionError, PreparedSemanticAttemptResult,
+    ProductionPausedCheckpointReplayFactory, ProductionPausedCheckpointReplaySession,
+    RepositoryAttemptAdmission, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
+    UnixPeerExecutorIdentity, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact, evaluate_crucible_measurement_publication,
     prepare_production_paused_checkpoint_promotion_restart, publish_next_objective_evaluation,
     resolve_production_paused_checkpoint_promotion_recovery,
@@ -1502,7 +1503,7 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
 #[test]
 fn complete_prepared_journal_recovers_without_rerunning_guest_work() {
     for prepublish_trace_leaf in [false, true] {
-        recover_complete_prepared_journal(prepublish_trace_leaf, false);
+        recover_complete_prepared_journal(prepublish_trace_leaf, false, false);
     }
 }
 
@@ -1724,10 +1725,19 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
 
 #[test]
 fn transient_recovery_input_unavailability_retries_without_guest_work() {
-    recover_complete_prepared_journal(false, true);
+    recover_complete_prepared_journal(false, true, false);
 }
 
-fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_recovery_input: bool) {
+#[test]
+fn hidden_journal_recovery_commits_only_the_ledger_authorized_publication() {
+    recover_complete_prepared_journal(false, false, true);
+}
+
+fn recover_complete_prepared_journal(
+    prepublish_trace_leaf: bool,
+    transient_recovery_input: bool,
+    seed_hidden_journal: bool,
+) {
     let blobs = Arc::new(TransientExecutorReadBackend::new(
         "prepared-recovery",
         64 * 1024 * 1024,
@@ -1818,14 +1828,27 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
     );
     drop(ledger);
     let journals = TempDir::new().expect("prepared-result journals");
-    let (journal, _) = crate::DirectoryPreparedResultJournal::create(
-        journals.path(),
-        key,
-        producer_execution,
-        crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
-        prepared,
-    )
-    .expect("seed complete prepared result");
+    let journal_namespace = crate::PreparedResultJournalNamespace::open(journals.path())
+        .expect("open prepared-result journal namespace");
+    let (journal, _) = if seed_hidden_journal {
+        crate::DirectoryPreparedResultJournal::prepare_staged(
+            &journal_namespace,
+            key,
+            producer_execution,
+            crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            prepared,
+        )
+        .expect("seed hidden prepared result")
+    } else {
+        crate::DirectoryPreparedResultJournal::create(
+            &journal_namespace,
+            key,
+            producer_execution,
+            crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            prepared,
+        )
+        .expect("seed complete prepared result")
+    };
     let journal_root = journal.root().to_path_buf();
     drop(journal);
 
@@ -1872,7 +1895,7 @@ fn recover_complete_prepared_journal(prepublish_trace_leaf: bool, transient_reco
         vec![PanickingWorker],
         observer,
         Some(PreparedResultJournalConfig::new(
-            journals.path().to_path_buf(),
+            journal_namespace,
             crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         )),
     )
@@ -1936,8 +1959,10 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
     let key = AttemptExecutionKey::new(lineage.id().expect("lineage ID"), admitted.attempt);
     let execution = ExecutionId::from_bytes([0xa1; 16]).expect("execution");
     let journals = TempDir::new().expect("prepared journals");
+    let journal_namespace = crate::PreparedResultJournalNamespace::open(journals.path())
+        .expect("open prepared-result journal namespace");
     let (journal, _) = crate::DirectoryPreparedResultJournal::create(
-        journals.path(),
+        &journal_namespace,
         key,
         execution,
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
@@ -1970,7 +1995,7 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
     let profile = ExecutorCompatibilityProfile::from_lineage(&lineage);
     let validator = RepositoryAttemptAdmission::new(Arc::clone(&repository), profile);
     let config = PreparedResultJournalConfig::new(
-        journals.path().to_path_buf(),
+        journal_namespace,
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
     );
     let gc_exclusion = repository
@@ -2033,8 +2058,10 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
     )
     .expect("submit request");
     let journals = TempDir::new().expect("prepared-result journals");
+    let journal_namespace = crate::PreparedResultJournalNamespace::open(journals.path())
+        .expect("open prepared-result journal namespace");
     let (journal, _) = crate::DirectoryPreparedResultJournal::create(
-        journals.path(),
+        &journal_namespace,
         AttemptExecutionKey::for_request(&request),
         ExecutionId::from_bytes([0x87; 16]).expect("producer execution"),
         crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
@@ -2062,7 +2089,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
         vec![PanickingWorker],
         observer,
         Some(PreparedResultJournalConfig::new(
-            journals.path().to_path_buf(),
+            journal_namespace,
             crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
         )),
     )
@@ -2141,6 +2168,8 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
     let observer: Arc<dyn PausedCheckpointObserver> =
         Arc::new(RecordingPausedCheckpointObserver::default());
     let journals = TempDir::new().expect("prepared journals");
+    let journal_namespace = crate::PreparedResultJournalNamespace::open(journals.path())
+        .expect("open prepared-result journal namespace");
     let pool = LocalExecutorWorkerPool::start_with_checkpoint_observer(
         capability,
         store.clone(),
@@ -2155,10 +2184,7 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
             },
         )],
         observer,
-        Some(PreparedResultJournalConfig::new(
-            journals.path().to_path_buf(),
-            1,
-        )),
+        Some(PreparedResultJournalConfig::new(journal_namespace, 1)),
     )
     .expect("prepared-result pool");
     let mut service = pool.service();

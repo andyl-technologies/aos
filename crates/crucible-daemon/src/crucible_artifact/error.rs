@@ -27,6 +27,9 @@ impl std::fmt::Display for FindingRequiredReproductionStage {
 /// Failure to translate a campaign artifact into the Crucible execution model.
 #[derive(Debug, thiserror::Error)]
 pub enum CrucibleArtifactError {
+    /// A private production replay could not be converted to portable capture evidence.
+    #[error(transparent)]
+    ProductionReplay(#[from] crate::FindingProductionReplayCaptureError),
     /// A required original or selected replay did not preserve the finding signature.
     #[error("required finding reproduction failed during {stage}")]
     FindingRequiredReproductionMismatch {

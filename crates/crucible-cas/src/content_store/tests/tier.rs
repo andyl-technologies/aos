@@ -48,6 +48,63 @@ fn tier_policy_separates_read_write_and_promotion_roles() {
 }
 
 #[test]
+fn graph_marks_every_non_write_tier_as_reconstructible_cache() {
+    let root = node_id("tiered");
+    let cache = node_id("cache");
+    let source = node_id("source");
+    let (_, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::Tiered {
+                    tiers: vec![
+                        StoreTierPolicy {
+                            child: cache.clone(),
+                            readable: true,
+                            writable: false,
+                            promote_reads: false,
+                        },
+                        StoreTierPolicy {
+                            child: source.clone(),
+                            readable: true,
+                            writable: true,
+                            promote_reads: false,
+                        },
+                    ],
+                },
+            ),
+            (
+                cache.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1_024,
+                },
+            ),
+            (
+                source.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1_024,
+                },
+            ),
+        ]),
+    })
+    .expect("tiered graph");
+
+    let physical = admin.physical();
+    let cache_role = physical
+        .iter()
+        .find(|physical| physical.node() == &cache)
+        .and_then(|physical| physical.retention(ObjectKind::Trace));
+    let source_role = physical
+        .iter()
+        .find(|physical| physical.node() == &source)
+        .and_then(|physical| physical.retention(ObjectKind::Trace));
+    assert_eq!(cache_role, Some(StoreGraphPhysicalRetention::Cache));
+    assert_eq!(source_role, Some(StoreGraphPhysicalRetention::Required));
+}
+
+#[test]
 fn stopped_owner_repairs_one_physical_copy_from_an_independent_source() {
     let temporary = TempDir::new().expect("physical repair fixture root");
     let tiered = node_id("tiered");
@@ -803,7 +860,7 @@ fn closed_store_graph_routes_shared_leaves_and_is_introspectable() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(
         ram_roles["ram-cache"],
-        Some(StoreGraphPhysicalRetention::ReadThroughCache)
+        Some(StoreGraphPhysicalRetention::Cache)
     );
     assert_eq!(
         ram_roles["directory"],

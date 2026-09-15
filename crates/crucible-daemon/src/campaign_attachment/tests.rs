@@ -18,12 +18,12 @@ use crucible_campaign::{
 use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
 use crate::{
-    AllowAllAttemptAdmission, ExecutorCapacity, LocalExecutorCapabilityService,
-    LocalExecutorSupervisor, LoopbackExecutorTimeouts, MemoryAssignmentLedger,
-    serve_loopback_executor_component_once,
+    ExecutorCapacity, LocalExecutorCapabilityService, LocalExecutorSupervisor,
+    LoopbackExecutorTimeouts, MemoryAssignmentLedger, serve_loopback_executor_component_once,
 };
 
 use super::*;
+use crate::executor_supervisor::AllowAllAttemptAdmission;
 
 fn fixture() -> (
     Arc<CampaignRepository>,

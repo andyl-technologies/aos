@@ -10,7 +10,8 @@ use std::sync::{
 
 use super::*;
 use crate::content_store::admin::{
-    InventoryCounter, persistent_inventory_generation, physical_storage_identity,
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    physical_storage_identity,
 };
 use crate::content_store::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
@@ -441,6 +442,38 @@ impl BlobInventoryFence for S3BlobInventoryFence<'_> {
                 Ok(PlannedDeleteDisposition::Deleted)
             }
             StoreS3ConditionalDeleteOutcome::PreconditionFailed => Err(StoreError::Incompatible),
+        }
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        let logical_length = source.logical_length();
+        if logical_length > self.backend.maximum_logical_object_bytes {
+            return Err(StoreError::Quota);
+        }
+        validate_source(id, source)?;
+        if self.backend.contains(id)? {
+            return self.backend.authenticate_existing(id);
+        }
+
+        self.inventory = self.administration.advance_state(self.backend)?;
+        let outcome = if logical_length == 0 {
+            self.backend
+                .client
+                .put_empty_if_absent(&self.backend.bucket, &self.backend.key(id))?
+        } else {
+            self.backend.upload_multipart(id, source)?
+        };
+        match outcome {
+            StoreS3ConditionalPutOutcome::Created => {
+                self.backend.authenticate_existing(id)?;
+                Ok(self.backend.receipt(id, logical_length))
+            }
+            StoreS3ConditionalPutOutcome::AlreadyExists => self.backend.authenticate_existing(id),
         }
     }
 }

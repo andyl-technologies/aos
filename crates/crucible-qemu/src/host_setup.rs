@@ -344,7 +344,7 @@ pub fn complete_qemu_host_plugin_setup(
     )
 }
 
-/// Completes setup with one version-negotiated composite plugin plan.
+/// Completes setup with one current-version composite plugin plan.
 ///
 /// Control protocol v3 sends the complete composite setup plan in the third
 /// descriptor.

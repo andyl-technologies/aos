@@ -6,6 +6,8 @@
   openTaskIds ? [],
   dependencies ? [],
   crossHostEvidence ? null,
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -144,11 +146,11 @@
     ++ failuresFor "tests/crucible/_fleet-runner.nix" fleetRunner [
       {
         label = "native runner binding";
-        needle = "e2eNativeRunner = ./_e2e-determinism-native-runner.sh;";
+        needle = "e2eNativeRunnerPackage = pkgs.writeTextFile";
       }
       {
         label = "native runner environment";
-        needle = "export CRUCIBLE_E2E_NATIVE_RUNNER=";
+        needle = "CRUCIBLE_E2E_NATIVE_RUNNER = e2eNativeRunner;";
       }
       {
         label = "live QEMU durable process state";
@@ -210,6 +212,12 @@
 in
   if failures != []
   then throw "crucible phase7 e2e-determinism check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else if campaignComposition != null
+  then
+    import ./phase4-e2e-determinism.nix {
+      inherit pkgs lib testing campaignComposition;
+      inherit attrPath taskIds dependencies;
+    }
   else
     pkgs.mkDerivation {
       pname = "crucible-phase7-e2e-determinism";

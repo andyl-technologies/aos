@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn index_only_frontier_is_rejected_at_the_campaign_boundary() {
         let (mut frontier, _) = fixture(2);
-        let legacy = frontier
+        let untyped_candidates = frontier
             .choices
             .choices()
             .iter()
@@ -835,7 +835,7 @@ mod tests {
                 Decision::Override(decision)
             })
             .collect::<Vec<_>>();
-        frontier.choices = SearchFrontierChoices::from_decisions(legacy);
+        frontier.choices = SearchFrontierChoices::from_decisions(untyped_candidates);
 
         assert_eq!(
             SignalFaultSelectable::from_frontier(&frontier),

@@ -70,8 +70,8 @@ pub struct PreparedAttemptResult {
 
 #[derive(Debug)]
 enum PreparedAttemptResultOwner {
-    Volatile(PreparedSemanticAttemptResult),
-    Journal(DirectoryPreparedResultJournal),
+    Volatile(Box<PreparedSemanticAttemptResult>),
+    Journal(Box<DirectoryPreparedResultJournal>),
 }
 
 impl PreparedAttemptResultOwner {
@@ -85,7 +85,7 @@ impl PreparedAttemptResultOwner {
     fn into_journal(self) -> Option<DirectoryPreparedResultJournal> {
         match self {
             Self::Volatile(_) => None,
-            Self::Journal(journal) => Some(journal),
+            Self::Journal(journal) => Some(*journal),
         }
     }
 }
@@ -109,10 +109,43 @@ impl PreparedAttemptResult {
         self.finding_candidate
     }
 
+    /// Returns portable replay-capture roots already bound into the candidate.
+    #[must_use]
+    pub fn finding_replay_captures(&self) -> Option<crucible_campaign::FindingReplayCaptureSet> {
+        self.result()
+            .finding()
+            .and_then(|finding| finding.bundle().replay_captures())
+    }
+
     /// Returns the exact prepared semantic closure.
     #[must_use]
     pub const fn result(&self) -> &PreparedSemanticAttemptResult {
         self.result.result()
+    }
+
+    pub(crate) fn production_replay_capture_inputs(
+        &self,
+    ) -> Result<
+        Option<[crate::FindingReplayCaptureInput; 4]>,
+        crate::FindingProductionReplayCaptureError,
+    > {
+        self.result().production_replay_capture_inputs()
+    }
+
+    pub(crate) fn bind_production_replay_captures(
+        &mut self,
+        captures: crucible_campaign::FindingReplayCaptureSet,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        let PreparedAttemptResultOwner::Volatile(current) = &mut self.result else {
+            return Err(PreparedSemanticResultCodecError::Inconsistent {
+                component: "finding replay captures attached after journaling",
+            });
+        };
+        let finding = current.prepare_bound_production_replay_finding(captures)?;
+        let candidate = finding.id()?;
+        current.commit_bound_production_replay_finding(finding);
+        self.finding_candidate = Some(candidate);
+        Ok(())
     }
 
     /// Recovers the execution token when durable journal ownership was never acquired.
@@ -139,6 +172,19 @@ impl PreparedAttemptResult {
             PreparedAttemptResultOwner::Volatile(_) => Ok(()),
             PreparedAttemptResultOwner::Journal(journal) => journal.remove(),
         }
+    }
+
+    /// Promotes a hidden prepared-result journal after publication-root staging.
+    pub(crate) fn commit_staged_journal(mut self) -> Result<Self, AttemptResultJournalError> {
+        if let PreparedAttemptResultOwner::Journal(journal) = &mut self.result
+            && let Err(source) = journal.commit_staged()
+        {
+            return Err(AttemptResultJournalError {
+                prepared: Box::new(self),
+                source: Box::new(source),
+            });
+        }
+        Ok(self)
     }
 }
 
@@ -180,6 +226,12 @@ pub enum AttemptResultRecoveryFailure {
     /// Recovered semantic content failed repository or scenario authentication.
     #[error(transparent)]
     Preparation(#[from] AttemptResultPreparationFailure),
+    /// Portable capture manifests or chunks were absent or inconsistent.
+    #[error(transparent)]
+    CaptureStore(#[from] crate::FindingReplayCaptureStoreError),
+    /// Reassembled production replay bytes failed canonical authentication.
+    #[error(transparent)]
+    ProductionReplay(#[from] crate::FindingProductionReplayCaptureError),
 }
 
 /// Candidate whose immutable objects were published outside the supervisor actor.
@@ -195,6 +247,12 @@ pub struct PublishedAttemptResult {
 #[derive(Debug)]
 pub struct StagedAttemptResult {
     prepared: PreparedAttemptResult,
+}
+
+impl StagedAttemptResult {
+    pub(crate) fn into_prepared(self) -> PreparedAttemptResult {
+        self.prepared
+    }
 }
 
 /// Prepared exact checkpoint bound to the sole execution reconciliation token.

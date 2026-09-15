@@ -945,7 +945,7 @@ in
               ]
               kick = rr[
                   rr.index("void rr_kick_vcpu_thread"):
-                  rr.index("static void rr_kick_thread")
+                  rr.index("/*\n * TCG vCPU kick timer")
               ]
               hot_fork_start = rr.index(
                   "int rr_hot_fork_restart_vcpu_thread"
@@ -1105,7 +1105,20 @@ in
                    r"initialized\).*?qemu_event_set\(&rr_dispatch_ceiling_event\)",
                    1),
                   ("dispatch event owners", kick,
-                   r"wake_state_published = true;", 2),
+                   r"wake_state_published = true;", 1),
+                  ("kick producer does not consume wake state", kick,
+                   r"rr_crucible_sim_complete_wake_boundary\(\)", 0),
+                  ("stateful kick retains idle wake predicate", kick,
+                   r"if \(stateful_exit \|\| idle_wake\) \{.*?"
+                   r"CPU_FOREACH\(cpu\) \{\s*"
+                   r"tcg_kick_vcpu_thread\(cpu\);\s*\}.*?"
+                   r"if \(starting_wake\) \{.*?"
+                   r"RR_TCG_EXEC_STARTING_WAKE_ARMING,\s*"
+                   r"RR_TCG_EXEC_STARTING\);\s*"
+                   r"\} else if \(idle_wake\) \{\s*"
+                   r"qatomic_cmpxchg\(&rr_tcg_exec_state,\s*"
+                   r"RR_TCG_EXEC_IDLE_WAKE_ARMING,\s*"
+                   r"RR_TCG_EXEC_IDLE_WAKE_PENDING\);\s*\}", 1),
                   ("dispatch event owner notification", kick,
                    r"if \(wake_state_published\) \{.*?"
                    r"rr_crucible_sim_notify_dispatch_ceiling\(\);\s*\}", 1),

@@ -97,6 +97,7 @@ impl PrivateFindingReplayRunner for ReplayRunner {
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         _finding: &FindingReproductionArtifact,
+        _replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
         _target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -284,6 +285,7 @@ impl PrivateFindingReplayRunner for DivergenceReplayRunner {
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
+        _replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
         _target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -606,6 +608,7 @@ impl PrivateFindingReplayRunner for RetainedReplayRunner {
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
+        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -626,6 +629,7 @@ impl PrivateFindingReplayRunner for RetainedReplayRunner {
             input,
             candidate,
             finding,
+            replay_closure,
             target_signature,
             context,
         );

@@ -12,9 +12,10 @@ use crucible_campaign::{
 };
 
 use super::*;
+use crate::executor_supervisor::AllowAllAttemptAdmission;
 use crate::{
-    AllowAllAttemptAdmission, AssignmentLedger, AttemptExecutionKey, AttemptExecutionOrigin,
-    AttemptRuntimeState, ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
+    AssignmentLedger, AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState,
+    ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
 };
 
 #[test]

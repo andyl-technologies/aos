@@ -96,8 +96,7 @@ use crucible_daemon::{
 };
 use serde::Serialize;
 
-const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v1";
-const CAMPAIGN_STATUS_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v2";
+const CAMPAIGN_HEAD_REPORT_SCHEMA: &str = "crucible.cli.campaign-head.v2";
 const CAMPAIGN_LIST_REPORT_SCHEMA: &str = "crucible.cli.campaign-list.v1";
 const CAMPAIGN_MUTATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-mutation.v1";
 const CAMPAIGN_PAGE_REPORT_SCHEMA: &str = "crucible.cli.campaign-page.v2";
@@ -1769,7 +1768,7 @@ where
                 }
             };
             Ok(CampaignHeadReport {
-                schema: CAMPAIGN_STATUS_REPORT_SCHEMA,
+                schema: CAMPAIGN_HEAD_REPORT_SCHEMA,
                 operation: "status",
                 campaign: campaign.as_str().to_owned(),
                 snapshot: response.snapshot().to_string(),

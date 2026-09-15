@@ -265,7 +265,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::{AllowAllAttemptAdmission, ExecutorCapacity, MemoryAssignmentLedger};
+    use crate::executor_supervisor::AllowAllAttemptAdmission;
+    use crate::{ExecutorCapacity, MemoryAssignmentLedger};
 
     #[test]
     fn capacity_reports_track_exact_supervisor_reservations() {

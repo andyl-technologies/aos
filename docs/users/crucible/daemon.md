@@ -130,7 +130,7 @@ leases are a separate authorization layer: possessing a valid client
 certificate does not itself grant `observe`, `control`, `mutate`, `shell`, or
 `admin`. The server derives the principal from the transport, never from a
 request field. Controller leases are session-owned and generation-checked on
-every relay operation. RPC ABI v5 gives each command or long-lived relay an
+every relay operation. RPC ABI v6 gives each command or long-lived relay an
 idempotent holder; only the final holder releases the exclusive principal's
 lease. Relay opens can connect only to the loopback endpoint reported by the
 session actor, and chunks are bounded to 64 KiB.

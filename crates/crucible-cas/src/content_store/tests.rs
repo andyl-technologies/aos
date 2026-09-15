@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -1091,13 +1091,15 @@ fn assert_no_staging(root: &Path, id: ContentId) {
     if !directory.exists() {
         return;
     }
-    assert!(fs::read_dir(directory)
-        .expect("read object directory")
-        .all(|entry| !entry
-            .expect("directory entry")
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".staging-")));
+    assert!(
+        fs::read_dir(directory)
+            .expect("read object directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".staging-"))
+    );
 }
 
 struct UnavailableReadBackend;

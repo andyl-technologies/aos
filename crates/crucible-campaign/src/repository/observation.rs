@@ -248,9 +248,8 @@ impl CampaignRepository {
             }
         }
         if !projection.frontier_updates.is_empty() {
-            let published = self
-                .frontier_index_after(roots.exploration, &projection.frontier_updates, true)?
-                .ok_or_else(|| integrity("observation-frontier-index-disappeared"))?;
+            let published =
+                self.frontier_index_after(roots.exploration, &projection.frontier_updates, true)?;
             if projection
                 .exploration
                 .get(&frontier_index_anchor_key())
@@ -666,9 +665,8 @@ impl CampaignRepository {
         }
         let mut exploration = BTreeMap::new();
         if !frontier_updates.is_empty() {
-            let next_frontier = self
-                .frontier_index_after(roots.exploration, &frontier_updates, false)?
-                .ok_or_else(|| integrity("progressive-generator-frontier-index-is-missing"))?;
+            let next_frontier =
+                self.frontier_index_after(roots.exploration, &frontier_updates, false)?;
             exploration.insert(frontier_index_anchor_key(), next_frontier);
         }
 
@@ -751,39 +749,6 @@ impl CampaignRepository {
         Ok(())
     }
 
-    pub(super) fn strict_migration_sequence_anchor(
-        &self,
-        accounting: ContentId,
-        transition: ContentId,
-    ) -> Result<ContentId, CampaignRepositoryError> {
-        // Streaming retains a prior strict anchor but may complete later
-        // ordinals around holes. Advance only through the authenticated
-        // contiguous prefix; the derivation fact represents ordinal zero when
-        // the first admission is still open.
-        let sequence = self.merkle.get(accounting, observation_sequence_key())?;
-        let baseline = self.strict_sequence_anchor_ordinal(accounting, sequence)?;
-        let admitted = self.accounted_attempts(accounting)?;
-        if baseline > admitted {
-            return Err(integrity("strict-completion-sequence-past-admission-head"));
-        }
-
-        let mut anchor = sequence.filter(|_| baseline != 0).unwrap_or(transition);
-        let Some(mut candidate) = baseline.checked_add(1) else {
-            return Err(integrity("strict-completion-sequence-overflow"));
-        };
-        while candidate <= admitted {
-            let ordinal = AdmissionOrdinal::new(candidate);
-            let Some(completion) = self.completion_at_ordinal(accounting, ordinal)? else {
-                break;
-            };
-            anchor = completion;
-            candidate = candidate
-                .checked_add(1)
-                .ok_or_else(|| integrity("strict-completion-sequence-overflow"))?;
-        }
-        Ok(anchor)
-    }
-
     fn next_strict_completion_ordinal(
         &self,
         accounting: ContentId,
@@ -827,13 +792,9 @@ impl CampaignRepository {
             }
             crate::CampaignRecordKind::Fact => match self.read_fact(sequence)? {
                 CampaignFact::AttemptClosed { ordinal, .. } => ordinal,
-                CampaignFact::CampaignDerived(derivation) => {
-                    self.validate_strict_migration_marker(derivation)?;
-                    return Ok(0);
-                }
                 _ => {
                     return Err(integrity(
-                        "strict-completion-sequence-fact-is-not-a-completion-or-migration",
+                        "strict-completion-sequence-fact-is-not-a-completion",
                     ));
                 }
             },
@@ -847,21 +808,6 @@ impl CampaignRepository {
             return Err(integrity("strict-completion-sequence-has-zero-ordinal"));
         }
         Ok(ordinal.value())
-    }
-
-    fn validate_strict_migration_marker(
-        &self,
-        derivation: CampaignDerivation,
-    ) -> Result<(), CampaignRepositoryError> {
-        let source = self.read_snapshot(derivation.source().content_id())?;
-        let prior = self.read_policy(source.snapshot.active_policy().content_id())?;
-        let next = self.read_policy(derivation.active_policy().content_id())?;
-        if !is_streaming_to_strict_migration(prior.mode(), next.mode()) {
-            return Err(integrity(
-                "strict-completion-sequence-has-invalid-migration-marker",
-            ));
-        }
-        Ok(())
     }
 
     fn completion_at_ordinal(

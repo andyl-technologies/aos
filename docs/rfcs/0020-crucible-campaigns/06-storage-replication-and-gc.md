@@ -60,8 +60,8 @@ cross-record constraints. Non-campaign structured kinds such as exact
 manifests, observations, findings, and projections are still parsed as generic
 envelopes so their children remain walkable; their owning crate performs the
 stronger body validation. Scenario and configuration artifacts are owned
-campaign envelopes with exact semantic cross-links; legacy raw forms must be
-migrated explicitly before import. Deliberately opaque leaves such as RAM/disk
+campaign envelopes with exact semantic cross-links; noncurrent raw forms are
+rejected before import. Deliberately opaque leaves such as RAM/disk
 extents, VMState, and trace segments are drained through their authenticated
 stream to EOF but are not parsed as envelopes. A missing child, wrong record
 subtype, malformed ancestry transition, cycle, or traversal-limit breach
@@ -1618,7 +1618,7 @@ does not grant campaign-ref mutation and its summary is operational evidence,
 not modeled campaign identity.
 
 Within a campaign snapshot, the semantic pin projection is keyed by the exact
-`ConfigurationId`. Its value is the latest authenticated schema-v5
+`ConfigurationId`. Its value is the latest authenticated schema-v14
 `PinCommandAccepted` fact. `Thin` and `Exact` select the required logical
 closure profile; `None` is a retained tombstone that removes the configuration
 from the current GC pin set without erasing command replay or campaign history.
@@ -1643,10 +1643,9 @@ authenticates the complete current semantic pin projection, requires the target
 configuration to be `Exact`, loads the complete `ExactCheckpointId` root and
 metadata through the exact-checkpoint store, and requires the checkpoint's
 modeled configuration identity to equal the pin target before the first journal
-write. Authentication is representation-independent: compatibility schema-v2/
-v3 single-node roots and schema-v4 production root-manifest/index closures are
-both admitted, while operations that require the compatibility-only node model
-fail closed for a production root. The selected value binds the campaign name,
+write. Authentication requires the sole current production exact-closure schema
+v9 and its current checkpoint contract. Any other closure or checkpoint schema
+fails closed. The selected value binds the campaign name,
 configuration, latest accepted pin fact, and exact-checkpoint root. It is
 operational owner state and does not advance the campaign ref or alter modeled
 campaign identity.

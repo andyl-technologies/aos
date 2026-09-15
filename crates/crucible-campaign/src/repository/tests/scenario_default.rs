@@ -130,8 +130,7 @@ fn forge_branch_request_successor(
             )],
             true,
         )
-        .expect("project forged frontier")
-        .expect("frontier index");
+        .expect("project forged frontier");
     roots.exploration = repository
         .merkle
         .insert(roots.exploration, frontier_index_anchor_key(), frontier)
@@ -143,8 +142,7 @@ fn forge_branch_request_successor(
             &[(request_id, request.branch_point())],
             true,
         )
-        .expect("project forged scan index")
-        .expect("planner scan index");
+        .expect("project forged scan index");
     roots.exploration = repository
         .merkle
         .insert(roots.exploration, planner_scan_index_anchor_key(), scan)

@@ -2,6 +2,7 @@
 
 use super::*;
 use crucible::LocalDagStore;
+use crucible::exact_checkpoint::PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION;
 use crucible::model::FaultResourceLimits;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,7 +61,7 @@ pub use test_support::{
 };
 
 const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v9\0";
-const MANIFEST_VERSION: u8 = 9;
+const MANIFEST_VERSION: u8 = PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES_U64: u64 = 64 * 1024 * 1024;

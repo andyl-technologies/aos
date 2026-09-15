@@ -37,7 +37,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, flock};
 
-use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
+use super::admin::{
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    physical_storage_identity,
+};
 use super::*;
 
 mod ref_admin;
@@ -428,6 +431,67 @@ impl BlobInventoryFence for DirectoryBlobInventoryFence<'_> {
         })?;
         sync_directory(directory)?;
         Ok(PlannedDeleteDisposition::Deleted)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        self.backend.advance_inventory_state(&mut self.state)?;
+        let path = self.backend.object_path(id);
+        let directory = path.parent().ok_or(StoreError::InvalidComposition {
+            reason: "repair object path has no containing directory",
+        })?;
+        create_dir_all_durable(directory)?;
+
+        if path.exists() {
+            source.verified_as(id)?;
+            self.backend
+                .read_handle(id, None)?
+                .copy_to(&mut io::sink())?;
+            sync_directory(directory)?;
+            return Ok(directory_receipt(
+                &self.backend.name,
+                id,
+                source.logical_length(),
+            ));
+        }
+
+        let (staging_path, mut staging) = self.backend.create_staging(directory)?;
+        let publish_result = (|| {
+            let authenticated_length = copy_source(id, source, &mut staging)?;
+            staging.sync_all().map_err(|source| StoreError::Io {
+                operation: "sync-repair-object-staging",
+                path: staging_path.clone(),
+                source,
+            })?;
+            fs::hard_link(&staging_path, &path).map_err(|source| StoreError::Io {
+                operation: "publish-repair-object",
+                path: path.clone(),
+                source,
+            })?;
+            sync_directory(directory)?;
+            Ok(authenticated_length)
+        })();
+        let remove_result = fs::remove_file(&staging_path);
+        if let Err(source) = remove_result
+            && source.kind() != io::ErrorKind::NotFound
+            && publish_result.is_ok()
+        {
+            return Err(StoreError::Io {
+                operation: "remove-repair-object-staging",
+                path: staging_path,
+                source,
+            });
+        }
+        let authenticated_length = publish_result?;
+        Ok(directory_receipt(
+            &self.backend.name,
+            id,
+            authenticated_length,
+        ))
     }
 }
 

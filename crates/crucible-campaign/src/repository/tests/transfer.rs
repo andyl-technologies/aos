@@ -33,7 +33,7 @@ fn archive_manifest_rejects_duplicate_configuration_pin_pairs() {
     let (_repository, lineage, _policy) = fixture();
     let configuration = lineage.genesis();
     let pin_fact =
-        CampaignFactId::from_content_id(ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"pin"))
+        CampaignFactId::from_content_id(ContentId::for_bytes(ObjectKind::CampaignFact, 14, b"pin"))
             .expect("pin fact");
     let first = ExactCheckpointId::from_content_id(ContentId::for_bytes(
         ObjectKind::ExactManifest,

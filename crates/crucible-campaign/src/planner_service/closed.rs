@@ -2,7 +2,7 @@
 //!
 //! The engine never resolves repository records or generator algorithms. The
 //! coordinator supplies exact continuation projections and Ready candidate
-//! offers. Budget-aware engines also require an eligibility record for every
+//! offers. Every current engine requires an eligibility record for every
 //! offer, including blocked offers. The engine scans
 //! those bounded inputs in canonical order, carries the best offer in portable
 //! state across pages, and issues only after reaching EOF.
@@ -211,10 +211,6 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
         let view = request.invocation().input_view();
         let page = request.invocation().scan_page();
         let prior = Self::decode_state(request)?;
-        let budget_aware = request
-            .engine()
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY);
         let mut budget_blocked = prior.input_view == Some(view) && prior.budget_blocked;
         let mut best = if prior.input_view == Some(view) {
             if prior.best.as_ref().is_some_and(|candidate| {
@@ -344,9 +340,7 @@ impl PurePlannerEngine for CanonicalFrontierPlanner {
             ),
             ("selected".to_owned(), i64::from(next_best.is_some())),
         ]);
-        if budget_aware {
-            terms.insert("budget-blocked".to_owned(), i64::from(budget_blocked));
-        }
+        terms.insert("budget-blocked".to_owned(), i64::from(budget_blocked));
         if branch_request_count != 0 {
             terms.insert("statistical-request".to_owned(), 1);
         }
@@ -522,9 +516,7 @@ impl Canonical for CanonicalFrontierPlannerState {
     fn encode(&self, encoder: &mut Encoder) {
         self.schema_version.encode(encoder);
         self.input_view.encode(encoder);
-        encoder.option(self.best.as_ref(), |encoder, candidate| {
-            candidate.encode_for_schema(encoder, self.schema_version)
-        });
+        self.best.encode(encoder);
         self.budget_blocked.encode(encoder);
     }
 
@@ -538,8 +530,7 @@ impl Canonical for CanonicalFrontierPlannerState {
         Ok(Self {
             schema_version,
             input_view: Option::decode(decoder)?,
-            best: decoder
-                .option(|decoder| CarriedCandidate::decode_for_schema(decoder, schema_version))?,
+            best: Option::decode(decoder)?,
             budget_blocked: bool::decode(decoder)?,
         })
     }
@@ -594,31 +585,24 @@ impl CarriedCandidate {
             ),
         }
     }
+}
 
-    fn encode_for_schema(&self, encoder: &mut Encoder, schema_version: u32) {
+impl Canonical for CarriedCandidate {
+    fn encode(&self, encoder: &mut Encoder) {
         self.position.encode(encoder);
         self.domain.encode(encoder);
         self.value.encode(encoder);
         self.ordinal.encode(encoder);
-        if schema_version >= 3 {
-            self.statistical_evidence.encode(encoder);
-        }
+        self.statistical_evidence.encode(encoder);
     }
 
-    fn decode_for_schema(
-        decoder: &mut Decoder<'_>,
-        schema_version: u32,
-    ) -> Result<Self, CampaignCodecError> {
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let candidate = Self {
             position: PlanningScanPosition::decode(decoder)?,
             domain: ChoiceDomainId::decode(decoder)?,
             value: ChoiceValue::decode(decoder)?,
             ordinal: u64::decode(decoder)?,
-            statistical_evidence: if schema_version >= 3 {
-                Option::decode(decoder)?
-            } else {
-                None
-            },
+            statistical_evidence: Option::decode(decoder)?,
         };
         if candidate.ordinal == 0 {
             return Err(CampaignCodecError::InvalidValue {
@@ -626,16 +610,6 @@ impl CarriedCandidate {
             });
         }
         Ok(candidate)
-    }
-}
-
-impl Canonical for CarriedCandidate {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.encode_for_schema(encoder, STATE_SCHEMA_VERSION);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Self::decode_for_schema(decoder, STATE_SCHEMA_VERSION)
     }
 }
 
@@ -821,10 +795,6 @@ impl PurePlannerEngine for CanonicalPuctPlanner {
         let policy_id = request.invocation().policy();
         let page = request.invocation().scan_page();
         let prior = Self::decode_state(request)?;
-        let budget_aware = request
-            .engine()
-            .capabilities()
-            .contains(CANONICAL_FRONTIER_BUDGET_CAPABILITY);
         let mut budget_blocked = prior.input_view == Some(view)
             && prior.policy == Some(policy_id)
             && prior.budget_blocked;
@@ -927,11 +897,7 @@ impl PurePlannerEngine for CanonicalPuctPlanner {
         let next_state = Self::encode_state(
             expected_engine_id,
             &CanonicalPuctPlannerState {
-                schema_version: if budget_aware {
-                    PUCT_STATE_SCHEMA_VERSION
-                } else {
-                    1
-                },
+                schema_version: PUCT_STATE_SCHEMA_VERSION,
                 input_view: Some(view),
                 policy: Some(policy_id),
                 best: next_best.clone(),
@@ -940,13 +906,9 @@ impl PurePlannerEngine for CanonicalPuctPlanner {
         )?;
         let explanation =
             puct_explanation(offered_on_page, next_best.as_ref(), request.policy(), view)?;
-        let explanation = if budget_aware {
-            let mut terms = explanation.terms_micros().clone();
-            terms.insert("budget-blocked".to_owned(), i64::from(budget_blocked));
-            GuidanceEvidence::new(terms)?
-        } else {
-            explanation
-        };
+        let mut terms = explanation.terms_micros().clone();
+        terms.insert("budget-blocked".to_owned(), i64::from(budget_blocked));
+        let explanation = GuidanceEvidence::new(terms)?;
         Ok(PlannerEngineOutput::new(PlannerStepProposal::new(
             invocation,
             next_state,

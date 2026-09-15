@@ -1,11 +1,6 @@
-//! Authenticated inline, manifest, and chunk storage records.
+//! Authenticated manifest and chunk storage records.
 
 use super::*;
-
-pub(super) enum AuthenticatedFindingTriageReplayRoot {
-    Inline(FindingTriageReplayEvidence),
-    Manifest(FindingTriageReplayManifest),
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FindingTriageReplayChunkDescriptor {
@@ -286,14 +281,6 @@ pub(super) fn evidence_children(
 
 pub(super) fn chunk_role(index: usize) -> String {
     format!("payload-chunk-{index:06}")
-}
-
-pub(super) fn encoded_schema_version(bytes: &[u8]) -> Result<u32, CampaignCodecError> {
-    bytes
-        .get(..std::mem::size_of::<u32>())
-        .and_then(|value| value.try_into().ok())
-        .map(u32::from_be_bytes)
-        .ok_or(CampaignCodecError::Truncated)
 }
 
 pub(super) fn authenticated_storage_envelope(

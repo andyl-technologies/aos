@@ -25,11 +25,10 @@ use crucible::{AdvanceOutcome, ObservableEventPayload, SimulationBackend, Virtua
 use crucible_device::block::{BaseImage, BlockDurabilityConfig};
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
-    launch_qemu_production_fresh_node, parse_qemu_rr_control_boundary_trace,
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity,
     QemuLiveNodeStepGateConfig, QemuNode, QemuProductionFreshLaunchAdmission,
     QemuRrControlBoundaryTracePhase, QemuRrControlBoundaryTraceRecord, QemuShutdownReport,
-    QemuShutdownRung,
+    QemuShutdownRung, launch_qemu_production_fresh_node, parse_qemu_rr_control_boundary_trace,
 };
 
 #[cfg(target_os = "linux")]
@@ -62,7 +61,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         .skip(1)
         .map(PathBuf::from)
         .collect::<Vec<_>>();
-    let [qemu, plugin, kernel, initrd, firmware, cgroup_root, run_root] = arguments.as_slice()
+    let [
+        qemu,
+        plugin,
+        kernel,
+        initrd,
+        firmware,
+        cgroup_root,
+        run_root,
+    ] = arguments.as_slice()
     else {
         return Err("expected QEMU PLUGIN KERNEL INITRD FIRMWARE CGROUP_ROOT RUN_ROOT".into());
     };

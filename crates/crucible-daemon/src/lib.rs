@@ -87,6 +87,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod anchored_fs;
 pub mod assignment_ledger;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
@@ -123,6 +124,7 @@ pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
 pub mod finding_production_replay;
+pub mod finding_replay_capture_store;
 mod guest_selectable;
 #[cfg(target_os = "linux")]
 pub mod hot_checkpoint_fallback;
@@ -280,7 +282,8 @@ pub use crucible_artifact::{
     AutomaticFindingPreparationError, AutomaticFindingReplayOutcome,
     CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3, CrucibleArtifactError, CrucibleCampaignArtifactStore,
-    CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript, FindingReplayIncompatibility,
+    CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
+    FindingProductionReplayMaterialOutcome, FindingReplayIncompatibility,
     MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
     MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
     MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedCrucibleFindingCandidate,
@@ -340,8 +343,7 @@ pub use executor_loopback::{
     DEFAULT_EXECUTOR_REQUESTS_PER_CONNECTION, LoopbackExecutorProtocolError,
     LoopbackExecutorServerError, LoopbackExecutorService, LoopbackExecutorTimeouts,
     MAX_EXECUTOR_REQUESTS_PER_CONNECTION, serve_loopback_executor_component_connection_with_limits,
-    serve_loopback_executor_component_once, serve_loopback_executor_once,
-    serve_loopback_executor_once_with_timeouts,
+    serve_loopback_executor_component_once,
 };
 pub(crate) use executor_pool::{
     LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker,
@@ -363,15 +365,16 @@ pub use executor_service::{
     ExecutorLocalServiceShutdown,
 };
 pub use executor_supervisor::{
-    AllowAllAttemptAdmission, AttemptAdmissionValidator, CancellationOutcome,
-    CheckpointCompletionOutcome, CheckpointHandoffFailure, CheckpointPromotionCompletionOutcome,
-    CheckpointPromotionRecovery, CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome,
-    CheckpointPublicationOutcome, CheckpointRequestOutcome, CompletionOutcome,
-    CompletionValidationFailure, ExecutionCancellation, ExecutionCheckpointRequest,
-    ExecutorAvailability, ExecutorCapacity, ExecutorCapacityError, LocalExecutorError,
-    LocalExecutorSupervisor, PausedCheckpointPromotionRecovery, QueuedAttempt,
-    TerminalFailureOutcome, stage_prepared_attempt_result,
+    AttemptAdmissionValidator, CancellationOutcome, CheckpointCompletionOutcome,
+    CheckpointHandoffFailure, CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,
+    CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome, CheckpointPublicationOutcome,
+    CheckpointRequestOutcome, CompletionOutcome, CompletionValidationFailure,
+    ExecutionCancellation, ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity,
+    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor,
+    PausedCheckpointPromotionRecovery, QueuedAttempt, TerminalFailureOutcome,
+    stage_prepared_attempt_result,
 };
+pub(crate) use executor_worker::stage_prepared_attempt_result_journal;
 pub use executor_worker::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,
     AttemptExecutionModel, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
@@ -407,6 +410,10 @@ pub use finding_production_replay::{
     FindingProductionReplaySharedContext, FindingProductionReplayTerminalOutcome,
     capture_finding_replay_deployment, capture_finding_replay_lifecycle_objects,
     capture_finding_replay_lifecycle_objects_with_limits, capture_finding_replay_shared_context,
+};
+pub use finding_replay_capture_store::{
+    FindingReplayCaptureInput, FindingReplayCaptureStore, FindingReplayCaptureStoreError,
+    LoadedFindingReplayCapture, PreparedFindingReplayCaptureSet,
 };
 pub use guest_selectable::{
     GuestSelectableBoundaryDiagnosticConfig, GuestSelectableBoundaryDiagnosticConfigError,
@@ -504,7 +511,7 @@ pub use planner_process::{
 };
 pub use prepared_result_journal::{
     DirectoryPreparedResultJournal, PreparedResultJournalCreateDisposition,
-    PreparedResultJournalError,
+    PreparedResultJournalError, PreparedResultJournalNamespace,
 };
 #[cfg(target_os = "linux")]
 pub use production_plugin_probe::{

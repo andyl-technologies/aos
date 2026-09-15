@@ -23,7 +23,7 @@ fn fixture_request() -> SubmitAttemptRequest {
         .expect("lineage"),
         AttemptId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            1,
+            8,
             b"executor-attempt",
         ))
         .expect("attempt"),
@@ -38,7 +38,7 @@ fn fixture_request() -> SubmitAttemptRequest {
 fn fixture_finding_candidate() -> FindingCandidateBundleId {
     FindingCandidateBundleId::from_content_id(ContentId::for_bytes(
         ObjectKind::Finding,
-        5,
+        6,
         b"executor-finding-candidate",
     ))
     .expect("finding candidate")
@@ -56,7 +56,7 @@ fn fixture_configuration(byte: u8) -> ConfigurationArtifactId {
 fn fixture_campaign_fact(byte: u8) -> CampaignFactId {
     CampaignFactId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        10,
+        14,
         &[byte; 32],
     ))
     .expect("campaign fact")
@@ -68,7 +68,7 @@ fn completed_responses_encode_current_optional_finding_candidates() {
     let execution = ExecutionId::from_bytes([0x71; 16]).expect("execution");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"candidate-bearing-completion",
     ))
     .expect("observation");
@@ -200,7 +200,7 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
             &request_bytes
         )
         .to_hex(),
-        "4db5e0ed4a3b049dbbce0f1fd7510ac698affb5c022dfb69d9aa484deb4dd508"
+        "73098d610ed7d29555b0ae966698d03e892f38e22f5829e6eb9047fcad70f132"
     );
 
     let response = SubmitAttemptResponse::new(
@@ -227,7 +227,7 @@ fn submit_attempt_messages_are_strict_bounded_and_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "a7dfe2c31afc68a5bb1990e78e9cae9ef85206584bc9dc418a943d66bc979473"
+        "aab0d3330280a22dff35425a5e7105d8d1f0016b8f70322945676a25a06e92f2"
     );
 
     let different = SubmitAttemptRequest::new(
@@ -601,12 +601,12 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &request_bytes,
         )
         .to_hex(),
-        "80e21acee3459cbbae200416e5e2d457c091856457ef4da06d9c22157bfef13f"
+        "2d7a8087238c6807aca5bd3e056d12082cad8aa8516ded847617dd1e972ef8ac"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"executor-status-observation",
     ))
     .expect("observation");
@@ -627,7 +627,7 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "8c022dfc38b479c6ca3a0529431c134be9ad10e506838ddac579801c8fce2896"
+        "96f31d687e20741befb022fc96b3d5cb4dcef93ca01a2175101abf8e50d94b3c"
     );
 
     let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
@@ -697,7 +697,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &request_bytes,
         )
         .to_hex(),
-        "1ee1a24dd8c782f2f5632078078a87ba0baf1c272152c0d8c36e94fee2a01958"
+        "8ea751b3fbdc96c840f4803d34e9df0b97dd11aaafcbe6fe7ef757d8dc74105e"
     );
 
     let execution = ExecutionId::from_bytes([0x3e; 16]).expect("resumed execution");
@@ -718,7 +718,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &response_bytes,
         )
         .to_hex(),
-        "e809fec04fc012456700a515530924c6a255c92a7a63e61c9c8fe814e37e7465"
+        "ef27c6c347f165ae453e976a8eadbac0c423f2361c73ea3dc462a62bb62393f8"
     );
 
     let other_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
@@ -996,12 +996,12 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &request_bytes,
         )
         .to_hex(),
-        "b30f9977a210d56cc957cccff4704fb0b5cc92b6d564f83513c419b0fad3e75c"
+        "7f143a2bb2e74ae9cdc3f568633b016e30b3a7ba3d8651d1e351e0a6dc62123c"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        1,
+        12,
         b"executor-cancellation-observation",
     ))
     .expect("observation");
@@ -1022,7 +1022,7 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "676316b0dcf77a0a4f02819fa66bb93e307720f52b8408a6bf900d250b9f8c4d"
+        "00fb0f2cb19b855b630d79d0c09fa67e78c6a3f7e2eef6975e11cd283be5b701"
     );
 
     let other = CancelAttemptExecutionRequest::new(
@@ -1072,7 +1072,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
             &request_bytes,
         )
         .to_hex(),
-        "d66430a738dfeed7134c714e7bb8db10ecd344258e02cb0fd0e06999ee6c4182"
+        "3aae78e714d18563b0b87b5f8c74e36b7fd05ec22c049e254f825d762deccea3"
     );
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
@@ -1098,7 +1098,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
             &response_bytes,
         )
         .to_hex(),
-        "0fe5190e163e5648a2b8bbb7fba942faebfe43bafd6d1752401cbbae25969603"
+        "50b849a5d33bfcd04b246d0f9d6f142e37ba7fe53dfac46e43657185651424c2"
     );
 
     let other = CheckpointAttemptExecutionRequest::new(

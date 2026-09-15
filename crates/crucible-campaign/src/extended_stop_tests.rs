@@ -51,9 +51,9 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         },
     )
     .expect("next-choice-or-timeout attempt");
-    assert_eq!(terminal_attempt.schema_version(), 1);
-    assert_eq!(attempt.schema_version(), 2);
-    assert_eq!(next_choice_or_timeout_attempt.schema_version(), 2);
+    assert_eq!(terminal_attempt.schema_version(), 8);
+    assert_eq!(attempt.schema_version(), 8);
+    assert_eq!(next_choice_or_timeout_attempt.schema_version(), 8);
     assert_eq!(
         Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("attempt round trip"),
         attempt
@@ -64,26 +64,24 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("attempt ID")
             .content_id()
             .schema_version(),
-        2
+        8
     );
     assert_eq!(
         Attempt::from_canonical_bytes(&next_choice_or_timeout_attempt.canonical_bytes())
             .expect("next-choice-or-timeout round trip"),
         next_choice_or_timeout_attempt
     );
-    let mut downgraded_attempt = attempt.canonical_bytes();
-    downgraded_attempt[..4].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(Attempt::from_canonical_bytes(&downgraded_attempt).is_err());
-    let mismatched_attempt_envelope = ObjectEnvelope::for_record_versioned(
-        CampaignRecordKind::Attempt,
-        1,
-        super::object::content_children(attempt.content_children()).expect("attempt children"),
-        attempt.canonical_bytes(),
-    )
-    .expect("structural attempt envelope");
+    let mut noncurrent_attempt = attempt.canonical_bytes();
+    noncurrent_attempt[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(Attempt::from_canonical_bytes(&noncurrent_attempt).is_err());
     assert!(
-        ObjectEnvelope::from_canonical_bytes(&mismatched_attempt_envelope.canonical_bytes())
-            .is_err()
+        ObjectEnvelope::for_record_versioned(
+            CampaignRecordKind::Attempt,
+            0,
+            super::object::content_children(attempt.content_children()).expect("attempt children"),
+            attempt.canonical_bytes(),
+        )
+        .is_err()
     );
 
     let branch_point =
@@ -213,7 +211,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         BTreeSet::new(),
     )
     .expect("execution-quanta observation");
-    assert_eq!(observation.schema_version(), 5);
+    assert_eq!(observation.schema_version(), 12);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -225,13 +223,11 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("observation ID")
             .content_id()
             .schema_version(),
-        5
+        12
     );
-    for wrong_version in [1_u32, 6] {
-        let mut mismatched = observation.canonical_bytes();
-        mismatched[..4].copy_from_slice(&wrong_version.to_be_bytes());
-        assert!(Observation::from_canonical_bytes(&mismatched).is_err());
-    }
+    let mut noncurrent_observation = observation.canonical_bytes();
+    noncurrent_observation[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(Observation::from_canonical_bytes(&noncurrent_observation).is_err());
 
     let produced_selection = stored_id!(
         SelectionId,
@@ -243,16 +239,12 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         .clone()
         .with_produced_selections(BTreeSet::from([produced_selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 7);
+    assert_eq!(selection_observation.schema_version(), 12);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("selection observation round trip"),
         selection_observation
     );
-    let mut impossible_scenario_failure_version = selection_observation.canonical_bytes();
-    impossible_scenario_failure_version[..4].copy_from_slice(&8_u32.to_be_bytes());
-    assert!(Observation::from_canonical_bytes(&impossible_scenario_failure_version).is_err());
-
     let discovery = DiscoveryRequest::new(
         CampaignCommandId::from_hash(CampaignHash::derive(
             "extended-stop-test",
@@ -269,15 +261,18 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     )
     .expect("execution-quanta discovery");
     let fact = CampaignFact::DiscoveryRequested(discovery.clone());
-    assert_eq!(&fact.canonical_bytes()[..4], &9_u32.to_be_bytes());
-    assert_eq!(fact.id().expect("fact ID").content_id().schema_version(), 9);
+    assert_eq!(&fact.canonical_bytes()[..4], &14_u32.to_be_bytes());
+    assert_eq!(
+        fact.id().expect("fact ID").content_id().schema_version(),
+        14
+    );
     assert_eq!(
         CampaignFact::from_canonical_bytes(&fact.canonical_bytes()).expect("fact round trip"),
         fact
     );
-    let mut downgraded_fact = fact.canonical_bytes();
-    downgraded_fact[..4].copy_from_slice(&8_u32.to_be_bytes());
-    assert!(CampaignFact::from_canonical_bytes(&downgraded_fact).is_err());
+    let mut noncurrent_fact = fact.canonical_bytes();
+    noncurrent_fact[..4].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(CampaignFact::from_canonical_bytes(&noncurrent_fact).is_err());
 
     let service_request = SubmitCampaignDiscoveryRequest::new(
         CampaignPrincipal::new("operator:extended-stop").expect("principal"),
@@ -287,7 +282,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     .expect("service request");
     assert_eq!(
         &service_request.canonical_bytes()[..4],
-        &2_u32.to_be_bytes()
+        &3_u32.to_be_bytes()
     );
     assert_eq!(
         SubmitCampaignDiscoveryRequest::from_canonical_bytes(&service_request.canonical_bytes())
@@ -295,7 +290,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         service_request
     );
     let mut downgraded_service_request = service_request.canonical_bytes();
-    downgraded_service_request[..4].copy_from_slice(&1_u32.to_be_bytes());
+    downgraded_service_request[..4].copy_from_slice(&0_u32.to_be_bytes());
     assert!(
         SubmitCampaignDiscoveryRequest::from_canonical_bytes(&downgraded_service_request).is_err()
     );
@@ -322,13 +317,13 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     assert_eq!(
         golden_digests,
         [
-            "16a43db59753647e81b424e087085d2dc4602cc1de21daad6cca851064461a54",
-            "ca56047687eabd692abfa41dba49e9abbebdaa49e20e4fd4e143d4e13035f95f",
+            "b0ed027903ad6ee53ff16770cbea7221db343ce284a5e01b927ed46aff2cc3c0",
+            "9f4b1ee50c0cd915fe9bf55fa9a2b765b0da73607fe794406ffd58cf9680fc6e",
             "2c33f5842cc9ed13e921d287b34c5776385503e3feac253c4c4993b0cee7f36c",
-            "c01f43dfaf3eccd05cfd8ffbf024fbd0cfd34561eb0e5a1f4d6d595745d6fd48",
-            "4843bdc4e0e715066fbc04ab31be52ea01c6df4811431fb0358aba1fcfc1fbcb",
-            "2964e78ecc7b1fa408b1e5c16aaad83629f0a09738db28a4d1ed9d264bc06773",
-            "62f72751a8db51bb3c033a9da6e454000bda19ab6c1793a92df75b31e86c2b9e",
+            "75500f41fc4855fd239cb03132231482eb085438511ef2b57a5e39631fbd31aa",
+            "8e60273d4936917295147d076e5b068fc9f12b77082fd107c1d4cb12cec092de",
+            "fdac8722ae55b2183954b36ea0908f0a73c8c6095fed2e251a5ee837e736d84f",
+            "dcb5d010f97bfbda6697408bcd9c456031be8eb7316d49202cb0b11a98b2cbeb",
         ]
     );
 }

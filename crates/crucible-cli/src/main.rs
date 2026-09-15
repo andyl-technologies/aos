@@ -659,6 +659,8 @@ struct CampaignStoreGcArgs {
 enum CampaignStoreGcCommand {
     /// Inventory exact roots and persist a non-destructive deletion plan.
     Plan,
+    /// Durably cancel a planned journal before deletion begins.
+    Cancel,
     /// Revalidate every generation and apply one persisted deletion plan.
     Apply,
 }

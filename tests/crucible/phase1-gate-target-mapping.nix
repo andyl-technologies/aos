@@ -207,7 +207,7 @@
       gate = "gate:fleet-equivalence";
       package = "crucible";
       testTarget = "gate_fleet_equivalence";
-      requiredFeatures = ["test-double"];
+      requiredFeatures = [];
     }
     {
       gate = "gate:campaign-continuity";

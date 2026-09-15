@@ -439,7 +439,7 @@ features = []
 gate = "gate:fleet-equivalence"
 package = "crucible"
 test_target = "gate_fleet_equivalence"
-features = ["test-double"]
+features = []
 
 [[targets]]
 gate = "gate:campaign-continuity"

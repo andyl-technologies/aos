@@ -773,7 +773,7 @@ section states the plugin's obligations on that channel and at the boot barrier.
 - **[PLUG-38]** The plugin MUST perform the version handshake before mapping or
   reading any byte of the shared-memory region: it sends `Hello(proto_version,
   abi_version)` carrying the shmem ABI version it was compiled against, blocks for
-  `HelloAck`, and verifies the negotiated `proto_version`, the exact `abi_version`
+  `HelloAck`, and verifies the exact agreed `proto_version`, the exact `abi_version`
   match, and `slot_index < node_count`
   ([`14-protocol.md`](14-protocol.md) [PROTO-10], [PROTO-11], [PROTO-16]). A
   mismatch MUST abort setup loudly. *Gate:* `gate:abi-conformance`. *Spec:*
@@ -790,7 +790,7 @@ section states the plugin's obligations on that channel and at the boot barrier.
 
 - **[PLUG-40]** On control-protocol v3 `Setup` the plugin MUST receive
   exactly three descriptors via `SCM_RIGHTS` in fixed order — the shmem fd, the
-  wake fd, then the sealed node-local version-negotiated plugin-plan memfd
+  wake fd, then the sealed node-local current-version plugin-plan memfd
   ([`14-protocol.md`](14-protocol.md) [PROTO-8]) — `mmap` the shmem fd for exactly
   the `region_len` the host sent, validate the region header's magic, ABI version,
   and that its `node_count` and the plugin's `slot_index` are consistent

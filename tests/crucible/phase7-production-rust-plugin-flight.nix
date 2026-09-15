@@ -106,6 +106,7 @@
     mkdir -m 700 /tmp/attempts/run
 
     result=/tmp/production-plugin-result
+    runtime_trace=/tmp/production-reference-runtime-determinism.trace
     ${pkgs.coreutils}/bin/timeout -k 15 600 \
       ${flight}/bin/crucible-qemu-production-plugin-flight \
       ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
@@ -113,7 +114,12 @@
       ${pkgs.linux}/boot/vmlinuz-* \
       ${idleGuest}/initrd.img \
       ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
-      /sys/fs/cgroup/crucible /tmp/attempts/run > "$result"
+      /sys/fs/cgroup/crucible /tmp/attempts/run "$runtime_trace" > "$result"
+    test -f "$runtime_trace"
+    test ! -L "$runtime_trace"
+    test -s "$runtime_trace"
+    runtime_trace_sha256=$(${pkgs.coreutils}/bin/sha256sum "$runtime_trace" | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
+    printf 'hot_fork_runtime_trace_sha256=%s\n' "$runtime_trace_sha256" >> "$result"
     cat "$result"
     for evidence in \
       PASS \
@@ -146,10 +152,23 @@
       queued_idle_wake_reached_exact_deadline=true \
       actual_virtual_timer_fire_authenticated=true \
       idle_wake_stream_restart_identical=true \
+      nonmain_timer_service_completed_before_hot_fork=true \
+      hot_fork_template_draining=true \
+      hot_fork_template_prepared=true \
+      hot_fork_preparation_order=timer-service-complete,draining,prepared \
       component_failures=0 \
       per_vcpu_register_files_present=true \
       aggregate_icount_equals_target=true; do
-      grep -Fxq "$evidence" "$result"
+      test "$(grep -Fxc "$evidence" "$result")" -eq 1
+    done
+    for numeric_evidence in \
+      nonmain_timer_service_list \
+      nonmain_timer_service_generation \
+      nonmain_timer_service_request_sequence \
+      nonmain_timer_service_complete_sequence \
+      nonmain_timer_service_raw_icount \
+      hot_fork_template_generation; do
+      test "$(grep -Ec "^$numeric_evidence=[1-9][0-9]*$" "$result")" -eq 1
     done
     witness_value() {
       sed -n "s/^$1=//p" "$result"
@@ -186,6 +205,12 @@
     post_wake=$(witness_value timer_witness_post_wake_logical_icount)
     witness_completed=$(witness_value timer_witness_completed)
     witness_reserved=$(witness_value timer_witness_reserved)
+    timer_service_list=$(witness_value nonmain_timer_service_list)
+    timer_service_generation=$(witness_value nonmain_timer_service_generation)
+    timer_service_request_sequence=$(witness_value nonmain_timer_service_request_sequence)
+    timer_service_complete_sequence=$(witness_value nonmain_timer_service_complete_sequence)
+    timer_service_raw_icount=$(witness_value nonmain_timer_service_raw_icount)
+    hot_fork_template_generation=$(witness_value hot_fork_template_generation)
     test -n "$witness_generation"
     test "$witness_generation" -gt 0
     test -n "$setup_marker_icount"
@@ -203,6 +228,13 @@
     test "$published_wake" = "$post_wake"
     test "$witness_completed" = 1
     test "$witness_reserved" = 0
+    test "$timer_service_list" -gt 0
+    test "$timer_service_generation" -gt 0
+    test "$timer_service_request_sequence" -gt 0
+    test "$timer_service_complete_sequence" -gt "$timer_service_request_sequence"
+    test "$timer_service_raw_icount" = "$fired_raw_icount"
+    test "$hot_fork_template_generation" -gt 0
+    test "$(grep -Ec '^hot_fork_runtime_trace_sha256=[0-9a-f]{64}$' "$result")" -eq 1
     # This canonical flight fixes shift zero, so ceil conversion is exact.
     test "$icount_shift" = 0
     test "$armed_deadline_ns" = "$fired_virtual_ns"
@@ -273,6 +305,9 @@
       production_host_parallel_authenticated_exact_recovery=true; do
       grep -Fx "$evidence" "$lifecycle_log" >> "$result"
     done
+    printf '%s\n' PRODUCTION_PLUGIN_RUNTIME_TRACE_BEGIN
+    ${pkgs.coreutils}/bin/base64 "$runtime_trace"
+    printf '%s\n' PRODUCTION_PLUGIN_RUNTIME_TRACE_END
     printf '%s\n' PRODUCTION_PLUGIN_RESULT_BEGIN
     cat "$result"
     printf '%s\n' PRODUCTION_PLUGIN_RESULT_END

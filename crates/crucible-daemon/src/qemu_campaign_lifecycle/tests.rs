@@ -2266,7 +2266,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .bundle()
         .triage_evidence()
         .expect("candidate bundle v2 triage evidence");
-    assert_eq!(finding.bundle().schema_version(), 5);
+    assert_eq!(finding.bundle().schema_version(), 6);
     assert_eq!(
         triage_ids.minimization_original(),
         triage_ids.verification_original(),
@@ -2520,7 +2520,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
     let finding = result
         .finding()
         .expect("supplemental finding must survive private minimization");
-    assert_eq!(finding.bundle().schema_version(), 5);
+    assert_eq!(finding.bundle().schema_version(), 6);
     crate::executor_worker::publish_prepared_semantic_attempt_result(
         &store,
         crate::automatic_finding_runner::test_finding_exact_retention_source().as_ref(),

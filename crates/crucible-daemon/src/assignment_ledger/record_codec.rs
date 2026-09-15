@@ -507,12 +507,16 @@ fn parse_typed<T>(
 }
 
 pub(super) fn load_or_create_retention_state(
+    authority: &crate::anchored_fs::AnchoredDirectory,
     root: &Path,
 ) -> Result<AssignmentRetentionState, AssignmentLedgerError> {
     let path = root.join(RETENTION_STATE_FILE);
-    if let Some(bytes) =
-        read_optional_with_limit(&path, MAX_RETENTION_STATE_BYTES, "retention-state-size")?
-    {
+    if let Some(bytes) = read_optional_with_limit(
+        authority,
+        &path,
+        MAX_RETENTION_STATE_BYTES,
+        "retention-state-size",
+    )? {
         return decode_retention_state(&bytes);
     }
 
@@ -525,15 +529,17 @@ pub(super) fn load_or_create_retention_state(
         instance,
         generation: 1,
     };
-    persist_retention_state(root, state)?;
+    persist_retention_state(authority, root, state)?;
     Ok(state)
 }
 
 pub(super) fn persist_retention_state(
+    authority: &crate::anchored_fs::AnchoredDirectory,
     root: &Path,
     state: AssignmentRetentionState,
 ) -> Result<(), AssignmentLedgerError> {
     replace_mutable(
+        authority,
         &root.join(RETENTION_STATE_FILE),
         &encode_retention_state(state),
     )

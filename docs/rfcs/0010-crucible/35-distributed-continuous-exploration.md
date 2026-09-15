@@ -1077,7 +1077,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
 - [x] **T-DCE-8** Implement `gate:fleet-equivalence` (single-host exhaustive search
   vs fleet work-stealing search over the same (family, seed, budget) discover the
   same content-addressed finding-set with byte-identical artifacts; order may
-  differ), running against the SimDouble fleet under adversarial host conditions and
+  differ), running the work-stealing fleet under adversarial host conditions and
   a real-QEMU slice, with divergence-bisection localization. — satisfies [DCE-20],
   [DCE-21], [DCE-25], [DCE-33]; spec §35.4.4, §35.5.4; cross-ref 24 §3/§7.
   - Completed by `checks.crucible.phase7.gates.fleetEquivalence`: the Crucible
@@ -1088,9 +1088,9 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
     seed, and budget, requires both runs to exhaust the same content-addressed
     graph, then compares order-insensitive content-addressed finding sets and
     byte-identical reproduction artifacts while preserving discovery order only as
-    diagnostics. The test also drives one `SimDouble` lane per logical fleet host
-    under the shared `canonical_host_adversary_matrix` fixture and requires
-    profile-independent host-schedule witnesses. Negative controls drop a fleet
+    diagnostics. The test also runs complete work-stealing searches as independent
+    logical tasks under the shared `canonical_host_adversary_matrix` fixture and
+    requires profile-independent fleet results. Negative controls drop a fleet
     finding and cap the budget before exhaustion, verifying divergence-bisection
     handoff through `SearchReplayOracleBisectionRequest`. The root TCG-only fleet
     wrapper consumes this gate result before advertising distributed continuous

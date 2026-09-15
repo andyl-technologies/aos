@@ -5,6 +5,8 @@
 //! attempt identity, so restart recovery does not materialize daemon history in
 //! memory. Every file is bounded, checksummed, strictly decoded, and published
 //! through an fsynced staging file followed by an atomic link or rename.
+//! Startup accepts only a bounded inventory of exact v15 attempt records; stale
+//! staging names and every noncurrent record shape fail closed.
 //! Retention administration is a separate mutable capability whose fence binds
 //! one combined operational-root scan to a persistent generation.
 //!
@@ -19,8 +21,8 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -32,7 +34,8 @@ use crucible_campaign::{
     ExecutionRetentionIntent, FindingCandidateBundleId, ObservationId, SubmitAttemptRequest,
     SubmitAttemptResponse, attempt_execution_basis_digest_for_start_mode,
 };
-use rustix::fs::{FlockOperation, flock};
+
+use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
 mod record_codec;
 
@@ -49,6 +52,8 @@ const RETENTION_STATE_FILE: &str = "retention-state-v1";
 const MAX_LEDGER_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_RETENTION_STATE_BYTES: u64 = 256;
 const MAX_TYPED_ID_BYTES: usize = 256;
+const MAX_RUNTIME_ATTEMPT_RECORDS: usize = 1_000_000;
+const MAX_RUNTIME_ATTEMPT_SHARDS: usize = 256;
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MEMORY_LEDGER_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -363,7 +368,7 @@ impl AttemptExecutionKey {
         )
     }
 
-    /// Returns the exact compatibility lineage.
+    /// Returns the exact campaign lineage.
     #[must_use]
     pub const fn lineage(self) -> CampaignLineageId {
         self.lineage
@@ -383,18 +388,13 @@ impl AttemptExecutionKey {
 
     /// Returns the stable digest used for ledger and journal storage paths.
     ///
-    /// Semantic keys preserve the original version 1 digest exactly. Scoped
-    /// capture keys use a separate version 2 domain and bind the canonical
-    /// scope bytes, so no capture can alias semantic state.
+    /// Every key binds its canonical scope bytes under the sole current domain,
+    /// so semantic and capture execution state cannot alias.
     #[must_use]
     pub fn storage_digest(self) -> CampaignHash {
         let mut material = Vec::with_capacity(256);
         push_bytes(&mut material, self.lineage.to_text().as_bytes());
         push_bytes(&mut material, self.attempt.to_text().as_bytes());
-        if self.scope == AttemptExecutionScope::Semantic {
-            return CampaignHash::derive("crucible.executor.attempt-execution-key.v1", &material);
-        }
-
         push_bytes(&mut material, &self.scope.canonical_bytes());
         CampaignHash::derive("crucible.executor.attempt-execution-key.v2", &material)
     }
@@ -1369,7 +1369,8 @@ pub enum AssignmentLedgerError {
 /// Crash-safe directory ledger with one nonblocking process writer lock.
 pub struct DirectoryAssignmentLedger {
     root: PathBuf,
-    writer_lock: File,
+    authority: crate::anchored_fs::AnchoredDirectory,
+    writer_lock: OwnedAdvisoryLock,
     retention_state: AssignmentRetentionState,
 }
 
@@ -1386,28 +1387,27 @@ impl DirectoryAssignmentLedger {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, AssignmentLedgerError> {
         let root = root.into();
         create_directory_durable(&root)?;
+        let authority = crate::anchored_fs::AnchoredDirectory::open(root.clone())
+            .map_err(|source| anchored_ledger_error(source, "open-ledger-root"))?;
         let lock_path = root.join("writer.lock");
-        let writer_lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|source| io_error("open-writer-lock", &lock_path, source))?;
-        flock(&writer_lock, FlockOperation::NonBlockingLockExclusive).map_err(|source| {
-            io_error(
-                "lock-writer",
-                &lock_path,
-                std::io::Error::from_raw_os_error(source.raw_os_error()),
-            )
-        })?;
-        sync_directory(&root)?;
-        let retention_state = load_or_create_retention_state(&root)?;
-        Ok(Self {
+        let lock_file = authority
+            .open_or_create_regular(&lock_path, "open-writer-lock")
+            .map_err(|source| anchored_ledger_error(source, "open-writer-lock"))?;
+        let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(lock_file)
+            .map_err(|source| anchored_ledger_error(source, "lock-writer"))?;
+        validate_runtime_attempt_inventory(&authority)?;
+        authority
+            .sync()
+            .map_err(|source| anchored_ledger_error(source, "sync-ledger-root"))?;
+        let retention_state = load_or_create_retention_state(&authority, &root)?;
+        let ledger = Self {
             root,
+            authority,
             writer_lock,
             retention_state,
-        })
+        };
+        ledger.verify_authority()?;
+        Ok(ledger)
     }
 
     /// Returns the physical ledger root.
@@ -1431,7 +1431,9 @@ impl DirectoryAssignmentLedger {
     fn advance_retention_state(&mut self) -> Result<(), AssignmentLedgerError> {
         let mut next = self.retention_state;
         next.advance()?;
-        persist_retention_state(&self.root, next)?;
+        self.verify_authority()?;
+        persist_retention_state(&self.authority, &self.root, next)?;
+        self.verify_authority()?;
         self.retention_state = next;
         Ok(())
     }
@@ -1440,14 +1442,36 @@ impl DirectoryAssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
     ) -> Result<(), AssignmentLedgerError> {
-        let complete = visit_directory_attempt_states_bounded(&self.root, usize::MAX, visitor)?;
+        self.verify_authority()?;
+        let complete = visit_directory_attempt_states_with_authority(
+            &self.authority,
+            &self.root,
+            MAX_RUNTIME_ATTEMPT_RECORDS,
+            visitor,
+        )?;
         if !complete {
-            return Err(corrupt(
-                "attempt-record-count-exceeds-process-address-space",
-            ));
+            return Err(corrupt("runtime-attempt-inventory-limit"));
         }
+        self.verify_authority()?;
         Ok(())
     }
+
+    fn verify_authority(&self) -> Result<(), AssignmentLedgerError> {
+        self.writer_lock
+            .verify_path_binding()
+            .map_err(|source| anchored_ledger_error(source, "verify-writer-lock"))?;
+        self.authority
+            .verify_path_binding()
+            .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))
+    }
+}
+
+fn anchored_ledger_error(
+    source: crate::anchored_fs::AnchoredFsError,
+    operation: &'static str,
+) -> AssignmentLedgerError {
+    let (operation, path, source) = source.into_io_parts(operation);
+    io_error(operation, &path, source)
 }
 
 fn attempt_path_at(root: &Path, key: AttemptExecutionKey) -> PathBuf {
@@ -1459,9 +1483,19 @@ fn attempt_path_at(root: &Path, key: AttemptExecutionKey) -> PathBuf {
 pub(crate) fn directory_assignment_retention_generation(
     root: &Path,
 ) -> Result<AssignmentRetentionGeneration, AssignmentLedgerError> {
+    let authority = crate::anchored_fs::AnchoredDirectory::open(root.to_owned())
+        .map_err(|source| anchored_ledger_error(source, "open-ledger-root"))?;
     let path = root.join(RETENTION_STATE_FILE);
-    let bytes = read_optional_with_limit(&path, MAX_RETENTION_STATE_BYTES, "retention-state-size")?
-        .ok_or_else(|| corrupt("retention-state-is-missing"))?;
+    let bytes = read_optional_with_limit(
+        &authority,
+        &path,
+        MAX_RETENTION_STATE_BYTES,
+        "retention-state-size",
+    )?
+    .ok_or_else(|| corrupt("retention-state-is-missing"))?;
+    authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
     decode_retention_state(&bytes).map(AssignmentRetentionState::digest)
 }
 
@@ -1482,18 +1516,29 @@ pub fn visit_directory_attempt_states_bounded(
     maximum: usize,
     visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
 ) -> Result<bool, AssignmentLedgerError> {
+    let authority = crate::anchored_fs::AnchoredDirectory::open(root.to_owned())
+        .map_err(|source| anchored_ledger_error(source, "open-ledger-root"))?;
+    visit_directory_attempt_states_with_authority(&authority, root, maximum, visitor)
+}
+
+fn visit_directory_attempt_states_with_authority(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    root: &Path,
+    maximum: usize,
+    visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
+) -> Result<bool, AssignmentLedgerError> {
     let attempts = root.join("attempts");
-    let shards = match fs::read_dir(&attempts) {
-        Ok(shards) => shards,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(source) => return Err(io_error("read-attempt-root-shards", &attempts, source)),
+    let Some(attempts_authority) = authority
+        .open_directory_optional(&attempts, "open-attempt-root")
+        .map_err(|source| anchored_ledger_error(source, "open-attempt-root"))?
+    else {
+        return Ok(true);
     };
+    let shards = attempts_authority
+        .entry_names(MAX_RUNTIME_ATTEMPT_SHARDS, "read-attempt-root-shards")
+        .map_err(|source| anchored_ledger_error(source, "read-attempt-root-shards"))?;
     let mut visited = 0_usize;
-    for shard in shards {
-        let shard =
-            shard.map_err(|source| io_error("read-attempt-root-shard", &attempts, source))?;
-        let shard_path = shard.path();
-        let shard_name = shard.file_name();
+    for shard_name in shards {
         let shard_name = shard_name
             .to_str()
             .ok_or_else(|| corrupt("attempt-root-shard-name"))?;
@@ -1504,32 +1549,19 @@ pub fn visit_directory_attempt_states_bounded(
         {
             return Err(corrupt("attempt-root-shard-name"));
         }
-        if !shard
-            .file_type()
-            .map_err(|source| io_error("stat-attempt-root-shard", &shard_path, source))?
-            .is_dir()
-        {
-            return Err(corrupt("attempt-root-shard-is-not-directory"));
-        }
-        let records = fs::read_dir(&shard_path)
-            .map_err(|source| io_error("read-attempt-root-records", &shard_path, source))?;
-        for record in records {
-            let record = record
-                .map_err(|source| io_error("read-attempt-root-record", &shard_path, source))?;
-            let path = record.path();
-            let name = record.file_name();
+        let shard_path = attempts.join(shard_name);
+        let shard_authority = attempts_authority
+            .open_directory(&shard_path, "open-attempt-root-shard")
+            .map_err(|source| anchored_ledger_error(source, "open-attempt-root-shard"))?;
+        let records = shard_authority
+            .entry_names(MAX_RUNTIME_ATTEMPT_RECORDS, "read-attempt-root-records")
+            .map_err(|source| anchored_ledger_error(source, "read-attempt-root-records"))?;
+        for name in records {
+            let path = shard_path.join(&name);
             let name = name
                 .to_str()
                 .ok_or_else(|| corrupt("attempt-root-record-name"))?;
             if name.starts_with('.') {
-                if is_staging_name(name)
-                    && record
-                        .file_type()
-                        .map_err(|source| io_error("stat-attempt-root-staging", &path, source))?
-                        .is_file()
-                {
-                    continue;
-                }
                 return Err(corrupt("attempt-root-unknown-hidden-entry"));
             }
             if name.len() != 64
@@ -1539,17 +1571,10 @@ pub fn visit_directory_attempt_states_bounded(
             {
                 return Err(corrupt("attempt-root-record-name"));
             }
-            if !record
-                .file_type()
-                .map_err(|source| io_error("stat-attempt-root-record", &path, source))?
-                .is_file()
-            {
-                return Err(corrupt("attempt-root-record-is-not-file"));
-            }
             if visited >= maximum {
                 return Ok(false);
             }
-            let bytes = read_optional_bounded(&path)?
+            let bytes = read_optional_bounded(&shard_authority, &path)?
                 .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
             let (key, state) = decode_attempt_state(&bytes)?;
             if attempt_path_at(root, key) != path {
@@ -1560,30 +1585,32 @@ pub fn visit_directory_attempt_states_bounded(
                 .checked_add(1)
                 .ok_or_else(|| corrupt("attempt-record-count-overflow"))?;
         }
+        shard_authority
+            .verify_path_binding()
+            .map_err(|source| anchored_ledger_error(source, "verify-attempt-root-shard"))?;
     }
+    attempts_authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-attempt-root"))?;
+    authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
     Ok(true)
 }
 
-fn is_staging_name(name: &str) -> bool {
-    let Some(suffix) = name.strip_prefix(".staging-") else {
-        return false;
-    };
-    let Some((process, ordinal)) = suffix.split_once('-') else {
-        return false;
-    };
-    !process.is_empty()
-        && process.bytes().all(|byte| byte.is_ascii_digit())
-        && !ordinal.is_empty()
-        && ordinal.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-impl Drop for DirectoryAssignmentLedger {
-    fn drop(&mut self) {
-        // A fork can retain a duplicate of this open-file description until
-        // exec closes it. Release ownership explicitly when the Rust owner
-        // ends so that inherited or duplicated descriptors cannot extend the
-        // ledger's writer lease.
-        let _ = flock(&self.writer_lock, FlockOperation::Unlock);
+fn validate_runtime_attempt_inventory(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<(), AssignmentLedgerError> {
+    let complete = visit_directory_attempt_states_with_authority(
+        authority,
+        authority.path(),
+        MAX_RUNTIME_ATTEMPT_RECORDS,
+        &mut |_key, _state| {},
+    )?;
+    if complete {
+        Ok(())
+    } else {
+        Err(corrupt("runtime-attempt-inventory-limit"))
     }
 }
 
@@ -1594,11 +1621,12 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         assignment: AssignmentId,
     ) -> Result<Option<AssignmentRecord>, Self::Error> {
+        self.verify_authority()?;
         let path = self.assignment_path(assignment);
-        let Some(bytes) = read_optional_bounded(&path)? else {
+        let Some(bytes) = read_optional_bounded(&self.authority, &path)? else {
             return Ok(None);
         };
-        sync_record_parent(&path)?;
+        sync_record_parent(&self.authority, &path)?;
         let record = decode_assignment_record(&bytes)?;
         if record.request.assignment() != assignment {
             return Err(corrupt("assignment-path-identity-mismatch"));
@@ -1610,6 +1638,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &mut self,
         record: &AssignmentRecord,
     ) -> Result<AssignmentPublish, Self::Error> {
+        self.verify_authority()?;
         let assignment = record.request.assignment();
         if let Some(existing) = self.load_assignment(assignment)? {
             return Ok(if existing == *record {
@@ -1620,7 +1649,9 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         }
 
         let path = self.assignment_path(assignment);
-        let published = publish_immutable(&path, &encode_assignment_record(record))?;
+        let published =
+            publish_immutable(&self.authority, &path, &encode_assignment_record(record))?;
+        self.verify_authority()?;
         if published {
             return Ok(AssignmentPublish::Stored);
         }
@@ -1638,12 +1669,12 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         key: AttemptExecutionKey,
     ) -> Result<Option<AttemptRuntimeState>, Self::Error> {
+        self.verify_authority()?;
         let path = self.attempt_path(key);
-        let Some(bytes) = read_optional_bounded(&path)? else {
-            sync_record_parent_if_present(&path)?;
+        let Some(bytes) = read_optional_bounded(&self.authority, &path)? else {
             return Ok(None);
         };
-        sync_record_parent(&path)?;
+        sync_record_parent(&self.authority, &path)?;
         let (recorded_key, state) = decode_attempt_state(&bytes)?;
         if recorded_key != key {
             return Err(corrupt("attempt-path-identity-mismatch"));
@@ -1657,6 +1688,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         expected: Option<AttemptRuntimeState>,
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptStateCas, Self::Error> {
+        self.verify_authority()?;
         if next.is_some_and(|state| !state.validates_for_key(key)) {
             return Err(corrupt("attempt-state-does-not-match-execution-scope"));
         }
@@ -1667,9 +1699,12 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         self.advance_retention_state()?;
         let path = self.attempt_path(key);
         match next {
-            Some(next) => replace_mutable(&path, &encode_attempt_state(key, next))?,
-            None => remove_mutable(&path)?,
+            Some(next) => {
+                replace_mutable(&self.authority, &path, &encode_attempt_state(key, next))?
+            }
+            None => remove_mutable(&self.authority, &path)?,
         }
+        self.verify_authority()?;
         Ok(AttemptStateCas::Advanced)
     }
 
@@ -1763,107 +1798,128 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
     }
 }
 
-fn read_optional_bounded(path: &Path) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
-    read_optional_with_limit(path, MAX_LEDGER_RECORD_BYTES, "record-size")
+fn read_optional_bounded(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
+    read_optional_with_limit(authority, path, MAX_LEDGER_RECORD_BYTES, "record-size")
 }
 
 fn read_optional_with_limit(
+    authority: &crate::anchored_fs::AnchoredDirectory,
     path: &Path,
     limit: u64,
     size_reason: &'static str,
 ) -> Result<Option<Vec<u8>>, AssignmentLedgerError> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(io_error("open-record", path, source)),
+    let Some(file) = authority
+        .open_regular_optional(path, "open-record")
+        .map_err(|source| anchored_ledger_error(source, "open-record"))?
+    else {
+        return Ok(None);
     };
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|source| io_error("read-record", path, source))?;
+    let bytes = file
+        .read_bounded(limit)
+        .map_err(|source| anchored_ledger_error(source, "read-record"))?;
     if bytes.len() as u64 > limit {
         return Err(corrupt(size_reason));
     }
+    file.verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-record"))?;
+    authority
+        .verify_path_binding()
+        .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
     Ok(Some(bytes))
 }
 
-fn publish_immutable(path: &Path, bytes: &[u8]) -> Result<bool, AssignmentLedgerError> {
-    let directory = record_directory(path)?;
-    let (staging_path, mut staging) = create_staging(directory)?;
+fn publish_immutable(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<bool, AssignmentLedgerError> {
+    let directory = record_directory(authority, path)?;
+    let staging = create_staging(&directory)?;
     staging
-        .write_all(bytes)
-        .and_then(|()| staging.sync_all())
-        .map_err(|source| io_error("write-assignment-staging", &staging_path, source))?;
-    let published = match fs::hard_link(&staging_path, path) {
-        Ok(()) => true,
-        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(source) => return Err(io_error("publish-assignment", path, source)),
-    };
-    fs::remove_file(&staging_path)
-        .map_err(|source| io_error("remove-assignment-staging", &staging_path, source))?;
-    sync_directory(directory)?;
+        .write_all_sync(bytes)
+        .map_err(|source| anchored_ledger_error(source, "write-assignment-staging"))?;
+    let published = directory
+        .link_file_noreplace(&staging, path, "publish-assignment")
+        .map_err(|source| anchored_ledger_error(source, "publish-assignment"))?;
+    directory
+        .remove_file(&staging, "remove-assignment-staging")
+        .map_err(|source| anchored_ledger_error(source, "remove-assignment-staging"))?;
+    directory
+        .sync()
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))?;
     Ok(published)
 }
 
-fn replace_mutable(path: &Path, bytes: &[u8]) -> Result<(), AssignmentLedgerError> {
-    let directory = record_directory(path)?;
-    let (staging_path, mut staging) = create_staging(directory)?;
+fn replace_mutable(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), AssignmentLedgerError> {
+    let directory = record_directory(authority, path)?;
+    let staging = create_staging(&directory)?;
     staging
-        .write_all(bytes)
-        .and_then(|()| staging.sync_all())
-        .map_err(|source| io_error("write-attempt-staging", &staging_path, source))?;
-    fs::rename(&staging_path, path)
-        .map_err(|source| io_error("publish-attempt-state", path, source))?;
-    sync_directory(directory)
+        .write_all_sync(bytes)
+        .map_err(|source| anchored_ledger_error(source, "write-attempt-staging"))?;
+    directory
+        .rename_file(&staging, path, false, "publish-attempt-state")
+        .map_err(|source| anchored_ledger_error(source, "publish-attempt-state"))?;
+    directory
+        .sync()
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
 }
 
-fn remove_mutable(path: &Path) -> Result<(), AssignmentLedgerError> {
-    match fs::remove_file(path) {
-        Ok(()) => {
-            let directory = path
-                .parent()
-                .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
-            sync_directory(directory)
-        }
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(io_error("remove-attempt-state", path, source)),
-    }
+fn remove_mutable(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<(), AssignmentLedgerError> {
+    authority
+        .remove_regular_optional(path, "remove-attempt-state")
+        .map_err(|source| anchored_ledger_error(source, "remove-attempt-state"))?;
+    authority
+        .sync_parent(path, "sync-record-directory")
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
 }
 
-fn record_directory(path: &Path) -> Result<&Path, AssignmentLedgerError> {
+fn record_directory(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<crate::anchored_fs::AnchoredDirectory, AssignmentLedgerError> {
     let directory = path
         .parent()
         .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
-    create_directory_durable(directory)?;
-    Ok(directory)
+    authority
+        .ensure_directory(directory, "create-record-directory")
+        .map_err(|source| anchored_ledger_error(source, "create-record-directory"))
 }
 
-fn sync_record_parent(path: &Path) -> Result<(), AssignmentLedgerError> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
-    sync_directory(directory)
+fn sync_record_parent(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+) -> Result<(), AssignmentLedgerError> {
+    authority
+        .sync_parent(path, "sync-record-directory")
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
 }
 
-fn sync_record_parent_if_present(path: &Path) -> Result<(), AssignmentLedgerError> {
-    let directory = path
-        .parent()
-        .ok_or_else(|| corrupt("record-path-has-no-parent"))?;
-    if directory.is_dir() {
-        sync_directory(directory)
-    } else {
-        Ok(())
-    }
-}
-
-fn create_staging(directory: &Path) -> Result<(PathBuf, File), AssignmentLedgerError> {
+fn create_staging(
+    directory: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<crate::anchored_fs::AnchoredFile, AssignmentLedgerError> {
     loop {
         let ordinal = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = directory.join(format!(".staging-{}-{ordinal}", std::process::id()));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => return Ok((path, file)),
-            Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(source) => return Err(io_error("create-staging", &path, source)),
+        let path = directory
+            .path()
+            .join(format!(".staging-{}-{ordinal}", std::process::id()));
+        match directory.create_new_regular(&path, "create-staging") {
+            Ok(file) => return Ok(file),
+            Err(crate::anchored_fs::AnchoredFsError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                continue;
+            }
+            Err(source) => return Err(anchored_ledger_error(source, "create-staging")),
         }
     }
 }

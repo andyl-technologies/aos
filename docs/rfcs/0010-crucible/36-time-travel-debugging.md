@@ -1515,7 +1515,7 @@ peer-credential completion remain open in T-DBG-11.
   principal on every operation. Authenticated attach allocates a daemon-loopback
   stable gateway, and the CLI exposes it through a bounded client-side loopback
   relay over HTTP/2 while retaining and finally releasing the controller lease.
-  RPC ABI v5 adds caller-owned acquisition tokens and daemon-side holder
+  Current RPC ABI v6 uses caller-owned acquisition tokens and daemon-side holder
   identities: a lost-response retry reuses one token/holder, while concurrent
   commands and a long-lived relay hold separate
   references to the same principal/generation, and only the final release clears

@@ -45,7 +45,7 @@ mod prepared_result;
 
 pub use finding_replay::{
     AutomaticFindingReplayOutcome, CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
-    FindingReplayIncompatibility,
+    FindingProductionReplayMaterialOutcome, FindingReplayIncompatibility,
 };
 use finding_replay::{
     PreparedFindingReplayRecords, RecordedFindingReplay, validate_recorded_replay_configuration,
@@ -69,11 +69,12 @@ use crucible_campaign::{
     CoverageProjection, FindingCandidateBundle, FindingCandidateBundleId,
     FindingExactCheckpointAuthenticator, FindingExactPins, FindingExactRetention,
     FindingExactRetentionEvidence, FindingMinimizationAttempt, FindingMinimizationEvidence,
-    FindingReplaySignature, FindingSignature, FindingSignatureMinimizationEvidence,
-    FindingTriageEvidenceSet, FindingTriageReplayEvidence, MeasurementSet, ObservationId,
-    PropertyVerdictSet, ReproductionArtifact, ReproductionArtifactId, ResolvedSelection,
-    ScenarioArtifact, ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection,
-    SelectionId, SelectionOrigin,
+    FindingReplayCaptureIncomplete, FindingReplayCaptureSet, FindingReplaySignature,
+    FindingSignature, FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
+    FindingTriageReplayEvidence, MeasurementSet, ObservationId, PropertyVerdictSet,
+    ReproductionArtifact, ReproductionArtifactId, ResolvedSelection, ScenarioArtifact,
+    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, Selection, SelectionId,
+    SelectionOrigin,
 };
 use crucible_cas::content_store::ContentId;
 
@@ -139,7 +140,91 @@ pub struct PreparedCrucibleFindingCandidate {
     minimization_replays: Vec<RecordedFindingReplay>,
     verification_replays: Vec<RecordedFindingReplay>,
     triage_replays: Option<PreparedFindingTriageReplayRecords>,
+    production_replays: Option<PreparedFindingProductionReplays>,
     bundle: FindingCandidateBundle,
+}
+
+/// Four production replay results retained for the required finding passes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedFindingProductionReplays {
+    minimization_original: crate::FindingProductionReplayCaptureOutcome,
+    minimization_selected: crate::FindingProductionReplayCaptureOutcome,
+    verification_original: crate::FindingProductionReplayCaptureOutcome,
+    verification_selected: crate::FindingProductionReplayCaptureOutcome,
+    limits: crate::FindingProductionReplayCaptureLimits,
+}
+
+impl PreparedFindingProductionReplays {
+    /// Returns the first pass replay of the original reproduction.
+    #[must_use]
+    pub const fn minimization_original(&self) -> &crate::FindingProductionReplayCaptureOutcome {
+        &self.minimization_original
+    }
+
+    /// Returns the first pass replay of the selected minimized reproduction.
+    #[must_use]
+    pub const fn minimization_selected(&self) -> &crate::FindingProductionReplayCaptureOutcome {
+        &self.minimization_selected
+    }
+
+    /// Returns the independent replay of the original reproduction.
+    #[must_use]
+    pub const fn verification_original(&self) -> &crate::FindingProductionReplayCaptureOutcome {
+        &self.verification_original
+    }
+
+    /// Returns the independent replay of the selected minimized reproduction.
+    #[must_use]
+    pub const fn verification_selected(&self) -> &crate::FindingProductionReplayCaptureOutcome {
+        &self.verification_selected
+    }
+
+    pub(crate) fn capture_inputs(
+        &self,
+    ) -> Result<[crate::FindingReplayCaptureInput; 4], crate::FindingProductionReplayCaptureError>
+    {
+        Ok([
+            replay_capture_input(&self.minimization_original, self.limits)?,
+            replay_capture_input(&self.minimization_selected, self.limits)?,
+            replay_capture_input(&self.verification_original, self.limits)?,
+            replay_capture_input(&self.verification_selected, self.limits)?,
+        ])
+    }
+}
+
+fn replay_capture_input(
+    outcome: &crate::FindingProductionReplayCaptureOutcome,
+    limits: crate::FindingProductionReplayCaptureLimits,
+) -> Result<crate::FindingReplayCaptureInput, crate::FindingProductionReplayCaptureError> {
+    Ok(match outcome {
+        crate::FindingProductionReplayCaptureOutcome::Complete(capture) => {
+            let bytes = capture.to_canonical_bytes(limits)?;
+            let content_hash = ContentHash::from_bytes(&bytes);
+            crate::FindingReplayCaptureInput::Complete {
+                bytes,
+                content_hash,
+            }
+        }
+        crate::FindingProductionReplayCaptureOutcome::Incomplete(reason) => {
+            crate::FindingReplayCaptureInput::Incomplete(match reason {
+                crate::FindingProductionReplayIncomplete::MissingEventLogPrefix => {
+                    FindingReplayCaptureIncomplete::MissingEventLogPrefix
+                }
+                crate::FindingProductionReplayIncomplete::MissingTerminalFingerprints => {
+                    FindingReplayCaptureIncomplete::MissingTerminalFingerprints
+                }
+                crate::FindingProductionReplayIncomplete::MissingSignalArtifactStore => {
+                    FindingReplayCaptureIncomplete::MissingSignalArtifactStore
+                }
+                crate::FindingProductionReplayIncomplete::MissingWorldArtifactStore => {
+                    FindingReplayCaptureIncomplete::MissingWorldArtifactStore
+                }
+                crate::FindingProductionReplayIncomplete::PublicationLimitExceeded => {
+                    FindingReplayCaptureIncomplete::PublicationLimitExceeded
+                }
+            })
+        }
+    })
 }
 
 pub(crate) struct PreparedFindingExactRetention {
@@ -234,6 +319,121 @@ impl PreparedCrucibleFindingCandidate {
     #[must_use]
     pub const fn bundle(&self) -> &FindingCandidateBundle {
         &self.bundle
+    }
+
+    /// Returns the four transient production replay outcomes, when captured.
+    #[must_use]
+    pub const fn production_replays(&self) -> Option<&PreparedFindingProductionReplays> {
+        self.production_replays.as_ref()
+    }
+
+    pub(crate) fn production_replay_capture_bindings(
+        &self,
+    ) -> Result<[(ReproductionArtifactId, FindingSignature); 4], CampaignCodecError> {
+        let original = self.original.id()?;
+        let minimized = self.minimized.id()?;
+        let selected_index = self
+            .minimized
+            .minimization()
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "finding production replay minimization is unavailable",
+            })?
+            .attempts()
+            .iter()
+            .position(|attempt| attempt.accepted())
+            .map_or(0, |index| index + 1);
+        let signatures = self.bundle.signature_minimization();
+        let signature_at = |pass: &[Option<FindingSignature>], index, reason| {
+            pass.get(index)
+                .and_then(Option::as_ref)
+                .cloned()
+                .ok_or(CampaignCodecError::InvalidValue { reason })
+        };
+
+        Ok([
+            (
+                original,
+                signature_at(
+                    signatures.minimization_pass(),
+                    0,
+                    "finding production replay minimization original signature is unavailable",
+                )?,
+            ),
+            (
+                minimized,
+                signature_at(
+                    signatures.minimization_pass(),
+                    selected_index,
+                    "finding production replay minimization selected signature is unavailable",
+                )?,
+            ),
+            (
+                original,
+                signature_at(
+                    signatures.verification_pass(),
+                    0,
+                    "finding production replay verification original signature is unavailable",
+                )?,
+            ),
+            (
+                minimized,
+                signature_at(
+                    signatures.verification_pass(),
+                    selected_index,
+                    "finding production replay verification selected signature is unavailable",
+                )?,
+            ),
+        ])
+    }
+
+    pub(crate) fn production_replay_capture_inputs(
+        &self,
+    ) -> Result<
+        Option<[crate::FindingReplayCaptureInput; 4]>,
+        crate::FindingProductionReplayCaptureError,
+    > {
+        self.production_replays
+            .as_ref()
+            .map(PreparedFindingProductionReplays::capture_inputs)
+            .transpose()
+    }
+
+    pub(crate) fn bind_production_replay_captures(
+        &mut self,
+        replay_captures: FindingReplayCaptureSet,
+    ) -> Result<(), CampaignCodecError> {
+        if self.production_replays.is_none() || self.bundle.replay_captures().is_some() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "finding production replay captures cannot be rebound",
+            });
+        }
+        let core = crucible_campaign::FindingCandidateCore::new(
+            self.bundle.observation(),
+            self.bundle.signature().clone(),
+            self.bundle.reproduction(),
+            self.bundle.minimized(),
+            self.bundle.signature_minimization().clone(),
+            self.bundle.exact_pins().clone(),
+        );
+        self.bundle = match self.bundle.exact_retention_evidence() {
+            Some(evidence) => {
+                FindingCandidateBundle::new_with_replay_captures_and_authenticated_exact_retention(
+                    core,
+                    self.bundle.triage_evidence(),
+                    replay_captures,
+                    self.bundle.exact_retention(),
+                    evidence.clone(),
+                )?
+            }
+            None => FindingCandidateBundle::new_with_replay_captures_and_exact_retention(
+                core,
+                self.bundle.triage_evidence(),
+                replay_captures,
+                self.bundle.exact_retention(),
+            )?,
+        };
+        self.production_replays = None;
+        Ok(())
     }
 
     /// Returns the deterministic root that must be staged before publication.
@@ -408,6 +608,7 @@ fn prepare_signature_preserving_minimized_finding_candidate_with_retention(
         verification_pass,
         records,
         triage,
+        production,
     } = transcript;
     let minimization =
         replay_recorded_signature_pass(finding, &signature, seed, &minimization_pass)?;
@@ -445,6 +646,8 @@ fn prepare_signature_preserving_minimized_finding_candidate_with_retention(
     )?;
     let minimized_id = minimized.id()?;
     let triage_replays = prepare_finding_triage_replay_records(triage, original_id, minimized_id)?;
+    let production_replays =
+        prepare_finding_production_replays(production, original_id, minimized_id, finding)?;
     let replay_records = records.finish();
     let triage_evidence = triage_replays
         .as_ref()
@@ -484,8 +687,51 @@ fn prepare_signature_preserving_minimized_finding_candidate_with_retention(
         minimization_replays: minimization_pass,
         verification_replays: verification_pass,
         triage_replays,
+        production_replays,
         bundle,
     })
+}
+
+fn prepare_finding_production_replays(
+    production: finding_replay::RetainedFindingProductionReplayEvidence,
+    original: ReproductionArtifactId,
+    minimized: ReproductionArtifactId,
+    finding: &FindingReproductionArtifact,
+) -> Result<Option<PreparedFindingProductionReplays>, CrucibleArtifactError> {
+    let Some((
+        minimization_original,
+        minimization_selected,
+        verification_original,
+        verification_selected,
+    )) = production.into_parts()?
+    else {
+        return Ok(None);
+    };
+    let limits = crate::FindingProductionReplayCaptureLimits::for_finding(finding);
+    let bind = |reproduction, replay: finding_replay::RetainedFindingProductionReplay| {
+        Ok::<_, CrucibleArtifactError>(match replay.capture {
+            crate::FindingProductionReplayCaptureOutcome::Complete(material) => {
+                crate::FindingProductionReplayCaptureOutcome::Complete(
+                    material.as_ref().clone().bind(
+                        reproduction,
+                        replay.observed_signature,
+                        limits,
+                    )?,
+                )
+            }
+            crate::FindingProductionReplayCaptureOutcome::Incomplete(reason) => {
+                crate::FindingProductionReplayCaptureOutcome::Incomplete(reason)
+            }
+        })
+    };
+
+    Ok(Some(PreparedFindingProductionReplays {
+        minimization_original: bind(original, minimization_original)?,
+        minimization_selected: bind(minimized, minimization_selected)?,
+        verification_original: bind(original, verification_original)?,
+        verification_selected: bind(minimized, verification_selected)?,
+        limits,
+    }))
 }
 
 /// Runs both minimization passes with typed exact-boundary replay outcomes.
@@ -550,6 +796,7 @@ where
                         evidence,
                         measurement_replay_evidence,
                         triage_evidence,
+                        production_replay,
                     } => {
                         if let Err(error) =
                             replay_measurements.extend(measurement_replay_evidence)
@@ -560,19 +807,20 @@ where
                                 reason: "raw measurement evidence exceeded its prepared-result bound",
                             });
                         }
-                        match triage_evidence {
+                        let retained = match triage_evidence {
                             Some(triage_evidence) => {
-                                Ok(AutomaticFindingReplayOutcome::observed_with_triage(
+                                AutomaticFindingReplayOutcome::observed_with_triage(
                                     *evidence,
                                     Vec::new(),
                                     *triage_evidence,
-                                ))
+                                )
                             }
-                            None => Ok(AutomaticFindingReplayOutcome::observed(
-                                *evidence,
-                                Vec::new(),
-                            )),
-                        }
+                            None => AutomaticFindingReplayOutcome::observed(*evidence, Vec::new()),
+                        };
+                        Ok(match production_replay {
+                            Some(capture) => retained.with_production_replay(capture),
+                            None => retained,
+                        })
                     }
                     incompatible @ AutomaticFindingReplayOutcome::DeterministicallyIncompatible {
                         ..

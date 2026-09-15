@@ -321,13 +321,13 @@ fn forced_duplicate_resampling_policy(
                         .ok()?,
                         AttemptId::from_content_id(content_id(
                             ObjectKind::CampaignFact,
-                            3,
+                            8,
                             &format!("forced-attempt-{coordinate}"),
                         ))
                         .ok()?,
                         ObservationId::from_content_id(content_id(
                             ObjectKind::Observation,
-                            8,
+                            12,
                             &format!("forced-observation-{coordinate}"),
                         ))
                         .ok()?,

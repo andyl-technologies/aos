@@ -36,7 +36,10 @@ use format::{
     write_pack_header,
 };
 
-use super::admin::{InventoryCounter, persistent_inventory_generation, physical_storage_identity};
+use super::admin::{
+    InventoryCounter, PhysicalRepairAuthority, persistent_inventory_generation,
+    physical_storage_identity,
+};
 use super::directory::create_dir_all_durable;
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
@@ -928,6 +931,53 @@ impl BlobInventoryFence for PackedInventoryFence<'_> {
             self.backend.remove_pack(removed.pack)?;
         }
         Ok(PlannedDeleteDisposition::Deleted)
+    }
+
+    fn repair_put_if_absent(
+        &mut self,
+        _authority: &PhysicalRepairAuthority,
+        id: ContentId,
+        source: &BlobHandle,
+    ) -> Result<PutReceipt, StoreError> {
+        if let Some(existing) = self.index.entries.get(&id) {
+            self.backend
+                .open_entry(id, existing)?
+                .copy_to(&mut io::sink())?;
+            source.verified_as(id)?;
+            return Ok(packed_receipt(
+                &self.backend.name,
+                id,
+                source.logical_length(),
+            ));
+        }
+        if self.index.entries.len() >= MAX_LOGICAL_OBJECTS
+            || self.index.pack_ids().len() >= MAX_PACKS
+        {
+            return Err(StoreError::Quota);
+        }
+
+        let candidate = self.backend.build_pack(&[(id, source.clone())])?;
+        let result = (|| {
+            self.backend.publish_pack(&candidate)?;
+            let entry = candidate
+                .entries
+                .first()
+                .ok_or(StoreError::Incompatible)?
+                .to_index_entry(candidate.id);
+            let mut next = self.index.clone();
+            next.entries.insert(id, entry);
+            next.generation = next.generation.checked_add(1).ok_or(StoreError::Quota)?;
+            next.last_repack_plan = None;
+            self.backend.publish_index_reconciled(&next)?;
+            self.index = next;
+            Ok(packed_receipt(
+                &self.backend.name,
+                id,
+                source.logical_length(),
+            ))
+        })();
+        remove_temporary(&candidate.temporary, result.is_ok())?;
+        result
     }
 }
 

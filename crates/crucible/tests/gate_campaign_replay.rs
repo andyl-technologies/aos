@@ -280,7 +280,7 @@ fn consume_export(directory: &Path) -> Result<(), Box<dyn Error>> {
         SELECTED_REPRODUCTION_FILE,
     )?)?;
 
-    if bundle.schema_version() != 5
+    if bundle.schema_version() != 6
         || original.id()? != bundle.reproduction()
         || selected.id()? != bundle.minimized()
     {
@@ -631,7 +631,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         verification_selected.id()?,
     );
     let observation =
-        content_id::<ObservationId>(ObjectKind::Observation, 1, b"portable finding observation")?;
+        content_id::<ObservationId>(ObjectKind::Observation, 12, b"portable finding observation")?;
     let bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observation,

@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use std::fs;
+use std::os::unix::fs::symlink;
 
 use crucible_campaign::{
     AttemptResourceLimits, AttemptStartMode, CampaignFactId, CampaignLineageId,
@@ -18,6 +19,7 @@ fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
     let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("first writer");
     let inherited = ledger
         .writer_lock
+        .file()
         .try_clone()
         .expect("duplicate inherited writer descriptor");
 
@@ -28,6 +30,121 @@ fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
         .expect("owner drop releases inherited lock");
     drop(replacement);
     drop(inherited);
+}
+
+#[test]
+fn directory_ledger_fences_a_replaced_root_and_writer_lock() {
+    for replaced in ["root", "writer-lock"] {
+        let parent = tempfile::tempdir().expect("ledger parent");
+        let root = parent.path().join("ledger");
+        fs::create_dir(&root).expect("ledger root");
+        let mut ledger = DirectoryAssignmentLedger::open(&root).expect("ledger owner");
+        let detached = parent.path().join(format!("detached-{replaced}"));
+
+        if replaced == "root" {
+            fs::rename(&root, &detached).expect("detach ledger root");
+            fs::create_dir(&root).expect("replacement ledger root");
+        } else {
+            let lock = root.join("writer.lock");
+            fs::rename(&lock, &detached).expect("detach writer lock");
+            fs::write(&lock, []).expect("replacement writer lock");
+        }
+
+        let record = AssignmentRecord::new(
+            request(0x15, 0x35, 1),
+            SubmitAttemptResponse::new(
+                &request(0x15, 0x35, 1),
+                SubmitAttemptDisposition::Accepted {
+                    execution: execution(0x55),
+                },
+            )
+            .expect("response"),
+        )
+        .expect("record");
+        assert!(ledger.publish_assignment(&record).is_err());
+    }
+}
+
+#[test]
+fn directory_ledger_rejects_stale_staging_at_open() {
+    let directory = tempfile::tempdir().expect("ledger directory");
+    {
+        let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("initialize ledger");
+        drop(ledger);
+    }
+    let shard = directory.path().join("attempts/ab");
+    fs::create_dir_all(&shard).expect("attempt shard");
+    fs::write(shard.join(".staging-12-34"), b"stale").expect("stale staging record");
+
+    assert!(DirectoryAssignmentLedger::open(directory.path()).is_err());
+}
+
+#[test]
+fn directory_ledger_rejects_a_writer_lock_symlink() {
+    let parent = tempfile::tempdir().expect("ledger parent");
+    let root = parent.path().join("ledger");
+    fs::create_dir(&root).expect("ledger root");
+    let target = parent.path().join("outside-lock");
+    fs::write(&target, b"outside").expect("outside file");
+    symlink(&target, root.join("writer.lock")).expect("writer lock symlink");
+
+    assert!(DirectoryAssignmentLedger::open(&root).is_err());
+    assert_eq!(fs::read(target).expect("outside bytes"), b"outside");
+}
+
+#[test]
+fn directory_ledger_rejects_a_replaced_attempt_shard_without_external_access() {
+    let parent = tempfile::tempdir().expect("ledger parent");
+    let root = parent.path().join("ledger");
+    fs::create_dir(&root).expect("ledger root");
+    let mut ledger = DirectoryAssignmentLedger::open(&root).expect("ledger owner");
+    let request = request(0x16, 0x36, 1);
+    let key = AttemptExecutionKey::for_request(&request);
+    let state = AttemptRuntimeState::Running {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x56),
+    };
+    ledger
+        .compare_exchange_attempt(key, None, Some(state))
+        .expect("publish initial state");
+
+    let record = ledger.attempt_path(key);
+    let shard = record.parent().expect("attempt shard").to_path_buf();
+    let detached = parent.path().join("detached-shard");
+    let outside = parent.path().join("outside-shard");
+    fs::create_dir(&outside).expect("outside shard");
+    let outside_record = outside.join(record.file_name().expect("record name"));
+    let exact_bytes = fs::read(&record).expect("exact state bytes");
+    fs::write(&outside_record, &exact_bytes).expect("outside state bytes");
+    fs::rename(&shard, &detached).expect("detach attempt shard");
+    symlink(&outside, &shard).expect("replace shard with symlink");
+
+    for error in [
+        ledger.load_attempt(key).expect_err("reject shard symlink"),
+        ledger
+            .compare_exchange_attempt(key, Some(state), None)
+            .expect_err("reject shard symlink before mutation"),
+    ] {
+        let AssignmentLedgerError::Io { source, .. } = error else {
+            panic!("shard symlink must fail during descriptor-relative resolution");
+        };
+        assert_eq!(
+            source.raw_os_error(),
+            Some(rustix::io::Errno::LOOP.raw_os_error())
+        );
+    }
+    assert_eq!(
+        fs::read(&outside_record).expect("outside state remains"),
+        exact_bytes
+    );
+    assert_eq!(
+        fs::read_dir(&outside)
+            .expect("outside shard inventory")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -134,6 +251,28 @@ fn directory_ledger_reopens_exact_records_and_attempt_state() {
         .expect("stream reopened roots");
     assert_eq!(roots, vec![observation(0x71)]);
     assert_eq!(response.validate_for(&request), Ok(()));
+}
+
+#[test]
+fn current_storage_digest_binds_every_scope_under_one_domain() {
+    let semantic_request = request(0x17, 0x37, 1);
+    let capture_request =
+        savepoint_capture_request(0x18, 0x37, 1, campaign_fact(0x57), configuration(0x58));
+
+    for key in [
+        AttemptExecutionKey::for_request(&semantic_request),
+        AttemptExecutionKey::for_request(&capture_request),
+    ] {
+        let mut material = Vec::new();
+        push_bytes(&mut material, key.lineage().to_text().as_bytes());
+        push_bytes(&mut material, key.attempt().to_text().as_bytes());
+        push_bytes(&mut material, &key.scope().canonical_bytes());
+
+        assert_eq!(
+            key.storage_digest(),
+            CampaignHash::derive("crucible.executor.attempt-execution-key.v2", &material)
+        );
+    }
 }
 
 #[test]
@@ -640,7 +779,12 @@ fn directory_ledger_rejects_corrupt_bounded_records() {
         ledger
             .publish_assignment(&record)
             .expect("publish assignment");
-        ledger.assignment_path(request.assignment())
+        let encoded = encode_hex(&request.assignment().as_bytes());
+        directory
+            .path()
+            .join("assignments")
+            .join(&encoded[..2])
+            .join(encoded)
     };
     fs::write(&path, b"truncated-record").expect("corrupt assignment file");
 
@@ -939,12 +1083,14 @@ fn request(assignment_byte: u8, attempt_byte: u8, vcpus: u32) -> SubmitAttemptRe
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x41,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             attempt_byte,
         ))
         .expect("attempt"),
@@ -967,12 +1113,14 @@ fn capture_request(
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x41,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             attempt_byte,
         ))
         .expect("attempt"),
@@ -999,12 +1147,14 @@ fn savepoint_capture_request(
         CampaignLineageId::parse(&typed_id(
             "crucible.campaign.lineage",
             "campaign-fact",
+            1,
             0x41,
         ))
         .expect("lineage"),
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
+            8,
             attempt_byte,
         ))
         .expect("attempt"),
@@ -1020,7 +1170,7 @@ fn savepoint_capture_request(
 
 fn campaign_fact(byte: u8) -> CampaignFactId {
     CampaignFactId::parse(&format!(
-        "crucible.campaign.fact@campaign-fact.10.{}",
+        "crucible.campaign.fact@campaign-fact.14.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("campaign fact")
@@ -1030,6 +1180,7 @@ fn configuration(byte: u8) -> ConfigurationArtifactId {
     ConfigurationArtifactId::parse(&typed_id(
         "crucible.campaign.configuration-artifact",
         "configuration",
+        1,
         byte,
     ))
     .expect("configuration")
@@ -1039,6 +1190,7 @@ fn observation(byte: u8) -> ObservationId {
     ObservationId::parse(&typed_id(
         "crucible.campaign.observation",
         "observation",
+        12,
         byte,
     ))
     .expect("observation")
@@ -1046,7 +1198,7 @@ fn observation(byte: u8) -> ObservationId {
 
 fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
     FindingCandidateBundleId::parse(&format!(
-        "crucible.campaign.finding-candidate-bundle@finding.5.{}",
+        "crucible.campaign.finding-candidate-bundle@finding.6.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("finding candidate")
@@ -1064,6 +1216,6 @@ fn execution(byte: u8) -> ExecutionId {
     ExecutionId::from_bytes([byte; 16]).expect("execution")
 }
 
-fn typed_id(tag: &str, kind: &str, byte: u8) -> String {
-    format!("{tag}@{kind}.1.{}", encode_hex(&[byte; 32]))
+fn typed_id(tag: &str, kind: &str, version: u32, byte: u8) -> String {
+    format!("{tag}@{kind}.{version}.{}", encode_hex(&[byte; 32]))
 }

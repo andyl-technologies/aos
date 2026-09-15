@@ -17,7 +17,7 @@ pub(super) fn savepoint_handle_text(
     let replay_closure = replay_closure.to_canonical_bytes()?;
     let boundary_predicate = crucible::Predicate::quiescent().to_compact_binary();
     let mut text = String::new();
-    artifact_line(&mut text, &["schema", "crucible.savepoint-handle.v5"]);
+    artifact_line(&mut text, &["schema", "crucible.savepoint-handle.v6"]);
     artifact_line(&mut text, &["label", "process-replay-to"]);
     artifact_line(
         &mut text,

@@ -413,7 +413,7 @@ fn explicit_discovery_with_execution_quanta_is_cold_recomputable() {
         .load_attempt(accepted.attempt)
         .expect("accepted attempt");
     assert_eq!(attempt.stop(), &stop);
-    assert_eq!(accepted.attempt.content_id().schema_version(), 2);
+    assert_eq!(accepted.attempt.content_id().schema_version(), 8);
 
     let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
     cold.validate_complete_head(accepted.new_snapshot.content_id())

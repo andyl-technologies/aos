@@ -575,15 +575,7 @@ impl QemuLaunchCommand {
         self.resource_requirements
     }
 
-    /// Returns the immutable node-local app-random campaign branch plan.
-    #[must_use]
-    pub const fn app_random_branch_plan(
-        &self,
-    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
-        self.plugin_setup_plan.app_random_branch_plan()
-    }
-
-    /// Returns the complete version-negotiated plugin setup plan.
+    /// Returns the complete current-version plugin setup plan.
     #[must_use]
     pub const fn plugin_setup_plan(
         &self,
@@ -599,17 +591,13 @@ impl QemuLaunchCommand {
         &self.fingerprint_projection_manifest
     }
 
-    /// Returns canonical material for hashing the complete QEMU command line.
+    /// Returns current v3 canonical material for hashing the complete QEMU command line.
+    ///
+    /// Every launch identity binds the complete encoded plugin setup plan.
     #[must_use]
     pub fn command_line_hash_material(&self) -> String {
-        let selectable_is_empty = self.plugin_setup_plan.selectable_catalog_plan()
-            == &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::default();
         let mut lines = Vec::with_capacity(self.args.len() + 6);
-        lines.push(if selectable_is_empty {
-            "crucible.qemu-launch-command.v2".to_owned()
-        } else {
-            "crucible.qemu-launch-command.v3".to_owned()
-        });
+        lines.push("crucible.qemu-launch-command.v3".to_owned());
         lines.push("command_line_in_hash=executable-and-argv".to_owned());
         lines.push(format!("executable={}", self.executable));
         lines.push(format!(
@@ -620,20 +608,10 @@ impl QemuLaunchCommand {
             "ready_marker_manifest_v1={}",
             lower_hex(self.fault_capability_requirement.ready_marker_digest())
         ));
-        if selectable_is_empty {
-            lines.push(format!(
-                "app_random_branch_plan_v1={}",
-                lower_hex(
-                    *blake3::hash(&self.plugin_setup_plan.app_random_branch_plan().encode())
-                        .as_bytes(),
-                )
-            ));
-        } else {
-            lines.push(format!(
-                "plugin_setup_plan_v1={}",
-                lower_hex(self.plugin_setup_plan_digest)
-            ));
-        }
+        lines.push(format!(
+            "plugin_setup_plan_v1={}",
+            lower_hex(self.plugin_setup_plan_digest)
+        ));
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
         }

@@ -96,9 +96,9 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     corrupted.push(0);
     assert!(SelectionDecision::from_canonical_bytes(&corrupted).is_err());
 
-    let mut legacy = encoded;
-    legacy[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v1\0");
-    assert!(Schedule::from_compact_binary(&legacy).is_err());
+    let mut noncurrent = encoded;
+    noncurrent[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v0\0");
+    assert!(Schedule::from_compact_binary(&noncurrent).is_err());
     Ok(())
 }
 

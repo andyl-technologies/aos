@@ -35,7 +35,7 @@
       }
       {
         label = "portable handle identity";
-        needle = "current v5 and v6 handles bind the";
+        needle = "the current v6 handle binds the";
       }
       {
         label = "authenticated replay closure";
@@ -125,11 +125,7 @@
     ]
     ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifactConstants [
       {
-        label = "current replay-closure handle schema";
-        needle = "crucible.savepoint-handle.v5";
-      }
-      {
-        label = "current observation handle schema";
+        label = "sole current savepoint handle schema";
         needle = "crucible.savepoint-handle.v6";
       }
     ]

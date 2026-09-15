@@ -911,7 +911,7 @@ where
 mod lock_tests {
     use super::*;
 
-    use crate::AllowAllAttemptAdmission;
+    use crate::executor_supervisor::AllowAllAttemptAdmission;
     use crucible_campaign::{
         AssignmentId, AttemptId, AttemptResourceLimits, CampaignLineageId, ExecutionRetentionIntent,
     };

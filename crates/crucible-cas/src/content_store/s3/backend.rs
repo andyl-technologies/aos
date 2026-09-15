@@ -42,7 +42,7 @@ pub struct S3BlobBackend {
     pub(super) prefix: String,
     pub(super) maximum_logical_object_bytes: u64,
     multipart_part_bytes: u64,
-    client: Arc<dyn StoreS3Client>,
+    pub(super) client: Arc<dyn StoreS3Client>,
     pub(super) lifecycle: Arc<S3BlobLifecycle>,
     pub(super) administration: Option<S3BlobAdministration>,
 }
@@ -196,7 +196,7 @@ impl S3BlobBackend {
         }
     }
 
-    fn authenticate_existing(&self, id: ContentId) -> Result<PutReceipt, StoreError> {
+    pub(super) fn authenticate_existing(&self, id: ContentId) -> Result<PutReceipt, StoreError> {
         let handle = self.read(id, None)?;
         let logical_length = handle.logical_length();
         handle.copy_to(&mut io::sink())?;
@@ -215,7 +215,7 @@ impl S3BlobBackend {
         Ok(length)
     }
 
-    fn receipt(&self, id: ContentId, logical_length: u64) -> PutReceipt {
+    pub(super) fn receipt(&self, id: ContentId, logical_length: u64) -> PutReceipt {
         PutReceipt::one(
             id,
             PlacementReceipt {
@@ -226,7 +226,7 @@ impl S3BlobBackend {
         )
     }
 
-    fn upload_multipart(
+    pub(super) fn upload_multipart(
         &self,
         id: ContentId,
         source: &BlobHandle,

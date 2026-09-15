@@ -171,8 +171,6 @@ For deeper work:
   9p, lifecycle, CPU, interrupt, memory, clock, and accelerator effects.
 - [Recorded signal inputs](recorded-signals.md) documents deterministic CSV,
   JSONL, PCAP, and PCAPNG import, provenance, storage, and runtime attachment.
-- [Fault-model migration](fault-model-migration.md) explains the required
-  one-way move to the signal-driven schema and why old plans are not translated.
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
   `replay`, `save`, and `resume`.
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.

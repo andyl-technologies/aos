@@ -771,7 +771,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
         exact_retention,
     )
     .expect("finding candidate bundle");
-    assert_eq!(bundle.schema_version(), 5);
+    assert_eq!(bundle.schema_version(), 6);
 
     let mismatched_triage_bundle = FindingCandidateBundle::new_with_exact_retention(
         crate::FindingCandidateCore::new(
