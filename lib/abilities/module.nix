@@ -763,6 +763,20 @@
     );
 
   environmentType = abilityTypes.environmentId;
+  derivedInstanceKey = declaration:
+    "instance-${builtins.hashString "sha256" (builtins.toJSON {
+      schema = "aos.ability.instance-key/v1";
+      inherit declaration;
+    })}";
+  projectedInstanceIdentities =
+    if config == null || config.aos.abilities.environment == null
+    then {}
+    else
+      builtins.mapAttrs (declaration: _: {
+        environment = config.aos.abilities.environment;
+        key = derivedInstanceKey declaration;
+      })
+      config.aos.abilities.instances;
 
   instanceBaseType = strictSubmodule {
     implementation = mkOption {
@@ -968,6 +982,13 @@ in {
         else throw "Ability instances require a deployment environment and valid implementation configuration.";
       description = "Configured logical provider and consumer instances.";
     };
+    instanceIdentities = mkOption {
+      type = moduleTypes.attrsOf abilityTypes.instanceId;
+      default = {};
+      readOnly = true;
+      internal = true;
+      description = "Canonical deployment instance identities derived from final qualified declaration keys.";
+    };
     requests = mkOption {
       type = abilityMapType "requests" requestBaseType;
       default = {};
@@ -993,4 +1014,6 @@ in {
       description = "Provider-owned desired resources derived during module evaluation.";
     };
   };
+
+  config.aos.abilities.instanceIdentities = projectedInstanceIdentities;
 }
