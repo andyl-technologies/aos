@@ -1,5 +1,6 @@
 ##! bind — Authoritative DNS server, recursive resolver, and DNS utilities
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -60,6 +61,8 @@ in
       readline
     ];
     propagatedDeps = [];
+
+    abilities = ./_bind/module.nix;
 
     phases = [
       {
@@ -152,8 +155,74 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
+    }: let
+      evaluated = lib.evalModules {
+        inherit lib;
+        modules = [
+          lib.abilities.module
+          {
+            options.assertions = lib.mkOption {
+              type = lib.types.listOf lib.types.attrs;
+              default = [];
+              contributable = true;
+            };
+            aos.abilities.environment = {
+              authority = "deployment";
+              key = "bind-test";
+              stage = "host";
+            };
+            aos.services.bind = {
+              enable = true;
+              port = 5353;
+              listenIPv4 = ["127.0.0.1"];
+              listenIPv6 = [];
+            };
+          }
+        ];
+        packageModules = [
+          {
+            name = "bind";
+            module.imports = [./_bind/module.nix];
+          }
+        ];
+      };
+      requests = evaluated.config.aos.abilities.requests;
+      configuration = requests."bind:server-configuration".parameters.source;
+      dependencies = requests."bind:named-dependencies".parameters;
+      ingress = requests."bind:dns-ingress".parameters;
+      qualifiedResultOf = request: output: {
+        _type = "aos-request-output-reference";
+        inherit request output;
+      };
+      contractHolds =
+        self.abilities ? interfaces
+        && self.abilities ? implementations
+        && self.abilities ? requirementTemplates
+        && self.abilities ? guarantees
+        && !(self.abilities ? contract)
+        && builtins.hasAttr "network-ingress-policy" self.abilities.requirementTemplates
+        && builtins.all (assertion: assertion.assertion) evaluated.config.assertions
+        && configuration.kind == "interpolated-text"
+        && !(lib.hasInfix "/var/lib/" (builtins.toJSON configuration))
+        && !(lib.hasInfix "/run/" (builtins.toJSON configuration))
+        && ingress.endpoints
+        == [
+          {
+            transport = "tcp";
+            port = 5353;
+          }
+          {
+            transport = "udp";
+            port = 5353;
+          }
+        ]
+        && dependencies.prerequisites
+        == [(qualifiedResultOf "bind:dns-ingress" "readiness-resource")]
+        && dependencies.after == []
+        && dependencies.requires == [];
+    in {
       link = testing.mkLinkCheck {
         pname = "lib-bind-dns";
         library = self;
@@ -177,6 +246,14 @@ in
         tool = self.dnsutils;
         command = "dig -v && nslookup -version";
       };
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "bind-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the BIND native ability contract check failed";
     };
 
     meta = {
