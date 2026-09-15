@@ -109,7 +109,6 @@
         credentialDelivery
         storageView
         storageAllocation
-        persistentStorageAllocation
         hostPathView
         deviceView
         rootDirectoryView
@@ -827,6 +826,11 @@ in
   assert interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.phase == "planning";
   assert interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.lifetime == "persistent";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
+  assert !interfaces.persistentStorageAllocation.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert interfaces.persistentStorageAllocation.document.interface.lifecycle.retains_persistent_by_default;
+  assert interfaces.persistentStorageAllocation.document.interface.lifecycle.persistent_delete_method == null;
+  assert interfaces.persistentStorageAllocation.document.interface.methods.release.semantics.required_target_access == "exclusive-write";
+  assert interfaces.persistentStorageAllocation.document.interface.methods.release.semantics.stops_provider;
   assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;
   assert succeedsAs serviceTypes.storageAllocation ownedStorageAllocation;
