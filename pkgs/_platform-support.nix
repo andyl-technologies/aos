@@ -832,6 +832,8 @@ let
     "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_zfstools/module.nix" = "linux-only-config-source";
     "system/_dbus/module.nix" = "linux-only-config-source";
+    "system/_dbus/availability-interface.nix" = "target-independent-source";
+    "system/_dbus/availability-provider.nix" = "target-independent-source";
     "system/_dbus/registration-interface.nix" = "target-independent-source";
     "system/_dbus/registration-provider.nix" = "target-independent-source";
     "system/_dbus/registration-transition.nix" = "target-independent-source";
