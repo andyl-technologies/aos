@@ -697,6 +697,14 @@
   };
 
   qualificationType = strictSubmodule {
+    adapter = mkOption {
+      type = localKeyType;
+      description = "Stable package-owned adapter identity used by qualification evidence.";
+    };
+    scope = mkOption {
+      type = localKeyType;
+      description = "Native execution scope containing this implementation's effects.";
+    };
     conformanceFamilies = mkOption {
       type = moduleTypes.listOf localKeyType;
       description = "Semantic conformance families required by this implementation.";
@@ -1468,19 +1476,6 @@ in {
       default = {};
       contributable = true;
       description = "Package-owned ability implementations available to provider discovery.";
-    };
-    qualification.implementations = mkOption {
-      type = abilityMapType "qualification.implementations" qualificationType;
-      default = {};
-      contributable = true;
-      apply = qualifications:
-        if
-          builtins.all
-          (name: builtins.hasAttr name config.aos.abilities.implementations)
-          (builtins.attrNames qualifications)
-        then qualifications
-        else throw "An ability qualification claim has no matching package implementation.";
-      description = "Package-owned native conformance and observation claims keyed by implementation.";
     };
     requirementTemplates = mkOption {
       type = abilityMapType "requirementTemplates" requirementBaseType;

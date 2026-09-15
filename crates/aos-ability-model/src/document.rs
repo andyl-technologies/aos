@@ -1107,6 +1107,8 @@ impl VersionedDocument for PackageDocument {
 
         #[derive(Serialize)]
         struct SemanticQualification<'a> {
+            adapter: &'a LocalKey,
+            scope: &'a LocalKey,
             conformance_families: &'a [LocalKey],
             observer: SemanticHandler<'a>,
         }
@@ -1186,6 +1188,8 @@ impl VersionedDocument for PackageDocument {
                 (
                     implementation,
                     SemanticQualification {
+                        adapter: &qualification.adapter,
+                        scope: &qualification.scope,
                         conformance_families: &qualification.conformance_families,
                         observer: SemanticHandler {
                             artifact: qualification.observer.artifact.identity(),

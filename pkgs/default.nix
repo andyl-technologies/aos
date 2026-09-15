@@ -180,7 +180,6 @@
         guarantees = {};
         implementations = {};
         interfaces = {};
-        qualification.implementations = {};
         requirementTemplates = {};
       };
     };
@@ -339,7 +338,6 @@
         guarantees = {};
         implementations = {};
         interfaces = {};
-        qualification.implementations = {};
         requirementTemplates = {};
       };
     projectLocalAbilityMap = values:

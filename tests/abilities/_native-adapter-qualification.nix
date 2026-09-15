@@ -5,11 +5,7 @@
 }: let
   inherit (lib.abilities) types;
 in {
-  observerFor = {
-    provider,
-    kind,
-    scope,
-  }: {
+  observer = {
     artifact = lib.abilities.packageOutput {
       package = observerPackage.pname;
       output = observerPackage.outputName or "out";
@@ -24,9 +20,9 @@ in {
     };
     result = types.record {
       fields = {
-        provider = types.enum [provider];
-        kind = types.enum [kind];
-        scope = types.enum [scope];
+        provider = types.localKey;
+        kind = types.localKey;
+        scope = types.localKey;
         observation = types.string {
           maxLength = 1048576;
           syntax = null;

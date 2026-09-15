@@ -298,6 +298,10 @@ pub struct PackageImplementationProjection {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QualificationProjection {
+    /// Stable package-owned adapter identity represented by the implementation.
+    pub adapter: LocalKey,
+    /// Native execution scope containing the implementation's effects.
+    pub scope: LocalKey,
     /// Semantic conformance families claimed by the implementation.
     pub conformance_families: Vec<LocalKey>,
     /// Package-owned observer used to collect independent qualification evidence.
@@ -705,6 +709,8 @@ pub fn resolve_package_projection(
             Ok((
                 provider.descriptor_digest()?,
                 ProviderQualification {
+                    adapter: qualification.adapter,
+                    scope: qualification.scope,
                     conformance_families: qualification.conformance_families,
                     observer: HandlerDescriptor {
                         artifact: resolver.select(&qualification.observer.artifact)?,
@@ -1514,6 +1520,8 @@ mod tests {
         document.qualification.implementations.insert(
             Sha256Digest::of_bytes("implementation"),
             aos_ability_model::ProviderQualification {
+                adapter: LocalKey::new("fixture-adapter").unwrap(),
+                scope: LocalKey::new("fixture-scope").unwrap(),
                 conformance_families: vec![LocalKey::new("lifecycle").unwrap()],
                 observer: aos_ability_model::HandlerDescriptor {
                     artifact: observer,

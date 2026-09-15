@@ -199,17 +199,18 @@
         (implementation.handlerDescriptor != null)
         (selector implementation.handlerDescriptor.artifact)
         ++ lib.optional
-        (builtins.hasAttr name evaluated.qualification.implementations)
-        (selector evaluated.qualification.implementations.${name}.observer.artifact))
+        (implementation.qualification != null)
+        (selector implementation.qualification.observer.artifact))
       implementationNames
       ++ lib.optionals (projectedPackageProbe != null) projectedPackageProbe.selectors
     );
-  implementationQualification = builtins.listToAttrs (lib.concatMap (name:
-      lib.optional (builtins.hasAttr name evaluated.qualification.implementations) {
+  implementationQualification = builtins.listToAttrs (lib.concatMap (name: let
+      qualification = semanticImplementations.${name}.qualification;
+    in
+      lib.optional (qualification != null) {
         name = localName name;
-        value = let
-          qualification = evaluated.qualification.implementations.${name};
-        in {
+        value = {
+          inherit (qualification) adapter scope;
           conformance_families = builtins.sort builtins.lessThan qualification.conformanceFamilies;
           observer = projectedHandler "qualification observer" qualification.observer;
         };

@@ -187,14 +187,20 @@ def provider_documents(roots: list[str]) -> list[tuple[str, Any]]:
     return documents
 
 
-def _observer_descriptor(adapter: str) -> dict[str, Any]:
-    """Resolves the package-owned observer selected by the generated matrix."""
+def _adapter_claim(adapter: str) -> dict[str, Any]:
+    """Resolves the package-owned qualification claim selected by the matrix."""
 
     adapters = MATRIX_SPEC.get("surface", {}).get("adapters", [])
     matches = [entry for entry in adapters if entry.get("adapter") == adapter]
     if len(matches) != 1:
         raise RuntimeError("matrix does not select one observer for the adapter")
-    descriptor = matches[0].get("provider_implementation", {}).get("observer")
+    return matches[0]
+
+
+def _observer_descriptor(adapter_claim: dict[str, Any]) -> dict[str, Any]:
+    """Returns the observer from an exact package-owned qualification claim."""
+
+    descriptor = adapter_claim.get("provider_implementation", {}).get("observer")
     if not isinstance(descriptor, dict):
         raise RuntimeError("selected implementation lacks an observer descriptor")
     return descriptor
@@ -203,21 +209,16 @@ def _observer_descriptor(adapter: str) -> dict[str, Any]:
 def _package_observation(adapter: str, operation: dict[str, Any]) -> dict[str, Any]:
     """Invokes the exact selected qualification artifact inside the guest."""
 
-    descriptor = _observer_descriptor(adapter)
+    adapter_claim = _adapter_claim(adapter)
+    descriptor = _observer_descriptor(adapter_claim)
     artifact = descriptor.get("artifact", {})
     artifact_path = artifact.get("path")
     entry_point = descriptor.get("entry_point")
     if not isinstance(artifact_path, str) or not isinstance(entry_point, str):
         raise RuntimeError("observer artifact binding is malformed")
-    scope_values = (
-        descriptor.get("result", {})
-        .get("fields", {})
-        .get("scope", {})
-        .get("values")
-    )
-    if not isinstance(scope_values, list) or len(scope_values) != 1:
-        raise RuntimeError("observer descriptor does not select one scope")
-    scope = scope_values[0]
+    scope = adapter_claim.get("scope")
+    if not isinstance(scope, str):
+        raise RuntimeError("qualification claim does not select one scope")
     executable = str(PurePosixPath(artifact_path) / entry_point)
 
     request_path = f"/run/aos-native-adapter-observer-{hashlib.sha256(canonical(operation)).hexdigest()}.json"
