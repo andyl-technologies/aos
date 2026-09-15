@@ -17,7 +17,6 @@
   aos-verity-root-guard,
   aos-ebpf-net-policy,
   aos-ebpf-lsm-policy,
-  ability-package-smoke,
   checkpolicy,
   cmake,
   coreutils,
@@ -70,10 +69,6 @@
     if isCross
     then buildPackages.nix
     else nix;
-  mkReferenceGraph = import ../../../lib/build/reference-graph.nix {
-    inherit lib;
-    inherit (buildPackages) mkDerivation coreutils jq;
-  };
   buildOpenSsh =
     if isCross
     then buildPackages.openssh
@@ -148,62 +143,6 @@
   abilityEvaluatorFixture = builtins.path {
     path = ../../../tests/abilities/evaluator-provider;
     name = "aos-ability-evaluator-fixture";
-  };
-  abilityAuthoringConformanceCorpus =
-    builtins.toFile
-    "aos-ability-authoring-conformance-v1.json"
-    (builtins.toJSON (import ../../../tests/abilities/conformance/corpus.nix));
-  abilityAuthoringConformanceFixture = buildPackages.mkDerivation {
-    pname = "aos-ability-authoring-conformance-fixture";
-    version = "1";
-    src = null;
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out/lib"
-          cp -R ${../../../lib}/. "$out/lib/"
-          ${buildPackages.sed}/bin/sed \
-            ${lib.escapeShellArg "s|@aosBuildSystem@|${stdenv.buildPlatform.system}|g"} \
-            ${../../../tests/abilities/conformance/provider.nix} > "$out/default.nix"
-          cp ${abilityAuthoringConformanceCorpus} "$out/corpus.json"
-        '';
-      }
-    ];
-  };
-  abilityReferenceNginxFixture = builtins.path {
-    path = ../../networking/_nginx-ability-provider;
-    name = "aos-ability-reference-nginx";
-  };
-  abilityReferenceManagedConfigurationFixture = builtins.path {
-    path = ../../../tests/abilities/reference-nginx/providers/managed-configuration;
-    name = "aos-ability-reference-managed-configuration";
-  };
-  abilityReferenceHttpBackendFixture = builtins.path {
-    path = ../../../tests/abilities/reference-nginx/providers/http-backend-registry;
-    name = "aos-ability-reference-http-backend";
-  };
-  abilityReferenceCredentialFixture = builtins.path {
-    path = ../../../tests/abilities/reference-nginx/providers/credential;
-    name = "aos-ability-reference-credential";
-  };
-  abilityReferenceServiceFixture = builtins.path {
-    path = ../../../tests/abilities/reference-nginx/providers/service;
-    name = "aos-ability-reference-service";
-  };
-  abilityReferenceRegistryPackages = import ../../../tests/abilities/reference-nginx/package.nix {
-    inherit lib;
-    inherit (buildPackages) mkDerivation;
-  };
-  abilityReferenceNginxGraph = mkReferenceGraph {
-    rootPaths =
-      [abilityReferenceNginxFixture abilityReferenceHttpBackendFixture]
-      ++ builtins.map (package: package.abilities.contract) (builtins.attrValues abilityReferenceRegistryPackages);
-    pname = "aos-ability-reference-nginx-graph";
-  };
-  abilityContractSmokeGraph = mkReferenceGraph {
-    rootPaths = [ability-package-smoke ability-package-smoke.abilities.contract];
-    pname = "aos-ability-package-smoke-graph";
   };
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
@@ -453,26 +392,7 @@ in
       export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
       export AOS_TEST_ABILITY_FIXTURE="${abilityEvaluatorFixture}"
       export AOS_TEST_ABILITY_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityEvaluatorFixture})"
-      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE="${abilityAuthoringConformanceFixture}"
-      export AOS_TEST_ABILITY_CONFORMANCE_FIXTURE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityAuthoringConformanceFixture})"
-      export AOS_TEST_ABILITY_CONFORMANCE_CORPUS="${abilityAuthoringConformanceFixture}/corpus.json"
       export AOS_TEST_ABILITY_BUILD_SYSTEM=${lib.escapeShellArg stdenv.buildPlatform.system}
-      export AOS_TEST_ABILITY_REFERENCE_NGINX="${abilityReferenceNginxFixture}"
-      export AOS_TEST_ABILITY_REFERENCE_NGINX_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceNginxFixture})"
-      export AOS_TEST_ABILITY_REFERENCE_HTTP_BACKEND="${abilityReferenceHttpBackendFixture}"
-      export AOS_TEST_ABILITY_REFERENCE_HTTP_BACKEND_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceHttpBackendFixture})"
-      export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION="${abilityReferenceManagedConfigurationFixture}"
-      export AOS_TEST_ABILITY_REFERENCE_MANAGED_CONFIGURATION_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceManagedConfigurationFixture})"
-      export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL="${abilityReferenceCredentialFixture}"
-      export AOS_TEST_ABILITY_REFERENCE_CREDENTIAL_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceCredentialFixture})"
-      export AOS_TEST_ABILITY_REFERENCE_SERVICE="${abilityReferenceServiceFixture}"
-      export AOS_TEST_ABILITY_REFERENCE_SERVICE_NAR_HASH="sha256:$(${buildNix}/bin/nix --extra-experimental-features nix-command hash path --type sha256 --base16 ${abilityReferenceServiceFixture})"
-      export AOS_TEST_ABILITY_REFERENCE_PACKAGES="${
-        lib.concatStringsSep ":" (
-          builtins.map (package: "${package.abilities.contract}") (builtins.attrValues abilityReferenceRegistryPackages)
-        )
-      }"
-      export AOS_TEST_ABILITY_PACKAGE_SMOKE="${ability-package-smoke.abilities.contract}"
       export AOS_TEST_ABILITY_CACHE="$NIX_BUILD_TOP/ability-evaluator-cache"
       ${lib.optionalString (!isCross) ''
         ability_nix_root="$NIX_BUILD_TOP/ability-retention-nix"
@@ -489,17 +409,6 @@ in
         NIX_LOG_DIR="$ability_nix_log" \
         NIX_REMOTE=local \
           ${buildNix}/bin/nix-store --init
-        NIX_STORE_DIR=/nix/store \
-        NIX_STATE_DIR="$ability_nix_state" \
-        NIX_LOG_DIR="$ability_nix_log" \
-        NIX_REMOTE=local \
-          ${buildNix}/bin/nix-store --load-db < ${abilityReferenceNginxGraph}/registration
-        NIX_STORE_DIR=/nix/store \
-        NIX_STATE_DIR="$ability_nix_state" \
-        NIX_LOG_DIR="$ability_nix_log" \
-        NIX_REMOTE=local \
-          ${buildNix}/bin/nix-store --load-db < ${abilityContractSmokeGraph}/registration
-
         export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
         export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"
         export AOS_TEST_ABILITY_NIX_LOG_DIR="$ability_nix_log"
