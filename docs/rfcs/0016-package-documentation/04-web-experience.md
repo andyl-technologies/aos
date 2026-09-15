@@ -96,7 +96,7 @@ The option tree:
 - distinguishes owned roots and contributed subtrees;
 - preserves expansion/selection in the URL or local navigation state;
 - shows badges for required, deprecated, read-only, internal, contributable,
-  credential-related, and restart/reboot effects;
+  and credential-related declarations;
 - supports keyboard tree navigation and a linear accessible fallback.
 
 The detail pane shows:
@@ -107,7 +107,6 @@ The detail pane shows:
 - default/default text and example;
 - version/platform/ABI availability;
 - owner, contributor policy, and source locator;
-- activation impact and affected units;
 - deprecation and replacement;
 - semantic changes relative to the previously selected release.
 
@@ -129,23 +128,18 @@ Copy actions include option path, example value, complete Nix fragment, CLI
 command, and immutable documentation URL. Generated snippets are formatted by
 shared Rust, not by browser string templates.
 
-## Services workspace
+## Deployment workspace
 
-The Services tab turns expose/config metadata into a coherent runtime map:
+The deployment view consumes the same checked inspection graph as the CLI. It
+shows selected bindings, current and desired resource revisions, controller
+provenance, and typed provider-produced realization observations. Concrete
+services, listeners, paths, credentials, and effect ordering appear only when
+the checked plan or provider journal supplies those facts.
 
-- workload services, activation sources, helpers, targets, and ordering;
-- listeners and ports, including network mode and firewall admission;
-- state/cache/log/runtime/config paths and persistence policy;
-- configuration artifacts, validators, and reload/restart mapping;
-- credential names, purpose, delivery mode, and missing/rotation behavior;
-- capability provides/uses, kernel requirements, and host integrations;
-- filesystem/network/MAC confinement summary;
-- enable, disable, upgrade, rollback, and removal behavior.
-
-A compact relationship diagram is appropriate here because one source often
-affects several units and artifacts. The same facts remain available as a table
-and definition list for screen readers and no-JavaScript clients. Visualizations
-never become the only representation.
+A compact relationship diagram may present that graph. The same facts remain
+available as a table and definition list for screen readers and no-JavaScript
+clients. Visualizations never become the only representation, and Hub does not
+fill missing observations from package names or a service catalog.
 
 ## Versions and semantic comparison
 

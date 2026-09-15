@@ -8,10 +8,8 @@ one coordinated cutover.
 
 ## Phase 0: characterize and freeze the contracts
 
-- [x] Inventory every package summary, config option, ownership/contribution
-      rule, expose artifact, unit, listener, managed path, credential contract,
-      capability, activation effect, and unique prose section in current package
-      guides.
+- [x] Inventory every package summary, public option, package-owned ability
+      declaration, and unique prose section in current package guides.
 - [x] Define the closed `aos.package-documentation/v1` data model, canonical JSON
       encoding, semantic schema digest, structured prose/type/path algebras, and
       hard limits.
@@ -29,42 +27,34 @@ one coordinated cutover.
       initial design ceiling is 4 MiB per uncompressed document NAR.
 - [x] Add a repository policy that new package option reference content is
       authored in Nix data while transitional Markdown remains readable.
-- [x] Close the runnable-service inventory: every package carrying a systemd
-      unit must expose a typed package contract, every managed package must be
-      present in the documentation catalog, and reviewed on-demand engines and
-      test fixtures must have an explicit non-service disposition.
+- [x] Require every published package reference to derive from its checked
+      package contract, with tests isolated in explicit test package sets.
 
 **Done when:** fixtures and the checked schema can represent every interface in
 the current package-guide inventory without executing Nix in a consumer.
 
 ## Phase 1: extraction and documentation store artifacts
 
-- [x] Extend the restricted base library/options-only evaluation with pure
-      documentation constructors and export.
+- [x] Project package documentation from the ordinary package module's signed
+      option and ability declarations.
 - [x] Implement shared Rust document types, validation, canonical encoding,
       structured prose rendering primitives, and semantic digest computation.
 - [x] Split a WASM-safe structured model/search/render core from the native
       `aos-doc` repository walker, Nix evaluation, cache, built-in language data,
       and TUI; migrate shared presentation without making the old `DocIndex` an
       artifact format.
-- [x] Cross-check rich option data against `declares`, `declaration_schema`,
-      ownership/contribution metadata, config artifacts, credentials, expose
-      metadata, and package identity.
+- [x] Validate rich option data and ability prose as exact, complete projections
+      of the checked package contract.
 - [x] Materialize one empty-reference, non-executable regular-file store object
       after trusted validation.
 - [x] Add `DocumentationArtifactMeta` to `PlatformEntry`, feature gating,
       provenance subjects, store graph validation, and registry parsing.
 - [x] Make publisher typed inventories upload/verify the docs NAR/narinfo before
       Git/channel pointer movement.
-- [x] Generate documents for all configurable packages and summary/runtime docs
-      for ordinary packages.
-- [x] Extract system/image-owned service documentation from the exact evaluated
-      base-library Nix object, bind its NAR hash into the documentation identity,
-      and publish named entries such as `aos-hub` without creating a competing
-      package configuration owner.
-- [x] Reject publication and repository checks when any public configuration
-      option lacks a human-authored description; validate summaries and
-      structured operational sections for every configurable service.
+- [x] Generate documents for packages with public options or ability
+      declarations and package metadata for ordinary packages.
+- [x] Reject publication when any public option or package-owned ability
+      declaration lacks its required authored description.
 - [x] Add deterministic-build, tamper, partial-publication, safe-default, and
       prose-versus-semantic-change tests.
 
@@ -233,9 +223,11 @@ classify every section as:
       public configurable packages.
 
 **Done when:** no handwritten file is the authority for a package option or
-runtime surface, unique human guidance has a deliberate home, all accepted
+ability declaration, unique human guidance has a deliberate home, all accepted
 surfaces deep-link to generated docs, and deleting the transitional files causes
-no information or usability regression.
+no information or usability regression. Deployment realization details come
+from checked plans and provider observations rather than package reference
+metadata.
 
 ## Rollout and rollback
 

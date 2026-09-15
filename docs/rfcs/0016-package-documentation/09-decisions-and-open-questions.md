@@ -65,10 +65,10 @@ needed presentation without raw markup.
 
 ### Store only JSON Schema
 
-Rejected because Nix module semantics include ownership, contribution, option
-merge behavior, activation effects, credentials, services, availability, and
-conceptual/runtime information that JSON Schema alone cannot represent. The AOS
-model may expose JSON-schema-like projections for compatible tools.
+Rejected because Nix module semantics include contribution, option merge
+behavior, checked ability declarations, and deployment state that JSON Schema
+alone cannot represent. The AOS model may generate JSON-schema projections from
+its authoritative closed types for compatible tools.
 
 ### Make the LSP authoritative
 

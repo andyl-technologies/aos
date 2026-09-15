@@ -10,7 +10,6 @@ JSON, server-rendered Web pages, CLI, and LSP adapters share:
 - `PackageDocumentationSummary`;
 - `PackageDocumentation`;
 - `OptionSummary` and `OptionDocument`;
-- `RuntimeSurfaceDocument`;
 - `DocumentationSearchHit`;
 - `DocumentationComparison`;
 - `DocumentationSourceIdentity`.
@@ -93,7 +92,7 @@ registries:
 ```text
 apm docs nginx
 apm docs nginx --version 1.30.4 --platform x86_64-linux
-apm docs nginx --section services
+apm docs nginx --section abilities
 apm docs nginx --format terminal|man|json
 
 apm options search 'tls certificate'
@@ -205,7 +204,7 @@ in the runtime closure.
 The conventional views are:
 
 ```text
-apm-nginx(5)       package configuration and runtime surface
+apm-nginx(5)       package configuration and ability reference
 aos-options(5)     option language, ownership, contribution, and references
 ```
 
@@ -229,7 +228,7 @@ evaluation, and does not require Hub.
 Remote listening requires an explicit non-loopback address plus the ordinary
 AOS service/auth policy; the convenience command does not silently expose local
 package inventory. `apm docs --open` can start the loopback server and print or
-open its URL. The local UI retains package/configure/services/integrity views and
+open its URL. The local UI retains package/configure/abilities/integrity views and
 searches the bounded local corpus.
 
 ## Cache and sync controls

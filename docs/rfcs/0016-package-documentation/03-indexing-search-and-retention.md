@@ -102,11 +102,11 @@ backend without FTS remains fully functional.
 Queries support exact and fuzzy text plus structured filters:
 
 - package, version, platform, registry, release, or channel;
-- result kind: package, option, service, credential contract, capability, or
-  conceptual section;
-- option type and owner root/package;
+- result kind: package, option, interface, implementation, requirement,
+  guarantee, deployment resource, or conceptual section;
+- option type and package;
 - public/internal visibility permitted to the caller;
-- contributable, deprecated, required, or activation effect;
+- contributable, deprecated, or required;
 - changed relative to another exact document.
 
 Highlight ranges index plain result text. Hub never returns or stores
