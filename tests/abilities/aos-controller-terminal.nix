@@ -3,6 +3,7 @@
   lib,
   pkgs,
 }: let
+  providerRoot = ../../pkgs/tools/aos/_abilities;
   evaluation = lib.evalModules {
     inherit lib pkgs;
     modules = [
@@ -19,10 +20,20 @@
       {
         name = "aos";
         version = pkgs.aos.version;
-        module.imports = [
-          (import (pkgs.aos.module + "/module.nix"))
-          (import (pkgs.aos.module + "/configuration-provider/provider.nix"))
-        ];
+        module = pkgs.aos.module + "/module.nix";
+      }
+    ];
+    selectedProviderModules = [
+      {
+        name = "aos";
+        packageVersion = pkgs.aos.version;
+        configRoot = providerRoot;
+        module = providerRoot + "/configuration-provider/provider.nix";
+        outputs = {
+          self = builtins.toString pkgs.aos.packageRuntime;
+          dependencies = {};
+        };
+        artifactLocators = {};
       }
     ];
   };

@@ -33,7 +33,8 @@
       packageModules = [
         {
           name = "docker-engine";
-          module.imports = [../../pkgs/containers/_docker-engine/module.nix];
+          inherit (pkgs.docker-engine) version;
+          module = pkgs.docker-engine.module + "/module.nix";
         }
       ];
     };

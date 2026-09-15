@@ -442,7 +442,7 @@
     inherit lib;
   };
   managedIdentityAllocation = import ./managed-identity-allocation.nix {
-    inherit lib;
+    inherit lib pkgs;
   };
   systemServiceModules = import ./system-service-modules.nix {
     inherit lib;
