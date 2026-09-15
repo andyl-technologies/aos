@@ -195,6 +195,10 @@
       enabled = types.boolean;
       pool = poolName;
       import_policy = types.enum ["force"];
+      properties = {
+        type = datasetProperties;
+        default = {};
+      };
       inherit prerequisites;
     };
   };
@@ -249,7 +253,22 @@
       enabled = types.boolean;
       pool = types.deferredResult poolName;
       dataset = datasetName;
-      mountpoint = types.executionPath;
+      mountpoint = {
+        type = types.optional types.executionPath;
+        optional = true;
+      };
+      mount_options = {
+        type = types.list {
+          element = types.string {
+            maxLength = 1024;
+            syntax = null;
+          };
+          maxItems = 64;
+          unique = true;
+          canonicalOrder = true;
+        };
+        default = [];
+      };
       properties = datasetProperties;
       inherit prerequisites;
     };
@@ -275,8 +294,8 @@
     actionDescription = "Converges and mounts the exact requested storage dataset.";
     releaseDescription = "Unmounts only the storage dataset owned by this resource without destroying data.";
     resultName = "mountpoint";
-    resultType = types.executionPath;
-    resultDescription = "Returns the exact mounted dataset path.";
+    resultType = types.optional types.executionPath;
+    resultDescription = "Returns the exact mounted dataset path when the dataset is mounted.";
     lifecycle = ephemeralLifecycle;
   };
 

@@ -28,7 +28,8 @@ struct Desired {
     enabled: bool,
     pool: String,
     dataset: String,
-    mountpoint: String,
+    mountpoint: Option<String>,
+    mount_options: Vec<String>,
     properties: BTreeMap<String, String>,
     prerequisites: Vec<ResourceReference>,
 }
@@ -53,7 +54,8 @@ struct Marker {
     schema: String,
     revision: RevisionId,
     dataset: String,
-    mountpoint: String,
+    mountpoint: Option<String>,
+    mount_options: Vec<String>,
     properties: BTreeMap<String, String>,
     pending: bool,
 }
@@ -133,7 +135,7 @@ impl Backend for ZfsDatasetBackend {
             evidence,
             ready,
             released,
-            path: ready.then_some(desired_value.mountpoint),
+            path: ready.then_some(desired_value.mountpoint).flatten(),
             unknown: false,
         })
     }
@@ -164,6 +166,7 @@ impl Backend for ZfsDatasetBackend {
             revision,
             dataset: full_name.clone(),
             mountpoint: desired.mountpoint.clone(),
+            mount_options: desired.mount_options.clone(),
             properties: desired.properties.clone(),
             pending: true,
         };
@@ -171,7 +174,11 @@ impl Backend for ZfsDatasetBackend {
 
         if !native.exists {
             let mut arguments = vec!["create".to_string(), "-p".to_string()];
-            push_property(&mut arguments, "mountpoint", &desired.mountpoint)?;
+            push_property(
+                &mut arguments,
+                "mountpoint",
+                desired.mountpoint.as_deref().unwrap_or("none"),
+            )?;
             for (key, value) in &desired.properties {
                 push_property(&mut arguments, key, value)?;
             }
@@ -179,10 +186,17 @@ impl Backend for ZfsDatasetBackend {
             arguments.push(full_name.clone());
             run_owned(&context.zfs, &arguments, remaining_millis)?;
         } else {
+            if desired.mountpoint.is_none() && native.mounted {
+                run_success(
+                    &context.zfs,
+                    &["unmount", "--", &full_name],
+                    remaining_millis,
+                )?;
+            }
             set_property(
                 &context.zfs,
                 "mountpoint",
-                &desired.mountpoint,
+                desired.mountpoint.as_deref().unwrap_or("none"),
                 &full_name,
                 remaining_millis,
             )?;
@@ -193,8 +207,15 @@ impl Backend for ZfsDatasetBackend {
             }
         }
         let current = inspect(&context.zfs, &full_name, &desired.properties)?;
-        if !current.mounted {
-            run_success(&context.zfs, &["mount", "--", &full_name], remaining_millis)?;
+        if desired.mountpoint.is_some() && !current.mounted {
+            let mut arguments = vec!["mount".to_string()];
+            if !desired.mount_options.is_empty() {
+                arguments.push("-o".into());
+                arguments.push(desired.mount_options.join(","));
+            }
+            arguments.push("--".into());
+            arguments.push(full_name.clone());
+            run_owned(&context.zfs, &arguments, remaining_millis)?;
         }
         write_marker(
             target,
@@ -240,11 +261,14 @@ fn classify(
         marker.revision == revision
             && marker.dataset == full_name
             && marker.mountpoint == desired.mountpoint
+            && marker.mount_options == desired.mount_options
             && marker.properties == desired.properties
     });
     let exact_native = native.exists
-        && native.mounted
-        && native.mountpoint.as_deref() == Some(desired.mountpoint.as_str())
+        && match desired.mountpoint.as_deref() {
+            Some(mountpoint) => native.mounted && native.mountpoint.as_deref() == Some(mountpoint),
+            None => !native.mounted && native.mountpoint.as_deref() == Some("none"),
+        }
         && native.properties == desired.properties;
     let ready = desired.enabled && exact_marker && exact_native;
     let released = marker.is_none();
@@ -362,7 +386,9 @@ fn full_dataset_name(desired: &Desired) -> Result<String> {
 
 fn validate_desired(desired: &Desired) -> Result<()> {
     full_dataset_name(desired)?;
-    validate_path(&desired.mountpoint)?;
+    if let Some(mountpoint) = &desired.mountpoint {
+        validate_path(mountpoint)?;
+    }
     ensure!(
         !desired.name.is_empty() && desired.name.len() <= 128,
         "storage-dataset request name is invalid"
@@ -374,6 +400,24 @@ fn validate_desired(desired: &Desired) -> Result<()> {
     );
     for (key, value) in &desired.properties {
         validate_property(key, value)?;
+    }
+    ensure!(
+        desired.mount_options.len() <= 64
+            && desired
+                .mount_options
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+        "storage-dataset mount options must be unique and canonically ordered"
+    );
+    for option in &desired.mount_options {
+        ensure!(
+            !option.is_empty()
+                && option.len() <= 1024
+                && !option
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte == b','),
+            "storage-dataset mount option is invalid"
+        );
     }
     Ok(())
 }
@@ -464,7 +508,17 @@ fn read_marker(target: &ResourceReference) -> Result<Option<Marker>> {
         .context("storage-dataset marker name is invalid")?;
     validate_pool_name(pool)?;
     validate_dataset_name(dataset)?;
-    validate_path(&marker.mountpoint)?;
+    if let Some(mountpoint) = &marker.mountpoint {
+        validate_path(mountpoint)?;
+    }
+    ensure!(
+        marker.mount_options.len() <= 64
+            && marker
+                .mount_options
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+        "storage-dataset marker mount options are invalid"
+    );
     for (key, value) in &marker.properties {
         validate_property(key, value)?;
     }
@@ -499,7 +553,8 @@ mod tests {
             enabled: true,
             pool: "aos-pool".into(),
             dataset: "var/log".into(),
-            mountpoint: "/var/log".into(),
+            mountpoint: Some("/var/log".into()),
+            mount_options: vec!["nodev".into(), "nosuid".into()],
             properties: BTreeMap::from([("compression".into(), "zstd-3".into())]),
             prerequisites: vec![],
         }
@@ -536,6 +591,7 @@ mod tests {
             revision: revision(b"desired"),
             dataset: "aos-pool/var/log".into(),
             mountpoint: desired.mountpoint.clone(),
+            mount_options: desired.mount_options.clone(),
             properties: desired.properties.clone(),
             pending: true,
         };
@@ -546,6 +602,39 @@ mod tests {
                 revision(b"desired"),
                 Some(&marker),
                 &native()
+            ),
+            ("ready", true, false)
+        );
+    }
+
+    #[test]
+    fn unmounted_dataset_is_ready_only_when_mounting_is_disabled() {
+        let mut desired = desired();
+        desired.mountpoint = None;
+        desired.mount_options.clear();
+        let marker = Marker {
+            schema: MARKER_SCHEMA.into(),
+            revision: revision(b"desired"),
+            dataset: "aos-pool/var/log".into(),
+            mountpoint: None,
+            mount_options: vec![],
+            properties: desired.properties.clone(),
+            pending: false,
+        };
+        let native = NativeState {
+            exists: true,
+            mounted: false,
+            mountpoint: Some("none".into()),
+            properties: desired.properties.clone(),
+        };
+
+        assert_eq!(
+            classify(
+                &desired,
+                "aos-pool/var/log",
+                revision(b"desired"),
+                Some(&marker),
+                &native
             ),
             ("ready", true, false)
         );

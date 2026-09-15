@@ -16,6 +16,7 @@
   ...
 }: let
   cfg = config.aos.filesystems;
+  zfsForRunningKernel = pkgs.zfsForKernel config.system.build.kernel;
 
   # Build fstab entries from the filesystem configuration.
   #
@@ -51,7 +52,7 @@
     "${cfg.espDevice}  /boot  vfat  noauto,nofail,ro,noatime,fmask=0077,dmask=0077  0  0"
     ""
     (
-      if cfg.zfs.enable
+      if cfg.zfs.enable && cfg.zfs.systemState
       then ''
         # /var is a native storage dataset mounted by the selected provider.
       ''
@@ -125,6 +126,16 @@ in {
   };
 
   config = {
+    assertions = [
+      {
+        assertion =
+          !(cfg.zfs.enable && cfg.zfs.systemState)
+          || config.aos.boot.storage.backend == "zfs-zvol";
+        message =
+          "aos.filesystems.zfs.systemState requires the zfs-zvol boot backend so /var can be unlocked before switch-root; set systemState = false for a data-only pool";
+      }
+    ];
+
     system.checks.filesystem = {
       description = "Filesystem layout checks";
       checks = [
@@ -180,32 +191,6 @@ in {
       ];
     };
 
-    # Base ZFS datasets — other modules add entries via the same option.
-    aos.filesystems.zfs.datasets = {
-      "var" = {
-        mountpoint = "/var";
-        properties = {
-          compression = "zstd-3";
-          atime = "off";
-        };
-      };
-      "var/log" = {
-        mountpoint = "/var/log";
-        properties = {
-          compression = "zstd-3";
-          atime = "off";
-          logbias = "throughput";
-        };
-      };
-      "var/lib" = {
-        mountpoint = "/var/lib";
-        properties = {
-          compression = "zstd-3";
-          atime = "off";
-        };
-      };
-    };
-
     # /etc/fstab — filesystem table read by mount(8) and systemd generators.
     environment.etc."fstab" = {
       text = fstabEntries + "\n";
@@ -220,5 +205,13 @@ in {
         d /run 0755 root root -
       '';
     };
+
+    # ZFS userland and its module must come from one kernel-bound build. The
+    # same closure is retained in recovery so pool repair never mixes releases.
+    aos.filesystems.zfs.package = lib.mkIf cfg.zfs.enable (lib.mkDefault zfsForRunningKernel);
+    aos.kernel.modulePackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
+    aos.kernel.modules = lib.mkIf cfg.zfs.enable ["zfs"];
+    aos.boot.recovery.extraPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
+    environment.systemPackages = lib.mkIf cfg.zfs.enable [cfg.zfs.package];
   };
 }

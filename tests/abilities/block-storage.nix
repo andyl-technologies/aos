@@ -161,6 +161,7 @@
                   enabled = true;
                   pool = "aos-pool";
                   import_policy = "force";
+                  properties = {};
                   prerequisites = [];
                 };
               })
@@ -174,6 +175,7 @@
                   pool = "aos-pool";
                   dataset = "var/log";
                   mountpoint = "/var/log";
+                  mount_options = ["nodev" "nosuid"];
                   properties = {compression = "zstd-3";};
                   prerequisites = [];
                 };
