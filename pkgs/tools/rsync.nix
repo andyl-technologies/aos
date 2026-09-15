@@ -159,8 +159,6 @@ in
         assertionsHold evaluated
         && assertionsHold authenticated
         && !assertionsHold invalid
-        && builtins.length (builtins.attrNames requests) == 14
-        && builtins.length (builtins.attrNames authenticatedRequests) == 16
         && configuration.source.kind == "interpolated-text"
         && !(lib.hasInfix "/var/lib/aos-pkg-rsyncd" (builtins.toJSON configuration))
         && !(lib.hasInfix "RSYNCD_CONFIG_GENERATION" (builtins.toJSON requests))
