@@ -12,8 +12,8 @@
   packageProfile = resultOf "package-profile-convergence-lifecycle" "service-resource";
   command = {
     executable = {
-      artifact = lib.abilities.packageOutput {output = "apm";};
-      entry_point = "bin/apm";
+      artifact = lib.abilities.packageOutput {output = "packageRuntime";};
+      entry_point = "bin/aos-package-runtime";
       arguments = ["__attest-service"];
     };
     ignore_failure = false;

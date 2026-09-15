@@ -80,9 +80,9 @@ in
       executable = {
         artifact = lib.abilities.packageOutput {
           package = "aos";
-          output = "apm";
+          output = "packageRuntime";
         };
-        entry_point = "bin/apm";
+        entry_point = "bin/aos-package-runtime";
         arguments = ["__attest-service"];
       };
       ignore_failure = false;
