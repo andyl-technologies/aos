@@ -114,6 +114,7 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
         retained_host_inputs: None,
         require_signed_host_nix: true,
         image_default_host: false,
+        registry_snapshot: None,
     };
     let err = run_eval_command(&cmd).expect_err("gate must fail closed with no anchors");
     let msg = format!("{err:#}");
@@ -146,6 +147,7 @@ fn platform_host_nix_policy_needs_no_image_baked_key() {
         retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host: false,
+        registry_snapshot: None,
     };
 
     super::enforce_host_nix_trust_policy(&cmd)
@@ -173,6 +175,7 @@ fn host_package_selection_rejects_a_mutable_input_path() {
         retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host: false,
+        registry_snapshot: None,
     };
 
     let error = super::load_host_selection(&cmd)
@@ -204,6 +207,7 @@ fn image_default_host_accepts_only_the_empty_module_without_operator_keys() {
         retained_host_inputs: None,
         require_signed_host_nix: true,
         image_default_host: true,
+        registry_snapshot: None,
     };
 
     super::enforce_host_nix_trust_policy(&cmd)

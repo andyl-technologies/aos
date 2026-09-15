@@ -819,7 +819,8 @@ in rec {
     transaction = localKeyType;
     handle = localKeyType;
     content_sha256 = digestType;
-    size_bytes = moduleTypes.ints.between 0 (32 * 1024 * 1024);
+    size_bytes = moduleTypes.addCheck moduleTypes.int (value:
+      value >= 0 && value <= 32 * 1024 * 1024);
   };
   deferredResult = expectedType: let
     schema = schemaOf "deferred result" expectedType;

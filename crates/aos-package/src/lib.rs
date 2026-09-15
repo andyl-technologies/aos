@@ -3454,6 +3454,7 @@ async fn apply_runtime_worktree(
             }),
             require_signed_host_nix: false,
             image_default_host,
+            registry_snapshot: None,
         },
         base_manifest,
         base_label: "current".to_string(),
@@ -3640,6 +3641,7 @@ pub async fn run(
             retained_host_inputs: None,
             require_signed_host_nix: *require_signed_host_nix,
             image_default_host: *image_default_host,
+            registry_snapshot: None,
         });
         if let Err(error) = &result {
             exit_for_eval_failure(error, verbose);
@@ -3861,6 +3863,7 @@ pub async fn run(
                 retained_host_inputs: None,
                 require_signed_host_nix: *require_signed_host_nix,
                 image_default_host,
+                registry_snapshot: None,
             },
             base_manifest,
             base_label,

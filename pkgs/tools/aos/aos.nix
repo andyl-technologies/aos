@@ -605,6 +605,7 @@ in
             "$metadataRuntime/libexec/.aos-metadata-provisioning-provider-unwrapped"
           cat > "$metadataRuntime/libexec/aos-metadata-provisioning-provider" <<'METADATA_PROVIDER'
       #!${bash}/bin/bash
+      export PATH=${lib.escapeShellArg (runtimeBinPath metadataRuntimeTools)}
       export AOS_METADATA_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_METADATA_BLKID="${util-linux}/sbin/blkid"
       export AOS_METADATA_MOUNT="${util-linux}/bin/mount"
