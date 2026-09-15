@@ -661,6 +661,10 @@
   isolationFeature = feature {
     privilege = types.enum ["privileged" "unprivileged"];
     filesystem = types.enum ["host" "private" "read-only-software" "read-only-system"];
+    home_access = {
+      type = types.enum ["host" "read-only" "inaccessible"];
+      default = "host";
+    };
     network = types.enum ["host" "none" "private"];
     process_visibility = types.enum ["host" "private"];
     termination_scope = types.enum ["all-processes" "main-process" "mixed"];
