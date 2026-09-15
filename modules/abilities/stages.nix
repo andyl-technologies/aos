@@ -9,16 +9,64 @@
   lib,
   initrdAbilityEvaluation ? null,
   ...
-}: {
+}: let
+  resolutionInputType = lib.types.submodule {
+    options = {
+      desiredInput = lib.mkOption {
+        type = lib.types.path;
+        description = "Canonical aos.ability.activation-desired/v1 build input.";
+      };
+      authenticatedPolicySet = lib.mkOption {
+        type = lib.types.path;
+        description = "Canonical aos.ability.authenticated-policy-set/v1 build input.";
+      };
+    };
+  };
+in {
   options = {
-    aos.abilities.stages.initrd.modules = lib.mkOption {
-      type = lib.types.listOf lib.types.anything;
-      default = [];
-      internal = true;
-      description = ''
-        Ordinary modules evaluated in the authenticated initrd ability
-        environment after the parent system selects its package modules.
-      '';
+    aos.abilities.stages.initrd = {
+      modules = lib.mkOption {
+        type = lib.types.listOf lib.types.anything;
+        default = [];
+        internal = true;
+        description = ''
+          Ordinary modules evaluated in the authenticated initrd ability
+          environment after the parent system selects its package modules.
+        '';
+      };
+
+      packages = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [];
+        internal = true;
+        description = ''
+          Parent-selected packages whose authenticated native modules participate
+          in the initrd fixed point. Selection does not add payload dependency
+          edges beyond the package's existing initrd inclusion.
+        '';
+      };
+
+      intent = lib.mkOption {
+        type = lib.types.attrs;
+        default = {};
+        internal = true;
+        description = ''
+          Data-only initrd module configuration retained as the hermetic
+          build-stage evaluator input. Package modules remain authoritative for
+          their declarations, implementations, and composition behavior.
+        '';
+      };
+
+      resolutionInput = lib.mkOption {
+        type = lib.types.nullOr resolutionInputType;
+        default = null;
+        internal = true;
+        description = ''
+          Existing authenticated desired-state and operator policy documents
+          from which the build-stage planner retains the checked initrd
+          PlanningSnapshot. This option defines no provider policy vocabulary.
+        '';
+      };
     };
 
     system.build.initrdAbilityGraph = lib.mkOption {
