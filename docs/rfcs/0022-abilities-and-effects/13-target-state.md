@@ -121,12 +121,14 @@ flags. Configured instances and requests refer to those declarations by typed
 identity instead of copying their contents.
 
 Option reference annotations are fields of the same `mkOption` declaration.
-Visibility, contribution policy, activation behavior, deprecation and
-replacement information, and declaration provenance are projected with the
-option's path, type, description, default, and example. Publication signs that
-complete projection. Documentation and registry clients consume the signed
-projection directly; they do not re-evaluate the module or join it with a
-separate documentation manifest.
+Visibility, contribution policy, deprecation and replacement information, and
+declaration provenance are projected with the option's path, type,
+description, default, and example. Publication signs that complete projection.
+Documentation and registry clients consume the signed projection directly;
+they do not re-evaluate the module or join it with a separate documentation
+manifest. Operational impact is derived from the final desired-resource diff,
+selected methods, and effect plan. An option declaration does not repeat unit
+names or predict backend actions in a documentation-only activation field.
 
 Bindings refer to requests and implementations; desired resources refer to
 the selected definitions. Module type checking rejects unknown fields,
