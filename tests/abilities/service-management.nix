@@ -165,6 +165,11 @@
         lifecycle = minimalService.lifecycle // {restart_token = "operator-requested-restart";};
       };
   };
+  expandedHelper = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration = minimalService // {service = "helper";};
+  };
   observeOnlyKernelModules = serviceManagement.forProducer {
     consumerInstance = "consumer";
     key = "kernel-modules";
@@ -746,6 +751,61 @@
       }
     ];
   };
+  multiServiceFixedPoint = lib.evalModules {
+    specialArgs = {inherit lib;};
+    modules = [
+      ../../modules/abilities/default.nix
+      {
+        aos.abilities.environment = {
+          authority = "deployment";
+          key = "multi-service-test";
+          stage = "host";
+        };
+      }
+    ];
+    packageModules = [
+      {
+        name = "multi-service";
+        module = {
+          config.aos.abilities = lib.mkMerge [
+            {instances.consumer = {};}
+            expanded
+            expandedHelper
+          ];
+        };
+      }
+    ];
+  };
+  sharedGuarantee = {
+    name = "aos.guarantee.test";
+    version = 1;
+    descriptor = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+  };
+  sharedRequirement = {
+    description = "Exercises canonical merging of repeated service requirements.";
+    interface = "aos.test.shared-service";
+    abi = 1;
+    descriptor = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    methods = ["observe"];
+    guarantees = [sharedGuarantee];
+    strength = "required";
+    fallback = null;
+  };
+  multiServiceGuaranteeFixedPoint = lib.evalModules {
+    specialArgs = {inherit lib;};
+    modules = [../../modules/abilities/default.nix];
+    packageModules = [
+      {
+        name = "multi-service-guarantee";
+        module = {
+          config.aos.abilities = lib.mkMerge [
+            {requirementTemplates.shared = sharedRequirement;}
+            {requirementTemplates.shared = sharedRequirement;}
+          ];
+        };
+      }
+    ];
+  };
   declaredAliases = builtins.attrNames serviceManagement.declarations;
 in
   assert succeedsAs serviceTypes.serviceDeclaration minimalService;
@@ -858,6 +918,12 @@ in
   assert expanded.requirementTemplates.service-lifecycle.methods == ["observe" "restart" "start" "stop"];
   assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
   assert expandedWithRestartToken.requests.main-lifecycle.parameters.restart_token == "operator-requested-restart";
+  assert multiServiceFixedPoint.config.aos.abilities.requirementTemplates."multi-service:service-lifecycle".methods
+  == ["observe" "restart" "start" "stop"];
+  assert builtins.attrNames multiServiceFixedPoint.config.aos.abilities.requests
+  == ["multi-service:helper-lifecycle" "multi-service:main-lifecycle"];
+  assert multiServiceGuaranteeFixedPoint.config.aos.abilities.requirementTemplates."multi-service-guarantee:shared".guarantees
+  == [sharedGuarantee];
   assert observeOnlyKernelModules.requirementTemplates.kernel-modules.methods == ["observe"];
   assert declarationOnlyKernelModules.requirementTemplates.kernel-modules
   == observeOnlyKernelModules.requirementTemplates.kernel-modules;
