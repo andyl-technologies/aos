@@ -979,11 +979,11 @@ mod tests {
     use aos_ability_model::document::{DesiredInstance, PackageSubject};
     use aos_ability_model::identity::compare_request_ids;
     use aos_ability_model::{
-        AbilityActivationMode, AbilityValue, AccessMode, AggregateId, BindingRequest,
-        ContributionPermission, ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey,
-        ModuleLocator, PackageImplementation, ProviderAdoptionAuthorization,
-        ProviderImplementation, ProviderImplementationReference, ProviderStateFormat, RelativePath,
-        RequiredFeature, ResourcePermission, ScopePath, TeardownBindingAuthorization, ValueSchema,
+        AbilityValue, AccessMode, AggregateId, BindingRequest, ContributionPermission,
+        ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey, ModuleLocator,
+        PackageImplementation, ProviderAdoptionAuthorization, ProviderImplementation,
+        ProviderImplementationReference, ProviderStateFormat, RelativePath, RequiredFeature,
+        ResourcePermission, ScopePath, TeardownBindingAuthorization, ValueSchema,
     };
 
     use super::*;
@@ -1687,7 +1687,6 @@ mod tests {
                 RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)
                     .expect("state-format feature"),
             ],
-            activation_mode: AbilityActivationMode::StructuredEffects,
             package: PackageSubject {
                 name: key("multi-export-provider"),
                 version: "1.0.0".to_string(),

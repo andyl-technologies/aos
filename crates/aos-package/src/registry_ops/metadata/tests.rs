@@ -1,8 +1,8 @@
 //! Tests for package catalog TOML construction and platform metadata recording.
 
 use super::{
-    build_package_toml, build_package_toml_with_documentation, record_ability_output,
-    record_config_module_platform_fields, record_named_output,
+    build_package_toml, build_package_toml_with_documentation,
+    record_config_module_platform_fields, record_named_output, record_package_contract,
 };
 use crate::registry_ops::attestation::{package_nar_root_digest, publish_config_attestation_meta};
 use crate::registry_ops::mac::{PublishExposeManifest, PublishMacProfileManifest};
@@ -13,14 +13,13 @@ use crate::registry_ops::test_support::{
     rewrite_test_image_parent, verity_expose_manifest, write_direct_image_output,
 };
 use crate::types::{
-    AbilityPackageMeta, AttestationMeta, DocumentationArtifactMeta, ExposeMeta,
-    FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
-    FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
-    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
-    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
-    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RecoveryUkiEntry, SbatEntry,
-    UkiSlot,
+    AttestationMeta, DocumentationArtifactMeta, ExposeMeta, FEATURE_ABILITIES_V1,
+    FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
+    FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
+    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
+    PackageContractMeta, PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
 };
 use std::fs;
 use std::path::Path;
@@ -128,7 +127,7 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
             ),
         ])),
     );
-    let ability = AbilityPackageMeta {
+    let ability = PackageContractMeta {
         store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities".to_string(),
         nar_hash: format!("sha256:{}", "2".repeat(64)),
         nar_size: 512,
@@ -141,7 +140,7 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
     };
 
-    let recorded = record_ability_output(
+    let recorded = record_package_contract(
         &toml::to_string(&document).expect("serialize initial metadata"),
         "demo",
         "1",
@@ -171,7 +170,7 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
 
     let mut structured_ability = ability;
     structured_ability.activation_mode = "structured-effects".to_string();
-    let structured_recorded = record_ability_output(
+    let structured_recorded = record_package_contract(
         &recorded,
         "demo",
         "1",

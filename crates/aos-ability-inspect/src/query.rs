@@ -610,7 +610,7 @@ fn query_limits() -> JsonLimits {
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::{AbilityActivationMode, LocalKey};
+    use aos_ability_model::LocalKey;
     use aos_contract::Sha256Digest;
 
     use super::*;
@@ -775,7 +775,6 @@ mod tests {
             name: LocalKey::new("cursor-package")
                 .unwrap_or_else(|error| panic!("static package key is invalid: {error}")),
             version: "1.0.0".to_string(),
-            activation_mode: AbilityActivationMode::StructuredEffects,
         }
     }
 }

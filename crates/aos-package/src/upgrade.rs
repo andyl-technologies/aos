@@ -32,8 +32,7 @@ use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation,
-    validate_ordinary_profile_ability_state, write_meta,
+    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
 use super::registry::{RegistrySet, store_path_hash};
 use super::remove::retained_installed_indexes;
@@ -109,8 +108,6 @@ pub async fn run(
     printer.step(1, 7, "Loading installed packages...");
     let inspect_profile = Profile::open_readonly(config.scope);
     let installed = list_meta(&inspect_profile)?;
-    validate_ordinary_profile_ability_state(&installed)
-        .context("admitting retained package state for upgrade")?;
 
     // Step 2: Load registries from cache.
     printer.step(2, 7, "Loading registries...");
@@ -340,14 +337,15 @@ pub async fn run(
         printer.info("All packages already in store, skipping download.");
     }
 
-    let _verified_ability_packages = super::install::verify_ability_packages_from_cache_with_store(
-        config,
-        upgrade_closures
-            .iter()
-            .flat_map(|(registry_name, closure)| {
-                closure.iter().map(|meta| (registry_name.as_str(), meta))
-            }),
-    )?;
+    let _verified_package_contracts =
+        super::install::verify_package_contracts_from_cache_with_store(
+            config,
+            upgrade_closures
+                .iter()
+                .flat_map(|(registry_name, closure)| {
+                    closure.iter().map(|meta| (registry_name.as_str(), meta))
+                }),
+        )?;
 
     // Step 8: Create new generation.
     printer.step(6, 7, "Updating profile...");
@@ -420,7 +418,7 @@ pub async fn run(
                     expose_artifact: meta.expose_artifact.clone(),
                     config_module: meta.config_module.clone(),
                     documentation: meta.documentation.clone(),
-                    ability: meta.ability.clone(),
+                    contract: meta.contract.clone(),
                     permissions: meta.permissions.clone(),
                     bpf_lsm: meta.bpf_lsm.clone(),
                     attestation: meta.attestation.clone(),
@@ -645,12 +643,10 @@ fn obsolete_installed_hashes(
         if let Some(documentation) = &apm.documentation {
             hashes.insert(store_path_hash(&documentation.store_path).to_string());
         }
-        if let Some(ability) = &apm.ability {
-            hashes.insert(store_path_hash(&ability.store_path).to_string());
+        if let Some(ability) = &apm.contract {
+            hashes.insert(store_path_hash(&ability.document.store_path).to_string());
             hashes.extend(
-                ability
-                    .artifacts
-                    .iter()
+                crate::package_contract::retained_artifacts(ability)
                     .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
             );
         }
@@ -949,17 +945,17 @@ fn collect_closure_secondary_artifacts(
                     true,
                 )?;
             }
-            if let Some(ability) = &package.ability {
+            if let Some(ability) = &package.contract {
                 push_secondary_artifact(
                     artifacts,
                     &mut seen,
                     registry_name,
-                    &ability.store_path,
-                    &ability.nar_hash,
+                    &ability.document.store_path,
+                    &ability.document.nar_hash,
                     true,
                     false,
                 )?;
-                for artifact in &ability.artifacts {
+                for artifact in crate::package_contract::retained_artifacts(ability) {
                     push_secondary_artifact(
                         artifacts,
                         &mut seen,
@@ -1205,7 +1201,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
-                ability: None,
+                contract: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),
@@ -1238,7 +1234,7 @@ mod tests {
             expose_artifact: None,
             config_module: None,
             documentation: None,
-            ability: None,
+            contract: None,
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: Default::default(),
@@ -1831,7 +1827,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
-                    ability: None,
+                    contract: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1867,7 +1863,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
-                    ability: None,
+                    contract: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1921,7 +1917,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
-                    ability: None,
+                    contract: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -1957,7 +1953,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
-                    ability: None,
+                    contract: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -2012,7 +2008,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
-                    ability: None,
+                    contract: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),
@@ -2048,7 +2044,7 @@ nar_size = 42
                     expose_artifact: None,
                     config_module: None,
                     documentation: None,
-                    ability: None,
+                    contract: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
                     attestation: Default::default(),

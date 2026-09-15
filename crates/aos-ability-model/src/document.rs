@@ -350,15 +350,8 @@ impl InterfaceDocument {
     }
 }
 
-/// Selects whether a signed package may author structured activation effects.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AbilityActivationMode {
-    /// Publishes interfaces and pure planning contracts without resource effects.
-    ContractsOnly,
-    /// Authorizes declared resource ownership and structured effect construction.
-    StructuredEffects,
-}
+/// Names the package-reader feature for package-owned effect implementations.
+pub const FEATURE_ABILITY_EFFECTS_V1: &str = "ability-effects-v1";
 
 /// Wraps one authenticated package ability manifest.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -368,8 +361,6 @@ pub struct PackageDocument {
     pub schema: String,
     /// Names required semantics in canonical order.
     pub required_features: Vec<RequiredFeature>,
-    /// Selects the signed package activation and effect-authoring capability.
-    pub activation_mode: AbilityActivationMode,
     /// Identifies the package subject without referring to its enclosing signature.
     pub package: PackageSubject,
     /// Lists retained companion artifacts in canonical digest order.
@@ -1128,7 +1119,6 @@ impl VersionedDocument for PackageDocument {
         struct SemanticPackage<'a> {
             schema: &'a str,
             required_features: &'a [RequiredFeature],
-            activation_mode: AbilityActivationMode,
             package: SemanticPackageSubject<'a>,
             artifacts: Vec<crate::ArtifactIdentity>,
             interfaces: &'a BTreeMap<LocalKey, InterfaceKey>,
@@ -1275,7 +1265,6 @@ impl VersionedDocument for PackageDocument {
         let semantic = SemanticPackage {
             schema: &self.schema,
             required_features: &self.required_features,
-            activation_mode: self.activation_mode,
             package: SemanticPackageSubject {
                 name: &self.package.name,
                 version: &self.package.version,

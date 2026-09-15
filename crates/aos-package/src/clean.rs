@@ -262,7 +262,8 @@ where
                 continue;
             }
             let generation_path = profile.join(format!("gen-{}", generation.number));
-            if crate::config_eval::transaction_store::generation_must_be_retained(&generation_path)? {
+            if crate::config_eval::transaction_store::generation_must_be_retained(&generation_path)?
+            {
                 continue;
             }
             removed.push(generation.number);

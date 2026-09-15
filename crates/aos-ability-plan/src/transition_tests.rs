@@ -1804,7 +1804,6 @@ fn pure_service_package(
     PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: key("upgrade-service"),
             version: version.to_string(),
@@ -1848,7 +1847,6 @@ fn terminal_package(
     PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: key("systemd-terminal"),
             version: "1.0.0".to_string(),
@@ -2604,7 +2602,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let pure_package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: key("pipeline-pure"),
             version: "1.0.0".to_string(),
@@ -2662,7 +2659,6 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
     let terminal_package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: Vec::new(),
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: key("pipeline-terminal"),
             version: "1.0.0".to_string(),

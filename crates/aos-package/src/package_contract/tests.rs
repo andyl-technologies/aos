@@ -9,26 +9,25 @@ use std::path::PathBuf;
 use anyhow::Result;
 use aos_ability_model::document::{PackageSubject, PlatformIdentity};
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactClosureMemberInput, ArtifactReference, ExportDeclaration,
-    InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, ModuleLocator,
-    PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation, ProviderImplementation,
-    ProviderStateFormat, RelativePath, RequiredFeature, VersionedDocument,
-    artifact_closure_identity, encode_canonical,
+    ArtifactClosureMemberInput, ArtifactReference, ExportDeclaration, InterfaceDocument,
+    InterfaceKey, InterfaceName, LocalKey, ModuleLocator, PROVIDER_STATE_FORMAT_V1,
+    PackageDocument, PackageImplementation, ProviderImplementation, ProviderStateFormat,
+    RelativePath, RequiredFeature, VersionedDocument, artifact_closure_identity, encode_canonical,
 };
 use aos_contract::Sha256Digest;
 use base64::Engine as _;
 use tempfile::TempDir;
 
 use super::{
-    AbilityPackageCoordinate, AbilityRetentionVerifier, VerifiedAbilityPackage,
-    VerifiedAbilityPackageSet, VerifiedAbilityRetentionManifest, ability_provenance_statement,
-    collect_distinct_artifacts, validate_ability_package_meta, validate_store_root,
-    verify_ability_package,
+    PackageContractCoordinate, PackageContractRetentionVerifier, VerifiedPackageContract,
+    VerifiedPackageContractRetentionManifest, VerifiedPackageContractSet,
+    ability_provenance_statement, collect_distinct_artifacts, validate_package_contract_meta,
+    validate_store_root, verify_package_contract,
 };
 use crate::provenance::{TrustedProvenanceKey, sign_statement_dsse_jsonl};
 use crate::types::{
-    AbilityArtifactRetentionMeta, AbilityClosureMemberMeta, AbilityPackageMeta, AttestationMeta,
-    PackageMeta, PermissionsMeta,
+    AttestationMeta, PackageContractArtifactMeta, PackageContractClosureMemberMeta,
+    PackageContractMeta, PackageMeta, PermissionsMeta,
 };
 
 const STORE_ROOT: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-ability-artifact";
@@ -90,7 +89,7 @@ fn production_nix_companion_round_trips_through_native_contracts() {
 
     let package_digest = package.content_digest().unwrap();
     let activation_mode = package.activation_mode;
-    let sealed = VerifiedAbilityPackage {
+    let sealed = VerifiedPackageContract {
         artifacts: collect_distinct_artifacts(&package).unwrap(),
         package,
         manifest_sha256: Sha256Digest::of_bytes(&manifest),
@@ -99,15 +98,15 @@ fn production_nix_companion_round_trips_through_native_contracts() {
         package_version: "1.0.0".to_string(),
         platform: "x86_64-linux".to_string(),
         activation_mode,
-        retention: VerifiedAbilityRetentionManifest {
-            companion_store_path: companion,
-            companion_nar_hash: digest('8'),
-            companion_nar_size: 1,
-            companion_references: Vec::new(),
+        retention: VerifiedPackageContractRetentionManifest {
+            document_store_path: companion,
+            document_nar_hash: digest('8'),
+            document_nar_size: 1,
+            document_references: Vec::new(),
             artifacts: Vec::new(),
         },
     };
-    let set = VerifiedAbilityPackageSet::from_verified(vec![sealed]).unwrap();
+    let set = VerifiedPackageContractSet::from_verified(vec![sealed]).unwrap();
     let catalog = set.planning_catalog().unwrap();
     assert_eq!(catalog.packages().len(), 1);
     let _composer = catalog.composer();
@@ -141,10 +140,9 @@ fn older_package_reader_rejects_encoded_state_format_semantics() {
 #[test]
 fn package_decoder_rejects_an_unknown_future_state_format_feature() {
     let mut package = stateful_package();
-    package.required_features.push(
-        RequiredFeature::new("provider-state-format-future").expect("valid future feature name"),
-    );
-    package.required_features.sort();
+    package
+        .required_features
+        .push(RequiredFeature::new("provider-state-format-v2").expect("valid future feature name"));
     let manifest = encode_canonical(&package).unwrap();
 
     let error = super::decode_package_manifest(&manifest)
@@ -183,7 +181,7 @@ fn artifact_collection_includes_module_and_state_format_semantic_identities() {
 }
 
 #[test]
-fn stateless_package_omits_state_format_and_round_trips_exactly() {
+fn legacy_package_omits_state_format_and_round_trips_exactly() {
     let mut package = stateful_package();
     package
         .required_features
@@ -202,7 +200,7 @@ fn stateless_package_omits_state_format_and_round_trips_exactly() {
     );
 
     let decoded = super::decode_package_manifest(&manifest)
-        .expect("the package reader accepts a stateless provider");
+        .expect("the package reader retains the legacy absent-field contract");
     assert_eq!(decoded.implementation.providers[0].state_format, None);
     assert_eq!(encode_canonical(&decoded).unwrap(), manifest);
 }
@@ -245,7 +243,6 @@ fn stateful_package() -> PackageDocument {
             RequiredFeature::new("abilities-v1").unwrap(),
             RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).unwrap(),
         ],
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: LocalKey::new("stateful-package").unwrap(),
             version: "1.0.0".to_string(),
@@ -287,7 +284,7 @@ struct TestFixture {
 
 impl TestFixture {
     fn new() -> Self {
-        let member = AbilityClosureMemberMeta {
+        let member = PackageContractClosureMemberMeta {
             store_path: STORE_ROOT.to_string(),
             nar_hash: digest('2').to_string(),
             nar_size: 128,
@@ -312,7 +309,6 @@ impl TestFixture {
         let package = PackageDocument {
             schema: PackageDocument::SCHEMA.to_string(),
             required_features: vec![RequiredFeature::new("abilities-v1").unwrap()],
-            activation_mode: AbilityActivationMode::ContractsOnly,
             package: PackageSubject {
                 name: aos_ability_model::LocalKey::new("demo").unwrap(),
                 version: "1.0.0".to_string(),
@@ -337,7 +333,7 @@ impl TestFixture {
             qualification: aos_ability_model::PackageQualification::default(),
         };
         let manifest_bytes = encode_canonical(&package).unwrap();
-        let ability = AbilityPackageMeta {
+        let ability = PackageContractMeta {
             store_path: COMPANION_ROOT.to_string(),
             nar_hash: digest('3').to_string(),
             nar_size: 256,
@@ -346,7 +342,7 @@ impl TestFixture {
             manifest_size: manifest_bytes.len() as u64,
             package_digest: package.content_digest().unwrap().to_string(),
             activation_mode: "contracts-only".to_string(),
-            artifacts: vec![AbilityArtifactRetentionMeta {
+            artifacts: vec![PackageContractArtifactMeta {
                 content: artifact.content.to_string(),
                 store_path: artifact.store_path.clone(),
                 nar_hash: artifact.nar_hash.to_string(),
@@ -354,7 +350,7 @@ impl TestFixture {
                 closure_digest: closure_digest.to_string(),
                 closure,
             }],
-            provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
+            provenance: "provenance/demo.contract.intoto.jsonl".to_string(),
         };
         let package_meta = PackageMeta {
             name: "demo".to_string(),
@@ -380,7 +376,7 @@ impl TestFixture {
             expose_artifact: None,
             config_module: None,
             documentation: None,
-            ability: Some(ability),
+            contract: Some(ability),
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta::default(),
@@ -395,7 +391,6 @@ impl TestFixture {
             key_id: KEY_ID.to_string(),
             key: keypair.trust_key_line(REGISTRY),
             retired_before_sequence: None,
-            package_contract_retired_before_sequence: None,
         }];
         let mut fixture = Self {
             _key_dir: key_dir,
@@ -410,8 +405,8 @@ impl TestFixture {
     }
 
     fn resign(&mut self) {
-        let ability = self.package_meta.ability.as_ref().unwrap();
-        let coordinate = AbilityPackageCoordinate {
+        let ability = self.package_meta.contract.as_ref().unwrap();
+        let coordinate = PackageContractCoordinate {
             name: &self.package_meta.name,
             version: &self.package_meta.version,
             platform: &self.package_meta.platform,
@@ -430,8 +425,11 @@ struct AcceptRetention {
     calls: Cell<u32>,
 }
 
-impl AbilityRetentionVerifier for AcceptRetention {
-    fn verify_retention(&self, _retention: &VerifiedAbilityRetentionManifest) -> Result<()> {
+impl PackageContractRetentionVerifier for AcceptRetention {
+    fn verify_retention(
+        &self,
+        _retention: &VerifiedPackageContractRetentionManifest,
+    ) -> Result<()> {
         self.calls.set(self.calls.get() + 1);
         Ok(())
     }
@@ -439,8 +437,11 @@ impl AbilityRetentionVerifier for AcceptRetention {
 
 struct RejectRetention(&'static str);
 
-impl AbilityRetentionVerifier for RejectRetention {
-    fn verify_retention(&self, _retention: &VerifiedAbilityRetentionManifest) -> Result<()> {
+impl PackageContractRetentionVerifier for RejectRetention {
+    fn verify_retention(
+        &self,
+        _retention: &VerifiedPackageContractRetentionManifest,
+    ) -> Result<()> {
         Err(anyhow::anyhow!(self.0))
     }
 }
@@ -454,7 +455,7 @@ fn signed_package_constructs_opaque_verified_value_after_retention() {
     let fixture = TestFixture::new();
     let retention = AcceptRetention::default();
 
-    let verified = verify_ability_package(
+    let verified = verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -473,7 +474,7 @@ fn signed_package_constructs_opaque_verified_value_after_retention() {
 #[test]
 fn verified_package_set_deduplicates_equal_seals_and_checks_plan_inputs() {
     let fixture = TestFixture::new();
-    let verified = verify_ability_package(
+    let verified = verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -482,7 +483,7 @@ fn verified_package_set_deduplicates_equal_seals_and_checks_plan_inputs() {
         &AcceptRetention::default(),
     )
     .unwrap();
-    let packages = VerifiedAbilityPackageSet::from_verified(vec![verified.clone(), verified])
+    let packages = VerifiedPackageContractSet::from_verified(vec![verified.clone(), verified])
         .expect("equal seals must coalesce");
 
     assert_eq!(packages.iter().len(), 1);
@@ -518,7 +519,7 @@ fn verified_package_set_deduplicates_equal_seals_and_checks_plan_inputs() {
 #[test]
 fn verified_package_set_rejects_conflicting_coordinate_seals() {
     let fixture = TestFixture::new();
-    let verified = verify_ability_package(
+    let verified = verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -530,7 +531,7 @@ fn verified_package_set_rejects_conflicting_coordinate_seals() {
     let mut conflicting = verified.clone();
     conflicting.package_digest = digest('9');
 
-    let error = VerifiedAbilityPackageSet::from_verified(vec![verified, conflicting])
+    let error = VerifiedPackageContractSet::from_verified(vec![verified, conflicting])
         .expect_err("one coordinate must have one authenticated commitment");
 
     assert!(
@@ -543,7 +544,7 @@ fn verified_package_set_rejects_conflicting_coordinate_seals() {
 #[test]
 fn verified_package_set_rechecks_every_live_retention_catalog() {
     let fixture = TestFixture::new();
-    let verified = verify_ability_package(
+    let verified = verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -552,7 +553,7 @@ fn verified_package_set_rechecks_every_live_retention_catalog() {
         &AcceptRetention::default(),
     )
     .unwrap();
-    let packages = VerifiedAbilityPackageSet::from_verified(vec![verified]).unwrap();
+    let packages = VerifiedPackageContractSet::from_verified(vec![verified]).unwrap();
     let retention = AcceptRetention::default();
 
     packages.verify_live_retention(&retention).unwrap();
@@ -563,7 +564,7 @@ fn verified_package_set_rechecks_every_live_retention_catalog() {
 #[test]
 fn verified_package_set_rejects_path_derived_artifact_claims() {
     let fixture = TestFixture::new();
-    let verified = verify_ability_package(
+    let verified = verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -578,7 +579,7 @@ fn verified_package_set_rejects_path_derived_artifact_claims() {
         .expect("fixture retains an artifact")
         .clone();
     claimed.store_path = format!("{}-untrusted", claimed.store_path);
-    let packages = VerifiedAbilityPackageSet::from_verified(vec![verified])
+    let packages = VerifiedPackageContractSet::from_verified(vec![verified])
         .expect("verified package set is valid");
 
     let error = packages
@@ -597,7 +598,7 @@ fn signed_package_accepts_equivalent_primary_sri_nar_identity() {
     );
     fixture.resign();
 
-    verify_ability_package(
+    verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -615,7 +616,7 @@ fn signed_package_accepts_equivalent_primary_nix_base32_nar_identity() {
         aos_core::nar::cache::normalize_sha256_nix32(&digest('2').to_string());
     fixture.resign();
 
-    verify_ability_package(
+    verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -634,8 +635,8 @@ fn signed_package_rejects_untrusted_signer() {
     let other_path = other_dir.path().join("other-builder");
     fs::write(&other_path, other_keypair.to_openssh_private_key(REGISTRY)).unwrap();
     fs::set_permissions(&other_path, fs::Permissions::from_mode(0o600)).unwrap();
-    let ability = fixture.package_meta.ability.as_ref().unwrap();
-    let coordinate = AbilityPackageCoordinate {
+    let ability = fixture.package_meta.contract.as_ref().unwrap();
+    let coordinate = PackageContractCoordinate {
         name: &fixture.package_meta.name,
         version: &fixture.package_meta.version,
         platform: &fixture.package_meta.platform,
@@ -645,7 +646,7 @@ fn signed_package_rejects_untrusted_signer() {
     let statement = ability_provenance_statement(&coordinate, ability, REGISTRY, "other").unwrap();
     fixture.provenance_jsonl = sign_statement_dsse_jsonl(&statement, "other", &other_path).unwrap();
 
-    let error = verify_ability_package(
+    let error = verify_package_contract(
         &fixture.package_meta,
         &fixture.manifest_bytes,
         &fixture.provenance_jsonl,
@@ -661,7 +662,7 @@ fn signed_package_rejects_untrusted_signer() {
 fn signed_package_rejects_coordinate_and_payload_substitution() {
     let mut wrong_platform = TestFixture::new();
     wrong_platform.package_meta.platform = "aarch64-linux".to_string();
-    let error = verify_ability_package(
+    let error = verify_package_contract(
         &wrong_platform.package_meta,
         &wrong_platform.manifest_bytes,
         &wrong_platform.provenance_jsonl,
@@ -677,7 +678,7 @@ fn signed_package_rejects_coordinate_and_payload_substitution() {
         "/nix/store/23456789abcdfghijklmnpqrsvwxyz01-other-payload".to_string();
     wrong_payload.package_meta.nar_hash = digest('4').to_string();
     wrong_payload.resign();
-    let error = verify_ability_package(
+    let error = verify_package_contract(
         &wrong_payload.package_meta,
         &wrong_payload.manifest_bytes,
         &wrong_payload.provenance_jsonl,
@@ -694,12 +695,12 @@ fn signed_package_rejects_manifest_and_artifact_tampering() {
     let mut wrong_digest = TestFixture::new();
     wrong_digest
         .package_meta
-        .ability
+        .contract
         .as_mut()
         .unwrap()
         .package_digest = digest('5').to_string();
     wrong_digest.resign();
-    let error = verify_ability_package(
+    let error = verify_package_contract(
         &wrong_digest.package_meta,
         &wrong_digest.manifest_bytes,
         &wrong_digest.provenance_jsonl,
@@ -713,13 +714,13 @@ fn signed_package_rejects_manifest_and_artifact_tampering() {
     let mut wrong_artifact = TestFixture::new();
     wrong_artifact
         .package_meta
-        .ability
+        .contract
         .as_mut()
         .unwrap()
         .artifacts[0]
         .content = digest('6').to_string();
     wrong_artifact.resign();
-    let error = verify_ability_package(
+    let error = verify_package_contract(
         &wrong_artifact.package_meta,
         &wrong_artifact.manifest_bytes,
         &wrong_artifact.provenance_jsonl,
@@ -738,7 +739,7 @@ fn signed_package_propagates_live_store_failures() {
         "ability store path is missing",
     ] {
         let fixture = TestFixture::new();
-        let error = verify_ability_package(
+        let error = verify_package_contract(
             &fixture.package_meta,
             &fixture.manifest_bytes,
             &fixture.provenance_jsonl,
@@ -754,11 +755,11 @@ fn signed_package_propagates_live_store_failures() {
 #[test]
 fn closure_mutation_invalidates_the_semantic_closure_digest() {
     let mut fixture = TestFixture::new();
-    let ability = fixture.package_meta.ability.as_mut().unwrap();
+    let ability = fixture.package_meta.contract.as_mut().unwrap();
     ability.artifacts[0].closure[0].references =
         vec!["3456789abcdfghijklmnpqrsvwxyz012".to_string()];
 
-    let error = validate_ability_package_meta(ability).unwrap_err();
+    let error = validate_package_contract_meta(ability).unwrap_err();
     assert!(format!("{error:#}").contains("closure digest does not match"));
 }
 

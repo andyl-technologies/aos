@@ -29,7 +29,7 @@ mod trace;
 
 use evaluation::{
     EvaluationRecorder, PureProviderEvaluationInputs, evaluate_pure_providers,
-    validate_desired_activation_modes, validate_desired_outputs, validate_enabled_providers,
+    validate_desired_outputs, validate_enabled_providers,
 };
 use merge::merge_fragments;
 use trace::TraceBudget;
@@ -470,7 +470,6 @@ impl<'a> RecursiveComposer<'a> {
                     &packages,
                     &package_index,
                 )?;
-                validate_desired_activation_modes(&desired_state, &packages, &package_index)?;
 
                 let cursor = cursors.get(round as usize).copied().unwrap_or_default();
                 let draft = self.resolver.resolve_draft_at(

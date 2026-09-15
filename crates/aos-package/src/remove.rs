@@ -24,10 +24,7 @@ use super::exposed_units::{
 };
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
-use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation,
-    validate_ordinary_profile_ability_state,
-};
+use super::profile::meta::{delete_meta, list_meta, snapshot_profile_meta_to_generation};
 use super::registry::store_path_hash;
 use super::store::closure_paths;
 use super::types::InstalledMeta;
@@ -111,8 +108,6 @@ async fn run_inner(
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
     let installed = list_meta(&inspect_profile)?;
-    validate_ordinary_profile_ability_state(&installed)
-        .context("admitting retained package state for removal")?;
 
     // Step 2: Find installed packages matching the requested names.
     let to_remove = select_installed_for_removal(&installed, packages)?;
@@ -231,9 +226,6 @@ pub async fn run_autoremove(
         .current_generation()?
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
     let installed = list_meta(&inspect_profile)?;
-    validate_ordinary_profile_ability_state(&installed)
-        .context("admitting retained package state for autoremove")?;
-
     // Step 2: Find orphaned packages.
     let empty_exclude: HashSet<String> = HashSet::new();
     let orphans = find_orphans(&installed, &empty_exclude).await?;
@@ -592,12 +584,10 @@ fn root_hashes_for_installed(installed: &[InstalledMeta]) -> HashSet<String> {
             if let Some(documentation) = &apm.documentation {
                 hashes.insert(store_path_hash(&documentation.store_path).to_string());
             }
-            if let Some(ability) = &apm.ability {
-                hashes.insert(store_path_hash(&ability.store_path).to_string());
+            if let Some(ability) = &apm.contract {
+                hashes.insert(store_path_hash(&ability.document.store_path).to_string());
                 hashes.extend(
-                    ability
-                        .artifacts
-                        .iter()
+                    crate::package_contract::retained_artifacts(ability)
                         .map(|artifact| store_path_hash(&artifact.store_path).to_string()),
                 );
             }
@@ -735,7 +725,7 @@ mod tests {
                 expose_artifact: None,
                 config_module: None,
                 documentation: None,
-                ability: None,
+                contract: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
                 attestation: Default::default(),

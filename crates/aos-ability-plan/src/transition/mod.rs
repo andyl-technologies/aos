@@ -404,7 +404,6 @@ impl<'a> TransitionPlanner<'a> {
                 &group.provider,
                 &operation_scope,
                 group.reference.descriptor,
-                package.activation_mode,
                 &outgoing,
                 &fragment,
                 self.limits,

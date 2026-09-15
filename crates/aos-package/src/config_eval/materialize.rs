@@ -57,6 +57,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use aos_ability_model::VersionedDocument as _;
 use base64::Engine as _;
 use rustix::fd::OwnedFd;
 use rustix::fs::{AtFlags, Mode, OFlags, fchmod, mkdirat, openat, symlinkat, unlinkat};
@@ -68,7 +69,7 @@ use super::runtime::{RuntimePackageOrigin, RuntimePackagePin};
 mod ability_activation;
 
 pub use ability_activation::{
-    AbilityActivationInput, AbilityPackageCoordinate, PinnedAbilitySidecar,
+    AbilityActivationInput, PackageContractCoordinate, PinnedAbilitySidecar,
 };
 
 /// The runtime directory a materialized job script resolves to once the
@@ -192,17 +193,6 @@ impl ConfigManifest {
                 }
             }
             _ => unreachable!(),
-        }
-        if self.package_outputs.values().any(|package| {
-            package
-                .ability
-                .as_ref()
-                .is_some_and(|ability| ability.activation_mode == "structured-effects")
-        }) && (self.schema != Self::SCHEMA_V2 || self.inputs.ability_activation.is_none())
-        {
-            bail!(
-                "structured-effects package output requires config-manifest/v2 ability_activation"
-            );
         }
         if self.module_abi != self.inputs.base_lib.module_abi {
             bail!("manifest module_abi does not match inputs.base_lib.module_abi");
@@ -479,21 +469,6 @@ impl ConfigManifest {
                 bail!("packageOutputs.{package}.store_path is not owned by that package");
             }
             validate_runtime_pin(package, pin, self.inputs.ability_activation.is_some())?;
-            if let Some(artifact) = &pin.expose_artifact {
-                if !self.store_paths.contains(&artifact.store_path) {
-                    bail!(
-                        "packageOutputs.{package}.expose_artifact.store_path is absent from manifest storePaths"
-                    );
-                }
-                if !matches!(
-                    self.ownership.store_paths.get(&artifact.store_path),
-                    Some(owner) if owner == package || owner == "@base"
-                ) {
-                    bail!(
-                        "packageOutputs.{package}.expose_artifact.store_path has invalid ownership"
-                    );
-                }
-            }
         }
         for (package, deps) in &self.graph.edges {
             if !package_set.contains(package.as_str()) {
@@ -591,14 +566,23 @@ pub(crate) fn package_activation_revision(
     const DOMAIN: &str = "aos.package-activation-revision/v1";
 
     let ability = pin
-        .ability
+        .contract
         .as_ref()
         .context("structured package has no ability metadata")?;
+    let coordinate = crate::package_contract::PackageContractCoordinate {
+        name: package,
+        version: &pin.version,
+        platform: &pin.platform,
+        store_path: &pin.store_path,
+        nar_hash: &pin.nar_hash,
+    };
+    let (document, _) =
+        crate::package_contract::resolve_pinned_package_document(coordinate, ability)?;
     let material = serde_json::json!({
         "schema": DOMAIN,
         "package": package,
         "runtime_nar_hash": pin.nar_hash,
-        "ability_package_digest": ability.package_digest,
+        "package_contract_digest": document.content_digest()?,
     });
 
     Ok(aos_contract::Sha256Digest::of_canonical(DOMAIN, &material)?.to_string())
@@ -618,19 +602,9 @@ fn validate_runtime_pin(
             bail!("packageOutputs.{package} has a noncanonical or empty runtime NAR identity");
         }
     }
-    match (&pin.expose, &pin.expose_artifact) {
-        (Some(expose), Some(artifact)) => {
-            crate::types::validate_expose_meta_for_package(package, expose)
-                .with_context(|| format!("validating packageOutputs.{package}.expose"))?;
-            crate::types::validate_expose_artifact_meta(artifact)
-                .with_context(|| format!("validating packageOutputs.{package}.expose_artifact"))?;
-        }
-        (None, None) => {}
-        _ => bail!("packageOutputs.{package} must carry expose metadata and its artifact together"),
-    }
-    if let Some(ability) = &pin.ability {
-        crate::ability_package::validate_ability_package_meta(ability)
-            .with_context(|| format!("validating packageOutputs.{package}.ability"))?;
+    if let Some(ability) = &pin.contract {
+        crate::package_contract::validate_package_contract_meta(ability)
+            .with_context(|| format!("validating packageOutputs.{package}.contract"))?;
     }
     let root_hash = pin
         .store_path
@@ -695,33 +669,6 @@ fn validate_runtime_pin(
     }
     if (require_exact_runtime_nar || carries_runtime_nar) && !includes_exact_root_nar {
         bail!("packageOutputs.{package}.closure does not bless its selected runtime output NAR");
-    }
-    if let Some(artifact) = &pin.expose_artifact {
-        let artifact_hash = crate::registry::store_path_hash(&artifact.store_path);
-        let Some(member) = pin
-            .closure
-            .iter()
-            .find(|member| member.store_path_hash == artifact_hash)
-        else {
-            bail!("packageOutputs.{package}.closure omits its expose artifact root");
-        };
-        if member.store_path.as_deref() != Some(artifact.store_path.as_str()) {
-            bail!(
-                "packageOutputs.{package}.expose artifact root is not a named fetchable closure member"
-            );
-        }
-        let expected =
-            crate::registry::store::NarBytes::from_hash(&artifact.nar_hash, artifact.nar_size)
-                .with_context(|| {
-                    format!("validating packageOutputs.{package}.expose_artifact NAR identity")
-                })?;
-        if !member.realisations.iter().any(|realisation| {
-            realisation.nar_hash == expected.nar_hash() && realisation.nar_size == expected.size
-        }) {
-            bail!(
-                "packageOutputs.{package}.expose artifact disagrees with its authenticated closure"
-            );
-        }
     }
     Ok(())
 }
@@ -2662,7 +2609,7 @@ mod tests {
                 expose: None,
                 expose_artifact: None,
                 config_projection: None,
-                ability: Some(crate::types::AbilityPackageMeta {
+                ability: Some(crate::types::PackageContractMeta {
                     store_path: "/nix/store/22222222222222222222222222222222-structured-abilities"
                         .to_string(),
                     nar_hash: format!("sha256:{}", "0".repeat(52)),
@@ -2673,7 +2620,7 @@ mod tests {
                     package_digest: format!("sha256:{}", "b".repeat(64)),
                     activation_mode: "structured-effects".to_string(),
                     artifacts: Vec::new(),
-                    provenance: "provenance/structured.ability.intoto.jsonl".to_string(),
+                    provenance: "provenance/structured.contract.intoto.jsonl".to_string(),
                 }),
                 legacy_config: None,
             },

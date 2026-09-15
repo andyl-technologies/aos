@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::PackageSubject;
 use aos_ability_model::{
-    AbilityActivationMode, AbilityValue, AggregationContract, AggregationScope, BindingId,
-    DeploymentObligation, ExportDeclaration, InstanceId, LocalKey, ModuleLocator, ObligationKind,
+    AbilityValue, AggregationContract, AggregationScope, BindingId, DeploymentObligation,
+    ExportDeclaration, InstanceId, LocalKey, ModuleLocator, ObligationKind,
     PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation, ProviderImplementation,
     ProviderImplementationReference, ProviderStateFormat, RelativePath, RequiredFeature,
     ResourceLifetime, TeardownBindingAuthorization, TransitionAuthorizationDocument,
@@ -426,7 +426,6 @@ fn build_verified_planning_fixture(
         } else {
             Vec::new()
         },
-        activation_mode: AbilityActivationMode::StructuredEffects,
         package: PackageSubject {
             name: key("planning-provider"),
             version: "1.0.0".to_string(),

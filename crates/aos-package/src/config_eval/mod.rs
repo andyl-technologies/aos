@@ -818,7 +818,7 @@ fn replay_candidate_ability_plan(
         })
         .collect::<Result<Vec<_>>>()?;
     let catalog =
-        crate::ability_package::VerifiedAbilityPlanningCatalog::from_authenticated_documents(
+        crate::package_contract::VerifiedPackagePlanningCatalog::from_authenticated_documents(
             documents,
         )?;
     let mut evaluator = native_activation::production_evaluator()?;
@@ -1232,13 +1232,30 @@ fn enrich_ability_activation(
     runtime: &runtime::RuntimeResolution,
     fixed_point: &ability_rounds::AbilityFixedPointProjection,
 ) -> Result<Option<serde_json::Value>> {
-    let structured_packages = runtime
-        .packages
-        .values()
-        .filter_map(|package| package.ability.as_ref())
-        .any(|ability| ability.activation_mode == "structured-effects");
-    if structured_packages && input.is_none() {
-        anyhow::bail!("structured-effects package selection requires an ability_activation input");
+    let requires_effect_activation =
+        runtime
+            .packages
+            .iter()
+            .try_fold(false, |required, (name, package)| -> Result<bool> {
+                let Some(contract) = &package.contract else {
+                    return Ok(required);
+                };
+                let coordinate = crate::package_contract::PackageContractCoordinate {
+                    name,
+                    version: &package.version,
+                    platform: &package.platform,
+                    store_path: &package.store_path,
+                    nar_hash: &package.nar_hash,
+                };
+                let (document, _) =
+                    crate::package_contract::resolve_pinned_package_document(coordinate, contract)?;
+                Ok(required
+                    || document.required_features.iter().any(|feature| {
+                        feature.as_str() == aos_ability_model::FEATURE_ABILITY_EFFECTS_V1
+                    }))
+            })?;
+    if requires_effect_activation && input.is_none() {
+        anyhow::bail!("effect-bearing package selection requires an ability_activation input");
     }
     let Some(mut input) = input else {
         return Ok(None);
@@ -1254,8 +1271,17 @@ fn enrich_ability_activation(
         .packages
         .iter()
         .filter_map(|(name, package)| {
-            package.ability.as_ref().map(|ability| -> Result<_> {
+            package.contract.as_ref().map(|ability| -> Result<_> {
                 let activation_revision = materialize::package_activation_revision(name, package)?;
+                let coordinate = crate::package_contract::PackageContractCoordinate {
+                    name,
+                    version: &package.version,
+                    platform: &package.platform,
+                    store_path: &package.store_path,
+                    nar_hash: &package.nar_hash,
+                };
+                let (document, _) =
+                    crate::package_contract::resolve_pinned_package_document(coordinate, ability)?;
                 Ok(serde_json::json!({
                     "name": name,
                     "version": package.version,
@@ -1264,10 +1290,10 @@ fn enrich_ability_activation(
                     "runtime_store_path": package.store_path,
                     "runtime_nar_hash": package.nar_hash,
                     "runtime_nar_size": package.nar_size,
-                    "ability_store_path": ability.store_path,
-                    "ability_nar_hash": ability.nar_hash,
-                    "manifest_sha256": ability.manifest_sha256,
-                    "package_digest": ability.package_digest,
+                    "contract_store_path": ability.document.store_path,
+                    "contract_nar_hash": ability.document.nar_hash,
+                    "contract_document_sha256": ability.document.document_sha256,
+                    "package_digest": document.content_digest()?,
                     "activation_revision": activation_revision,
                 }))
             })
@@ -1415,7 +1441,6 @@ fn enrich_runtime_projection(
     object
         .entry("credentials")
         .or_insert_with(|| serde_json::json!({}));
-    enrich_exposed_units(object, runtime)?;
     let packages: Vec<String> = runtime.packages.keys().cloned().collect();
     object.insert("packages".into(), serde_json::to_value(&packages)?);
     object.insert(
@@ -1440,12 +1465,6 @@ fn enrich_runtime_projection(
             .values()
             .map(|package| package.store_path.clone()),
     );
-    store_paths.extend(runtime.packages.values().filter_map(|package| {
-        package
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| artifact.store_path.clone())
-    }));
     let etc_store_owners = {
         let etc = object
             .get("etc")
@@ -1492,13 +1511,7 @@ fn enrich_runtime_projection(
         .context("manifest ownership.storePaths must be an object")?;
 
     for (name, package) in &runtime.packages {
-        let package_paths = std::iter::once(package.store_path.as_str()).chain(
-            package
-                .expose_artifact
-                .as_ref()
-                .map(|artifact| artifact.store_path.as_str()),
-        );
-        for package_path in package_paths {
+        for package_path in [package.store_path.as_str()] {
             if let Some(existing) = owned.get(package_path) {
                 let existing = existing.as_str().with_context(|| {
                     format!("manifest ownership.storePaths.{package_path} must be a string")
@@ -1520,9 +1533,6 @@ fn enrich_runtime_projection(
                     }
                 }
             }
-            // A bundled expose artifact can remain image-owned. Its unit links
-            // are immutable and the package-owned enablement edge below is
-            // what makes selecting or removing the package operational.
             owned
                 .entry(package_path.to_string())
                 .or_insert_with(|| serde_json::Value::String(name.clone()));
@@ -1561,151 +1571,6 @@ fn enrich_runtime_projection(
     for path in &store_paths {
         if !owned.contains_key(path) {
             anyhow::bail!("manifest store path {path} has no authenticated artifact owner");
-        }
-    }
-    Ok(())
-}
-
-/// Projects authenticated package units and their atomic enablement edge.
-fn enrich_exposed_units(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    runtime: &runtime::RuntimeResolution,
-) -> Result<()> {
-    let existing_store_owners = object
-        .get("ownership")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|ownership| ownership.get("storePaths"))
-        .and_then(serde_json::Value::as_object)
-        .context("manifest ownership.storePaths must be an object")?;
-    let existing_etc_owners = object
-        .get("ownership")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|ownership| ownership.get("etc"))
-        .and_then(serde_json::Value::as_object)
-        .context("manifest ownership.etc must be an object")?
-        .clone();
-    let mut entries = Vec::new();
-    let mut package_presets = Vec::new();
-    for (package, pin) in &runtime.packages {
-        match (&pin.expose, &pin.expose_artifact) {
-            (None, None) => continue,
-            (Some(expose), Some(artifact)) => {
-                crate::types::validate_expose_meta_for_package(package, expose)
-                    .with_context(|| format!("validating runtime expose metadata for {package}"))?;
-                crate::types::validate_expose_artifact_meta(artifact)
-                    .with_context(|| format!("validating runtime expose artifact for {package}"))?;
-
-                let unit_owner = existing_store_owners
-                    .get(&artifact.store_path)
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|owner| *owner == "@base")
-                    .unwrap_or(package);
-                for unit in &expose.units {
-                    entries.push((
-                        format!("systemd/system/{unit}"),
-                        serde_json::json!({
-                            "kind": "store-symlink",
-                            "target": format!("{}/units/{unit}", artifact.store_path),
-                        }),
-                        unit_owner.to_string(),
-                        package.clone(),
-                    ));
-                }
-                if pin.uses_structured_effects() {
-                    // The native dispatcher still needs the authenticated unit
-                    // files to load concrete units. The structured graph owns
-                    // start/stop lifecycle, so omit only legacy enablement.
-                    continue;
-                }
-                entries.push((
-                    format!("systemd/system/multi-user.target.wants/{}", expose.target),
-                    serde_json::json!({"kind": "symlink", "target": format!("../{}", expose.target)}),
-                    package.clone(),
-                    package.clone(),
-                ));
-                entries.push((
-                    format!("systemd/system-preset/30-aos-config-{package}.preset"),
-                    serde_json::json!({
-                        "kind": "text",
-                        "text": format!("enable {}\n", expose.target),
-                        "mode": "0644",
-                    }),
-                    package.clone(),
-                    package.clone(),
-                ));
-                package_presets.push((expose.target.clone(), package.clone()));
-            }
-            _ => anyhow::bail!(
-                "runtime package {package:?} must carry expose metadata and its artifact together"
-            ),
-        }
-    }
-
-    let etc = object
-        .get_mut("etc")
-        .and_then(serde_json::Value::as_object_mut)
-        .context("manifest etc must be an object")?;
-    let mut newly_owned = Vec::new();
-    for (path, entry, owner, package) in entries {
-        if let Some(existing) = etc.get(&path) {
-            if existing == &entry {
-                continue;
-            }
-            if existing_etc_owners
-                .get(&path)
-                .and_then(serde_json::Value::as_str)
-                == Some("@base")
-            {
-                etc.insert(path.clone(), entry);
-                newly_owned.push((path, owner));
-            } else {
-                anyhow::bail!(
-                    "runtime package {package:?} unit projection conflicts with existing /etc/{path}"
-                );
-            }
-        } else {
-            etc.insert(path.clone(), entry);
-            newly_owned.push((path, owner));
-        }
-    }
-    let owned = object
-        .get_mut("ownership")
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|ownership| ownership.get_mut("etc"))
-        .and_then(serde_json::Value::as_object_mut)
-        .context("manifest ownership.etc must be an object")?;
-    for (path, package) in newly_owned {
-        owned.insert(path, serde_json::Value::String(package));
-    }
-
-    let presets = object
-        .get_mut("presets")
-        .and_then(serde_json::Value::as_array_mut)
-        .context("manifest presets must be an array")?;
-    for (target, package) in &package_presets {
-        let record = serde_json::json!({
-            "unit": target,
-            "policy": "enable",
-            "source": package,
-        });
-        if presets.contains(&record) {
-            anyhow::bail!("manifest already contains runtime preset for package {package:?}");
-        }
-        presets.push(record);
-    }
-    let preset_owners = object
-        .get_mut("ownership")
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|ownership| ownership.get_mut("presets"))
-        .and_then(serde_json::Value::as_object_mut)
-        .context("manifest ownership.presets must be an object")?;
-    for (target, package) in package_presets {
-        let key = format!("{target}:{package}");
-        if preset_owners
-            .insert(key, serde_json::Value::String(package.clone()))
-            .is_some()
-        {
-            anyhow::bail!("manifest preset ownership collides for package {package:?}");
         }
     }
     Ok(())
@@ -1975,14 +1840,21 @@ fn retained_cross_abi_working_set(
                         module.package
                     )
                 })?;
-            let contract = pin.ability.as_ref().with_context(|| {
+            let contract = pin.contract.as_ref().with_context(|| {
                 format!(
                     "retained package module {} has no package contract",
                     module.package
                 )
             })?;
-            let bytes = crate::ability_package::read_package_manifest(&contract.store_path)?;
-            let document = crate::ability_package::decode_package_manifest(&bytes)?;
+            let coordinate = crate::package_contract::PackageContractCoordinate {
+                name: &module.package,
+                version: &pin.version,
+                platform: &pin.platform,
+                store_path: &pin.store_path,
+                nar_hash: &pin.nar_hash,
+            };
+            let (document, _) =
+                crate::package_contract::resolve_pinned_package_document(coordinate, contract)?;
             anyhow::ensure!(
                 document.content_digest()?.to_string() == module.document_digest,
                 "retained package document digest disagrees with its manifest identity"
@@ -1994,7 +1866,7 @@ fn retained_cross_abi_working_set(
                 package: module.package.clone(),
                 version: Some(pin.version.clone()),
                 ability: Some(document),
-                ability_store_path: Some(contract.store_path.clone()),
+                ability_store_path: Some(contract.document.store_path.clone()),
                 outputs: PackageOutputs {
                     self_output: Some(pin.store_path.clone()),
                     dependencies: source

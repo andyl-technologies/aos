@@ -595,8 +595,6 @@ where
         });
         Ok(())
     }
-
-
 }
 
 /// Holds one protected native authority publication through adapter dispatch.

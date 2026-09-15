@@ -1,4 +1,4 @@
-//! Live Nix-store verification for authenticated ability retention catalogs.
+//! Live Nix-store verification for authenticated package contract retention catalogs.
 //!
 //! The verifier compares signed catalog identities with complete NAR streams,
 //! direct references, and transitive closure membership from `nix-store`. Every
@@ -15,17 +15,17 @@ use aos_contract::Sha256Digest;
 use aos_core::nix::aos_nix_env;
 use sha2::{Digest as _, Sha256};
 
-use super::{AbilityRetentionVerifier, VerifiedAbilityRetentionManifest};
+use super::{PackageContractRetentionVerifier, VerifiedPackageContractRetentionManifest};
 
 const STORE_VERIFY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const STORE_VERIFY_ERROR_LIMIT: u64 = 64 * 1024;
 const STORE_VERIFY_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
 
-/// Checks authenticated ability retention catalogs against the live Nix store.
+/// Checks authenticated package contract retention catalogs against the live Nix store.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct NativeAbilityRetentionVerifier;
+pub struct NativePackageContractRetentionVerifier;
 
-impl NativeAbilityRetentionVerifier {
+impl NativePackageContractRetentionVerifier {
     /// Constructs the production live-store retention verifier.
     #[must_use]
     pub const fn new() -> Self {
@@ -33,15 +33,18 @@ impl NativeAbilityRetentionVerifier {
     }
 }
 
-impl AbilityRetentionVerifier for NativeAbilityRetentionVerifier {
-    fn verify_retention(&self, retention: &VerifiedAbilityRetentionManifest) -> anyhow::Result<()> {
+impl PackageContractRetentionVerifier for NativePackageContractRetentionVerifier {
+    fn verify_retention(
+        &self,
+        retention: &VerifiedPackageContractRetentionManifest,
+    ) -> anyhow::Result<()> {
         use anyhow::Context as _;
 
         verify_store_object(
-            retention.companion_store_path(),
-            retention.companion_nar_hash(),
-            retention.companion_nar_size(),
-            retention.companion_references(),
+            retention.document_store_path(),
+            retention.document_nar_hash(),
+            retention.document_nar_size(),
+            retention.document_references(),
         )?;
 
         for artifact in retention.artifacts() {
@@ -381,16 +384,16 @@ mod tests {
     use anyhow::Context as _;
 
     use super::*;
-    use crate::ability_package::seal_test_retention_manifest;
+    use crate::package_contract::seal_test_retention_manifest;
     use crate::types::{
-        AbilityArtifactRetentionMeta, AbilityClosureMemberMeta, AbilityPackageMeta,
+        PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractMeta,
     };
 
-    const TEST_CLOSURE_DIGEST_DOMAIN: &str = "aos.ability.closure/v1";
+    const TEST_CLOSURE_DIGEST_DOMAIN: &str = "aos.contract.closure/v1";
 
-    fn live_closure_member(store_path: &str) -> anyhow::Result<AbilityClosureMemberMeta> {
+    fn live_closure_member(store_path: &str) -> anyhow::Result<PackageContractClosureMemberMeta> {
         let (nar_hash, nar_size) = dump_store_path_identity(store_path)?;
-        Ok(AbilityClosureMemberMeta {
+        Ok(PackageContractClosureMemberMeta {
             store_path: store_path.to_string(),
             nar_hash: nar_hash.to_string(),
             nar_size,
@@ -398,7 +401,7 @@ mod tests {
         })
     }
 
-    fn live_ability_fixture(store_path: &str) -> anyhow::Result<AbilityPackageMeta> {
+    fn live_ability_fixture(store_path: &str) -> anyhow::Result<PackageContractMeta> {
         let companion = live_closure_member(store_path)?;
         let mut closure = query_store_paths(&["--query", "--requisites"], store_path)?
             .iter()
@@ -408,7 +411,7 @@ mod tests {
         let closure_digest = Sha256Digest::of_canonical(TEST_CLOSURE_DIGEST_DOMAIN, &closure)?;
         let content = Sha256Digest::of_bytes(store_path.as_bytes());
 
-        Ok(AbilityPackageMeta {
+        Ok(PackageContractMeta {
             store_path: store_path.to_string(),
             nar_hash: companion.nar_hash.clone(),
             nar_size: companion.nar_size,
@@ -417,7 +420,7 @@ mod tests {
             manifest_size: 1,
             package_digest: Sha256Digest::of_bytes(b"test package").to_string(),
             activation_mode: "contracts-only".to_string(),
-            artifacts: vec![AbilityArtifactRetentionMeta {
+            artifacts: vec![PackageContractArtifactMeta {
                 content: content.to_string(),
                 store_path: store_path.to_string(),
                 nar_hash: companion.nar_hash,
@@ -425,11 +428,11 @@ mod tests {
                 closure_digest: closure_digest.to_string(),
                 closure,
             }],
-            provenance: "provenance/test.ability.intoto.jsonl".to_string(),
+            provenance: "provenance/test.contract.intoto.jsonl".to_string(),
         })
     }
 
-    fn refresh_test_closure_digest(ability: &mut AbilityPackageMeta) {
+    fn refresh_test_closure_digest(contract: &mut PackageContractMeta) {
         ability.artifacts[0].closure.sort();
         ability.artifacts[0].closure_digest =
             Sha256Digest::of_canonical(TEST_CLOSURE_DIGEST_DOMAIN, &ability.artifacts[0].closure)
@@ -442,7 +445,7 @@ mod tests {
         let Ok(store_path) = std::env::var("AOS_TEST_ABILITY_REFERENCE_NGINX") else {
             return Ok(());
         };
-        let verifier = NativeAbilityRetentionVerifier::new();
+        let verifier = NativePackageContractRetentionVerifier::new();
         let ability = live_ability_fixture(&store_path)?;
         verifier.verify_retention(&seal_test_retention_manifest(&ability)?)?;
 

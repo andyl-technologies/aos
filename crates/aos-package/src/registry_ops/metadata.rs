@@ -15,15 +15,16 @@ use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
 use crate::types::{
-    AbilityPackageMeta, AttestationMeta, ConfigModuleMeta, DocumentationArtifactMeta,
-    ExposeArtifactMeta, FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
+    AttestationMeta, ConfigModuleMeta, DocumentationArtifactMeta, ExposeArtifactMeta,
+    FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1, FEATURE_ATTESTATION_V1,
     FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
     FEATURE_MAC_PROFILE_V1, FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1,
     FEATURE_OPTIONAL_CREDENTIALS_V1, FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1,
     FEATURE_RECOVERY_UKIS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1,
-    PACKAGE_META_FORMAT, validate_attestation_meta, validate_config_module_meta,
-    validate_documentation_artifact_meta, validate_expose_artifact_meta,
+    PACKAGE_META_FORMAT, PackageContractMeta, validate_attestation_meta,
+    validate_config_module_meta, validate_documentation_artifact_meta,
+    validate_expose_artifact_meta,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};
@@ -355,32 +356,23 @@ pub(crate) fn record_named_output(
     toml::to_string_pretty(&document).context("serializing package TOML with supplemental output")
 }
 
-/// Records an authenticated ability output and its fail-closed feature gates.
+/// Records an authenticated package contract and its fail-closed feature gates.
 ///
 /// # Errors
 ///
-/// Returns an error when the package coordinate is absent, the named output or
-/// ability metadata is invalid, an existing binding conflicts, or the platform
-/// and structural reference gates cannot be merged without losing information.
-pub(crate) fn record_ability_output(
+/// Returns an error when the package coordinate is absent, contract metadata
+/// is invalid, or structural reference gates cannot be merged safely.
+pub(crate) fn record_package_contract(
     existing: &str,
     name: &str,
     version: &str,
     platform: &str,
-    projection_store_path: &str,
-    ability: &AbilityPackageMeta,
+    contract: &PackageContractMeta,
+    structured_effects: bool,
 ) -> Result<String> {
-    crate::ability_package::validate_ability_package_meta(ability)?;
-    let updated = record_named_output(
-        existing,
-        name,
-        version,
-        platform,
-        crate::types::ABILITY_MANIFEST_OUTPUT,
-        projection_store_path,
-    )?;
+    crate::package_contract::validate_package_contract_meta(contract)?;
     let mut document: toml::Value =
-        toml::from_str(&updated).context("parsing package TOML for ability output")?;
+        toml::from_str(existing).context("parsing package TOML for package contract")?;
     let platform_entry = document
         .get_mut("versions")
         .and_then(toml::Value::as_array_mut)
@@ -396,7 +388,7 @@ pub(crate) fn record_ability_output(
         .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
 
     let mut features = BTreeSet::from([FEATURE_ABILITIES_V1.to_string()]);
-    if ability.activation_mode == "structured-effects" {
+    if structured_effects {
         features.insert(FEATURE_ABILITY_EFFECTS_V1.to_string());
     }
     merge_feature_gate(platform_entry, "requires-features", &features)?;
@@ -421,11 +413,11 @@ pub(crate) fn record_ability_output(
     merge_minimum_format(&mut reference_gate, "platform references")?;
     platform_entry.insert("references".into(), toml::Value::Table(reference_gate));
     platform_entry.insert(
-        "ability".into(),
-        toml::Value::try_from(ability).context("serializing ability metadata")?,
+        "contract".into(),
+        toml::Value::try_from(contract).context("serializing package contract metadata")?,
     );
 
-    toml::to_string_pretty(&document).context("serializing package TOML with ability output")
+    toml::to_string_pretty(&document).context("serializing package TOML with package contract")
 }
 
 fn merge_feature_gate(

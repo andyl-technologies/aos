@@ -9,8 +9,8 @@ use std::path::Path;
 use aos_ability_model::ArtifactReference;
 use aos_ability_model::document::PlatformIdentity;
 
-use crate::ability_package::VerifiedAbilityPackageSet;
-use crate::ability_package::retention::{dump_store_path_identity, run_store_check};
+use crate::package_contract::VerifiedPackageContractSet;
+use crate::package_contract::retention::{dump_store_path_identity, run_store_check};
 
 pub(super) trait AbilityArtifactVerifier {
     fn verify(&self, artifact: &ArtifactReference) -> anyhow::Result<()>;
@@ -18,7 +18,7 @@ pub(super) trait AbilityArtifactVerifier {
 
 #[derive(Debug)]
 pub(super) struct NativeAbilityArtifactVerifier {
-    pub(super) authenticated: VerifiedAbilityPackageSet,
+    pub(super) authenticated: VerifiedPackageContractSet,
     pub(super) platform: PlatformIdentity,
 }
 
