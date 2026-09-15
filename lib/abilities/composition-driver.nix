@@ -333,6 +333,23 @@
       controller = builtins.head controllerCandidates;
     };
   mergedResources = builtins.map mergeResource (builtins.attrValues fragmentsByResource);
+  publishedPlanningResources = builtins.concatLists (builtins.map (group:
+    builtins.concatLists (builtins.map (requestName:
+      builtins.concatMap (outputName: let
+        value = group.result.outputs.${requestName}.${outputName};
+      in
+        lib.optional
+        (lib.abilities.types.resourceReference.check value
+          && !builtins.any (resource: resource.resource == value.resource) mergedResources) {
+          inherit (value) resource lifetime;
+          kind = value.interface.name;
+          value = group.context.requests.${requestName}.parameters;
+          controller = null;
+        })
+      (builtins.attrNames group.result.outputs.${requestName}))
+    (builtins.attrNames group.result.outputs)))
+  provisionGroups);
+  plannedResources = mergedResources ++ publishedPlanningResources;
   resourcesByController = groupBy (resource:
     builtins.hashString "sha256" (builtins.toJSON {
       implementation = resource.controller.binding.implementation;
@@ -356,7 +373,7 @@
         controller.implementation.compose ((contextFor provision)
           // {
             resources = resourceMap;
-            allResources = mergedResources;
+            allResources = plannedResources;
           });
     result =
       exactAttrs

@@ -436,12 +436,27 @@
     // {
       ${identity} = (resources.${identity} or []) ++ [resource];
     }) {} (builtins.attrValues config.aos.abilities.resolvedResources);
+  semanticGuarantee = reference:
+    if builtins.isString reference
+    then lib.abilities.guaranteeIdentity config.aos.abilities.guarantees.${reference}
+    else reference;
+  semanticInterface = declaration:
+    declaration
+    // {
+      guarantees = builtins.map semanticGuarantee declaration.guarantees;
+      methods = builtins.mapAttrs (_: method:
+        method // {guarantees = builtins.map semanticGuarantee method.guarantees;})
+      declaration.methods;
+    };
   interfaceForReference = reference: let
+    named = builtins.filter (
+      candidate: candidate.name == reference.interface.name
+    ) (builtins.attrValues config.aos.abilities.interfaces);
     matches = builtins.filter (candidate:
       lib.abilities.interfaceIdentity (
-        lib.abilities.interfaceDocumentFromDeclaration candidate
+        lib.abilities.interfaceDocumentFromDeclaration (semanticInterface candidate)
       )
-      == reference.interface) (builtins.attrValues config.aos.abilities.interfaces);
+      == reference.interface) named;
   in
     if builtins.length matches != 1
     then throw "systemd dependency must name exactly one declared interface"
@@ -580,7 +595,9 @@
     resource =
       if builtins.length matches == 1
       then builtins.head matches
-      else throw "systemd dependency must resolve to exactly one planned resource";
+      else
+        throw
+        "systemd dependency ${builtins.toJSON reference.resource} must resolve to exactly one planned resource; found ${builtins.toString (builtins.length matches)}";
     unitIdentity = unitIdentityForPlannedResource allResources resource;
   in
     if resource.resource != reference.resource
