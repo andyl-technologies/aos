@@ -120,9 +120,10 @@ authorization restrictions. Applying RBAC or cluster-scoped resources requires
 the corresponding grant; a schema-valid object is not authorization.
 
 Kubernetes remains responsible for its reconciliation loops. AOS submits a
-desired revision and checks the agreed completion condition. Runtime-created
-endpoints enter typed observations or subsequent materialization, not an
-implicit read from the Nix evaluator host.
+desired revision and checks the agreed completion condition. Fixed endpoints
+are ordinary typed configuration. Dynamic endpoint allocation is unsupported
+until a provider can atomically transfer a persistent socket or service handle
+to its consumer.
 
 ## Initrd, boot stages, and handoff
 
@@ -147,7 +148,7 @@ Security presets express requested policy. A bound provider must supply the
 actual enforcement mechanism and evidence appropriate to that mechanism.
 An attribute named `isolated` or `encrypted` does not establish either property.
 
-Network contracts distinguish namespace membership, address/port allocation,
+Network contracts distinguish namespace membership, fixed endpoint selection,
 DNS, route policy, inbound publication, and egress enforcement. A container's
 ability to listen locally does not imply host ingress or permission to modify
 host firewall rules. Policy changes precede exposure when the policy is a

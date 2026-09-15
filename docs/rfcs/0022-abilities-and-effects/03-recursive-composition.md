@@ -188,15 +188,16 @@ Nix. Distinguish these result classes:
   and build/retention dependencies.
 - Planned resource references identify a logical resource or future output.
   They are typed symbolic values, not live file descriptors or secret bytes.
-- Runtime observations, such as health or an allocated endpoint, become
-  available only after an operation and belong to execution state.
+- Runtime observations, such as health, become available only after an
+  operation and belong to execution state.
 
 `resultOf` constructs a typed symbolic reference resolved in the current
 composition scope. It MUST NOT coerce to an arbitrary string. Consumers must
 accept that result type, or use an explicit authorized materialization step.
-A file renderer requiring a runtime-assigned address runs after allocation,
-or the deployment selects an address beforehand. Nix cannot synchronously
-read a future runtime result to finish the same pure evaluation.
+A deployment selects fixed endpoints through ordinary typed configuration.
+Dynamic endpoint allocation is unsupported until a provider can atomically
+transfer a persistent socket or service handle to its consumer. Nix cannot
+synchronously read a future runtime result to finish the same pure evaluation.
 
 The engine checks result existence, type, phase, visibility, and lifetime. A
 result port does not grant every operation supported by its underlying

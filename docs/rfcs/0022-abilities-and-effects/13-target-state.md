@@ -274,11 +274,21 @@ of packages that happen to implement an interface.
 
 An interface document defines request and result schemas, methods, guarantees,
 lifetimes, aggregation rules, and compatibility identity. Applications and
-providers reference the same interface value. A package may define a
-package-specific interface alongside its package when that interface is
-intrinsically owned by the package. Shared service, process, storage,
-credential, endpoint, and policy interfaces remain provider-neutral so a
-consumer does not depend on one implementation merely to name its requirement.
+providers reference the same interface value. A consumer authors a symbolic
+interface selector and generic structured request values; it neither imports
+nor depends on an implementation package to declare that requirement. The
+final module fixed point selects the interface document and validates those
+values against its portable request schema. A core provider-neutral interface
+has one shared canonical owning module, while each provider package declares
+its implementation of that interface. A provider package declares an interface
+only for an intrinsically package- or backend-specific extension. There is no
+separate `abilityDeps` edge or consumer-owned copy of the interface schema.
+
+A package may define a package-specific interface alongside its package when
+that interface is intrinsically owned by the package. Shared service, process,
+storage, credential, endpoint, and policy interfaces remain provider-neutral
+so a consumer does not depend on one implementation merely to name its
+requirement.
 
 Nix and Rust consume the same canonical interface documents. Rust does not
 carry a handwritten second copy of an interface catalog, descriptor digest, or
