@@ -52,9 +52,6 @@
     serviceManagement.forProducer {
       inherit consumerInstance key interface parameters;
     };
-  filesystemReadiness = producer "filesystem-readiness" serviceManagement.interfaces.filesystemReadiness {
-    scope = "local-filesystems";
-  };
   command = artifact: entry_point: arguments: {
     executable = {
       inherit artifact entry_point arguments;
@@ -145,10 +142,10 @@
         (builtins.map datasetCommand cfg.datasets)
         true;
       dependencies = {
-        prerequisites = [(resultOf "filesystem-readiness" "readiness-resource")];
-        after = [(resultOf "filesystem-readiness" "readiness-resource")];
+        prerequisites = cfg.storageReadiness;
+        after = cfg.storageReadiness;
         before = [];
-        requires = [(resultOf "filesystem-readiness" "readiness-resource")];
+        requires = cfg.storageReadiness;
         wants = [];
       };
       inherit isolation;
@@ -169,11 +166,11 @@
       randomized_delay_millis = cfg.randomizedDelayMillis;
     };
     dependencies = {
-      prerequisites = [(resultOf "filesystem-readiness" "readiness-resource")];
-      after = [(resultOf "filesystem-readiness" "readiness-resource")];
+      prerequisites = cfg.storageReadiness;
+      after = cfg.storageReadiness;
       before = [];
       requires = lib.optional (cfg.datasets != []) (resultOf "prepare-lifecycle" "service-resource");
-      wants = [(resultOf "filesystem-readiness" "readiness-resource")];
+      wants = cfg.storageReadiness;
     };
     service = serviceManagement.forService {
       inherit serviceTypes consumerInstance;
@@ -198,8 +195,7 @@
     };
   in [schedule service];
   fragments =
-    [filesystemReadiness]
-    ++ lib.optional (cfg.datasets != []) prepareService
+    lib.optional (cfg.datasets != []) prepareService
     ++ lib.concatMap intervalFragments enabledIntervals;
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
@@ -268,6 +264,15 @@ in {
       default = 300000;
       description = "Maximum randomized delay applied to scheduled snapshot runs.";
     };
+    storageReadiness = lib.mkOption {
+      type = abilityTypes.list {
+        element = abilityTypes.deferredResult abilityTypes.resourceReference;
+        maxItems = 1025;
+      };
+      default = [];
+      internal = true;
+      description = "Exact owning storage resources that must be ready before snapshot work.";
+    };
   };
 
   config = lib.mkMerge [
@@ -281,6 +286,10 @@ in {
         {
           assertion = enabledIntervals != [];
           message = "aos.services.zfsAutoSnapshot requires at least one enabled interval";
+        }
+        {
+          assertion = cfg.storageReadiness != [];
+          message = "aos.services.zfsAutoSnapshot requires owning storage readiness resources";
         }
       ];
       aos.abilities = lib.mkMerge (

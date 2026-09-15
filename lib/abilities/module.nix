@@ -137,7 +137,14 @@
     };
   qualifyDeferredResults = package: value:
     if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
-    then value // {request = qualify package value.request;}
+    then
+      value
+      // {
+        request =
+          if declarationKeyType.check value.request
+          then value.request
+          else qualify package value.request;
+      }
     else if builtins.isAttrs value
     then builtins.mapAttrs (_: qualifyDeferredResults package) value
     else if builtins.isList value

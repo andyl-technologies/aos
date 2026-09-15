@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  packageName,
   ...
 }: let
   storage = lib.abilities.interfaces.blockStorage.interfaces;
@@ -10,6 +11,11 @@
   cfg = config.aos.filesystems.zfs;
   consumerInstance = "zfs-storage";
   resultOf = lib.abilities.resultOf;
+  qualifiedResultOf = request: output: {
+    _type = "aos-request-output-reference";
+    request = "${packageName}:${request}";
+    inherit output;
+  };
 
   terminal = {
     alias,
@@ -107,20 +113,28 @@
     prerequisites = [];
   };
   datasetKey = name: "dataset-${builtins.substring 0 32 (builtins.hashString "sha256" name)}";
-  datasets = lib.mapAttrsToList (name: attributes: let
-    key = datasetKey name;
-    mountpoint = attributes.mountpoint or "/${name}";
-  in
-    producer key storage.dataset {
-      name = key;
-      enabled = true;
-      pool = resultOf "pool" "pool-name";
-      dataset = name;
-      inherit mountpoint;
-      properties = builtins.removeAttrs attributes ["mountpoint"];
-      prerequisites = [(resultOf "pool" "readiness-resource")];
+  datasetEntries =
+    lib.mapAttrsToList (name: attributes: let
+      key = datasetKey name;
+      mountpoint = attributes.mountpoint or "/${name}";
+    in {
+      inherit key;
+      fragment = producer key storage.dataset {
+        name = key;
+        enabled = true;
+        pool = resultOf "pool" "pool-name";
+        dataset = name;
+        inherit mountpoint;
+        properties = builtins.removeAttrs attributes ["mountpoint"];
+        prerequisites = [(resultOf "pool" "readiness-resource")];
+      };
+      readiness = qualifiedResultOf key "readiness-resource";
     })
-  cfg.datasets;
+    cfg.datasets;
+  datasets = builtins.map (entry: entry.fragment) datasetEntries;
+  readinessResources =
+    [(qualifiedResultOf "pool" "readiness-resource")]
+    ++ builtins.map (entry: entry.readiness) datasetEntries;
   fragments = [pool] ++ datasets;
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
@@ -140,21 +154,34 @@ in {
       default = {};
       description = "Datasets and their exact desired properties.";
     };
+    readinessResources = lib.mkOption {
+      type = lib.abilities.types.list {
+        element = lib.abilities.types.deferredResult lib.abilities.types.resourceReference;
+        maxItems = 1025;
+      };
+      default = [];
+      readOnly = true;
+      internal = true;
+      description = "Derived readiness outputs for the configured pool and datasets.";
+    };
   };
 
-  config.aos.abilities = lib.mkMerge ([
-      {
-        interfaces.${poolTerminal.alias} = poolTerminal.declaration;
-        interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
-        implementations.storage-pool = controller storage.pool poolTerminal "share/aos/providers/storage-pool.nix" "Converges storage pools through the OpenZFS controller.";
-        implementations.storage-dataset = controller storage.dataset datasetTerminal "share/aos/providers/storage-dataset.nix" "Converges storage datasets through the OpenZFS controller.";
-        implementations.${poolTerminal.alias} = poolTerminal.implementation;
-        implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
-      }
-    ]
-    ++ builtins.map (contribution: contribution.declarations) contributions
-    ++ lib.optional cfg.enable (lib.mkMerge (
-      [{instances.${consumerInstance} = {};}]
-      ++ builtins.map (contribution: contribution.configured) contributions
-    )));
+  config = {
+    aos.filesystems.zfs.readinessResources = lib.mkIf cfg.enable readinessResources;
+    aos.abilities = lib.mkMerge ([
+        {
+          interfaces.${poolTerminal.alias} = poolTerminal.declaration;
+          interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
+          implementations.storage-pool = controller storage.pool poolTerminal "share/aos/providers/storage-pool.nix" "Converges storage pools through the OpenZFS controller.";
+          implementations.storage-dataset = controller storage.dataset datasetTerminal "share/aos/providers/storage-dataset.nix" "Converges storage datasets through the OpenZFS controller.";
+          implementations.${poolTerminal.alias} = poolTerminal.implementation;
+          implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
+        }
+      ]
+      ++ builtins.map (contribution: contribution.declarations) contributions
+      ++ lib.optional cfg.enable (lib.mkMerge (
+        [{instances.${consumerInstance} = {};}]
+        ++ builtins.map (contribution: contribution.configured) contributions
+      )));
+  };
 }

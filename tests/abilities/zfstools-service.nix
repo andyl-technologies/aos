@@ -3,16 +3,41 @@
   lib,
   pkgs,
 }: let
+  packageModule = package: {
+    inherit (package) version;
+    name = package.pname;
+    module = package.module + "/module.nix";
+    outputs = {
+      self = builtins.toString package;
+      dependencies = {};
+    };
+  };
   evaluate = enabled:
     lib.evalModules {
       inherit lib;
       modules = [
         lib.abilities.module
+        ../../modules/services/zfs-auto-snapshot.nix
         {
+          options = {
+            assertions = lib.mkOption {
+              type = lib.types.listOf lib.types.anything;
+              default = [];
+            };
+            environment.systemPackages = lib.mkOption {
+              type = lib.types.listOf lib.types.package;
+              default = [];
+            };
+          };
           aos.abilities.environment = {
             authority = "test";
             key = "zfstools";
             stage = "host";
+          };
+          aos.filesystems.zfs = {
+            enable = true;
+            poolName = "tank";
+            datasets.data = {mountpoint = "/tank/data";};
           };
           aos.services.zfsAutoSnapshot = {
             enable = enabled;
@@ -24,16 +49,11 @@
           };
         }
       ];
-      packageModules = [
-        {
-          name = "zfstools";
-          version = pkgs.zfstools.version;
-          module = ../../pkgs/storage/_zfstools/module.nix;
-        }
-      ];
+      packageModules = builtins.map packageModule [pkgs.aos-zfs-provider pkgs.zfstools];
     };
   disabled = evaluate false;
   enabled = evaluate true;
+  disabledZfstoolsRequests = lib.filterAttrs (name: _: lib.hasPrefix "zfstools:" name) disabled.config.aos.abilities.requests;
   requests = enabled.config.aos.abilities.requests;
   outputReference = request: output: {
     _type = "aos-request-output-reference";
@@ -43,6 +63,9 @@
   prepareLifecycle = requests."zfstools:prepare-lifecycle".parameters;
   schedule = requests."zfstools:hourly-schedule".parameters;
   activation = requests."zfstools:zfs-auto-snapshot-hourly-activation".parameters;
+  storageReadiness = enabled.config.aos.filesystems.zfs.readinessResources;
+  datasetRequests = builtins.filter (name: lib.hasPrefix "aos-zfs-provider:dataset-" name) (builtins.attrNames requests);
+  datasetRequest = builtins.head datasetRequests;
   portableOptionTree = options:
     builtins.all
     (name: let
@@ -53,7 +76,7 @@
       else portableOptionTree option)
     (builtins.attrNames options);
 in
-  assert disabled.config.aos.abilities.requests == {};
+  assert disabledZfstoolsRequests == {};
   assert disabled.config.aos.abilities.requirementTemplates != {};
   assert enabled.config.aos.abilities.instances ? "zfstools:zfs-auto-snapshot";
   assert (builtins.head snapshotLifecycle.start).executable
@@ -95,6 +118,13 @@ in
   ];
   assert requests."zfstools:zfs-auto-snapshot-hourly-dependencies".parameters.requires
   == [(outputReference "zfstools:prepare-lifecycle" "service-resource")];
+  assert storageReadiness
+  == [
+    (outputReference "aos-zfs-provider:pool" "readiness-resource")
+    (outputReference datasetRequest "readiness-resource")
+  ];
+  assert requests."zfstools:prepare-dependencies".parameters.requires == storageReadiness;
+  assert requests."zfstools:zfs-auto-snapshot-hourly-dependencies".parameters.after == storageReadiness;
   assert requests."zfstools:zfs-auto-snapshot-hourly-scheduling".parameters
   == {
     service = "zfs-auto-snapshot-hourly";
