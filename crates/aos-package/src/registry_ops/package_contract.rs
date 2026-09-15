@@ -28,11 +28,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// An ability artifact reference and the exact closure retained for it.
-pub(in crate::registry_ops) struct ResolvedContractArtifact {
+pub(crate) struct ResolvedContractArtifact {
     /// Semantic reference embedded in the checked package document.
-    pub(in crate::registry_ops) reference: ArtifactReference,
+    pub(crate) reference: ArtifactReference,
     /// Complete realization metadata retained by the registry.
-    pub(in crate::registry_ops) retention: PackageContractArtifactMeta,
+    pub(crate) retention: PackageContractArtifactMeta,
 }
 
 /// Exact release-entry inventory used to bind symbolic package outputs.
@@ -97,9 +97,7 @@ impl PackageContractSelectorRegistry {
 /// Returns an error when the store output is unavailable, violates release
 /// policy, has malformed NAR metadata, or its complete closure cannot be
 /// inspected and canonically encoded.
-pub(in crate::registry_ops) fn resolve_store_artifact(
-    store_path: &str,
-) -> Result<ResolvedContractArtifact> {
+pub(crate) fn resolve_store_artifact(store_path: &str) -> Result<ResolvedContractArtifact> {
     let artifact = introspect_store_path(store_path)
         .with_context(|| format!("introspecting ability artifact {store_path}"))?;
     validate_store_path_release_policy(&artifact)?;
@@ -158,6 +156,16 @@ pub(in crate::registry_ops) fn resolve_store_artifact(
             closure,
         },
     })
+}
+
+/// Resolves one local store root to the exact semantic artifact reference.
+///
+/// # Errors
+///
+/// Returns an error when the path is not a valid publishable store root, its
+/// NAR or closure cannot be inspected, or the computed identities are invalid.
+pub(crate) fn resolve_store_artifact_reference(store_path: &str) -> Result<ArtifactReference> {
+    resolve_store_artifact(store_path).map(|resolved| resolved.reference)
 }
 
 /// Reads and resolves a symbolic companion through one exact release inventory.

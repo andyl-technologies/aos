@@ -57,6 +57,7 @@ mod execution_observer;
 pub mod runtime;
 pub mod runtime_modules;
 pub mod stage_handoff;
+pub(crate) mod static_packages;
 pub mod stock;
 pub mod system_roots;
 
@@ -1240,17 +1241,16 @@ fn enrich_ability_activation(
                 let Some(contract) = &package.contract else {
                     return Ok(required);
                 };
-                let coordinate = crate::package_contract::PackageContractCoordinate {
+                let resolved = static_packages::resolve(
                     name,
-                    version: &package.version,
-                    platform: &package.platform,
-                    store_path: &package.store_path,
-                    nar_hash: &package.nar_hash,
-                };
-                let (document, _) =
-                    crate::package_contract::resolve_pinned_package_document(coordinate, contract)?;
+                    &package.version,
+                    &package.platform,
+                    &package.store_path,
+                    &package.nar_hash,
+                    contract,
+                )?;
                 Ok(required
-                    || document.required_features.iter().any(|feature| {
+                    || resolved.document.required_features.iter().any(|feature| {
                         feature.as_str() == aos_ability_model::FEATURE_ABILITY_EFFECTS_V1
                     }))
             })?;
@@ -1273,15 +1273,14 @@ fn enrich_ability_activation(
         .filter_map(|(name, package)| {
             package.contract.as_ref().map(|ability| -> Result<_> {
                 let activation_revision = materialize::package_activation_revision(name, package)?;
-                let coordinate = crate::package_contract::PackageContractCoordinate {
+                let resolved = static_packages::resolve(
                     name,
-                    version: &package.version,
-                    platform: &package.platform,
-                    store_path: &package.store_path,
-                    nar_hash: &package.nar_hash,
-                };
-                let (document, _) =
-                    crate::package_contract::resolve_pinned_package_document(coordinate, ability)?;
+                    &package.version,
+                    &package.platform,
+                    &package.store_path,
+                    &package.nar_hash,
+                    ability,
+                )?;
                 Ok(serde_json::json!({
                     "name": name,
                     "version": package.version,
@@ -1290,10 +1289,10 @@ fn enrich_ability_activation(
                     "runtime_store_path": package.store_path,
                     "runtime_nar_hash": package.nar_hash,
                     "runtime_nar_size": package.nar_size,
-                    "contract_store_path": ability.document.store_path,
-                    "contract_nar_hash": ability.document.nar_hash,
-                    "contract_document_sha256": ability.document.document_sha256,
-                    "package_digest": document.content_digest()?,
+                    "contract_store_path": resolved.manifest_store_path,
+                    "contract_nar_hash": resolved.manifest_nar_hash,
+                    "contract_document_sha256": resolved.manifest_digest,
+                    "package_digest": resolved.document.content_digest()?,
                     "activation_revision": activation_revision,
                 }))
             })
@@ -1846,17 +1845,16 @@ fn retained_cross_abi_working_set(
                     module.package
                 )
             })?;
-            let coordinate = crate::package_contract::PackageContractCoordinate {
-                name: &module.package,
-                version: &pin.version,
-                platform: &pin.platform,
-                store_path: &pin.store_path,
-                nar_hash: &pin.nar_hash,
-            };
-            let (document, _) =
-                crate::package_contract::resolve_pinned_package_document(coordinate, contract)?;
+            let resolved = static_packages::resolve(
+                &module.package,
+                &pin.version,
+                &pin.platform,
+                &pin.store_path,
+                &pin.nar_hash,
+                contract,
+            )?;
             anyhow::ensure!(
-                document.content_digest()?.to_string() == module.document_digest,
+                resolved.document.content_digest()?.to_string() == module.document_digest,
                 "retained package document digest disagrees with its manifest identity"
             );
             Ok(WorkingSetMember {
@@ -1865,8 +1863,8 @@ fn retained_cross_abi_working_set(
                 config_realization: None,
                 package: module.package.clone(),
                 version: Some(pin.version.clone()),
-                ability: Some(document),
-                ability_store_path: Some(contract.document.store_path.clone()),
+                ability: Some(resolved.document),
+                ability_store_path: Some(resolved.manifest_store_path),
                 outputs: PackageOutputs {
                     self_output: Some(pin.store_path.clone()),
                     dependencies: source

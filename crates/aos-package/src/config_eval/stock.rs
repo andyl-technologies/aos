@@ -1108,12 +1108,12 @@ impl RegistryPackageModules {
         &self.image_packages
     }
 
-    /// Loads the on-host system-scope registry snapshot and immutable image catalog.
+    /// Loads the on-host registry snapshot and checked immutable image selection.
     ///
     /// # Errors
     ///
     /// Returns an error when APM configuration, a registry, or image package
-    /// metadata cannot be loaded and authenticated.
+    /// static contract cannot be loaded and authenticated.
     pub fn load_system() -> Result<Self> {
         let scope = crate::types::ProfileScope::System;
         let config = crate::config::ApmConfig::load(scope)?;
@@ -1123,48 +1123,8 @@ impl RegistryPackageModules {
             &enabled,
             &native_platform(),
         )?;
-        let profile = crate::profile::Profile::open_readonly(scope);
-        let mut image_catalog = None;
-        let mut image_packages = BTreeMap::new();
-        for record in crate::profile::meta::list_meta(&profile)? {
-            let Some(mut apm) = record.apm else {
-                continue;
-            };
-            let is_image = record.pushed_by == "aos-image" && apm.registry == "seed";
-            if !is_image {
-                continue;
-            }
-            if image_catalog.is_none() {
-                image_catalog = Some(immutable_image_seed_catalog()?);
-            }
-            let image_catalog = image_catalog
-                .as_ref()
-                .context("loading the immutable image package catalog")?;
-            let catalog_record = image_catalog.get(&record.store_path).with_context(|| {
-                format!(
-                    "image-seeded package '{}' is absent from the immutable image catalog",
-                    apm.name
-                )
-            })?;
-            let catalog_apm = catalog_record.apm.as_ref().with_context(|| {
-                format!(
-                    "immutable image catalog entry {} has no APM metadata",
-                    record.store_path
-                )
-            })?;
-            validate_image_seed_metadata(&apm, catalog_apm)?;
-            apm = catalog_apm.clone();
-            require_immutable_image_path(&record.store_path, "runtime output")?;
-            image_packages.insert(
-                apm.name,
-                super::runtime::LocalRuntimePackage {
-                    version: apm.version,
-                    store_path: record.store_path,
-                    contract: apm.contract,
-                    closure: std::cell::RefCell::new(None),
-                },
-            );
-        }
+        let image_packages = super::static_packages::load()
+            .context("loading checked packages from the host static ability contract")?;
         Ok(Self {
             registries,
             image_packages,
@@ -1211,41 +1171,15 @@ fn resolved_image_package_module(
     name: &str,
     package: &super::runtime::LocalRuntimePackage,
 ) -> Result<Option<ResolvedPackageModule>> {
-    let Some(contract) = package.contract.clone() else {
+    let Some(document) = package.document.clone() else {
         return Ok(None);
     };
-    let ability_store_path = contract.document.store_path.clone();
-    let package_meta = crate::types::PackageMeta {
-        name: name.to_string(),
-        version: package.version.clone(),
-        description: "immutable image package".to_string(),
-        homepage: None,
-        license: "LicenseRef-AOS-Image".to_string(),
-        maintainer: "AOS image".to_string(),
-        platform: "x86_64-linux".to_string(),
-        store_path: package.store_path.clone(),
-        nar_hash: contract.payload.nar_hash.clone(),
-        nar_size: 0,
-        references: Vec::new(),
-        source_drv: String::new(),
-        source_nar_hash: String::new(),
-        closure_size: 0,
-        sysroot: false,
-        previous: None,
-        images: Vec::new(),
-        min_format: None,
-        requires_features: Vec::new(),
-        expose: None,
-        expose_artifact: None,
-        documentation: None,
-        contract: Some(contract),
-        permissions: Default::default(),
-        bpf_lsm: None,
-        attestation: Default::default(),
-    };
-    let document = crate::package_contract::resolve_package_document(&package_meta)?;
+    ensure!(
+        !package.ability_store_path.is_empty(),
+        "checked image package has no retained companion path"
+    );
 
-    Ok(document.map(|document| ResolvedPackageModule {
+    Ok(Some(ResolvedPackageModule {
         registry: String::new(),
         release_trust: None,
         realization: None,
@@ -1253,98 +1187,9 @@ fn resolved_image_package_module(
         version: package.version.clone(),
         platform: "image".to_string(),
         runtime_output: package.store_path.clone(),
-        ability_store_path: ability_store_path.clone(),
+        ability_store_path: package.ability_store_path.clone(),
         document,
     }))
-}
-
-fn immutable_image_seed_catalog() -> Result<BTreeMap<String, crate::types::InstalledMeta>> {
-    let toplevel = std::fs::read_link("/aos-toplevel")
-        .context("reading the booted immutable toplevel link")?;
-    let toplevel = toplevel
-        .to_str()
-        .context("booted immutable toplevel path is not UTF-8")?;
-    let lower_toplevel = super::runtime::immutable_lower_store_path(toplevel)?;
-    if !lower_toplevel.exists() {
-        anyhow::bail!("booted toplevel {toplevel} is absent from the immutable image store");
-    }
-    let seed_link = lower_toplevel.join("package-profile-seed");
-    let seed = std::fs::read_link(&seed_link).with_context(|| {
-        format!(
-            "reading immutable package seed link {}",
-            seed_link.display()
-        )
-    })?;
-    let seed = seed
-        .to_str()
-        .context("immutable package seed path is not UTF-8")?;
-    let lower_seed = super::runtime::immutable_lower_store_path(seed)?;
-    let meta_dir = lower_seed.join("meta");
-    let mut files = std::fs::read_dir(&meta_dir)
-        .with_context(|| {
-            format!(
-                "reading immutable image package catalog {}",
-                meta_dir.display()
-            )
-        })?
-        .collect::<std::io::Result<Vec<_>>>()?;
-    files.sort_by_key(std::fs::DirEntry::file_name);
-
-    let mut catalog = BTreeMap::new();
-    for entry in files {
-        if !entry.file_type()?.is_file()
-            || entry
-                .path()
-                .extension()
-                .and_then(|extension| extension.to_str())
-                != Some("json")
-        {
-            continue;
-        }
-        let record: crate::types::InstalledMeta = serde_json::from_slice(
-            &std::fs::read(entry.path())
-                .with_context(|| format!("reading {}", entry.path().display()))?,
-        )
-        .with_context(|| format!("parsing {}", entry.path().display()))?;
-        let apm = record.apm.as_ref().with_context(|| {
-            format!(
-                "immutable image catalog entry {} has no APM metadata",
-                entry.path().display()
-            )
-        })?;
-        if record.pushed_by != "aos-image" || apm.registry != "seed" {
-            anyhow::bail!(
-                "immutable image catalog entry '{}' has invalid image provenance",
-                apm.name
-            );
-        }
-        require_immutable_image_path(&record.store_path, "catalog runtime output")?;
-        if catalog.insert(record.store_path.clone(), record).is_some() {
-            anyhow::bail!("immutable image package catalog contains a duplicate store path");
-        }
-    }
-    Ok(catalog)
-}
-
-fn require_immutable_image_path(path: &str, kind: &str) -> Result<PathBuf> {
-    let lower = super::runtime::immutable_lower_store_path(path)?;
-    if !lower.exists() {
-        anyhow::bail!("image {kind} {path} is absent from the immutable image store");
-    }
-    Ok(lower)
-}
-
-fn validate_image_seed_metadata(
-    profile: &crate::types::ApmMeta,
-    immutable: &crate::types::ApmMeta,
-) -> Result<()> {
-    if serde_json::to_value(profile)? != serde_json::to_value(immutable)? {
-        anyhow::bail!(
-            "image-seeded package '{}' disagrees with immutable image metadata",
-            profile.name
-        );
-    }
-    Ok(())
 }
 
 impl PackageModuleResolver for RegistryPackageModules {

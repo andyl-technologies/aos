@@ -17,6 +17,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::types::PackageContractMeta;
+use aos_ability_model::{ArtifactReference, LocalKey};
+
+/// Identifies the authority that supplied one exact package contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ContractOrigin {
+    /// Resolves a package through its signed registry publication metadata.
+    Registry {
+        /// Carries the exact signed publication and artifact retention record.
+        metadata: PackageContractMeta,
+    },
+    /// Resolves a package through the running image's authenticated static contract.
+    EmbeddedStatic {
+        /// Identifies the exact static-contract artifact retained by the image.
+        contract: ArtifactReference,
+        /// Selects one package entry from that checked static contract.
+        package: LocalKey,
+    },
+}
 
 /// An exact image-bundled package available from the active system profile.
 #[derive(Debug, Clone)]
@@ -26,7 +45,11 @@ pub struct LocalRuntimePackage {
     /// Exact runtime output in the immutable image closure.
     pub store_path: String,
     /// Authenticated package contract retained in the image.
-    pub contract: Option<PackageContractMeta>,
+    pub contract: Option<ContractOrigin>,
+    /// Retains the checked package document during the current fixed point.
+    pub document: Option<aos_ability_model::PackageDocument>,
+    /// Retains the authenticated companion root containing that document.
+    pub ability_store_path: String,
     /// Lazily verified closure reused across outer fixpoint iterations.
     pub(super) closure: RefCell<Option<Vec<RuntimeClosurePin>>>,
 }
@@ -66,7 +89,7 @@ pub struct RuntimePackagePin {
     pub closure: Vec<RuntimeClosurePin>,
     /// Exact authenticated package contract selected with this package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contract: Option<PackageContractMeta>,
+    pub contract: Option<ContractOrigin>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -283,7 +306,11 @@ pub fn resolve_runtime_with_local(
                 .nar_hash(),
                 nar_size: closure.root.nar_size,
                 closure: members,
-                contract: closure.root.contract.clone(),
+                contract: closure
+                    .root
+                    .contract
+                    .clone()
+                    .map(|metadata| ContractOrigin::Registry { metadata }),
             },
         );
     }
@@ -487,6 +514,8 @@ mod tests {
                 version: "1.2.3".to_string(),
                 store_path: store_path.to_string(),
                 contract: None,
+                document: None,
+                ability_store_path: String::new(),
                 closure: RefCell::new(Some(vec![RuntimeClosurePin {
                     store_path_hash: store_path_hash(store_path).to_string(),
                     store_path: Some(store_path.to_string()),

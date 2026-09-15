@@ -14,8 +14,8 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, ArtifactReference, InterfaceKey, LocalKey, PackageDocument,
-    RequirementDeclaration, RequirementStrength,
+    ABILITY_LIMITS_V1, ArtifactReference, InterfaceDocument, InterfaceKey, LocalKey,
+    PackageDocument, RequirementDeclaration, RequirementStrength,
 };
 use aos_contract::Sha256Digest;
 use serde::Deserialize;
@@ -97,6 +97,7 @@ pub struct CheckedStaticAbilityPackage {
     payload: ArtifactReference,
     manifest: CheckedStaticPackageManifest,
     package_document: Option<PackageDocument>,
+    retained_interfaces: Vec<InterfaceDocument>,
 }
 
 impl CheckedStaticAbilityPackage {
@@ -128,6 +129,15 @@ impl CheckedStaticAbilityPackage {
     #[must_use]
     pub const fn package_document(&self) -> Option<&PackageDocument> {
         self.package_document.as_ref()
+    }
+
+    /// Returns the artifact-validated retained interface catalog.
+    ///
+    /// Byte-only validation returns an empty slice. Artifact-backed callers
+    /// can distinguish an ability-free package through [`Self::package_document`].
+    #[must_use]
+    pub fn retained_interfaces(&self) -> &[InterfaceDocument] {
+        &self.retained_interfaces
     }
 }
 
@@ -291,7 +301,7 @@ fn validate_static_ability_contract_document(
 
 fn checked_static_ability_contract(
     contract: StaticAbilityContract,
-    package_documents: BTreeMap<(String, Sha256Digest), PackageDocument>,
+    package_documents: BTreeMap<(String, Sha256Digest), ArtifactBackedPackage>,
 ) -> CheckedStaticAbilityContract {
     let packages = contract
         .platforms
@@ -307,7 +317,10 @@ fn checked_static_ability_contract(
             },
             package_document: package_documents
                 .get(&manifest_key(&package.manifest))
-                .cloned(),
+                .map(|checked| checked.document.clone()),
+            retained_interfaces: package_documents
+                .get(&manifest_key(&package.manifest))
+                .map_or_else(Vec::new, |checked| checked.interfaces.clone()),
         })
         .collect();
 
@@ -321,6 +334,12 @@ fn checked_static_ability_contract(
 struct StaticPackageArtifacts {
     manifest: Vec<u8>,
     retained_interfaces: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct ArtifactBackedPackage {
+    document: PackageDocument,
+    interfaces: Vec<InterfaceDocument>,
 }
 
 fn read_package_artifacts(store_path: &str) -> Result<StaticPackageArtifacts> {
@@ -413,7 +432,7 @@ fn read_bounded_regular_file(path: &Path, label: &str) -> Result<Vec<u8>> {
 fn validate_artifact_projections(
     contract: &StaticAbilityContract,
     read_package: &mut impl FnMut(&str) -> Result<StaticPackageArtifacts>,
-) -> Result<BTreeMap<(String, Sha256Digest), PackageDocument>> {
+) -> Result<BTreeMap<(String, Sha256Digest), ArtifactBackedPackage>> {
     let mut package_documents = BTreeMap::new();
 
     for platform in &contract.platforms {
@@ -430,12 +449,18 @@ fn validate_artifact_projections(
             .context("validating artifact-backed static package companion")?;
 
             validate_package_projection(platform, static_package, checked_package.package())?;
+            let checked = ArtifactBackedPackage {
+                document: checked_package.package().clone(),
+                interfaces: checked_package
+                    .retained_interfaces()
+                    .into_values()
+                    .cloned()
+                    .collect(),
+            };
             let manifest = manifest_key(&static_package.manifest);
-            if let Some(previous) =
-                package_documents.insert(manifest, checked_package.package().clone())
-            {
+            if let Some(previous) = package_documents.insert(manifest, checked.clone()) {
                 ensure!(
-                    previous == *checked_package.package(),
+                    previous == checked,
                     "static package manifest identity resolves to different package documents"
                 );
             }

@@ -1931,16 +1931,16 @@ turn an unmeasured image into measured-image policy.
 - `evaluator.store_path` — the resolved store path of the `aos-eval` binary
   consumed by `aos-eval.service`; this path is ⊂ the measured UKI's covered
   closure only transitively via the root (F1) — recorded for re-derivation.
-- `config_modules.origins` — one `registry` or `image` origin aligned with each
-  module path. `image` means the exact config companion came from the active
-  image-seeded package profile. The evaluator resolves the booted toplevel's
-  `package-profile-seed` through `/nix.lower/store`, requires the mutable
-  profile record to exactly match that immutable seed record, requires all
-  referenced outputs to exist in the immutable lower store, and hashes the
-  lower-store NAR bytes. A remote verifier independently reconstructs the same
-  image-module catalog and requires an exact tuple match; a claimed
-  `origin=image` value absent from that catalog fails closed.
-- Registry-origin `config_modules.*` — from the resolver's `TrustContext`: `registry`,
+- `package_modules.modules[].origin` — `registry` or `image` on each exact
+  module locator. `image` means the package document and its module artifact
+  were selected by the authenticated host static ability contract embedded in
+  the immutable image. The evaluator validates that contract and every exact
+  package companion through `/nix.lower/store`, then derives the package name,
+  document digest, module artifact, NAR hash, and entrypoint from that one
+  checked selection. A remote verifier reconstructs the same selection and
+  requires an exact tuple match; a claimed `origin=image` value absent from the
+  static contract fails closed.
+- Registry-origin `package_modules.*` — from the resolver's `TrustContext`: `registry`,
   `release_tag` (the `verify_tag_chain` target, `registry/verify.rs:99`),
   `tag_signer_key` (`security.rs::key_fingerprint`), `realization` (sha256 of the
   signed `store/` graph subset consumed, the blessed set `verify.rs::verify_nar_blessed`

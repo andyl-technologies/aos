@@ -129,6 +129,14 @@ impl AbilityActivationInput {
             bail!("ability activation coordinates do not cover selected ability packages");
         }
         for (coordinate, (name, package, ability)) in self.packages.iter().zip(expected) {
+            let resolved = super::super::static_packages::resolve(
+                name,
+                &package.version,
+                &package.platform,
+                &package.store_path,
+                &package.nar_hash,
+                ability,
+            )?;
             if coordinate.name != *name
                 || coordinate.version != package.version
                 || coordinate.platform != package.platform
@@ -136,27 +144,16 @@ impl AbilityActivationInput {
                 || coordinate.runtime_store_path != package.store_path
                 || coordinate.runtime_nar_hash != package.nar_hash
                 || coordinate.runtime_nar_size != package.nar_size
-                || coordinate.contract_store_path != ability.document.store_path
-                || coordinate.contract_nar_hash != ability.document.nar_hash
-                || coordinate.contract_document_sha256 != ability.document.document_sha256
+                || coordinate.contract_store_path != resolved.manifest_store_path
+                || coordinate.contract_nar_hash != resolved.manifest_nar_hash
+                || coordinate.contract_document_sha256 != resolved.manifest_digest.to_string()
             {
                 bail!(
                     "ability activation coordinate for {:?} differs from authenticated packageOutputs",
                     coordinate.name
                 );
             }
-            let contract_coordinate = crate::package_contract::PackageContractCoordinate {
-                name,
-                version: &package.version,
-                platform: &package.platform,
-                store_path: &package.store_path,
-                nar_hash: &package.nar_hash,
-            };
-            let (document, _) = crate::package_contract::resolve_pinned_package_document(
-                contract_coordinate,
-                ability,
-            )?;
-            if coordinate.package_digest != document.content_digest()?.to_string() {
+            if coordinate.package_digest != resolved.document.content_digest()?.to_string() {
                 bail!(
                     "ability activation package digest for {:?} differs from its authenticated contract",
                     coordinate.name

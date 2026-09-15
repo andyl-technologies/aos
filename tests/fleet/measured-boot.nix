@@ -639,22 +639,14 @@ in {
           recorded_pcr11 = inputs["base_lib"]["pcr11_expected"].removeprefix("sha256:")
           assert recorded_pcr11 == expected_pcr11, (recorded_pcr11, expected_pcr11)
           assert inputs["evaluator"] == manifest["inputs"]["evaluator"]
-          config_inputs = manifest["inputs"]["config_modules"]
-          attested_modules = inputs["config_modules"]
-          assert attested_modules["closure_hash"] == config_inputs["closure_hash"]
-          assert attested_modules["count"] == config_inputs["count"]
-          assert attested_modules["count"] == 1, attested_modules
-          assert attested_modules["store_paths"] == config_inputs["store_paths"]
-          assert attested_modules["nar_hashes"] == config_inputs["nar_hashes"]
-          assert attested_modules["package_names"] == config_inputs["package_names"]
-          assert config_inputs["origins"] == ["image"], config_inputs
+          package_inputs = manifest["inputs"]["package_modules"]
+          attested_modules = inputs["package_modules"]
+          assert attested_modules == package_inputs, (attested_modules, package_inputs)
+          assert len(package_inputs["modules"]) == 1, package_inputs
+          assert [member["origin"] for member in package_inputs["modules"]] == ["image"]
           for field in ("registry", "release_tag", "tag_signer_key", "realization"):
               assert attested_modules.get(field) is None, (field, attested_modules)
-              assert config_inputs.get(field) is None, (field, config_inputs)
-          assert attested_modules["provenance"] == {
-              "module_abi_compat": config_inputs["module_abi_compat"],
-              "origins": config_inputs["origins"],
-          }
+              assert package_inputs.get(field) is None, (field, package_inputs)
           assert inputs["host_nix"] == {
               key: value
               for key, value in manifest["inputs"]["host_nix"].items()
@@ -790,58 +782,37 @@ in {
           # Exercise the public, identity-pinned generation verifier. The
           # verifier policy is a separate file even in this single-node test;
           # production callers supply these values from their fleet catalog.
-          immutable_top = target.succeed("readlink /aos-toplevel").strip()
-          immutable_top_lower = (
-              "/nix.lower/store/" + immutable_top.removeprefix("/nix/store/")
-          )
-          immutable_seed = target.succeed(
-              f"readlink {immutable_top_lower}/package-profile-seed"
-          ).strip()
-          immutable_seed_lower = (
-              "/nix.lower/store/" + immutable_seed.removeprefix("/nix/store/")
-          )
-          seed_meta_paths = target.succeed(
-              f"ls -1 {immutable_seed_lower}/meta/*.json"
-          ).splitlines()
-          seed_records = [
-              json.loads(target.succeed(f"cat {path}")) for path in seed_meta_paths
-          ]
+          static_contract = json.loads(target.succeed(
+              "cat /usr/lib/aos/host/static-ability-contract.json"
+          ))
+          static_packages = static_contract["platforms"][0]["packages"]
           image_members = []
-          for package_name, store_path, nar_hash, abi, origin in zip(
-              config_inputs["package_names"],
-              config_inputs["store_paths"],
-              config_inputs["nar_hashes"],
-              config_inputs["module_abi_compat"],
-              config_inputs["origins"],
-          ):
-              if origin != "image":
+          for module in package_inputs["modules"]:
+              if module["origin"] != "image":
                   continue
               matches = [
-                  item for item in seed_records
-                  if item.get("pushed_by") == "aos-image"
-                  and item.get("apm", {}).get("registry") == "seed"
-                  and item.get("apm", {}).get("name") == package_name
-                  and item.get("apm", {}).get("config_module", {})
-                      .get("config_output", {}).get("store_path") == store_path
+                  item for item in static_packages
+                  if item["name"] == module["package"]
               ]
-              assert len(matches) == 1, (package_name, matches)
-              lower_store_path = (
-                  "/nix.lower/store/" + store_path.removeprefix("/nix/store/")
+              assert len(matches) == 1, (module["package"], matches)
+              manifest_path = matches[0]["manifest"]["store_path"]
+              lower_manifest = (
+                  "/nix.lower/store/" + manifest_path.removeprefix("/nix/store/")
               )
-              target.succeed(f"test -e {lower_store_path}")
-              actual_nar_hash = "sha256:" + target.succeed(
-                  f"${pkgs.nix}/bin/nix-store --dump {lower_store_path} "
-                  "| ${pkgs.nix}/bin/nix-hash --type sha256 --base32 "
-                  "--flat /dev/stdin"
-              ).strip()
-              assert actual_nar_hash == nar_hash, (actual_nar_hash, nar_hash)
-              module = matches[0]["apm"]["config_module"]
-              assert abi == module["module_abi_compat"], (abi, module)
+              package_document = json.loads(target.succeed(
+                  f"cat {lower_manifest}/contract.json"
+              ))
+              locator = package_document["package_module"]
+              assert package_document["package"]["name"] == module["package"]
+              assert locator["artifact"]["store_path"] == module["store_path"]
+              assert locator["artifact"]["nar_hash"] == module["nar_hash"]
+              assert locator["path"] == module["entrypoint"]
               image_members.append({
-                  "package_name": package_name,
-                  "store_path": store_path,
-                  "nar_hash": nar_hash,
-                  "module_abi_compat": abi,
+                  "package_name": module["package"],
+                  "document_digest": module["document_digest"],
+                  "store_path": module["store_path"],
+                  "nar_hash": module["nar_hash"],
+                  "entrypoint": module["entrypoint"],
               })
           policy = {
               "schema": "aos.gen-attestation-policy/v2",
@@ -852,7 +823,7 @@ in {
               "expected_facts_hash": inputs["instance_facts"]["facts_hash"],
               "trusted_config_keys": [],
               "trusted_platforms": [inputs["host_nix"]["platform"]],
-              "image_config_modules": image_members,
+              "image_package_modules": image_members,
           }
           policy_encoded = base64.b64encode(
               json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()

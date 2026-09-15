@@ -44,7 +44,9 @@
 //! dumb-HTTP object store metadata is refreshed so plain-file origins stay
 //! cloneable.
 
-pub(crate) use package_contract::PackageContractSelectorRegistry;
+pub(crate) use package_contract::{
+    PackageContractSelectorRegistry, resolve_store_artifact, resolve_store_artifact_reference,
+};
 mod attestation;
 mod cache_validation;
 mod channels;
