@@ -1252,12 +1252,10 @@ in
   == templateInstanceService.instantiation;
   assert expandedSystemTemplateInstance.requests."system:worker-blue-instantiation".parameters.selection.template_resource.request
   == "system:main-template_definition";
-  assert builtins.map
-  (guarantee: guarantee.name)
-  expandedTemplateInstance.requirementTemplates.service-lifecycle.guarantees
-  == ["aos.guarantee.service-template-exact-reuse"];
-  assert builtins.map (guarantee: guarantee.name) interfaces.lifecycle.guarantees
-  == ["aos.guarantee.service-template-exact-reuse"];
+  assert expandedTemplateInstance.requirementTemplates.service-lifecycle.guarantees
+  == ["core:service-template-exact-reuse"];
+  assert interfaces.lifecycle.guarantees
+  == ["core:service-template-exact-reuse"];
   assert expandedTemplateInstance.requirementTemplates.service-instantiation.guarantees == [];
   assert !invalidTemplateInstanceSource.success;
   assert !validates (staticTemplateService // {enabled = true;});
@@ -1303,18 +1301,14 @@ in
   assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
   assert expandedExtended.requests.main-dependencies.parameters.prerequisites
   == [(resultOf "dependency" "retained-resource")];
-  assert builtins.map
-  (guarantee: guarantee.name)
-  expandedExtended.requirementTemplates.service-conditions.guarantees
+  assert expandedExtended.requirementTemplates.service-conditions.guarantees
   == [
-    "aos.guarantee.service-condition.kernel-argument"
-    "aos.guarantee.service-condition.mandatory-access-control"
-    "aos.guarantee.service-condition.path"
+    "core:service-condition-kernel-argument"
+    "core:service-condition-mandatory-access-control"
+    "core:service-condition-path"
   ];
-  assert builtins.map
-  (guarantee: guarantee.name)
-  expandedExtended.requirementTemplates.linux-service-conditions.guarantees
-  == ["aos.guarantee.linux-service-condition.capability"];
+  assert expandedExtended.requirementTemplates.linux-service-conditions.guarantees
+  == ["core:linux-service-condition-capability"];
   assert expandedExtended.requests.main-environment.parameters.variables.INSTANCE == "blue";
   assert !validates (extendedService
     // {

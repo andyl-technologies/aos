@@ -43,7 +43,7 @@
       values)));
   uniqueGuarantees = values:
     builtins.attrValues (builtins.listToAttrs (builtins.map (guarantee: {
-        name = guarantee.name;
+        name = guarantee;
         value = guarantee;
       })
       values));
