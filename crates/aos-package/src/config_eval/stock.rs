@@ -2,11 +2,9 @@
 //!
 //! [`StockNixEvaluator`] renders the working set into `entry.nix`, runs a cold
 //! stock-Nix subprocess under the determinism flags, and classifies its result
-//! via [`super::classify`]. [`SubstituterFetcher`] realises a provider's
-//! `config` output through the configured substituter (the registry static
-//! cache). Both are **builder-gated**: they require a real stock-nix and a
-//! reachable registry, so they cannot run on a developer's macOS host and are
-//! unit-tested here only for `entry.nix` rendering.
+//! via [`super::classify`]. It is **builder-gated** because it requires a real
+//! stock-nix, so it cannot run on a developer's macOS host and is unit-tested
+//! here only for `entry.nix` rendering.
 //!
 //! # The eval invocation
 //!
