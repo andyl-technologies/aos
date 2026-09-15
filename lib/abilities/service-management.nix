@@ -19,6 +19,7 @@
       ;
   };
   constructors = import ./_service-declaration.nix {
+    inherit interfaceDocumentFromDeclaration interfaceIdentity;
     serviceInterfaces = interfaces;
   };
 in {

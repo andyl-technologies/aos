@@ -140,6 +140,19 @@
       required = true;
     };
   };
+  declarationOnlyKernelModules = serviceManagement.forProducer {
+    consumerInstance = "consumer";
+    key = "declaration-only-kernel-modules";
+    interface = {
+      alias = interfaces.kernelModules.alias;
+      declaration = interfaces.kernelModules.declaration;
+    };
+    methods = ["observe"];
+    parameters = {
+      modules = ["overlay"];
+      required = true;
+    };
+  };
   invalidProducerMethods = methods:
     !(builtins.tryEval (builtins.deepSeq (serviceManagement.forProducer {
           consumerInstance = "consumer";
@@ -633,6 +646,8 @@ in
   assert expandedWithReload.requirementTemplates.service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];
   assert expandedWithRestartToken.requests.main-lifecycle.parameters.restart_token == "operator-requested-restart";
   assert observeOnlyKernelModules.requirementTemplates.kernel-modules.methods == ["observe"];
+  assert declarationOnlyKernelModules.requirementTemplates.kernel-modules
+  == observeOnlyKernelModules.requirementTemplates.kernel-modules;
   assert invalidProducerMethods [];
   assert invalidProducerMethods ["observe" "observe"];
   assert invalidProducerMethods ["remove"];
