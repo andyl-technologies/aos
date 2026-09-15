@@ -180,29 +180,11 @@
     strength = "required";
     fallback = null;
   };
-  qualificationObserver = entryPoint: {
-    artifact = runtimeArtifact;
-    inherit entryPoint;
-    arguments = abilityTypes.record {
-      fields.request_path = abilityTypes.string {
-        maxLength = 4096;
-        syntax = null;
-      };
-      optional = [];
+  qualificationObserver = entryPoint:
+    lib.qualification.abilityObserver {
+      artifact = runtimeArtifact;
+      inherit entryPoint;
     };
-    result = abilityTypes.record {
-      fields = {
-        provider = abilityTypes.localKey;
-        kind = abilityTypes.localKey;
-        scope = abilityTypes.localKey;
-        observation = abilityTypes.string {
-          maxLength = 1048576;
-          syntax = null;
-        };
-      };
-      optional = [];
-    };
-  };
   conformanceFamilies = [
     "authority-revocation"
     "dependent-effect"

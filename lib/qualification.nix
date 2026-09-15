@@ -253,6 +253,32 @@
       ++ builtins.concatMap (entry: entry.selectors) projectedSteps;
   };
 in rec {
+  abilityObserver = {
+    artifact ? abilities.packageOutput {},
+    entryPoint,
+  }: {
+    inherit artifact entryPoint;
+    arguments = abilities.types.record {
+      fields.request_path = abilities.types.string {
+        maxLength = 4096;
+        syntax = null;
+      };
+      optional = [];
+    };
+    result = abilities.types.record {
+      fields = {
+        provider = abilities.types.localKey;
+        kind = abilities.types.localKey;
+        scope = abilities.types.localKey;
+        observation = abilities.types.string {
+          maxLength = 1048576;
+          syntax = null;
+        };
+      };
+      optional = [];
+    };
+  };
+
   literal = text: normalizeFragment "literal fragment" {kind = "literal"; inherit text;};
   artifactRoot = {artifact ? abilities.packageOutput {}}:
     normalizeFragment "artifact-root fragment" {kind = "artifact-root"; inherit artifact;};
