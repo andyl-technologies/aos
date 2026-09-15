@@ -69,11 +69,6 @@ in
       };
     };
 
-    passthru.serviceDocumentation = {
-      kind = "on-demand";
-      summary = "Kubernetes-managed instance-manager payload.";
-    };
-
     meta = {
       description = "Longhorn Instance Manager — engine and replica process manager";
       homepage = "https://longhorn.io";

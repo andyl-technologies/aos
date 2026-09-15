@@ -184,11 +184,6 @@ in
       };
     };
 
-    passthru.serviceDocumentation = {
-      kind = "on-demand";
-      summary = "Shared payload selected through the configurable k3s role packages.";
-    };
-
     meta = {
       description = "k3s — lightweight Kubernetes distribution";
       homepage = "https://k3s.io";

@@ -77,11 +77,6 @@ in
       declares = [];
     };
 
-    passthru.serviceDocumentation = {
-      kind = "fixture";
-      summary = "VM control-plane fixture for fleet tests.";
-    };
-
     meta = {
       description = "AOS exposed package for the VM test guest agent";
       license = "Apache-2.0";
