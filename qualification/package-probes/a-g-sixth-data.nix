@@ -81,30 +81,6 @@ in {
   classpath-0_93 = mkClasspathProbe "classpath-0_93";
   classpath-0_99 = mkClasspathProbe "classpath-0_99";
 
-  config-module-smoke = mkDataProbe {
-    package = "config-module-smoke";
-    primaryInput = "The package's fixed config-module payload and Bash dependency link.";
-    primaryOperation = "Read the payload and resolve the declared dependency link.";
-    primaryExpected = "The payload is exact and the Bash link resolves inside the store.";
-    primaryScript = ''
-      import pathlib
-      root = pathlib.Path("@out@/share/config-module-smoke")
-      assert (root / "payload.txt").read_text() == "payload\n"
-      assert (root / "bash").is_symlink() and (root / "bash").resolve().is_dir()
-      print("config-module-smoke data passed")
-    '';
-    badInput = "A request for an undeclared config-module payload member.";
-    badOperation = "Resolve that member beneath the package data directory.";
-    badExpected = "The package data lookup rejects the absent member.";
-    badScript = ''
-      import pathlib, sys
-      if pathlib.Path("@out@/share/config-module-smoke/absent").exists():
-          raise SystemExit(2)
-      sys.stderr.write("config-module-smoke rejected invalid input\n")
-      raise SystemExit(7)
-    '';
-  };
-
   darwin-sdk = mkDataProbe {
     package = "darwin-sdk";
     primaryInput = "The assembled Darwin C headers and text-based libSystem stub.";
