@@ -23,6 +23,28 @@ fn interface(name: &str) -> InterfaceKey {
     }
 }
 
+fn assignment(
+    resource: &ResourceId,
+    interface: &InterfaceKey,
+) -> aos_ability_model::ProviderAssignment {
+    serde_json::from_value(serde_json::json!({
+        "provider": resource.provider,
+        "interface": interface,
+        "implementation": {
+            "descriptor": format!("sha256:{}", "4".repeat(64)),
+            "artifact": {
+                "content": format!("sha256:{}", "5".repeat(64)),
+                "store_path": "/nix/store/00000000000000000000000000000000-fixture",
+                "nar_hash": format!("sha256:{}", "6".repeat(64)),
+                "closure": format!("sha256:{}", "7".repeat(64)),
+            },
+            "handler": "fixture",
+        },
+        "incarnation": "fixture-incarnation",
+    }))
+    .expect("provider assignment fixture is valid")
+}
+
 fn resource(key_name: &str) -> ResourceId {
     ResourceId {
         provider: InstanceId {
@@ -65,6 +87,7 @@ fn provider(temporary: &Path) -> FilesystemProvider {
 
 fn admission_request(provider: &FilesystemProvider, resource: ResourceId) -> AdmissionRequest {
     let interface = interface(STORAGE_ALLOCATION_INTERFACE);
+    let assignment = assignment(&resource, &interface);
     let value = ability_value(json!({
         "name": "runtime",
         "purpose": "runtime",
@@ -89,6 +112,7 @@ fn admission_request(provider: &FilesystemProvider, resource: ResourceId) -> Adm
         },
         semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         target,
+        assignment,
         resource_spec: ResourceSpec {
             resource,
             kind: aos_ability_model::InterfaceName::new(STORAGE_ALLOCATION_INTERFACE)
@@ -121,6 +145,7 @@ fn entry_request(
     resources: Vec<ResourceContext>,
 ) -> AdmissionRequest {
     let interface = interface(FILESYSTEM_ENTRY_INTERFACE);
+    let assignment = assignment(&resource, &interface);
     let destination = provider.mutable_roots[0].join(relative_path);
     let target = ResourceReference {
         interface: interface.clone(),
@@ -146,6 +171,7 @@ fn entry_request(
         },
         semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         target,
+        assignment,
         resource_spec: ResourceSpec {
             resource,
             kind: InterfaceName::new(FILESYSTEM_ENTRY_INTERFACE)
@@ -173,7 +199,8 @@ fn persistent_request(provider: &FilesystemProvider, resource: ResourceId) -> Ad
     let mut request = admission_request(provider, resource);
     let interface = interface(PERSISTENT_STORAGE_ALLOCATION_INTERFACE);
     request.method.interface = interface.clone();
-    request.target.interface = interface;
+    request.target.interface = interface.clone();
+    request.assignment.interface = interface;
     request.target.lifetime = ResourceLifetime::Persistent;
     request.resource_spec.kind = InterfaceName::new(PERSISTENT_STORAGE_ALLOCATION_INTERFACE)
         .expect("persistent storage kind is valid");
@@ -204,6 +231,7 @@ fn storage_view_request(
     let source_provider =
         decode_provider_context(&source_context).expect("source provider context decodes");
     let interface = interface(STORAGE_VIEW_INTERFACE);
+    let assignment = assignment(&target_resource, &interface);
     let target = ResourceReference {
         interface: interface.clone(),
         resource: target_resource.clone(),
@@ -226,6 +254,7 @@ fn storage_view_request(
         },
         semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
         target,
+        assignment,
         resource_spec: ResourceSpec {
             resource: target_resource,
             kind: InterfaceName::new(STORAGE_VIEW_INTERFACE)
@@ -262,25 +291,9 @@ fn target_context(request: &AdmissionRequest, admission: &AdmissionResult) -> Re
         .expect("bound context serializes"),
     )
     .expect("bound context is canonical");
-    let assignment = serde_json::from_value(serde_json::json!({
-        "provider": request.target.resource.provider,
-        "interface": request.method.interface,
-        "implementation": {
-            "descriptor": format!("sha256:{}", "4".repeat(64)),
-            "artifact": {
-                "content": format!("sha256:{}", "5".repeat(64)),
-                "store_path": "/nix/store/00000000000000000000000000000000-fixture",
-                "nar_hash": format!("sha256:{}", "6".repeat(64)),
-                "closure": format!("sha256:{}", "7".repeat(64)),
-            },
-            "handler": "fixture",
-        },
-        "incarnation": "fixture-incarnation",
-    }))
-    .expect("provider assignment fixture is valid");
     ResourceContext {
         reference: request.target.clone(),
-        assignment,
+        assignment: request.assignment.clone(),
         revision: request.resource_spec.revision,
         observation: admission.observation.clone(),
         native_context_digest: aos_provider_protocol::native_context_digest(&bound)
