@@ -430,6 +430,9 @@
   kernelModules = import ./kernel-modules.nix {
     inherit lib;
   };
+  bootPreparationCore = import ./boot-preparation-core.nix {
+    inherit lib;
+  };
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;
   };
@@ -868,6 +871,7 @@ in
   assert dockerService;
   assert containerdStaticProjection;
   assert kernelModules;
+  assert bootPreparationCore;
   assert postgresqlService;
   assert (builtins.head smokePublishedInterfaces).document == smokeAbilityProjection.interfaces.default;
   assert networkPolicyCore;

@@ -1642,6 +1642,10 @@ in rec {
       inherit declareInterface descriptorFor interfaceDocumentFromDeclaration interfaceIdentity;
       types = abilityTypes;
     };
+    bootPreparation = import ./boot-preparation.nix {
+      inherit declareInterface interfaceDocumentFromDeclaration interfaceIdentity;
+      types = abilityTypes;
+    };
   };
   module = {config, ...}:
     import ./module.nix {
@@ -1658,7 +1662,8 @@ in rec {
         ;
       coreInterfaces =
         interfaces.serviceManagement.declarations
-        // interfaces.networkPolicy.declarations;
+        // interfaces.networkPolicy.declarations
+        // interfaces.bootPreparation.declarations;
       moduleTypes = moduleOptionTypes;
     };
 
