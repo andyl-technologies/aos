@@ -2,10 +2,11 @@
 {
   lib,
   packageNames,
+  nativeAdapterMatrix,
   modules ? [],
 }:
 lib.evalModules {
   inherit lib;
-  specialArgs = {inherit packageNames;};
+  specialArgs = {inherit nativeAdapterMatrix packageNames;};
   modules = (import ./modules) ++ modules;
 }

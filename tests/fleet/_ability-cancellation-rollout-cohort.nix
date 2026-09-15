@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   cellId,
 }: let
   foreignService = {
@@ -33,7 +34,7 @@
   };
 in
   import ./_ability-cancellation-cohort.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     fixture = rollout;
     name = "ability-native-cancellation-rollout-${builtins.substring 0 12 (builtins.hashString "sha256" cellId)}";
     qualifiedCells = [cellId];

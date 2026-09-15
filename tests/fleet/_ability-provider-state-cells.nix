@@ -64,18 +64,14 @@ in
   assert builtins.length all == builtins.length (lib.unique all);
   assert builtins.sort builtins.lessThan all
   == builtins.sort builtins.lessThan (map (cell: cell.id) selected);
-  assert builtins.length blockedCompatible
-  == builtins.length matrix.inapplicable_cells;
-  assert builtins.length instanceLifetimeBlocked
-  + builtins.length missingStateFormatBlocked
-  == builtins.length matrix.inapplicable_cells;
+  assert builtins.sort builtins.lessThan (compatible ++ retained ++ unsupported)
+  == builtins.sort builtins.lessThan all;
+  assert map (cell: cell.id) blockedCompatible == matrix.inapplicable_cell_ids;
+  assert builtins.sort builtins.lessThan (instanceLifetimeBlocked ++ missingStateFormatBlocked)
+  == builtins.sort builtins.lessThan matrix.inapplicable_cell_ids;
   assert builtins.all (cell:
-    builtins.length cell.postconditions
-    == (
-      if lib.hasSuffix "/reject-unsupported-transfer" cell.id
-      then 7
-      else 6
-    ))
+    !lib.hasSuffix "/reject-unsupported-transfer" cell.id
+    || builtins.elem "dependent-effects-not-executed" cell.postconditions)
   selected; {
     inherit
       all

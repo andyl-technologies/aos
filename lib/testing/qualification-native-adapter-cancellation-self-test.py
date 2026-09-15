@@ -46,6 +46,64 @@ def package_routes(cell, subject):
     ]
 
 
+def synthetic_matrix(cell, dispatch, entry_point, cancellation_oracle):
+    """Builds one bounded generated-claim projection for a synthetic cell."""
+
+    adapters = [
+        {
+            "adapter": cell["adapter"],
+            "interface_name": cell["interface"]["name"],
+            "provider_implementation": {
+                "observer": {
+                    "result": {
+                        "fields": {
+                            "provider": {
+                                "kind": "string-enum",
+                                "values": [cell["adapter"]],
+                            },
+                            "kind": {
+                                "kind": "string-enum",
+                                "values": [cancellation_oracle],
+                            },
+                        }
+                    }
+                },
+            },
+        }
+    ]
+    if cell["adapter"] != "systemd-manager":
+        adapters.append(
+            {
+                "adapter": "systemd-manager",
+                "interface_name": "aos.systemd-manager",
+                "provider_implementation": {
+                    "observer": {
+                        "result": {
+                            "fields": {
+                                "provider": {
+                                    "kind": "string-enum",
+                                    "values": ["systemd-manager"],
+                                },
+                                "kind": {
+                                    "kind": "string-enum",
+                                    "values": ["systemd"],
+                                },
+                            }
+                        }
+                    },
+                },
+            }
+        )
+
+    return {
+        "schema": "aos.test.matrix/v1",
+        "cells": [cell],
+        "surface": {
+            "adapters": adapters
+        },
+    }
+
+
 def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
     """Checks the image route, physical oracle, digests, and probe uniqueness."""
 
@@ -157,10 +215,14 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
         "failure": "process-termination",
         "candidate": "new",
         "predecessor": "same",
-        "recovery": {"cancel": "drain"},
         "postconditions": list(cohort.POSTCONDITION_KINDS)[:4],
     }
-    matrix_spec = {"schema": "aos.test.matrix/v1", "cells": [cell]}
+    matrix_spec = synthetic_matrix(
+        cell,
+        "native-ab-image-rollout",
+        "libexec/aos-ab-image-rollout-handler",
+        "image-rollout",
+    )
     owner = {"count": 1, "identities": [{"resource": resource}]}
     live = {
         "kind": "image-rollout",
@@ -238,7 +300,7 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
     )
     for postcondition, record in records.items():
         cohort._validate_cancellation_probe_facts(
-            postcondition, record["observations"], subject, cell
+            postcondition, record["observations"], subject, cell, matrix_spec
         )
     probe_digests = {
         cohort.sha256(record["observations"]) for record in records.values()
@@ -253,6 +315,7 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
         bound_subject,
         digest("5"),
         observed_probe_digests,
+        matrix_spec,
     )
     rejected(
         lambda: cohort._validated_probes(
@@ -262,6 +325,7 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
             bound_subject,
             digest("5"),
             observed_probe_digests,
+            matrix_spec,
         )
     )
 
@@ -297,7 +361,7 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
             wrong_live["live-after"]["filesystem"]["entries"] = []
         rejected(
             lambda wrong_live=wrong_live: cohort._validate_cancellation_probe_facts(
-                "durable-attempt-state-classified", wrong_live, subject, cell
+                "durable-attempt-state-classified", wrong_live, subject, cell, matrix_spec
             )
         )
 
@@ -309,7 +373,7 @@ def validate_image_rollout_case(cohort, effect, cancellation, digest) -> None:
     )
     rejected(
         lambda: cohort._validate_cancellation_probe_facts(
-            "foreign-resources-unchanged", duplicate_probe, subject, cell
+            "foreign-resources-unchanged", duplicate_probe, subject, cell, matrix_spec
         )
     )
 
@@ -430,10 +494,14 @@ def main() -> None:
         "effect_class": "mutation",
         "interface": interface,
         "method": "publish",
-        "recovery": {"cancel": "remove"},
         "postconditions": list(cohort.POSTCONDITION_KINDS)[:4],
     }
-    matrix_spec = {"schema": "aos.test.matrix/v1", "cells": [cell]}
+    matrix_spec = synthetic_matrix(
+        cell,
+        "managed-configuration-terminal",
+        "bin/.aos-package-runtime-unwrapped",
+        "filesystem",
+    )
     owner = {"count": 1, "identities": [{"resource": resource}]}
     live = {"kind": "filesystem", "entries": [{"path": "/owned"}]}
     foreign = {
@@ -491,7 +559,7 @@ def main() -> None:
     )
     for postcondition, record in probes[cell_id].items():
         cohort._validate_cancellation_probe_facts(
-            postcondition, record["observations"], subject, cell
+            postcondition, record["observations"], subject, cell, matrix_spec
         )
 
     wrong_handler = copy.deepcopy(subject)
@@ -514,7 +582,7 @@ def main() -> None:
     wrong_boundary["boundary-timeline"][2]["boundary"] = "effect-returned"
     rejected(
         lambda: cohort._validate_cancellation_probe_facts(
-            "durable-attempt-state-classified", wrong_boundary, subject, cell
+            "durable-attempt-state-classified", wrong_boundary, subject, cell, matrix_spec
         )
     )
     wrong_owner = copy.deepcopy(
@@ -523,7 +591,7 @@ def main() -> None:
     wrong_owner["owner-after"]["count"] = 2
     rejected(
         lambda: cohort._validate_cancellation_probe_facts(
-            "at-most-one-resource-owner", wrong_owner, subject, cell
+            "at-most-one-resource-owner", wrong_owner, subject, cell, matrix_spec
         )
     )
     wrong_foreign = copy.deepcopy(
@@ -533,7 +601,7 @@ def main() -> None:
     wrong_foreign["foreign-after"]["observation"]["entries"] = []
     rejected(
         lambda: cohort._validate_cancellation_probe_facts(
-            "foreign-resources-unchanged", wrong_foreign, subject, cell
+            "foreign-resources-unchanged", wrong_foreign, subject, cell, matrix_spec
         )
     )
     wrong_dependency = copy.deepcopy(
@@ -542,7 +610,7 @@ def main() -> None:
     wrong_dependency["dependent-effect-count"] = 1
     rejected(
         lambda: cohort._validate_cancellation_probe_facts(
-            "dependent-effects-not-executed", wrong_dependency, subject, cell
+            "dependent-effects-not-executed", wrong_dependency, subject, cell, matrix_spec
         )
     )
 

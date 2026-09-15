@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   qualificationImage ? false,
 }: let
   fixture = import ./_kubernetes-runtime-reference.nix {
@@ -10,7 +11,7 @@
     guestTools = qualificationImage;
     effectQualification = true;
   };
-  matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  matrix = nativeAdapterMatrix;
   cells = import ./_ability-cancellation-cells.nix {
     inherit lib matrix;
   };
@@ -21,7 +22,7 @@
     cells.groups.systemd;
 in
   import ./_ability-cancellation-cohort.nix {
-    inherit lib mkSystem pkgs fixture;
+    inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-cancellation-kubernetes";
     qualifiedCells = cells.groups.kubernetes ++ bootstrapCells;
     domainScript = ''

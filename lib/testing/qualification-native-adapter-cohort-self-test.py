@@ -9,12 +9,22 @@ import pathlib
 import sys
 
 
-POSTGRESQL_FIXTURE_CELLS = [
-    "postgresql/aos.postgresql-effects/abi-1/materialize/adopt-compatible-state",
-    "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer",
-    "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result",
-    "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
-]
+SYNTHETIC_CLAIMS = {
+    "foreground-process": ("aos.foreground-process", "foreground-process"),
+    "image-rollout": ("aos.ab-image-rollout-effects", "boot-slot"),
+    "managed-configuration": ("aos.managed-configuration-effects", "managed-file"),
+    "network-endpoint": ("aos.network-endpoint-effects", "loopback-listener"),
+    "postgresql": ("aos.postgresql-effects", "postgresql-cluster"),
+    "service-management": ("aos.service-management", "systemd-unit"),
+}
+SYNTHETIC_CELL_PREFIX = (
+    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/"
+)
+SYNTHETIC_CRASH_SCENARIOS = (
+    "interrupt-after-durable-intent",
+    "lose-external-result",
+    "interrupt-after-durable-outcome",
+)
 
 
 def load(path: pathlib.Path):
@@ -56,17 +66,15 @@ def qualification_subject(
     """Builds a small package-route fixture from the test's matrix and evidence."""
 
     routes = {}
-    for cell in spec["cells"]:
+    for adapter in spec["surface"]["adapters"]:
         route = {
-            "adapter": cell["adapter"],
-            "interface": cell["interface"],
-            "methods": sorted(
-                {
-                    candidate["method"]
-                    for candidate in spec["cells"]
-                    if candidate["adapter"] == cell["adapter"]
-                }
-            ),
+            "adapter": adapter["adapter"],
+            "interface": {
+                "name": adapter["interface_name"],
+                "abi": adapter["interface_abi"],
+                "descriptor": adapter["interface_descriptor"],
+            },
+            "methods": sorted(method["method"] for method in adapter["methods"]),
             "provenance": [
                 {
                     "package": "qualification-fixture",
@@ -166,11 +174,55 @@ def classify(module, spec):
     """Adds the exact applicability envelope to one bounded matrix fixture."""
 
     if "surface" not in spec:
-        adapters = sorted({cell["adapter"] for cell in spec["cells"]})
+        adapters = sorted(
+            {cell["adapter"] for cell in spec["cells"]}
+            | {"service-management"}
+        )
         spec["surface"] = {
             "adapters": [
                 {
                     "adapter": adapter,
+                    "interface_name": SYNTHETIC_CLAIMS[adapter][0],
+                    "interface_abi": 1,
+                    "interface_descriptor": next(
+                        (
+                            cell["interface"]["descriptor"]
+                            for cell in spec["cells"]
+                            if cell["adapter"] == adapter
+                        ),
+                        "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
+                    ),
+                    "methods": [
+                        {"method": method, "effect_class": "mutation"}
+                        for method in sorted(
+                            {
+                                cell["method"]
+                                for cell in spec["cells"]
+                                if cell["adapter"] == adapter
+                            }
+                            | (
+                                {"reload"}
+                                if adapter == "service-management"
+                                else set()
+                            )
+                        )
+                    ],
+                    "provider_implementation": {
+                        "observer": {
+                            "result": {
+                                "fields": {
+                                    "provider": {
+                                        "kind": "string-enum",
+                                        "values": [adapter],
+                                    },
+                                    "kind": {
+                                        "kind": "string-enum",
+                                        "values": [SYNTHETIC_CLAIMS[adapter][1]],
+                                    },
+                                }
+                            }
+                        },
+                    },
                     "provider_contract": {
                         "resource_lifetime": "persistent",
                         "state_format": "sha256:" + "aa" * 32,
@@ -185,6 +237,9 @@ def classify(module, spec):
     }
     for adapter in spec["surface"]["adapters"]:
         cells = [cell for cell in spec["cells"] if cell["adapter"] == adapter["adapter"]]
+        if not cells:
+            continue
+
         interface = cells[0]["interface"]
         adapter.setdefault("interface_name", interface["name"])
         adapter.setdefault("interface_abi", interface["abi"])
@@ -457,6 +512,7 @@ def assert_provider_negative_validator(module, template_cell):
                 "artifact": "sha256:" + "50" * 32,
                 "implementation": "sha256:" + "51" * 32,
                 "handler": "network-endpoint-terminal",
+                "entry-point": "libexec/fixture-handler",
             },
             "boundary": "after-durable-intent-before-external-effect",
             "journal": {
@@ -515,14 +571,15 @@ def assert_provider_negative_validator(module, template_cell):
     provider_spec = provider_spec_fixture(cell)
     provider_routes = [provider_route_fixture(cell, record)]
 
+    provider_spec = classify(module, {"cells": [cell]})
     module._validated_provider_negative_cell(
-        cell, record, "sha256:" + "80" * 32, set(), provider_spec, provider_routes
+        cell, record, "sha256:" + "80" * 32, set(), provider_spec
     )
     forged = copy.deepcopy(record)
     forged["evidence"]["provider-route"]["candidate-linked"] = False
     try:
         module._validated_provider_negative_cell(
-            cell, forged, "sha256:" + "80" * 32, set(), provider_spec, provider_routes
+            cell, forged, "sha256:" + "80" * 32, set(), provider_spec
         )
     except RuntimeError:
         pass
@@ -598,13 +655,13 @@ def assert_provider_negative_validator(module, template_cell):
         "live": True,
     }
 
+    foreground_spec = classify(module, {"cells": [foreground_cell]})
     module._validated_provider_negative_cell(
         foreground_cell,
         foreground_record,
         "sha256:" + "81" * 32,
         set(),
-        provider_spec_fixture(foreground_cell),
-        [provider_route_fixture(foreground_cell, foreground_record)],
+        foreground_spec,
     )
     changed_sentinel = copy.deepcopy(foreground_record)
     changed_sentinel["evidence"]["provider-sentinel"]["after"] = (
@@ -616,8 +673,7 @@ def assert_provider_negative_validator(module, template_cell):
             changed_sentinel,
             "sha256:" + "81" * 32,
             set(),
-            provider_spec_fixture(foreground_cell),
-            [provider_route_fixture(foreground_cell, foreground_record)],
+            foreground_spec,
         )
     except RuntimeError:
         pass
@@ -788,6 +844,7 @@ def assert_rollout_provider_negative_validator(module, template_cell):
                     "artifact": "sha256:" + "50" * 32,
                     "implementation": "sha256:" + "51" * 32,
                     "handler": "image-rollout-terminal",
+                    "entry-point": "libexec/fixture-handler",
                 },
                 "boundary": (
                     "after-durable-intent-before-external-effect"
@@ -804,24 +861,19 @@ def assert_rollout_provider_negative_validator(module, template_cell):
             },
         }
 
+        rollout_spec = classify(module, {"cells": [cell]})
+        if witness is not None:
+            rollout_spec["surface"]["adapters"][0]["methods"].append(
+                {"method": witness["method"], "effect_class": "mutation"}
+            )
         module._validated_provider_negative_cell(
-            cell,
-            record,
-            "sha256:" + "60" * 32,
-            set(),
-            provider_spec_fixture(cell),
-            [provider_route_fixture(cell, record)],
+            cell, record, "sha256:" + "60" * 32, set(), rollout_spec
         )
         forged = copy.deepcopy(record)
         forged["evidence"]["blocked-successor"]["after"] = "sha256:" + "61" * 32
         try:
             module._validated_provider_negative_cell(
-                cell,
-                forged,
-                "sha256:" + "60" * 32,
-                set(),
-                provider_spec_fixture(cell),
-                [provider_route_fixture(cell, record)],
+                cell, forged, "sha256:" + "60" * 32, set(), rollout_spec
             )
         except RuntimeError:
             pass
@@ -1051,9 +1103,9 @@ def assert_postgresql_cohort(module):
         },
     }
     bundle_bytes = module.canonical(bundle)
-    subject = module._postgresql_plan_subject(bundle_bytes, "materialize")
+    subject = module.provider_evidence.postgresql_evidence.postgresql_plan_subject(bundle_bytes, "materialize")
     cell = {
-        "id": POSTGRESQL_FIXTURE_CELLS[0],
+        "id": "postgresql/aos.postgresql-effects/abi-1/materialize/adopt-compatible-state",
         "adapter": "postgresql",
         "interface": {
             **interface,
@@ -1064,7 +1116,14 @@ def assert_postgresql_cohort(module):
         "candidate": "compatible-replacement",
         "predecessor": "in-flight-compatible",
     }
-    module._validate_cohort_subject(cell, subject, bundle_bytes)
+
+    def validate_subject(cell_value, subject_value, evidence_value):
+        matrix_spec = classify(module, {"cells": [cell_value]})
+        module._validate_cohort_subject(
+            cell_value, subject_value, evidence_value, matrix_spec
+        )
+
+    validate_subject(cell, subject, bundle_bytes)
 
     row_digest = digest("0")
     facts = {
@@ -1084,9 +1143,9 @@ def assert_postgresql_cohort(module):
         },
         "at-most-one-resource-owner": {
             "resource": resource,
-            "owners-before": [{"identity": module.endpoint_identity(adoption["source"])}],
+            "owners-before": [{"identity": module.provider_evidence.postgresql_evidence.endpoint_identity(adoption["source"])}],
             "owners-unsettled": [],
-            "owners-after": [{"identity": module.endpoint_identity(adoption["candidate"])}],
+            "owners-after": [{"identity": module.provider_evidence.postgresql_evidence.endpoint_identity(adoption["candidate"])}],
         },
         "foreign-resources-unchanged": {
             "resource": {"provider": "test", "key": "storage"},
@@ -1114,13 +1173,13 @@ def assert_postgresql_cohort(module):
         },
         "exactly-one-resource-owner": {
             "resource": resource,
-            "expected-owner": {"identity": module.endpoint_identity(adoption["candidate"])},
-            "owners": [{"identity": module.endpoint_identity(adoption["candidate"])}],
+            "expected-owner": {"identity": module.provider_evidence.postgresql_evidence.endpoint_identity(adoption["candidate"])},
+            "owners": [{"identity": module.provider_evidence.postgresql_evidence.endpoint_identity(adoption["candidate"])}],
         },
     }
     for name, observation in facts.items():
         observation["matrix-operation"] = subject["operation"]
-        module._validate_postgresql_probe_facts(name, observation, subject, cell)
+        module.provider_evidence.postgresql_evidence.validate_probe(name, observation, subject, cell)
 
         invalid = copy.deepcopy(observation)
         if name == "durable-attempt-state-classified":
@@ -1136,7 +1195,7 @@ def assert_postgresql_cohort(module):
         else:
             invalid["owners"] = []
         try:
-            module._validate_postgresql_probe_facts(name, invalid, subject, cell)
+            module.provider_evidence.postgresql_evidence.validate_probe(name, invalid, subject, cell)
         except RuntimeError:
             pass
         else:
@@ -1158,7 +1217,7 @@ def assert_postgresql_cohort(module):
         }
     }
     rejection = {
-        "schema": module.POSTGRESQL_REJECTION_EVIDENCE_SCHEMA,
+        "schema": module.provider_evidence.postgresql_evidence.REJECTION_EVIDENCE_SCHEMA,
         "activation": activation,
         "policy": rejection_policy,
         "observation": {
@@ -1173,17 +1232,15 @@ def assert_postgresql_cohort(module):
         },
     }
     rejection_bytes = module.canonical(rejection)
-    rejection_subject = module._postgresql_rejection_subject(rejection_bytes)
+    rejection_subject = module.provider_evidence.postgresql_evidence.postgresql_rejection_subject(rejection_bytes)
     rejection_cell = {
         **cell,
-        "id": POSTGRESQL_FIXTURE_CELLS[1],
+        "id": "postgresql/aos.postgresql-effects/abi-1/materialize/reject-unsupported-transfer",
         "failure": "transfer-rejected",
         "candidate": "unsupported-replacement",
         "predecessor": "in-flight-incompatible",
     }
-    module._validate_cohort_subject(
-        rejection_cell, rejection_subject, rejection_bytes
-    )
+    validate_subject(rejection_cell, rejection_subject, rejection_bytes)
 
     incompatible_facts = {
         "durable-attempt-state-classified": {
@@ -1224,7 +1281,7 @@ def assert_postgresql_cohort(module):
     }
     for name, observation in incompatible_facts.items():
         observation["matrix-operation"] = rejection_subject["operation"]
-        module._validate_postgresql_probe_facts(
+        module.provider_evidence.postgresql_evidence.validate_probe(
             name, observation, rejection_subject, rejection_cell
         )
         invalid = copy.deepcopy(observation)
@@ -1237,7 +1294,7 @@ def assert_postgresql_cohort(module):
         else:
             invalid["row-digest-after"] = digest("3")
         try:
-            module._validate_postgresql_probe_facts(
+            module.provider_evidence.postgresql_evidence.validate_probe(
                 name, invalid, rejection_subject, rejection_cell
             )
         except RuntimeError:
@@ -1245,7 +1302,7 @@ def assert_postgresql_cohort(module):
         else:
             raise AssertionError(f"PostgreSQL {name} validator accepted false facts")
 
-    restart_subject = module._postgresql_plan_subject(bundle_bytes, "restart")
+    restart_subject = module.provider_evidence.postgresql_evidence.postgresql_plan_subject(bundle_bytes, "restart")
     restart_adoption_cell = {
         **cell,
         "id": (
@@ -1254,9 +1311,7 @@ def assert_postgresql_cohort(module):
         ),
         "method": "restart",
     }
-    module._validate_cohort_subject(
-        restart_adoption_cell, restart_subject, bundle_bytes
-    )
+    validate_subject(restart_adoption_cell, restart_subject, bundle_bytes)
     ordered_restart = {
         "matrix-operation": restart_subject["operation"],
         "transaction": "transaction-postgresql",
@@ -1279,7 +1334,7 @@ def assert_postgresql_cohort(module):
         "terminal": "complete",
         "classified": True,
     }
-    module._validate_postgresql_probe_facts(
+    module.provider_evidence.postgresql_evidence.validate_probe(
         "durable-attempt-state-classified",
         ordered_restart,
         restart_subject,
@@ -1288,7 +1343,7 @@ def assert_postgresql_cohort(module):
     reversed_restart = copy.deepcopy(ordered_restart)
     reversed_restart["adoption-timeline"][-1]["sequence"] = 6
     try:
-        module._validate_postgresql_probe_facts(
+        module.provider_evidence.postgresql_evidence.validate_probe(
             "durable-attempt-state-classified",
             reversed_restart,
             restart_subject,
@@ -1301,19 +1356,19 @@ def assert_postgresql_cohort(module):
 
     lost_cell = {
         **cell,
-        "id": POSTGRESQL_FIXTURE_CELLS[2],
+        "id": "postgresql/aos.postgresql-effects/abi-1/restart/lose-external-result",
         "method": "restart",
         "failure": "external-result-lost",
     }
     retained_cell = {
         **lost_cell,
-        "id": POSTGRESQL_FIXTURE_CELLS[3],
+        "id": "postgresql/aos.postgresql-effects/abi-1/restart/activate-retained-target",
         "failure": "none",
         "candidate": "retained-target",
         "predecessor": "current-authority",
     }
-    module._validate_cohort_subject(lost_cell, restart_subject, bundle_bytes)
-    module._validate_cohort_subject(retained_cell, restart_subject, bundle_bytes)
+    validate_subject(lost_cell, restart_subject, bundle_bytes)
+    validate_subject(retained_cell, restart_subject, bundle_bytes)
 
     restart_timeline = {
         "matrix-operation": restart_subject["operation"],
@@ -1336,13 +1391,13 @@ def assert_postgresql_cohort(module):
         "terminal": "complete",
         "classified": True,
     }
-    module._validate_postgresql_probe_facts(
+    module.provider_evidence.postgresql_evidence.validate_probe(
         "durable-attempt-state-classified",
         restart_timeline,
         restart_subject,
         lost_cell,
     )
-    module._validate_postgresql_probe_facts(
+    module.provider_evidence.postgresql_evidence.validate_probe(
         "dependent-effects-not-executed",
         {
             "matrix-operation": restart_subject["operation"],
@@ -1377,7 +1432,7 @@ def assert_postgresql_cohort(module):
     }
     for name, observation in retained_facts.items():
         observation["matrix-operation"] = restart_subject["operation"]
-        module._validate_postgresql_probe_facts(
+        module.provider_evidence.postgresql_evidence.validate_probe(
             name, observation, restart_subject, retained_cell
         )
         invalid = copy.deepcopy(observation)
@@ -1386,7 +1441,7 @@ def assert_postgresql_cohort(module):
         else:
             invalid["data-path-after"] = "/var/lib/postgresql/replaced"
         try:
-            module._validate_postgresql_probe_facts(
+            module.provider_evidence.postgresql_evidence.validate_probe(
                 name, invalid, restart_subject, retained_cell
             )
         except RuntimeError:
@@ -1398,7 +1453,7 @@ def assert_postgresql_cohort(module):
     invalid_rejection["observation"]["candidate-effect-count"] = 1
     invalid_rejection_bytes = module.canonical(invalid_rejection)
     try:
-        module._validate_cohort_subject(
+        validate_subject(
             rejection_cell,
             rejection_subject,
             invalid_rejection_bytes,
@@ -1484,7 +1539,6 @@ def main() -> None:
                 "predecessor": "same",
                 "candidate": "same",
                 "postconditions": names,
-                "recovery": {"reconcile": "observe", "cancel": "cancel"},
                 "invalidated_by": ["subject", "policy", "executor", "environment"],
             }
         ]
@@ -1722,8 +1776,8 @@ def main() -> None:
         }
     }
     scope = [
-        module.QUALIFIED_CELL_PREFIX + scenario
-        for scenario in module.QUALIFIED_CRASH_SCENARIOS
+        SYNTHETIC_CELL_PREFIX + scenario
+        for scenario in SYNTHETIC_CRASH_SCENARIOS
     ]
     scenarios = {
         "interrupt-after-durable-intent": {
@@ -1738,7 +1792,7 @@ def main() -> None:
         },
     }
     for scenario, scenario_spec in scenarios.items():
-        scenario_cell_id = module.QUALIFIED_CELL_PREFIX + scenario
+        scenario_cell_id = SYNTHETIC_CELL_PREFIX + scenario
         scenario_cell = copy.deepcopy(spec["cells"][0])
         scenario_cell.update(
             {
@@ -1751,8 +1805,8 @@ def main() -> None:
 
         scenario_observations = copy.deepcopy(observations)
         durable = scenario_observations["durable-attempt-state-classified"]
-        expected_timeline = module.EXPECTED_ATTEMPT_TIMELINES[scenario]
-        expected_boundaries = module.EXPECTED_ATTEMPT_BOUNDARIES[scenario]
+        expected_timeline = module.provider_evidence.reference_evidence.EXPECTED_ATTEMPT_TIMELINES[scenario]
+        expected_boundaries = module.provider_evidence.reference_evidence.EXPECTED_ATTEMPT_BOUNDARIES[scenario]
         offset = 20 if scenario == "interrupt-after-durable-intent" else 40
         durable["transaction"] = "transaction-" + scenario
         durable["journal-before-loss"] = (
@@ -1805,7 +1859,7 @@ def main() -> None:
                 "kind": kind,
                 "node-ordinal": 2,
             }
-            for index, kind in enumerate(module.DEPENDENT_EFFECT_TIMELINE)
+            for index, kind in enumerate(module.provider_evidence.reference_evidence.DEPENDENT_EFFECT_TIMELINE)
         ]
         dependency["effect-boundary-timeline"] = [
             {
@@ -1814,7 +1868,7 @@ def main() -> None:
                 "boundary": boundary,
             }
             for index, (purpose, boundary) in enumerate(
-                module.DEPENDENT_EFFECT_BOUNDARY_TIMELINE
+                module.provider_evidence.reference_evidence.DEPENDENT_EFFECT_BOUNDARY_TIMELINE
             )
         ]
         dependency["dependent-effect-return-position"] = dependency[
@@ -1969,10 +2023,6 @@ def main() -> None:
             ),
             "boundary": "cancellation",
             "failure": "unsupported-cancellation-retains-ownership",
-            "recovery": {
-                "reconcile": control_cell["recovery"]["reconcile"],
-                "cancel": None,
-            },
         }
     )
     control_digest = module.sha256(control_cell)
@@ -1995,8 +2045,7 @@ def main() -> None:
         "evidence": {
             "scenario": "cancel-unsettled-attempt",
             "classification": "cancellation-unsupported-intervention",
-            "recovery-routes": control_cell["recovery"],
-            "fixture-recovery-routes": {
+            "operation-recovery": {
                 "reconcile": control_cell["method"],
                 "cancel": None,
             },
@@ -2147,7 +2196,6 @@ def main() -> None:
             authority_cell,
             provider_cell,
             executor_cell,
-            control_cell,
         ]
     })
     runtime_audit = {
@@ -2157,7 +2205,6 @@ def main() -> None:
             authority_cell["id"]: authority_record,
             provider_cell["id"]: provider_record,
             executor_cell["id"]: executor_record,
-            control_cell["id"]: control_record,
         },
     }
     runtime_scope = [
@@ -2165,7 +2212,6 @@ def main() -> None:
         authority_cell["id"],
         provider_cell["id"],
         executor_cell["id"],
-        control_cell["id"],
     ]
     authority_cells, authority_count = module.build_cells(
         runtime_spec,
@@ -2177,20 +2223,13 @@ def main() -> None:
         "sha256:" + "22" * 32,
         runtime_audit,
     )
-    assert authority_count == 28
+    assert authority_count == 24
     authority_observations = {
         cell["id"]: cell for cell in authority_cells
     }[authority_cell["id"]]
     assert all(
         value["passed"]
         for value in authority_observations["postconditions"].values()
-    )
-    control_observations = {
-        cell["id"]: cell for cell in authority_cells
-    }[control_cell["id"]]
-    assert all(
-        value["passed"]
-        for value in control_observations["postconditions"].values()
     )
     for replacement_cell in [provider_cell, executor_cell]:
         replacement_observations = {
@@ -2260,36 +2299,23 @@ def main() -> None:
     else:
         raise AssertionError("executor replacement accepted a non-blocking graph")
 
-    rejected_control = copy.deepcopy(runtime_audit)
-    rejected_control["cells"][control_cell["id"]]["evidence"]["journal"][
-        "cancellation-interventions"
-    ] = 0
-    try:
-        module.build_cells(
-            runtime_spec,
-            probes,
-            runtime_scope,
-            {qualified: subject for qualified in scope},
-            {qualified: plan_bundle for qualified in scope},
-            "sha256:" + "11" * 32,
-            "sha256:" + "22" * 32,
-            rejected_control,
-        )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("runtime audit accepted a missing cancellation intervention")
+    module._validated_failure_control_cell(
+        control_cell,
+        control_record,
+        "sha256:" + "11" * 32,
+        set(),
+    )
 
     supported_control_cell = copy.deepcopy(control_cell)
     supported_control_cell["failure"] = "cancelled-after-reconciliation"
-    supported_control_cell["recovery"]["cancel"] = "cancel"
     supported_control_record = copy.deepcopy(control_record)
     supported_control_digest = module.sha256(supported_control_cell)
     supported_control_record["cell_digest"] = supported_control_digest
     supported_control_record["subject"]["cell-digest"] = supported_control_digest
-    supported_control_record["evidence"]["recovery-routes"] = supported_control_cell[
-        "recovery"
-    ]
+    supported_control_record["evidence"]["operation-recovery"]["cancel"] = {
+        "interface": supported_control_cell["interface"],
+        "method": "cancel",
+    }
     try:
         module._validated_failure_control_cell(
             supported_control_cell,
@@ -2358,8 +2384,7 @@ def main() -> None:
         "evidence": {
             "scenario": "interrupt-before-acquisition",
             "runtime-boundary": "BeforeResourceAcquisition",
-            "declared-recovery-routes": interruption_cell["recovery"],
-            "fixture-recovery-routes": {
+            "operation-recovery": {
                 "reconcile": interruption_cell["method"],
                 "cancel": None,
             },
@@ -2422,7 +2447,7 @@ def main() -> None:
         interruption_audit,
         provider_negative_audit,
     )
-    assert combined_count == 37
+    assert combined_count == 33
     interruption_observation = {
         cell["id"]: cell for cell in combined_cells
     }[interruption_cell["id"]]

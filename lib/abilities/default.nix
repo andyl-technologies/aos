@@ -222,6 +222,7 @@
       then entry.desiredType
       else definition._interface_declaration.requestType or null;
     requiredFeatures = entry.requiredFeatures or [];
+    qualification = entry.qualification or null;
   };
 
   projectDefinitions = entries: {

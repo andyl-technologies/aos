@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   qualificationImage ? false,
 }: let
   fixture = import ./_kubernetes-runtime-reference.nix {
@@ -10,13 +11,13 @@
     guestTools = qualificationImage;
     providerStateQualification = true;
   };
-  matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  matrix = nativeAdapterMatrix;
   cells = import ./_ability-provider-state-cells.nix {
     inherit lib matrix;
   };
 in
   import ./_ability-provider-state-cohort.nix {
-    inherit lib mkSystem pkgs fixture;
+    inherit lib mkSystem pkgs fixture nativeAdapterMatrix;
     name = "ability-native-provider-state-kubernetes";
     qualifiedCells = cells.groups.kubernetes;
     domainScript = ''

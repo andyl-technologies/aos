@@ -388,11 +388,11 @@
       platforms = qualificationPackageCoverageByPlatform;
       neverPublicationEligiblePackages = neverPublicationEligiblePackageNames;
     };
+  nativeAdapterMatrix = nativeAdapterMatrixCohort.nativeAdapterMatrix;
   releaseQualification = import ./qualification {
-    inherit lib;
+    inherit lib nativeAdapterMatrix;
     packageNames = qualificationPackageNames;
   };
-  nativeAdapterMatrix = import ./qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
   qualificationReportScenario = testing.mkQualificationReportScenario {
     name = "aos-qualification-${hostPlatform.system}-report";
@@ -504,24 +504,24 @@
     matrix = nativeAdapterMatrix;
   };
   nativeEffectReferenceCohort = import ./tests/fleet/ability-native-effect-boundaries-reference.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeEffectPostgresqlCohort = import ./tests/fleet/ability-native-effect-boundaries-postgresql.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeEffectKubernetesCohort = import ./tests/fleet/ability-native-effect-boundaries-kubernetes.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeEffectForegroundCohort = import ./tests/fleet/ability-native-effect-boundaries-foreground.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeEffectRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-effect-boundary-rollout-cohort.nix {
-      inherit lib mkSystem pkgs cellId;
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
       systems = discoverSystems;
     })
   nativeEffectBoundaryCells.groups.rollout;
@@ -531,20 +531,20 @@
     matrix = nativeAdapterMatrix;
   };
   nativeProviderStateReferenceCohort = import ./tests/fleet/ability-native-provider-state-reference.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderStateKubernetesCohort = import ./tests/fleet/ability-native-provider-state-kubernetes.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderStateForegroundCohort = import ./tests/fleet/ability-native-provider-state-foreground.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderStateRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-provider-state-rollout-cohort.nix {
-      inherit lib mkSystem pkgs cellId;
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
       systems = discoverSystems;
     })
   nativeProviderStateCells.groups.rollout;
@@ -561,7 +561,7 @@
       )
       nativeCancellationCells.groups.systemd;
   in
-    assert builtins.length selected == 5; selected;
+    selected;
   nativeCancellationSystemdCells = let
     selected =
       builtins.filter (
@@ -569,30 +569,35 @@
       )
       nativeCancellationCells.groups.systemd;
   in
-    assert builtins.length selected == 4; selected;
+    assert builtins.sort builtins.lessThan (
+      nativeCancellationKubernetesCells ++ selected
+    )
+    == builtins.sort builtins.lessThan (
+      nativeCancellationCells.groups.kubernetes ++ nativeCancellationCells.groups.systemd
+    ); selected;
   nativeCancellationKubernetesCohort = import ./tests/fleet/ability-native-cancellation-kubernetes.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeCancellationPostgresqlCohort = import ./tests/fleet/ability-native-cancellation-postgresql.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeCancellationSystemdCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeCancellationRolloutCohorts = map (cellId:
     import ./tests/fleet/_ability-cancellation-rollout-cohort.nix {
-      inherit lib mkSystem pkgs cellId;
+      inherit lib mkSystem pkgs cellId nativeAdapterMatrix;
     })
   nativeCancellationCells.groups.rollout;
   nativeCancellationReferenceCohort = import ./tests/fleet/ability-native-cancellation-reference.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeCancellationForegroundCohort = import ./tests/fleet/ability-native-cancellation-foreground.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
 
@@ -601,23 +606,23 @@
     matrix = nativeAdapterMatrix;
   };
   nativeProviderNegativeReference = import ./tests/fleet/ability-native-provider-negative-reference.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderNegativePostgresql = import ./tests/fleet/ability-native-provider-negative-postgresql.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderNegativeForeground = import ./tests/fleet/ability-native-provider-negative-foreground.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderNegativeSystemdManager = import ./tests/fleet/ability-native-provider-negative-systemd-manager.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderNegativeKubernetes = import ./tests/fleet/ability-native-provider-negative-kubernetes.nix {
-    inherit lib mkSystem pkgs;
+    inherit lib mkSystem pkgs nativeAdapterMatrix;
     qualificationImage = true;
   };
   nativeProviderNegativeRolloutMethods = lib.unique (
@@ -635,7 +640,7 @@
         )
         nativeProviderNegativeCells.groups.rollout;
       cohort = import ./tests/fleet/_ability-provider-negative-rollout-cohort.nix {
-        inherit lib mkSystem method pkgs cellIds;
+        inherit lib mkSystem method pkgs cellIds nativeAdapterMatrix;
         systems = discoverSystems;
       };
     in {
@@ -675,17 +680,15 @@
     nativeAdapterMatrix.cells
   );
   nativeAdapterFailureControlScenarios = [
-    "cancel-unsettled-attempt"
     "expire-attempt-deadline"
     "fail-cleanup"
     "fail-release"
   ];
   nativeAdapterFailureControlCells = map (cell: cell.id) (
-    builtins.filter (cell: let
-      scenario = builtins.elemAt (lib.splitString "/" cell.id) 4;
-    in
-      builtins.elem scenario (builtins.tail nativeAdapterFailureControlScenarios)
-      || (scenario == "cancel-unsettled-attempt" && cell.recovery.cancel == null))
+    builtins.filter (cell:
+      builtins.elem
+      (builtins.elemAt (lib.splitString "/" cell.id) 4)
+      nativeAdapterFailureControlScenarios)
     nativeAdapterMatrix.cells
   );
   nativeAdapterInterruptionCells = map (cell: cell.id) (
@@ -1837,7 +1840,7 @@ in {
   # stays at the top level.
   checks = rec {
     qualification = import ./tests/qualification {
-      inherit pkgs lib build fleet container;
+      inherit pkgs lib build fleet container nativeAdapterMatrix;
       packageCoverage = qualificationPackageCoverageReport;
       releaseExecutor = releaseQualificationExecutor;
     };

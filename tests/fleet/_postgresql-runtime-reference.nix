@@ -7,10 +7,12 @@
   effectQualification ? false,
   transitionTransform ? transition: transition,
 }: let
+  qualificationObserver = import ./_native-adapter-observer.nix {inherit pkgs;};
   packageSet = import ../abilities/reference-postgresql/package.nix {
     inherit lib;
     inherit (pkgs) bash coreutils jq mkDerivation postgresql writeTextFile;
     packageRuntime = pkgs.aos.packageRuntime;
+    inherit qualificationObserver;
     inherit effectQualification transitionTransform;
   };
 

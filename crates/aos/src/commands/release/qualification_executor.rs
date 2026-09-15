@@ -836,6 +836,9 @@ mod tests {
         let surface = serde_json::from_value::<NativeAdapterSurfaceSpec>(serde_json::json!({
             "adapters": [{
                 "adapter": "fixture",
+                "cancellation_oracle": "fixture-state",
+                "conformance_families": ["durability-recovery"],
+                "harness": "fixture",
                 "interface_abi": 1,
                 "interface_descriptor": Sha256Digest::of_bytes(b"interface descriptor"),
                 "interface_name": "aos.fixture-effects",
@@ -845,12 +848,34 @@ mod tests {
                     "method": "apply",
                     "reconcile": "apply",
                 }],
+                "oracle": "fixture-state",
                 "provider_contract": {
                     "resource_lifetime": "persistent",
                     "state_format": Sha256Digest::of_bytes(b"state format"),
                 },
+                "provider_implementation": {
+                    "package": "fixture-package",
+                    "name": "fixture-implementation",
+                    "artifact": {
+                        "_type": "aos-package-output-selector",
+                        "package": "fixture-package",
+                        "output": "out",
+                    },
+                    "dispatch": "fixture-dispatch",
+                    "handler": {
+                        "artifact": {
+                            "_type": "aos-package-output-selector",
+                            "package": "fixture-runtime",
+                            "output": "out",
+                        },
+                        "entry_point": "libexec/fixture-handler",
+                    },
+                    "required_features": [],
+                },
                 "scope": "host-resource",
             }],
+            "families": ["durability-recovery"],
+            "implementation_claims_digest": Sha256Digest::of_bytes(b"fixture implementation claims"),
             "limits": {
                 "max_adapters": 1,
                 "max_methods": 1,
@@ -861,6 +886,7 @@ mod tests {
                 "boundary": "before-external-effect",
                 "candidate": "same",
                 "failure": "injected-interruption",
+                "family": "durability-recovery",
                 "id": "interruption",
                 "predecessor": "same",
             }],

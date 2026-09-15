@@ -8,6 +8,7 @@
   providerStateQualification ? false,
   transitionTransform ? transition: transition,
 }: let
+  qualificationObserver = import ./_native-adapter-observer.nix {inherit pkgs;};
   packageSet = import ../abilities/reference-nginx/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
@@ -15,12 +16,14 @@
     managedConfigurationRuntime = pkgs.aos.packageRuntime;
     nginxRuntime = pkgs.nginx;
     serviceRuntime = pkgs.aos.packageRuntime;
+    inherit qualificationObserver;
     inherit effectQualification providerStateQualification transitionTransform;
   };
   systemdManagerPackage = import ../abilities/reference-systemd-manager/package.nix {
     inherit lib;
     inherit (pkgs) mkDerivation;
     packageRuntime = pkgs.aos.packageRuntime;
+    inherit qualificationObserver;
   };
 
   orderedPackages = [
@@ -41,8 +44,8 @@
       package = packageSet.credential;
     }
     {
-      name = "ability-reference-systemd";
-      package = packageSet.systemd;
+      name = "ability-reference-service";
+      package = packageSet.service;
     }
     {
       name = "ability-reference-systemd-manager";
@@ -198,7 +201,7 @@
       "ability-reference-nginx"
       "ability-reference-managed-configuration"
       "ability-reference-credential"
-      "ability-reference-systemd"
+      "ability-reference-service"
       "ability-reference-systemd-manager"
     ];
 in {

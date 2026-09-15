@@ -7,10 +7,11 @@
   container,
   packageCoverage,
   releaseExecutor,
+  nativeAdapterMatrix,
 }: let
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
-    inherit lib;
+    inherit lib nativeAdapterMatrix;
     inherit packageNames;
   };
   available = {checks = {inherit build fleet container;};};
@@ -39,7 +40,6 @@
   imageRecovery = builtins.head (
     builtins.filter (requirement: requirement.id == "image-update-recovery") contract.requirements
   );
-  nativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   nativeAdapterMatrixArtifact = pkgs.writeTextFile {
     name = "aos-qualification-native-adapter-matrix";
     destination = "/matrix-spec.json";
@@ -50,9 +50,9 @@ in
   assert (resolve "checks.fleet.measured-boot").drvPath == fleet.measured-boot.drvPath;
     groups
     // {
-      policy = import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;};
+      policy = import ./policy.nix {inherit pkgs lib nativeAdapterMatrix packageCoverage releaseExecutor;};
       native-adapter-matrix = nativeAdapterMatrixArtifact;
-      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib packageCoverage releaseExecutor;})] ++ builtins.attrValues groups);
+      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib nativeAdapterMatrix packageCoverage releaseExecutor;})] ++ builtins.attrValues groups);
       # Evaluating this inventory resolves every reference, including sparse
       # groups, before an expensive VM campaign starts.
       inventory = builtins.listToAttrs (map (requirement: {

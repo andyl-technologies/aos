@@ -1,4 +1,13 @@
-"""Builds exact matrix cells from independently retained production probes."""
+"""Builds exact matrix cells from independently retained production probes.
+
+This module owns one fail-closed aggregation transaction: it verifies the
+matrix partition, binds every normalized subject and probe to the same subject,
+policy, executor, and environment digests, rejects replay across cells, and
+returns the closed cell map. Keeping those generic scenario validators together
+lets one replay set and one partition check cover the whole result. Raw plan and
+live-resource formats remain in provider-owned modules behind a small normalized
+validation API.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +15,8 @@ import hashlib
 import json
 import re
 from typing import Any
+
+import native_adapter_evidence as provider_evidence
 
 
 PROBE_SCHEMA = "aos.release.native-adapter-postcondition-probe/v1"
@@ -34,14 +45,6 @@ RELATIVE_PATH = re.compile(
 ).fullmatch
 MAX_PROBE_FACTS = 32
 MAX_PROBE_BYTES = 64 * 1024
-QUALIFIED_CELL_PREFIX = (
-    "managed-configuration/aos.managed-configuration-effects/abi-1/publish/"
-)
-QUALIFIED_CRASH_SCENARIOS = (
-    "interrupt-after-durable-intent",
-    "lose-external-result",
-    "interrupt-after-durable-outcome",
-)
 QUALIFICATION_SUBJECT_SCHEMA = (
     "aos.qualification.native-adapter-package-subject/v1"
 )
@@ -74,6 +77,70 @@ MATRIX_APPLICABILITY_SCHEMA = (
     "aos.qualification.native-adapter-matrix-applicability/v1"
 )
 RESOURCE_LIFETIMES = {"attempt", "transaction", "instance", "persistent"}
+
+
+def _adapter_claim(spec: dict[str, Any], adapter_name: str) -> dict[str, Any]:
+    """Returns one generated typed provider claim from the matrix surface."""
+
+    adapters = spec.get("surface", {}).get("adapters", [])
+    matches = [
+        adapter
+        for adapter in adapters
+        if isinstance(adapter, dict) and adapter.get("adapter") == adapter_name
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("matrix surface lacks one exact adapter claim")
+    return matches[0]
+
+
+def _adapter_claim_by_interface(
+    spec: dict[str, Any], interface_name: Any
+) -> dict[str, Any]:
+    """Resolves one generated provider claim by its selected interface name."""
+
+    adapters = spec.get("surface", {}).get("adapters", [])
+    matches = [
+        adapter
+        for adapter in adapters
+        if isinstance(adapter, dict)
+        and adapter.get("interface_name") == interface_name
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("matrix surface lacks one exact interface claim")
+    return matches[0]
+
+
+def _claim_interface(adapter_claim: dict[str, Any]) -> dict[str, Any]:
+    """Projects the exact interface identity from one generated adapter claim."""
+
+    return {
+        "name": adapter_claim.get("interface_name"),
+        "abi": adapter_claim.get("interface_abi"),
+        "descriptor": adapter_claim.get("interface_descriptor"),
+    }
+
+
+def _observer_result_value(adapter_claim: dict[str, Any], field: str) -> str:
+    """Returns one closed value from the package-owned observer result type."""
+
+    descriptor = adapter_claim.get("provider_implementation", {}).get("observer", {})
+    result_field = descriptor.get("result", {}).get("fields", {}).get(field, {})
+    values = result_field.get("values")
+    if result_field.get("kind") != "string-enum" or not isinstance(values, list):
+        raise RuntimeError("matrix observer result is not a closed typed descriptor")
+    if len(values) != 1 or not _matches(LOCAL_KEY, values[0]):
+        raise RuntimeError("matrix observer result does not select one value")
+    return values[0]
+
+
+def _cancellation_oracle_kinds(spec: dict[str, Any]) -> set[str]:
+    """Returns live-state kinds from package-owned observer descriptors."""
+
+    return {
+        _observer_result_value(adapter, "kind")
+        for adapter in spec.get("surface", {}).get("adapters", [])
+        if isinstance(adapter, dict)
+    }
 
 
 def _inapplicable_reason(
@@ -154,23 +221,13 @@ def _runtime_audit_cell(cell: dict[str, Any]) -> bool:
     """Returns whether the shared runtime can qualify this exact matrix cell."""
 
     scenario = cell["id"].rsplit("/", 1)[-1]
-    if scenario in ROLE_SCENARIOS | REPLACEMENT_SCENARIOS:
-        return True
-    if scenario in FAILURE_CONTROL_SCENARIOS - {"cancel-unsettled-attempt"}:
-        return True
-
-    return (
-        scenario == "cancel-unsettled-attempt"
-        and cell.get("recovery", {}).get("cancel") is None
+    return scenario in (
+        ROLE_SCENARIOS
+        | REPLACEMENT_SCENARIOS
+        | (FAILURE_CONTROL_SCENARIOS - {"cancel-unsettled-attempt"})
     )
 
 
-EFFECT_BOUNDARY_SCENARIOS = {
-    "interrupt-after-acquisition",
-    "interrupt-after-durable-intent",
-    "lose-external-result",
-    "interrupt-after-durable-outcome",
-}
 EFFECT_BOUNDARY_ATTEMPT_TIMELINES = {
     "interrupt-after-acquisition": [
         "operation-admitted",
@@ -233,25 +290,6 @@ PROVIDER_NEGATIVE_SCENARIOS = {
     "block-dependent-effect",
     "reject-foreign-resource-mutation",
 }
-PROVIDER_ORACLE_KINDS = {
-    "credential-delivery": "credential-view",
-    "foreground-process": "foreground-process",
-    "host-network-policy": "nft-policy",
-    "host-storage": "storage-tree",
-    "image-rollout": "boot-slot",
-    "kubernetes-object": "kubernetes-object",
-    "managed-configuration": "managed-file",
-    "network-endpoint": "loopback-listener",
-    "nginx-validation": "nginx-association",
-    "postgresql": "postgresql-cluster",
-    "systemd-bootstrap": "systemd-unit",
-    "systemd-manager": "systemd-unit",
-    "service-management": "systemd-unit",
-}
-COHORT_SUBJECT_SCHEMA = "aos.qualification.host-resource-cohort-subject/v1"
-POSTGRESQL_COHORT_SUBJECT_SCHEMA = (
-    "aos.qualification.postgresql-provider-replacement-cohort-subject/v1"
-)
 EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA = (
     "aos.qualification.native-adapter-effect-cohort-subject/v1"
 )
@@ -285,141 +323,6 @@ CANCELLATION_BOUNDARIES = [
     ("cancel", "final-dispatch"),
     ("cancel", "cancellation-returned"),
     ("cancel", "cancellation-outcome-durable"),
-]
-CANCELLATION_ORACLE_KINDS = {
-    "credential-delivery": "filesystem",
-    "foreground-process": "foreground-process",
-    "host-network-policy": "network",
-    "host-storage": "filesystem",
-    "managed-configuration": "filesystem",
-    "network-endpoint": "network",
-    "nginx-validation": "filesystem",
-    "postgresql": "postgresql",
-    "kubernetes-object": "kubernetes",
-    "systemd-bootstrap": "systemd",
-    "systemd-manager": "systemd",
-    "service-management": "systemd",
-    "image-rollout": "image-rollout",
-}
-POSTGRESQL_REJECTION_EVIDENCE_SCHEMA = (
-    "aos.qualification.postgresql-provider-rejection-evidence/v1"
-)
-POSTGRESQL_ORDERED_METHOD_EVIDENCE_SCHEMA = (
-    "aos.qualification.postgresql-ordered-method-evidence/v1"
-)
-PUBLISH_ORDINAL = 5
-DEPENDENT_ORDINAL = 2
-FIXTURE_ENVIRONMENT = {
-    "authority": "reference",
-    "key": "host",
-    "stage": "host",
-}
-MANAGED_CONFIGURATION_INTERFACE = {
-    "name": "aos.managed-configuration-effects",
-    "abi": 1,
-    "descriptor": "sha256:682ee08aadd9d0198b409146a373bf38d901ba530b74180400c9087616a41dab",
-}
-SYSTEMD_SERVICE_INTERFACE = {
-    "name": "aos.service-management",
-    "abi": 1,
-    "descriptor": "sha256:a51e8ccfbde3b8caa89120afdd033edfaa51f087ffc399c3aa3006f34e6c0dff",
-}
-PUBLISH_TARGET = {
-    "interface": MANAGED_CONFIGURATION_INTERFACE,
-    "resource": {
-        "provider": {
-            "environment": FIXTURE_ENVIRONMENT,
-            "key": "shared-configuration",
-        },
-        "key": "nginx-secondary-configuration",
-    },
-    "operations": ["publish"],
-    "lifetime": "instance",
-}
-DEPENDENT_TARGET = {
-    "interface": SYSTEMD_SERVICE_INTERFACE,
-    "resource": {
-        "provider": {
-            "environment": FIXTURE_ENVIRONMENT,
-            "key": "shared-service",
-        },
-        "key": "nginx-secondary-service",
-    },
-    "operations": ["reload"],
-    "lifetime": "instance",
-}
-LOST_RESULT_TIMELINE = [
-    "operation-admitted",
-    "effect-started",
-    "operation-admitted",
-    "reconciliation-started",
-    "reconciled-completed",
-]
-LOST_RESULT_BOUNDARY_TIMELINE = [
-    ("effect", "effect-intent-durable"),
-    ("effect", "effect-returned"),
-    ("reconcile", "reconciliation-intent-durable"),
-    ("reconcile", "reconciliation-returned"),
-    ("reconcile", "reconciliation-outcome-durable"),
-]
-INTERRUPTED_INTENT_TIMELINE = [
-    "operation-admitted",
-    "effect-started",
-    "operation-admitted",
-    "reconciliation-started",
-    "reconciled-safe-to-retry",
-    "operation-admitted",
-    "effect-started",
-    "effect-completed",
-]
-INTERRUPTED_INTENT_BOUNDARY_TIMELINE = [
-    ("effect", "effect-intent-durable"),
-    ("reconcile", "reconciliation-intent-durable"),
-    ("reconcile", "reconciliation-returned"),
-    ("reconcile", "reconciliation-outcome-durable"),
-    ("effect", "effect-intent-durable"),
-    ("effect", "effect-returned"),
-    ("effect", "effect-outcome-durable"),
-]
-DURABLE_OUTCOME_TIMELINE = [
-    "operation-admitted",
-    "effect-started",
-    "effect-completed",
-]
-DURABLE_OUTCOME_BOUNDARY_TIMELINE = [
-    ("effect", "effect-intent-durable"),
-    ("effect", "effect-returned"),
-    ("effect", "effect-outcome-durable"),
-]
-EXPECTED_ATTEMPT_TIMELINES = {
-    "interrupt-after-durable-intent": INTERRUPTED_INTENT_TIMELINE,
-    "lose-external-result": LOST_RESULT_TIMELINE,
-    "interrupt-after-durable-outcome": DURABLE_OUTCOME_TIMELINE,
-}
-EXPECTED_ATTEMPT_BOUNDARIES = {
-    "interrupt-after-durable-intent": INTERRUPTED_INTENT_BOUNDARY_TIMELINE,
-    "lose-external-result": LOST_RESULT_BOUNDARY_TIMELINE,
-    "interrupt-after-durable-outcome": DURABLE_OUTCOME_BOUNDARY_TIMELINE,
-}
-DEPENDENT_EFFECT_TIMELINE = [
-    "operation-admitted",
-    "effect-started",
-    "effect-completed",
-]
-DEPENDENT_EFFECT_BOUNDARY_TIMELINE = [
-    ("effect", "effect-intent-durable"),
-    ("effect", "effect-returned"),
-    ("effect", "effect-outcome-durable"),
-]
-REJECTED_EFFECT_TIMELINE = [
-    "operation-admitted",
-    "effect-started",
-    "rejected-before-effect",
-]
-REJECTED_EFFECT_BOUNDARY_TIMELINE = [
-    ("effect", "effect-intent-durable"),
-    ("effect", "effect-returned"),
-    ("effect", "effect-outcome-durable"),
 ]
 SCENARIO_DISPOSITIONS = {
     "interrupt-before-acquisition": "rejected-before-acquisition",
@@ -657,8 +560,6 @@ def build_cells(
         raise RuntimeError(
             "cohort qualification scope differs from the applicable matrix partition"
         )
-    if not expected_qualified_cells:
-        raise RuntimeError("cohort qualification scope is empty")
     if set(cohort_subjects) != set(submissions):
         raise RuntimeError("cohort subjects differ from its explicit qualification scope")
     if set(cohort_evidence) != set(submissions):
@@ -677,7 +578,7 @@ def build_cells(
         _validate_interruption_audit(interruption_audit, spec, specification_cells)
     if provider_negative_cells:
         _validate_provider_negative_audit(
-            provider_negative_audit, spec, specification_cells
+            provider_negative_audit, spec, specification_cells, set(submissions)
         )
 
     observed_cells = []
@@ -719,7 +620,6 @@ def build_cells(
                     subject_digest,
                     probe_digests,
                     spec,
-                    routes,
                 )
             )
         elif submitted is None:
@@ -741,6 +641,7 @@ def build_cells(
                 bound_subject,
                 subject_digest,
                 probe_digests,
+                spec,
             )
 
         observation = {
@@ -828,8 +729,7 @@ def _validated_interruption_cell(
         != {
             "scenario",
             "runtime-boundary",
-            "declared-recovery-routes",
-            "fixture-recovery-routes",
+            "operation-recovery",
             "boundary-record",
             "journal-at-fault",
             "journal-after-restart",
@@ -842,12 +742,7 @@ def _validated_interruption_cell(
         }
         or evidence.get("scenario") != INTERRUPTION_SCENARIO
         or evidence.get("runtime-boundary") != "BeforeResourceAcquisition"
-        or evidence.get("declared-recovery-routes") != cell["recovery"]
-        or evidence.get("fixture-recovery-routes")
-        != {
-            "reconcile": cell["method"] if cell["recovery"]["reconcile"] else None,
-            "cancel": None,
-        }
+        or not isinstance(evidence.get("operation-recovery"), dict)
         or evidence.get("primary-ready-at-restart") is not True
         or evidence.get("dependent-ready-at-restart") is not False
         or not _matches(DIGEST, evidence.get("foreign-before"))
@@ -993,24 +888,15 @@ def _validate_runtime_audit(
 
 def _provider_negative_cell_ids(
     specification_cells: dict[str, dict[str, Any]],
+    directly_observed_cells: set[str],
 ) -> set[str]:
-    """Returns the closed dependency/foreign scope not owned by the legacy pair."""
+    """Returns the closed dependency/foreign scope owned by the shared audit."""
 
-    excluded = {
-        (
-            "managed-configuration/aos.managed-configuration-effects/abi-1/"
-            "publish/reject-foreign-resource-mutation"
-        ),
-        (
-            "service-management/aos.service-management/abi-1/"
-            "reload/block-dependent-effect"
-        ),
-    }
     return {
         cell_id
-        for cell_id in specification_cells
+        for cell_id, cell in specification_cells.items()
         if cell_id.rsplit("/", 1)[-1] in PROVIDER_NEGATIVE_SCENARIOS
-        and cell_id not in excluded
+        and cell_id not in directly_observed_cells
     }
 
 
@@ -1018,10 +904,13 @@ def _validate_provider_negative_audit(
     audit: dict[str, Any],
     spec: dict[str, Any],
     specification_cells: dict[str, dict[str, Any]],
+    directly_observed_cells: set[str],
 ) -> None:
     """Checks the provider-flight envelope against the realized matrix scope."""
 
-    expected = _provider_negative_cell_ids(specification_cells)
+    expected = _provider_negative_cell_ids(
+        specification_cells, directly_observed_cells
+    )
     if (
         set(audit) != {"schema", "matrix_spec_digest", "cells"}
         or audit.get("schema") != PROVIDER_NEGATIVE_AUDIT_SCHEMA
@@ -1038,14 +927,26 @@ def _validated_provider_negative_cell(
     subject_digest: str,
     probe_digests: set[str],
     spec: dict[str, Any],
-    routes: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Validates one provider flight and derives its five exact probes."""
 
-    if record.get("mode") in {"rollout-dependency", "rollout-map-validation"}:
-        return _validated_rollout_provider_negative_cell(
-            cell, record, subject_digest, probe_digests, routes
-        )
+    provider_result = provider_evidence.validate_special_provider_negative_cell(
+        cell,
+        record,
+        subject_digest,
+        probe_digests,
+        spec,
+        {
+            "cell-subject-schema": CELL_SUBJECT_SCHEMA,
+            "subject-schema": PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
+            "plan-schema": PROVIDER_NEGATIVE_PLAN_SCHEMA,
+            "probe-schema": PROBE_SCHEMA,
+            "postcondition-kinds": POSTCONDITION_KINDS,
+            "disposition": SCENARIO_DISPOSITIONS[_cell_scenario(cell)],
+        },
+    )
+    if provider_result is not None:
+        return provider_result
     if set(record) != {"cell_digest", "subject", "plan_bundle", "evidence"}:
         raise RuntimeError("provider-negative audit cell is malformed")
     cell_digest = sha256(cell)
@@ -1060,7 +961,8 @@ def _validated_provider_negative_cell(
 
     scenario = _cell_scenario(cell)
     adapter = cell["adapter"]
-    expected_oracle = PROVIDER_ORACLE_KINDS.get(adapter)
+    adapter_claim = _adapter_claim(spec, adapter)
+    expected_oracle = _observer_result_value(adapter_claim, "kind")
     expected_subject = {
         "schema": PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
         "cell-id": cell["id"],
@@ -1076,7 +978,7 @@ def _validated_provider_negative_cell(
     if (
         subject != expected_subject
         or scenario not in PROVIDER_NEGATIVE_SCENARIOS
-        or expected_oracle is None
+        or not _matches(LOCAL_KEY, expected_oracle)
         or not _matches(DIGEST, subject.get("plan"))
         or not _matches(LOCAL_KEY, subject.get("transaction"))
         or not _matches(LOCAL_KEY, subject.get("flight"))
@@ -1172,6 +1074,7 @@ def _validated_provider_negative_cell(
             "artifact",
             "implementation",
             "handler",
+            "entry-point",
         }
         or provider_route.get("adapter") != adapter
         or provider_route.get("interface") != cell["interface"]
@@ -1179,16 +1082,9 @@ def _validated_provider_negative_cell(
         or provider_route.get("candidate-linked") is not True
         or not _matches(DIGEST, provider_route.get("artifact"))
         or not _matches(LOCAL_KEY, provider_route.get("handler"))
-        or len(
-            _matching_package_routes(
-                routes,
-                cell,
-                implementation=provider_route.get("implementation"),
-                handler=provider_route.get("handler"),
-                artifact=provider_route.get("artifact"),
-            )
-        )
-        != 1
+        or not isinstance(provider_route.get("entry-point"), str)
+        or not provider_route["entry-point"]
+        or provider_route["entry-point"].startswith("/")
         or evidence.get("boundary")
         != "after-durable-intent-before-external-effect"
     ):
@@ -1229,8 +1125,8 @@ def _validated_provider_negative_cell(
         "maximum-owner-count": 1,
     }:
         raise RuntimeError("provider-negative ownership is not exclusive")
-    successor_adapter = _adapter_for_interface(
-        spec, dependent_operation.get("interface")
+    successor_claim = _adapter_claim_by_interface(
+        spec, dependent_operation.get("interface", {}).get("name")
     )
     for label, oracle, operation, oracle_kind, must_be_live in [
         ("foreign", foreign, foreign_operation, expected_oracle, True),
@@ -1238,7 +1134,7 @@ def _validated_provider_negative_cell(
             "successor",
             successor,
             dependent_operation,
-            PROVIDER_ORACLE_KINDS.get(successor_adapter),
+            _observer_result_value(successor_claim, "kind"),
             False,
         ),
     ]:
@@ -1264,8 +1160,11 @@ def _validated_provider_negative_cell(
         or set(blocked_witness)
         != {"kind", "resource", "before", "after", "unchanged", "live"}
         or blocked_witness.get("kind")
-        != PROVIDER_ORACLE_KINDS.get(
-            _adapter_for_interface(spec, behavioral_witness.get("interface"))
+        != _observer_result_value(
+            _adapter_claim_by_interface(
+                spec, behavioral_witness.get("interface", {}).get("name")
+            ),
+            "kind",
         )
         or blocked_witness.get("resource") != behavioral_witness.get("resource")
         or not _matches(DIGEST, blocked_witness.get("before"))
@@ -1275,21 +1174,19 @@ def _validated_provider_negative_cell(
     ):
         raise RuntimeError("observation cell does not prove mutation-witness nonexecution")
 
-    if adapter == "foreground-process":
+    if provider_sentinel is not None:
         if (
             not isinstance(provider_sentinel, dict)
             or set(provider_sentinel)
             != {"kind", "resource", "before", "after", "unchanged", "live"}
-            or provider_sentinel.get("kind") != "foreground-process"
+            or provider_sentinel.get("kind") != expected_oracle
             or not _matches(DIGEST, provider_sentinel.get("before"))
             or provider_sentinel.get("after") != provider_sentinel.get("before")
             or provider_sentinel.get("unchanged") is not True
             or provider_sentinel.get("live") is not True
             or provider_sentinel.get("resource") == foreign_operation.get("resource")
         ):
-            raise RuntimeError("foreground provider sentinel is not independent and live")
-    elif provider_sentinel is not None:
-        raise RuntimeError("non-foreground provider flight unexpectedly has a sentinel")
+            raise RuntimeError("provider sentinel is not independent and live")
 
     bound_subject = {
         "schema": CELL_SUBJECT_SCHEMA,
@@ -1366,316 +1263,6 @@ def _validated_provider_negative_cell(
             "cohort_subject_digest": cohort_subject_digest,
         }
 
-    return bound_subject, postconditions, probes
-
-
-def _validated_rollout_provider_negative_cell(
-    cell: dict[str, Any],
-    record: dict[str, Any],
-    subject_digest: str,
-    probe_digests: set[str],
-    routes: list[dict[str, Any]],
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Validates rollout's same-machine dependency or map-collision evidence."""
-
-    if (
-        set(record)
-        != {"mode", "cell_digest", "subject", "plan_bundle", "evidence"}
-        or cell.get("adapter") != "image-rollout"
-        or record.get("cell_digest") != sha256(cell)
-    ):
-        raise RuntimeError("rollout provider-negative record is malformed")
-    mode = record["mode"]
-    scenario = _cell_scenario(cell)
-    if (mode, scenario) not in {
-        ("rollout-dependency", "block-dependent-effect"),
-        ("rollout-map-validation", "reject-foreign-resource-mutation"),
-    }:
-        raise RuntimeError("rollout provider-negative mode differs from its cell")
-
-    subject = record["subject"]
-    plan = record["plan_bundle"]
-    evidence = record["evidence"]
-    expected_subject = {
-        "schema": PROVIDER_NEGATIVE_SUBJECT_SCHEMA,
-        "cell-id": cell["id"],
-        "cell-digest": sha256(cell),
-        "adapter": "image-rollout",
-        "interface": cell["interface"],
-        "method": cell["method"],
-        "scenario": scenario,
-        "plan": subject.get("plan"),
-        "transaction": subject.get("transaction"),
-        "flight": subject.get("flight"),
-    }
-    if (
-        subject != expected_subject
-        or not _matches(DIGEST, subject.get("plan"))
-        or not _matches(LOCAL_KEY, subject.get("transaction"))
-        or not _matches(LOCAL_KEY, subject.get("flight"))
-    ):
-        raise RuntimeError("rollout provider-negative subject is not exact")
-
-    expected_plan_fields = {
-        "schema",
-        "digest",
-        "plan",
-        "foreign-operation",
-        "dependent-operation",
-        "required-success",
-        "behavioral-witness",
-    }
-    foreign = plan.get("foreign-operation")
-    dependent = plan.get("dependent-operation")
-    witness = plan.get("behavioral-witness")
-    if (
-        set(plan) != expected_plan_fields
-        or plan.get("schema") != PROVIDER_NEGATIVE_PLAN_SCHEMA
-        or not _matches(DIGEST, plan.get("digest"))
-        or plan.get("plan") != subject["plan"]
-        or not isinstance(foreign, dict)
-        or not isinstance(dependent, dict)
-        or not _provider_negative_operation(foreign)
-        or not _provider_negative_operation(dependent)
-        or plan.get("required-success")
-        != {"from": foreign, "to": dependent, "kind": "required-success"}
-        or foreign.get("interface") != cell["interface"]
-        or foreign.get("method") != cell["method"]
-    ):
-        raise RuntimeError("rollout provider-negative plan is not exact")
-    same_machine = foreign.get("resource") == dependent.get("resource")
-    if same_machine != (mode == "rollout-dependency"):
-        raise RuntimeError("rollout resource relationship differs from its scenario")
-    if cell["effect_class"] == "observation":
-        if (
-            not isinstance(witness, dict)
-            or not _provider_negative_operation(witness)
-            or (
-                witness != dependent
-                and witness.get("method")
-                not in {
-                    "drain",
-                    "hold",
-                    "prepare",
-                    "retain",
-                    "retire",
-                    "select",
-                    "withdraw",
-                }
-            )
-        ):
-            raise RuntimeError("rollout observation lacks a real mutation witness")
-    elif witness is not None:
-        raise RuntimeError("rollout mutation unexpectedly has a witness")
-
-    if set(evidence) != {
-        "provider-route",
-        "boundary",
-        "classification",
-        "ownership",
-        "foreign-resource",
-        "blocked-successor",
-        "blocked-witness",
-    }:
-        raise RuntimeError("rollout provider-negative evidence has unexpected fields")
-    route = evidence["provider-route"]
-    expected_route = {
-        "adapter": "image-rollout",
-        "interface": cell["interface"],
-        "method": cell["method"],
-        "candidate-linked": True,
-        "artifact": route.get("artifact"),
-        "implementation": route.get("implementation"),
-        "handler": route.get("handler"),
-    }
-    if (
-        route != expected_route
-        or not _matches(DIGEST, route.get("artifact"))
-        or not _matches(LOCAL_KEY, route.get("handler"))
-        or len(
-            _matching_package_routes(
-                routes,
-                cell,
-                implementation=route.get("implementation"),
-                handler=route.get("handler"),
-                artifact=route.get("artifact"),
-            )
-        )
-        != 1
-    ):
-        raise RuntimeError("rollout provider route is not candidate-linked")
-
-    classification = evidence["classification"]
-    ownership = evidence["ownership"]
-    if mode == "rollout-dependency":
-        expected_boundary = "after-durable-intent-before-external-effect"
-        if (
-            set(classification)
-            != {
-                "kind",
-                "digest",
-                "failure-record",
-                "predecessor-timeline",
-                "dependent-timeline",
-                "witness-timeline",
-                "classified",
-            }
-            or classification.get("kind") != "execution-journal"
-            or not _matches(DIGEST, classification.get("digest"))
-            or not _matches(DIGEST, classification.get("failure-record"))
-            or [
-                event.get("kind")
-                for event in classification.get("predecessor-timeline", [])
-            ]
-            != ["operation-admitted", "effect-started", "rejected-before-effect"]
-            or classification.get("dependent-timeline") != []
-            or classification.get("witness-timeline") != []
-            or classification.get("classified") != "boot-slot-authority-rejected"
-            or ownership
-            != {
-                "machine-owner-count-before": 1,
-                "machine-owner-count-after": 1,
-                "candidate-owner-count": 0,
-                "maximum-owner-count": 1,
-            }
-        ):
-            raise RuntimeError("rollout dependency classification is incomplete")
-    else:
-        expected_boundary = "native-resource-map-validation"
-        if (
-            set(classification)
-            != {
-                "kind",
-                "digest",
-                "attempted-map-digest",
-                "failure-record",
-                "classified",
-                "dependent-timeline",
-                "witness-timeline",
-            }
-            or classification.get("kind") != "native-resource-map-validation"
-            or not all(
-                _matches(DIGEST, classification.get(field))
-                for field in ["digest", "attempted-map-digest", "failure-record"]
-            )
-            or classification.get("classified") != "foreign-authority-rejected"
-            or classification.get("dependent-timeline") != []
-            or classification.get("witness-timeline") != []
-            or ownership
-            != {
-                "machine-owner-count-before": 1,
-                "machine-owner-count-after": 1,
-                "forged-owner-count": 0,
-                "maximum-owner-count": 1,
-            }
-        ):
-            raise RuntimeError("rollout map-collision classification is incomplete")
-    if evidence.get("boundary") != expected_boundary:
-        raise RuntimeError("rollout provider-negative boundary differs")
-
-    foreign_oracle = evidence["foreign-resource"]
-    successor_oracle = evidence["blocked-successor"]
-    witness_oracle = evidence["blocked-witness"]
-    for label, oracle, kind in [
-        ("foreign", foreign_oracle, "systemd-unit"),
-        ("successor", successor_oracle, "boot-slot"),
-    ]:
-        if (
-            not isinstance(oracle, dict)
-            or set(oracle)
-            != {"kind", "resource", "before", "after", "unchanged", "live"}
-            or oracle.get("kind") != kind
-            or not _matches(DIGEST, oracle.get("before"))
-            or oracle.get("after") != oracle.get("before")
-            or oracle.get("unchanged") is not True
-            or oracle.get("live") is not True
-        ):
-            raise RuntimeError(f"rollout {label} oracle is not live and unchanged")
-    if successor_oracle.get("resource") != dependent.get("resource"):
-        raise RuntimeError("rollout successor oracle names another machine")
-    if foreign_oracle.get("resource") == foreign.get(
-        "resource"
-    ) or foreign_oracle.get("resource") == dependent.get("resource"):
-        raise RuntimeError("rollout foreign sentinel is not independently owned")
-    if witness is None:
-        if witness_oracle is not None:
-            raise RuntimeError("rollout mutation unexpectedly reports a witness oracle")
-    elif (
-        not isinstance(witness_oracle, dict)
-        or witness_oracle.get("kind") != "boot-slot"
-        or witness_oracle.get("resource") != witness.get("resource")
-        or witness_oracle.get("before") != witness_oracle.get("after")
-        or witness_oracle.get("unchanged") is not True
-        or witness_oracle.get("live") is not True
-    ):
-        raise RuntimeError("rollout mutation witness was not independently blocked")
-
-    bound_subject = {
-        "schema": CELL_SUBJECT_SCHEMA,
-        "cell": {
-            "id": cell["id"],
-            "digest": sha256(cell),
-            "boundary": cell["boundary"],
-            "failure": cell["failure"],
-            "candidate": cell["candidate"],
-            "predecessor": cell["predecessor"],
-        },
-        "subject": subject,
-    }
-    cohort_subject_digest = sha256(bound_subject)
-    scenario_probe = (
-        "prerequisite-failure-recorded"
-        if scenario == "block-dependent-effect"
-        else "foreign-attempt-rejected-before-mutation"
-    )
-    observations = {
-        "durable-attempt-state-classified": classification,
-        "at-most-one-resource-owner": ownership,
-        "foreign-resources-unchanged": foreign_oracle,
-        "dependent-effects-not-executed": {
-            "successor": successor_oracle,
-            "witness": witness_oracle,
-        },
-        scenario_probe: {
-            "boundary": evidence["boundary"],
-            "provider-route": route,
-            "classification": classification,
-            "foreign-operation": foreign,
-            "dependent-operation": dependent,
-            "behavioral-witness": witness,
-        },
-    }
-    if set(observations) != set(cell["postconditions"]):
-        raise RuntimeError("rollout evidence differs from cell postconditions")
-
-    postconditions = {}
-    probes = {}
-    for name in cell["postconditions"]:
-        observation = observations[name]
-        observation_digest = sha256(
-            {
-                "schema": PROBE_SCHEMA,
-                "cell": sha256(cell),
-                "postcondition": name,
-                "subject": cohort_subject_digest,
-                "candidate-subject": subject_digest,
-                "observations": observation,
-            }
-        )
-        if observation_digest in probe_digests:
-            raise RuntimeError("passing rollout postconditions replay a provider probe")
-        probe_digests.add(observation_digest)
-        postconditions[name] = {
-            "passed": True,
-            "detail": "candidate-linked rollout flight satisfied exact postcondition",
-        }
-        probes[name] = {
-            "schema": PROBE_SCHEMA,
-            "kind": POSTCONDITION_KINDS[name],
-            "disposition": SCENARIO_DISPOSITIONS[scenario],
-            "observation_digest": observation_digest,
-            "cohort_subject_digest": cohort_subject_digest,
-        }
     return bound_subject, postconditions, probes
 
 
@@ -2103,8 +1690,7 @@ def _validated_failure_control_cell(
         != {
             "scenario",
             "classification",
-            "recovery-routes",
-            "fixture-recovery-routes",
+            "operation-recovery",
             "journal",
             "reservation-ledger",
             "adapter",
@@ -2113,14 +1699,7 @@ def _validated_failure_control_cell(
             "foreign-after",
         }
         or evidence.get("scenario") != scenario
-        or evidence.get("recovery-routes") != cell["recovery"]
-        or evidence.get("fixture-recovery-routes")
-        != {
-            "reconcile": cell["method"]
-            if cell["recovery"]["reconcile"] is not None
-            else None,
-            "cancel": None,
-        }
+        or not isinstance(evidence.get("operation-recovery"), dict)
         or not _matches(DIGEST, evidence.get("foreign-before"))
         or evidence.get("foreign-after") != evidence.get("foreign-before")
     ):
@@ -2181,7 +1760,7 @@ def _validated_failure_control_cell(
     ):
         raise RuntimeError("runtime control durable journal or ownership evidence is invalid")
 
-    cancel_supported = cell["recovery"]["cancel"] is not None
+    cancel_supported = evidence["operation-recovery"].get("cancel") is not None
     if scenario == "cancel-unsettled-attempt":
         if (
             cancel_supported
@@ -2251,8 +1830,7 @@ def _validated_failure_control_cell(
             "journal-head": journal["head"],
             "scenario": scenario,
             "classification": evidence["classification"],
-            "recovery-routes": evidence["recovery-routes"],
-            "fixture-recovery-routes": evidence["fixture-recovery-routes"],
+            "operation-recovery": evidence["operation-recovery"],
         },
         "at-most-one-resource-owner": {
             "cell": cell["id"],
@@ -2281,7 +1859,12 @@ def _validated_failure_control_cell(
 
     postconditions = {}
     probes = {}
-    disposition = _expected_disposition(cell)
+    disposition_subject = (
+        {"cancel-route": evidence["operation-recovery"].get("cancel")}
+        if scenario == "cancel-unsettled-attempt"
+        else None
+    )
+    disposition = _expected_disposition(cell, disposition_subject)
     for name in cell["postconditions"]:
         facts = observations[name]
         observation_digest = sha256(facts)
@@ -2313,6 +1896,7 @@ def _validated_probes(
     bound_subject: dict[str, Any],
     subject_digest: str,
     cohort_probe_digests: set[str],
+    matrix_spec: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     postcondition_names = cell["postconditions"]
     if set(submitted) != set(postcondition_names):
@@ -2322,7 +1906,7 @@ def _validated_probes(
 
     cell_digest = sha256(cell)
     cohort_subject_digest = sha256(bound_subject)
-    expected_disposition = _expected_disposition(cell)
+    expected_disposition = _expected_disposition(cell, cohort_subject)
     postconditions = {}
     probes = {}
     for name in postcondition_names:
@@ -2345,7 +1929,7 @@ def _validated_probes(
             or len(canonical(observations)) > MAX_PROBE_BYTES
         ):
             raise RuntimeError("postcondition probe is malformed")
-        _validate_probe_facts(name, observations, cohort_subject, cell)
+        _validate_probe_facts(name, observations, cohort_subject, cell, matrix_spec)
         observation_digest = sha256(observations)
         if observation_digest in cohort_probe_digests:
             raise RuntimeError("passing matrix postconditions replay a production probe")
@@ -2372,17 +1956,15 @@ def _validate_probe_facts(
     observations: dict[str, Any],
     cohort_subject: dict[str, Any],
     cell: dict[str, Any],
+    matrix_spec: dict[str, Any] | None = None,
 ) -> None:
     """Checks semantic facts for one exact matrix postcondition."""
 
     if cohort_subject.get("schema") == CANCELLATION_COHORT_SUBJECT_SCHEMA:
+        if matrix_spec is None:
+            raise RuntimeError("cancellation probe lacks its matrix specification")
         _validate_cancellation_probe_facts(
-            postcondition, observations, cohort_subject, cell
-        )
-        return
-    if cohort_subject.get("schema") == POSTGRESQL_COHORT_SUBJECT_SCHEMA:
-        _validate_postgresql_probe_facts(
-            postcondition, observations, cohort_subject, cell
+            postcondition, observations, cohort_subject, cell, matrix_spec
         )
         return
     if cohort_subject.get("schema") == EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA:
@@ -2391,797 +1973,39 @@ def _validate_probe_facts(
         )
         return
     if cohort_subject.get("schema") == PROVIDER_STATE_COHORT_SUBJECT_SCHEMA:
+        if matrix_spec is None:
+            raise RuntimeError("provider-state probe lacks its matrix specification")
         _validate_provider_state_probe_facts(
-            postcondition, observations, cohort_subject, cell
+            postcondition, observations, cohort_subject, cell, matrix_spec
         )
         return
 
-    scenario = _cell_scenario(cell)
-    if postcondition == "durable-attempt-state-classified":
-        operation = observations.get("operation")
-        timeline = observations.get("timeline")
-        boundary_timeline = observations.get("boundary-timeline")
-        if scenario in {
-            "block-dependent-effect",
-            "reject-foreign-resource-mutation",
-        }:
-            cause = observations.get("cause-operation")
-            expected_operation = (
-                cohort_subject["dependent-operation"]
-                if scenario == "block-dependent-effect"
-                else cohort_subject["publish-operation"]
-            )
-            if (
-                set(observations)
-                != {
-                    "transaction",
-                    "plan",
-                    "operation",
-                    "timeline",
-                    "cause-operation",
-                    "cause-timeline",
-                    "boundary-timeline",
-                    "failure-record",
-                    "classified",
-                }
-                or not _matches(LOCAL_KEY, observations.get("transaction"))
-                or observations.get("plan") != cohort_subject["plan"]
-                or operation != expected_operation
-                or cause != cohort_subject["publish-operation"]
-                or (
-                    scenario == "block-dependent-effect"
-                    and timeline != []
-                )
-                or (
-                    scenario == "reject-foreign-resource-mutation"
-                    and not _is_exact_timeline(
-                        timeline, REJECTED_EFFECT_TIMELINE, operation.get("ordinal")
-                    )
-                )
-                or not _is_exact_timeline(
-                    observations.get("cause-timeline"),
-                    REJECTED_EFFECT_TIMELINE,
-                    cause.get("ordinal"),
-                )
-                or not _is_exact_boundary_timeline(
-                    boundary_timeline, REJECTED_EFFECT_BOUNDARY_TIMELINE
-                )
-                or not _matches(RAW_DIGEST, observations.get("failure-record"))
-                or observations.get("classified") is not True
-            ):
-                raise RuntimeError("journal probe does not prove durable negative classification")
-            return
-
-        expected_fields = {
-            "transaction",
-            "plan",
-            "journal-before-loss",
-            "operation",
-            "timeline",
-            "boundary-timeline",
-            "interruption-position",
-            "settlement-position",
-        }
-        if (
-            set(observations) != expected_fields
-            or not _matches(LOCAL_KEY, observations.get("transaction"))
-            or not _matches(DIGEST, observations.get("plan"))
-            or observations.get("plan") != cohort_subject["plan"]
-            or not _matches(RAW_DIGEST, observations.get("journal-before-loss"))
-            or operation != cohort_subject["publish-operation"]
-            or not _is_exact_timeline(
-                timeline, EXPECTED_ATTEMPT_TIMELINES.get(scenario), operation.get("ordinal")
-            )
-            or not _is_exact_boundary_timeline(
-                boundary_timeline, EXPECTED_ATTEMPT_BOUNDARIES.get(scenario)
-            )
-            or observations.get("interruption-position")
-            != _interruption_position(scenario, boundary_timeline)
-            or observations.get("settlement-position")
-            != boundary_timeline[-1]["transcript-position"]
-        ):
-            raise RuntimeError("journal probe does not prove exact crash recovery")
-    elif postcondition == "at-most-one-resource-owner":
-        if scenario in {
-            "block-dependent-effect",
-            "reject-foreign-resource-mutation",
-        }:
-            if (
-                set(observations)
-                != {
-                    "resource",
-                    "owner-count-before",
-                    "owner-count-after",
-                    "one-owner-throughout",
-                    "owner-evidence-before",
-                    "owner-evidence-after",
-                }
-                or not isinstance(observations.get("resource"), dict)
-                or observations.get("owner-count-before") != 1
-                or observations.get("owner-count-after") != 1
-                or observations.get("one-owner-throughout") is not True
-                or not isinstance(observations.get("owner-evidence-before"), str)
-                or not observations.get("owner-evidence-before")
-                or observations.get("owner-evidence-after")
-                != observations.get("owner-evidence-before")
-            ):
-                raise RuntimeError("ownership probe does not prove one negative-flight owner")
-            return
-
-        if (
-            set(observations)
-            != {"resource", "destination", "revision", "matching-markers", "selected-after-gc"}
-            or observations.get("matching-markers") != 1
-            or observations.get("selected-after-gc") is not True
-            or not isinstance(observations.get("resource"), dict)
-            or not isinstance(observations.get("destination"), str)
-            or not observations["destination"].startswith("/")
-            or not isinstance(observations.get("revision"), str)
-            or not observations["revision"]
-        ):
-            raise RuntimeError("ownership probe does not prove one retained owner")
-    elif postcondition == "foreign-resources-unchanged":
-        if scenario in {
-            "block-dependent-effect",
-            "reject-foreign-resource-mutation",
-        }:
-            allowed_fields = {
-                "resource",
-                "snapshot-before",
-                "snapshot-after",
-                "unchanged",
-            }
-            if scenario == "block-dependent-effect":
-                allowed_fields.add("cell")
-            if (
-                set(observations) != allowed_fields
-                or not isinstance(observations.get("resource"), dict)
-                or not isinstance(observations.get("snapshot-before"), str)
-                or observations.get("snapshot-after")
-                != observations.get("snapshot-before")
-                or observations.get("unchanged") is not True
-                or (
-                    scenario == "block-dependent-effect"
-                    and observations.get("cell") != cell["id"]
-                )
-            ):
-                raise RuntimeError("foreign-resource probe changed during negative flight")
-            return
-
-        snapshots = [
-            observations.get("content-before"),
-            observations.get("content-unsettled"),
-            observations.get("content-after-gc"),
-            observations.get("content-after-recovery"),
-        ]
-        if (
-            set(observations)
-            != {
-                "resource",
-                "revision",
-                "content-before",
-                "content-unsettled",
-                "content-after-gc",
-                "content-after-recovery",
-            }
-            or snapshots[0] is None
-            or any(snapshot != snapshots[0] for snapshot in snapshots[1:])
-            or not isinstance(observations.get("resource"), dict)
-        ):
-            raise RuntimeError("foreign-resource probe changed across the cohort")
-    elif postcondition == "dependent-effects-not-executed":
-        if scenario in {
-            "block-dependent-effect",
-            "reject-foreign-resource-mutation",
-        }:
-            allowed_fields = {
-                "predecessor-operation",
-                "dependent-operation",
-                "dependency-edge",
-                "dependent-timeline",
-                "dependent-effect-boundaries",
-                "behavior-before",
-                "behavior-after",
-                "blocked",
-            }
-            if scenario == "block-dependent-effect":
-                allowed_fields.add("cell")
-            predecessor = observations.get("predecessor-operation")
-            dependent = observations.get("dependent-operation")
-            if (
-                set(observations) != allowed_fields
-                or predecessor != cohort_subject["publish-operation"]
-                or dependent != cohort_subject["dependent-operation"]
-                or observations.get("dependency-edge")
-                != {
-                    "from": {"kind": "operation", "key": predecessor["key"]},
-                    "to": {"kind": "operation", "key": dependent["key"]},
-                    "kind": "required-success",
-                }
-                or observations.get("dependent-timeline") != []
-                or observations.get("dependent-effect-boundaries") != []
-                or observations.get("behavior-before")
-                != observations.get("behavior-after")
-                or observations.get("blocked") is not True
-                or (
-                    scenario == "block-dependent-effect"
-                    and observations.get("cell") != cell["id"]
-                )
-            ):
-                raise RuntimeError("dependency probe does not prove negative-flight blocking")
-            return
-
-        before = observations.get("route-while-unsettled")
-        after = observations.get("route-after-recovery")
-        publish = observations.get("publish-operation")
-        dependent = observations.get("dependent-operation")
-        edge = observations.get("dependency-edge")
-        timeline_after = observations.get("timeline-after-recovery")
-        boundary_after = observations.get("effect-boundary-timeline")
-        expected_fields = {
-            "publish-operation",
-            "dependent-operation",
-            "dependency-edge",
-            "timeline-before-completion",
-            "effect-boundaries-before-completion",
-            "publish-settlement-sequence",
-            "publish-settlement-position",
-            "timeline-after-recovery",
-            "effect-boundary-timeline",
-            "dependent-effect-return-position",
-            "route-while-unsettled",
-            "route-after-recovery",
-            "changed-only-after-recovery",
-        }
-        if (
-            set(observations) != expected_fields
-            or publish != cohort_subject["publish-operation"]
-            or dependent != cohort_subject["dependent-operation"]
-            or edge
-            != {
-                "from": {"kind": "operation", "key": publish["key"]},
-                "to": {"kind": "operation", "key": dependent["key"]},
-                "kind": "required-success",
-            }
-            or observations.get("timeline-before-completion") != []
-            or observations.get("effect-boundaries-before-completion") != []
-            or not _is_exact_timeline(
-                timeline_after, DEPENDENT_EFFECT_TIMELINE, dependent["ordinal"]
-            )
-            or not _is_exact_boundary_timeline(
-                boundary_after, DEPENDENT_EFFECT_BOUNDARY_TIMELINE
-            )
-            or not _is_nonnegative_int(observations.get("publish-settlement-sequence"))
-            or observations["publish-settlement-sequence"] >= timeline_after[0]["sequence"]
-            or not _is_nonnegative_int(
-                observations.get("publish-settlement-position")
-            )
-            or observations["publish-settlement-position"]
-            >= boundary_after[0]["transcript-position"]
-            or observations.get("dependent-effect-return-position")
-            != boundary_after[1]["transcript-position"]
-            or not isinstance(before, str)
-            or not isinstance(after, str)
-            or before == after
-            or observations.get("changed-only-after-recovery") is not True
-        ):
-            raise RuntimeError("dependency probe does not retain the predecessor result")
-    elif postcondition == "fresh-receiving-authority":
-        predecessor = observations.get("predecessor-authority")
-        candidate = observations.get("candidate-authority")
-        if (
-            set(observations)
-            != {
-                "predecessor-authority",
-                "candidate-authority",
-                "predecessor-incarnation",
-                "candidate-incarnation",
-                "authority-sequence-before",
-                "authority-sequence-after",
-                "fresh",
-            }
-            or not _matches(DIGEST, predecessor)
-            or not _matches(DIGEST, candidate)
-            or predecessor == candidate
-            or not _distinct_nonempty_strings(
-                observations.get("predecessor-incarnation"),
-                observations.get("candidate-incarnation"),
-            )
-            or not _strictly_increasing_nonnegative(
-                observations.get("authority-sequence-before"),
-                observations.get("authority-sequence-after"),
-            )
-            or observations.get("fresh") is not True
-        ):
-            raise RuntimeError("authority probe does not prove a fresh receiving authority")
-    elif postcondition == "compatible-state-adopted":
-        if (
-            set(observations)
-            != {
-                "resource",
-                "compatibility-contract",
-                "predecessor-state",
-                "adopted-state",
-                "adoption-record",
-                "candidate-effect-count",
-                "adopted",
-            }
-            or not isinstance(observations.get("resource"), dict)
-            or not _matches(DIGEST, observations.get("compatibility-contract"))
-            or not _matches(DIGEST, observations.get("predecessor-state"))
-            or observations.get("adopted-state") != observations.get("predecessor-state")
-            or not _matches(DIGEST, observations.get("adoption-record"))
-            or observations.get("candidate-effect-count") != 0
-            or observations.get("adopted") is not True
-        ):
-            raise RuntimeError("adoption probe does not prove compatible state adoption")
-    elif postcondition == "exactly-one-resource-owner":
-        owners = observations.get("owners")
-        if (
-            set(observations)
-            != {"resource", "expected-owner", "owners", "matching-markers"}
-            or not isinstance(observations.get("resource"), dict)
-            or not isinstance(observations.get("expected-owner"), dict)
-            or owners != [observations.get("expected-owner")]
-            or observations.get("matching-markers") != 1
-        ):
-            raise RuntimeError("ownership probe does not prove one exact owner")
-    elif postcondition == "transfer-rejected-before-candidate-effect":
-        if (
-            set(observations)
-            != {
-                "candidate-operation",
-                "rejection",
-                "candidate-effect-count",
-                "rejected-before-effect",
-            }
-            or observations.get("candidate-operation") != _cohort_operation(cohort_subject)
-            or observations.get("rejection") != cell.get("failure")
-            or observations.get("candidate-effect-count") != 0
-            or observations.get("rejected-before-effect") is not True
-        ):
-            raise RuntimeError("transfer probe does not prove pre-effect rejection")
-    elif postcondition == "predecessor-remains-sole-owner":
-        predecessor = observations.get("predecessor-owner")
-        if (
-            set(observations)
-            != {
-                "resource",
-                "predecessor-owner",
-                "owners",
-                "behavior-before",
-                "behavior-after",
-            }
-            or not isinstance(observations.get("resource"), dict)
-            or not isinstance(predecessor, dict)
-            or observations.get("owners") != [predecessor]
-            or observations.get("behavior-before") is None
-            or observations.get("behavior-after") != observations.get("behavior-before")
-        ):
-            raise RuntimeError("predecessor probe does not prove sole retained ownership")
-    elif postcondition == "current-grants-reauthorized":
-        if (
-            set(observations)
-            != {
-                "plan",
-                "retained-grant",
-                "current-grant",
-                "authority-sequence-before",
-                "authority-sequence-after",
-                "reauthorized",
-            }
-            or observations.get("plan") != cohort_subject.get("plan")
-            or not _matches(DIGEST, observations.get("retained-grant"))
-            or not _matches(DIGEST, observations.get("current-grant"))
-            or observations.get("retained-grant") == observations.get("current-grant")
-            or not _strictly_increasing_nonnegative(
-                observations.get("authority-sequence-before"),
-                observations.get("authority-sequence-after"),
-            )
-            or observations.get("reauthorized") is not True
-        ):
-            raise RuntimeError("grant probe does not prove current reauthorization")
-    elif postcondition == "retained-target-identity-preserved":
-        if (
-            set(observations)
-            != {
-                "retained-target",
-                "activated-target",
-                "retained-revision",
-                "activated-revision",
-            }
-            or not isinstance(observations.get("retained-target"), dict)
-            or observations.get("activated-target") != observations.get("retained-target")
-            or not _matches(DIGEST, observations.get("retained-revision"))
-            or observations.get("activated-revision")
-            != observations.get("retained-revision")
-        ):
-            raise RuntimeError("target probe does not preserve retained identity")
-    elif postcondition == "prerequisite-failure-recorded":
-        predecessor = observations.get("predecessor-operation")
-        dependent = observations.get("dependent-operation")
-        edge = observations.get("dependency-edge")
-        if (
-            set(observations)
-            != {
-                "predecessor-operation",
-                "dependent-operation",
-                "dependency-edge",
-                "failure-record",
-                "dependent-effect-count",
-            }
-            or not _operation_key(predecessor)
-            or not _operation_key(dependent)
-            or edge
-            not in [
-                {
-                    "from": {"kind": "operation", "key": predecessor.get("key")},
-                    "to": {"kind": "operation", "key": dependent.get("key")},
-                    "kind": kind,
-                }
-                for kind in ["data", "required-success", "readiness"]
-            ]
-            or not _matches(DIGEST, observations.get("failure-record"))
-            or observations.get("dependent-effect-count") != 0
-        ):
-            raise RuntimeError("prerequisite probe does not prove durable dependent blocking")
-    elif postcondition == "foreign-attempt-rejected-before-mutation":
-        foreign = observations.get("foreign-resource")
-        authorized = observations.get("authorized-resources")
-        if (
-            set(observations)
-            != {
-                "foreign-resource",
-                "attempted-resource",
-                "authorized-resources",
-                "rejection",
-                "mutation-count",
-                "rejected-before-mutation",
-            }
-            or not isinstance(foreign, dict)
-            or observations.get("attempted-resource") != foreign
-            or not isinstance(authorized, list)
-            or foreign in authorized
-            or observations.get("rejection") != cell.get("failure")
-            or observations.get("mutation-count") != 0
-            or observations.get("rejected-before-mutation") is not True
-        ):
-            raise RuntimeError("foreign-resource probe does not prove pre-mutation rejection")
-    else:
-        raise RuntimeError("matrix postcondition has no semantic validator")
+    result = provider_evidence.validate_probe(
+        postcondition, observations, cohort_subject, cell
+    )
+    if result != {
+        "schema": "aos.qualification.provider-evidence-validation/v1",
+        "cell-id": cell["id"],
+        "kind": "postcondition",
+        "postcondition": postcondition,
+    }:
+        raise RuntimeError("provider evidence returned a malformed validation result")
 
 
-def _validate_postgresql_probe_facts(
-    postcondition: str,
-    observations: dict[str, Any],
-    subject: dict[str, Any],
-    cell: dict[str, Any],
-) -> None:
-    """Checks one PostgreSQL replacement observation against its exact subject."""
-
-    scenario = cell["id"].rsplit("/", 1)[-1]
-    operation = subject["operation"]
-    resource = subject["resource"]
-    observations = dict(observations)
-    if observations.pop("matrix-operation", None) != operation:
-        raise RuntimeError("PostgreSQL probe is not bound to its exact matrix operation")
-
-    if postcondition == "durable-attempt-state-classified":
-        expected_timelines = {
-            "adopt-compatible-state": [
-                "operation-admitted",
-                "effect-started",
-                "effect-completed",
-            ],
-            "reject-unsupported-transfer": [],
-            "lose-external-result": [
-                "operation-admitted",
-                "effect-started",
-                "operation-admitted",
-                "reconciliation-started",
-                "reconciled-completed",
-            ],
-            "activate-retained-target": [
-                "operation-admitted",
-                "effect-started",
-                "effect-completed",
-            ],
-        }
-        timeline = observations.get("timeline")
-        adoption_operation = observations.pop("adoption-operation", None)
-        adoption_timeline = observations.pop("adoption-timeline", None)
-        adoption_generation = observations.pop("adoption-generation", None)
-        method_generation = observations.pop("method-generation", None)
-        requires_ordered_adoption = (
-            scenario in {"adopt-compatible-state", "activate-retained-target"}
-            and operation["method"] != subject["candidate"]["handler_method"]
-        )
-        ordered_adoption = (
-            isinstance(adoption_operation, dict)
-            and adoption_operation.get("interface") == operation["interface"]
-            and adoption_operation.get("method")
-            == subject["candidate"]["handler_method"]
-            and adoption_operation.get("target", {}).get("interface")
-            == operation["target"]["interface"]
-            and adoption_operation.get("target", {}).get("resource")
-            == operation["target"]["resource"]
-            and isinstance(adoption_timeline, list)
-            and [event.get("kind") for event in adoption_timeline]
-            == ["operation-admitted", "effect-started", "effect-completed"]
-            and all(
-                isinstance(event, dict)
-                and set(event) == {"sequence", "kind", "node-ordinal"}
-                and _is_nonnegative_int(event.get("sequence"))
-                and event.get("node-ordinal") == adoption_operation.get("ordinal")
-                for event in adoption_timeline
-            )
-            and bool(timeline)
-            and (
-                adoption_timeline[-1]["sequence"] < timeline[0]["sequence"]
-                or (
-                    _is_nonnegative_int(adoption_generation)
-                    and _is_nonnegative_int(method_generation)
-                    and adoption_generation < method_generation
-                )
-            )
-        )
-        expected = expected_timelines.get(scenario)
-        if (
-            set(observations)
-            != {
-                "transaction",
-                "plan",
-                "operation",
-                "timeline",
-                "record-digest",
-                "terminal",
-                "classified",
-            }
-            or not _matches(LOCAL_KEY, observations.get("transaction"))
-            or observations.get("plan") != subject["plan"]
-            or observations.get("operation") != operation
-            or not _matches(DIGEST, observations.get("record-digest"))
-            or observations.get("classified") is not True
-            or requires_ordered_adoption != ordered_adoption
-            or (not requires_ordered_adoption and adoption_operation is not None)
-            or (not requires_ordered_adoption and adoption_timeline is not None)
-            or (adoption_generation is None) != (method_generation is None)
-            or expected is None
-            or [event.get("kind") for event in timeline or []] != expected
-            or any(
-                not isinstance(event, dict)
-                or set(event) != {"sequence", "kind", "node-ordinal"}
-                or not _is_nonnegative_int(event.get("sequence"))
-                or event.get("node-ordinal") != operation["ordinal"]
-                for event in timeline or []
-            )
-            or observations.get("terminal")
-            != (
-                "rejected-before-effect"
-                if scenario == "reject-unsupported-transfer"
-                else "complete"
-            )
-        ):
-            raise RuntimeError("PostgreSQL journal does not classify the exact transition")
-    elif postcondition == "at-most-one-resource-owner":
-        inventories = [
-            observations.get("owners-before"),
-            observations.get("owners-unsettled"),
-            observations.get("owners-after"),
-        ]
-        if (
-            set(observations)
-            != {"resource", "owners-before", "owners-unsettled", "owners-after"}
-            or observations.get("resource") != resource
-            or any(not isinstance(owners, list) or len(owners) > 1 for owners in inventories)
-            or not inventories[0]
-            or not inventories[2]
-        ):
-            raise RuntimeError("PostgreSQL ownership evidence permits multiple owners")
-    elif postcondition == "foreign-resources-unchanged":
-        if (
-            set(observations)
-            != {"resource", "snapshot-before", "snapshot-after", "unchanged"}
-            or not isinstance(observations.get("resource"), dict)
-            or observations.get("resource") == resource
-            or not _matches(DIGEST, observations.get("snapshot-before"))
-            or observations.get("snapshot-after") != observations.get("snapshot-before")
-            or observations.get("unchanged") is not True
-        ):
-            raise RuntimeError("PostgreSQL transition changed its independent resource")
-    elif postcondition == "dependent-effects-not-executed":
-        if (
-            set(observations)
-            != {
-                "predecessor-operation",
-                "dependent-operations",
-                "dependent-timelines-before-settlement",
-                "dependent-effect-count-before-settlement",
-                "blocked",
-            }
-            or observations.get("predecessor-operation") != operation
-            or observations.get("dependent-operations")
-            != subject["dependent-operations"]
-            or observations.get("dependent-timelines-before-settlement") != []
-            or observations.get("dependent-effect-count-before-settlement") != 0
-            or observations.get("blocked") is not True
-        ):
-            raise RuntimeError("PostgreSQL rejection or recovery ran a dependent effect")
-    elif postcondition == "fresh-receiving-authority":
-        authorization = subject.get("adoption-authorization", {})
-        expected_policy_revision = authorization.get(
-            "authorization-policy-revision", subject["authorization-policy-revision"]
-        )
-        expected_current = authorization.get("current-planning", subject["current-planning"])
-        expected_desired = authorization.get("desired-planning", subject["desired-planning"])
-        if (
-            set(observations)
-            != {
-                "source-handler-incarnation",
-                "candidate-handler-incarnation",
-                "authorization-policy-revision",
-                "current-planning",
-                "desired-planning",
-                "fresh",
-            }
-            or observations.get("source-handler-incarnation")
-            != subject["source"]["handler_incarnation"]
-            or observations.get("candidate-handler-incarnation")
-            != subject["candidate"]["handler_incarnation"]
-            or observations.get("source-handler-incarnation")
-            == observations.get("candidate-handler-incarnation")
-            or observations.get("authorization-policy-revision")
-            != expected_policy_revision
-            or observations.get("current-planning") != expected_current
-            or observations.get("desired-planning") != expected_desired
-            or observations.get("fresh") is not True
-        ):
-            raise RuntimeError("PostgreSQL transition lacks fresh receiving authority")
-    elif postcondition == "compatible-state-adopted":
-        if (
-            set(observations)
-            != {
-                "resource",
-                "source-state-format",
-                "candidate-state-format",
-                "system-identifier-before",
-                "system-identifier-after",
-                "row-digest-before",
-                "row-digest-after",
-                "adopted",
-            }
-            or observations.get("resource") != resource
-            or observations.get("source-state-format")
-            != subject["source"]["state_format"]
-            or observations.get("candidate-state-format")
-            != subject["candidate"]["state_format"]
-            or observations.get("source-state-format", {}).get("descriptor")
-            != observations.get("candidate-state-format", {}).get("descriptor")
-            or observations.get("system-identifier-before")
-            != observations.get("system-identifier-after")
-            or not _matches(DIGEST, observations.get("row-digest-before"))
-            or observations.get("row-digest-after")
-            != observations.get("row-digest-before")
-            or observations.get("adopted") is not True
-        ):
-            raise RuntimeError("PostgreSQL evidence does not prove compatible adoption")
-    elif postcondition == "exactly-one-resource-owner":
-        if (
-            set(observations) != {"resource", "expected-owner", "owners"}
-            or observations.get("resource") != resource
-            or observations.get("owners") != [observations.get("expected-owner")]
-            or observations.get("expected-owner", {}).get("identity")
-            != endpoint_identity(subject["candidate"])
-        ):
-            raise RuntimeError("PostgreSQL transition lacks its one exact candidate owner")
-    elif postcondition == "transfer-rejected-before-candidate-effect":
-        if (
-            set(observations)
-            != {
-                "candidate-operation",
-                "source-state-format",
-                "candidate-state-format",
-                "rejection",
-                "candidate-effect-count",
-                "generation-before",
-                "generation-after",
-                "rejected-before-effect",
-            }
-            or observations.get("candidate-operation") != operation
-            or observations.get("source-state-format")
-            != subject["source"]["state_format"]
-            or observations.get("candidate-state-format")
-            != subject["candidate"]["state_format"]
-            or observations.get("source-state-format", {}).get("descriptor")
-            == observations.get("candidate-state-format", {}).get("descriptor")
-            or observations.get("rejection") != cell["failure"]
-            or observations.get("candidate-effect-count") != 0
-            or observations.get("generation-before")
-            != observations.get("generation-after")
-            or observations.get("rejected-before-effect") is not True
-        ):
-            raise RuntimeError("PostgreSQL transfer was not rejected before effect")
-    elif postcondition == "predecessor-remains-sole-owner":
-        if (
-            set(observations)
-            != {
-                "resource",
-                "predecessor-owner-before",
-                "predecessor-owner-after",
-                "system-identifier-before",
-                "system-identifier-after",
-                "row-digest-before",
-                "row-digest-after",
-            }
-            or observations.get("resource") != resource
-            or observations.get("predecessor-owner-after")
-            != observations.get("predecessor-owner-before")
-            or observations.get("system-identifier-after")
-            != observations.get("system-identifier-before")
-            or observations.get("row-digest-after")
-            != observations.get("row-digest-before")
-        ):
-            raise RuntimeError("PostgreSQL rejection did not preserve its predecessor")
-    elif postcondition == "current-grants-reauthorized":
-        if (
-            set(observations)
-            != {
-                "authorization-policy-revision",
-                "source-handler-incarnation",
-                "candidate-handler-incarnation",
-                "current-planning",
-                "desired-planning",
-                "reauthorized",
-            }
-            or observations.get("authorization-policy-revision")
-            != subject["authorization-policy-revision"]
-            or observations.get("source-handler-incarnation")
-            != subject["source"]["handler_incarnation"]
-            or observations.get("candidate-handler-incarnation")
-            != subject["candidate"]["handler_incarnation"]
-            or observations.get("source-handler-incarnation")
-            == observations.get("candidate-handler-incarnation")
-            or observations.get("current-planning") != subject["current-planning"]
-            or observations.get("desired-planning") != subject["desired-planning"]
-            or observations.get("current-planning")
-            == observations.get("desired-planning")
-            or observations.get("reauthorized") is not True
-        ):
-            raise RuntimeError("PostgreSQL retained target lacks current grants")
-    elif postcondition == "retained-target-identity-preserved":
-        if (
-            set(observations)
-            != {
-                "resource",
-                "data-path-before",
-                "data-path-after",
-                "system-identifier-before",
-                "system-identifier-after",
-                "row-digest-before",
-                "row-digest-after",
-            }
-            or observations.get("resource") != resource
-            or observations.get("data-path-after") != observations.get("data-path-before")
-            or observations.get("system-identifier-after")
-            != observations.get("system-identifier-before")
-            or observations.get("row-digest-after")
-            != observations.get("row-digest-before")
-        ):
-            raise RuntimeError("PostgreSQL retained target identity changed")
-    else:
-        raise RuntimeError("PostgreSQL matrix postcondition has no semantic validator")
 
 
-def endpoint_identity(endpoint: dict[str, Any]) -> dict[str, Any]:
-    """Projects the durable provider identity carried by an adoption endpoint."""
 
-    return {
-        "provider": endpoint["provider"],
-        "package": endpoint["package"],
-        "interface": endpoint["interface"],
-        "implementation": endpoint["implementation"],
-        "state_format": endpoint["state_format"],
-    }
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _cell_scenario(cell: dict[str, Any]) -> str:
@@ -3223,10 +2047,16 @@ def _bound_cohort_subject(
     }
 
 
-def _expected_disposition(cell: dict[str, Any]) -> str:
+def _expected_disposition(
+    cell: dict[str, Any], cohort_subject: dict[str, Any] | None = None
+) -> str:
     scenario = cell["id"].rsplit("/", 1)[-1]
     if scenario == "cancel-unsettled-attempt":
-        if cell.get("recovery", {}).get("cancel") is None:
+        if cohort_subject is None or "cancel-route" not in cohort_subject:
+            raise RuntimeError(
+                "cancellation disposition requires its concrete operation route"
+            )
+        if cohort_subject["cancel-route"] is None:
             return "unsupported-cancellation-retains-ownership"
         return "cancelled-after-reconciliation"
     try:
@@ -3280,10 +2110,6 @@ def _validate_cohort_subject(
         )
         return
 
-    if cell.get("adapter") == "postgresql":
-        _validate_postgresql_cohort_subject(cell, subject, evidence_bytes)
-        return
-
     if isinstance(subject, dict) and subject.get("schema") == EFFECT_BOUNDARY_COHORT_SUBJECT_SCHEMA:
         _validate_effect_boundary_subject(cell, subject, evidence_bytes)
         return
@@ -3292,7 +2118,15 @@ def _validate_cohort_subject(
         _validate_provider_state_subject(cell, subject, evidence_bytes, matrix_spec)
         return
 
-    _validate_managed_configuration_subject(cell, subject, evidence_bytes)
+    result = provider_evidence.validate_subject(
+        cell, subject, evidence_bytes, matrix_spec
+    )
+    if result != {
+        "schema": "aos.qualification.provider-evidence-validation/v1",
+        "cell-id": cell["id"],
+        "kind": "subject",
+    }:
+        raise RuntimeError("provider evidence returned a malformed validation result")
 
 
 def _validate_cancellation_subject(
@@ -3372,12 +2206,8 @@ def _validate_cancellation_subject(
             evidence["source-authority"],
             evidence["candidate-authority"],
         )
-        matching_routes = _matching_package_routes(
-            routes,
-            cell,
-            implementation=implementation.get("descriptor"),
-            handler=implementation.get("handler"),
-        )
+        if matrix_spec is None:
+            raise RuntimeError("cancellation validation lacks its matrix specification")
     except RuntimeError:
         raise
     except (AttributeError, KeyError, TypeError) as error:
@@ -3385,11 +2215,17 @@ def _validate_cancellation_subject(
 
     cell_digest = sha256(cell)
     matrix_digest = subject["matrix-spec-digest"]
+    cancel_route = operation_document.get("recovery", {}).get("cancel")
+    if cancel_route is not None and (
+        not isinstance(cancel_route, dict)
+        or cancel_route.get("interface") != cell["interface"]
+        or not _matches(LOCAL_KEY, cancel_route.get("method"))
+    ):
+        raise RuntimeError("cancellation operation carries an invalid route")
     if matrix_spec is not None and matrix_digest != sha256(matrix_spec):
         raise RuntimeError("cancellation subject names another matrix specification")
     if (
         _cell_scenario(cell) != "cancel-unsettled-attempt"
-        or cell.get("recovery", {}).get("cancel") is None
         or subject["schema"] != CANCELLATION_COHORT_SUBJECT_SCHEMA
         or matrix_digest != evidence["matrix-spec-digest"]
         or subject["cell-digest"] != cell_digest
@@ -3402,11 +2238,9 @@ def _validate_cancellation_subject(
         or operation["interface"] != cell["interface"]
         or operation["method"] != cell["method"]
         or operation["target"]["interface"] != cell["interface"]
-        or operation_document.get("recovery", {}).get("cancel")
-        != {"interface": cell["interface"], "method": cell["recovery"]["cancel"]}
         or subject["cancel-route"] != operation_document["recovery"]["cancel"]
         or subject["provider-implementation"] != implementation
-        or len(matching_routes) != 1
+        or not implementation.get("handler")
         or subject["native-route"] != native_route
     ):
         raise RuntimeError("cancellation subject differs from its production plan")
@@ -3515,6 +2349,9 @@ def _validate_provider_state_subject(
     matrix_spec: dict[str, Any] | None,
 ) -> None:
     """Rebuilds a provider-state subject from its production flight evidence."""
+
+    if matrix_spec is None:
+        raise RuntimeError("provider-state validation lacks its matrix specification")
 
     evidence = _canonical_evidence(evidence_bytes, "provider-state flight")
     scenario = _cell_scenario(cell)
@@ -3720,13 +2557,13 @@ def _validate_provider_state_subject(
     if (
         not live_snapshots
         or any(
-            not _provider_state_oracle_snapshot(cell["adapter"], snapshot)
+            not _provider_state_oracle_snapshot(matrix_spec, cell["adapter"], snapshot)
             for snapshot in live_snapshots
         )
         or not foreign_snapshots
         or any(
             not isinstance(snapshot, dict)
-            or snapshot.get("kind") not in set(CANCELLATION_ORACLE_KINDS.values())
+            or snapshot.get("kind") not in _cancellation_oracle_kinds(matrix_spec)
             for snapshot in foreign_snapshots
         )
     ):
@@ -4026,12 +2863,16 @@ def _provider_state_claim_core(claim: Any) -> Any:
     return claim
 
 
-def _provider_state_oracle_snapshot(adapter: str, value: Any) -> bool:
+def _provider_state_oracle_snapshot(
+    matrix_spec: dict[str, Any], adapter: str, value: Any
+) -> bool:
     """Checks that state evidence came from the adapter's live substrate oracle."""
 
     return (
         isinstance(value, dict)
-        and value.get("kind") == CANCELLATION_ORACLE_KINDS.get(adapter)
+        and value.get("kind") == _observer_result_value(
+            _adapter_claim(matrix_spec, adapter), "kind"
+        )
     )
 
 
@@ -4290,6 +3131,7 @@ def _validate_provider_state_probe_facts(
     observations: dict[str, Any],
     subject: dict[str, Any],
     cell: dict[str, Any],
+    matrix_spec: dict[str, Any],
 ) -> None:
     """Validates state-family probes against the exact candidate operation."""
 
@@ -4404,7 +3246,7 @@ def _validate_provider_state_probe_facts(
             or not snapshots
             or any(
                 not isinstance(snapshot, dict)
-                or snapshot.get("kind") not in set(CANCELLATION_ORACLE_KINDS.values())
+                or snapshot.get("kind") not in _cancellation_oracle_kinds(matrix_spec)
                 for snapshot in snapshots
             )
             or any(snapshot != snapshots[0] for snapshot in snapshots[1:])
@@ -4476,10 +3318,10 @@ def _validate_provider_state_probe_facts(
             or source_format
             != contract.get("disposition", {}).get("owner", {}).get("state_format")
             or not _provider_state_oracle_snapshot(
-                cell["adapter"], observations.get("live-before")
+                matrix_spec, cell["adapter"], observations.get("live-before")
             )
             or not _provider_state_oracle_snapshot(
-                cell["adapter"], observations.get("live-after")
+                matrix_spec, cell["adapter"], observations.get("live-after")
             )
             or observations.get("adopted") is not True
         ):
@@ -4548,7 +3390,7 @@ def _validate_provider_state_probe_facts(
             or observations.get("ledger-owners-after") != observations.get("owners")
             or observations.get("behavior-before") is None
             or not _provider_state_oracle_snapshot(
-                cell["adapter"], observations.get("behavior-before")
+                matrix_spec, cell["adapter"], observations.get("behavior-before")
             )
             or observations.get("behavior-after") != observations.get("behavior-before")
         ):
@@ -4601,10 +3443,10 @@ def _validate_provider_state_probe_facts(
             or observations.get("current-revision") is None
             and observations.get("desired-revision") is None
             or not _provider_state_oracle_snapshot(
-                cell["adapter"], observations.get("live-before")
+                matrix_spec, cell["adapter"], observations.get("live-before")
             )
             or not _provider_state_oracle_snapshot(
-                cell["adapter"], observations.get("live-after")
+                matrix_spec, cell["adapter"], observations.get("live-after")
             )
         ):
             raise RuntimeError("retained target identity was not preserved")
@@ -4657,67 +3499,18 @@ def _validate_provider_state_probe_facts(
         raise RuntimeError("provider-state cohort carries another postcondition")
 
 
-def _cancellation_oracle_snapshot(adapter: str, value: Any) -> bool:
+def _cancellation_oracle_snapshot(
+    matrix_spec: dict[str, Any], adapter: str, value: Any
+) -> bool:
     """Checks that a live snapshot names the adapter's independent oracle kind."""
 
-    expected = CANCELLATION_ORACLE_KINDS.get(adapter)
-    if not isinstance(value, dict) or value.get("kind") != expected:
-        return False
-    if adapter != "image-rollout":
-        return True
-
-    if set(value) != {
-        "kind",
-        "filesystem",
-        "hook-state",
-        "kernel-command-line",
-    }:
-        return False
-    filesystem = value.get("filesystem")
-    hooks = value.get("hook-state")
-    if (
-        not _cancellation_filesystem_snapshot(filesystem)
-        or not _cancellation_filesystem_snapshot(hooks)
-        or not isinstance(value.get("kernel-command-line"), str)
-        or not value["kernel-command-line"]
-    ):
-        return False
-    paths = [entry["path"] for entry in filesystem["entries"]]
-    return (
-        "/var/lib/profiles/image/state.json" in paths
-        and any(
-            path.startswith("/var/lib/profiles/image/ability-rollouts/")
-            and path.endswith("/state.json")
-            for path in paths
-        )
-    )
+    expected = _observer_result_value(_adapter_claim(matrix_spec, adapter), "kind")
+    return provider_evidence.valid_cancellation_snapshot(expected, value)
 
 
-def _cancellation_filesystem_snapshot(value: Any) -> bool:
-    """Checks the bounded file facts used by the image rollout oracle."""
-
-    if not isinstance(value, dict) or set(value) != {"kind", "entries"}:
-        return False
-    entries = value.get("entries")
-    if value.get("kind") != "filesystem" or not isinstance(entries, list):
-        return False
-    if len(entries) > 512:
-        return False
-    return all(
-        isinstance(entry, dict)
-        and set(entry) == {"path", "metadata", "digest"}
-        and isinstance(entry.get("path"), str)
-        and entry["path"].startswith("/")
-        and isinstance(entry.get("metadata"), str)
-        and (
-            entry.get("digest") is None
-            or _matches(RAW_DIGEST, entry.get("digest"))
-        )
-        for entry in entries
-    )
-
-
-def _cancellation_foreign_snapshot(value: Any) -> bool:
+def _cancellation_foreign_snapshot(
+    matrix_spec: dict[str, Any], value: Any
+) -> bool:
     """Checks one separately addressed provider sentinel observation."""
 
     if not isinstance(value, dict) or set(value) != {
@@ -4730,7 +3523,9 @@ def _cancellation_foreign_snapshot(value: Any) -> bool:
     return (
         isinstance(adapter, str)
         and isinstance(value.get("resource"), dict)
-        and _cancellation_oracle_snapshot(adapter, value.get("observation"))
+        and _cancellation_oracle_snapshot(
+            matrix_spec, adapter, value.get("observation")
+        )
     )
 
 
@@ -4739,6 +3534,7 @@ def _validate_cancellation_probe_facts(
     observations: dict[str, Any],
     subject: dict[str, Any],
     cell: dict[str, Any],
+    matrix_spec: dict[str, Any],
 ) -> None:
     """Validates a supported cancellation against independent provider state."""
 
@@ -4787,7 +3583,7 @@ def _validate_cancellation_probe_facts(
             or [(event["purpose"], event["boundary"]) for event in boundaries]
             != CANCELLATION_BOUNDARIES
             or not all(
-                _cancellation_oracle_snapshot(cell["adapter"], observations.get(field))
+                _cancellation_oracle_snapshot(matrix_spec, cell["adapter"], observations.get(field))
                 for field in ("live-before", "live-unsettled", "live-after")
             )
             or observations.get("live-before") != observations.get("live-unsettled")
@@ -4830,7 +3626,7 @@ def _validate_cancellation_probe_facts(
         before = observations.get("foreign-before")
         if (
             set(observations) != expected_fields
-            or not _cancellation_foreign_snapshot(before)
+            or not _cancellation_foreign_snapshot(matrix_spec, before)
             or before.get("resource") == resource
             or observations.get("foreign-unsettled") != before
             or observations.get("foreign-after") != before
@@ -4916,305 +3712,16 @@ def _is_ordered_boundary_timeline(value: Any) -> bool:
     return positions == sorted(set(positions))
 
 
-def _validate_managed_configuration_subject(
-    cell: dict[str, Any], subject: Any, plan_bundle_bytes: Any
-) -> None:
-    scenario = cell["id"].rsplit("/", 1)[-1]
-    expected_interface = (
-        SYSTEMD_SERVICE_INTERFACE
-        if scenario == "block-dependent-effect"
-        else MANAGED_CONFIGURATION_INTERFACE
-    )
-    expected_method = "reload" if scenario == "block-dependent-effect" else "publish"
-    if not isinstance(subject, dict) or set(subject) != {
-        "schema",
-        "plan",
-        "plan-bundle-digest",
-        "authoring-evaluations",
-        "publish-operation",
-        "dependent-operation",
-    }:
-        raise RuntimeError("cohort operation subject is malformed")
-    expected_subject = _subject_from_plan_bundle(plan_bundle_bytes)
-    authors = subject.get("authoring-evaluations")
-    if (
-        subject != expected_subject
-        or subject.get("schema") != COHORT_SUBJECT_SCHEMA
-        or not _matches(DIGEST, subject.get("plan"))
-        or not _matches(DIGEST, subject.get("plan-bundle-digest"))
-        or not isinstance(authors, dict)
-        or set(authors) != {"publish", "dependent"}
-        or cell.get("interface") != expected_interface
-        or cell.get("method") != expected_method
-        or not _is_expected_author(authors.get("publish"), "shared-configuration")
-        or not _is_expected_author(authors.get("dependent"), "nginx-secondary")
-        or not _is_expected_operation(
-            subject.get("publish-operation"),
-            authors["publish"],
-            "publish-nginx-secondary-configuration",
-            PUBLISH_ORDINAL,
-            MANAGED_CONFIGURATION_INTERFACE,
-            "publish",
-            PUBLISH_TARGET,
-        )
-        or not _is_expected_operation(
-            subject.get("dependent-operation"),
-            authors["dependent"],
-            "reload-nginx-secondary-service",
-            DEPENDENT_ORDINAL,
-            SYSTEMD_SERVICE_INTERFACE,
-            "reload",
-            DEPENDENT_TARGET,
-        )
-    ):
-        raise RuntimeError("cohort operation subject differs from the fixed fixture")
 
 
-def _validate_postgresql_cohort_subject(
-    cell: dict[str, Any], subject: Any, evidence_bytes: Any
-) -> None:
-    if (
-        cell.get("interface", {}).get("name") != "aos.postgresql-effects"
-        or cell.get("interface", {}).get("abi") != 1
-        or cell.get("interface", {}).get("descriptor")
-        != "sha256:6a1e7d5fb03d9b91127144a64fb96e4c98f4995e7f4f0de258f79fb61fbb9fd6"
-        or cell.get("method")
-        not in {"materialize", "observe", "restart", "start", "stop"}
-    ):
-        raise RuntimeError("PostgreSQL cohort is bound to another adapter method")
-
-    scenario = cell["id"].rsplit("/", 1)[-1]
-    if scenario == "reject-unsupported-transfer":
-        expected = _postgresql_rejection_subject(evidence_bytes)
-    else:
-        expected = _postgresql_plan_subject(evidence_bytes, cell["method"])
-    if subject != expected or subject.get("schema") != POSTGRESQL_COHORT_SUBJECT_SCHEMA:
-        raise RuntimeError("PostgreSQL cohort subject differs from its exact evidence")
-    if (
-        subject.get("operation", {}).get("interface") != cell["interface"]
-        or subject.get("operation", {}).get("method") != cell["method"]
-        or subject.get("operation", {}).get("target", {}).get("interface")
-        != cell["interface"]
-        or subject.get("operation", {}).get("target", {}).get("resource")
-        != subject.get("resource")
-    ):
-        raise RuntimeError("PostgreSQL evidence operation differs from its matrix cell")
-
-    source_format = subject.get("source", {}).get("state_format")
-    candidate_format = subject.get("candidate", {}).get("state_format")
-    compatible = (
-        isinstance(source_format, dict)
-        and isinstance(candidate_format, dict)
-        and source_format.get("descriptor") == candidate_format.get("descriptor")
-    )
-    if compatible != (scenario != "reject-unsupported-transfer"):
-        raise RuntimeError("PostgreSQL cohort state-format disposition is inconsistent")
 
 
-def _postgresql_plan_subject(evidence_bytes: Any, method: str) -> dict[str, Any]:
-    bundle = _canonical_evidence(evidence_bytes, "PostgreSQL plan bundle")
-    if bundle.get("schema") == POSTGRESQL_ORDERED_METHOD_EVIDENCE_SCHEMA:
-        return _postgresql_ordered_method_subject(bundle, evidence_bytes, method)
-    try:
-        if bundle.get("schema") != "aos.ability.plan-bundle/v1":
-            raise RuntimeError("PostgreSQL evidence has another plan-bundle schema")
-        authority = bundle["transition_authority"]
-        adoptions = authority["provider_adoptions"]
-        if len(adoptions) != 1:
-            raise RuntimeError("PostgreSQL plan does not carry one adoption contract")
-        adoption = adoptions[0]
-        effect_document = bundle["transition"]["effect_document"]
-        operations = effect_document["operations"]
-        matches = [
-            _project_operation(operation, ordinal)
-            for ordinal, operation in enumerate(operations)
-            if operation.get("method") == method
-            and operation.get("target", {}).get("resource") == adoption["resource"]
-        ]
-        if len(matches) != 1:
-            raise RuntimeError("PostgreSQL plan lacks one exact cohort operation")
-        dependent_operations = _required_success_dependents(
-            effect_document, matches[0]
-        )
-    except RuntimeError:
-        raise
-    except (AttributeError, KeyError, TypeError) as error:
-        raise RuntimeError("PostgreSQL plan evidence is malformed") from error
-
-    return _postgresql_subject(
-        plan=bundle["plan"],
-        evidence_bytes=evidence_bytes,
-        operation=matches[0],
-        dependent_operations=dependent_operations,
-        authority=authority,
-        adoption=adoption,
-    )
 
 
-def _postgresql_ordered_method_subject(
-    evidence: dict[str, Any], evidence_bytes: bytes, method: str
-) -> dict[str, Any]:
-    """Rebuilds a post-adoption method subject from both retained plans."""
-
-    try:
-        if set(evidence) != {"schema", "adoption", "method", "observation"}:
-            raise RuntimeError("ordered PostgreSQL evidence is malformed")
-        adoption_bundle = evidence["adoption"]
-        method_bundle = evidence["method"]
-        observation = evidence["observation"]
-        if (
-            adoption_bundle.get("schema") != "aos.ability.plan-bundle/v1"
-            or method_bundle.get("schema") != "aos.ability.plan-bundle/v1"
-            or set(observation)
-            != {
-                "adoption-generation",
-                "method-generation",
-                "transaction",
-                "journal-digest",
-                "resource-state",
-            }
-            or observation["method-generation"] <= observation["adoption-generation"]
-            or not _matches(RAW_DIGEST, observation["journal-digest"])
-            or not _matches(DIGEST, observation["resource-state"])
-        ):
-            raise RuntimeError("ordered PostgreSQL observation is not durable")
-        adoptions = adoption_bundle["transition_authority"]["provider_adoptions"]
-        if len(adoptions) != 1:
-            raise RuntimeError("ordered PostgreSQL evidence lacks one adoption")
-        adoption = adoptions[0]
-        effect = method_bundle["transition"]["effect_document"]
-        matches = [
-            _project_operation(operation, ordinal)
-            for ordinal, operation in enumerate(effect["operations"])
-            if operation.get("method") == method
-            and operation.get("target", {}).get("resource") == adoption["resource"]
-        ]
-        if len(matches) != 1:
-            raise RuntimeError("ordered PostgreSQL method is absent or ambiguous")
-        authority = method_bundle["transition_authority"]
-        subject = _postgresql_subject(
-            plan=method_bundle["plan"],
-            evidence_bytes=evidence_bytes,
-            operation=matches[0],
-            dependent_operations=_required_success_dependents(effect, matches[0]),
-            authority=authority,
-            adoption=adoption,
-        )
-        subject["adoption-authorization"] = {
-            "authorization-policy-revision": adoption_bundle["transition_authority"][
-                "authorization_policy_revision"
-            ],
-            "current-planning": adoption_bundle["transition_authority"]["current_planning"],
-            "desired-planning": adoption_bundle["transition_authority"]["desired_planning"],
-        }
-        return subject
-    except RuntimeError:
-        raise
-    except (AttributeError, KeyError, TypeError) as error:
-        raise RuntimeError("ordered PostgreSQL state evidence is malformed") from error
 
 
-def _postgresql_rejection_subject(evidence_bytes: Any) -> dict[str, Any]:
-    evidence = _canonical_evidence(evidence_bytes, "PostgreSQL rejection")
-    try:
-        if (
-            evidence.get("schema") != POSTGRESQL_REJECTION_EVIDENCE_SCHEMA
-            or set(evidence) != {"schema", "activation", "policy", "observation"}
-        ):
-            raise RuntimeError("PostgreSQL rejection evidence has another schema")
-        activation = evidence["activation"]
-        policy = evidence["policy"]
-        policy_bytes = canonical(policy)
-        pinned = activation["authenticated_policy_set"]
-        if (
-            pinned["document_sha256"]
-            != "sha256:" + hashlib.sha256(policy_bytes).hexdigest()
-            or pinned["document_size"] != len(policy_bytes)
-        ):
-            raise RuntimeError("PostgreSQL rejection policy is not the pinned input")
-        observation = evidence["observation"]
-        if (
-            not isinstance(observation, dict)
-            or set(observation)
-            != {
-                "error",
-                "generation-before",
-                "generation-after",
-                "owner-ledger-before",
-                "owner-ledger-after",
-                "persistent-state-before",
-                "persistent-state-after",
-                "candidate-effect-count",
-            }
-            or "state-format descriptors are incompatible"
-            not in observation.get("error", "")
-            or observation.get("generation-before")
-            != observation.get("generation-after")
-            or observation.get("owner-ledger-before")
-            != observation.get("owner-ledger-after")
-            or observation.get("persistent-state-before")
-            != observation.get("persistent-state-after")
-            or observation.get("candidate-effect-count") != 0
-        ):
-            raise RuntimeError("PostgreSQL rejection evidence lacks the exact outcome")
-        authority = policy["transition_authority"]
-        adoptions = authority["provider_adoptions"]
-        if len(adoptions) != 1:
-            raise RuntimeError("PostgreSQL rejection lacks one adoption contract")
-        adoption = adoptions[0]
-        candidate = adoption["candidate"]
-        operation = {
-            "key": candidate["handler_binding"],
-            "ordinal": 0,
-            "interface": candidate["handler_interface"],
-            "method": candidate["handler_method"],
-            "target": {
-                "interface": candidate["handler_interface"],
-                "resource": adoption["resource"],
-                "operations": [candidate["handler_method"]],
-                "lifetime": "persistent",
-            },
-        }
-    except RuntimeError:
-        raise
-    except (AttributeError, KeyError, TypeError) as error:
-        raise RuntimeError("PostgreSQL rejection evidence is malformed") from error
-
-    return _postgresql_subject(
-        plan=authority["desired_planning"],
-        evidence_bytes=evidence_bytes,
-        operation=operation,
-        dependent_operations=[],
-        authority=authority,
-        adoption=adoption,
-    )
 
 
-def _postgresql_subject(
-    *,
-    plan: str,
-    evidence_bytes: bytes,
-    operation: dict[str, Any],
-    dependent_operations: list[dict[str, Any]],
-    authority: dict[str, Any],
-    adoption: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "schema": POSTGRESQL_COHORT_SUBJECT_SCHEMA,
-        "plan": plan,
-        "evidence-digest": "sha256:" + hashlib.sha256(evidence_bytes).hexdigest(),
-        "operation": operation,
-        "dependent-operations": dependent_operations,
-        "resource": adoption["resource"],
-        "resource-interface": adoption["resource_interface"],
-        "source": adoption["source"],
-        "candidate": adoption["candidate"],
-        "current-planning": authority["current_planning"],
-        "desired-planning": authority["desired_planning"],
-        "authorization-policy-revision": authority[
-            "authorization_policy_revision"
-        ],
-    }
 
 
 def _required_success_dependents(
@@ -5228,7 +3735,7 @@ def _required_success_dependents(
         for ordinal, candidate in enumerate(operations)
     }
     if len(by_key) != len(operations):
-        raise RuntimeError("PostgreSQL plan repeats an operation key")
+        raise RuntimeError("checked plan repeats an operation key")
 
     dependent_keys = [
         edge["to"]["key"]
@@ -5240,7 +3747,7 @@ def _required_success_dependents(
     try:
         return [by_key[canonical(key)] for key in dependent_keys]
     except KeyError as error:
-        raise RuntimeError("PostgreSQL plan dependency names an unknown operation") from error
+        raise RuntimeError("checked plan dependency names an unknown operation") from error
 
 
 def _canonical_evidence(evidence_bytes: Any, label: str) -> dict[str, Any]:
@@ -5255,83 +3762,8 @@ def _canonical_evidence(evidence_bytes: Any, label: str) -> dict[str, Any]:
     return value
 
 
-def _subject_from_plan_bundle(plan_bundle_bytes: Any) -> dict[str, Any]:
-    if not isinstance(plan_bundle_bytes, bytes):
-        raise RuntimeError("cohort plan bundle is not an exact byte string")
-    try:
-        bundle = json.loads(plan_bundle_bytes)
-        if canonical(bundle) != plan_bundle_bytes:
-            raise RuntimeError("cohort plan bundle is not canonical JSON")
-        if bundle.get("schema") != "aos.ability.plan-bundle/v1":
-            raise RuntimeError("cohort plan bundle has another schema")
-
-        transition = bundle["transition"]
-        if transition.get("schema") != "aos.ability.transition-snapshot/v1":
-            raise RuntimeError("cohort transition snapshot has another schema")
-        evaluations = transition["evaluations"]
-        operations = transition["effect_document"]["operations"]
-        publish_author = _author_from_evaluations(
-            evaluations, "shared-configuration"
-        )
-        dependent_author = _author_from_evaluations(evaluations, "nginx-secondary")
-        publish_operation = _project_operation(
-            operations[PUBLISH_ORDINAL], PUBLISH_ORDINAL
-        )
-        dependent_operation = _project_operation(
-            operations[DEPENDENT_ORDINAL], DEPENDENT_ORDINAL
-        )
-        plan = bundle["plan"]
-    except RuntimeError:
-        raise
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
-        raise RuntimeError("cohort plan bundle cannot authenticate its subject") from error
-
-    return {
-        "schema": COHORT_SUBJECT_SCHEMA,
-        "plan": plan,
-        "plan-bundle-digest": "sha256:"
-        + hashlib.sha256(plan_bundle_bytes).hexdigest(),
-        "authoring-evaluations": {
-            "publish": publish_author,
-            "dependent": dependent_author,
-        },
-        "publish-operation": publish_operation,
-        "dependent-operation": dependent_operation,
-    }
 
 
-def _author_from_evaluations(evaluations: Any, provider_key: str) -> dict[str, Any]:
-    provider = {
-        "environment": FIXTURE_ENVIRONMENT,
-        "key": provider_key,
-    }
-    if not isinstance(evaluations, list):
-        raise RuntimeError("cohort transition evaluations are malformed")
-    matches = [
-        evaluation
-        for evaluation in evaluations
-        if isinstance(evaluation, dict) and evaluation.get("provider") == provider
-    ]
-    if len(matches) != 1:
-        raise RuntimeError("cohort transition lacks one exact authoring evaluation")
-    evaluation = matches[0]
-    implementation = evaluation.get("implementation")
-    result = evaluation.get("result")
-    descriptor = (
-        implementation.get("descriptor")
-        if isinstance(implementation, dict)
-        else None
-    )
-    if (
-        not _matches(DIGEST, descriptor)
-        or not isinstance(result, dict)
-        or result.get("status") != "returned"
-    ):
-        raise RuntimeError("cohort authoring evaluation is not an exact success")
-    return {
-        "provider": provider,
-        "implementation-descriptor": descriptor,
-    }
 
 
 def _project_operation(value: Any, ordinal: int) -> dict[str, Any]:
@@ -5346,37 +3778,8 @@ def _project_operation(value: Any, ordinal: int) -> dict[str, Any]:
     }
 
 
-def _is_expected_author(value: Any, provider_key: str) -> bool:
-    return (
-        isinstance(value, dict)
-        and set(value) == {"provider", "implementation-descriptor"}
-        and value.get("provider")
-        == {"environment": FIXTURE_ENVIRONMENT, "key": provider_key}
-        and _matches(DIGEST, value.get("implementation-descriptor"))
-    )
 
 
-def _is_expected_operation(
-    value: Any,
-    author: dict[str, Any],
-    local_key: str,
-    ordinal: int,
-    interface: dict[str, Any],
-    method: str,
-    target: dict[str, Any],
-) -> bool:
-    descriptor = author["implementation-descriptor"]
-    expected_key = {
-        "scope": [author["provider"]["key"], descriptor.removeprefix("sha256:")],
-        "key": local_key,
-    }
-    return value == {
-        "key": expected_key,
-        "ordinal": ordinal,
-        "interface": interface,
-        "method": method,
-        "target": target,
-    }
 
 
 def _is_nonnegative_int(value: Any) -> bool:

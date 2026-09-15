@@ -2206,25 +2206,14 @@ class Scenario:
         REPORT.write_bytes(self.build_report(guest_kernel_release))
 
 
-NATIVE_ADAPTER_MATRIX_CHECK_PREFIX = "native-adapter-matrix-v1-sha256-"
-NATIVE_ADAPTER_MATRIX_CHECK_DETAIL = (
-    "The native-adapter matrix bound every applicable durability and authority "
-    "cell plus every exact provider-contract exclusion to the adapter interface "
-    "name, ABI, and descriptor."
-)
-
-
-def check_detail(check: str) -> str:
-    """Returns stable prose for a required check, including derived matrix IDs."""
-
-    if check.startswith(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX):
-        digest_value = check.removeprefix(NATIVE_ADAPTER_MATRIX_CHECK_PREFIX)
-        if re.fullmatch(r"[0-9a-f]{64}", digest_value):
-            return NATIVE_ADAPTER_MATRIX_CHECK_DETAIL
-    try:
-        return CHECK_DETAILS[check]
-    except KeyError as error:
-        raise RuntimeError(f"qualification scenario has unknown check {check!r}") from error
+def check_detail(check):
+    if check.startswith("native-adapter-matrix-v1-sha256-"):
+        return (
+            "The package-derived native-adapter matrix bound every applicable "
+            "durability and authority cell plus every exact provider-contract "
+            "exclusion to the adapter interface name, ABI, and descriptor."
+        )
+    return CHECK_DETAILS[check]
 
 
 CHECK_DETAILS = {

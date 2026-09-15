@@ -24,15 +24,21 @@
   imageRolloutFixture = import ./_image-rollout-runtime-reference.nix {
     inherit lib pkgs;
   };
-  authorityInterfaceRoots =
-    map (entry: entry.package.abilities.contract) fixture.orderedPackages
-    ++ [
-      postgresqlFixture.packageSet.suite.abilities
-      kubernetesFixture.packageSet.kubernetes.abilities
-      kubernetesFixture.packageSet.systemd.abilities
-      imageRolloutFixture.package.abilities.contract
-    ];
-  authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  selectedPackageEntries =
+    fixture.orderedPackages
+    ++ postgresqlFixture.orderedPackages
+    ++ kubernetesFixture.orderedPackages
+    ++ imageRolloutFixture.orderedPackages;
+  selectedPackages = builtins.attrValues (builtins.listToAttrs (map (entry: {
+      name = builtins.unsafeDiscardStringContext (builtins.toString entry.package);
+      value = entry.package;
+    })
+    selectedPackageEntries));
+  authorityInterfaceRoots = map (package: package.abilities.contract) selectedPackages;
+  authorityMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
+    inherit lib;
+    packages = selectedPackages;
+  };
   authorityMatrixSpec = pkgs.writeTextFile {
     name = "aos-authority-revocation-matrix-spec";
     destination = "/matrix-spec.json";
@@ -125,6 +131,7 @@
     else "False";
 in {
   name = "ability-native-power-loss";
+  nativeAdapterMatrix = authorityMatrix;
   timeout = 5400;
   bootTimeout = 600;
 

@@ -1289,8 +1289,8 @@ fn run_failure_control_cell(
                 .map_err(|failure| anyhow::anyhow!(failure.error().to_string()))?;
             cancellation.cancel();
             ensure!(
-                matrix_method.cancel.is_none(),
-                "supported cancellation requires a provider-specific oracle"
+                operation.recovery.cancel.is_none(),
+                "supported cancellation requires a provider-specific flight"
             );
             transaction.record_unsupported_cancellation(&admitted, &clock)?;
             ensure!(
@@ -1509,18 +1509,7 @@ fn run_failure_control_cell(
     let evidence = json!({
         "scenario": scenario,
         "classification": classification,
-        "recovery-routes": {
-            "reconcile": matrix_method.reconcile,
-            "cancel": matrix_method.cancel,
-        },
-        "fixture-recovery-routes": {
-            "reconcile": if descriptor.outcome.indeterminate == IndeterminateSemantics::Reconcile {
-                Some(matrix_method.method.as_str())
-            } else {
-                None
-            },
-            "cancel": Value::Null,
-        },
+        "operation-recovery": operation.recovery,
         "journal": {
             "digest": digest_file(&journal_path)?,
             "head": snapshot.head_digest(),

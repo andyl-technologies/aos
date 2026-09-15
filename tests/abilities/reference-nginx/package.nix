@@ -10,6 +10,7 @@
   effectQualification ? false,
   providerStateQualification ? false,
   transitionTransform ? transition: transition,
+  qualificationObserver ? null,
 }: let
   inherit (lib.abilities) types;
   schemas = lib.abilities.schemas;
@@ -89,6 +90,35 @@
   packageRuntimeSelector = selectorFor serviceRuntimeDependency;
   nginxRuntimeSelector = selectorFor nginxRuntimeDependency;
   serviceManagementContract = lib.abilities.interfaces.serviceManagement;
+  qualificationSupport =
+    if qualificationObserver == null
+    then null
+    else import ../_native-adapter-qualification.nix {
+      inherit lib;
+      observerPackage = qualificationObserver;
+    };
+  qualificationDependencies = lib.optional (qualificationObserver != null) qualificationObserver;
+  conformanceFamilies = [
+    "authority-revocation"
+    "dependent-effect"
+    "durability-recovery"
+    "foreign-resource"
+    "incarnation-replacement"
+    "provider-state-transfer"
+  ];
+  qualificationFor = provider: kind: scope:
+    if qualificationSupport == null
+    then null
+    else {
+      inherit conformanceFamilies;
+      observer = qualificationSupport.observerFor {inherit provider kind scope;};
+    };
+  nginxQualificationClaims = {
+    network-endpoint = qualificationFor "network-endpoint" "network" "host-resource";
+    network-policy = qualificationFor "host-network-policy" "network" "host-resource";
+    nginx-validation = qualificationFor "nginx-validation" "filesystem" "host-process";
+    storage = qualificationFor "host-storage" "filesystem" "host-resource";
+  };
 
   interface = name: descriptor: {
     inherit name descriptor;
@@ -607,6 +637,7 @@
     providerArtifact = nginxArtifact;
     runtimeArtifact = nginxRuntimeSelector;
     hostResourceRuntime = selectorFor hostResourceRuntimeDependency;
+    qualificationClaims = lib.filterAttrs (_: value: value != null) nginxQualificationClaims;
   };
   baseNginxAbilities = baseNginxAbilityModule.config.aos.abilities;
   baseNginxImplementations = baseNginxAbilities.implementations;
@@ -681,9 +712,9 @@ in {
     };
   };
 
-  nginx = mkPackage "ability-reference-nginx" nginxArtifact [nginxRuntimeDependency hostResourceRuntimeDependency] nginxAbilityModule;
+  nginx = mkPackage "ability-reference-nginx" nginxArtifact ([nginxRuntimeDependency hostResourceRuntimeDependency] ++ qualificationDependencies) nginxAbilityModule;
 
-  managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact [managedConfigurationRuntimeDependency] {
+  managed-configuration = mkPackage "ability-reference-managed-configuration" managedConfigurationArtifact ([managedConfigurationRuntimeDependency] ++ qualificationDependencies) {
     config.aos.abilities = lib.abilities.projectDefinitions {
       managed-configuration = {
         definition = lib.abilities.define {
@@ -726,6 +757,7 @@ in {
         };
       };
       managed-configuration-effects = {
+        qualification = qualificationFor "managed-configuration" "filesystem" "host-filesystem";
         artifact = selectorFor managedConfigurationRuntimeDependency;
         definition = terminalExport {
           name = managedConfigurationEffects.name;
@@ -747,7 +779,7 @@ in {
     };
   };
 
-  credential = mkPackage "ability-reference-credential" credentialArtifact [credentialRuntimeDependency] {
+  credential = mkPackage "ability-reference-credential" credentialArtifact ([credentialRuntimeDependency] ++ qualificationDependencies) {
     config.aos.abilities = lib.abilities.projectDefinitions {
       credential-delivery = {
         definition = lib.abilities.define {
@@ -786,6 +818,7 @@ in {
         };
       };
       credential-delivery-effects = {
+        qualification = qualificationFor "credential-delivery" "filesystem" "host-resource";
         artifact = selectorFor credentialRuntimeDependency;
         definition = terminalExport {
           name = credentialDeliveryEffects.name;
@@ -813,9 +846,10 @@ in {
     };
   };
 
-  service = mkPackage "ability-reference-service" serviceArtifact [serviceRuntimeDependency] {
+  service = mkPackage "ability-reference-service" serviceArtifact ([serviceRuntimeDependency] ++ qualificationDependencies) {
     config.aos.abilities = lib.abilities.projectDefinitions {
       foreground-process = {
+        qualification = qualificationFor "foreground-process" "foreground-process" "application-container-process";
         artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = foregroundProcess.name;
@@ -868,6 +902,7 @@ in {
         };
       };
       service-management = {
+        qualification = qualificationFor "service-management" "systemd" "host-manager";
         artifact = packageRuntimeSelector;
         definition = terminalExport {
           name = serviceManagement.name;

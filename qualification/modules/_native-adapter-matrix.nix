@@ -1,7 +1,9 @@
-##! Validates and expands the closed RFC-0022 native-adapter qualification matrix.
+##! Derives and expands the RFC-0022 native-adapter qualification matrix.
 {
   lib,
-  surface ? builtins.fromJSON (builtins.readFile ../native-adapter-surface.json),
+  packages ? null,
+  scenarioPolicy ? builtins.fromJSON (builtins.readFile ../native-adapter-scenarios.json),
+  surface ? null,
   cells ? null,
   subject ? null,
   applicability ? null,
@@ -15,11 +17,14 @@
     "checks.fleet.ability-native-power-loss"
   ],
 }: let
-  expectedSurfaceKeys = ["adapters" "limits" "matrix_schema" "scenarios" "schema" "subject_schema"];
-  expectedAdapterKeys = ["adapter" "interface_abi" "interface_descriptor" "interface_name" "methods" "provider_contract" "scope"];
-  expectedMethodKeys = ["cancel" "effect_class" "method" "reconcile"];
+  expectedSurfaceKeys = ["adapters" "families" "limits" "matrix_schema" "scenarios" "schema" "subject_schema"];
+  expectedAdapterKeys = ["adapter" "conformance_families" "interface_abi" "interface_descriptor" "interface_name" "methods" "provider_contract" "provider_implementation" "scope"];
+  expectedMethodKeys = ["effect_class" "method"];
   expectedProviderContractKeys = ["resource_lifetime" "state_format"];
-  expectedScenarioKeys = ["boundary" "candidate" "failure" "id" "predecessor"];
+  expectedProviderImplementationKeys = ["contract" "implementation" "observer"];
+  expectedHandlerKeys = ["arguments" "artifact" "entry_point" "result"];
+  expectedScenarioKeys = ["boundary" "candidate" "failure" "family" "id" "predecessor"];
+  expectedScenarioPolicyKeys = ["matrix_schema" "scenarios" "subject_schema"];
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   allowedRegressions = [
     "checks.fleet.ability-native-activation"
@@ -34,41 +39,164 @@
     && builtins.stringLength value > 0
     && builtins.stringLength value <= 96
     && builtins.match "[a-z0-9.-]+" value != null;
+  localKey = value:
+    builtins.isString value
+    && builtins.stringLength value > 0
+    && builtins.stringLength value <= 128
+    && builtins.match "[A-Za-z0-9._-]+" value != null;
   digest = value:
     builtins.isString value
     && builtins.match "sha256:[0-9a-f]{64}" value != null;
   unique = values: builtins.length values == builtins.length (lib.unique values);
-  surfaceDigest = builtins.hashString "sha256" (builtins.toJSON surface);
-  canonicalSubject = {
-    schema = "aos.qualification.native-adapter-subject/v1";
-    matrix_schema = "aos.qualification.native-adapter-matrix/v1";
-    surface_digest = "sha256:${surfaceDigest}";
-    adapter_count = builtins.length surface.adapters;
-    method_count = builtins.length adapterMethods;
-    scenario_count = builtins.length surface.scenarios;
-    interfaces = builtins.sort (left: right: builtins.lessThan left.name right.name) (
-      map (adapter: {
-        name = adapter.interface_name;
-        abi = adapter.interface_abi;
-        descriptor = adapter.interface_descriptor;
-      })
-      surface.adapters
-    );
+  scenarioFamilies = builtins.sort builtins.lessThan (
+    lib.unique (map (scenario: scenario.family) scenarioPolicy.scenarios)
+  );
+  selectedPackages =
+    if packages == null
+    then []
+    else builtins.filter (package: package ? abilities) packages;
+  selectedImplementations = builtins.concatMap (package:
+    map (name: {
+      inherit package name;
+      implementation = package.abilities.implementations.${name};
+      interface = package.abilities.interfaces.${package.abilities.implementations.${name}.interface};
+    }) (builtins.filter
+      (name: package.abilities.implementations.${name}.qualification != null)
+      (builtins.attrNames package.abilities.implementations)))
+  selectedPackages;
+  packageDependencies = package:
+    [package]
+    ++ (package.buildDeps or [])
+    ++ (package.runtimeDeps or [])
+    ++ (package.propagatedDeps or []);
+  resolveOutput = owner: selector: let
+    matches = lib.unique (builtins.filter (candidate:
+      builtins.isAttrs candidate
+      && (candidate.pname or null) == selector.package)
+    (packageDependencies owner));
+    selected =
+      if selector.package == "self"
+      then owner
+      else if builtins.length matches == 1
+      then builtins.head matches
+      else throw "native qualification artifact '${selector.package}' is absent or ambiguous for '${owner.pname}'";
+    outputs = selected.outputs or ["out"];
+  in
+    if !(builtins.elem selector.output outputs)
+    then throw "native qualification artifact '${selector.package}' lacks output '${selector.output}'"
+    else if selector.output == "out"
+    then selected.out or selected
+    else builtins.getAttr selector.output selected;
+  resolvedArtifact = owner: selector: {
+    inherit selector;
+    path = builtins.toString (resolveOutput owner selector);
   };
-  selectedSubject =
-    if subject == null
-    then canonicalSubject
-    else subject;
+  projectedHandler = owner: handler: {
+    artifact = resolvedArtifact owner handler.artifact;
+    entry_point = handler.entryPoint;
+    inherit (handler) arguments result;
+  };
+  interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
+  closedObserverResult = field: observer:
+    if
+      observer.result.kind
+      == "record"
+      && builtins.hasAttr field observer.result.fields
+      && observer.result.fields.${field}.kind == "string-enum"
+      && builtins.length observer.result.fields.${field}.values == 1
+    then builtins.head observer.result.fields.${field}.values
+    else throw "native qualification observer must return one closed ${field}";
+  stateContractFor = entry: let
+    persistentOutput = builtins.any (output: output.lifetime == "persistent") (
+      builtins.concatMap (method: builtins.attrValues method.outputs) (
+        builtins.attrValues entry.interface.interface.methods
+      )
+    );
+    stateFormat = entry.implementation.state_format;
+  in {
+    resource_lifetime =
+      if persistentOutput || stateFormat != null
+      then "persistent"
+      else "instance";
+    state_format = stateFormat;
+  };
+  effectClass = method:
+    if method.semantics.required_target_access == "read"
+    then "observation"
+    else "mutation";
+  adapterFor = entry: let
+    implementation = entry.implementation;
+    qualification = implementation.qualification;
+    interface = entry.interface;
+    methodNames = implementation.methods;
+    observer = projectedHandler entry.package qualification.observer;
+    adapter = closedObserverResult "provider" qualification.observer;
+    oracleKind = closedObserverResult "kind" qualification.observer;
+    scope = closedObserverResult "scope" qualification.observer;
+    identity = interfaceIdentity interface;
+  in
+    assert qualification.conformanceFamilies != [];
+    assert unique qualification.conformanceFamilies;
+    assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformanceFamilies;
+    assert token oracleKind; {
+      inherit adapter;
+      inherit scope;
+      conformance_families = builtins.sort builtins.lessThan qualification.conformanceFamilies;
+      interface_name = identity.name;
+      interface_abi = identity.abi;
+      interface_descriptor = identity.descriptor;
+      methods =
+        map (methodName: {
+          method = methodName;
+          effect_class = effectClass interface.interface.methods.${methodName};
+        })
+        methodNames;
+      provider_contract = stateContractFor entry;
+      provider_implementation = {
+        contract = builtins.toString entry.package.abilities.contract;
+        implementation = entry.name;
+        inherit observer;
+      };
+    };
+  derivedSurface = {
+    schema = "aos.qualification.native-adapter-surface/v1";
+    matrix_schema = scenarioPolicy.matrix_schema;
+    subject_schema = scenarioPolicy.subject_schema;
+    adapters =
+      builtins.sort
+      (left: right: builtins.lessThan left.adapter right.adapter)
+      (map adapterFor selectedImplementations);
+    families = scenarioFamilies;
+    scenarios = scenarioPolicy.scenarios;
+    limits = {
+      max_adapters = builtins.length selectedImplementations;
+      max_methods = builtins.length (builtins.concatMap (entry: entry.implementation.methods) selectedImplementations);
+      max_scenarios = builtins.length scenarioPolicy.scenarios;
+    };
+  };
+  selectedSurface =
+    if surface == null
+    then derivedSurface
+    else surface;
+  surfaceDigest = builtins.hashString "sha256" (builtins.toJSON selectedSurface);
   adapterMethods = builtins.concatMap (adapter:
     map (method: {
       inherit adapter method;
     })
     adapter.methods)
-  surface.adapters;
-  cancellationFailure = method:
-    if method.cancel == null
-    then "unsupported-cancellation-retains-ownership"
-    else "cancelled-after-reconciliation";
+  selectedSurface.adapters;
+  canonicalSubject = {
+    schema = "aos.qualification.native-adapter-subject/v1";
+    matrix_schema = "aos.qualification.native-adapter-matrix/v1";
+    surface_digest = "sha256:${surfaceDigest}";
+    adapter_count = builtins.length selectedSurface.adapters;
+    method_count = builtins.length adapterMethods;
+    scenario_count = builtins.length selectedSurface.scenarios;
+  };
+  selectedSubject =
+    if subject == null
+    then canonicalSubject
+    else subject;
   postconditionsFor = scenario:
     [
       "durable-attempt-state-classified"
@@ -95,7 +223,7 @@
     ++ lib.optional (scenario.id == "reject-foreign-resource-mutation") "foreign-attempt-rejected-before-mutation";
   cellFor = pair: scenario: {
     id = "${pair.adapter.adapter}/${pair.adapter.interface_name}/abi-${toString pair.adapter.interface_abi}/${pair.method.method}/${scenario.id}";
-    matrix_schema = surface.matrix_schema;
+    matrix_schema = selectedSurface.matrix_schema;
     adapter = pair.adapter.adapter;
     interface = {
       name = pair.adapter.interface_name;
@@ -106,24 +234,25 @@
     effect_class = pair.method.effect_class;
     scope = pair.adapter.scope;
     boundary = scenario.boundary;
-    failure =
-      if scenario.failure == "route-dependent"
-      then cancellationFailure pair.method
-      else scenario.failure;
+    failure = scenario.failure;
     predecessor = scenario.predecessor;
     candidate = scenario.candidate;
     postconditions = postconditionsFor scenario;
-    recovery = {
-      reconcile = pair.method.reconcile;
-      cancel = pair.method.cancel;
-    };
     invalidated_by = requiredInvalidation;
   };
   expectedCells = builtins.sort (left: right: builtins.lessThan left.id right.id) (
-    builtins.concatMap (pair: map (cellFor pair) surface.scenarios) adapterMethods
+    builtins.concatMap (
+      pair:
+        map (cellFor pair) (
+          builtins.filter
+          (scenario: builtins.elem scenario.family pair.adapter.conformance_families)
+          selectedSurface.scenarios
+        )
+    )
+    adapterMethods
   );
   providerContractFor = cell:
-    builtins.head (builtins.filter (adapter: adapter.adapter == cell.adapter) surface.adapters);
+    builtins.head (builtins.filter (adapter: adapter.adapter == cell.adapter) selectedSurface.adapters);
   inapplicableReason = cell: let
     contract = (providerContractFor cell).provider_contract;
   in
@@ -135,17 +264,15 @@
     then "missing-authenticated-state-format"
     else null;
   inapplicableCells = builtins.filter (entry: entry != null) (
-    map (
-      cell: let
-        reason = inapplicableReason cell;
-      in
-        if reason == null
-        then null
-        else {
-          cell_id = cell.id;
-          inherit reason;
-        }
-    )
+    map (cell: let
+      reason = inapplicableReason cell;
+    in
+      if reason == null
+      then null
+      else {
+        cell_id = cell.id;
+        inherit reason;
+      })
     expectedCells
   );
   inapplicableCellIds = map (entry: entry.cell_id) inapplicableCells;
@@ -167,7 +294,7 @@
     else cells;
   matrixSpec = {
     schema = "aos.qualification.native-adapter-matrix-spec/v1";
-    inherit surface;
+    surface = selectedSurface;
     subject = canonicalSubject;
     cells = selectedCells;
     applicability = selectedApplicability;
@@ -183,14 +310,36 @@
     builtins.attrNames method
     == expectedMethodKeys
     && token method.method
-    && builtins.elem method.effect_class ["mutation" "observation"]
-    && (method.reconcile == null || token method.reconcile)
-    && (method.cancel == null || token method.cancel);
+    && builtins.elem method.effect_class ["mutation" "observation"];
   validProviderContract = contract:
     builtins.attrNames contract
     == expectedProviderContractKeys
     && builtins.elem contract.resource_lifetime ["attempt" "transaction" "instance" "persistent"]
     && (contract.state_format == null || digest contract.state_format);
+  validArtifact = artifact:
+    builtins.isAttrs artifact
+    && builtins.attrNames artifact == ["path" "selector"]
+    && builtins.isString artifact.path
+    && artifact.path != ""
+    && builtins.isAttrs artifact.selector
+    && builtins.attrNames artifact.selector == ["_type" "output" "package"]
+    && artifact.selector._type == "aos-package-output-selector"
+    && builtins.all localKey [artifact.selector.output artifact.selector.package];
+  validHandler = handler:
+    builtins.isAttrs handler
+    && builtins.attrNames handler == expectedHandlerKeys
+    && validArtifact handler.artifact
+    && builtins.isString handler.entry_point
+    && handler.entry_point != ""
+    && builtins.isAttrs handler.arguments
+    && builtins.isAttrs handler.result;
+  validProviderImplementation = implementation:
+    builtins.attrNames implementation
+    == expectedProviderImplementationKeys
+    && builtins.isString implementation.contract
+    && lib.hasPrefix "/nix/store/" implementation.contract
+    && localKey implementation.implementation
+    && validHandler implementation.observer;
   validAdapter = adapter:
     builtins.attrNames adapter
     == expectedAdapterKeys
@@ -198,29 +347,20 @@
     && token adapter.interface_name
     && adapter.interface_abi == 1
     && digest adapter.interface_descriptor
+    && adapter.conformance_families != []
+    && unique adapter.conformance_families
+    && builtins.all (family: builtins.elem family selectedSurface.families) adapter.conformance_families
     && validProviderContract adapter.provider_contract
-    && builtins.elem adapter.scope [
-      "bootstrap-manager"
-      "application-container-process"
-      "host-filesystem"
-      "host-manager"
-      "host-machine"
-      "host-process"
-      "host-resource"
-      "kubernetes-cluster"
-    ]
+    && validProviderImplementation adapter.provider_implementation
+    && token adapter.scope
     && adapter.methods != []
     && unique (map (method: method.method) adapter.methods)
-    && builtins.all validMethod adapter.methods
-    && builtins.all (method:
-      builtins.all (route:
-        route == null || builtins.any (candidate: candidate.method == route) adapter.methods)
-      [method.reconcile method.cancel])
-    adapter.methods;
+    && builtins.all validMethod adapter.methods;
   validScenario = scenario:
     builtins.attrNames scenario
     == expectedScenarioKeys
-    && builtins.all token [scenario.boundary scenario.candidate scenario.failure scenario.id scenario.predecessor]
+    && builtins.all token [scenario.boundary scenario.candidate scenario.failure scenario.family scenario.id scenario.predecessor]
+    && builtins.elem scenario.family selectedSurface.families
     && builtins.elem scenario.boundary [
       "after-acquisition"
       "after-durable-intent"
@@ -238,45 +378,44 @@
       "retained-target-activation"
     ];
   validSurface =
-    builtins.attrNames surface
+    builtins.attrNames selectedSurface
     == expectedSurfaceKeys
-    && surface.schema == "aos.qualification.native-adapter-surface/v1"
-    && surface.matrix_schema == "aos.qualification.native-adapter-matrix/v1"
-    && surface.subject_schema == "aos.qualification.native-adapter-subject/v1"
-    && builtins.attrNames surface.limits == ["max_adapters" "max_methods" "max_scenarios"]
-    && surface.limits.max_adapters > 0
-    && surface.limits.max_adapters <= 64
-    && surface.limits.max_methods > 0
-    && surface.limits.max_methods <= 1024
-    && surface.limits.max_scenarios > 0
-    && surface.limits.max_scenarios <= 64
-    && surface.adapters != []
-    && builtins.length surface.adapters <= surface.limits.max_adapters
+    && selectedSurface.schema == "aos.qualification.native-adapter-surface/v1"
+    && selectedSurface.matrix_schema == "aos.qualification.native-adapter-matrix/v1"
+    && selectedSurface.subject_schema == "aos.qualification.native-adapter-subject/v1"
+    && selectedSurface.families != []
+    && unique selectedSurface.families
+    && builtins.all token selectedSurface.families
+    && selectedSurface.limits
+    == {
+      max_adapters = builtins.length selectedSurface.adapters;
+      max_methods = builtins.length adapterMethods;
+      max_scenarios = builtins.length selectedSurface.scenarios;
+    }
+    && selectedSurface.adapters != []
     && adapterMethods != []
-    && builtins.length adapterMethods <= surface.limits.max_methods
-    && surface.scenarios != []
-    && builtins.length surface.scenarios <= surface.limits.max_scenarios
-    && unique (map (adapter: adapter.adapter) surface.adapters)
-    && unique (map (adapter: "${adapter.interface_name}/abi-${toString adapter.interface_abi}/${adapter.interface_descriptor}") surface.adapters)
-    && unique (map (scenario: scenario.id) surface.scenarios)
-    && builtins.all validAdapter surface.adapters
-    && builtins.all validScenario surface.scenarios;
+    && selectedSurface.scenarios != []
+    && unique (map (adapter: adapter.adapter) selectedSurface.adapters)
+    && unique (map (adapter: "${adapter.interface_name}/abi-${toString adapter.interface_abi}/${adapter.interface_descriptor}") selectedSurface.adapters)
+    && unique (map (scenario: scenario.id) selectedSurface.scenarios)
+    && builtins.all validAdapter selectedSurface.adapters
+    && builtins.all validScenario selectedSurface.scenarios;
   check = "native-adapter-matrix-v1-sha256-${matrixDigest}";
 in
+  assert surface != null || packages != null;
+  assert builtins.attrNames scenarioPolicy == expectedScenarioPolicyKeys;
   assert validSurface;
   assert selectedSubject == canonicalSubject;
   assert invalidatedBy == requiredInvalidation;
   assert regressions == allowedRegressions;
   assert exactCells;
   assert selectedApplicability == canonicalApplicability;
-  assert builtins.length inapplicableCellIds
-  == builtins.length (lib.unique inapplicableCellIds);
+  assert unique inapplicableCellIds;
   assert builtins.all (cell: !builtins.elem cell.id inapplicableCellIds) applicableCells;
   assert builtins.sort builtins.lessThan (applicableCellIds ++ inapplicableCellIds)
   == map (cell: cell.id) expectedCells;
-  assert builtins.length (lib.unique (applicableCellIds ++ inapplicableCellIds))
-  == builtins.length expectedCells; {
-    schema = surface.matrix_schema;
+  assert unique (applicableCellIds ++ inapplicableCellIds); {
+    schema = selectedSurface.matrix_schema;
     subject = canonicalSubject;
     spec = matrixSpec;
     matrix_digest = "sha256:${matrixDigest}";

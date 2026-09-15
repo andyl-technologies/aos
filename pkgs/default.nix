@@ -262,6 +262,15 @@
           value = transform values.${name};
         })
         (builtins.attrNames values));
+    projectAbilityHandler = context: handler:
+      if handler == null
+      then null
+      else
+        (builtins.removeAttrs handler ["arguments" "result"])
+        // {
+          arguments = lib.abilities.types.schemaOf "${context} arguments" handler.arguments;
+          result = lib.abilities.types.schemaOf "${context} result" handler.result;
+        };
     abilityProjection =
       if localAbilityProjection == null
       then null
@@ -287,6 +296,24 @@
             (requirement: builtins.removeAttrs requirement ["description"])
             localAbilityProjection.requirementTemplates;
         };
+    publishedAbilityImplementations =
+      if abilityProjection == null
+      then null
+      else
+        builtins.mapAttrs (_: implementation:
+          implementation
+          // {
+            handlerDescriptor = projectAbilityHandler "implementation handler" implementation.handlerDescriptor;
+            qualification =
+              if implementation.qualification == null
+              then null
+              else
+                implementation.qualification
+                // {
+                  observer = projectAbilityHandler "qualification observer" implementation.qualification.observer;
+                };
+          })
+        abilityProjection.implementations;
     preparedAuthoredConfigModule =
       if authoredConfigModule != null
       then
@@ -660,7 +687,8 @@
       if abilityContract != null
       then {
         abilities = {
-          inherit (abilityProjection) interfaces implementations;
+          inherit (abilityProjection) interfaces;
+          implementations = publishedAbilityImplementations;
           requirements = abilityProjection.requirementTemplates;
           module = packageModule;
           moduleOutputs = {

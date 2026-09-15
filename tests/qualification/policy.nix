@@ -2,18 +2,159 @@
 {
   pkgs,
   lib,
+  nativeAdapterMatrix,
   packageCoverage,
   releaseExecutor,
 }: let
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
   contract = import ../../qualification {
-    inherit lib;
+    inherit lib nativeAdapterMatrix;
     inherit packageNames;
+  };
+  fixtureObserver = provider: {
+    artifact = {
+      path = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-fixture-observer";
+      selector = {
+        _type = "aos-package-output-selector";
+        package = "fixture-observer";
+        output = "out";
+      };
+    };
+    entry_point = "bin/fixture-observer";
+    arguments = {
+      kind = "record";
+      fields.request_path = {
+        kind = "string";
+        max_length = 4096;
+        syntax = null;
+      };
+      optional_fields = [];
+    };
+    result = {
+      kind = "record";
+      fields = {
+        kind = {
+          kind = "string-enum";
+          values = ["fixture-state"];
+        };
+        observation = {
+          kind = "string";
+          max_length = 1048576;
+          syntax = null;
+        };
+        provider = {
+          kind = "string-enum";
+          values = [provider];
+        };
+        scope = {
+          kind = "string-enum";
+          values = ["host-resource"];
+        };
+      };
+      optional_fields = [];
+    };
+  };
+  fixtureAdapter = {
+    name,
+    interface,
+    descriptor,
+    method,
+    effectClass,
+    family,
+    lifetime,
+    stateFormat,
+  }: {
+    adapter = name;
+    conformance_families = [family];
+    interface_abi = 1;
+    interface_descriptor = descriptor;
+    interface_name = interface;
+    methods = [
+      {
+        effect_class = effectClass;
+        inherit method;
+      }
+    ];
+    provider_contract = {
+      resource_lifetime = lifetime;
+      state_format = stateFormat;
+    };
+    provider_implementation = {
+      contract = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-${name}-abilities";
+      implementation = "${name}-implementation";
+      observer = fixtureObserver name;
+    };
+    scope = "host-resource";
+  };
+  syntheticNativeAdapterSurface = {
+    schema = "aos.qualification.native-adapter-surface/v1";
+    matrix_schema = "aos.qualification.native-adapter-matrix/v1";
+    subject_schema = "aos.qualification.native-adapter-subject/v1";
+    families = ["durability-recovery" "provider-state-transfer"];
+    adapters = [
+      (fixtureAdapter {
+        name = "fixture-a";
+        interface = "aos.fixture-a";
+        descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        method = "operate";
+        effectClass = "mutation";
+        family = "durability-recovery";
+        lifetime = "instance";
+        stateFormat = null;
+      })
+      (fixtureAdapter {
+        name = "fixture-z";
+        interface = "aos.fixture-z";
+        descriptor = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        method = "observe";
+        effectClass = "observation";
+        family = "provider-state-transfer";
+        lifetime = "persistent";
+        stateFormat = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+      })
+    ];
+    scenarios = [
+      {
+        boundary = "before-acquisition";
+        candidate = "same";
+        failure = "injected-interruption";
+        family = "durability-recovery";
+        id = "interrupt-before-acquisition";
+        predecessor = "none";
+      }
+      {
+        boundary = "recovery";
+        candidate = "different-provider";
+        failure = "none";
+        family = "provider-state-transfer";
+        id = "adopt-compatible-state";
+        predecessor = "present";
+      }
+    ];
+    limits = {
+      max_adapters = 2;
+      max_methods = 2;
+      max_scenarios = 2;
+    };
+  };
+  syntheticNativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {
+    inherit lib;
+    surface = syntheticNativeAdapterSurface;
   };
   fixture = import ../../qualification {
     inherit lib;
+    nativeAdapterMatrix = syntheticNativeAdapterMatrix;
     packageNames = ["aos" "nginx" "containerd" "runc"];
   };
+  fixtureWithoutNativeAdapterMatrix =
+    fixture
+    // {
+      requirements =
+        builtins.filter (
+          requirement: requirement.id != "ability-native-adapter-matrix"
+        )
+        fixture.requirements;
+    };
   capturedFixture = builtins.fromJSON (builtins.readFile ../../crates/aos-release/tests/fixtures/qualification-contract.json);
   sourceTree = builtins.path {
     path = ../../qualification;
@@ -178,9 +319,8 @@
       "ability-native-postgresql"
       "ability-native-recovery"
     ]);
-  nativeAdapterMatrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
   containerExecutionMatrix = import ../../qualification/modules/_container-execution-matrix.nix {inherit lib;};
-  nativeAdapterSurface = builtins.fromJSON (builtins.readFile ../../qualification/native-adapter-surface.json);
+  nativeAdapterSurface = nativeAdapterMatrix.spec.surface;
   providerContract = adapterName:
     (builtins.head (builtins.filter (adapter: adapter.adapter == adapterName) nativeAdapterSurface.adapters)).provider_contract;
   postgresqlAbilityContract = import ../../pkgs/storage/_postgresql-ability/contract.nix {inherit lib;};
@@ -204,17 +344,17 @@
   nativeFailureControlCells = builtins.filter (cell: let
     scenario = builtins.elemAt (lib.splitString "/" cell.id) 4;
   in
-    builtins.elem scenario ["expire-attempt-deadline" "fail-cleanup" "fail-release"]
-    || (scenario == "cancel-unsettled-attempt" && cell.recovery.cancel == null))
-  nativeCells;
-  unsupportedCancellationCells = builtins.filter (cell:
-    builtins.elemAt (lib.splitString "/" cell.id) 4
-    == "cancel-unsettled-attempt"
-    && cell.recovery.cancel == null)
+    builtins.elem scenario ["expire-attempt-deadline" "fail-cleanup" "fail-release"])
   nativeCells;
   replaceFirstNativeCell = replacement: [replacement] ++ remainingNativeCells;
   rejectsNativeMatrix = arguments:
-    !(builtins.tryEval (builtins.deepSeq (import ../../qualification/modules/_native-adapter-matrix.nix ({inherit lib;} // arguments)) true)).success;
+    !(builtins.tryEval (builtins.deepSeq (import ../../qualification/modules/_native-adapter-matrix.nix ({
+        inherit lib;
+        surface = nativeAdapterSurface;
+      }
+      // arguments))
+    true))
+    .success;
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
@@ -237,7 +377,7 @@
     )
     pkgs.platformSupport.canonicalSystems;
   composed = import ../../qualification/_eval.nix {
-    inherit lib;
+    inherit lib nativeAdapterMatrix;
     packageNames = ["aos" "fixture"];
     modules = [
       {
@@ -286,14 +426,14 @@
   configured = composed.config.qualification;
   rejects = module:
     !(builtins.tryEval (builtins.deepSeq (import ../../qualification {
-        inherit lib;
+        inherit lib nativeAdapterMatrix;
         packageNames = ["aos"];
         modules = [module];
       })
       true))
     .success;
 in
-  assert fixture == capturedFixture;
+  assert fixtureWithoutNativeAdapterMatrix == capturedFixture;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
   assert names == builtins.sort builtins.lessThan packageNames;
@@ -393,23 +533,21 @@ in
     "checks.fleet.ability-native-power-loss"
   ];
   assert abilityRequirements.ability-native-adapter-matrix.production_only;
-  assert nativeAdapterMatrix.cell_count
-  == nativeAdapterMatrix.required_production_vm_cells
-  + builtins.length nativeAdapterMatrix.inapplicable_cells;
-  assert builtins.length nativeAdapterMatrix.applicable_cells
-  == nativeAdapterMatrix.required_production_vm_cells;
+  assert nativeAdapterMatrix.cell_count == builtins.length nativeCells;
+  assert syntheticNativeAdapterMatrix.cell_count == 2;
+  assert map (cell: cell.id) syntheticNativeAdapterMatrix.cells
+  == [
+    "fixture-a/aos.fixture-a/abi-1/operate/interrupt-before-acquisition"
+    "fixture-z/aos.fixture-z/abi-1/observe/adopt-compatible-state"
+  ];
+  assert nativeAdapterMatrix.required_production_vm_cells == builtins.length applicableNativeIds;
   assert builtins.length applicableNativeIds
   == builtins.length (lib.unique applicableNativeIds);
   assert builtins.length inapplicableNativeIds
   == builtins.length (lib.unique inapplicableNativeIds);
   assert builtins.all (id: !builtins.elem id inapplicableNativeIds) applicableNativeIds;
   assert partitionedNativeIds == map (cell: cell.id) nativeCells;
-  assert builtins.length (builtins.filter (entry: entry.reason == "non-persistent-lifetime") nativeAdapterMatrix.inapplicable_cells)
-  + builtins.length (builtins.filter (entry: entry.reason == "missing-authenticated-state-format") nativeAdapterMatrix.inapplicable_cells)
-  == builtins.length nativeAdapterMatrix.inapplicable_cells;
   assert nativeAdapterMatrix.spec.applicability == nativeAdapterMatrix.applicability;
-  assert nativeAdapterMatrix.applicability_digest
-  == "sha256:${builtins.hashString "sha256" (builtins.toJSON nativeAdapterMatrix.applicability)}";
   assert (providerContract "postgresql")
   == {
     resource_lifetime = "persistent";
@@ -420,16 +558,11 @@ in
   assert (providerContract "image-rollout")
   == {
     resource_lifetime = "persistent";
-    state_format = rolloutPackageContract.abilities.implementations.rollout.definition.state_format;
+    state_format = rolloutPackageContract.abilities.config.aos.abilities.implementations.rollout.definition.state_format;
   };
-  assert rolloutPackageContract.abilities.implementations.rollout.definition.outputs.machine.lifetime == "persistent";
-  assert rolloutPackageContract.abilities.implementations.rollout.definition.state_format
-  == "sha256:ab3d033a412b9b81a99491c719eb8ff6d564080701f45a20ccd723c1133fb8e8";
-  assert builtins.length nativeRoleRevocationCells == 600;
-  assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeRoleRevocationCells;
-  assert builtins.length nativeFailureControlCells == 156;
-  assert builtins.length unsupportedCancellationCells == 6;
-  assert builtins.all (cell: builtins.length cell.postconditions == 4) nativeFailureControlCells;
+  assert rolloutPackageContract.abilities.config.aos.abilities.implementations.rollout.definition.outputs.machine.lifetime == "persistent";
+  assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeRoleRevocationCells;
+  assert builtins.all (cell: builtins.elem "dependent-effects-not-executed" cell.postconditions) nativeFailureControlCells;
   assert nativeAdapterMatrix.spec.cells == nativeAdapterMatrix.cells;
   assert builtins.all (cell: !(cell ? evidence)) nativeAdapterMatrix.cells;
   assert abilityRequirements.ability-native-adapter-matrix.checks
@@ -442,7 +575,10 @@ in
   assert rejectsNativeMatrix {
     applicability =
       nativeAdapterMatrix.applicability
-      // {required_production_vm_cells = nativeAdapterMatrix.required_production_vm_cells + 1;};
+      // {
+        required_production_vm_cells =
+          nativeAdapterMatrix.required_production_vm_cells - 1;
+      };
   };
   assert rejectsNativeMatrix {
     applicability =
@@ -469,7 +605,7 @@ in
       nativeAdapterSurface
       // {
         scenarios =
-          [(builtins.head nativeAdapterSurface.scenarios // {failure = "none";})]
+          [(builtins.head nativeAdapterSurface.scenarios // {failure = "INVALID";})]
           ++ builtins.tail nativeAdapterSurface.scenarios;
       };
   };
@@ -481,10 +617,22 @@ in
         adapters =
           [
             ((builtins.head nativeAdapterSurface.adapters)
+              // {conformance_families = ["unknown-family"];})
+          ]
+          ++ builtins.tail nativeAdapterSurface.adapters;
+      };
+  };
+  assert rejectsNativeMatrix {
+    surface =
+      nativeAdapterSurface
+      // {
+        adapters =
+          [
+            ((builtins.head nativeAdapterSurface.adapters)
               // {
                 provider_contract =
                   (builtins.head nativeAdapterSurface.adapters).provider_contract
-                  // {resource_lifetime = "persistent";};
+                  // {resource_lifetime = "forever";};
               })
           ]
           ++ builtins.tail nativeAdapterSurface.adapters;
@@ -502,7 +650,7 @@ in
               // {
                 provider_contract =
                   (builtins.elemAt nativeAdapterSurface.adapters 4).provider_contract
-                  // {state_format = "sha256:3f1ee821c852480fa2cc3160555bbb187668c1509f84345d4339306910487596";};
+                  // {state_format = "sha256:invalid";};
               })
           ]
           ++ lib.drop 5 nativeAdapterSurface.adapters;

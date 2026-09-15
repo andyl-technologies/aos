@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   fixture,
   name,
   qualifiedCells,
@@ -23,7 +24,7 @@
     ) = EFFECT_BUILDER.finish()
   '',
 }: let
-  matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  matrix = nativeAdapterMatrix;
   matrixSpec = pkgs.writeTextFile {
     name = "${name}-matrix-spec";
     destination = "/matrix-spec.json";

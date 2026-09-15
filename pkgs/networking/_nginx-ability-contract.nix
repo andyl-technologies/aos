@@ -6,6 +6,7 @@
   hostResourceRuntime ? null,
   effectQualification ? false,
   providerStateQualification ? false,
+  qualificationClaims ? {},
 }: let
   inherit (lib.abilities) types;
   serviceManagementContract = lib.abilities.interfaces.serviceManagement;
@@ -626,14 +627,18 @@ in let
 in {
   config.aos.abilities = lib.abilities.projectDefinitions (
     builtins.mapAttrs (
-      _: implementation: {
-        definition = implementation.export;
-        artifact = implementation.artifact or null;
-        handler =
-          if implementation.export.handler == null
-          then null
-          else handlers.${implementation.export.handler};
-      }
+      name: implementation:
+        {
+          definition = implementation.export;
+          artifact = implementation.artifact or null;
+          handler =
+            if implementation.export.handler == null
+            then null
+            else handlers.${implementation.export.handler};
+        }
+        // lib.optionalAttrs (builtins.hasAttr name qualificationClaims) {
+          qualification = qualificationClaims.${name};
+        }
     )
     implementations
   );

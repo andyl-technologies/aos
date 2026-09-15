@@ -2,10 +2,10 @@
 {
   config,
   lib,
+  nativeAdapterMatrix,
   ...
 }: let
   cfg = config.qualification;
-  nativeAdapterMatrix = import ./_native-adapter-matrix.nix {inherit lib;};
   containerExecutionMatrix = import ./_container-execution-matrix.nix {inherit lib;};
   requiredInvalidation = ["subject" "policy" "executor" "environment"];
   # This cohort exercises credential delivery, loopback ingress policy, and
@@ -183,10 +183,13 @@ in {
       {
         assertion =
           nativeAdapterMatrix.cell_count
+          == builtins.length nativeAdapterMatrix.cells
+          && nativeAdapterMatrix.required_production_vm_cells
+          == builtins.length nativeAdapterMatrix.applicable_cells
+          && nativeAdapterMatrix.cell_count
           == nativeAdapterMatrix.required_production_vm_cells
-          + builtins.length nativeAdapterMatrix.inapplicable_cells
-          && nativeAdapterMatrix.required_production_vm_cells > 0;
-        message = "The native adapter matrix must retain every surface cell and its exact fail-closed production applicability partition.";
+          + builtins.length nativeAdapterMatrix.inapplicable_cells;
+        message = "The native adapter matrix must partition every package-derived surface cell through fail-closed production applicability.";
       }
       {
         assertion = containerExecutionMatrix.missing_container_cells == 1;

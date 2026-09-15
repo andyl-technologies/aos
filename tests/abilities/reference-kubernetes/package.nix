@@ -8,12 +8,39 @@
   providerStateQualification ? false,
   transitionTransform ? transition: transition,
   bootstrapMatrix ? false,
+  qualificationObserver ? null,
 }: let
   contracts = import ../../../pkgs/kubernetes/_ability-contracts.nix {inherit lib;};
   packageRuntimeSelector = lib.abilities.packageOutput {
     package = "aos";
     output = "packageRuntime";
   };
+  qualificationSupport =
+    if qualificationObserver == null
+    then null
+    else import ../_native-adapter-qualification.nix {
+      inherit lib;
+      observerPackage = qualificationObserver;
+    };
+  conformanceFamilies = [
+    "authority-revocation"
+    "dependent-effect"
+    "durability-recovery"
+    "foreign-resource"
+    "incarnation-replacement"
+    "provider-state-transfer"
+  ];
+  qualificationFor = provider: kind: scope: {
+    inherit conformanceFamilies;
+    observer = qualificationSupport.observerFor {inherit provider kind scope;};
+  };
+  withQualification = name: provider: kind: scope: abilities:
+    if qualificationSupport == null
+    then abilities
+    else
+      lib.recursiveUpdate abilities {
+        config.aos.abilities.implementations.${name}.qualification = qualificationFor provider kind scope;
+      };
 
   k3sArtifact = ../../../pkgs/kubernetes/_k3s-ability-provider;
   ciliumArtifact = ./providers/cilium;
@@ -48,11 +75,15 @@ in {
     inherit bootstrapMatrix effectQualification providerStateQualification transitionTransform;
   });
 
-  systemd = mkPackage "ability-reference-systemd-bootstrap" systemdArtifact [systemdRuntime] (
+  systemd = mkPackage "ability-reference-systemd-bootstrap" systemdArtifact (
+    [systemdRuntime] ++ lib.optional (qualificationObserver != null) qualificationObserver
+  ) (withQualification "systemd-bootstrap" "systemd-bootstrap" "systemd" "bootstrap-manager" (
     contracts.systemdPackage packageRuntimeSelector
-  );
+  ));
 
-  kubernetes = mkPackage "ability-reference-kubernetes-terminal" kubernetesArtifact [systemdRuntime kubernetesRuntime] (
+  kubernetes = mkPackage "ability-reference-kubernetes-terminal" kubernetesArtifact (
+    [systemdRuntime kubernetesRuntime] ++ lib.optional (qualificationObserver != null) qualificationObserver
+  ) (withQualification "kubernetes" "kubernetes-object" "kubernetes" "kubernetes-cluster" (
     contracts.kubernetesPackage packageRuntimeSelector
-  );
+  ));
 }

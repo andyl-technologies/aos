@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import base64
 import shlex
 from pathlib import PurePosixPath
 from typing import Any
@@ -196,8 +197,71 @@ def provider_documents(roots: list[str]) -> list[tuple[str, Any]]:
     return documents
 
 
+def _observer_descriptor(adapter: str) -> dict[str, Any]:
+    """Resolves the package-owned observer selected by the generated matrix."""
+
+    adapters = MATRIX_SPEC.get("surface", {}).get("adapters", [])
+    matches = [entry for entry in adapters if entry.get("adapter") == adapter]
+    if len(matches) != 1:
+        raise RuntimeError("matrix does not select one observer for the adapter")
+    descriptor = matches[0].get("provider_implementation", {}).get("observer")
+    if not isinstance(descriptor, dict):
+        raise RuntimeError("selected implementation lacks an observer descriptor")
+    return descriptor
+
+
+def _package_observation(adapter: str, operation: dict[str, Any]) -> dict[str, Any]:
+    """Invokes the exact selected qualification artifact inside the guest."""
+
+    descriptor = _observer_descriptor(adapter)
+    artifact = descriptor.get("artifact", {})
+    artifact_path = artifact.get("path")
+    entry_point = descriptor.get("entry_point")
+    if not isinstance(artifact_path, str) or not isinstance(entry_point, str):
+        raise RuntimeError("observer artifact binding is malformed")
+    scope_values = (
+        descriptor.get("result", {})
+        .get("fields", {})
+        .get("scope", {})
+        .get("values")
+    )
+    if not isinstance(scope_values, list) or len(scope_values) != 1:
+        raise RuntimeError("observer descriptor does not select one scope")
+    scope = scope_values[0]
+    executable = str(PurePosixPath(artifact_path) / entry_point)
+
+    request_path = f"/run/aos-native-adapter-observer-{hashlib.sha256(canonical(operation)).hexdigest()}.json"
+    request = canonical({"adapter": adapter, "scope": scope, "operation": operation})
+    encoded_request = base64.b64encode(request).decode()
+    runtime.succeed(
+        f"printf '%s' {shlex.quote(encoded_request)} | {COREUTILS}/base64 -d "
+        f"> {shlex.quote(request_path)}"
+    )
+    arguments = json.dumps({"request_path": request_path}, separators=(",", ":"))
+    output = runtime.succeed(
+        f"printf '%s' {shlex.quote(arguments)} | {shlex.quote(executable)}"
+    )
+    result = json.loads(output)
+    if (
+        not isinstance(result, dict)
+        or set(result) != {"provider", "kind", "scope", "observation"}
+        or result.get("provider") != adapter
+        or result.get("scope") != scope
+        or result.get("kind") != PROVIDER_ORACLES[adapter]["live"]
+        or not isinstance(result.get("observation"), str)
+    ):
+        raise RuntimeError("package-owned observer returned another typed result")
+    observation = json.loads(result["observation"])
+    if not isinstance(observation, dict) or observation.get("kind") != result["kind"]:
+        raise RuntimeError("package-owned observer result is not canonical")
+    return observation
+
+
 def live_observation(adapter: str, operation: dict[str, Any]) -> dict[str, Any]:
-    """Dispatches to an independent provider substrate observation."""
+    """Dispatches through the selected observer or its package-local implementation."""
+
+    if not globals().get("QUALIFICATION_OBSERVER_DIRECT", False):
+        return _package_observation(adapter, operation)
 
     oracle = PROVIDER_ORACLES[adapter]
     kind = oracle["live"]

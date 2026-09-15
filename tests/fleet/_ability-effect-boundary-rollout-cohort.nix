@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  nativeAdapterMatrix,
   systems,
   cellId,
 }: let
@@ -16,7 +17,7 @@
     inherit lib pkgs;
     guestTools = true;
   };
-  matrix = import ../../qualification/modules/_native-adapter-matrix.nix {inherit lib;};
+  matrix = nativeAdapterMatrix;
   matrixSpec = pkgs.writeTextFile {
     name = "ability-rollout-effect-matrix-spec";
     destination = "/matrix-spec.json";
