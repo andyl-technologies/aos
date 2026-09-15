@@ -1943,9 +1943,6 @@ in {
       inherit pkgs lib mkSystem;
       serverModule = ./systems/server.nix;
     };
-    aos-registry-server-config = import ./tests/packages/aos-registry-server-config.nix {
-      inherit pkgs lib;
-    };
     k3s-config = import ./tests/packages/k3s-config.nix {inherit pkgs lib;};
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     container = rec {
@@ -2025,7 +2022,6 @@ in {
           module-args
           module-enforcement
           package-documentation
-          aos-registry-server-config
           registry-hub
           nginx-config
           k3s-config
