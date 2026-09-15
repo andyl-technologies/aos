@@ -627,10 +627,14 @@
     ${filesystemReadinessAlias}.provide =
       provideReadiness serviceInterfaces.filesystemReadiness "readiness-resource";
   };
+  identityProviderImplementations = import ./_systemd-identity-provider.nix {
+    inherit config lib packageName;
+  };
 in {
   config.aos.abilities.implementations =
     serviceProviderImplementations
     // readinessProviderImplementations
+    // identityProviderImplementations
     // {
       ${implementationAlias} = {
         inherit provide compose;

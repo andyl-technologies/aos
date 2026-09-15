@@ -5,6 +5,7 @@
 //! checked realizations, materializes their authenticated bytes, and drives a
 //! pinned systemd manager over D-Bus.
 
+mod identity;
 mod materialize;
 mod model;
 mod readiness;
@@ -95,6 +96,8 @@ async fn run() -> Result<()> {
 async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> {
     if request.method.interface.name.as_str() == INTERFACE_NAME {
         admit_packaged_unit(request).await
+    } else if identity::supports(&request.method) {
+        identity::admit(request).await
     } else if readiness::supports(&request.method) {
         readiness::admit(request).await
     } else {
@@ -163,6 +166,8 @@ async fn admit_packaged_unit(request: AdmissionRequest) -> Result<AdmissionResul
 async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     if invocation.method.interface.name.as_str() == INTERFACE_NAME {
         invoke_packaged_unit(invocation).await
+    } else if identity::supports(&invocation.method) {
+        identity::invoke(invocation).await
     } else if readiness::supports(&invocation.method) {
         readiness::invoke(invocation).await
     } else {

@@ -501,6 +501,9 @@
   systemdDirectoryPreparation = import ./systemd-directory-preparation.nix {
     inherit pkgs lib;
   };
+  systemdIdentityRealization = import ./systemd-identity-realization.nix {
+    inherit pkgs lib;
+  };
   systemdReadiness = import ./systemd-readiness.nix {
     inherit pkgs lib;
   };
@@ -925,6 +928,7 @@ in
   assert systemdPackagedUnit;
   assert systemdServiceRealization;
   assert systemdDirectoryPreparation;
+  assert systemdIdentityRealization;
   assert systemdReadiness;
   assert baseKernelNative;
   assert baseNixDbNative;

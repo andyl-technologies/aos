@@ -479,6 +479,150 @@
     strength = "required";
     fallback = null;
   };
+  identityRealizationType = types.record {
+    fields = {
+      schema = types.enum ["aos.systemd.identity-realization/v1"];
+      backend = types.enum ["systemd-sysusers"];
+    };
+  };
+  identityKinds = {
+    principal = {
+      controller = serviceInterfaces.principalResolution;
+      effectsAlias = "systemd-principal-effects";
+      effectsName = "aos.systemd.principal-effects";
+      requestType = serviceManagement.types.principalResolution;
+      observationType = serviceManagement.types.producerObservations.principalResolution;
+      resourceKind = "aos.identity.principal";
+    };
+    group = {
+      controller = serviceInterfaces.groupResolution;
+      effectsAlias = "systemd-group-effects";
+      effectsName = "aos.systemd.group-effects";
+      requestType = serviceManagement.types.groupResolution;
+      observationType = serviceManagement.types.producerObservations.groupResolution;
+      resourceKind = "aos.identity.group";
+    };
+    group-membership = {
+      controller = serviceInterfaces.groupMembership;
+      effectsAlias = "systemd-group-membership-effects";
+      effectsName = "aos.systemd.group-membership-effects";
+      requestType = serviceManagement.types.groupMembership;
+      observationType = serviceManagement.types.producerObservations.groupMembership;
+      resourceKind = "aos.identity.group-membership";
+    };
+  };
+  identityEffectsRequest = selected:
+    types.record {
+      fields.desired = selected.requestType;
+    };
+  identityEffectsObservation = selected:
+    types.record {
+      fields = {
+        kind = types.enum [selected.resourceKind];
+        observation = selected.observationType;
+      };
+    };
+  identityEffectMethod = selected: name: description: access: stopsProvider: {
+    inherit description;
+    semantics = {
+      requiredTargetAccess = access;
+      inherit stopsProvider;
+    };
+    parameters = identityEffectsRequest selected;
+    targetResource = selected.resourceKind;
+    outputs.observation =
+      output
+      (if name == "observe" then "observation" else "runtime")
+      "attempt"
+      "Reports the exact systemd identity effect state."
+      (identityEffectsObservation selected);
+    permittedOperations = [name];
+    guarantees = [];
+    outcome = {
+      completionEvidence = identityEffectsObservation selected;
+      observationEvidence = identityEffectsObservation selected;
+      supportsRejectedBeforeEffect = true;
+      indeterminate = "reconcile";
+    };
+  };
+  identityEffectsDeclaration = selected:
+    lib.abilities.declareInterface {
+      name = selected.effectsName;
+      description = "Executes checked lower systemd identity effects for ${selected.resourceKind}.";
+      abi = 1;
+      requestType = identityEffectsRequest selected;
+      outputs = {};
+      methods = {
+        create = identityEffectMethod selected "create" "Creates the exact desired identity state." "exclusive-write" false;
+        observe = identityEffectMethod selected "observe" "Observes the exact desired identity state." "read" false;
+        reconcile = identityEffectMethod selected "reconcile" "Repairs divergent exact identity state." "exclusive-write" false;
+        remove = identityEffectMethod selected "remove" "Removes exact identity state owned by this controller." "exclusive-write" true;
+        update = identityEffectMethod selected "update" "Updates the exact identity state owned by this controller." "exclusive-write" false;
+      };
+      lifecycle = lifecycle;
+      aggregation = {
+        scope = "provider-instance";
+        key = "slot";
+        rejectSlotCollisions = true;
+        mergeContract = null;
+        controllerGroup = selected.effectsAlias;
+      };
+      configurationType = null;
+      guarantees = [];
+    };
+  identityEffectsDeclarations = builtins.mapAttrs (_: identityEffectsDeclaration) identityKinds;
+  identityEffectsIdentity = selected:
+    lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration (identityEffectsDeclaration selected)
+    );
+  identityEffectsRequirement = selected: {
+    alias = "identity-effects";
+    description = "Selects the checked lower systemd identity effect handler for ${selected.resourceKind}.";
+    accepted_interfaces = [(identityEffectsIdentity selected)];
+    methods = ["create" "observe" "reconcile" "remove" "update"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
+  identityControllerImplementations = builtins.listToAttrs (builtins.map (kind: let
+      selected = identityKinds.${kind};
+    in {
+      name = selected.controller.alias;
+      value = {
+        description = "Realizes ${selected.resourceKind} through the selected systemd identity controller.";
+        interface = selected.controller.alias;
+        inherit artifact;
+        inherit (selected.controller) methods;
+        guarantees = [];
+        requirements.identity-effects = identityEffectsRequirement selected;
+        providerModule = {
+          inherit artifact;
+          path = "share/aos/providers/systemd.nix";
+        };
+        desiredType = identityRealizationType;
+        requiredFeatures = [];
+      };
+    }) (builtins.attrNames identityKinds));
+  identityTerminalImplementations = builtins.listToAttrs (builtins.map (kind: let
+      selected = identityKinds.${kind};
+    in {
+      name = selected.effectsAlias;
+      value = {
+        description = "Executes checked ${selected.resourceKind} effects through systemd-sysusers.";
+        interface = selected.effectsAlias;
+        artifact = handlerArtifact;
+        methods = ["create" "observe" "reconcile" "remove" "update"];
+        guarantees = [];
+        handlerDescriptor = {
+          artifact = handlerArtifact;
+          entryPoint = "bin/aos-systemd-provider";
+          arguments = identityEffectsRequest selected;
+          result = identityEffectsObservation selected;
+        };
+        desiredType = null;
+        requiredFeatures = [];
+      };
+    }) (builtins.attrNames identityKinds));
   serviceFeatureNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
@@ -556,11 +700,17 @@ in {
     interfaces = {
       systemd-packaged-unit = packagedUnitDeclaration;
       systemd-service-effects = serviceEffectsDeclaration;
-    };
+    }
+    // builtins.listToAttrs (builtins.map (kind: {
+        name = identityKinds.${kind}.effectsAlias;
+        value = identityEffectsDeclarations.${kind};
+      }) (builtins.attrNames identityKinds));
 
     implementations =
       serviceImplementations
       // readinessImplementations
+      // identityControllerImplementations
+      // identityTerminalImplementations
       // {
         systemd-service-effects = {
           description = "Executes checked systemd service effects selected by the package-owned service controller.";
