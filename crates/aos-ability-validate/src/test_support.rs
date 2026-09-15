@@ -1136,6 +1136,7 @@ pub fn test_manager_interface() -> InterfaceDocument {
     for method in document.interface.methods.values_mut() {
         method.target_resource = interface_name.clone();
         method.parameters = request.clone();
+        method.outcome.indeterminate = IndeterminateSemantics::Reconcile;
     }
     document.interface.lifecycle.releases_ephemeral_on_disable = false;
     document.interface.lifecycle.retains_persistent_by_default = true;
