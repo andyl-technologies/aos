@@ -1,4 +1,5 @@
 ##! Pure managed-configuration provider for the checked source fixture.
+{resourceRevision}:
 let
   effectsInterface = {
     name = "aos.managed-configuration-effects";
@@ -115,7 +116,7 @@ let
       builtins.map
       (contribution: {
         resource = resourceFor contribution;
-        revision = "sha256:${builtins.hashString "sha256" (builtins.toJSON contribution.value)}";
+        revision = resourceRevision contribution.value;
       })
       contributions;
     outputs = [

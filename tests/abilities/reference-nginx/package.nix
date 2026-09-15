@@ -12,7 +12,7 @@
   transitionTransform ? transition: transition,
   qualificationObserver ? null,
 }: let
-  inherit (lib.abilities) types;
+  inherit (lib.abilities) resourceRevision types;
   schemas = lib.abilities.schemas;
 
   nginxArtifact = ../../../pkgs/networking/_nginx-ability-provider;
@@ -41,7 +41,7 @@
   httpBackendRegistryArtifact = ./providers/http-backend-registry;
   credentialArtifact = ./providers/credential;
   serviceArtifact = ./providers/service;
-  serviceProvider = import serviceArtifact;
+  serviceProvider = import serviceArtifact {inherit resourceRevision;};
   fixtureRuntime = name: entryPoints: source:
     if builtins.isAttrs source
     then source
@@ -629,7 +629,7 @@
       inherit handler;
     };
 
-  managedConfigurationProvider = import ./providers/managed-configuration/default.nix;
+  managedConfigurationProvider = import ./providers/managed-configuration/default.nix {inherit resourceRevision;};
   credentialProvider = import ./providers/credential/default.nix;
   httpBackendRegistryProvider = import ./providers/http-backend-registry/default.nix;
   baseNginxAbilityModule = import ../../../pkgs/networking/_nginx-ability-contract.nix {
