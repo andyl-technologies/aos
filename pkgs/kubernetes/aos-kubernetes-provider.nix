@@ -1,19 +1,14 @@
 ##! aos-kubernetes-provider - K3s-owned typed object-set handler
 {
-  lib,
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
 }: let
   version = "0.1.0";
-  src = import ../tools/aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-kubernetes-provider-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
-  };
+  src = aosWorkspaceSource;
+  cargoDeps = aosWorkspaceVendor;
   cargoArtifactContract = {
     family = "aos-kubernetes-provider-release-and-test";
     checkType = "debug";

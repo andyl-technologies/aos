@@ -1038,7 +1038,7 @@
   };
   packageArgumentScope =
     self
-    // {inherit firmwarePackages;}
+    // {inherit firmwarePackages aosWorkspaceSource aosWorkspaceVendor;}
     // lib.optionalAttrs stdenv.isCross (
       builtins.listToAttrs (
         builtins.map (name: {
@@ -1072,6 +1072,16 @@
 
   # Shared KubeEdge source (single tarball for cloudcore, edgecore)
   kubeedgeSource = import ./kubernetes/_kubeedge-source.nix {inherit fetchurl;};
+
+  # Every Rust package built from the workspace consumes this one source and
+  # vendor closure. Cargo.lock therefore has one fixed-output hash to update.
+  aosWorkspaceSource = import ./tools/aos/_workspace-source.nix {inherit lib;};
+  aosWorkspaceVendor = fetchCargoVendor {
+    src = aosWorkspaceSource;
+    name = "aos-workspace-vendor";
+    sourceRoot = "source/crates";
+    hash = "sha256-2tAj5sn/KEahcZivDkx4L6CtQm958EY9m4Va91WsyR4=";
+  };
 
   # Auto-discover packages from subdirectories.
   # Recursively scans for .nix files, skipping default.nix and _-prefixed
