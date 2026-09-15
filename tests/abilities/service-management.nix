@@ -96,6 +96,33 @@
     == requestSchemas.storageAllocation.fields.group.value
     && interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.schema
     == requestSchemas.principalResolution.fields.home_directory;
+  producerInterfacesReleaseEphemeralResources =
+    builtins.all
+    (interface:
+      interface.document.interface.lifecycle.releases_ephemeral_on_disable
+      && interface.document.interface.methods.release.semantics.required_target_access
+      == "exclusive-write"
+      && interface.document.interface.methods.release.semantics.stops_provider)
+    (builtins.attrValues {
+      inherit
+        (interfaces)
+        credentialDelivery
+        storageView
+        storageAllocation
+        persistentStorageAllocation
+        hostPathView
+        deviceView
+        rootDirectoryView
+        principalResolution
+        groupResolution
+        scheduledActivation
+        pathActivation
+        mountResource
+        automountResource
+        swapResource
+        activationGroup
+         ;
+     });
   activationOutputsAreReferences =
     outputSchema "scheduledActivation" "realize" "activation-resource"
     == resourceReferenceSchema
@@ -789,6 +816,7 @@ in
     })
     true)).success;
   assert producerOutputsMatchConsumers;
+  assert producerInterfacesReleaseEphemeralResources;
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";

@@ -269,6 +269,10 @@
     methods = {
       ${action} = actionMethod;
       observe = method requestType observationType name "observe" observationDescription read;
+      release =
+        method requestType observationType name "release"
+        "Releases the exact ephemeral resource controlled by this request."
+        stopSemantics;
     };
     declaration = declareInterface {
       inherit name description requestType methods;
