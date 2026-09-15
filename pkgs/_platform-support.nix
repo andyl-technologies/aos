@@ -705,17 +705,16 @@ let
 
   helperInventory = {
     "_platform-support.nix" = "platform-policy";
-    "build-support/_ability-contract-renderer.nix" = "native-build-helper";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
     "build-support/_expose-module.nix" = "target-independent-source";
+    "build-support/_expose-config-projection-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
     "build-support/_generated-expose-config-module.nix" = "target-independent-source";
     "build-support/_github-upstream.nix" = "native-build-helper";
     "build-support/_manual-upstream.nix" = "native-build-helper";
     "build-support/_perl-module.nix" = "native-build-helper";
     "build-support/_service-ability-module.nix" = "native-build-helper";
-    "build-support/_service-ability-provider/default.nix" = "target-independent-source";
     "build-support/_upstream.nix" = "native-build-helper";
     "darwin/_apple-libtapi.nix" = "linux-only-build-helper";
     "darwin/_darwin-binutils.nix" = "cross-build-helper";
@@ -735,6 +734,8 @@ let
     "system/_kmod-abilities.nix" = "target-independent-source";
     "system/_kmod-provider.nix" = "target-independent-source";
     "system/_systemd-service-provider-lib.nix" = "target-independent-source";
+    "tests/_ability-package-smoke-module.nix" = "target-independent-source";
+    "tests/_ability-package-smoke-provider.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
     "toolchain/_linux-hosted-cc.nix" = "cross-build-helper";
@@ -768,6 +769,7 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
+    "build-support/_service-ability-provider/default.nix" = "target-independent-source";
     "tests/_ability-package-smoke/default.nix" = "linux-only-test-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
@@ -783,9 +785,15 @@ let
     "networking/_envoy/render.nix" = "linux-only-config-source";
     "networking/_envoy/types.nix" = "linux-only-config-source";
     "networking/_nginx/module.nix" = "linux-only-config-source";
-    "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "networking/_openldap/module.nix" = "linux-only-config-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
+    "storage/_postgresql-ability/contract.nix" = "target-independent-source";
+    "storage/_postgresql-ability/provider/default.nix" = "target-independent-source";
+    "storage/_postgresql-config/host-resources.nix" = "linux-only-config-source";
+    "tools/_rsyncd/module.nix" = "linux-only-config-source";
+    "tools/aos/_configuration-provider/module.nix" = "target-independent-source";
+    "tools/aos/_configuration-provider/provider.nix" = "target-independent-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_longhorn-config/module.nix" = "linux-only-config-source";
     "storage/_mariadb/module.nix" = "linux-only-config-source";
@@ -796,7 +804,6 @@ let
     "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
     "tests/_aos-registry-server-config/module.nix" = "linux-only-config-source";
     "tools/_conntrackd/module.nix" = "linux-only-config-source";
-    "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
@@ -912,9 +919,10 @@ in rec {
         package = packages.${name};
         selectedOutput = package.outputName or "out";
         publishedOutputs =
-          if selectedOutput == "out"
+          (if selectedOutput == "out"
           then package.outputs or ["out"]
-          else [selectedOutput];
+          else [selectedOutput])
+          ++ (if package ? abilities._artifact_outputs.module then ["module"] else []);
         normalizeSource = source: let
           sourcePath = toString source;
           storePath = builtins.match "^(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?$" sourcePath;
@@ -948,7 +956,8 @@ in rec {
             source:
               builtins.unsafeDiscardStringContext (toString (normalizeSource source))
           )
-          declaredSources;
+          (declaredSources
+            ++ (if package ? abilities._artifact_outputs.module then [package.abilities._artifact_outputs.module.drvPath] else []));
       in {
         inherit name;
         source_store_paths = builtins.attrNames (builtins.listToAttrs (
@@ -977,7 +986,8 @@ in rec {
           };
         derivation = builtins.unsafeDiscardStringContext package.drvPath;
         outputs =
-          map (output: {
+          map (output:
+            {
             # A public alias of one non-default derivation output is itself a
             # single-output package root. Normalize that selected root to `out`
             # so package qualification cannot silently exercise a sibling output.
@@ -985,8 +995,15 @@ in rec {
               if selectedOutput == "out"
               then output
               else "out";
-            store_path = builtins.unsafeDiscardStringContext (toString package.${output});
-          })
+            store_path = builtins.unsafeDiscardStringContext (toString (
+              if output == "module"
+              then package.abilities._artifact_outputs.module
+              else package.${output}
+            ));
+            }
+            // (if output == "module"
+            then {derivation = builtins.unsafeDiscardStringContext package.abilities._artifact_outputs.module.drvPath;}
+            else {}))
           publishedOutputs;
       }
     ) (publicationEligibleNames system names);

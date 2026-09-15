@@ -53,7 +53,8 @@
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   output = abilities.compositionOutputs."consumer:required-modules".readiness-resource;
 in
-  assert builtins.attrNames abilities.interfaces == ["kmod:kernel-modules"];
+  assert abilities.interfaces.${kernelModules.alias} == kernelModules.declaration;
+  assert !(abilities.interfaces ? "kmod:kernel-modules");
   assert builtins.attrNames abilities.implementations == ["kmod:kernel-modules"];
   assert desired.kind == kernelModules.identity.name;
   assert desired.lifetime == "instance";

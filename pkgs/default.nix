@@ -371,22 +371,12 @@
       if localAbilityProjection == null
       then null
       else
-        (projectPackageAbilities {
-            inherit packageName;
-            version = args.version or "0";
-            evaluated = localAbilityProjection;
-            packageModuleLocator = symbolicAbilityModuleLocator;
-            optionDeclarations = abilityOptionDeclarations;
-          })
-        // {
-          artifactOutputs =
-            lib.optionalAttrs (abilityModuleArtifact != null) {
-              module = {
-                derivation = builtins.unsafeDiscardStringContext abilityModuleArtifact.drvPath;
-                output = abilityModuleArtifact.module;
-                storePath = builtins.unsafeDiscardStringContext (toString abilityModuleArtifact.module);
-              };
-            };
+        projectPackageAbilities {
+          inherit packageName;
+          version = args.version or "0";
+          evaluated = localAbilityProjection;
+          packageModuleLocator = symbolicAbilityModuleLocator;
+          optionDeclarations = abilityOptionDeclarations;
         };
     preparedAuthoredConfigModule =
       if authoredConfigModule != null
@@ -613,13 +603,17 @@
     abilityAttrs =
       if abilityProjection != null
       then {
-        abilities = abilityProjection.value;
-        _aosAbilityCarrier = {
-          module = retainedAbilityModule;
-          document = abilityProjection.document;
-          interfaces = abilityProjection.interfaces;
-          artifactOutputs = abilityProjection.artifactOutputs;
-        };
+        abilities =
+          abilityProjection
+          // {
+            # These handles are derived from the same authored module path as
+            # the signed fields above. Publication strips underscore fields.
+            _module = retainedAbilityModule;
+            _artifact_outputs =
+              lib.optionalAttrs (abilityModuleArtifact != null) {
+                module = abilityModuleArtifact.module;
+              };
+          };
       }
       else if hasConfigModule
       then {
