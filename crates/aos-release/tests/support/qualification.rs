@@ -16,6 +16,11 @@ use aos_release::qualification::environment::{
 use aos_release::qualification_evidence::QualificationCase;
 use serde_json::{Value, json};
 
+#[path = "qualification_contract.rs"]
+mod qualification_contract;
+
+pub use qualification_contract::contract;
+
 pub fn metadata() -> Result<Value> {
     let capabilities = ImageCapabilities {
         schema_version: "aos.image.capabilities/v1".into(),
