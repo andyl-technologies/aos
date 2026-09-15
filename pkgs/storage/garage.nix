@@ -183,17 +183,17 @@ in
           bootstrapPeers = ["same@host:3901" "same@host:3901"];
         };
       };
-      abilities = evaluated.config.aos.abilities;
-      disabledAbilities = disabled.config.aos.abilities;
-      adminAbilities = evaluatedAdmin.config.aos.abilities;
-      adminWithoutMetricsTokenAbilities = evaluatedAdminWithoutMetricsToken.config.aos.abilities;
-      requests = builtins.attrNames abilities.requests;
-      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
-      adminRequests = builtins.attrNames adminAbilities.requests;
-      adminWithoutMetricsTokenRequests = builtins.attrNames adminWithoutMetricsTokenAbilities.requests;
-      configurationSource = abilities.requests."garage:server-configuration".parameters.source;
-      servicePrincipal = abilities.requests."garage:service-principal".parameters;
-      mainStorageMounts = abilities.requests."garage:main-storage".parameters.mounts;
+      enabledAbilityConfig = evaluated.config.aos.abilities;
+      disabledAbilityConfig = disabled.config.aos.abilities;
+      adminAbilityConfig = evaluatedAdmin.config.aos.abilities;
+      adminWithoutMetricsTokenAbilityConfig = evaluatedAdminWithoutMetricsToken.config.aos.abilities;
+      requests = builtins.attrNames enabledAbilityConfig.requests;
+      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
+      adminRequests = builtins.attrNames adminAbilityConfig.requests;
+      adminWithoutMetricsTokenRequests = builtins.attrNames adminWithoutMetricsTokenAbilityConfig.requests;
+      configurationSource = enabledAbilityConfig.requests."garage:server-configuration".parameters.source;
+      servicePrincipal = enabledAbilityConfig.requests."garage:service-principal".parameters;
+      mainStorageMounts = enabledAbilityConfig.requests."garage:main-storage".parameters.mounts;
       renderedConfig = builtins.toFile "garage-runtime-check.toml" ''
         metadata_dir = "/var/lib/aos-pkg-garage/meta"
         data_dir = "/var/lib/aos-pkg-garage/data"
@@ -211,8 +211,8 @@ in
         && !assertionsHold invalidRpc
         && !assertionsHold invalidAdmin
         && !assertionsHold invalidPeers
-        && ownedValues disabledAbilities.instances == {}
-        && ownedValues disabledAbilities.requests == {}
+        && ownedValues disabledAbilityConfig.instances == {}
+        && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "garage:credential-delivery" disabledRequirements
         && builtins.elem "garage:service-lifecycle" disabledRequirements
         && builtins.elem "garage:main-lifecycle" requests

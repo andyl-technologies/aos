@@ -276,12 +276,12 @@ in
           "http://127.0.0.1:2379"
         ];
       };
-      abilities = evaluated.config.aos.abilities;
-      disabledAbilities = disabled.config.aos.abilities;
-      requests = builtins.attrNames abilities.requests;
-      mainStorageMounts = abilities.requests."etcd:main-storage".parameters.mounts;
-      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
-      configurationSource = abilities.requests."etcd:server-configuration".parameters.source;
+      enabledAbilityConfig = evaluated.config.aos.abilities;
+      disabledAbilityConfig = disabled.config.aos.abilities;
+      requests = builtins.attrNames enabledAbilityConfig.requests;
+      mainStorageMounts = enabledAbilityConfig.requests."etcd:main-storage".parameters.mounts;
+      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
+      configurationSource = enabledAbilityConfig.requests."etcd:server-configuration".parameters.source;
       runtimeConfig = builtins.toFile "etcd-runtime-check.json" (builtins.toJSON {
         name = "node-a";
         "data-dir" = "/var/lib/etcd-check";
@@ -299,8 +299,8 @@ in
         && !assertionsHold invalidMember
         && !assertionsHold invalidTls
         && !assertionsHold invalidDuplicate
-        && ownedValues disabledAbilities.instances == {}
-        && ownedValues disabledAbilities.requests == {}
+        && ownedValues disabledAbilityConfig.instances == {}
+        && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "etcd:credential-delivery" disabledRequirements
         && builtins.elem "etcd:service-lifecycle" disabledRequirements
         && builtins.elem "etcd:main-lifecycle" requests

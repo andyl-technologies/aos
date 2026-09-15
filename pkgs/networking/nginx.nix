@@ -313,8 +313,7 @@ in
           (qualifiedResultOf "nginx:log-storage" "planned-path")
         ]
         && !(lib.hasInfix "/etc/nginx" (builtins.toJSON cleartextAbilities.requests))
-        && !(lib.hasInfix "/run/credentials" (builtins.toJSON tlsAbilities.requests))
-        && !(self ? expose);
+        && !(lib.hasInfix "/run/credentials" (builtins.toJSON tlsAbilities.requests));
     in
       {
         version = testing.mkToolCheck {

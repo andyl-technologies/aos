@@ -1393,17 +1393,17 @@ in
           };
         };
       };
-      abilities = validCredentialTls.config.aos.abilities;
-      plainAbilities = evaluatedConfig.config.aos.abilities;
-      disabledAbilities = disabledConfig.config.aos.abilities;
-      requests = builtins.attrNames abilities.requests;
-      plainRequests = builtins.attrNames plainAbilities.requests;
-      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
-      configuration = (abilities.requests."envoy:bootstrap-configuration" or {parameters = {};}).parameters;
+      credentialTlsAbilityConfig = validCredentialTls.config.aos.abilities;
+      plainAbilityConfig = evaluatedConfig.config.aos.abilities;
+      disabledAbilityConfig = disabledConfig.config.aos.abilities;
+      requests = builtins.attrNames credentialTlsAbilityConfig.requests;
+      plainRequests = builtins.attrNames plainAbilityConfig.requests;
+      disabledRequirements = builtins.attrNames disabledAbilityConfig.requirementTemplates;
+      configuration = (credentialTlsAbilityConfig.requests."envoy:bootstrap-configuration" or {parameters = {};}).parameters;
       evaluatedConfiguration = bootstrapSourceFor evaluatedConfig;
-      mainLifecycle = (abilities.requests."envoy:main-lifecycle" or {parameters = {};}).parameters;
-      mainStorage = (abilities.requests."envoy:main-storage" or {parameters = {};}).parameters;
-      mainResources = (abilities.requests."envoy:main-resources" or {parameters = {};}).parameters;
+      mainLifecycle = (credentialTlsAbilityConfig.requests."envoy:main-lifecycle" or {parameters = {};}).parameters;
+      mainStorage = (credentialTlsAbilityConfig.requests."envoy:main-storage" or {parameters = {};}).parameters;
+      mainResources = (credentialTlsAbilityConfig.requests."envoy:main-resources" or {parameters = {};}).parameters;
       qualifiedResultOf = request: output: {
         _type = "aos-request-output-reference";
         inherit request output;
@@ -1417,8 +1417,8 @@ in
         && !assertionsHoldFor invalidTls
         && !assertionsHoldFor invalidAdmin
         && !invalidAdminLog.success
-        && ownedValues disabledAbilities.instances == {}
-        && ownedValues disabledAbilities.requests == {}
+        && ownedValues disabledAbilityConfig.instances == {}
+        && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "envoy:credential-delivery" disabledRequirements
         && builtins.elem "envoy:service-credentials" disabledRequirements
         && builtins.elem "envoy:service-lifecycle" disabledRequirements
@@ -1454,8 +1454,8 @@ in
           && configurationArgument.request == "envoy:bootstrap-configuration"
           && configurationArgument.output == "planned-path")
         && mainResources.open_files.value == 1048576
-        && !(lib.hasInfix "/etc/aos/packages/envoy" (builtins.toJSON abilities.requests))
-        && !(lib.hasInfix "/var/log/aos-pkg-envoy" (builtins.toJSON abilities.requests));
+        && !(lib.hasInfix "/etc/aos/packages/envoy" (builtins.toJSON credentialTlsAbilityConfig.requests))
+        && !(lib.hasInfix "/var/log/aos-pkg-envoy" (builtins.toJSON credentialTlsAbilityConfig.requests));
       renderedBootstrap =
         if assertionsHoldFor evaluatedConfig
         then

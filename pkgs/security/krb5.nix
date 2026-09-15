@@ -438,11 +438,11 @@ in
       assertionsHold = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
       ownedValues = lib.filterAttrs (name: _: lib.hasPrefix "krb5:" name);
-      abilities = enabled.config.aos.abilities;
-      administrationAbilities = withAdministration.config.aos.abilities;
-      disabledAbilities = disabled.config.aos.abilities;
-      requests = abilities.requests;
-      administrationRequests = administrationAbilities.requests;
+      enabledAbilityConfig = enabled.config.aos.abilities;
+      administrationAbilityConfig = withAdministration.config.aos.abilities;
+      disabledAbilityConfig = disabled.config.aos.abilities;
+      requests = enabledAbilityConfig.requests;
+      administrationRequests = administrationAbilityConfig.requests;
       clientSource = requests."krb5:client-configuration".parameters.source;
       kdcSource = requests."krb5:kdc-profile".parameters.source;
       kdcLiteralText = lib.concatStringsSep "" (builtins.map
@@ -465,12 +465,12 @@ in
         && assertionsHold withAdministration
         && !assertionsHold missingPassword
         && !assertionsHold detachedAdministration
-        && ownedValues disabledAbilities.instances == {}
-        && ownedValues disabledAbilities.requests == {}
+        && ownedValues disabledAbilityConfig.instances == {}
+        && ownedValues disabledAbilityConfig.requests == {}
         && builtins.elem "krb5:named-credential-resolution"
-        (builtins.attrNames disabledAbilities.requirementTemplates)
+        (builtins.attrNames disabledAbilityConfig.requirementTemplates)
         && builtins.elem "krb5:credential-delivery"
-        (builtins.attrNames disabledAbilities.requirementTemplates)
+        (builtins.attrNames disabledAbilityConfig.requirementTemplates)
         && builtins.hasAttr "krb5:initialize-lifecycle" requests
         && builtins.hasAttr "krb5:kdc-lifecycle" requests
         && !(builtins.hasAttr "krb5:administration-lifecycle" requests)
