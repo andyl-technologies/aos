@@ -30,5 +30,5 @@ in {
       value = value.declaration;
     })
     (builtins.attrValues interfaces));
-  inherit (constructors) featureInterfaces forConfiguration forProducer forProducers forService splitContribution structuredSource validate;
+  inherit (constructors) featureInterfaces forConfiguration forProducer forProducers forService instanceOf splitContribution structuredSource validate;
 }

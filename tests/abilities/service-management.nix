@@ -105,6 +105,8 @@
     serviceTypes.resourceReference;
   prerequisiteSchema =
     interfaces.dependencies.document.interface.request.fields.prerequisites;
+  instanceSelectionSchema =
+    interfaces.instantiation.document.interface.request.fields.selection.variants.instance;
   requestSchemas =
     builtins.mapAttrs
     (_: interface: interface.document.interface.request)
@@ -192,6 +194,15 @@
     == resourceReferenceSchema
     && interfaces.filesystemReadiness.document.interface.outputs.readiness-resource.schema
     == resourceReferenceSchema;
+  plannedServiceOutputsAreReferences =
+    builtins.all
+    (interface:
+      interface.document.interface.outputs.service-resource.schema
+      == resourceReferenceSchema
+      && interface.document.interface.outputs.service-resource.phase == "planning"
+      && interface.document.interface.outputs.service-resource.visibility == "protected"
+      && interface.document.interface.outputs.service-resource.lifetime == "instance")
+    [interfaces.lifecycle interfaces.templateDefinition];
 
   expanded = serviceManagement.forService {
     inherit serviceTypes;
@@ -239,6 +250,32 @@
     consumerInstance = "consumer";
     declaration = staticTemplateService;
   };
+  checkedStaticTemplate = serviceManagement.validate serviceTypes staticTemplateService;
+  templateInstanceService = serviceManagement.instanceOf {
+    inherit serviceTypes;
+    template = staticTemplateService;
+    service = "worker-blue";
+    instance = "blue";
+  };
+  expandedTemplateInstance = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "consumer";
+    declaration = templateInstanceService;
+  };
+  expandedSystemTemplateInstance = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "system:workers";
+    declaration = templateInstanceService;
+  };
+  invalidTemplateInstanceSource = builtins.tryEval (builtins.deepSeq (serviceManagement.instanceOf {
+      inherit serviceTypes;
+      template = minimalService;
+      service = "worker-blue";
+      instance = "blue";
+    })
+    true);
+  reusableServiceFacets = declaration:
+    builtins.removeAttrs declaration ["service" "enabled" "instantiation"];
   observeOnlyKernelModules = serviceManagement.forProducer {
     consumerInstance = "consumer";
     key = "kernel-modules";
@@ -326,9 +363,7 @@
         }
       ];
       instantiation = {
-        kind = "instance";
-        template = "worker";
-        instance = "blue";
+        kind = "singleton";
       };
       supervision = {
         startup_protocol = "notification";
@@ -432,6 +467,21 @@
         ];
       };
     };
+  richStaticTemplate =
+    extendedService
+    // {
+      enabled = false;
+      instantiation = {
+        kind = "template";
+        template = "worker-rich";
+      };
+    };
+  richTemplateInstance = serviceManagement.instanceOf {
+    inherit serviceTypes;
+    template = richStaticTemplate;
+    service = "worker-rich-blue";
+    instance = "blue";
+  };
   expandedExtended = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "consumer";
@@ -987,6 +1037,9 @@ in
   assert lifecycleMethods.start.outputs.observation.phase == "runtime";
   assert lifecycleMethods.start.outputs.observation.lifetime == "attempt";
   assert lifecycleMethods.start.outputs.retained-resource.lifetime == "instance";
+  assert lifecycleMethods.start.outputs.retained-resource.phase == "runtime";
+  assert interfaces.templateDefinition.document.interface.methods.materialize.outputs.retained-resource.phase
+  == "runtime";
   assert materializedPathSchema == executionPathSchema;
   assert materialization.methods == ["materialize" "observe" "release"];
   assert materialization.document.interface.methods.release.semantics.required_target_access
@@ -1027,8 +1080,12 @@ in
   assert prerequisiteSchema.max_items == 256;
   assert prerequisiteSchema.unique;
   assert prerequisiteSchema.canonical_order;
+  assert builtins.attrNames instanceSelectionSchema.fields
+  == ["instance" "kind" "template_resource"];
+  assert instanceSelectionSchema.fields.template_resource.kind == "resource-reference";
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;
+  assert plannedServiceOutputsAreReferences;
   assert interfaces.namedCredential.document.interface.outputs.credential-resource.phase == "planning";
   assert interfaces.namedCredential.document.interface.outputs.credential-resource.lifetime == "instance";
   assert !interfaces.namedCredential.document.interface.lifecycle.releases_ephemeral_on_disable;
@@ -1112,6 +1169,32 @@ in
   == ["materialize" "observe" "release"];
   assert expandedStaticTemplate.requests.main-template_definition.parameters.service == "main";
   assert !(expandedStaticTemplate.requests.main-template_definition.parameters ? enabled);
+  assert expandedStaticTemplate.requests.main-instantiation.parameters.selection
+  == staticTemplateService.instantiation;
+  assert reusableServiceFacets templateInstanceService == reusableServiceFacets checkedStaticTemplate;
+  assert reusableServiceFacets richTemplateInstance
+  == reusableServiceFacets (serviceManagement.validate serviceTypes richStaticTemplate);
+  assert templateInstanceService.enabled;
+  assert templateInstanceService.instantiation
+  == {
+    kind = "instance";
+    instance = "blue";
+    template_resource = resultOf "main-template_definition" "service-resource";
+  };
+  assert builtins.attrNames expandedTemplateInstance.requests
+  == ["worker-blue-instantiation" "worker-blue-lifecycle"];
+  assert expandedTemplateInstance.requests.worker-blue-instantiation.parameters.selection
+  == templateInstanceService.instantiation;
+  assert expandedSystemTemplateInstance.requests."system:worker-blue-instantiation".parameters.selection.template_resource.request
+  == "system:main-template_definition";
+  assert builtins.map
+  (guarantee: guarantee.name)
+  expandedTemplateInstance.requirementTemplates.service-lifecycle.guarantees
+  == ["aos.guarantee.service-template-exact-reuse"];
+  assert builtins.map (guarantee: guarantee.name) interfaces.lifecycle.guarantees
+  == ["aos.guarantee.service-template-exact-reuse"];
+  assert expandedTemplateInstance.requirementTemplates.service-instantiation.guarantees == [];
+  assert !invalidTemplateInstanceSource.success;
   assert !validates (staticTemplateService // {enabled = true;});
   assert observeOnlyKernelModules.requirementTemplates.kernel-modules.methods == ["observe"];
   assert declarationOnlyKernelModules.requirementTemplates.kernel-modules
@@ -1255,6 +1338,14 @@ in
         mechanism = "process-signal";
         signal_scope = "children";
         timeout_millis = 1000;
+      };
+    });
+  assert !validates (minimalService
+    // {
+      instantiation = {
+        kind = "instance";
+        template = "worker";
+        instance = "blue";
       };
     });
   assert !validates (minimalService

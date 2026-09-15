@@ -33,6 +33,10 @@
     output "runtime" "instance"
     "References the exact retained resource controlled by this completed operation."
     serviceTypes.resourceReference;
+  plannedServiceResourceOutput =
+    output "planning" "instance"
+    "References the exact service resource selected for composition before effects execute."
+    serviceTypes.resourceReference;
   semantics = requiredTargetAccess: stopsProvider: {
     inherit requiredTargetAccess stopsProvider;
   };
@@ -71,7 +75,7 @@
   write = semantics "exclusive-write" false;
   stopSemantics = semantics "exclusive-write" true;
 
-  conditionGuarantee = name: semantics: {
+  executionGuarantee = name: semantics: {
     inherit name;
     version = 1;
     descriptor = descriptorFor "aos.ability.execution-guarantee/v1" {
@@ -81,26 +85,30 @@
   };
   conditionGuarantees = {
     path =
-      conditionGuarantee
+      executionGuarantee
       "aos.guarantee.service-condition.path"
       "the provider evaluates the declared path predicate without translating provider-specific condition tokens";
     kernel-argument =
-      conditionGuarantee
+      executionGuarantee
       "aos.guarantee.service-condition.kernel-argument"
       "the provider evaluates exact kernel argument presence without translating provider-specific condition tokens";
     mandatory-access-control =
-      conditionGuarantee
+      executionGuarantee
       "aos.guarantee.service-condition.mandatory-access-control"
       "the provider evaluates whether mandatory access control is available or enforcing without translating provider-specific condition tokens";
   };
   linuxConditionGuarantees = {
     capability =
-      conditionGuarantee
+      executionGuarantee
       "aos.guarantee.linux-service-condition.capability"
       "the provider evaluates availability of the declared Linux capability name";
   };
+  templateInstanceGuarantee =
+    executionGuarantee
+    "aos.guarantee.service-template-exact-reuse"
+    "a concrete instance retains and authenticates its static template resource, matches every reusable service facet in canonical bytes after omitting service, enabled, and instantiation identity, and installs no instance-specific drop-in";
 
-  canonicalWithGuarantees = guarantees: alias: name: description: requestType: observationType: methodsFor: let
+  canonicalWithGuarantees = guarantees: interfaceOutputs: alias: name: description: requestType: observationType: methodsFor: let
     methods = methodsFor "aos.service.instance";
     ownsControllerLifecycle =
       builtins.any
@@ -110,7 +118,7 @@
       inherit name description requestType methods;
       abi = 1;
       configurationType = null;
-      outputs = {};
+      outputs = interfaceOutputs;
       lifecycle =
         if ownsControllerLifecycle
         then ephemeralLifecyclePolicy
@@ -124,7 +132,7 @@
     identity = interfaceIdentity document;
     methods = builtins.attrNames methods;
   };
-  canonical = canonicalWithGuarantees [];
+  canonical = canonicalWithGuarantees [] {};
 
   managedConfigurationName = "aos.configuration.materialization";
   managedConfigurationMethods = {
@@ -474,34 +482,37 @@
       serviceTypes.observations.lifecycle
       (_: {});
     lifecycle =
-      canonical "service-lifecycle" "aos.service.lifecycle"
-      "Controls and observes the lifecycle of one assembled service resource."
-      serviceTypes.lifecycle
-      serviceTypes.observations.lifecycle
-      (targetResource: {
-        observe =
-          method serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "observe"
-          "Observes the exact assembled service resource without mutating it."
-          read;
-        reload =
-          retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "reload"
-          "Reloads the assembled service through its bound reload facet."
-          write;
-        restart =
-          retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "restart"
-          "Restarts the exact assembled service resource."
-          write;
-        start =
-          retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "start"
-          "Starts the exact assembled service resource."
-          write;
-        stop =
-          method serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "stop"
-          "Stops the exact assembled service resource."
-          stopSemantics;
-      });
+      (canonicalWithGuarantees [templateInstanceGuarantee] {service-resource = plannedServiceResourceOutput;}
+        "service-lifecycle" "aos.service.lifecycle"
+        "Controls and observes the lifecycle of one assembled service resource."
+        serviceTypes.lifecycle
+        serviceTypes.observations.lifecycle
+        (targetResource: {
+          observe =
+            method serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "observe"
+            "Observes the exact assembled service resource without mutating it."
+            read;
+          reload =
+            retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "reload"
+            "Reloads the assembled service through its bound reload facet."
+            write;
+          restart =
+            retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "restart"
+            "Restarts the exact assembled service resource."
+            write;
+          start =
+            retainingMethod serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "start"
+            "Starts the exact assembled service resource."
+            write;
+          stop =
+            method serviceTypes.lifecycle serviceTypes.observations.lifecycle targetResource "stop"
+            "Stops the exact assembled service resource."
+            stopSemantics;
+        }))
+      // {guaranteesByKind.instance = templateInstanceGuarantee;};
     templateDefinition =
-      canonical "service-template-definition" "aos.service.template-definition"
+      canonicalWithGuarantees [] {service-resource = plannedServiceResourceOutput;}
+      "service-template-definition" "aos.service.template-definition"
       "Materializes and observes one static service template without controlling a concrete service instance."
       serviceTypes.templateDefinition
       serviceTypes.observations.templateDefinition
@@ -531,7 +542,7 @@
           read;
       });
     conditions =
-      (canonicalWithGuarantees (builtins.attrValues conditionGuarantees)
+      (canonicalWithGuarantees (builtins.attrValues conditionGuarantees) {}
         "service-conditions" "aos.service.conditions"
         "Contributes declarative environment conditions to a service resource."
         serviceTypes.conditions
@@ -544,7 +555,7 @@
         }))
       // {guaranteesByKind = conditionGuarantees;};
     linuxConditions =
-      (canonicalWithGuarantees (builtins.attrValues linuxConditionGuarantees)
+      (canonicalWithGuarantees (builtins.attrValues linuxConditionGuarantees) {}
         "linux-service-conditions" "aos.platform.linux.service-conditions"
         "Contributes Linux capability-availability conditions to a service resource."
         serviceTypes.linuxConditions
@@ -558,7 +569,7 @@
       // {guaranteesByKind = linuxConditionGuarantees;};
     instantiation =
       canonical "service-instantiation" "aos.service.instantiation"
-      "Contributes singleton, template, or bound-instance identity to a service resource."
+      "Contributes singleton, static-template, or exact template-derived instance identity to a service resource."
       serviceTypes.instantiation
       serviceTypes.observations.instantiation
       (targetResource: {

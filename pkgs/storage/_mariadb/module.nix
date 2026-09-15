@@ -416,9 +416,9 @@
           stop_timeout_millis = 60000;
         };
         dependencies = {
-          after = [(resultOf "initialize-lifecycle" "retained-resource") (resultOf "network-readiness" "readiness-resource")];
+          after = [(resultOf "initialize-lifecycle" "service-resource") (resultOf "network-readiness" "readiness-resource")];
           before = [];
-          requires = [(resultOf "initialize-lifecycle" "retained-resource")];
+          requires = [(resultOf "initialize-lifecycle" "service-resource")];
           wants = [(resultOf "network-readiness" "readiness-resource")];
         };
         supervision = {
