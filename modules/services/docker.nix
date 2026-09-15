@@ -122,12 +122,12 @@
       storage.mounts = [
         {
           name = "data";
-          source = resultOf "docker-data-storage" "storage-path";
+          source = resultOf "docker-data-storage" "planned-path";
           access = "read-write";
         }
         {
           name = "runtime";
-          source = resultOf "docker-runtime-storage" "storage-path";
+          source = resultOf "docker-runtime-storage" "planned-path";
           access = "read-write";
         }
       ];
