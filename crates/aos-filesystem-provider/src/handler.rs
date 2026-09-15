@@ -40,6 +40,7 @@ const STORAGE_VIEW_INTERFACE: &str = "aos.storage.view";
 const FILESYSTEM_ENTRY_INTERFACE: &str = "aos.filesystem.entry";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.filesystem.storage-context/v1";
 const CLAIM_SCHEMA: &str = "aos.filesystem.storage-claim/v1";
+const VIEW_CLAIM_SCHEMA: &str = "aos.filesystem.storage-view-claim/v1";
 const REALIZATION_SCHEMA: &str = "aos.filesystem.storage-realization/v1";
 const ENTRY_REALIZATION_SCHEMA: &str = "aos.filesystem.entry-realization/v1";
 const VIEW_REALIZATION_SCHEMA: &str = "aos.filesystem.storage-view-realization/v1";
@@ -168,20 +169,22 @@ impl FilesystemProvider {
                 } else {
                     planned_child_path(root, input.relative_path.as_deref())?
                 };
-                let present = root.is_dir();
+                let claim = self.view_claim_for(&request.resource_spec.resource)?;
+                let state = inspect_view(
+                    root,
+                    &path,
+                    claim.as_ref(),
+                    &request.resource_spec.resource,
+                    request.resource_spec.revision,
+                    &input.source,
+                    source.revision,
+                )?;
                 let observation = storage_view_observation(
                     &desired,
-                    present.then(|| path_string(&path)).transpose()?,
-                    if present { "ready" } else { "absent" },
+                    state.is_present().then(|| path_string(&path)).transpose()?,
+                    state.observation_state(),
                 )?;
-                let revision = if present {
-                    AdmissionRevision::Present {
-                        revision: request.resource_spec.revision,
-                    }
-                } else {
-                    AdmissionRevision::Absent
-                };
-                (path, observation, revision)
+                (path, observation, state.revision())
             }
             FILESYSTEM_ENTRY_INTERFACE => self.admit_entry(&request)?,
             _ => bail!("selected interface is not owned by the filesystem storage provider"),
@@ -263,6 +266,13 @@ impl FilesystemProvider {
             InvocationPurpose::Effect => {
                 if interface == FILESYSTEM_ENTRY_INTERFACE {
                     self.apply_entry(
+                        &bound,
+                        &provider_context,
+                        &request.resources,
+                        invocation.control.attempt_remaining_millis,
+                    )?;
+                } else if interface == STORAGE_VIEW_INTERFACE {
+                    self.apply_view(
                         &bound,
                         &provider_context,
                         &request.resources,
@@ -513,6 +523,44 @@ impl FilesystemProvider {
         })
     }
 
+    fn apply_view(
+        &self,
+        bound: &BoundNativeContext,
+        context: &StorageProviderContext,
+        resources: &[ResourceContext],
+        remaining_millis: u64,
+    ) -> Result<()> {
+        ensure!(
+            context.kind == StorageContextKind::View,
+            "storage-view effect has the wrong admitted context kind"
+        );
+        let input: StorageViewRequest = decode_value(&bound.resource_spec.value)?;
+        let source = exact_resource_context(resources, &input.source)?;
+        let source_context = decode_provider_context(source)?;
+        ensure!(
+            source_context.kind == StorageContextKind::Allocation,
+            "storage view source is not an admitted allocation"
+        );
+        let root = Path::new(&source_context.path);
+        ensure!(root.is_dir(), "storage view source is not materialized");
+        let path = resolve_storage_view_path(root, input.relative_path.as_deref())?;
+        ensure!(
+            Path::new(&context.path) == path,
+            "admitted storage-view path drifted before effect"
+        );
+
+        let _lock = StateLock::acquire(&self.state_root, remaining_millis)?;
+        self.write_view_claim(&StorageViewClaim {
+            schema: VIEW_CLAIM_SCHEMA.into(),
+            resource: bound.resource_spec.resource.clone(),
+            revision: bound.resource_spec.revision,
+            source: input.source,
+            source_revision: source.revision,
+            path,
+            active: true,
+        })
+    }
+
     fn release(
         &self,
         interface: &str,
@@ -537,6 +585,22 @@ impl FilesystemProvider {
                 let input: FilesystemEntryRequest = decode_value(&bound.resource_spec.value)?;
                 PathBuf::from(input.destination)
             }
+            STORAGE_VIEW_INTERFACE => {
+                ensure!(
+                    context.kind == StorageContextKind::View,
+                    "storage-view release has the wrong admitted context kind"
+                );
+                let input: StorageViewRequest = decode_value(&bound.resource_spec.value)?;
+                let realization: StorageViewRealization =
+                    decode_value(&bound.resource_spec.realization)?;
+                ensure!(
+                    realization.schema == VIEW_REALIZATION_SCHEMA
+                        && realization.source == input.source
+                        && realization.relative_path == input.relative_path,
+                    "storage-view realization drifted before release"
+                );
+                PathBuf::from(&context.path)
+            }
             _ => bail!("selected method has no filesystem release effect"),
         };
         ensure!(
@@ -545,6 +609,18 @@ impl FilesystemProvider {
         );
 
         let _lock = StateLock::acquire(&self.state_root, remaining_millis)?;
+        if interface == STORAGE_VIEW_INTERFACE {
+            let claim = self
+                .view_claim_for(&bound.resource_spec.resource)?
+                .context("storage-view release requires its durable ownership claim")?;
+            ensure!(
+                claim.resource == bound.resource_spec.resource
+                    && claim.revision == bound.resource_spec.revision
+                    && claim.path == expected,
+                "storage-view release claim differs from the checked resource revision"
+            );
+            return self.remove_view_claim(&bound.resource_spec.resource);
+        }
         if interface == PERSISTENT_STORAGE_ALLOCATION_INTERFACE {
             let mut claim = self
                 .claim_for(&bound.resource_spec.resource)?
@@ -604,11 +680,20 @@ impl FilesystemProvider {
                 } else {
                     planned_child_path(root, input.relative_path.as_deref())?
                 };
-                let present = root.is_dir();
+                let claim = self.view_claim_for(&bound.resource_spec.resource)?;
+                let state = inspect_view(
+                    root,
+                    &path,
+                    claim.as_ref(),
+                    &bound.resource_spec.resource,
+                    bound.resource_spec.revision,
+                    &input.source,
+                    source.revision,
+                )?;
                 storage_view_observation(
                     desired,
-                    present.then(|| path_string(&path)).transpose()?,
-                    if present { "ready" } else { "absent" },
+                    state.is_present().then(|| path_string(&path)).transpose()?,
+                    state.observation_state(),
                 )
             }
             FILESYSTEM_ENTRY_INTERFACE => self.observe_entry(bound, resources),
@@ -748,7 +833,7 @@ impl FilesystemProvider {
         else {
             return Ok(None);
         };
-        let path = match source {
+        let path = match source.as_ref() {
             FilesystemEntrySource::ArtifactFile { reference } => {
                 authenticated_artifact_path(reference)?
             }
@@ -822,19 +907,8 @@ impl FilesystemProvider {
         };
         for entry in entries {
             let entry = entry.context("reading storage claim entry")?;
-            let metadata =
-                fs::symlink_metadata(entry.path()).context("inspecting storage claim")?;
-            ensure!(
-                metadata.is_file(),
-                "storage claim entry is not a regular file"
-            );
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt as _;
-                ensure!(metadata.nlink() == 1, "storage claim entry is hard-linked");
-            }
-            let claim: StorageClaim = serde_json::from_slice(&fs::read(entry.path())?)
-                .context("decoding storage claim")?;
+            let claim: StorageClaim = read_private_record(&entry.path(), "storage claim")?
+                .context("storage claim disappeared while enumerating it")?;
             ensure!(
                 claim.schema == CLAIM_SCHEMA,
                 "unsupported storage claim schema"
@@ -848,26 +922,14 @@ impl FilesystemProvider {
 
     fn claim_for(&self, resource: &ResourceId) -> Result<Option<StorageClaim>> {
         let path = self.claim_path(resource)?;
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) => {
-                ensure!(metadata.is_file(), "storage claim is not a regular file");
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt as _;
-                    ensure!(metadata.nlink() == 1, "storage claim is hard-linked");
-                }
-                let bytes = fs::read(&path).context("reading storage claim")?;
-                let claim: StorageClaim =
-                    serde_json::from_slice(&bytes).context("decoding storage claim")?;
-                ensure!(
-                    claim.schema == CLAIM_SCHEMA && claim.resource == *resource,
-                    "storage claim identity differs"
-                );
-                Ok(Some(claim))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error).context("inspecting storage claim"),
+        let claim: Option<StorageClaim> = read_private_record(&path, "storage claim")?;
+        if let Some(claim) = claim.as_ref() {
+            ensure!(
+                claim.schema == CLAIM_SCHEMA && claim.resource == *resource,
+                "storage claim identity differs"
+            );
         }
+        Ok(claim)
     }
 
     fn claim_path(&self, resource: &ResourceId) -> Result<PathBuf> {
@@ -883,27 +945,7 @@ impl FilesystemProvider {
         ensure_private_directory(&self.state_root)?;
         ensure_private_directory(&claims)?;
         let destination = self.claim_path(&claim.resource)?;
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary =
-            destination.with_extension(format!("{}.{}.tmp", std::process::id(), sequence));
-        let bytes = aos_contract::canonical::to_vec(claim)?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .context("creating storage claim temporary file")?;
-        let result = (|| -> Result<()> {
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temporary, &destination)?;
-            File::open(&claims)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result
+        write_private_record(&claims, &destination, claim)
     }
 
     fn remove_claim(&self, resource: &ResourceId) -> Result<()> {
@@ -915,6 +957,46 @@ impl FilesystemProvider {
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).context("removing released storage claim"),
+        }
+    }
+
+    fn view_claim_for(&self, resource: &ResourceId) -> Result<Option<StorageViewClaim>> {
+        let path = self.view_claim_path(resource)?;
+        let claim: Option<StorageViewClaim> = read_private_record(&path, "storage-view claim")?;
+        if let Some(claim) = claim.as_ref() {
+            ensure!(
+                claim.schema == VIEW_CLAIM_SCHEMA && claim.resource == *resource,
+                "storage-view claim identity differs"
+            );
+        }
+        Ok(claim)
+    }
+
+    fn view_claim_path(&self, resource: &ResourceId) -> Result<PathBuf> {
+        let digest =
+            Sha256Digest::of_canonical("aos.filesystem.storage-view-claim-name/v1", resource)?;
+        Ok(self
+            .state_root
+            .join("views")
+            .join(format!("{}.json", digest.hex())))
+    }
+
+    fn write_view_claim(&self, claim: &StorageViewClaim) -> Result<()> {
+        let views = self.state_root.join("views");
+        ensure_private_directory(&self.state_root)?;
+        ensure_private_directory(&views)?;
+        write_private_record(&views, &self.view_claim_path(&claim.resource)?, claim)
+    }
+
+    fn remove_view_claim(&self, resource: &ResourceId) -> Result<()> {
+        let path = self.view_claim_path(resource)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                File::open(self.state_root.join("views"))?.sync_all()?;
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("removing released storage-view claim"),
         }
     }
 }
@@ -983,7 +1065,7 @@ struct FilesystemEntryRequest {
 enum FilesystemEntryKind {
     Directory,
     CopiedFile {
-        source: FilesystemEntrySource,
+        source: Box<FilesystemEntrySource>,
         maximum_size_bytes: u64,
     },
 }
@@ -1064,6 +1146,18 @@ struct StorageClaim {
     inode: u64,
     kind: ClaimedEntryKind,
     content_digest: Option<Sha256Digest>,
+    active: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StorageViewClaim {
+    schema: String,
+    resource: ResourceId,
+    revision: RevisionId,
+    source: ResourceReference,
+    source_revision: RevisionId,
+    path: PathBuf,
     active: bool,
 }
 
@@ -1176,6 +1270,43 @@ fn inspect_storage(
             "inode": metadata.ino(),
             "path": path_string(path)?,
             "claim_revision": claim.map(|claim| claim.revision),
+        }),
+    )?;
+    Ok(StorageState::Divergent(RevisionId(observed)))
+}
+
+fn inspect_view(
+    root: &Path,
+    path: &Path,
+    claim: Option<&StorageViewClaim>,
+    resource: &ResourceId,
+    desired: RevisionId,
+    source: &ResourceReference,
+    source_revision: RevisionId,
+) -> Result<StorageState> {
+    let Some(claim) = claim else {
+        return Ok(StorageState::Absent);
+    };
+    let exact = root.is_dir()
+        && claim.active
+        && claim.resource == *resource
+        && claim.revision == desired
+        && claim.source == *source
+        && claim.source_revision == source_revision
+        && claim.path == path;
+    if exact {
+        return Ok(StorageState::Exact(desired));
+    }
+    let observed = Sha256Digest::of_canonical(
+        "aos.filesystem.observed-storage-view/v1",
+        &json!({
+            "root_present": root.is_dir(),
+            "resource": claim.resource,
+            "revision": claim.revision,
+            "source": claim.source,
+            "source_revision": claim.source_revision,
+            "path": path_string(&claim.path)?,
+            "active": claim.active,
         }),
     )?;
     Ok(StorageState::Divergent(RevisionId(observed)))
@@ -1405,6 +1536,68 @@ fn release_claimed_entry(
     sync_parent(&quarantine)
 }
 
+fn write_private_record<T: Serialize>(
+    directory: &Path,
+    destination: &Path,
+    value: &T,
+) -> Result<()> {
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = destination.with_extension(format!("{}.{}.tmp", std::process::id(), sequence));
+    let bytes = aos_contract::canonical::to_vec(value)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .context("creating provider record temporary file")?;
+    let result = (|| -> Result<()> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, destination)?;
+        File::open(directory)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn read_private_record<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    label: &str,
+) -> Result<Option<T>> {
+    let descriptor = match openat(
+        rustix::fs::CWD,
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("opening {label}")),
+    };
+    let metadata = fstat(&descriptor).with_context(|| format!("inspecting {label}"))?;
+    ensure!(
+        rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::RegularFile,
+        "{label} is not a regular file"
+    );
+    ensure!(metadata.st_nlink == 1, "{label} is hard-linked");
+
+    let mut bytes = Vec::new();
+    File::from(descriptor)
+        .take(ABILITY_LIMITS_V1.max_document_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {label}"))?;
+    ensure!(
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= ABILITY_LIMITS_V1.max_document_bytes,
+        "{label} exceeds the ability document bound"
+    );
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding {label}"))
+        .map(Some)
+}
+
 fn ensure_claimed_identity(metadata: &fs::Metadata, claim: &StorageClaim) -> Result<()> {
     use std::os::unix::fs::MetadataExt as _;
 
@@ -1556,7 +1749,7 @@ fn inspect_regular_file_nofollow(
     ensure_unchanged_regular_file(&initial, &final_metadata)?;
     Ok(RegularFileObservation {
         digest: Sha256Digest::from_bytes(digest.finalize().into()),
-        mode: u32::from(final_metadata.st_mode) & 0o7777,
+        mode: final_metadata.st_mode & 0o7777,
         uid: final_metadata.st_uid,
         gid: final_metadata.st_gid,
         device: final_metadata.st_dev,
@@ -1914,6 +2107,8 @@ struct StateLock {
 }
 
 impl StateLock {
+    // Monotonic time bounds lock acquisition only; it never enters provider state.
+    #[allow(clippy::disallowed_methods)]
     fn acquire(state_root: &Path, remaining_millis: u64) -> Result<Self> {
         ensure_private_directory(state_root)?;
         let path = state_root.join("mutation.lock");
@@ -1921,6 +2116,7 @@ impl StateLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .open(path)
             .context("opening filesystem provider state lock")?;
@@ -2192,6 +2388,59 @@ mod tests {
         }))
         .expect("persistent realization is valid");
         request
+    }
+
+    fn storage_view_request(
+        target_resource: ResourceId,
+        source: ResourceReference,
+        source_context: ResourceContext,
+        path: &Path,
+    ) -> AdmissionRequest {
+        let interface = interface(STORAGE_VIEW_INTERFACE);
+        let target = ResourceReference {
+            interface: interface.clone(),
+            resource: target_resource.clone(),
+            operations: vec![key("materialize"), key("observe"), key("release")],
+            lifetime: ResourceLifetime::Instance,
+        };
+        let value = ability_value(json!({
+            "name": "socket",
+            "source": source,
+            "access": "rw",
+            "relative_path": "service.sock",
+        }))
+        .expect("storage-view request is valid");
+        AdmissionRequest {
+            schema: ADMISSION_REQUEST_SCHEMA.into(),
+            method: MethodReference {
+                interface,
+                method: key("materialize"),
+            },
+            semantics: MethodSemantics::ordinary(AccessMode::ExclusiveWrite),
+            target,
+            resource_spec: ResourceSpec {
+                resource: target_resource,
+                kind: InterfaceName::new(STORAGE_VIEW_INTERFACE)
+                    .expect("storage-view resource kind is valid"),
+                lifetime: ResourceLifetime::Instance,
+                value,
+                realization: ability_value(json!({
+                    "schema": VIEW_REALIZATION_SCHEMA,
+                    "source": source_context.reference,
+                    "relative_path": "service.sock",
+                }))
+                .expect("storage-view realization is valid"),
+                revision: RevisionId(Sha256Digest::of_bytes(
+                    path_string(path).expect("path is UTF-8"),
+                )),
+            },
+            resources: vec![source_context],
+            control: InvocationControl {
+                attempt_remaining_millis: 10_000,
+                recovery_remaining_millis: 10_000,
+                cancelled: false,
+            },
+        }
     }
 
     fn target_context(request: &AdmissionRequest, admission: &AdmissionResult) -> ResourceContext {
@@ -2564,6 +2813,67 @@ mod tests {
             .admit(undeclared_child)
             .expect_err("an undeclared claimed parent must fail admission");
         assert!(error.to_string().contains("parent"), "{error:#}");
+    }
+
+    #[test]
+    fn storage_view_materialize_and_release_only_its_exact_durable_lease() {
+        let temporary = tempdir().expect("temporary directory exists");
+        let provider = provider(temporary.path());
+        let source_request = admission_request(&provider, resource("source"));
+        let source_admission = provider
+            .admit(source_request.clone())
+            .expect("source allocation admits");
+        provider
+            .invoke(invocation(
+                InvocationPurpose::Effect,
+                &source_request,
+                target_context(&source_request, &source_admission),
+            ))
+            .expect("source allocation materializes");
+        let source_observation = provider
+            .admit(source_request.clone())
+            .expect("source allocation observes");
+        let source_context = target_context(&source_request, &source_observation);
+        let source_root: StorageProviderContext =
+            decode_value(&source_observation.native_context).expect("source context decodes");
+        let view_path = Path::new(&source_root.path).join("service.sock");
+        let mut request = storage_view_request(
+            resource("view"),
+            source_request.target.clone(),
+            source_context.clone(),
+            &view_path,
+        );
+
+        let admission = provider
+            .admit(request.clone())
+            .expect("absent storage-view lease admits");
+        assert_eq!(admission.revision, AdmissionRevision::Absent);
+        let effect = provider
+            .invoke(invocation_with_dependencies(
+                InvocationPurpose::Effect,
+                &request,
+                target_context(&request, &admission),
+                vec![source_context.clone()],
+            ))
+            .expect("storage-view lease materializes");
+        assert_eq!(effect.disposition, InvocationDisposition::Completed);
+        assert_eq!(observation_state(&effect.evidence), Some("ready"));
+
+        request.method.method = key("release");
+        let release_admission = provider
+            .admit(request.clone())
+            .expect("active storage-view lease admits for release");
+        let release = provider
+            .invoke(invocation_with_dependencies(
+                InvocationPurpose::Effect,
+                &request,
+                target_context(&request, &release_admission),
+                vec![source_context],
+            ))
+            .expect("storage-view lease releases");
+        assert_eq!(release.disposition, InvocationDisposition::Completed);
+        assert_eq!(observation_state(&release.evidence), Some("absent"));
+        assert!(Path::new(&source_root.path).is_dir());
     }
 
     #[test]
