@@ -8,19 +8,21 @@ args @ {lib, ...}: let
   lifecycleDeclaration =
     interfaces.lifecycle.declaration
     // {
-      outputs.marker = {
-        description = "Marks completion of merged lifecycle composition.";
-        schema = lib.abilities.types.boolean;
-        phase = "planning";
-        visibility = "protected";
-        lifetime = "instance";
-      };
-      outputs.runtime-marker = {
-        description = "Proves pure composition cannot manufacture runtime evidence.";
-        schema = lib.abilities.types.boolean;
-        phase = "runtime";
-        visibility = "protected";
-        lifetime = "instance";
+      outputs = interfaces.lifecycle.declaration.outputs // {
+        marker = {
+          description = "Marks completion of merged lifecycle composition.";
+          schema = lib.abilities.types.boolean;
+          phase = "planning";
+          visibility = "protected";
+          lifetime = "instance";
+        };
+        runtime-marker = {
+          description = "Proves pure composition cannot manufacture runtime evidence.";
+          schema = lib.abilities.types.boolean;
+          phase = "runtime";
+          visibility = "protected";
+          lifetime = "instance";
+        };
       };
     };
   lifecycleModuleDeclaration =
@@ -31,6 +33,7 @@ args @ {lib, ...}: let
   lifecycleInterface =
     interfaces.lifecycle
     // {
+      alias = "fixture-lifecycle";
       declaration = lifecycleDeclaration;
       identity = lib.abilities.interfaceIdentity (
         lib.abilities.interfaceDocumentFromDeclaration lifecycleDeclaration
@@ -87,9 +90,38 @@ args @ {lib, ...}: let
     outputs = {};
     resourceFragments = {};
   };
-  provideFacet = facet: {requests, ...}:
+  bindingFor = bindings: requestName: let
+    matches = builtins.filter
+      (binding: binding.request == requestName)
+      (builtins.attrValues bindings);
+  in
+    if builtins.length matches == 1
+    then builtins.head matches
+    else throw "fixture request must have exactly one binding";
+  provideFacet = facet: {
+    instance,
+    requests,
+    bindings,
+    ...
+  }:
     emptyProvision
     // {
+      outputs =
+        if facet != "lifecycle"
+        then {}
+        else
+          builtins.mapAttrs (requestName: _: {
+            service-resource = {
+              interface = lifecycleInterface.identity;
+              resource = {
+                provider = instance.id;
+                key = (bindingFor bindings requestName).slot;
+              };
+              operations = ["observe"];
+              lifetime = "instance";
+            };
+          })
+          requests;
       resourceFragments = builtins.listToAttrs (builtins.map (request: {
           name = request.parameters.service;
           value = {
@@ -123,7 +155,7 @@ args @ {lib, ...}: let
     config.aos.abilities = {
       interfaces = {
         service-instance = moduleDeclarationFor interfaces.serviceInstance;
-        service-lifecycle = lifecycleModuleDeclaration;
+        fixture-lifecycle = lifecycleModuleDeclaration;
         service-dependencies = moduleDeclarationFor interfaces.dependencies;
         network-readiness = moduleDeclarationFor interfaces.networkReadiness;
       };

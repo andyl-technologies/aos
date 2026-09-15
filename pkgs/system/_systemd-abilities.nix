@@ -382,9 +382,6 @@
     configurationType = null;
     guarantees = [];
   };
-  packagedUnitIdentity = lib.abilities.interfaceIdentity (
-    lib.abilities.interfaceDocumentFromDeclaration packagedUnitDeclaration
-  );
   serviceFeatureNames = builtins.filter (featureName: let
     selected = serviceInterfaces.${featureName};
     aggregation = selected.document.interface.aggregation;
@@ -407,7 +404,7 @@
     name = selected.alias;
     value = {
       description = "Realizes ${selected.document.interface.name} through the selected systemd service controller.";
-      interface = selected.identity;
+      interface = selected.alias;
       inherit artifact;
       inherit (selected) methods;
       inherit guarantees;
@@ -435,7 +432,7 @@
       name = selected.alias;
       value = {
         description = "Observes ${selected.document.interface.name} through systemd manager readiness targets.";
-        interface = selected.identity;
+        interface = selected.alias;
         inherit artifact;
         inherit (selected) methods;
         guarantees = [];
@@ -466,7 +463,7 @@ in {
       // {
         systemd-packaged-unit = {
           description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
-          interface = packagedUnitIdentity;
+          interface = "systemd-packaged-unit";
           inherit artifact;
           methods = ["apply" "observe" "remove"];
           guarantees = [];
