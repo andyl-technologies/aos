@@ -95,12 +95,15 @@
     ++ unitIdentityList "PartOf" memberships;
 
   pathCondition = condition: let
-    directive = {
-      exists = "ConditionPathExists";
-      is-directory = "ConditionPathIsDirectory";
-      is-mount-point = "ConditionPathIsMountPoint";
-      is-nonempty = "ConditionDirectoryNotEmpty";
-    }.${condition.predicate};
+    directive =
+      {
+        exists = "ConditionPathExists";
+        is-directory = "ConditionPathIsDirectory";
+        is-mount-point = "ConditionPathIsMountPoint";
+        is-nonempty = "ConditionDirectoryNotEmpty";
+      }.${
+        condition.predicate
+      };
   in
     semantic.directive directive (semantic.executionPath {
       value = condition.path;
@@ -112,9 +115,10 @@
       if condition.kind == "path"
       then pathCondition condition
       else if condition.kind == "kernel-argument"
-      then semantic.directive "ConditionKernelCommandLine" (
-        semantic.quotedLiteral "${lib.optionalString condition.negated "!"}${condition.argument}"
-      )
+      then
+        semantic.directive "ConditionKernelCommandLine" (
+          semantic.quotedLiteral "${lib.optionalString condition.negated "!"}${condition.argument}"
+        )
       else throw "systemd does not implement this provider-neutral service condition")
     ((value.conditions or {all = [];}).all);
   linuxConditionDirectives = value:
@@ -148,7 +152,11 @@
       ++ optional "StartLimitBurst" (policy.rate_burst or null);
 
   environmentDirectives = value: let
-    environment = value.environment or {variables = {}; search_path = [];};
+    environment =
+      value.environment or {
+        variables = {};
+        search_path = [];
+      };
     variables = builtins.map (name:
       semantic.runtimeString {
         value = environment.variables.${name};
@@ -168,7 +176,7 @@
           encoding = "escaped";
         })
       ])
-    environment.search_path);
+      environment.search_path);
   in
     repeated "Environment" (
       variables
@@ -178,30 +186,55 @@
     );
 
   directoryPurpose = {
-    cache = {directory = "CacheDirectory"; mode = "CacheDirectoryMode"; preserve = null;};
-    configuration = {directory = "ConfigurationDirectory"; mode = "ConfigurationDirectoryMode"; preserve = null;};
-    logs = {directory = "LogsDirectory"; mode = "LogsDirectoryMode"; preserve = null;};
-    runtime = {directory = "RuntimeDirectory"; mode = "RuntimeDirectoryMode"; preserve = "RuntimeDirectoryPreserve";};
-    state = {directory = "StateDirectory"; mode = "StateDirectoryMode"; preserve = null;};
+    cache = {
+      directory = "CacheDirectory";
+      mode = "CacheDirectoryMode";
+      preserve = null;
+    };
+    configuration = {
+      directory = "ConfigurationDirectory";
+      mode = "ConfigurationDirectoryMode";
+      preserve = null;
+    };
+    logs = {
+      directory = "LogsDirectory";
+      mode = "LogsDirectoryMode";
+      preserve = null;
+    };
+    runtime = {
+      directory = "RuntimeDirectory";
+      mode = "RuntimeDirectoryMode";
+      preserve = "RuntimeDirectoryPreserve";
+    };
+    state = {
+      directory = "StateDirectory";
+      mode = "StateDirectoryMode";
+      preserve = null;
+    };
   };
   directoryDirectives = value: let
     managed = (value.directories or {managed = [];}).managed;
     identity = value.identity or null;
     matchesServiceIdentity = entry:
-      (entry.owner or null) == null
+      (entry.owner or null)
+      == null
       || (
-        identity != null
+        identity
+        != null
         && (identity.principal or null) != null
         && entry.owner == identity.principal
       );
     matchesServiceGroup = entry:
-      (entry.group or null) == null
+      (entry.group or null)
+      == null
       || (
-        identity != null
+        identity
+        != null
         && (identity.primary_group or null) != null
         && entry.group == identity.primary_group
       );
-    ownershipIsExact = builtins.all
+    ownershipIsExact =
+      builtins.all
       (entry: matchesServiceIdentity entry && matchesServiceGroup entry)
       managed;
     forPurpose = purpose: let
@@ -214,11 +247,15 @@
         then []
         else if builtins.length retentions != 1
         then throw "systemd managed ${purpose} directories require one retention policy"
-        else one mapping.preserve {
-          persistent = "yes";
-          restart = "restart";
-          service-lifetime = "no";
-        }.${builtins.head retentions};
+        else
+          one mapping.preserve
+          {
+            persistent = "yes";
+            restart = "restart";
+            service-lifetime = "no";
+          }.${
+            builtins.head retentions
+          };
     in
       if entries == []
       then []
@@ -262,10 +299,22 @@
         then source
         else throw "systemd service-identity storage needs a statically known standard path";
       prefixes = [
-        {prefix = "/run/"; directive = "RuntimeDirectory";}
-        {prefix = "/var/lib/"; directive = "StateDirectory";}
-        {prefix = "/var/cache/"; directive = "CacheDirectory";}
-        {prefix = "/var/log/"; directive = "LogsDirectory";}
+        {
+          prefix = "/run/";
+          directive = "RuntimeDirectory";
+        }
+        {
+          prefix = "/var/lib/";
+          directive = "StateDirectory";
+        }
+        {
+          prefix = "/var/cache/";
+          directive = "CacheDirectory";
+        }
+        {
+          prefix = "/var/log/";
+          directive = "LogsDirectory";
+        }
       ];
       matches = builtins.filter (entry: lib.hasPrefix entry.prefix literalSource) prefixes;
       selected =
@@ -276,7 +325,10 @@
     in
       if !lib.abilities.types.relativePath.check path
       then throw "systemd service-identity storage must use a normalized relative standard path"
-      else {inherit path; inherit (selected) directive;};
+      else {
+        inherit path;
+        inherit (selected) directive;
+      };
     standard = builtins.map standardDirectory serviceOwned;
   in
     repeated "ReadOnlyPaths" (providerPaths "read-only")
@@ -305,20 +357,24 @@
     credentials.views;
 
   configurationDirectives = value:
-    repeated "EnvironmentFile" (builtins.map (entry: semantic.executionPath {
+    repeated "EnvironmentFile" (builtins.map (entry:
+      semantic.executionPath {
         value = entry.source;
         prefix = lib.optionalString entry.optional "-";
         encoding = "quoted";
       })
-      ((value.configuration or {views = [];}).views));
+    ((value.configuration or {views = [];}).views));
 
-  loggingTarget = target: {
-    console = "console";
-    discard = "null";
-    "inherit" = "inherit";
-    structured = "journal";
-    structured-and-console = "journal+console";
-  }.${target};
+  loggingTarget = target:
+    {
+      console = "console";
+      discard = "null";
+      "inherit" = "inherit";
+      structured = "journal";
+      structured-and-console = "journal+console";
+    }.${
+      target
+    };
   loggingDirectives = value: let
     logging = value.logging or null;
   in
@@ -375,33 +431,40 @@
         then "full"
         else "no"
       )
-      ++ one "ProtectHome" {
+      ++ one "ProtectHome"
+      {
         host = "no";
         read-only = "read-only";
         inaccessible = "yes";
-      }.${isolation.home_access or "host"}
+      }.${
+        isolation.home_access or "host"
+      }
       ++ one "ProtectProc" (
         if isolation.process_visibility == "private"
         then "invisible"
         else "default"
       )
-      ++ one "KillMode" {
+      ++ one "KillMode"
+      {
         all-processes = "control-group";
         main-process = "process";
         mixed = "mixed";
-      }.${isolation.termination_scope}
+      }.${
+        isolation.termination_scope
+      }
       ++ one "LimitCORE" (
         if isolation.permit_core_dumps
         then "infinity"
         else "0"
       )
       ++ lib.optional (isolation.devices != []) (semantic.directive "DevicePolicy" "closed")
-      ++ repeated "DeviceAllow" (builtins.map (device: semantic.executionPath {
+      ++ repeated "DeviceAllow" (builtins.map (device:
+        semantic.executionPath {
           value = device.source;
           suffix = " ${deviceAccess device}";
           encoding = "quoted";
         })
-        isolation.devices)
+      isolation.devices)
       ++ lib.optional (isolation.root_directory != null) (
         semantic.directive "RootDirectory" (quotedExecutionPath isolation.root_directory)
       )
@@ -426,11 +489,14 @@
         else literalList "CapabilityBoundingSet" isolation.capability_bounds.capabilities
       )
       ++ one "Delegate" (yesNo isolation.control_group_delegation)
-      ++ one "ProtectControlGroups" {
+      ++ one "ProtectControlGroups"
+      {
         host = "no";
         read-only = "yes";
         private = "strict";
-      }.${isolation.control_group_access}
+      }.${
+        isolation.control_group_access
+      }
       ++ one "PrivateDevices" (yesNo (isolation.device_namespace == "private"))
       ++ one "ProtectClock" (yesNo (!isolation.kernel_clock_mutation))
       ++ one "ProtectHostname" (yesNo (!isolation.kernel_hostname_mutation))
@@ -447,21 +513,39 @@
       ++ one "PrivateUsers" (
         if !namespace "user"
         then "no"
-        else {full = "full"; identity = "identity"; none = "no"; self = "self";}.${isolation.user_namespace_ownership}
+        else
+          {
+            full = "full";
+            identity = "identity";
+            none = "no";
+            self = "self";
+          }.${
+            isolation.user_namespace_ownership
+          }
       )
-      ++ literalList "RestrictAddressFamilies" (builtins.map (family: {
+      ++ literalList "RestrictAddressFamilies" (builtins.map (family:
+        {
           ipv4 = "AF_INET";
           ipv6 = "AF_INET6";
           netlink = "AF_NETLINK";
           packet = "AF_PACKET";
           unix = "AF_UNIX";
-        }.${family})
-        isolation.network_address_families)
+        }.${
+          family
+        })
+      isolation.network_address_families)
       ++ one "RestrictRealtime" (yesNo (!isolation.permit_realtime))
       ++ one "RestrictNamespaces" (yesNo (isolation.namespace_creation == "denied"))
       ++ one "RestrictSUIDSGID" (yesNo (!isolation.permit_suid_sgid))
       ++ one "OOMScoreAdjust" isolation.oom_score_adjust
-      ++ one "ProtectProc" {all = "default"; same-user = "ptraceable"; self = "invisible";}.${isolation.process_visibility}
+      ++ one "ProtectProc"
+      {
+        all = "default";
+        same-user = "ptraceable";
+        self = "invisible";
+      }.${
+        isolation.process_visibility
+      }
       ++ optional "SELinuxContext" (isolation.security_label or null)
       ++ literalList "SystemCallArchitectures" isolation.syscall_architectures
       ++ literalList "SystemCallFilter" isolation.syscall_allow
@@ -512,15 +596,35 @@
     signalReadiness = readiness != null && readiness.mechanism == "process-signal";
     notificationAccess =
       if signalReadiness
-      then {all-processes = "all"; main-process = "main";}.${readiness.signal_scope}
+      then
+        {
+          all-processes = "all";
+          main-process = "main";
+        }.${
+          readiness.signal_scope
+        }
       else if supervision == null
       then null
-      else {all-processes = "all"; main-process = "main"; none = "none";}.${supervision.notification_access};
+      else
+        {
+          all-processes = "all";
+          main-process = "main";
+          none = "none";
+        }.${
+          supervision.notification_access
+        };
     scopesAgree =
       !signalReadiness
       || supervision == null
       || supervision.startup_protocol != "notification"
-      || notificationAccess == {all-processes = "all"; main-process = "main"; none = "none";}.${supervision.notification_access};
+      || notificationAccess
+      == {
+        all-processes = "all";
+        main-process = "main";
+        none = "none";
+      }.${
+        supervision.notification_access
+      };
     serviceType =
       if !scopesAgree
       then throw "systemd notification supervision and readiness scopes disagree"
@@ -531,7 +635,14 @@
         else "notify"
       else if supervision != null && supervision.startup_protocol == "bus-name"
       then "dbus"
-      else {foreground = "simple"; forking = "forking"; oneshot = "oneshot";}.${lifecycle.execution_model};
+      else
+        {
+          foreground = "simple";
+          forking = "forking";
+          oneshot = "oneshot";
+        }.${
+          lifecycle.execution_model
+        };
     neutralIsolation = value.isolation or null;
     linuxIsolation = value.linux_isolation or null;
     noNewPrivileges =
@@ -545,17 +656,22 @@
       else one "ReloadSignal" reload.signal;
   in
     one "Type" serviceType
-    ++ optional "BusName" (if supervision == null then null else supervision.bus_name or null)
+    ++ optional "BusName" (
+      if supervision == null
+      then null
+      else supervision.bus_name or null
+    )
     ++ optional "NotifyAccess" notificationAccess
     ++ lib.optional ((lifecycle.working_directory or null) != null) (
       semantic.directive "WorkingDirectory" (quotedExecutionPath lifecycle.working_directory)
     )
-    ++ repeated "EnvironmentFile" (builtins.map (entry: semantic.executionPath {
+    ++ repeated "EnvironmentFile" (builtins.map (entry:
+      semantic.executionPath {
         value = entry.source;
         prefix = lib.optionalString entry.optional "-";
         encoding = "quoted";
       })
-      lifecycle.environment_files)
+    lifecycle.environment_files)
     ++ environmentDirectives value
     ++ commands "ExecCondition" lifecycle.condition
     ++ commands "ExecStartPre" lifecycle.pre_start
@@ -563,11 +679,26 @@
     ++ commands "ExecStartPost" lifecycle.post_start
     ++ commands "ExecStop" lifecycle.stop
     ++ commands "ExecStopPost" lifecycle.post_stop
-    ++ one "Restart" {always = "always"; never = "no"; on-failure = "on-failure";}.${lifecycle.restart}
+    ++ one "Restart"
+    {
+      always = "always";
+      never = "no";
+      on-failure = "on-failure";
+    }.${
+      lifecycle.restart
+    }
     ++ one "RestartSec" (millis lifecycle.restart_delay_millis)
     ++ one "RemainAfterExit" (yesNo lifecycle.remain_after_exit)
-    ++ one "TimeoutStartSec" (if lifecycle.start_timeout_unbounded or false then "infinity" else millis lifecycle.start_timeout_millis)
-    ++ one "TimeoutStopSec" (if lifecycle.stop_timeout_unbounded or false then "infinity" else millis lifecycle.stop_timeout_millis)
+    ++ one "TimeoutStartSec" (
+      if lifecycle.start_timeout_unbounded or false
+      then "infinity"
+      else millis lifecycle.start_timeout_millis
+    )
+    ++ one "TimeoutStopSec" (
+      if lifecycle.stop_timeout_unbounded or false
+      then "infinity"
+      else millis lifecycle.stop_timeout_millis
+    )
     ++ (
       if (lifecycle.configuration_change_action or "restart") == "none"
       then one "X-RestartIfChanged" "false"
@@ -579,8 +710,16 @@
     ++ lib.optional (termination != null && (termination.process_id_file or null) != null) (
       semantic.directive "PIDFile" (quotedExecutionPath termination.process_id_file)
     )
-    ++ optional "KillSignal" (if termination == null then null else termination.signal)
-    ++ optional "FinalKillSignal" (if termination == null then null else termination.final_signal or null)
+    ++ optional "KillSignal" (
+      if termination == null
+      then null
+      else termination.signal
+    )
+    ++ optional "FinalKillSignal" (
+      if termination == null
+      then null
+      else termination.final_signal or null
+    )
     ++ optional "KillMode" (
       if termination == null
       then null
@@ -588,15 +727,43 @@
       then "control-group"
       else "process"
     )
-    ++ optional "WatchdogSec" (if watchdog == null then null else millis watchdog.timeout_millis)
-    ++ optional "WatchdogSignal" (if watchdog == null then null else "SIGABRT")
-    ++ (if startPolicy == null then [] else literalList "SuccessExitStatus" startPolicy.accepted_exit_statuses)
-    ++ (if startPolicy == null then [] else literalList "RestartPreventExitStatus" startPolicy.restart_preventing_exit_statuses)
+    ++ optional "WatchdogSec" (
+      if watchdog == null
+      then null
+      else millis watchdog.timeout_millis
+    )
+    ++ optional "WatchdogSignal" (
+      if watchdog == null
+      then null
+      else "SIGABRT"
+    )
+    ++ (
+      if startPolicy == null
+      then []
+      else literalList "SuccessExitStatus" startPolicy.accepted_exit_statuses
+    )
+    ++ (
+      if startPolicy == null
+      then []
+      else literalList "RestartPreventExitStatus" startPolicy.restart_preventing_exit_statuses
+    )
     ++ lib.optional (watchdog != null && watchdog.action == "stop") (semantic.directive "RestartPreventExitStatus" "SIGABRT")
     ++ lib.optional (watchdog != null && watchdog.action == "restart") (semantic.directive "RestartForceExitStatus" "SIGABRT")
-    ++ (if scheduling == null then [] else one "Nice" scheduling.nice)
-    ++ (if scheduling == null then [] else one "IOSchedulingClass" scheduling.io_class)
-    ++ (if scheduling == null then [] else one "IOSchedulingPriority" scheduling.io_priority)
+    ++ (
+      if scheduling == null
+      then []
+      else one "Nice" scheduling.nice
+    )
+    ++ (
+      if scheduling == null
+      then []
+      else one "IOSchedulingClass" scheduling.io_class
+    )
+    ++ (
+      if scheduling == null
+      then []
+      else one "IOSchedulingPriority" scheduling.io_priority
+    )
     ++ directoryDirectives value
     ++ storageDirectives value
     ++ configurationDirectives value
@@ -614,7 +781,8 @@
 
   installationLinks = child: value: let
     dependencies = value.dependencies or {};
-    targets = relationship: values: builtins.map (target: {
+    targets = relationship: values:
+      builtins.map (target: {
         parent = unitNameForReference target;
         inherit child relationship;
       })
@@ -680,7 +848,8 @@
       if selection.kind != "singleton" && sockets != []
       then throw "systemd template services cannot own instance-specific socket activation"
       else builtins.map (socketDocument serviceUnitName resource) sockets;
-    facets = builtins.filter
+    facets =
+      builtins.filter
       (facet:
         builtins.hasAttr facet.facet value
         && (facet.facet != "lifecycle" || facet.interface == controllerInterface))
@@ -704,26 +873,29 @@
       builtins.sort
       (left: right: left.systemd_unit.unit_name < right.systemd_unit.unit_name)
       (lib.optional (selection.kind != "instance") primary ++ auxiliary);
-    links = builtins.sort
+    links =
+      builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
       (installationLinks serviceIdentity value
-      ++ builtins.concatMap (socket: let
-        socketIdentity = {
-          kind = "unit";
-          unit_name = socket.systemd_unit.unit_name;
-        };
-      in
-        if value.enabled
-        then [{
-          parent = {
+        ++ builtins.concatMap (socket: let
+          socketIdentity = {
             kind = "unit";
-            unit_name = "sockets.target";
+            unit_name = socket.systemd_unit.unit_name;
           };
-          child = socketIdentity;
-          relationship = "wants";
-        }]
-        else [])
-      auxiliary);
+        in
+          if value.enabled
+          then [
+            {
+              parent = {
+                kind = "unit";
+                unit_name = "sockets.target";
+              };
+              child = socketIdentity;
+              relationship = "wants";
+            }
+          ]
+          else [])
+        auxiliary);
   in {
     schema = "aos.systemd.service-realization/v2";
     systemd_unit = serviceIdentity;
