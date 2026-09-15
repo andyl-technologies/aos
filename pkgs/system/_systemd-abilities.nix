@@ -898,6 +898,30 @@
   nativeResourceRealizationType = types.taggedUnion {
     tag = "backend";
     variants = {
+      activation-group-target = types.record {
+        fields = {
+          schema = types.enum ["aos.systemd.native-resource-realization/v1"];
+          backend = types.enum ["activation-group-target"];
+          after_units = types.list {
+            element = serviceUnitIdentity;
+            maxItems = 512;
+            unique = true;
+            canonicalOrder = true;
+          };
+          member_units = types.list {
+            element = serviceUnitIdentity;
+            maxItems = 512;
+            unique = true;
+            canonicalOrder = true;
+          };
+          required_member_units = types.list {
+            element = serviceUnitIdentity;
+            maxItems = 512;
+            unique = true;
+            canonicalOrder = true;
+          };
+        };
+      };
       mount-unit = types.record {
         fields = {
           schema = types.enum ["aos.systemd.native-resource-realization/v1"];
@@ -921,6 +945,14 @@
     };
   };
   nativeResourceKinds = {
+    activation-group = {
+      controller = serviceInterfaces.activationGroup;
+      effectsAlias = "systemd-activation-group-effects";
+      effectsName = "aos.systemd.activation-group-effects";
+      requestType = serviceManagement.types.activationGroup;
+      observationType = serviceManagement.types.producerObservations.activationGroup;
+      resourceKind = "aos.activation.group";
+    };
     mount = {
       controller = serviceInterfaces.mountResource;
       effectsAlias = "systemd-mount-effects";

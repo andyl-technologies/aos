@@ -25,6 +25,7 @@
     package = pkgs.systemd;
     implementation = "mount-resource";
   };
+  activationGroupEffectsKey = effectsKey "systemd:activation-group" "ready";
   evaluation = lib.evalModules {
     inherit lib;
     modules = [
@@ -62,6 +63,18 @@
               providerInstance = "systemd:manager";
               slot = "main";
             };
+            "test:activation-group" = {
+              request = "consumer:activation-group";
+              implementation = "systemd:activation-group";
+              providerInstance = "systemd:manager";
+              slot = "ready";
+            };
+            "test:activation-group-effects" = {
+              request = activationGroupEffectsKey;
+              implementation = "systemd:systemd-activation-group-effects";
+              providerInstance = "systemd:manager";
+              slot = "ready";
+            };
             "test:device" = {
               request = "consumer:device";
               implementation = "systemd:device-presence";
@@ -87,6 +100,7 @@
             mount = requirement interfaces.mountResource;
             swap = requirement interfaces.swapResource;
             device = requirement interfaces.devicePresence;
+            activation-group = requirement interfaces.activationGroup;
           };
           requests = {
             mount = {
@@ -123,6 +137,19 @@
                 device = "/dev/net/tun";
               };
             };
+            activation-group = {
+              requirement = "activation-group";
+              consumer = "client";
+              scope = ["ready"];
+              parameters = {
+                name = "ready";
+                enabled = true;
+                description = "Ready native resources";
+                after = [];
+                members = [];
+                required_members = [];
+              };
+            };
           };
         };
       }
@@ -143,8 +170,18 @@
     builtins.head (builtins.filter (resource: resource.kind == kind) resources);
   mount = resourceByKind "aos.filesystem.mount";
   swap = resourceByKind "aos.memory.swap";
+  activationGroup = resourceByKind "aos.activation.group";
+  declaredRoleEntryPoints = builtins.sort builtins.lessThan (lib.unique (lib.concatMap (
+      implementation: let
+        handler = implementation.handlerDescriptor;
+      in
+        lib.optional
+        (handler != null && handler.artifact.package == "aos-systemd-provider")
+        (lib.removePrefix "bin/" handler.entryPoint)
+    )
+    (builtins.attrValues abilities.implementations)));
 in
-  assert builtins.length resources == 2;
+  assert builtins.length resources == 3;
   assert mount.realization
   == {
     schema = "aos.systemd.native-resource-realization/v1";
@@ -155,13 +192,24 @@ in
     schema = "aos.systemd.native-resource-realization/v1";
     backend = "swap-unit";
   };
+  assert activationGroup.realization
+  == {
+    schema = "aos.systemd.native-resource-realization/v1";
+    backend = "activation-group-target";
+    after_units = [];
+    member_units = [];
+    required_member_units = [];
+  };
   assert abilities.compositionRequests.${mountEffectsKey}.parameters.desired == mount.value;
   assert abilities.compositionRequests.${swapEffectsKey}.parameters.desired == swap.value;
-  assert abilities.compositionOutputs == {};
+  assert abilities.compositionRequests.${activationGroupEffectsKey}.parameters.desired == activationGroup.value;
+  assert abilities.compositionOutputs."consumer:activation-group" ? activation-resource;
   assert abilities.implementations."systemd:mount-resource".handlerDescriptor == null;
   assert builtins.isFunction abilities.implementations."systemd:mount-resource".transition;
   assert abilities.implementations."systemd:systemd-mount-effects".providerModule == null;
   assert abilities.implementations."systemd:systemd-mount-effects".handlerDescriptor.entryPoint == "bin/aos-systemd-mount-effects";
   assert abilities.implementations."systemd:device-presence".providerModule == null;
   assert abilities.implementations."systemd:device-presence".handlerDescriptor.entryPoint == "bin/aos-systemd-device-presence";
-  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 2; true
+  assert declaredRoleEntryPoints == pkgs.aos-systemd-provider.roleEntryPoints;
+  assert builtins.length declaredRoleEntryPoints == 16;
+  assert builtins.length evaluation.config.systemd.providerUnitArtifacts == 3; true

@@ -264,6 +264,12 @@
     declaration = staticTemplateService;
   };
   checkedStaticTemplate = serviceManagement.validate serviceTypes staticTemplateService;
+  publicStaticTemplate = staticTemplateService // {
+    manager_identity = {
+      name = "worker";
+      aliases = [];
+    };
+  };
   templateInstanceService = serviceManagement.instanceOf {
     inherit serviceTypes;
     template = staticTemplateService;
@@ -1214,6 +1220,7 @@ in
   assert multiServiceGuaranteeFixedPoint.config.aos.abilities.requirementTemplates."multi-service-guarantee:shared".guarantees
   == ["multi-service-guarantee:shared"];
   assert validates staticTemplateService;
+  assert validates publicStaticTemplate;
   assert builtins.attrNames expandedStaticTemplate.requirementTemplates
   == ["service-instantiation" "service-template-definition"];
   assert builtins.attrNames expandedStaticTemplate.requests
@@ -1342,7 +1349,9 @@ in
     name = "ready";
     enabled = true;
     description = "Ready resources";
+    after = [];
     members = [(resultOf "mount" "mount-resource")];
+    required_members = [];
   };
   assert succeedsAs serviceTypes.devicePresence {
     name = "accelerator";

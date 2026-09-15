@@ -877,7 +877,10 @@
     selection = (value.instantiation or {selection.kind = "singleton";}).selection;
     templateIdentity =
       if selection.kind == "template"
-      then providerLib.templateUnitIdentityForResource resource.resource selection.template
+      then
+        if (value.manager_identity or null) != null
+        then providerLib.publicTemplateUnitIdentity value.manager_identity.name
+        else providerLib.templateUnitIdentityForResource resource.resource selection.template
       else if selection.kind == "instance"
       then unitNameForReference selection.template_resource
       else null;
