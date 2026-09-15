@@ -778,6 +778,13 @@
           });
         };
       };
+      execution-path = types.record {
+        fields = {
+          kind = types.enum ["execution-path"];
+          path = documentPath;
+          value = types.deferredResult executionPath;
+        };
+      };
       null = types.record {
         fields = {
           kind = types.enum ["null"];

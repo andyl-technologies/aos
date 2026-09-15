@@ -572,7 +572,7 @@
         valueType = lib.abilities.types.record {
           fields = {
             enabled = lib.abilities.types.deferredResult lib.abilities.types.boolean;
-            path = lib.abilities.types.deferredResult lib.abilities.types.runtimeString;
+            path = lib.abilities.types.deferredResult lib.abilities.types.executionPath;
             ports = lib.abilities.types.list {
               element = lib.abilities.types.integer {
                 minimum = 1;
@@ -664,6 +664,45 @@
       }
     ];
   };
+  deferredExecutionPathSource = {
+    kind = "structured-value";
+    format = "json";
+    document = [
+      {
+        kind = "execution-path";
+        path = [];
+        value =
+          lib.abilities.resultOf "configuration" "execution-path"
+          // {request = "package:configuration";};
+      }
+    ];
+  };
+  invalidExecutionPathSource =
+    deferredExecutionPathSource
+    // {
+      document = [
+        {
+          kind = "execution-path";
+          path = [];
+          value = "relative/runtime-path";
+        }
+      ];
+    };
+  invalidExecutionPathMarkerSource =
+    deferredExecutionPathSource
+    // {
+      document = [
+        {
+          kind = "execution-path";
+          path = [];
+          value = {
+            _type = "aos-runtime-path";
+            base = "relative/runtime-root";
+            relative_path = "configuration.json";
+          };
+        }
+      ];
+    };
   fixedPoint = lib.evalModules {
     specialArgs = {inherit lib;};
     modules = [
@@ -904,6 +943,7 @@ in
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
   assert builtins.elem "boolean" (builtins.map (node: node.kind) projectedStructuredConfiguration.source.document);
+  assert builtins.elem "execution-path" (builtins.map (node: node.kind) projectedStructuredConfiguration.source.document);
   assert projectedTomlConfiguration.document
   == [
     {
@@ -941,6 +981,9 @@ in
   ];
   assert !succeedsAs serviceTypes.structuredConfigurationSource invalidStructuredConfiguration.source;
   assert !succeedsAs serviceTypes.structuredConfigurationSource sparseArraySource;
+  assert succeedsAs serviceTypes.structuredConfigurationSource deferredExecutionPathSource;
+  assert !succeedsAs serviceTypes.structuredConfigurationSource invalidExecutionPathSource;
+  assert !succeedsAs serviceTypes.structuredConfigurationSource invalidExecutionPathMarkerSource;
   assert !(builtins.tryEval (builtins.deepSeq (serviceManagement.forConfiguration {
       inherit serviceTypes;
       consumerInstance = "consumer";

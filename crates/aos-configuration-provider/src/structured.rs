@@ -73,6 +73,11 @@ pub enum DocumentNode {
         path: Vec<DocumentPathSegment>,
         value: i64,
     },
+    /// Declares a checked execution-path scalar after deferred-result resolution.
+    ExecutionPath {
+        path: Vec<DocumentPathSegment>,
+        value: String,
+    },
     /// Declares a null scalar.
     Null { path: Vec<DocumentPathSegment> },
     /// Declares an object container.
@@ -89,6 +94,7 @@ impl DocumentNode {
         match self {
             Self::Array { path }
             | Self::Boolean { path, .. }
+            | Self::ExecutionPath { path, .. }
             | Self::Integer { path, .. }
             | Self::Null { path }
             | Self::Object { path }
@@ -179,7 +185,7 @@ fn validate_node_strings(node: &DocumentNode) -> Result<(), StructuredDocumentEr
             return Err(invalid("an object key exceeds the canonical ability bound"));
         }
     }
-    if let DocumentNode::String { value, .. } = node
+    if let DocumentNode::String { value, .. } | DocumentNode::ExecutionPath { value, .. } = node
         && u64::try_from(value.len()).unwrap_or(u64::MAX) > ABILITY_LIMITS_V1.max_string_bytes
     {
         return Err(invalid(
@@ -203,6 +209,7 @@ fn build_node(
         DocumentNode::Null { .. } => Ok(Value::Null),
         DocumentNode::Boolean { value, .. } => Ok(Value::Bool(*value)),
         DocumentNode::Integer { value, .. } => Ok(Value::from(*value)),
+        DocumentNode::ExecutionPath { value, .. } => Ok(Value::String(value.clone())),
         DocumentNode::String { value, .. } => Ok(Value::String(value.clone())),
         DocumentNode::Object { .. } => build_object(path, nodes, visited),
         DocumentNode::Array { .. } => build_array(path, nodes, visited),
@@ -296,7 +303,7 @@ mod tests {
     fn fixture() -> Vec<DocumentNode> {
         vec![
             DocumentNode::Object { path: vec![] },
-            DocumentNode::String {
+            DocumentNode::ExecutionPath {
                 path: vec![key("runtime")],
                 value: "/run/example".to_string(),
             },
@@ -323,6 +330,20 @@ mod tests {
 
         assert_eq!(json, br#"{"ports":[8080,8443],"runtime":"/run/example"}"#);
         assert_eq!(yaml, json);
+    }
+
+    #[test]
+    fn execution_path_node_decodes_and_serializes_as_a_string() {
+        let node: DocumentNode = serde_json::from_value(serde_json::json!({
+            "kind": "execution-path",
+            "path": [],
+            "value": "/run/aos/configurations/example.json"
+        }))
+        .expect("execution-path node decodes");
+        let encoded = encode_structured_document(StructuredFormat::Json, vec![node])
+            .expect("execution path document encodes");
+
+        assert_eq!(encoded, br#""/run/aos/configurations/example.json""#);
     }
 
     #[test]

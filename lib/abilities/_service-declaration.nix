@@ -386,6 +386,8 @@
       then "boolean"
       else if concrete.kind == "integer"
       then "integer"
+      else if concrete.kind == "string" && concrete.syntax == "execution-path-v1"
+      then "execution-path"
       else if builtins.elem concrete.kind ["string" "string-enum"]
       then "string"
       else throw "deferred structured configuration leaves must have Boolean, integer, or string schemas";
@@ -429,7 +431,7 @@
       else if builtins.elem concrete.kind ["string" "string-enum"]
       then [
         {
-          kind = "string";
+          kind = scalarKind concrete;
           inherit path;
           value = current;
         }
