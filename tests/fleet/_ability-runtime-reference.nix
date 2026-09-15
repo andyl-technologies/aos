@@ -353,8 +353,7 @@ in {
                   f"{JQ} -se --arg name {shlex.quote(entry['name'])} "
                   "'map(select(.name == $name)) "
                   "| length == 1 "
-                  "and (.[0].ability.activation_mode == \"structured-effects\" "
-                  "or .[0].ability.activation_mode == \"contracts-only\")' "
+                  "and .[0].contract != null' "
                   "/var/lib/profiles/system-packages/current/meta/*.json"
               )
 

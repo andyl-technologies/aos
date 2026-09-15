@@ -486,26 +486,6 @@ mod tests {
         }
     }
 
-    fn ability_meta(activation_mode: &str) -> PackageContractMeta {
-        PackageContractMeta {
-            store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities".to_string(),
-            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
-            nar_size: 1,
-            references: Vec::new(),
-            manifest_sha256:
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    .to_string(),
-            manifest_size: 1,
-            package_digest:
-                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    .to_string(),
-            activation_mode: activation_mode.to_string(),
-            artifacts: Vec::new(),
-            provenance: "provenance/demo.contract.intoto.jsonl".to_string(),
-        }
-    }
-
     fn add_usr_root(generation: &Generation, hash: &str, target: &str) {
         use std::os::unix::fs::symlink;
 
@@ -542,28 +522,6 @@ mod tests {
         let result = read_meta(&profile, "nonexistent").unwrap();
         assert!(result.is_none());
     }
-
-    #[test]
-    fn ordinary_profile_mutations_accept_contracts_only_ability_state() {
-        let mut installed = sample_meta("demo", "aos-core", true, false);
-        installed.apm.as_mut().unwrap().contract = Some(ability_meta("contracts-only"));
-
-        validate_ordinary_profile_ability_state(&[installed])
-            .expect("contracts-only metadata has no lifecycle owner");
-    }
-
-    #[test]
-    fn ordinary_profile_mutations_reject_structured_effect_state() {
-        let mut installed = sample_meta("demo", "aos-core", true, false);
-        installed.apm.as_mut().unwrap().contract = Some(ability_meta("structured-effects"));
-
-        let error = validate_ordinary_profile_ability_state(&[installed])
-            .expect_err("ordinary package mutations must not bypass structured activation");
-
-        assert!(error.to_string().contains(FEATURE_ABILITY_EFFECTS_V1));
-        assert!(error.to_string().contains("demo@1.0"));
-    }
-
     // 3. delete_meta removes the file
     #[test]
     fn delete_meta_removes_file() {

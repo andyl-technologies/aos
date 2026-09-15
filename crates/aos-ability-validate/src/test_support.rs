@@ -356,6 +356,8 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         schema: PackageDocument::SCHEMA.to_string(),
         required_features: vec![
             RequiredFeature::new("abilities-v1").expect("base abilities feature"),
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                .expect("effect semantics feature"),
             RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).expect("state-format feature"),
         ],
         package: aos_ability_model::document::PackageSubject {
@@ -557,6 +559,8 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
     fixture.context = ValidationContext::new(
         BTreeSet::from([
             RequiredFeature::new("abilities-v1").expect("base abilities feature"),
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                .expect("effect semantics feature"),
             RequiredFeature::new(PROVIDER_STATE_FORMAT_V1).expect("state-format feature"),
         ]),
         fixture.interfaces.clone(),

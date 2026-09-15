@@ -366,19 +366,19 @@ fn build_verified_planning_fixture(
     };
     source.refresh_interface();
     let stateful = kind == PlanningFixtureKind::StatefulSelected;
-    let context = if stateful {
-        ValidationContext::new(
-            BTreeSet::from([
-                RequiredFeature::new("abilities-v1").expect("static base ability feature is valid"),
-                RequiredFeature::new(PROVIDER_STATE_FORMAT_V1)
-                    .expect("static provider state-format feature is valid"),
-            ]),
-            source.interfaces.clone(),
-        )
-        .expect("stateful test validation context must construct")
-    } else {
-        source.context
-    };
+    let mut supported_features = BTreeSet::from([
+        RequiredFeature::new("abilities-v1").expect("base ability feature is valid"),
+        RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+            .expect("effect semantics feature is valid"),
+    ]);
+    if stateful {
+        supported_features.insert(
+            RequiredFeature::new(PROVIDER_STATE_FORMAT_V1)
+                .expect("provider state-format feature is valid"),
+        );
+    }
+    let context = ValidationContext::new(supported_features, source.interfaces.clone())
+        .expect("test validation context must construct");
     let interface = source.binding_plan.bindings[0].interface.clone();
     let provider = source.binding_plan.bindings[0].provider.clone();
     let artifact = source.binding_plan.bindings[0]
@@ -417,14 +417,19 @@ fn build_verified_planning_fixture(
     };
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: if stateful {
-            vec![
-                RequiredFeature::new("abilities-v1").expect("static base ability feature is valid"),
-                RequiredFeature::new(PROVIDER_STATE_FORMAT_V1)
-                    .expect("static provider state-format feature is valid"),
-            ]
-        } else {
-            Vec::new()
+        required_features: {
+            let mut features = vec![
+                RequiredFeature::new("abilities-v1").expect("base ability feature is valid"),
+                RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)
+                    .expect("effect semantics feature is valid"),
+            ];
+            if stateful {
+                features.push(
+                    RequiredFeature::new(PROVIDER_STATE_FORMAT_V1)
+                        .expect("provider state-format feature is valid"),
+                );
+            }
+            features
         },
         package: PackageSubject {
             name: key("planning-provider"),

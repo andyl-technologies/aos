@@ -38,6 +38,7 @@ pub use graph::{
 pub use output::{InputValidationError, OutputValidationError, ProviderReadinessError};
 pub use package_contract::{
     CheckedPackageContract, PackageContractValidationError, package_source_supported_features,
+    package_uses_effects,
 };
 pub use package_projection::{
     CONFIG_ARTIFACT_SELECTOR_MARKER, ConfigArtifactSelector, InterfaceDocumentProjection,

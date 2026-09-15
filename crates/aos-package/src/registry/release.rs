@@ -1547,57 +1547,9 @@ mod tests {
             isolated_registry: &Path,
             entry: &RegistryReleaseEntry,
         ) -> Result<()> {
-            if entry.output == "out" {
-                let directory = isolated_registry.join("packages").join(&entry.name[..1]);
-                fs::create_dir_all(&directory)?;
-                let path = directory.join(format!("{}.toml", entry.name));
-                let content = format!(
-                    "[package]\nname = \"{}\"\ndescription = \"test ability package\"\nlicense = \"MIT\"\nmaintainer = \"AOS test\"\n\n[[versions]]\nversion = \"{}\"\n\n[versions.platforms.{}]\nstore_path = \"{}\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\nprovenance = \"provenance/a/{}/x86_64-linux/package.intoto.jsonl\"\n\n[versions.platforms.{}.references]\nhashes = []\nmin-format = 1\nrequires-features = [\"attestation-v1\"]\n",
-                    entry.name,
-                    entry.version,
-                    entry.platform,
-                    entry.store_path,
-                    entry.name,
-                    entry.platform,
-                );
-                fs::write(path, content)?;
-                return Ok(());
-            }
-
-            if entry.output != crate::types::PACKAGE_CONTRACT_OUTPUT {
-                bail!("unexpected test output '{}'", entry.output);
-            }
-
-            let path = isolated_registry
-                .join("packages")
-                .join(&entry.name[..1])
-                .join(format!("{}.toml", entry.name));
-            let existing = fs::read_to_string(&path)?;
-            let ability = crate::types::PackageContractMeta {
-                store_path: entry.store_path.clone(),
-                nar_hash: format!("sha256:{}", "1".repeat(64)),
-                nar_size: 1,
-                references: Vec::new(),
-                manifest_sha256: format!("sha256:{}", "2".repeat(64)),
-                manifest_size: 1,
-                package_digest: format!("sha256:{}", "3".repeat(64)),
-                activation_mode: "structured-effects".to_string(),
-                artifacts: Vec::new(),
-                provenance: format!(
-                    "provenance/a/{}/x86_64-linux/package.ability.intoto.jsonl",
-                    entry.name
-                ),
-            };
-            let content = crate::registry_ops::record_ability_output(
-                &existing,
-                &entry.name,
-                &entry.version,
-                &entry.platform,
-                &entry.store_path,
-                &ability,
-            )?;
-            fs::write(path, content)?;
-            Ok(())
+            WritesPackageEntry
+                .author_entry(isolated_registry, entry)
+                .await
         }
     }
 
@@ -1831,7 +1783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_release_preparation_validates_authored_structured_abilities() -> Result<()> {
+    async fn complete_release_preparation_retains_the_package_contract_output() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let source = temporary.path().join("source");
         fs::create_dir(&source)?;

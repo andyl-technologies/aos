@@ -977,7 +977,6 @@ mod tests {
         json!({
             "schema": "aos.ability.package-projection/v1",
             "required_features": ["abilities-v1"],
-            "activation_mode": "contracts-only",
             "package": {"name": "owner", "version": "1"},
             "artifacts": [
                 {"package": "dependency", "output": "bin"},

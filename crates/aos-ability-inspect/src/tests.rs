@@ -57,8 +57,13 @@ fn bundle_round_trip_accepts_the_implemented_abilities_v1_feature()
     let feature = RequiredFeature::new("abilities-v1")?;
     let mut fixture = plan_fixture();
     install_package_with_feature(&mut fixture, feature.clone())?;
-    fixture.context =
-        ValidationContext::new(BTreeSet::from([feature]), fixture.interfaces.clone())?;
+    fixture.context = ValidationContext::new(
+        BTreeSet::from([
+            feature,
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)?,
+        ]),
+        fixture.interfaces.clone(),
+    )?;
 
     let bundle = InspectionBundle::from_checked(&fixture.validate()?)?;
     let bytes = bundle.canonical_bytes()?;
@@ -74,8 +79,13 @@ fn bundle_round_trip_accepts_state_format_package_semantics()
     let feature = RequiredFeature::new(aos_ability_model::PROVIDER_STATE_FORMAT_V1)?;
     let mut fixture = plan_fixture();
     install_package_with_feature(&mut fixture, feature.clone())?;
-    fixture.context =
-        ValidationContext::new(BTreeSet::from([feature]), fixture.interfaces.clone())?;
+    fixture.context = ValidationContext::new(
+        BTreeSet::from([
+            feature,
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)?,
+        ]),
+        fixture.interfaces.clone(),
+    )?;
 
     let bundle = InspectionBundle::from_checked(&fixture.validate()?)?;
     let bytes = bundle.canonical_bytes()?;
@@ -153,9 +163,15 @@ fn install_package_with_feature(
         fixture.interfaces.push(owner_interface);
     }
 
+    let mut required_features = vec![
+        feature,
+        RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)?,
+    ];
+    required_features.sort();
+    required_features.dedup();
     let package = PackageDocument {
         schema: PackageDocument::SCHEMA.to_string(),
-        required_features: vec![feature],
+        required_features,
         package: PackageSubject {
             name: LocalKey::new("feature-provider")?,
             version: "1.0.0".to_string(),
@@ -254,8 +270,13 @@ fn bundle_does_not_infer_support_for_a_nested_future_feature()
     let feature = RequiredFeature::new("future-ability-semantics")?;
     let mut fixture = plan_fixture();
     install_package_with_feature(&mut fixture, feature.clone())?;
-    fixture.context =
-        ValidationContext::new(BTreeSet::from([feature]), fixture.interfaces.clone())?;
+    fixture.context = ValidationContext::new(
+        BTreeSet::from([
+            feature,
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)?,
+        ]),
+        fixture.interfaces.clone(),
+    )?;
 
     let bundle = InspectionBundle::from_checked(&fixture.validate()?)?;
     assert!(matches!(
@@ -312,8 +333,13 @@ fn provider_node_preserves_checked_operator_instance_configuration()
     fixture.refresh_interface();
     let feature = RequiredFeature::new("abilities-v1")?;
     install_package_with_feature(&mut fixture, feature.clone())?;
-    fixture.context =
-        ValidationContext::new(BTreeSet::from([feature]), fixture.interfaces.clone())?;
+    fixture.context = ValidationContext::new(
+        BTreeSet::from([
+            feature,
+            RequiredFeature::new(aos_ability_model::FEATURE_ABILITY_EFFECTS_V1)?,
+        ]),
+        fixture.interfaces.clone(),
+    )?;
     let package = fixture.binding_inputs.packages[0].content_digest()?;
     let provider = fixture.binding_plan.bindings[0].provider.clone();
     let configuration = AbilityValue::new(serde_json::json!(PRIVATE_CONFIGURATION))?;

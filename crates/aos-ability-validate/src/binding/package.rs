@@ -113,12 +113,7 @@ pub(super) fn validate_package_document(
         );
     }
 
-    let declares_effects = !package.implementation.handlers.is_empty()
-        || package.implementation.providers.iter().any(|provider| {
-            provider.provider_module.is_some()
-                || !provider.owns_resource_kinds.is_empty()
-                || provider.handler.is_some()
-        });
+    let declares_effects = crate::package_contract::package_uses_effects(package);
     let declares_effect_feature = package
         .required_features
         .iter()

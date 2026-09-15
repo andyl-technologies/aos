@@ -19,8 +19,16 @@ use crate::types::{
     FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
     FEATURE_NATIVE_IMAGE_ROLLOUT_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PACKAGE_DOCUMENTATION_V1,
     FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
+    PackageContractArtifactMeta, PackageContractClosureMemberMeta, PackageContractDocumentMeta,
     PackageContractMeta, PermissionsMeta, RecoveryUkiEntry, SbatEntry, UkiSlot,
 };
+use aos_ability_model::document::PackageSubject;
+use aos_ability_model::{
+    ArtifactClosureMemberInput, ArtifactReference, LocalKey, PackageDocument,
+    PackageImplementation, RequiredFeature, VersionedDocument, artifact_closure_identity,
+};
+use aos_contract::Sha256Digest;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -127,17 +135,69 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
             ),
         ])),
     );
+    let closure_digest = artifact_closure_identity(
+        "0123456789abcdfghijklmnpqrsvwxyz",
+        &[ArtifactClosureMemberInput {
+            key: "0123456789abcdfghijklmnpqrsvwxyz".to_string(),
+            nar_hash: Sha256Digest::parse(&info.nar_hash).expect("valid NAR hash"),
+            references: Vec::new(),
+        }],
+    )
+    .expect("valid closure identity");
+    let artifact = PackageContractArtifactMeta {
+        content: format!("sha256:{}", "4".repeat(64)),
+        store_path: info.path.clone(),
+        nar_hash: info.nar_hash.clone(),
+        nar_size: info.nar_size,
+        closure_digest: closure_digest.to_string(),
+        closure: vec![PackageContractClosureMemberMeta {
+            store_path: info.path.clone(),
+            nar_hash: info.nar_hash.clone(),
+            nar_size: info.nar_size,
+            references: Vec::new(),
+        }],
+    };
     let ability = PackageContractMeta {
-        store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-abilities".to_string(),
-        nar_hash: format!("sha256:{}", "2".repeat(64)),
-        nar_size: 512,
-        references: Vec::new(),
-        manifest_sha256: format!("sha256:{}", "3".repeat(64)),
-        manifest_size: 256,
-        package_digest: format!("sha256:{}", "4".repeat(64)),
-        activation_mode: "contracts-only".to_string(),
-        artifacts: Vec::new(),
+        document: PackageContractDocumentMeta {
+            store_path: "/nix/store/123456789abcdfghijklmnpqrsvwxyz0-demo-contract".to_string(),
+            nar_hash: format!("sha256:{}", "2".repeat(64)),
+            nar_size: 512,
+            document_sha256: format!("sha256:{}", "3".repeat(64)),
+            document_size: 256,
+            references: Vec::new(),
+        },
+        payload: artifact.clone(),
+        source: artifact.clone(),
+        selectors: Vec::new(),
         provenance: "provenance/demo.ability.intoto.jsonl".to_string(),
+    };
+    let artifact_reference = ArtifactReference {
+        content: Sha256Digest::parse(&artifact.content).expect("valid content digest"),
+        store_path: artifact.store_path.clone(),
+        nar_hash: Sha256Digest::parse(&artifact.nar_hash).expect("valid NAR hash"),
+        closure: closure_digest,
+    };
+    let package_document = PackageDocument {
+        schema: PackageDocument::SCHEMA.to_string(),
+        required_features: vec![RequiredFeature::new("abilities-v1").expect("valid feature")],
+        package: PackageSubject {
+            name: LocalKey::new("demo").expect("valid package name"),
+            version: "1".to_string(),
+            payload: artifact_reference.clone(),
+            source: artifact_reference,
+        },
+        artifacts: Vec::new(),
+        interfaces: BTreeMap::new(),
+        guarantees: BTreeMap::new(),
+        package_module: None,
+        option_declarations: Vec::new(),
+        exports: Vec::new(),
+        requirements: Vec::new(),
+        implementation: PackageImplementation {
+            providers: Vec::new(),
+            handlers: BTreeMap::new(),
+        },
+        qualification: Default::default(),
     };
 
     let recorded = record_package_contract(
@@ -145,8 +205,8 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
         "demo",
         "1",
         "x86_64-linux",
-        &ability.store_path,
         &ability,
+        &package_document,
     )
     .expect("record ability output");
     let parsed = crate::registry::parse::parse_package_file(&recorded)
@@ -166,32 +226,13 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
                 .any(|feature| feature == FEATURE_ABILITIES_V1)
         );
     }
-    assert_eq!(platform.ability.as_ref(), Some(&ability));
-
-    let mut structured_ability = ability;
-    structured_ability.activation_mode = "structured-effects".to_string();
-    let structured_recorded = record_package_contract(
-        &recorded,
-        "demo",
-        "1",
-        "x86_64-linux",
-        &structured_ability.store_path,
-        &structured_ability,
-    )
-    .expect("record structured ability output");
-    let structured = crate::registry::parse::parse_package_file(&structured_recorded)
-        .expect("parse structured package metadata");
-    let structured_platform = &structured.versions[0].platforms["x86_64-linux"];
-    for features in [
-        structured_platform.requires_features.as_slice(),
-        structured_platform.references.requires_features(),
-    ] {
-        assert!(
-            features
-                .iter()
-                .any(|feature| feature == FEATURE_ABILITY_EFFECTS_V1)
-        );
-    }
+    assert_eq!(platform.contract.as_ref(), Some(&ability));
+    assert!(
+        !platform
+            .requires_features
+            .iter()
+            .any(|feature| feature == FEATURE_ABILITY_EFFECTS_V1)
+    );
 }
 
 #[test]
