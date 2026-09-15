@@ -1214,23 +1214,34 @@
     reference = output.value;
     binding = bindingForPublishedRequest requestName;
     implementation = config.aos.abilities.implementations.${binding.value.implementation};
+    declaration = config.aos.abilities.interfaces.${implementation.interface};
+    request =
+      config.aos.abilities.requests.${requestName}
+      or config.aos.abilities.compositionRequests.${requestName}
+      or (throw "Published resource output '${requestName}' has no exact request declaration.");
+    normalizedRequest = (evalModules {
+      modules = [{
+        options.value = mkOption {type = declaration.requestType;};
+        config.value = request.parameters;
+      }];
+    }).config.value;
     selectedImplementation = semanticImplementation binding.value.implementation implementation;
     publication = {
       schema = "aos.ability.resource-publication/v1";
-      inherit (reference) interface resource lifetime;
+      inherit (reference) interface resource operations lifetime;
       implementation = selectedImplementation;
     };
     selected = {
       schema = "aos.ability.selected-published-resource/v1";
       inherit publication;
-      value = reference;
+      value = normalizedRequest;
       realization = null;
     };
   in {
     inherit (reference) resource lifetime;
     kind = reference.interface.name;
     controller = null;
-    value = reference;
+    value = normalizedRequest;
     realization = null;
     revision = resourceRevision (normalizeSemanticValue selected);
   };

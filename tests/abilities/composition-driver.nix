@@ -422,6 +422,14 @@ args @ {lib, ...}: let
       }
     ];
   };
+  changedObserverRequest = evaluate {
+    consumerAdditions = [{
+      config.aos.abilities.requests.network.parameters = lib.mkForce {
+        scope = "configured-connectivity";
+        address_families = ["ipv4"];
+      };
+    }];
+  };
   publishedRevision = evaluation: let
     resources = builtins.attrValues evaluation.config.aos.abilities.resolvedResources;
   in
@@ -599,10 +607,15 @@ in
     assert controlledResource.controller == "test:lifecycle";
     assert publishedResource.controller == null;
     assert publishedResource.kind == interfaces.networkReadiness.identity.name;
-    assert publishedResource.value == networkOutput.value;
+    assert publishedResource.value
+    == {
+      scope = "configured-connectivity";
+      address_families = ["ipv4" "ipv6"];
+    };
     assert publishedResource.realization == null;
     assert publishedRevision evaluated != publishedRevision changedPublishedOperations;
     assert publishedRevision evaluated != publishedRevision changedObserverHandler;
+    assert publishedRevision evaluated != publishedRevision changedObserverRequest;
     assert networkOutput.phase == "planning";
     assert networkOutput.visibility == "protected";
     assert networkOutput.lifetime == "instance";
