@@ -46,7 +46,7 @@ pub(crate) async fn admit(request: AdmissionRequest) -> Result<AdmissionResult> 
     let rendered = render_service(&realization)?;
     let facet = require_method(&request.method, &request.semantics, &realization)?;
     let expected = expected_request(&request.resource_spec.value, facet)?;
-    let references = service_resource_references(&request.resource_spec.value)?;
+    let references = all_service_resource_references(&request.resource_spec.value, &realization)?;
     require_resource_contexts(&references, &request.resources)?;
     validate_template_reuse(
         &request.resource_spec.value,
@@ -133,10 +133,8 @@ pub(crate) async fn invoke(invocation: Invocation) -> Result<InvocationResult> {
     if invocation.request.inputs != expected {
         bail!("invocation inputs differ from the checked service facet");
     }
-    require_resource_contexts(
-        &service_resource_references(&bound.resource_spec.value)?,
-        &invocation.request.resources,
-    )?;
+    let references = all_service_resource_references(&bound.resource_spec.value, &realization)?;
+    require_resource_contexts(&references, &invocation.request.resources)?;
     validate_template_reuse(
         &bound.resource_spec.value,
         &realization,
@@ -550,6 +548,19 @@ fn service_resource_references(value: &AbilityValue) -> Result<Vec<ResourceRefer
     Ok(unique)
 }
 
+fn all_service_resource_references(
+    value: &AbilityValue,
+    realization: &ServiceRealization,
+) -> Result<Vec<ResourceReference>> {
+    let mut references = service_resource_references(value)?;
+    for reference in &realization.prerequisites {
+        if !references.contains(reference) {
+            references.push(reference.clone());
+        }
+    }
+    Ok(references)
+}
+
 fn validate_template_reuse(
     desired: &AbilityValue,
     realization: &ServiceRealization,
@@ -709,8 +720,9 @@ mod tests {
     use aos_contract::Sha256Digest;
 
     use super::{
-        SERVICE_RELOAD_INTERFACE, SERVICE_TEMPLATE_DEFINITION_INTERFACE, expected_request,
-        observation, require_method, require_reusable_facets, service_resource_references,
+        SERVICE_RELOAD_INTERFACE, SERVICE_TEMPLATE_DEFINITION_INTERFACE,
+        all_service_resource_references, expected_request, observation, require_method,
+        require_reusable_facets, service_resource_references,
     };
     use crate::model::{
         SERVICE_REALIZATION_SCHEMA, ServiceFacetIdentity, ServiceRealization, ServiceUnitIdentity,
@@ -751,6 +763,7 @@ mod tests {
                 },
             ],
             links: Vec::new(),
+            prerequisites: Vec::new(),
             enabled: true,
         }
     }
@@ -952,5 +965,36 @@ mod tests {
         let references = service_resource_references(&value).expect("references decode");
 
         assert_eq!(references.len(), 2);
+    }
+
+    #[test]
+    fn realization_prerequisites_require_checked_contexts() {
+        let value = AbilityValue::new(serde_json::json!({
+            "service": "main",
+            "enabled": true,
+            "lifecycle": {},
+        }))
+        .expect("service fixture is bounded");
+        let reference: aos_ability_model::ResourceReference =
+            serde_json::from_value(serde_json::json!({
+            "interface": interface("aos.filesystem.entry", 5),
+            "resource": {
+                "provider": {
+                    "environment": {"authority": "test", "key": "host", "stage": "host"},
+                    "key": "filesystem"
+                },
+                "key": "directory"
+            },
+            "operations": ["observe"],
+            "lifetime": "instance"
+            }))
+            .expect("resource reference fixture is valid");
+        let mut realization = realization();
+        realization.prerequisites.push(reference.clone());
+
+        let references = all_service_resource_references(&value, &realization)
+            .expect("realization references decode");
+
+        assert_eq!(references, vec![reference]);
     }
 }

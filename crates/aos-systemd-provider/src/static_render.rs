@@ -213,6 +213,7 @@ mod tests {
                 "child": {"kind": "unit", "unit_name": "example.service"},
                 "relationship": "wants"
             }],
+            "prerequisites": [],
             "enabled": true
         });
         let realization: ServiceRealization =

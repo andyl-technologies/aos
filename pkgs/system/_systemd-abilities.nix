@@ -7,6 +7,14 @@
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceInterfaces = serviceManagement.interfaces;
+  directoryPreparationRequirement = {
+    alias = "directory-preparation";
+    accepted_interfaces = [serviceInterfaces.filesystemEntry.identity];
+    methods = ["materialize" "observe" "release"];
+    guarantees = [];
+    strength = "required";
+    fallback = null;
+  };
 
   resourceReferenceList = types.list {
     element = types.deferredResult types.resourceReference;
@@ -285,6 +293,7 @@
         unique = true;
         canonicalOrder = true;
       };
+      prerequisites = resourceReferenceList;
       enabled = types.boolean;
     };
   };
@@ -408,6 +417,9 @@
       inherit artifact;
       inherit (selected) methods;
       inherit guarantees;
+      requirements = lib.optionalAttrs (selected.alias == serviceInterfaces.directories.alias) {
+        directory-preparation = directoryPreparationRequirement;
+      };
       providerModule = {
         inherit artifact;
         path = "share/aos/providers/systemd.nix";
