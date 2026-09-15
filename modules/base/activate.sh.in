@@ -401,50 +401,6 @@ fi
 # reported as degraded, never as a rollback/cleanup of the new live /etc.
 STAGE="$STAGE_POSTSWAP"
 
-# A static-network metadata seed lives in the persistent /var/etc lower so the
-# box can reach stage 2. Retiring it globally would make rollback to a
-# pre-authoritative generation lose networking. Preserve a durable copy and a
-# generation-local copy for the generation being switched away from; when a
-# non-authoritative generation is activated, restore its copy (or the durable
-# fallback) before asking networkd to reconfigure links.
-#
-# The target marker is derived solely from the strict manifest ownership index:
-# at least one systemd/network/*.network artifact must have authenticated
-# `@host` provenance. Package- or image-owned files never set it and therefore
-# cannot retire the substrate seed.
-network_seed=/var/etc/systemd/network/10-aos-seed.network
-network_seed_fallback=/var/lib/profiles/system/metadata-network-seed.network
-target_seed_archive=/var/lib/profiles/system/gen-${N}/metadata-network-seed.network
-network_seed_changed=0
-if [ -f "/var/lib/profiles/system/gen-${N}/host-network-authoritative" ]; then
-  if [ -f "$network_seed" ]; then
-    @coreutils@/bin/install -D -m 0600 "$network_seed" "$network_seed_fallback"
-    if [ -n "${prev_gen:-}" ] && [ -d "/var/lib/profiles/system/gen-${prev_gen}" ]; then
-      @coreutils@/bin/install -D -m 0600 "$network_seed" \
-        "/var/lib/profiles/system/gen-${prev_gen}/metadata-network-seed.network"
-    fi
-    @coreutils@/bin/rm -f "$network_seed"
-    network_seed_changed=1
-  fi
-else
-  seed_source=
-  if [ -f "$target_seed_archive" ]; then
-    seed_source=$target_seed_archive
-  elif [ -f "$network_seed_fallback" ]; then
-    seed_source=$network_seed_fallback
-    @coreutils@/bin/install -D -m 0600 "$seed_source" "$target_seed_archive"
-    seed_source=$target_seed_archive
-  fi
-  if [ -n "$seed_source" ]; then
-    @coreutils@/bin/install -D -m 0644 "$seed_source" "$network_seed"
-    network_seed_changed=1
-  fi
-fi
-if [ "$network_seed_changed" = 1 ]; then
-  @systemd@/bin/networkctl reload
-  @systemd@/bin/networkctl reconfigure --all
-fi
-
 # Apply the newly active tmpfiles.d policy before starting or restarting any
 # unit that may depend on its runtime or persistent directories. The boot-time
 # setup service has already run against the previous /etc and is not rerun by

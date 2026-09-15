@@ -66,13 +66,10 @@
       # variants retain their 512 MiB root budget.
       aos.image.budgets.maxRootMiB = 640;
       aos.boot.kernelParams = ["net.ifnames=0"];
-      environment.etc."systemd/network/10-fleet-eth0.network".text = ''
-        [Match]
-        MACAddress=52:54:00:12:00:02
-
-        [Network]
-        Address=192.168.50.11/24
-      '';
+      aos.networking.interfaces.fleet-eth0 = {
+        matchMACAddress = "52:54:00:12:00:02";
+        address = "192.168.50.11/24";
+      };
       systemd.services.aos-test-agent = {
         description = "AOS VM Test Guest Agent";
         wantedBy = ["multi-user.target"];

@@ -21,13 +21,10 @@
       aos.image.hostConfigClosures = lib.mkForce [];
       # Both targets must reach the authenticated registry before their
       # retained configuration can be rebound to the new image ABI.
-      environment.etc."systemd/network/10-fleet-target.network".text = ''
-        [Match]
-        MACAddress=52:54:00:12:00:03
-
-        [Network]
-        Address=192.168.50.12/24
-      '';
+      aos.networking.interfaces.fleet-target = {
+        matchMACAddress = "52:54:00:12:00:03";
+        address = "192.168.50.12/24";
+      };
     }
   ];
   abi2Top = abi2.config.system.build.toplevel;
