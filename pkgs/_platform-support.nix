@@ -453,6 +453,7 @@ let
     "aos-ability-crucible"
     "aos-boot-preparation-provider"
     "aos-boot-identity"
+    "aos-boot-preparations"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
     "aos-filesystem-provider"
