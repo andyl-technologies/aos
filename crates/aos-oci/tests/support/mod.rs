@@ -264,10 +264,7 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
         },
         qualification: ready_qualification(),
         evidence: ContainerReleaseEvidence {
-            abilities: Some(artifact(
-                "abilities",
-                MediaType::AosContainerStaticAbilities,
-            )),
+            abilities: Some(artifact("abilities", MediaType::AosContainerStaticAbilities)),
             sbom: artifact("sbom", MediaType::SpdxJson),
             source: artifact("source", MediaType::AosSourceClosure),
             license: artifact("license", MediaType::AosLicenseReport),

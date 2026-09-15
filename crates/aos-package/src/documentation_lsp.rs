@@ -314,10 +314,10 @@ impl Server {
             .and_then(|(_, option)| option.source.as_ref())
             .map(|source| {
                 json!({
-                    "uri": format!("aos-source:///{}", source.path.as_str()),
+                    "uri": format!("aos-source:///{}", source.path.trim_start_matches('/')),
                     "range": {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 0 }
+                        "start": { "line": source.line.unwrap_or(1).saturating_sub(1), "character": 0 },
+                        "end": { "line": source.line.unwrap_or(1).saturating_sub(1), "character": 0 }
                     }
                 })
             })
@@ -709,7 +709,7 @@ mod tests {
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
         AbilityExportReference, DocumentationIdentity, DocumentedPackage, InlineSpan, OptionOwner,
-        OptionType, PackageAbilityReference, ProseBlock, SourceLocator, Visibility,
+        OptionType, PackageAbilityReference, ProseBlock, Section, SourceLocator, Visibility,
     };
 
     fn document() -> PackageDocumentation {
@@ -727,9 +727,11 @@ mod tests {
                 semantic_schema_sha256: String::new(),
                 runtime_nar_hash: format!("sha256:{}", "a".repeat(64)),
                 config_module_nar_hash: None,
+                system_module_nar_hash: None,
                 expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
+            sections: Vec::new(),
             options: vec![OptionDocument {
                 path: vec![
                     PathSegment::Literal {
@@ -765,9 +767,11 @@ mod tests {
                     interface_abi: Some(1),
                 },
                 contributable: true,
+                activation: None,
                 source: Some(SourceLocator {
-                    path: aos_ability_model::RelativePath::new("module.nix")
-                        .expect("valid source path"),
+                    path: "module.nix".to_string(),
+                    attribute: None,
+                    line: Some(1),
                 }),
             }],
         };
@@ -779,7 +783,6 @@ mod tests {
     fn loaded_document() -> LoadedDocumentation {
         let interface = aos_ability_model::builtin::systemd_manager_interface()
             .expect("build systemd interface");
-        let interface_key = interface.interface_key().expect("interface key");
         LoadedDocumentation {
             document: document(),
             ability_reference: Some(PackageAbilityReference {
@@ -792,14 +795,10 @@ mod tests {
                 manifest_sha256: Sha256Digest::of_bytes("manifest"),
                 package_digest: Sha256Digest::of_bytes("package"),
                 activation_mode: AbilityActivationMode::ContractsOnly,
-                interfaces: BTreeMap::from([(
-                    LocalKey::new("systemd-manager-interface").expect("valid interface alias"),
-                    interface,
-                )]),
-                guarantees: BTreeMap::new(),
                 exports: vec![AbilityExportReference {
                     name: LocalKey::new("service-manager").expect("valid export name"),
-                    interface: interface_key,
+                    interface,
+                    aggregation: None,
                     implementation: Sha256Digest::of_bytes("implementation"),
                     requirements: Vec::new(),
                 }],
@@ -967,7 +966,8 @@ mod tests {
         let loaded = loaded_document();
         let key = loaded.ability_reference.as_ref().unwrap().exports[0]
             .interface
-            .clone();
+            .interface_key()
+            .unwrap();
         let server = Server {
             documents: vec![loaded],
             open_files: BTreeMap::new(),
@@ -1032,32 +1032,32 @@ mod tests {
             actions[0]["edit"]["changes"]["file:///workspace/configuration.nix"][0]["newText"],
             format!("\"{}\"", key.descriptor)
         );
+
+        let unsupported = server.diagnostics(
+            r#"lib.abilities.interfaceKey { name = "aos.systemd-manager"; abi = 1; descriptor = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; typo = true; }"#,
+        );
+        assert!(
+            unsupported
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "aos-ability-unsupported-field")
+        );
     }
 
     #[test]
-    fn contextual_ability_completion_uses_the_authenticated_request_schema() {
+    fn contextual_ability_completion_stays_at_constructor_key_depth() {
         let documents = vec![loaded_document()];
         let catalog = AbilityCatalog::new(&documents);
-        let key = documents[0].ability_reference.as_ref().unwrap().exports[0]
-            .interface
-            .clone();
-        let nested = format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{  }}; }}",
-            key.name, key.abi, key.descriptor,
-        );
-        let cursor = nested.rfind("{  }").unwrap() + 2;
+        let top_level = "lib.abilities.request { interface = \"aos.systemd-manager\"; abi = 1; descriptor = \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"; req }";
+        let cursor = top_level.find("req }").unwrap() + 3;
         assert!(
             catalog
-                .contextual_completions(&nested, 0, cursor)
-                .is_some_and(|items| items.iter().any(|item| item["label"] == "unit"))
+                .contextual_completions(top_level, 0, cursor)
+                .is_some_and(|items| items.iter().any(|item| item["label"] == "request"))
         );
 
-        let value = format!(
-            "lib.abilities.request {{ interface = \"{}\"; abi = {}; descriptor = \"{}\"; request = {{ unit = \"demo.service\"; }}; }}",
-            key.name, key.abi, key.descriptor,
-        );
-        let cursor = value.find("demo.service").unwrap() + 2;
-        assert!(catalog.contextual_completions(&value, 0, cursor).is_none());
+        let nested = "lib.abilities.request { request = { nested = true; }; }";
+        let cursor = nested.find("nested").unwrap() + 3;
+        assert!(catalog.contextual_completions(nested, 0, cursor).is_none());
     }
 
     #[test]
@@ -1089,11 +1089,15 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let before = loaded_document();
         let mut after = before.clone();
-        after.document.options[0].description = vec![ProseBlock::Paragraph {
-            spans: vec![InlineSpan::Text {
-                text: "Clarifies usage without changing configuration meaning.".to_string(),
+        after.document.sections.push(Section {
+            id: "operator-note".to_string(),
+            title: "Operator note".to_string(),
+            blocks: vec![ProseBlock::Paragraph {
+                spans: vec![InlineSpan::Text {
+                    text: "Clarifies usage without changing configuration meaning.".to_string(),
+                }],
             }],
-        }];
+        });
 
         assert_ne!(
             before.document.document_sha256().unwrap(),

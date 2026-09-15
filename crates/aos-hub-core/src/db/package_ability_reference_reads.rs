@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 
 use super::{Database, IndexedPackageAbilityReference};
 use crate::backend::Statement;
@@ -263,7 +263,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{IndexSnapshot, IndexedPackageAbilityReference, ReleaseRow, MIGRATIONS};
+    use crate::db::{IndexSnapshot, IndexedPackageAbilityReference, MIGRATIONS, ReleaseRow};
 
     fn package() -> aos_registry_surface::manifest::PackageToml {
         aos_registry_surface::manifest::parse_package_file(
@@ -326,10 +326,11 @@ source_nar_hash = ""
         assert_eq!(locator.indexed_commit, "c".repeat(64));
         assert_eq!(locator.package_version, "1.0.0");
         assert_eq!(locator.platform, "x86_64-linux");
-        assert!(db
-            .package_ability_reference_projection_complete(registry_id)
-            .await
-            .expect("check complete projection"));
+        assert!(
+            db.package_ability_reference_projection_complete(registry_id)
+                .await
+                .expect("check complete projection")
+        );
 
         db.apply_snapshot(
             registry_id,
@@ -350,11 +351,12 @@ source_nar_hash = ""
         )
         .await
         .expect("replace snapshot");
-        assert!(db
-            .resolve_package_ability_reference(registry_id, "demo", "", "")
-            .await
-            .expect("resolve removed reference")
-            .is_none());
+        assert!(
+            db.resolve_package_ability_reference(registry_id, "demo", "", "")
+                .await
+                .expect("resolve removed reference")
+                .is_none()
+        );
         assert_eq!(
             db.resolve_package_ability_reference_at_commit(
                 registry_id,
@@ -432,8 +434,8 @@ source_nar_hash = ""
             )
             .await
             .expect("delete release identity");
-        assert!(db
-            .resolve_package_ability_reference_at_commit(
+        assert!(
+            db.resolve_package_ability_reference_at_commit(
                 registry_id,
                 &"e".repeat(64),
                 "demo",
@@ -442,7 +444,8 @@ source_nar_hash = ""
             )
             .await
             .expect("resolve deleted release")
-            .is_none());
+            .is_none()
+        );
 
         db.backend
             .execute(
@@ -510,16 +513,18 @@ source_nar_hash = ""
             )
             .await
             .expect("model pre-projection index state");
-        assert!(!db
-            .package_ability_reference_projection_complete(registry_id)
-            .await
-            .expect("detect missing post-migration projection"));
+        assert!(
+            !db.package_ability_reference_projection_complete(registry_id)
+                .await
+                .expect("detect missing post-migration projection")
+        );
         db.retain_package_ability_reference_catalog(registry_id, &"a".repeat(64), &[])
             .await
             .expect("retain explicit empty projection");
-        assert!(db
-            .package_ability_reference_projection_complete(registry_id)
-            .await
-            .expect("accept explicit empty projection"));
+        assert!(
+            db.package_ability_reference_projection_complete(registry_id)
+                .await
+                .expect("accept explicit empty projection")
+        );
     }
 }
