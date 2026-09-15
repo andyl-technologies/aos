@@ -49,6 +49,61 @@ in
 mkDerivation {
   inherit pname;
   inherit (k3s) version;
+  qualification.packageProbe = lib.qualification.commandProbe {
+    primary = {
+      input = "The installed ${pname} role entry points.";
+      operation = "Verify the role launcher and K3s payload are executable.";
+      expected = "Both package-owned entry points are executable files.";
+      files = { };
+      steps = [
+        {
+          argv = [
+            "@python@"
+            "-c"
+            ''
+              import os
+              paths = ["@out@/bin/k3s-role-start", "@out@/libexec/k3s"]
+              assert all(os.path.isfile(path) and os.access(path, os.X_OK) for path in paths)
+              print("${pname} executables passed")
+            ''
+          ];
+          exit_code = 0;
+          stdout.exact = "${pname} executables passed\n";
+          stderr.exact = "";
+        }
+      ];
+      artifacts = [ ];
+    };
+    badInput = {
+      input = "An unsupported K3s argument.";
+      operation = "Invoke the packaged K3s payload with the unsupported argument.";
+      expected = "K3s rejects the unsupported invocation.";
+      files = { };
+      steps = [
+        {
+          argv = [
+            "@python@"
+            "-c"
+            ''
+              import subprocess, sys
+              result = subprocess.run(
+                  ["@out@/libexec/k3s", "--aos-qualification-invalid"],
+                  capture_output=True,
+              )
+              assert result.returncode != 0
+              sys.stderr.write("${pname} rejected invalid input\n")
+              raise SystemExit(7)
+            ''
+          ];
+          exit_code = 7;
+          stdout.exact = "";
+          stderr.exact = "${pname} rejected invalid input\n";
+          observes_rejection = true;
+        }
+      ];
+      artifacts = [ ];
+    };
+  };
   src = null;
   runtimeDeps = common.runtimePath ++ [ aos-kubernetes-provider ];
 

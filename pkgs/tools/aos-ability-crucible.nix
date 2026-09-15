@@ -1,5 +1,6 @@
 ##! aos-ability-crucible - optional RFC-0022 baseline guest adapter
 {
+  lib,
   stdenv,
   mkCargoPackage,
   mkCargoArtifacts,
@@ -55,6 +56,11 @@
 in
   mkCargoPackage {
     pname = "aos-ability-crucible";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-ability-crucible";
+      entryPoint = "bin/aos-ability-crucible";
+    };
+
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;

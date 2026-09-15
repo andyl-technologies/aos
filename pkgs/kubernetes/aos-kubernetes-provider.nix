@@ -1,5 +1,6 @@
 ##! aos-kubernetes-provider - K3s-owned typed object-set handler
 {
+  lib,
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
@@ -31,6 +32,11 @@
 in
   mkCargoPackage {
     pname = "aos-kubernetes-provider";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-kubernetes-provider";
+      entryPoint = "bin/aos-kubernetes-provider";
+    };
+
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoFlags = "-p aos-kubernetes-provider";

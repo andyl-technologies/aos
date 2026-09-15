@@ -6,17 +6,26 @@
   name,
   identity,
   packageNames,
-  probes,
   trustKeys,
   stagingHubUrl ? "https://aos.staging.andyl.org",
 }: let
   sortedPackageNames = builtins.sort builtins.lessThan packageNames;
+  mkPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
+  packageProbeSpec = import ./qualification-package-spec.nix {inherit lib;};
+  probeFor = packageName: let
+    package = pkgs.${packageName};
+    packageProbe = package.contract.value.qualification.package_probe;
+  in
+    mkPackageProbe {
+      name = packageName;
+      spec = packageProbeSpec {inherit packageName packageProbe;};
+    };
+  probes = builtins.listToAttrs (map (packageName: {
+      name = packageName;
+      value = probeFor packageName;
+  })
+    sortedPackageNames);
   probeNames = builtins.attrNames probes;
-  missingProbeNames =
-    builtins.filter (
-      packageName: !(builtins.hasAttr packageName probes)
-    )
-    sortedPackageNames;
   probeRegistry = pkgs.writeTextFile {
     name = "${name}-probes";
     destination = "/probes.json";
@@ -94,9 +103,6 @@ in
   assert identity != "";
   assert packageNames != [];
   assert builtins.length sortedPackageNames == builtins.length (lib.unique sortedPackageNames);
-  # Partial registries let reviewed probes land incrementally. A request for
-  # any missing package still fails before the scenario can write a report.
-  assert builtins.all (packageName: builtins.elem packageName sortedPackageNames) probeNames;
   assert trustKeys != [];
   assert builtins.all (key: builtins.match "[A-Za-z0-9_-]+:Ed25519:[A-Za-z0-9+/]+=*" key != null) trustKeys;
   assert builtins.match "https://[^/]+/?" stagingHubUrl != null;
@@ -109,12 +115,6 @@ in
             inherit identity packageNames stagingHubUrl trustKeys;
             platform = pkgs.stdenv.hostPlatform.system;
             probes = probeNames;
-            missingProbes = missingProbeNames;
-            probeCoverage = {
-              complete = missingProbeNames == [];
-              implemented = builtins.length probeNames;
-              total = builtins.length sortedPackageNames;
-            };
             probeRegistry = "${probeRegistry}/probes.json";
           };
         };

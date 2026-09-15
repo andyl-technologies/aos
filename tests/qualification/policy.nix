@@ -3,7 +3,6 @@
   pkgs,
   lib,
   nativeAdapterMatrix,
-  packageCoverage,
   releaseExecutor,
 }: let
   packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
@@ -288,26 +287,17 @@
     scenarios.package-function = "/nix/store/00000000000000000000000000000000-scenario/bin/run";
     workRoot = "/var/lib/aos-release/qualification-fixture";
   };
-  packageProbe = declarativeProbe;
   packageExecutor = testing.mkQualificationPackageScenario {
     name = "qualification-package-scenario-fixture";
     identity = "fixture-executor";
-    packageNames = ["fixture"];
-    probes.fixture = packageProbe;
+    packageNames = ["gzip"];
     trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
-  partialPackageExecutor = testing.mkQualificationPackageScenario {
-    name = "qualification-package-scenario-partial-fixture";
-    identity = "fixture-executor";
-    packageNames = ["fixture" "missing"];
-    probes.fixture = packageProbe;
-    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
-  };
-  rejectsPackageExecutor = packageNames: probes:
+  rejectsPackageExecutor = packageNames:
     !(builtins.tryEval (builtins.deepSeq (testing.mkQualificationPackageScenario {
         name = "qualification-package-scenario-invalid";
         identity = "fixture-executor";
-        inherit packageNames probes;
+        inherit packageNames;
         trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
       })
       true))
@@ -367,24 +357,6 @@
   recoveryPackage = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") contract.package_rules
   );
-  coveredAndMissingPackageNames = builtins.sort builtins.lessThan (
-    packageCoverage.implementedPackages ++ packageCoverage.missingPackages
-  );
-  coveragePartitions =
-    builtins.all (
-      platform: let
-        coverage = packageCoverage.platforms.${platform};
-        eligible = pkgs.platformSupport.publicationEligibleNames platform pkgs.allPackageNames;
-        coveredAndMissing = builtins.sort builtins.lessThan (
-          coverage.implementedPackages ++ coverage.missingPackages
-        );
-      in
-        coverage.total
-        == builtins.length eligible
-        && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
-        && coveredAndMissing == eligible
-    )
-    pkgs.platformSupport.canonicalSystems;
   composed = import ../../qualification/_eval.nix {
     inherit lib nativeAdapterMatrix;
     packageNames = ["aos" "fixture"];
@@ -698,16 +670,6 @@ in
   assert rejects {
     qualification.requirements.ability-native-image-rollout.production_only = lib.mkForce false;
   };
-  assert packageCoverage.schema_version == "aos.release.package-probe-coverage/v1";
-  assert packageCoverage.total == builtins.length packageNames;
-  assert packageCoverage.total
-  == packageCoverage.implemented + builtins.length packageCoverage.missingPackages;
-  assert coveredAndMissingPackageNames == packageNames;
-  assert coveragePartitions;
-  assert builtins.all (
-    name: !(builtins.elem name packageNames)
-  )
-  packageCoverage.neverPublicationEligiblePackages;
   assert builtins.all (rule: rule.inherit_dependency_obligations) contract.package_rules;
   assert recoveryPackage.role == "system-integrity";
   assert recoveryPackage.execution
@@ -723,27 +685,10 @@ in
   assert executor.passthru.qualification.caseScenarios == {};
   assert executor.passthru.qualification.scenarios.package-function == "/nix/store/00000000000000000000000000000000-scenario/bin/run";
   assert packageExecutor.passthru.qualification.platform == "x86_64-linux";
-  assert packageExecutor.passthru.qualification.packageNames == ["fixture"];
-  assert packageExecutor.passthru.qualification.probes == ["fixture"];
-  assert packageExecutor.passthru.qualification.missingProbes == [];
-  assert packageExecutor.passthru.qualification.probeCoverage
-  == {
-    complete = true;
-    implemented = 1;
-    total = 1;
-  };
+  assert packageExecutor.passthru.qualification.packageNames == ["gzip"];
+  assert packageExecutor.passthru.qualification.probes == ["gzip"];
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
-  assert partialPackageExecutor.passthru.qualification.missingProbes == ["missing"];
-  assert partialPackageExecutor.passthru.qualification.probeCoverage
-  == {
-    complete = false;
-    implemented = 1;
-    total = 2;
-  };
-  assert rejectsPackageExecutor ["fixture"] {
-    extra = packageProbe;
-    fixture = packageProbe;
-  };
+  assert rejectsPackageExecutor ["gzip" "gzip"];
   assert builtins.attrNames releaseExecutor.passthru.qualification.scenarios
   == [
     "ability-crucible-baseline"

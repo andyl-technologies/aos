@@ -1,5 +1,6 @@
 ##! aos-boot-preparations - exact compiled initrd configuration commands
 {
+  lib,
   mkDerivation,
   rust,
   aos,
@@ -11,6 +12,11 @@
 in
   mkDerivation {
     pname = "aos-boot-preparations";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-boot-preparations";
+      entryPoint = "bin/aos-boot-preparations";
+    };
+
     version = "0.1.0";
     src = source;
 
