@@ -85,7 +85,7 @@ pub use system_roots::{
 };
 
 use crate::resolve::{GatedConfigModule, enforce_module_abi_compat};
-use crate::types::{ConfigModuleMeta, ModuleAbiCompat, option_path_root};
+use crate::types::{ModuleAbiCompat, option_path_root};
 
 /// Absolute ceiling on re-evals, so a pathological registry cannot make the
 /// loop unbounded (build-spec §5).
@@ -123,9 +123,6 @@ pub struct WorkingSetMember {
     pub config_output_nar_hash: Option<String>,
     /// The member's declared base-lib ABI band, when it ships a config module.
     pub module_abi_compat: Option<ModuleAbiCompat>,
-    /// Resolver-controlled roots and foreign contribution paths authenticated
-    /// by this package's config-module metadata.
-    pub authorization: PackageAuthorization,
     /// Resolver-authenticated runtime outputs exposed to this module.
     pub outputs: PackageOutputs,
 }
@@ -143,52 +140,6 @@ pub struct PackageOutputs {
     pub dependencies: BTreeMap<String, String>,
 }
 
-/// Exact write authorization passed beside one authenticated package module.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackageAuthorization {
-    /// Shared roots this package owns. Its private package-name root is always
-    /// implicit and need not appear here.
-    pub owns: Vec<String>,
-    /// Allowed foreign writes, keyed by root and expressed as relative paths.
-    pub contributes: BTreeMap<String, Vec<String>>,
-    /// Exact base-owned artifact leaves this package may materialize.
-    #[serde(
-        default,
-        skip_serializing_if = "crate::types::ConfigModuleArtifacts::is_empty"
-    )]
-    pub artifacts: crate::types::ConfigModuleArtifacts,
-}
-
-impl PackageAuthorization {
-    /// Derives authorization solely from authenticated config-module metadata.
-    fn from_module(module: &ConfigModuleMeta) -> Self {
-        let mut owns: Vec<String> = module
-            .owns_roots
-            .iter()
-            .map(|owned| owned.root.clone())
-            .collect();
-        owns.sort();
-        owns.dedup();
-        let mut contributes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for contribution in &module.contributes {
-            contributes
-                .entry(contribution.root.clone())
-                .or_default()
-                .extend(contribution.paths.iter().cloned());
-        }
-        for paths in contributes.values_mut() {
-            paths.sort();
-            paths.dedup();
-        }
-        Self {
-            owns,
-            contributes,
-            artifacts: module.artifacts.clone(),
-        }
-    }
-}
-
 impl WorkingSetMember {
     /// Builds a bare seed member with no config-module metadata.
     pub fn seed(package: impl Into<String>) -> Self {
@@ -201,7 +152,6 @@ impl WorkingSetMember {
             config_output: None,
             config_output_nar_hash: None,
             module_abi_compat: None,
-            authorization: PackageAuthorization::default(),
             outputs: PackageOutputs::default(),
         }
     }
@@ -753,8 +703,6 @@ where
                         }
                     })?;
                 system_roots.validate_discovered_module(authenticated_module.clone())?;
-                let authorization = PackageAuthorization::from_module(authenticated_module.module);
-
                 // Gate the newly-selected provider before it enters entry.nix.
                 let gate = GatedConfigModule {
                     package: &selection.package,
@@ -795,7 +743,6 @@ where
                     config_output: Some(selection.config_output.clone()),
                     config_output_nar_hash: Some(selection.config_nar_hash.clone()),
                     module_abi_compat: Some(selection.module_abi_compat),
-                    authorization,
                     outputs: PackageOutputs {
                         self_output: Some(authenticated_module.runtime_output.to_string()),
                         dependencies: authenticated_module.module.dependency_outputs.clone(),
@@ -848,7 +795,6 @@ where
         seed.registry = (!resolved.registry.is_empty()).then(|| resolved.registry.to_string());
         seed.release_trust = resolved.release_trust.cloned();
         seed.config_realization = resolved.config_realization.clone();
-        seed.authorization = PackageAuthorization::from_module(resolved.module);
         seed.outputs.self_output = Some(resolved.runtime_output.to_string());
         seed.outputs.dependencies = resolved.module.dependency_outputs.clone();
         if seed.config_output_nar_hash.is_none() {
@@ -1564,7 +1510,6 @@ fn config_module_inputs(
     Vec<String>,
     Vec<String>,
     Vec<ModuleAbiCompat>,
-    Vec<PackageAuthorization>,
     Vec<String>,
 )> {
     let mut seen = BTreeMap::<String, String>::new();
@@ -1572,7 +1517,6 @@ fn config_module_inputs(
     let mut nar_hashes = Vec::new();
     let mut packages = Vec::new();
     let mut abi_compat = Vec::new();
-    let mut authorizations = Vec::new();
     let mut origins = Vec::new();
     for member in working_set {
         let Some(path) = member.config_output.as_deref() else {
@@ -1607,21 +1551,13 @@ fn config_module_inputs(
         nar_hashes.push(canonical_nar_hash);
         packages.push(member.package.clone());
         abi_compat.push(compat);
-        authorizations.push(member.authorization.clone());
         origins.push(if member.registry.is_some() {
             "registry".to_string()
         } else {
             "image".to_string()
         });
     }
-    Ok((
-        paths,
-        nar_hashes,
-        packages,
-        abi_compat,
-        authorizations,
-        origins,
-    ))
+    Ok((paths, nar_hashes, packages, abi_compat, origins))
 }
 
 fn config_module_release_identity(
@@ -1724,14 +1660,8 @@ fn enrich_manifest(
         .with_context(|| format!("reading host input {}", cmd.host_nix.display()))?;
     let evaluator = std::env::current_exe().context("resolving evaluator executable")?;
     let evaluator_store_path = evaluator_store_root(&evaluator)?;
-    let (
-        config_outputs,
-        config_nar_hashes,
-        config_packages,
-        config_abi_compat,
-        config_authorizations,
-        config_origins,
-    ) = config_module_inputs(&outcome.working_set)?;
+    let (config_outputs, config_nar_hashes, config_packages, config_abi_compat, config_origins) =
+        config_module_inputs(&outcome.working_set)?;
 
     let (facts, retained_facts_bytes, facts_input_path) =
         match cmd.facts_json.as_deref().filter(|path| path.is_file()) {
@@ -1872,7 +1802,6 @@ fn enrich_manifest(
             "package_names": config_packages,
             "origins": config_origins,
             "module_abi_compat": config_abi_compat,
-            "authorizations": config_authorizations,
         },
         "host_nix": host_input,
         "instance_facts": facts_input,
@@ -2765,53 +2694,44 @@ fn retained_cross_abi_working_set(
     retained: &crate::types::CrossAbiReEvalInputs,
 ) -> Result<Vec<WorkingSetMember>> {
     let modules = &source.inputs.config_modules;
-    if modules.authorizations.len() != retained.config_module_paths.len() {
-        anyhow::bail!(
-            "retained generation has no complete authenticated config-module authorization set"
-        );
-    }
     Ok(retained
         .config_module_paths
         .iter()
         .zip(&modules.nar_hashes)
         .zip(&retained.config_module_packages)
         .zip(&modules.module_abi_compat)
-        .zip(&modules.authorizations)
-        .map(
-            |((((path, nar_hash), package), compat), authorization)| WorkingSetMember {
-                registry: None,
-                release_trust: None,
-                config_realization: None,
-                package: package.clone(),
-                version: source
+        .map(|(((path, nar_hash), package), compat)| WorkingSetMember {
+            registry: None,
+            release_trust: None,
+            config_realization: None,
+            package: package.clone(),
+            version: source
+                .package_outputs
+                .get(package)
+                .map(|pin| pin.version.clone()),
+            config_output: Some(path.clone()),
+            config_output_nar_hash: Some(nar_hash.clone()),
+            module_abi_compat: Some(*compat),
+            outputs: PackageOutputs {
+                self_output: source
                     .package_outputs
                     .get(package)
-                    .map(|pin| pin.version.clone()),
-                config_output: Some(path.clone()),
-                config_output_nar_hash: Some(nar_hash.clone()),
-                module_abi_compat: Some(*compat),
-                authorization: authorization.clone(),
-                outputs: PackageOutputs {
-                    self_output: source
-                        .package_outputs
-                        .get(package)
-                        .map(|pin| pin.store_path.clone()),
-                    dependencies: source
-                        .graph
-                        .edges
-                        .get(package)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|dependency| {
-                            source
-                                .package_outputs
-                                .get(dependency)
-                                .map(|pin| (dependency.clone(), pin.store_path.clone()))
-                        })
-                        .collect(),
-                },
+                    .map(|pin| pin.store_path.clone()),
+                dependencies: source
+                    .graph
+                    .edges
+                    .get(package)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|dependency| {
+                        source
+                            .package_outputs
+                            .get(dependency)
+                            .map(|pin| (dependency.clone(), pin.store_path.clone()))
+                    })
+                    .collect(),
             },
-        )
+        })
         .collect())
 }
 

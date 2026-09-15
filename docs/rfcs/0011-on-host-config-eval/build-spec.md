@@ -356,8 +356,6 @@ pub struct ConfigModulesInput {
     pub package_names: Vec<String>,
     /// ABI compatibility evidence corresponding positionally to `store_paths`.
     pub module_abi_compat: Vec<ModuleAbiCompat>,
-    /// Shared-root authorization evidence corresponding positionally to `store_paths`.
-    pub authorizations: Vec<PackageAuthorization>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +380,11 @@ pub struct InstanceFactsInput {
     pub platform: String,
 }
 ```
+
+Package write authority is not a manifest input. The evaluator derives it from
+resolver-stamped option declaration and definition provenance in the admitted
+module graph. A package owns options it uniquely declares and may write beneath
+foreign declarations only when the declaring option is marked `contributable`.
 
 **Canonicalization + hashing of each input (normative):**
 

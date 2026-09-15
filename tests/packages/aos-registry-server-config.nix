@@ -16,6 +16,7 @@
             "aos-registry-server".config = lib.mkOption {
               type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
               default = {};
+              contributable = true;
             };
           };
         }
@@ -24,10 +25,6 @@
       packageModules = [
         {
           name = "aos-registry-server";
-          authorization = {
-            owns = ["aos-registry-server"];
-            contributes = {};
-          };
           configRoot = ../../pkgs/tests/_aos-registry-server-config;
           module = ../../pkgs/tests/_aos-registry-server-config/module.nix;
           outputs = {

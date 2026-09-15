@@ -101,6 +101,7 @@ in {
     # mode type catches typos (`"sym-link"`, `"0o644"`) at eval time.
     environment.etc = lib.mkOption {
       default = {};
+      contributable = true;
       type = lib.types.attrsOf (lib.types.submodule ({
         name,
         config,

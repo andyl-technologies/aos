@@ -111,7 +111,6 @@
       builtins.map (d: {
         name = strings.removePrefix "package:" d.provenance;
         module = defModule d;
-        authorization = d.authorization;
       }) (builtins.filter
         (d: strings.hasPrefix "package:" (d.provenance or "@base"))
         defs);
@@ -139,18 +138,13 @@
       operatorModules = operatorDefModules;
       runtimeModules = runtimeDefModules;
       packageModules = packageDefRecords;
-      enforcePackageAuthorization = false;
+      enforcePackageAuthorship = false;
     };
   in
     evaluated.config;
 
-  # Module-namespacing and contributable-surface helpers.
-  # Pure data over evaluated module sets / module values; takes the wired
-  # `types` and `mkOption` so callers reach them at `lib.mkPackageRoot` etc.
-  namespacing = import ./namespacing.nix {
-    inherit types;
-    inherit (modules) mkOption;
-  };
+  # Declaration-derived contributable-surface helpers.
+  namespacing = import ./namespacing.nix {};
 
   # Version-stable primitive contracts shared by independently authenticated
   # package modules. Logical service schemas remain package-owned.
@@ -268,13 +262,11 @@
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
 
-      # Namespacing and contributable-surface helpers.
+      # Declaration-derived contributable-surface helpers.
       inherit
         (namespacing)
         optionSurface
         contributableSurface
-        mkPackageRoot
-        mountPackageModules
         ;
 
       # Compiler-hardening token vocabulary and set algebra. Used by the

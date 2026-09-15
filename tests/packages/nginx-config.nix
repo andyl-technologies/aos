@@ -1,30 +1,20 @@
 ##! Focused evaluation checks for the nginx package configuration interface.
 ##!
 ##! Exercises a representative reverse-proxy plus health endpoint, proves the
-##! rendered nginx configuration is package-owned, and checks that the scoped
-##! artifact authorization cannot be reused to write a neighboring `/etc`
-##! path.
+##! rendered nginx configuration is package-owned, and checks that another
+##! package cannot conscript nginx through its owner-only enable option.
 {
   pkgs,
   lib,
   mkSystem,
   serverModule,
 }: let
-  artifactAuthorization = {
-    owns = ["nginx"];
-    contributes = {};
-    artifacts = {
-      etc = ["nginx/nginx.conf"];
-      units = [];
-      users = [];
-      groups = [];
-    };
-  };
   projectionStub = {
     options.nginx.config = lib.mkOption {
       type = lib.types.attrs;
       default = {};
       internal = true;
+      contributable = true;
     };
   };
   evaluated = mkSystem {
@@ -32,7 +22,6 @@
     packageModules = [
       {
         name = "nginx";
-        authorization = artifactAuthorization;
         configRoot = ../../pkgs/networking/_nginx-config;
         module = ../../pkgs/networking/_nginx-config/module.nix;
         outputs = {
@@ -42,10 +31,6 @@
       }
       {
         name = "nginx-site-profile";
-        authorization = {
-          owns = [];
-          contributes = {nginx = ["virtualHosts"];};
-        };
         module = {
           nginx.virtualHosts.meta-package = {
             listen = [8081];
@@ -98,17 +83,14 @@
       modules = [serverModule];
       packageModules = [
         {
-          name = "nginx";
-          authorization = artifactAuthorization;
-          module.environment.etc."nginx-neighbor.conf".text = "forbidden\n";
+          name = "nginx-neighbor";
+          module.config.nginx.enable = true;
         }
       ];
     })
     .config
-    .system
-    .build
-    .configManifest
-    .etc));
+    .nginx
+    .enable));
   contract = assert manifest.ownership.etc."nginx/nginx.conf" == "nginx";
   assert lib.hasInfix "worker_processes 2;" rendered;
   assert lib.hasInfix "upstream application" rendered;

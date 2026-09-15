@@ -225,7 +225,6 @@ fn loaded(package: &str) -> WorkingSetMember {
         config_output: Some(format!("/nix/store/h-{package}-config")),
         config_output_nar_hash: Some("sha256:test".to_string()),
         module_abi_compat: Some(compat(1, 2)),
-        authorization: PackageAuthorization::default(),
         outputs: PackageOutputs::default(),
     }
 }
@@ -248,7 +247,6 @@ fn signed_release_identity_flows_from_resolver_members_into_manifest_input() {
         config_output: Some("/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string()),
         config_output_nar_hash: Some(format!("sha256:{}", "bb".repeat(32))),
         module_abi_compat: Some(compat(1, 2)),
-        authorization: PackageAuthorization::default(),
         outputs: PackageOutputs::default(),
     }];
     let (registry, tag, signer, realization) =
@@ -1416,7 +1414,6 @@ fn seed_abi_gate_rejects_before_any_eval() {
         config_output: Some("/nix/store/h-firewall-config".into()),
         config_output_nar_hash: Some("sha256:test".into()),
         module_abi_compat: Some(compat(2, 4)),
-        authorization: PackageAuthorization::default(),
         outputs: PackageOutputs::default(),
     }];
 
@@ -1983,10 +1980,6 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
     assert_eq!(
         working[0].module_abi_compat,
         Some(crate::types::ModuleAbiCompat { min: 1, max: 1 })
-    );
-    assert_eq!(
-        working[0].authorization,
-        super::PackageAuthorization::default()
     );
 }
 

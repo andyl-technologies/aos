@@ -5048,7 +5048,7 @@ fn verify_generation_release_snapshot(
         .zip(&modules.store_paths)
         .zip(&modules.nar_hashes)
     {
-        let (module_abi_compat, authorization) = verify_signed_config_module_member(
+        let module_abi_compat = verify_signed_config_module_member(
             &repo,
             &tag.object,
             package_name,
@@ -5063,7 +5063,6 @@ fn verify_generation_release_snapshot(
             store_path: store_path.clone(),
             nar_hash: nar_hash.clone(),
             module_abi_compat,
-            authorization,
         });
     }
     realization_members.sort_by(|left, right| {
@@ -5110,7 +5109,7 @@ fn verify_signed_config_module_member(
     package_name: &str,
     store_path: &str,
     nar_hash: &str,
-) -> Result<(types::ModuleAbiCompat, config_eval::PackageAuthorization)> {
+) -> Result<types::ModuleAbiCompat> {
     types::validate_package_name(package_name)?;
     let path = format!(
         "packages/{}/{}.toml",
@@ -5142,38 +5141,7 @@ fn verify_signed_config_module_member(
             "signed release catalog must authenticate config output {store_path} exactly once for package {package_name}"
         );
     };
-    Ok((
-        module.module_abi_compat,
-        signed_module_authorization(module),
-    ))
-}
-
-fn signed_module_authorization(
-    module: &types::ConfigModuleMeta,
-) -> config_eval::PackageAuthorization {
-    let mut owns = module
-        .owns_roots
-        .iter()
-        .map(|owned| owned.root.clone())
-        .collect::<Vec<_>>();
-    owns.sort();
-    owns.dedup();
-    let mut contributes = BTreeMap::<String, Vec<String>>::new();
-    for contribution in &module.contributes {
-        contributes
-            .entry(contribution.root.clone())
-            .or_default()
-            .extend(contribution.paths.iter().cloned());
-    }
-    for paths in contributes.values_mut() {
-        paths.sort();
-        paths.dedup();
-    }
-    config_eval::PackageAuthorization {
-        owns,
-        contributes,
-        artifacts: module.artifacts.clone(),
-    }
+    Ok(module.module_abi_compat)
 }
 
 fn signed_store_subset_hash(repo: &Path, commit: &str, root: &str) -> Result<String> {
@@ -7324,11 +7292,6 @@ contributable = ["allowedTCPPorts"]
             release.config_modules[0].module_abi_compat,
             types::ModuleAbiCompat { min: 1, max: 1 }
         );
-        assert_eq!(
-            release.config_modules[0].authorization.owns,
-            vec!["firewall".to_string()]
-        );
-
         assert!(
             verify_generation_release_snapshot(
                 &repo,
@@ -7358,8 +7321,7 @@ contributable = ["allowedTCPPorts"]
         ]));
         verified_modules.realization = Some(release.realization.clone());
         verified_modules.provenance = serde_json::json!({
-            "module_abi_compat": [{"min": 1, "max": 1}],
-            "authorizations": [{"owns": ["firewall"], "contributes": {}}]
+            "module_abi_compat": [{"min": 1, "max": 1}]
         });
         let base_record = attestation::GenAttestation {
             schema: attestation::GEN_ATTESTATION_SCHEMA.to_string(),
@@ -7598,10 +7560,6 @@ contributable = ["allowedTCPPorts"]
                 "module_abi_compat": [
                     {"min": 1, "max": 1},
                     {"min": 1, "max": 1}
-                ],
-                "authorizations": [
-                    {"owns": [], "contributes": {}},
-                    {"owns": [], "contributes": {}}
                 ],
                 "origins": ["image", "registry"]
             }),

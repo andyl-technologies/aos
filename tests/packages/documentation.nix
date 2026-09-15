@@ -112,20 +112,11 @@
         base = import <aos-documentation-audit-base-lib>;
         configRoot = <aos-documentation-audit-config>;
         metadata = builtins.fromJSON (builtins.readFile <aos-documentation-audit-config/config-meta.json>);
-        authorization = {
-          owns = builtins.map (owned: owned.root) metadata.owns_roots;
-          contributes = builtins.listToAttrs (builtins.map
-            (contribution: {
-              name = contribution.root;
-              value = contribution.paths;
-            })
-            metadata.contributes);
-        };
         evaluated = base.lib.evalModules {
           modules = [];
           packageModules = [{
             name = ${builtins.toJSON name};
-            inherit authorization configRoot;
+            inherit configRoot;
             module = <aos-documentation-audit-config/module.nix>;
             outputs = {
               self = builtins.toString <aos-documentation-audit-runtime>;

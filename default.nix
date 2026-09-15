@@ -211,7 +211,6 @@
       builtins.map (package: {
         name = package.pname or package.name;
         module = package.packageModule;
-        authorization = package.packageModuleAuthorization;
         outputs = package.packageModuleOutputs;
       }) (builtins.filter
         (package: !(builtins.elem (package.pname or package.name) callerPackageNames))

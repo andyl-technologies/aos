@@ -653,7 +653,6 @@ in {
               assert config_inputs.get(field) is None, (field, config_inputs)
           assert attested_modules["provenance"] == {
               "module_abi_compat": config_inputs["module_abi_compat"],
-              "authorizations": config_inputs["authorizations"],
               "origins": config_inputs["origins"],
           }
           assert inputs["host_nix"] == {
@@ -808,12 +807,11 @@ in {
               json.loads(target.succeed(f"cat {path}")) for path in seed_meta_paths
           ]
           image_members = []
-          for package_name, store_path, nar_hash, abi, authorization, origin in zip(
+          for package_name, store_path, nar_hash, abi, origin in zip(
               config_inputs["package_names"],
               config_inputs["store_paths"],
               config_inputs["nar_hashes"],
               config_inputs["module_abi_compat"],
-              config_inputs["authorizations"],
               config_inputs["origins"],
           ):
               if origin != "image":
@@ -838,25 +836,12 @@ in {
               ).strip()
               assert actual_nar_hash == nar_hash, (actual_nar_hash, nar_hash)
               module = matches[0]["apm"]["config_module"]
-              owns = sorted(set(item["root"] for item in module["owns_roots"]))
-              contributes = {}
-              for contribution in module["contributes"]:
-                  contributes.setdefault(contribution["root"], []).extend(
-                      contribution["paths"]
-                  )
-              contributes = {
-                  root: sorted(set(paths)) for root, paths in sorted(contributes.items())
-              }
               assert abi == module["module_abi_compat"], (abi, module)
-              assert authorization == {"owns": owns, "contributes": contributes}, (
-                  authorization, module
-              )
               image_members.append({
                   "package_name": package_name,
                   "store_path": store_path,
                   "nar_hash": nar_hash,
                   "module_abi_compat": abi,
-                  "authorization": authorization,
               })
           policy = {
               "schema": "aos.gen-attestation-policy/v2",

@@ -9,10 +9,6 @@
     packageModules = [
       {
         name = "provenance-demo";
-        authorization = {
-          owns = ["environment" "systemd"];
-          contributes = {};
-        };
         module = {
           environment.etc."provenance-demo.conf".text = "package-owned\n";
           systemd.services.provenance-demo = {
@@ -93,10 +89,6 @@
       packageModules = [
         {
           name = "path-contributor";
-          authorization = {
-            owns = ["environment"];
-            contributes = {};
-          };
           module.environment.systemPackages = [pkgs.aos-test-agent];
         }
       ];
@@ -112,10 +104,6 @@
       packageModules = [
         {
           name = "session-contributor";
-          authorization = {
-            owns = ["environment"];
-            contributes = {};
-          };
           module.environment.sessionVariables.PROVENANCE_TEST = "package";
         }
       ];
@@ -152,10 +140,6 @@
       packageModules = [
         {
           name = "group-provider";
-          authorization = {
-            owns = ["aos"];
-            contributes = {};
-          };
           module.aos.users.groups.pkgonly = {
             gid = 778;
             members = [];
