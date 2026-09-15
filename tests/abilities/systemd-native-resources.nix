@@ -183,7 +183,6 @@
     selectedProviderModules = [selectedSystemdProvider];
     specialArgs = {
       inherit pkgs;
-      artifactLocatorFor = _: throw "native-resource realization contains no artifacts";
       provenance = {
         dependencyOwnersOfAttr = _: _: [];
         ownerOfListAttr = _: _: _: "@test";

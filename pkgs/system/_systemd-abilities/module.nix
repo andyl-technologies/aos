@@ -105,7 +105,7 @@
   };
   realizedPackagedUnitSource = types.record {
     fields = {
-      artifact = types.artifactReference;
+      artifact = types.artifactSelector;
       unit_file = types.relativePath;
     };
   };

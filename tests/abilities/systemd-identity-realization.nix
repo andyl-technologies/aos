@@ -78,7 +78,6 @@
     selectedProviderModules = [selectedSystemdProvider];
     specialArgs = {
       inherit pkgs;
-      artifactLocatorFor = _: throw "identity realization contains no artifacts";
       provenance = {
         dependencyOwnersOfAttr = _: _: [];
         ownerOfListAttr = _: _: _: "@test";

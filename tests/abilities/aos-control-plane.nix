@@ -57,7 +57,9 @@
   ];
   ownerContributions = builtins.map serviceManagement.splitContribution owners;
   aosModule = {
-    imports = [../../pkgs/tools/aos/_abilities/control-plane/module.nix];
+    imports = [
+      (pkgs.aos.module.evaluation.configRoot + "/control-plane/module.nix")
+    ];
     config.aos.abilities = lib.mkMerge (
       [
         {instances.readiness-owners = {};}
@@ -65,16 +67,6 @@
       ++ builtins.map (entry: entry.declarations) ownerContributions
       ++ builtins.map (entry: entry.configured) ownerContributions
     );
-  };
-  artifactLocatorFor = _selector: {
-    artifactReference = {
-      _type = "aos-artifact-reference";
-      content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-      store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-control-plane";
-      nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-      closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-    };
-    path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-control-plane";
   };
   evaluate = bindings:
     lib.evalModules {
@@ -113,7 +105,7 @@
         }
       ];
       specialArgs = {
-        inherit artifactLocatorFor pkgs;
+        inherit pkgs;
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";

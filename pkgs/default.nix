@@ -227,7 +227,7 @@
       else if builtins.attrNames authoredQualification != ["packageProbe"]
       then throw "mkDerivation qualification for package '${packageName}' supports only packageProbe"
       else lib.qualification.normalizePackageProbe authoredQualification.packageProbe;
-    abilityModuleSource =
+    abilityModuleInput =
       if authoredAbilities == null
       then null
       else if conflictingAbilityOutputs != []
@@ -256,12 +256,12 @@
     abilityModules =
       if authoredAbilities == null
       then []
-      else if abilityModuleSource.isDirectory
-      then [(abilityModuleSource.source + "/module.nix")]
-      else [abilityModuleSource.source];
+      else if abilityModuleInput.isDirectory
+      then [(abilityModuleInput.source + "/module.nix")]
+      else [abilityModuleInput.source];
     retainedAbilityModule = {imports = abilityModules;};
     abilityModuleArtifact =
-      if abilityModuleSource == null
+      if abilityModuleInput == null
       then null
       else
         lib.throwIf
@@ -279,9 +279,9 @@
               script = ''
                 mkdir -p "$module"
                 ${
-                  if abilityModuleSource.isDirectory
-                  then ''cp -R ${abilityModuleSource.source}/. "$module/"''
-                  else ''cp ${abilityModuleSource.source} "$module/module.nix"''
+                  if abilityModuleInput.isDirectory
+                  then ''cp -R ${abilityModuleInput.source}/. "$module/"''
+                  else ''cp ${abilityModuleInput.source} "$module/module.nix"''
                 }
                 test -f "$module/module.nix"
                 invalid_entry=$(${stdenv.findutils}/bin/find "$module" ! -type d ! -type f -print -quit)
@@ -303,7 +303,7 @@
       then null
       else {
         artifact = lib.abilities.packageOutput {output = "module";};
-        inherit (abilityModuleSource) path;
+        inherit (abilityModuleInput) path;
       };
     abilityEvaluation =
       if authoredAbilities == null
@@ -368,14 +368,14 @@
       if abilityEvaluation == null
       then []
       else let
-        moduleSource = builtins.toString abilityModuleSource.source;
+        moduleSource = builtins.toString abilityModuleInput.source;
         sourceFor = declaration: let
           source = builtins.toString declaration.source;
           directoryPrefix = "${moduleSource}/";
         in
-          if !abilityModuleSource.isDirectory && source == moduleSource
+          if !abilityModuleInput.isDirectory && source == moduleSource
           then "module.nix"
-          else if abilityModuleSource.isDirectory && lib.hasPrefix directoryPrefix source
+          else if abilityModuleInput.isDirectory && lib.hasPrefix directoryPrefix source
           then builtins.substring (builtins.stringLength directoryPrefix) (-1) source
           else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
       in
@@ -488,13 +488,17 @@
         }
         // lib.optionalAttrs (localAbilityProjection != null) {
           abilities = packageAbilityProjection;
-          # Module selection and artifact binding use the package's real
-          # module output. The static ability view contains semantic data only.
-          module = abilityModuleArtifact.module;
-          # Build-stage selection evaluates the exact source tree copied into
-          # the authenticated module output. Provider locators remain relative
-          # to this single package-authored tree.
-          abilityModuleSource = abilityModuleSource;
+          # One canonical module record carries the published output and the
+          # exact wrapper input used during pure build-stage evaluation.
+          module = abilityModuleArtifact.module // {
+            evaluation = {
+              configRoot = abilityModuleInput.source;
+              module =
+                if abilityModuleInput.isDirectory
+                then abilityModuleInput.source + "/module.nix"
+                else abilityModuleInput.source;
+            };
+          };
         };
     secondaryOutputAttrs = builtins.listToAttrs (
       builtins.map (outputName: {

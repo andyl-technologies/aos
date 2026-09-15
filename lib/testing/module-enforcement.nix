@@ -1077,6 +1077,46 @@
     .importConfinement
     .value
     == "confined";
+  confinedFilePackageModule =
+    (lib.evalModules {
+      modules = [];
+      packageModules = [
+        {
+          name = "file-fixture";
+          configRoot = ./fixtures/package-file-module.nix;
+          module = ./fixtures/package-file-module.nix;
+          outputs = {
+            self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-file-fixture";
+            dependencies = {};
+          };
+        }
+      ];
+      lib = lib;
+    })
+    .config
+    .fileBoundary
+    .value
+    == "confined";
+  filePackageImportRejected =
+    !(builtins.tryEval (builtins.deepSeq (
+        (lib.evalModules {
+          modules = [];
+          packageModules = [
+            {
+              name = "file-fixture";
+              configRoot = ./fixtures/package-file-import.nix;
+              module = ./fixtures/package-file-import.nix;
+              outputs = {
+                self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-file-fixture";
+                dependencies = {};
+              };
+            }
+          ];
+          lib = lib;
+        })
+        .config
+      ) true))
+    .success;
   escapedPackageImportRejected =
     !(builtins.tryEval (builtins.deepSeq (
         (lib.evalModules {
@@ -1299,7 +1339,7 @@
         message = "uniqEnum semantics";
       }
       {
-        ok = confinedPackageImport && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
+        ok = confinedPackageImport && confinedFilePackageModule && filePackageImportRejected && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected;
         message = "authenticated package import-root confinement";
       }
       {

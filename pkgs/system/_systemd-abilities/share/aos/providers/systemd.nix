@@ -1,6 +1,5 @@
 ##! Selected composition and static projection for systemd packaged units.
 {
-  artifactLocatorFor ? selector: throw "systemd provider has no authenticated locator for ${builtins.toJSON selector}",
   config,
   lib,
   packageName,
@@ -993,13 +992,10 @@
 
   realizationFor = resource: let
     parameters = resource.value;
-    sourceLocator = artifactLocatorFor parameters.source.artifact;
   in {
     schema = "aos.systemd.packaged-unit-realization/v1";
     source = {
-      artifact =
-        {_type = "aos-artifact-reference";}
-        // sourceLocator.artifactReference;
+      inherit (parameters.source) artifact;
       inherit (parameters.source) unit_file;
     };
     systemd_unit.unit_name = parameters.source.unit_name;

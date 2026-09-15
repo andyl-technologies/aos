@@ -675,9 +675,9 @@
     # provenance in this same module graph.
     packageModules ? [],
     # Resolver-selected provider modules use the same authenticated package
-    # provenance and confined import rules. Unlike a package's canonical
-    # `module.nix`, their entry path comes from the selected implementation's
-    # signed ModuleLocator and may lie anywhere below its authenticated root.
+    # provenance and confined import rules. The resolver maps the selected
+    # implementation's signed ModuleLocator into the package wrapper's exact
+    # source-side module tree; the entry may lie anywhere below that tree.
     selectedProviderModules ? [],
     # Nested submodule evaluation retains resolver provenance for priority and
     # ownership, but the outer evaluation already validates the same authored
@@ -859,16 +859,10 @@
                     // (
                       if packageIdentity == null
                       then {}
-                      else
-                        {
+                      else {
                           packageName = packageIdentity.name;
                           packageVersion = packageIdentity.version;
                         }
-                        // (
-                          if packageIdentity ? artifactLocatorFor
-                          then {inherit (packageIdentity) artifactLocatorFor;}
-                          else {}
-                        )
                     );
                 }
                 mod;
@@ -917,15 +911,7 @@
         (path: builtins.isString path && strings.hasPrefix "/nix/store/" path)
         (builtins.attrValues outputs.dependencies);
 
-      validStoreRoot = root: let
-        rootString =
-          if builtins.isPath root || builtins.isString root
-          then builtins.toString root
-          else "";
-      in
-        builtins.match "/nix/store/[0-9a-z]+-[^/]+" rootString != null;
-
-      validStoreModule = root: module: let
+      validProviderModule = root: module: let
         rootString = builtins.toString root;
         moduleString =
           if builtins.isPath module || builtins.isString module
@@ -938,39 +924,6 @@
         && strings.hasPrefix "${rootString}/" moduleString
         && !builtins.any (component: component == "." || component == "..") components
         && builtins.pathExists module;
-
-      validArtifactReference = reference:
-        builtins.isAttrs reference
-        && builtins.attrNames reference == ["closure" "content" "nar_hash" "store_path"]
-        && builtins.all builtins.isString (builtins.attrValues reference)
-        && strings.hasPrefix "/nix/store/" reference.store_path;
-      validArtifactLocators = locators:
-        builtins.isAttrs locators
-        && builtins.all
-        (locator:
-          builtins.isAttrs locator
-          && builtins.attrNames locator == ["artifactReference" "path"]
-          && validArtifactReference locator.artifactReference
-          && builtins.isString locator.path
-          && strings.hasPrefix "/nix/store/" locator.path)
-        (builtins.attrValues locators);
-      artifactLocatorFor = package: locators: selector: let
-        checked =
-          if
-            !builtins.isAttrs selector
-            || builtins.attrNames selector != ["_type" "output" "package"]
-            || (selector._type or null) != "aos-package-output-selector"
-          then throw "evalModules: package '${package}' requested an invalid artifact selector"
-          else builtins.removeAttrs selector ["_type"];
-        key = builtins.toJSON checked;
-        selected =
-          locators.${key}
-          or (throw "evalModules: package '${package}' requested an artifact selector outside its authenticated view");
-      in
-        selected
-        // {
-          artifactReference = selected.artifactReference // {_type = "aos-artifact-reference";};
-        };
 
       validatedPackageModules = builtins.map (record: let
         keys =
@@ -996,8 +949,12 @@
           != null
           && (!builtins.isPath configRoot
             || !builtins.isPath record.module
-            || builtins.toString record.module != "${builtins.toString configRoot}/module.nix")
-        then throw "evalModules: package '${record.name}' module is not module.nix beneath its authenticated configRoot"
+            || (
+              if builtins.readFileType configRoot == "directory"
+              then builtins.toString record.module != "${builtins.toString configRoot}/module.nix"
+              else builtins.readFileType configRoot != "regular" || record.module != configRoot
+            ))
+        then throw "evalModules: package '${record.name}' module is outside its authenticated source boundary"
         else if record ? outputs && !validPackageOutputs record.outputs
         then throw "evalModules: package '${record.name}' has invalid resolver-supplied outputs"
         else if !builtins.isString (record.version or "0")
@@ -1011,32 +968,22 @@
           then builtins.attrNames record
           else [];
         configRoot = record.configRoot or null;
-        root =
-          if builtins.isPath configRoot || builtins.isString configRoot
-          then builtins.toString configRoot
-          else "";
-        authenticatedRoots =
-          if validPackageOutputs (record.outputs or null)
-          then [record.outputs.self] ++ builtins.attrValues record.outputs.dependencies
-          else [];
       in
         if
           !builtins.isAttrs record
-          || keys != ["artifactLocators" "configRoot" "module" "name" "outputs" "packageVersion"]
-        then throw "evalModules: selectedProviderModules entries must contain exactly artifactLocators/configRoot/module/name/outputs/packageVersion"
+          || keys != ["configRoot" "module" "name" "outputs" "packageVersion"]
+        then throw "evalModules: selectedProviderModules entries must contain exactly configRoot/module/name/outputs/packageVersion"
         else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
         then throw "evalModules: invalid resolver-supplied provider package provenance name"
         else if !validPackageOutputs record.outputs
         then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
         else if
-          !validStoreRoot configRoot
-          || !builtins.elem root authenticatedRoots
-          || !validStoreModule configRoot record.module
+          !builtins.isPath configRoot
+          || !builtins.isPath record.module
+          || !validProviderModule configRoot record.module
         then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
         else if !builtins.isString record.packageVersion || record.packageVersion == ""
         then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
-        else if !validArtifactLocators record.artifactLocators
-        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied artifact locators"
         else record)
       selectedProviderModules;
 
@@ -1061,7 +1008,6 @@
         {
           inherit (record) name;
           version = record.packageVersion;
-          artifactLocatorFor = artifactLocatorFor record.name record.artifactLocators;
         }
         true
         [record.module])

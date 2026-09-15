@@ -241,6 +241,8 @@
   missingEntryRejected = !(builtins.tryEval (abilityModulePayload ./fixtures)).success;
   fileModuleArtifact = fileModulePayload.module;
   directoryModuleArtifact = directoryModulePayload.module;
+  fileEvaluationModule = fileModulePayload.module.evaluation;
+  directoryEvaluationModule = directoryModulePayload.module.evaluation;
   fileProjectionArtifact = fileModulePayload.contract.document;
   directoryProjectionArtifact = directoryModulePayload.contract.document;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
@@ -383,6 +385,10 @@ in
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "darling" "aarch64-linux").state == "not-applicable";
   assert (decisionFor "go-1_4" "aarch64-linux").state == "not-applicable";
+  assert fileEvaluationModule.configRoot == fileEvaluationModule.module;
+  assert builtins.readFileType fileEvaluationModule.configRoot == "regular";
+  assert directoryEvaluationModule.module == directoryEvaluationModule.configRoot + "/module.nix";
+  assert builtins.readFileType directoryEvaluationModule.configRoot == "directory";
     pkgs.mkDerivation {
       pname = "package-platform-support-check";
       version = "0";
@@ -396,10 +402,13 @@ in
           script = ''
             test "$(find ${fileModuleArtifact} -mindepth 1 -maxdepth 1 ! -name nix-support -printf '%f\n')" = module.nix
             test ! -e ${fileModuleArtifact}/ability-module-file-sibling.txt
+            cmp ${fileEvaluationModule.module} ${fileModuleArtifact}/module.nix
             test -f ${directoryModuleArtifact}/module.nix
             test -f ${directoryModuleArtifact}/private.nix
             test ! -e ${directoryModuleArtifact}/ability-module-directory-sibling.txt
             test "$(find ${directoryModuleArtifact} -mindepth 1 -maxdepth 1 ! -name nix-support -printf '%f\n' | sort)" = "$(printf 'module.nix\nprivate.nix')"
+            cmp ${directoryEvaluationModule.module} ${directoryModuleArtifact}/module.nix
+            cmp ${directoryEvaluationModule.configRoot}/private.nix ${directoryModuleArtifact}/private.nix
             cmp ${fileProjectionArtifact} ${directoryProjectionArtifact}
             mkdir -p "$out"
             cat > "$out/result" <<'EOF'

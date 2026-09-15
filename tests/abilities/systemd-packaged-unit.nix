@@ -3,37 +3,39 @@
   lib,
   pkgs,
 }: let
-  interfaceModule = pkgs.systemd.module + "/module.nix";
+  interfaceModule = pkgs.systemd.module.evaluation.module;
   selectedSystemdProvider = import ./_selected-package-provider.nix {
     inherit lib;
     package = pkgs.systemd;
     implementation = "systemd-packaged-unit";
-    artifactLocators.${
-      builtins.toJSON {
-        output = artifact.output;
-        package = artifact.package;
-      }
-    } = let
-      located = artifactLocatorFor artifact;
-    in {
-      inherit (located) path;
-      artifactReference = builtins.removeAttrs located.artifactReference ["_type"];
-    };
   };
+  fileBackedProviderRejected = !(builtins.tryEval (builtins.deepSeq (
+      import ./_selected-package-provider.nix {
+        inherit lib;
+        implementation = "fixture-provider";
+        package = {
+          pname = "fixture";
+          version = "1";
+          outputs = ["out"];
+          outPath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-fixture";
+          __toString = package: package.outPath;
+          module.evaluation.configRoot = ../build/fixtures/ability-module-file.nix;
+          contract.value.implementation.providers = [
+            {
+              name = "fixture-provider";
+              provider_module = {
+                artifact = {
+                  package = "fixture";
+                  output = "out";
+                };
+                path = "provider.nix";
+              };
+            }
+          ];
+        };
+      }
+    ) true)).success;
   artifact = lib.abilities.packageOutput {package = "consumer";};
-  artifactLocatorFor = selector:
-    if (selector._type or null) != "aos-package-output-selector"
-    then throw "provider attempted to resolve a materialized artifact reference"
-    else {
-      artifactReference = {
-        _type = "aos-artifact-reference";
-        content = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-        nar_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        closure = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-      };
-      path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
-    };
   consumerModuleFor = unitFile: {config, ...}: let
     declaration = config.aos.abilities.interfaces."systemd:systemd-packaged-unit";
     identity = lib.abilities.interfaceIdentity (
@@ -121,7 +123,6 @@
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
         };
-        inherit artifactLocatorFor;
       };
     };
 
@@ -181,7 +182,7 @@
     };
   composeFor = resolvedResources: compositionOutputs: resource: let
     provider = import selectedSystemdProvider.module {
-      inherit lib pkgs artifactLocatorFor;
+      inherit lib pkgs;
       packageName = "systemd";
       outputs = selectedSystemdProvider.outputs;
       config.aos.abilities = {
@@ -287,11 +288,20 @@
   searchPath = directiveFor desired.realization "Service" "Environment";
   requestSchema = declaration.requestType._abilitySchema;
 in
+  assert builtins.attrNames pkgs.systemd.abilities
+  == [
+    "guarantees"
+    "implementations"
+    "interfaces"
+    "requirementTemplates"
+  ];
+  assert fileBackedProviderRejected;
   assert desired.realization.systemd_unit.unit_name == "example.service";
   assert effectsChild.requirement == "packaged-unit-effects";
   assert abilities.implementations."systemd:systemd-packaged-unit".handlerDescriptor == null;
   assert abilities.implementations."systemd:systemd-packaged-unit-effects".providerModule == null;
-  assert desired.realization.source.artifact.store_path == "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
+  assert desired.realization.source.artifact == artifact;
+  assert desired.realization.source.artifact._type == "aos-package-output-selector";
   assert requestSchema.fields.dependencies.fields.after.unique;
   assert requestSchema.fields.dependencies.fields.after.canonical_order;
   assert requestSchema.fields.prerequisites.unique;

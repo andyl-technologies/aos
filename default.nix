@@ -198,10 +198,7 @@
       selectedByPath = builtins.listToAttrs (
         builtins.map (package: {
           name = builtins.unsafeDiscardStringContext (builtins.toString package);
-          # Static contract resolution follows each selected runtime root back
-          # to its derivation graph. Force that graph into the evaluator store
-          # before later projections intentionally discard path contexts.
-          value = builtins.seq package.drvPath package;
+          value = package;
         })
         (builtins.filter
           (package:
@@ -227,15 +224,10 @@
     );
     callerPackageNames = builtins.map (record: record.name) packageModules;
     nativeAbilityPackageModulesFor = selectedPackages:
-      builtins.map (package: let
-        source = package.abilityModuleSource;
-      in {
+      builtins.map (package: {
         name = package.pname or package.name;
         version = package.version or "0";
-        module =
-          if source.isDirectory
-          then source.source + "/module.nix"
-          else source.source;
+        inherit (package.module.evaluation) configRoot module;
         outputs = {
           self = builtins.toString package;
           dependencies = {};
@@ -250,40 +242,6 @@
         value = package;
       })
       allSelectedAbilityPackages);
-    buildArtifactLocator = selector: let
-      package =
-        selectedPackagesByName.${selector.package}
-        or pkgs.${selector.package}
-        or (throw "selected ability artifact package '${selector.package}' is absent");
-      output =
-        if selector.output == "out"
-        then package
-        else package.${selector.output}
-          or (throw "selected ability artifact '${selector.package}:${selector.output}' is absent");
-      path = builtins.toString output;
-      digest = "sha256:${builtins.hashString "sha256" path}";
-    in {
-      name = builtins.toJSON selector;
-      value = {
-        artifactReference = {
-          content = digest;
-          nar_hash = digest;
-          closure = digest;
-          store_path = path;
-        };
-        inherit path;
-      };
-    };
-    selectedArtifactSelectors = builtins.concatLists (builtins.map (package:
-      builtins.map (selector:
-        if selector.package == "self"
-        then selector // {package = package.pname or package.name;}
-        else selector)
-      package.contract.selectors)
-    allSelectedAbilityPackages);
-    buildArtifactLocators = builtins.listToAttrs (
-      builtins.map buildArtifactLocator selectedArtifactSelectors
-    );
     selectedProviderModulesFor = abilityBindings: let
       selectedImplementationNames = builtins.attrNames (builtins.listToAttrs (builtins.map (binding: {
           name = binding.implementation;
@@ -307,28 +265,27 @@
             inherit (locator) path;
           };
           value = let
-            # The package wrapper copies the complete authored ability tree to
-            # its lightweight module output. Provider modules retain the exact
-            # path from the authenticated runtime ModuleLocator, so build-time
-            # evaluation never needs an import from the executable output.
-            source = package.abilityModuleSource;
+            artifactPackage = locator.artifact.package;
+            artifactOutput = locator.artifact.output;
+            packageOutputs = package.outputs or ["out"];
             configRoot =
-              if source.isDirectory
-              then source.source
-              else
-                throw
-                "selected provider package '${providerPackageName}' does not author a directory module tree";
-          in {
-            name = providerPackageName;
-            packageVersion = package.version or "0";
-            inherit configRoot;
-            module = configRoot + "/${locator.path}";
-            outputs = {
-              self = builtins.toString package;
-              dependencies = {};
+              if builtins.readFileType package.module.evaluation.configRoot == "directory"
+              then package.module.evaluation.configRoot
+              else throw "selected provider package '${providerPackageName}' does not retain a provider module tree";
+          in
+            lib.throwIf
+            (artifactPackage != providerPackageName || !builtins.elem artifactOutput packageOutputs)
+            "selected provider '${implementationName}' has a module locator outside package '${providerPackageName}'"
+            {
+              name = providerPackageName;
+              packageVersion = package.version or "0";
+              inherit configRoot;
+              module = configRoot + "/${locator.path}";
+              outputs = {
+                self = builtins.toString package;
+                dependencies = {};
+              };
             };
-            artifactLocators = buildArtifactLocators;
-          };
         })
       selectedImplementationNames;
     in

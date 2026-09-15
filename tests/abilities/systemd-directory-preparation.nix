@@ -127,7 +127,6 @@
       selectedProviderModules = [selectedSystemdProvider];
       specialArgs = {
         inherit pkgs;
-        artifactLocatorFor = _: throw "directory preparation fixture does not resolve artifacts";
         provenance = {
           dependencyOwnersOfAttr = _: _: [];
           ownerOfListAttr = _: _: _: "@test";
