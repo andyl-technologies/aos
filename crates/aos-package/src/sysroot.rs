@@ -3136,7 +3136,10 @@ async fn ensure_image_imported(
         fallback_mirrors,
     };
     let engine = std::sync::Arc::new(default_engine());
-    let resolved = fetch_narinfos(
+    // The image output can retain direct references that are outside the
+    // sysroot package's runtime closure. Fetch those references first so Nix
+    // never sees an image import with dangling store paths.
+    let resolved = fetch_narinfo_closure(
         std::sync::Arc::clone(&engine),
         &[request],
         config.settings.parallel_downloads,
@@ -3150,24 +3153,36 @@ async fn ensure_image_imported(
         printer,
     )
     .await?;
-    let result = results
-        .first()
-        .context("image artifact download returned no result")?;
-    verify_download_hash(&result.local_path, &result.download_hash)?;
-    crate::verify::verify_nar_hash_with_compression(
-        &result.local_path,
-        authenticated_hash,
-        &result.compression,
-    )
-    .with_context(|| format!("verifying image update NAR for {authenticated_path}"))?;
-    crate::store::import_nar_with_compression(
-        &result.local_path,
-        &result.store_path,
-        &result.references,
-        result.deriver.as_deref(),
-        &result.compression,
-    )
-    .await?;
+    let image_result = results
+        .iter()
+        .find(|result| result.store_path == authenticated_path)
+        .context("image artifact download returned no authenticated root")?;
+    if image_result.nar_hash != authenticated_hash {
+        bail!("cache narinfo disagrees with the authenticated image update NAR");
+    }
+
+    for result in &results {
+        verify_download_hash(&result.local_path, &result.download_hash)?;
+        crate::verify::verify_nar_hash_with_compression(
+            &result.local_path,
+            &result.nar_hash,
+            &result.compression,
+        )
+        .with_context(|| {
+            format!(
+                "verifying image update closure NAR for {}",
+                result.store_path
+            )
+        })?;
+        crate::store::import_nar_with_compression(
+            &result.local_path,
+            &result.store_path,
+            &result.references,
+            result.deriver.as_deref(),
+            &result.compression,
+        )
+        .await?;
+    }
     if !store_path.exists() {
         bail!(
             "imported image artifact is absent from its authenticated store path {}",
