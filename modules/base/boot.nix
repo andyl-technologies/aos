@@ -228,7 +228,9 @@ in {
       # host policy has evaluated, activated, and produced its attestation;
       # aos-image-boot-commit performs that delayed blessing explicitly.
       "systemd.mask=systemd-bless-boot.service"
-    ];
+    ]
+    ++ lib.concatMap (name: config.aos.contributions.kernelParameters.${name})
+    (builtins.attrNames config.aos.contributions.kernelParameters);
 
     aos.boot.initrd.loadModules = lib.mkDefault (
       lib.filter (

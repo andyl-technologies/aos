@@ -162,7 +162,9 @@ in {
     };
   };
 
-  config = {
+  config = lib.mkMerge [
+    {system.checks = config.aos.contributions.runtimeChecks;}
+    {
     system.checks.boot-basics = {
       description = "Core boot verification";
       checks = [
@@ -290,5 +292,6 @@ in {
     environment.etc."timezone" = {
       text = cfg.timezone + "\n";
     };
-  };
+    }
+  ];
 }

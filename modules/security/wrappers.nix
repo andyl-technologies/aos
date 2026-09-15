@@ -97,8 +97,10 @@ in {
     description = "Privileged executables materialized under ${wrapperBin}.";
   };
 
-  config = lib.mkIf (names != []) (lib.mkMerge [
-    {
+  config = lib.mkMerge [
+    {aos.security.wrappers = config.aos.contributions.wrappers;}
+    (lib.mkIf (names != []) (lib.mkMerge [
+      {
       assertions =
         builtins.map
         (name: {
@@ -109,6 +111,7 @@ in {
 
       aos.abilities.instances.${consumerInstance} = {};
     }
-    {aos.abilities = filesystemRequests;}
-  ]);
+      {aos.abilities = filesystemRequests;}
+    ]))
+  ];
 }

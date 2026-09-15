@@ -320,7 +320,9 @@ in {
     '';
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkMerge [
+    {aos.pam.services = config.aos.contributions.pamServices;}
+    (lib.mkIf cfg.enable {
     # Register every distinct non-empty limit set as an image-fixed config
     # artifact keyed by content hash. `makeLimitsConf`
     # references `artifacts.<limitsKey>` so a `pam_limits.so conf=` argument
@@ -377,5 +379,6 @@ in {
       // {
         "pam/environment".text = formatEnvVars config.environment.sessionVariables;
       };
-  };
+    })
+  ];
 }

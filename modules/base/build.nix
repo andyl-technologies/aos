@@ -18,6 +18,24 @@
   provenance,
   ...
 }: let
+  selectedOutput = selector: let
+    package = pkgs.${selector.package} or (throw "unknown package in filesystem tree contribution: ${selector.package}");
+  in
+    if selector.output == "out"
+    then package
+    else package.${selector.output} or (throw "package ${selector.package} has no ${selector.output} output");
+  treeContributions = config.aos.contributions.filesystemTrees;
+  treeTargets = builtins.map (entry: entry.target) treeContributions;
+  uniqueTreeTargets = lib.unique treeTargets;
+  treeContributionEntries =
+    if builtins.length treeTargets != builtins.length uniqueTreeTargets
+    then throw "filesystem tree contributions must use distinct /etc target paths"
+    else
+      builtins.listToAttrs (builtins.map (entry: {
+          name = entry.target;
+          value.source = "${selectedOutput entry.source.artifact}/${entry.source.path}";
+        })
+        treeContributions);
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
   # --- composefs / EROFS inputs (spec v12 §5.3) ---
   #
@@ -381,7 +399,9 @@ in {
     };
   };
 
-  config = {
+  config = lib.mkMerge [
+    {environment.etc = treeContributionEntries;}
+    {
     # --- composefs lower for /etc (spec v12 §5.3) --------------------
     #
     # `etcBasedir` materialises octal-mode entries as regular files
@@ -1065,5 +1085,6 @@ in {
     # `system.build.initrd` is set by modules/systemd/initrd.nix (tier ii):
     # it renders `boot.initrd.systemd.*` into a gzip+cpio initramfs via
     # modules/base/initrd-builder.nix.
-  };
+    }
+  ];
 }
