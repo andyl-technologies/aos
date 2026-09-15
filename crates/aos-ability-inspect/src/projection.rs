@@ -22,7 +22,6 @@
 //! ```
 
 use std::collections::BTreeSet;
-use std::io::{self, Write};
 
 use aos_ability_model::{PlanId, RequiredFeature};
 use serde::{Deserialize, Serialize};
@@ -32,6 +31,7 @@ use crate::{
     INSPECTION_VIEW_MAX_BYTES, INSPECTION_VIEW_MAX_ITEMS, InspectionEdge, InspectionNode,
     InspectionRelation, InspectionView, ViewAnchor,
 };
+use aos_contract::limits::BoundedWriter;
 
 /// Exact schema discriminator for a semantic inspection projection.
 pub const INSPECTION_PROJECTION_SCHEMA: &str = "aos.ability.inspection-projection/v1";
@@ -148,9 +148,12 @@ impl InspectionProjection {
             return Err(InspectionProjectionError::ItemLimit);
         }
 
-        let mut writer = ProjectionBoundedWriter::new(INSPECTION_VIEW_MAX_BYTES);
+        let mut writer = BoundedWriter::new(
+            INSPECTION_VIEW_MAX_BYTES as u64,
+            "inspection projection encoding exceeds its bound",
+        );
         serde_json::to_writer(&mut writer, self).map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 InspectionProjectionError::EncodedSizeLimit
             } else {
                 InspectionProjectionError::Encoding(error.into())
@@ -324,36 +327,5 @@ fn relation_is_visible(kind: ProjectionKind, relation: InspectionRelation) -> bo
                 | InspectionRelation::RetainsArtifact
                 | InspectionRelation::Retention
         ),
-    }
-}
-
-struct ProjectionBoundedWriter {
-    remaining: usize,
-    exceeded: bool,
-}
-
-impl ProjectionBoundedWriter {
-    const fn new(limit: usize) -> Self {
-        Self {
-            remaining: limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for ProjectionBoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "inspection projection encoding exceeds its bound",
-            ));
-        }
-        self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }

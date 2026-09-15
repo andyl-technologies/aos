@@ -1,5 +1,7 @@
 //! Bounded decoding for untrusted JSON contract documents.
 
+use std::io::{self, Write};
+
 use anyhow::{Result, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -17,6 +19,61 @@ pub struct JsonLimits {
     pub max_items: usize,
     /// Maximum UTF-8 byte length of a string value or object member name.
     pub max_string_bytes: usize,
+}
+
+/// Counts serialized bytes and fails before a configured limit is exceeded.
+///
+/// Serializers can inspect [`Self::exceeded`] to distinguish an intentional
+/// size-limit failure from another encoding error. [`Self::written`] reports
+/// only bytes accepted before that failure.
+pub struct BoundedWriter {
+    remaining: u64,
+    message: &'static str,
+    exceeded: bool,
+    written: u64,
+}
+
+impl BoundedWriter {
+    /// Creates an empty byte counter with the supplied overflow message.
+    #[must_use]
+    pub const fn new(limit: u64, message: &'static str) -> Self {
+        Self {
+            remaining: limit,
+            message,
+            exceeded: false,
+            written: 0,
+        }
+    }
+
+    /// Reports whether a write was rejected for exceeding the byte limit.
+    #[must_use]
+    pub const fn exceeded(&self) -> bool {
+        self.exceeded
+    }
+
+    /// Reports the number of bytes accepted by this writer.
+    #[must_use]
+    pub const fn written(&self) -> u64 {
+        self.written
+    }
+}
+
+impl Write for BoundedWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let byte_count = bytes.len() as u64;
+        if byte_count > self.remaining {
+            self.exceeded = true;
+            return Err(io::Error::other(self.message));
+        }
+
+        self.remaining -= byte_count;
+        self.written += byte_count;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl JsonLimits {
@@ -152,5 +209,15 @@ mod tests {
                 .decode::<Fixture>(br#"{"value":"ok","extra":1}"#, "fixture")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn bounded_writer_counts_only_accepted_bytes() {
+        let mut writer = BoundedWriter::new(4, "test byte limit exceeded");
+
+        assert_eq!(writer.write(b"test").unwrap(), 4);
+        assert!(writer.write(b"!").is_err());
+        assert!(writer.exceeded());
+        assert_eq!(writer.written(), 4);
     }
 }

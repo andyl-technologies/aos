@@ -1,12 +1,11 @@
 //! Independent bounds for retained successful-pass explanations.
 
-use std::io::{self, Write};
-
 use aos_ability_model::DesiredStateDocument;
 use aos_contract::Sha256Digest;
 use serde::Serialize;
 
 use crate::resolution::{CandidateRejection, ResolutionDecision, ResolutionPolicyDocument};
+use aos_contract::limits::BoundedWriter;
 
 use super::{CompositionError, CompositionLimits};
 
@@ -44,7 +43,7 @@ impl TraceBudget {
             });
         }
         let remaining = limits.max_trace_bytes.saturating_sub(self.bytes);
-        let mut writer = BoundedCounter::new(remaining);
+        let mut writer = BoundedWriter::new(remaining, "bounded composition trace exceeded");
         serde_json::to_writer(
             &mut writer,
             &BorrowedCompositionPass {
@@ -58,7 +57,7 @@ impl TraceBudget {
             },
         )
         .map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 CompositionError::Limit {
                     limit: "trace byte",
                 }
@@ -68,7 +67,7 @@ impl TraceBudget {
         })?;
         let retained_bytes =
             self.bytes
-                .checked_add(writer.bytes)
+                .checked_add(writer.written())
                 .ok_or(CompositionError::Limit {
                     limit: "trace byte",
                 })?;
@@ -79,38 +78,6 @@ impl TraceBudget {
         }
         self.entries = entries;
         self.bytes = retained_bytes;
-        Ok(())
-    }
-}
-
-struct BoundedCounter {
-    bytes: u64,
-    maximum: u64,
-    exceeded: bool,
-}
-
-impl BoundedCounter {
-    const fn new(maximum: u64) -> Self {
-        Self {
-            bytes: 0,
-            maximum,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for BoundedCounter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let additional = buffer.len() as u64;
-        if self.bytes.saturating_add(additional) > self.maximum {
-            self.exceeded = true;
-            return Err(io::Error::other("bounded composition trace exceeded"));
-        }
-        self.bytes += additional;
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }

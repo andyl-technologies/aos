@@ -9,8 +9,6 @@
 //!  "evaluations":[...],"effect_plan":"sha256:...","effect_document":{...}}
 //! ```
 
-use std::io::{self, Write};
-
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, EffectPlanDocument, InstanceId, LocalKey, PlanId,
     ProviderImplementationReference, VersionedDocument, encode_canonical,
@@ -23,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{CompositionEvaluator, EvaluationError, VerifiedPlanningSnapshot};
+use aos_contract::limits::BoundedWriter;
 
 use super::{TransitionError, TransitionInputs, TransitionPlanner, TransitionReconciliation};
 
@@ -269,9 +268,12 @@ impl TransitionSnapshot {
         self.validate_linkage()?;
         self.validate_bounded_structure()?;
 
-        let mut writer = SnapshotBoundedWriter::new(TRANSITION_SNAPSHOT_MAX_BYTES);
+        let mut writer = BoundedWriter::new(
+            TRANSITION_SNAPSHOT_MAX_BYTES as u64,
+            "serialized transition snapshot exceeds its byte limit",
+        );
         serde_json::to_writer(&mut writer, self).map_err(|error| {
-            if writer.exceeded {
+            if writer.exceeded() {
                 TransitionSnapshotError::InvalidLinkage(
                     "encoded snapshot exceeds the version-1 byte limit",
                 )
@@ -547,36 +549,5 @@ const fn transition_snapshot_limits() -> JsonLimits {
         max_items: (ABILITY_LIMITS_V1.max_collection_items as usize)
             .saturating_mul(TRANSITION_SNAPSHOT_COMPONENT_LIMIT),
         max_string_bytes: ABILITY_LIMITS_V1.max_string_bytes as usize,
-    }
-}
-
-struct SnapshotBoundedWriter {
-    remaining: usize,
-    exceeded: bool,
-}
-
-impl SnapshotBoundedWriter {
-    const fn new(remaining: usize) -> Self {
-        Self {
-            remaining,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for SnapshotBoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            self.exceeded = true;
-            return Err(io::Error::other(
-                "serialized transition snapshot exceeds its byte limit",
-            ));
-        }
-        self.remaining -= bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
