@@ -1249,7 +1249,7 @@
       artifact-file = types.record {
         fields = {
           kind = types.enum ["artifact-file"];
-          reference = types.artifactFileReference;
+          reference = types.artifactPathReference;
         };
       };
       execution-path = types.record {
