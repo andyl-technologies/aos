@@ -15,9 +15,6 @@ use serde_json::json;
 
 /// Supplies one package-owned block-storage terminal implementation.
 pub trait Backend {
-    /// Returns the exact private terminal interface name.
-    fn interface_name(&self) -> &'static str;
-
     /// Returns the mutating method name.
     fn action_method(&self) -> &'static str;
 
@@ -158,9 +155,7 @@ impl<B: Backend> Provider<B> {
 
     fn admit(&self, request: AdmissionRequest) -> Result<AdmissionResult> {
         validate_method(
-            self.backend.interface_name(),
             self.backend.action_method(),
-            request.method.interface.name.as_str(),
             request.method.method.as_str(),
             &request.semantics,
         )?;
@@ -215,16 +210,12 @@ impl<B: Backend> Provider<B> {
             "invocation method is not durably bound"
         );
         validate_method(
-            self.backend.interface_name(),
             self.backend.action_method(),
-            invocation.request.method.interface.name.as_str(),
             invocation.request.method.method.as_str(),
             &invocation.request.semantics,
         )?;
         validate_method(
-            self.backend.interface_name(),
             self.backend.action_method(),
-            invocation.method.interface.name.as_str(),
             invocation.method.method.as_str(),
             &invocation.semantics,
         )?;
@@ -237,12 +228,14 @@ impl<B: Backend> Provider<B> {
         let target = exact_context(&invocation.request.resources, &invocation.request.target)?;
         let bound = validate_resource_context(target)?;
         ensure!(
-            invocation
-                .request
-                .target
-                .operations
-                .binary_search(&invocation.method.method)
-                .is_ok(),
+            invocation.method.interface == invocation.request.method.interface
+                && invocation.method.interface == invocation.request.target.interface
+                && invocation
+                    .request
+                    .target
+                    .operations
+                    .binary_search(&invocation.method.method)
+                    .is_ok(),
             "invocation method is outside the target resource authority"
         );
         require_prerequisites(&bound.resource_spec.value, &invocation.request.resources)?;
@@ -390,17 +383,7 @@ fn result(
     })
 }
 
-fn validate_method(
-    interface: &str,
-    action: &str,
-    actual_interface: &str,
-    method: &str,
-    semantics: &MethodSemantics,
-) -> Result<()> {
-    ensure!(
-        actual_interface == interface,
-        "method selects another interface"
-    );
+fn validate_method(action: &str, method: &str, semantics: &MethodSemantics) -> Result<()> {
     let expected = match method {
         "observe" => MethodSemantics::ordinary(AccessMode::Read),
         "release" => MethodSemantics::provider_stop(),

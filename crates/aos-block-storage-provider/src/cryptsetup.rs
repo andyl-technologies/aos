@@ -13,7 +13,6 @@ use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 use crate::state;
 
-const INTERFACE: &str = "aos.cryptsetup.encrypted-block-mapping-effects";
 const REALIZATION_SCHEMA: &str = "aos.storage.encrypted-block-mapping-realization/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.encrypted-block-mapping-observation/v1";
 const CONTEXT_SCHEMA: &str = "aos.cryptsetup.encrypted-block-mapping-context/v1";
@@ -76,10 +75,6 @@ struct NativeState {
 pub struct CryptsetupBackend;
 
 impl Backend for CryptsetupBackend {
-    fn interface_name(&self) -> &'static str {
-        INTERFACE
-    }
-
     fn action_method(&self) -> &'static str {
         "open"
     }

@@ -24,7 +24,6 @@ use serde_json::{Value, json};
 use crate::engine::{Backend, BackendObservation, ability_value};
 use crate::process::{Executable, ExecutableReference};
 
-const INTERFACE: &str = "aos.systemd-repart.storage-provisioning-effects";
 const REALIZATION_SCHEMA: &str = "aos.storage.provisioning-realization/v1";
 const CONTEXT_SCHEMA: &str = "aos.storage.provisioning-context/v1";
 const OBSERVATION_SCHEMA: &str = "aos.ability.storage-provisioning-observation/v1";
@@ -149,10 +148,6 @@ enum DiskState {
 pub struct StorageProvisioningBackend;
 
 impl Backend for StorageProvisioningBackend {
-    fn interface_name(&self) -> &'static str {
-        INTERFACE
-    }
-
     fn action_method(&self) -> &'static str {
         "commit"
     }
