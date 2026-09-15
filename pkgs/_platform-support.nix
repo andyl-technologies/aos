@@ -780,9 +780,9 @@ let
     "kubernetes/_k3s-ability-provider/default.nix" = "target-independent-source";
     "kubernetes/_k3s-config/module.nix" = "linux-only-config-source";
     "kubernetes/_kubelet-config/module.nix" = "linux-only-config-source";
-    "networking/_envoy-config/module.nix" = "linux-only-config-source";
-    "networking/_envoy-config/render.nix" = "linux-only-config-source";
-    "networking/_envoy-config/types.nix" = "linux-only-config-source";
+    "networking/_envoy/module.nix" = "linux-only-config-source";
+    "networking/_envoy/render.nix" = "linux-only-config-source";
+    "networking/_envoy/types.nix" = "linux-only-config-source";
     "networking/_nginx-ability-provider/default.nix" = "target-independent-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";

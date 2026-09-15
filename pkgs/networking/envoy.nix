@@ -5,7 +5,6 @@
 ##! (2) bazelPhases patchelfs downloaded ELFs and builds offline
 {
   mkBazelPackage,
-  mkServiceAbilityModule,
   fetchBazelDeps,
   stdenv,
   buildPackages,
@@ -198,14 +197,6 @@
     else "x86_64";
   darwinTargetTriple = stdenv.hostPlatform.config;
   llvmMajor = builtins.head (lib.splitString "." buildLlvm.version);
-
-  envoyCredentialNames = [
-    "tls-certificate"
-    "tls-private-key"
-    "validation-ca"
-  ];
-
-  envoyCredentialSource = name: "/run/credstore/envoy/${name}";
 
   tools = [
     buildBash
@@ -699,129 +690,7 @@ in
 
     bazel = buildBazel;
     jdk = buildJdk;
-    configModule = {
-      src = ./_envoy-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "envoy.admin"
-        "envoy.clusters"
-        "envoy.dynamicResources"
-        "envoy.enable"
-        "envoy.listeners"
-        "envoy.node"
-        "envoy.renderedBootstrap"
-        "envoy.runtimeLayers"
-        "envoy.telemetry"
-      ];
-      ownsRoots = [
-        {
-          root = "envoy";
-          interfaceAbi = 1;
-          contributable = [
-            "clusters"
-            "listeners"
-            "runtimeLayers"
-          ];
-        }
-      ];
-      documentation = {
-        summary = "Envoy proxy — high-performance L7 proxy and communication bus";
-        sections = {
-          quickstart = lib.aosDoc.section "Quick start" [
-            (lib.aosDoc.paragraph "Install Envoy, enable envoy.enable, and declare listeners and clusters. Every rendered bootstrap is checked with Envoy validation before the service starts.")
-            (lib.aosDoc.code "nix" ''
-              {
-                aos.apm.desiredPackages = ["envoy"];
-                envoy.enable = true;
-                envoy.listeners.http.port = 10000;
-              }
-            '')
-          ];
-          lifecycle = lib.aosDoc.section "Runtime lifecycle" [
-            (lib.aosDoc.paragraph "Systemd owns restarts, so hot restart is disabled. The administration endpoint remains loopback-only and its access log uses the managed package log directory.")
-          ];
-          credentials = lib.aosDoc.section "TLS and xDS credentials" [
-            (lib.aosDoc.paragraph "Static TLS handles use opaque system-credential references and are bound only when selected. SDS names xDS resources rather than embedding secret material.")
-          ];
-        };
-      };
-    };
-
-    abilities = mkServiceAbilityModule {
-      packageName = "envoy";
-      spec.interface = "aos.service.envoy";
-    };
-
-    expose = {
-      units."envoy.service" = {
-        description = "Envoy proxy";
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        serviceConfig = {
-          Type = "simple";
-          EnvironmentFile = "/etc/aos/packages/envoy/service.env";
-          ExecCondition = "${bash}/bin/bash -c 'test \"$ENVOY_ENABLED\" = 1'";
-          ExecStartPre = "/bin/envoy --mode validate --config-path /etc/aos/packages/envoy/bootstrap.json";
-          ExecStart = "/bin/envoy --disable-hot-restart --config-path /etc/aos/packages/envoy/bootstrap.json";
-          Restart = "on-failure";
-          RestartSec = "2s";
-          StateDirectory = "aos-pkg-envoy";
-          LogsDirectory = "aos-pkg-envoy";
-          LogsDirectoryMode = "0750";
-          LimitNOFILE = "1048576";
-        };
-      };
-
-      config = {
-        artifacts = [
-          {
-            name = "service";
-            path = "/etc/aos/packages/envoy/service.env";
-            format = "env";
-            required = ["ENVOY_ENABLED"];
-            optional = [];
-            units = ["envoy.service"];
-            reload = "restart";
-          }
-          {
-            name = "bootstrap";
-            path = "/etc/aos/packages/envoy/bootstrap.json";
-            format = "json";
-            required = ["node" "static_resources"];
-            optional = [
-              "admin"
-              "dynamic_resources"
-              "layered_runtime"
-              "stats_config"
-              "stats_sinks"
-            ];
-            units = ["envoy.service"];
-            reload = "restart";
-          }
-        ];
-        credentials =
-          builtins.map (name: {
-            inherit name;
-            source = envoyCredentialSource name;
-            units = ["envoy.service"];
-            encrypted = false;
-            optional = true;
-          })
-          envoyCredentialNames;
-      };
-
-      permissions = {
-        network = "host";
-        capabilities = ["CAP_NET_BIND_SERVICE"];
-        host-paths = [];
-        devices = [];
-        syscalls = "restricted";
-        security-label = "aos-pkg-envoy";
-      };
-    };
+    abilities = ./_envoy/module.nix;
 
     inherit tools;
     caCertificates = buildCaCertificates;
@@ -1323,51 +1192,62 @@ in
       self,
       pkgs,
     }: let
+      serviceManagement = lib.abilities.interfaces.serviceManagement;
+      environmentId = lib.abilities.environmentId {
+        authority = "deployment";
+        key = "envoy-test";
+        stage = "host";
+      };
+      credentialProvider = lib.abilities.instanceId {
+        environment = environmentId;
+        key = "credential-provider";
+      };
+      credential = key:
+        lib.abilities.resourceReference {
+          interface = serviceManagement.interfaces.credentialDelivery.identity;
+          resource = {
+            provider = credentialProvider;
+            inherit key;
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
       evalConfig = envoyConfig:
         lib.evalModules {
           modules = [
-            ({lib, ...}: {
-              options = {
-                assertions = lib.mkOption {
-                  type = lib.types.listOf lib.types.attrs;
-                  default = [];
-                };
-                envoy.config = lib.mkOption {
-                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-                  default = {};
-                };
-                envoy.credentials = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.attrs;
-                  default = {};
-                };
+            ../../modules/abilities/default.nix
+            {
+              options.assertions = lib.mkOption {
+                type = lib.types.listOf lib.types.attrs;
+                default = [];
+                contributable = true;
               };
-            })
-            (import ./_envoy-config/module.nix)
-            {envoy = envoyConfig;}
+              aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
+              envoy = envoyConfig;
+            }
+          ];
+          packageModules = [
+            {
+              name = "envoy";
+              module.imports = [./_envoy/module.nix];
+            }
           ];
           inherit lib;
         };
       assertionsHoldFor = result:
         builtins.all (assertion: assertion.assertion) result.config.assertions;
-      signedExpose = builtins.fromJSON self.expose.manifest;
-      signedCredentials = signedExpose.expose.config.credentials;
-      credentialDeclarationsHold =
-        builtins.length signedCredentials
-        == builtins.length envoyCredentialNames
-        && builtins.all (
-          credential:
-            builtins.elem credential.name envoyCredentialNames
-            && credential.source == envoyCredentialSource credential.name
-            && !credential.encrypted
-            && credential.optional
-            && credential.units == ["envoy.service"]
-        )
-        signedCredentials;
+      disabledConfig = evalConfig {};
       evaluatedConfig = evalConfig {
         enable = true;
+        admin.accessLog = "disabled";
         node = {
           id = "envoy-check";
           cluster = "aos-checks";
+          metadata = {
+            enabled = true;
+            attempts = 3;
+            region = "test-west";
+          };
         };
         listeners.http = {
           address = "127.0.0.1";
@@ -1394,19 +1274,25 @@ in
             }
           ];
         };
-        runtimeLayers.aos.values."envoy.reloadable_features.check" = true;
+        runtimeLayers.aos.values = {
+          "envoy.reloadable_features.check" = true;
+          "envoy.reloadable_features.count" = 2;
+          "envoy.reloadable_features.label" = "native";
+        };
         telemetry.statsd = {
           address = "127.0.0.1";
           port = 8125;
         };
       };
       invalidRoute = evalConfig {
+        enable = true;
         listeners.http = {
           port = 10000;
           filterChains.http.virtualHosts.local.routes.root = {};
         };
       };
       invalidTls = evalConfig {
+        enable = true;
         clusters.backend = {
           endpoints = [
             {
@@ -1417,16 +1303,20 @@ in
           tls.certificateCredential = "tls-certificate";
         };
       };
-      invalidAdmin = evalConfig {admin.address = "0.0.0.0";};
+      invalidAdmin = evalConfig {
+        enable = true;
+        admin.address = "0.0.0.0";
+      };
       invalidAdminLog = builtins.tryEval (builtins.deepSeq
         ((evalConfig {
-            admin.accessLogPath = "/dev/stderr";
+            admin.accessLog = "stderr";
           })
           .config
           .envoy
           .renderedBootstrap)
         true);
       validSds = evalConfig {
+        enable = true;
         dynamicResources = {
           enableAds = true;
           adsCluster = "xds-control-plane";
@@ -1450,9 +1340,10 @@ in
         };
       };
       validCredentialTls = evalConfig {
+        enable = true;
         credentials = {
-          tls-certificate.ref = "system-credential";
-          tls-private-key.ref = "system-credential";
+          tls-certificate.resource = credential "tls-certificate";
+          tls-private-key.resource = credential "tls-private-key";
         };
         listeners.https = {
           port = 10443;
@@ -1465,19 +1356,61 @@ in
           };
         };
       };
+      abilities = validCredentialTls.config.aos.abilities;
+      plainAbilities = evaluatedConfig.config.aos.abilities;
+      disabledAbilities = disabledConfig.config.aos.abilities;
+      requests = builtins.attrNames abilities.requests;
+      plainRequests = builtins.attrNames plainAbilities.requests;
+      disabledRequirements = builtins.attrNames disabledAbilities.requirementTemplates;
+      configuration = (abilities.requests."envoy:bootstrap-configuration" or {parameters = {};}).parameters;
+      mainLifecycle = (abilities.requests."envoy:main-lifecycle" or {parameters = {};}).parameters;
+      mainResources = (abilities.requests."envoy:main-resources" or {parameters = {};}).parameters;
       contractHolds =
         assertionsHoldFor evaluatedConfig
         && assertionsHoldFor validSds
         && assertionsHoldFor validCredentialTls
-        && credentialDeclarationsHold
         && !assertionsHoldFor invalidRoute
         && !assertionsHoldFor invalidTls
         && !assertionsHoldFor invalidAdmin
-        && !invalidAdminLog.success;
+        && !invalidAdminLog.success
+        && disabledAbilities.instances == {}
+        && disabledAbilities.requests == {}
+        && builtins.elem "envoy:credential-delivery" disabledRequirements
+        && builtins.elem "envoy:service-credentials" disabledRequirements
+        && builtins.elem "envoy:service-lifecycle" disabledRequirements
+        && builtins.elem "envoy:credential-tls-certificate" requests
+        && builtins.elem "envoy:credential-tls-private-key" requests
+        && !(builtins.elem "envoy:credential-validation-ca" requests)
+        && !(builtins.elem "envoy:credential-tls-certificate" plainRequests)
+        && builtins.elem "envoy:main-lifecycle" requests
+        && builtins.elem "envoy:bootstrap-configuration" requests
+        && configuration.source.kind == "structured-value"
+        && configuration.source.format == "json"
+        && builtins.any (node:
+          node.kind
+          == "string"
+          && builtins.any (segment: segment.kind == "key" && segment.value == "@type") node.path)
+        configuration.source.document
+        && mainLifecycle.restart == "on-failure"
+        && mainLifecycle.restart_delay_millis == 2000
+        && (let
+          arguments = (builtins.head mainLifecycle.pre_start).executable.arguments;
+          configurationArgument = builtins.elemAt arguments 3;
+        in
+          builtins.length arguments
+          == 4
+          && builtins.elemAt arguments 0 == "--mode"
+          && builtins.elemAt arguments 1 == "validate"
+          && builtins.elemAt arguments 2 == "--config-path"
+          && configurationArgument.request == "envoy:bootstrap-configuration"
+          && configurationArgument.output == "execution-path")
+        && mainResources.open_files.value == 1048576
+        && !(lib.hasInfix "/etc/aos/packages/envoy" (builtins.toJSON abilities.requests))
+        && !(lib.hasInfix "/var/log/aos-pkg-envoy" (builtins.toJSON abilities.requests));
       renderedBootstrap =
         if assertionsHoldFor evaluatedConfig
-        then builtins.toFile "envoy-config-module-check.json" (builtins.toJSON evaluatedConfig.config.envoy.renderedBootstrap)
-        else throw "the Envoy config-module fixture has a failing assertion";
+        then builtins.toFile "envoy-ability-check.json" (builtins.toJSON evaluatedConfig.config.envoy.renderedBootstrap)
+        else throw "the Envoy ability fixture has a failing assertion";
     in {
       version = testing.mkVMTest {
         name = "networking-envoy-version";
@@ -1547,39 +1480,24 @@ in
         '';
       };
 
-      config-module = testing.mkVMTest {
-        name = "networking-envoy-config-module";
-        rootfsDeps = [self];
+      ability-config = testing.mkVMTest {
+        name = "networking-envoy-ability-config";
+        rootfsDeps = [self renderedBootstrap pkgs.grep];
         testScript = ''
           envoy --mode validate --config-path ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy-check' ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy.reloadable_features.check' ${renderedBootstrap}
-          echo "==> envoy config-module: PASS"
+          echo "==> envoy ability config: PASS"
         '';
       };
 
-      config-module-contract =
+      ability-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "networking-envoy-config-module-contract" {} ''
-            if ${pkgs.grep}/bin/grep -E 'LoadCredential(Encrypted)?=.*(tls-certificate|tls-private-key|validation-ca)' ${self.expose}/units/envoy.service; then
-              echo "optional Envoy credentials must not create unconditional static unit bindings" >&2
-              exit 1
-            fi
-            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --mode validate' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --disable-hot-restart --config-path' ${self.expose}/units/envoy.service
-            if ${pkgs.grep}/bin/grep -Fq -- '--log-format-prefix-with-location' ${self.expose}/units/envoy.service; then
-              echo "Envoy service uses an unsupported log-format flag" >&2
-              exit 1
-            fi
-            ${pkgs.grep}/bin/grep -qx 'LogsDirectory=aos-pkg-envoy' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -qx 'LogsDirectoryMode=0750' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -Fq -- '--fs-rw /var/log/aos-pkg-envoy' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -Fq '"/var/log/aos-pkg-envoy"' ${self.expose}/network-policy.json
-            ${pkgs.grep}/bin/grep -Fq '"access_log_path":"/var/log/aos-pkg-envoy/admin-access.log"' ${renderedBootstrap}
+          pkgs.runCommand "networking-envoy-ability-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''
-        else throw "the Envoy config-module contract checks failed";
+        else throw "the Envoy native ability checks failed";
     };
   }

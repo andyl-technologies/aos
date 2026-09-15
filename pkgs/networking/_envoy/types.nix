@@ -1,9 +1,18 @@
 ##! Typed option contracts for the Envoy package configuration module.
 {lib}: let
   inherit (lib) mkOption types;
+  abilityTypes = lib.abilities.types;
   nonEmpty = types.strMatching ".+";
   positiveInt = types.addCheck types.int (value: value > 0);
   nonNegativeInt = types.addCheck types.int (value: value >= 0);
+  runtimeValue = abilityTypes.disjointUnion [
+    abilityTypes.boolean
+    (abilityTypes.integer {
+      minimum = -abilityTypes.limits.maxSafeInteger;
+      maximum = abilityTypes.limits.maxSafeInteger;
+    })
+    abilityTypes.runtimeString
+  ];
 
   socketAddress = types.submodule {
     config._module.strict = true;
@@ -456,12 +465,12 @@
         description = "The runtime layer name.";
       };
       values = mkOption {
-        type = types.attrsOf (types.either types.bool (types.either types.int types.str));
+        type = types.attrsOf runtimeValue;
         default = {};
         description = "Non-secret static runtime keys.";
       };
     };
   });
 in {
-  inherit cluster filterChain healthCheck listener runtimeLayer socketAddress tlsContext virtualHost;
+  inherit cluster filterChain healthCheck listener runtimeLayer runtimeValue socketAddress tlsContext virtualHost;
 }
