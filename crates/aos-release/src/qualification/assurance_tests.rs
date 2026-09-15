@@ -32,14 +32,10 @@ fn image_record(records: &mut [EvidenceRecord]) -> &mut EvidenceRecord {
 #[test]
 fn native_image_rollout_case_binds_the_frozen_predecessor() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let case = crate::qualification_evidence::cases(
-        &plan,
-        &manifest,
-        QualificationPhase::Staging,
-    )?
-    .into_iter()
-    .find(|case| case.requirement_id == NATIVE_IMAGE_ROLLOUT_REQUIREMENT)
-    .unwrap();
+    let case = crate::qualification_evidence::cases(&plan, &manifest, QualificationPhase::Staging)?
+        .into_iter()
+        .find(|case| case.requirement_id == NATIVE_IMAGE_ROLLOUT_REQUIREMENT)
+        .unwrap();
 
     assert_eq!(case.predecessor, plan.qualification_predecessor);
     assert!(!case.subjects.is_empty());

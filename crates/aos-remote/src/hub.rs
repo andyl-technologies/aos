@@ -2324,7 +2324,7 @@ fn ensure_trailing_slash(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_optional_response, HubClient, HubSurfaceRef, HubTopologyMethod};
+    use super::{HubClient, HubSurfaceRef, HubTopologyMethod, decode_optional_response};
     use aos_proto_types::surface_ref::Target;
     use aos_proto_types::{
         CONNECT_PROTOCOL_VERSION_HEADER, PlanCreatePlacementRequest, PlanUpdatePlacementRequest,
