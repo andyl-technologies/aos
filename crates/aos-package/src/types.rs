@@ -2381,6 +2381,7 @@ pub struct RecoveryPublication {
 /// over what is installed in the ESP slots, used by APM to reason about A/B
 /// state and retention. Persisted in `/var/lib/profiles/image/state.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageGeneration {
     /// Image-generation number (names the `image-gen-N/` directory).
     pub number: u32,
@@ -2394,8 +2395,8 @@ pub struct ImageGeneration {
     ///
     /// Runtime staging assigns [`Self::uki_path`] from the local monotonic
     /// image generation so boot ordering does not depend on a human package
-    /// version. This field retains the signed source identity. Older and seed
-    /// records omit it when the installed and canonical paths are identical.
+    /// version. This field retains the signed source identity and is omitted
+    /// when the installed and canonical paths are identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uki_source_path: Option<String>,
     /// Store path of the sysroot toplevel this image was built from.
@@ -2405,11 +2406,9 @@ pub struct ImageGeneration {
     /// Sysroot package version.
     pub version: String,
     /// Authenticated `/var` format contract carried by this image.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_version: Option<String>,
+    pub state_version: String,
     /// Exact native ability executor store path carried by this image.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_executor_ref: Option<String>,
+    pub native_executor_ref: String,
     /// Source registry the sysroot package was installed from.
     pub registry: String,
     /// Resolved kernel store path (kernel-change detection across A/B).
@@ -4007,8 +4006,8 @@ pin = "v2026.02"
                     toplevel: "/nix/store/top1-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.1".into(),
-                    state_version: Some("7".into()),
-                    native_executor_ref: Some("/nix/store/executor-1".into()),
+                    state_version: "7".into(),
+                    native_executor_ref: "/nix/store/executor-1".into(),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k1-linux".into()),
                     evaluator_ref: "/nix/store/bl1-aos-base-lib".into(),
@@ -4028,8 +4027,8 @@ pin = "v2026.02"
                     toplevel: "/nix/store/top2-server".into(),
                     package_name: "server".into(),
                     version: "2026.06.2".into(),
-                    state_version: Some("7".into()),
-                    native_executor_ref: Some("/nix/store/executor-2".into()),
+                    state_version: "7".into(),
+                    native_executor_ref: "/nix/store/executor-2".into(),
                     registry: "core".into(),
                     kernel_path: Some("/nix/store/k2-linux".into()),
                     evaluator_ref: "/nix/store/bl2-aos-base-lib".into(),
@@ -4059,6 +4058,24 @@ pin = "v2026.02"
             parsed.generations[1].uki_source_path.as_deref(),
             Some("EFI/Linux/aos-canonical+3.efi")
         );
+
+        for required in ["state_version", "native_executor_ref"] {
+            let mut incomplete = serde_json::to_value(&state).unwrap();
+            incomplete["generations"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(required);
+
+            let error = serde_json::from_value::<ImageGenerationState>(incomplete)
+                .expect_err("the final image-generation identity must be complete");
+            assert!(error.to_string().contains(required));
+        }
+
+        let mut obsolete = serde_json::to_value(&state).unwrap();
+        obsolete["generations"][0]["legacy_state_version"] = serde_json::json!("7");
+        let error = serde_json::from_value::<ImageGenerationState>(obsolete)
+            .expect_err("obsolete image-generation fields must fail closed");
+        assert!(error.to_string().contains("legacy_state_version"));
     }
 
     fn sample_documentation_artifact() -> DocumentationArtifactMeta {

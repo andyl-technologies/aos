@@ -438,11 +438,7 @@ pub fn create_image_gc_roots(
     create_baselib_gc_root(image_gen_dir, image.module_abi, &image.evaluator_ref)?;
     atomic_symlink(&image.toplevel, &image_gen_dir.join("toplevel"))?;
 
-    let executor = image
-        .native_executor_ref
-        .as_deref()
-        .context("image generation has no native executor identity")?;
-    atomic_symlink(executor, &image_gen_dir.join("executor"))?;
+    atomic_symlink(&image.native_executor_ref, &image_gen_dir.join("executor"))?;
     Ok(())
 }
 
@@ -543,14 +539,10 @@ pub fn reconcile_image_gc_roots(
         let toplevel = dir.join("toplevel");
         let executor = dir.join("executor");
         if keep.contains(&image.number) {
-            let native_executor = image
-                .native_executor_ref
-                .as_deref()
-                .context("retained image generation has no native executor identity")?;
             for (label, store_path) in [
                 ("base library", image.evaluator_ref.as_str()),
                 ("toplevel", image.toplevel.as_str()),
-                ("native executor", native_executor),
+                ("native executor", image.native_executor_ref.as_str()),
             ] {
                 if Path::new(store_path).exists() {
                     continue;
@@ -1265,8 +1257,8 @@ mod tests {
             toplevel: format!("/nix/store/top-{number}"),
             package_name: "aos-system".to_string(),
             version: number.to_string(),
-            state_version: None,
-            native_executor_ref: Some(format!("/nix/store/executor-{number}")),
+            state_version: "1".into(),
+            native_executor_ref: format!("/nix/store/executor-{number}"),
             registry: "core".to_string(),
             kernel_path: None,
             evaluator_ref: format!("/nix/store/base-lib-{number}"),
@@ -1332,7 +1324,7 @@ mod tests {
             std::fs::create_dir(&executor).unwrap();
             image.evaluator_ref = evaluator.to_string_lossy().into_owned();
             image.toplevel = toplevel.to_string_lossy().into_owned();
-            image.native_executor_ref = Some(executor.to_string_lossy().into_owned());
+            image.native_executor_ref = executor.to_string_lossy().into_owned();
             create_image_gc_roots(
                 &image_profile.join(format!("image-gen-{}", image.number)),
                 image,
