@@ -213,12 +213,10 @@
     group = producer "service-group" serviceManagement.interfaces.groupResolution {
       name = "garage";
       allocation = "managed";
-      requested_id = 804;
     };
     principal = producer "service-principal" serviceManagement.interfaces.principalResolution {
       name = "garage";
       allocation = "managed";
-      requested_id = 804;
       description = "Garage object-storage service";
       home_directory = resultOf "home-storage" "planned-path";
       login_access = "disabled";

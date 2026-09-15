@@ -435,6 +435,9 @@
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
+  managedIdentityAllocation = import ./managed-identity-allocation.nix {
+    inherit lib;
+  };
   systemServiceModules = import ./system-service-modules.nix {
     inherit lib;
   };
@@ -870,6 +873,7 @@ in
   assert kubernetesPackageServices;
   assert kubernetesObjectManagementCore;
   assert serviceManagement;
+  assert managedIdentityAllocation;
   assert systemServiceModules;
   assert compositionDriver;
   assert builtins.attrNames smokeAbilityProjection.implementations == ["default"];

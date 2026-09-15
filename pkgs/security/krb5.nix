@@ -453,8 +453,8 @@ in
           }
         ]
         && kdcLinuxIsolation.ambient_capabilities == ["CAP_NET_BIND_SERVICE"]
-        && requests."krb5:service-group".parameters.requested_id == 806
-        && requests."krb5:service-principal".parameters.requested_id == 806;
+        && !(requests."krb5:service-group".parameters ? requested_id)
+        && !(requests."krb5:service-principal".parameters ? requested_id);
       krb5Conf = builtins.toFile "krb5-lifecycle.conf" ''
         [libdefaults]
           default_realm = EXAMPLE.TEST

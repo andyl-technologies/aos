@@ -177,7 +177,6 @@
       parameters = {
         name = "mariadb";
         allocation = "managed";
-        requested_id = 803;
       };
     };
     servicePrincipal = serviceManagement.forProducer {
@@ -187,7 +186,6 @@
       parameters = {
         name = "mariadb";
         allocation = "managed";
-        requested_id = 803;
         description = "MariaDB database service";
         home_directory = statePath;
         login_access = "disabled";
