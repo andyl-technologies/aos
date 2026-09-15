@@ -951,7 +951,7 @@
     inherit pkgs mkSystem testing;
   };
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
-    inherit pkgs mkSystem testing;
+    inherit pkgs lib mkSystem testing;
   };
 
   # Stdenv cross-cutting integration check
