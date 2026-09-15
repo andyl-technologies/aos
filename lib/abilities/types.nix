@@ -352,7 +352,12 @@ in rec {
   ]) (moduleTypes.enum ["attempt" "transaction" "instance" "persistent"]);
 
   packageOutputSelector = packageOutputType;
-  relativePath = relativePathType;
+  relativePath =
+    decorate "relative path" (schemas.string {
+      maxLength = 4096;
+      syntax = null;
+    })
+    relativePathType;
 
   runtimeString = string {
     maxLength = 4096;
@@ -640,12 +645,7 @@ in rec {
       element = deferredResult runtimeString;
       maxItems = 128;
     };
-    entryPoint =
-      decorate "executable entry point" (schemas.string {
-        maxLength = 4096;
-        syntax = null;
-      })
-      relativePathType;
+    entryPoint = relativePath;
     schema = schemas.record {
       fields = {
         artifact = schemas.artifactReference;
@@ -663,12 +663,7 @@ in rec {
     decorate "executable reference" schema authored;
 
   artifactFileReference = let
-    path =
-      decorate "artifact-relative file path" (schemas.string {
-        maxLength = 4096;
-        syntax = null;
-      })
-      relativePathType;
+    path = relativePath;
     schema = schemas.record {
       fields = {
         artifact = schemas.artifactReference;

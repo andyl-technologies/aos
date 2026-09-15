@@ -676,6 +676,18 @@ in
     device = resultOf "device" "device-node";
     timeout_millis = 30000;
   };
+  assert succeedsAs serviceTypes.storageView {
+    name = "containerd-socket";
+    source = resultOf "runtime-storage" "retained-resource";
+    access = "read-write";
+    relative_path = "containerd.sock";
+  };
+  assert !succeedsAs serviceTypes.storageView {
+    name = "escaped-socket";
+    source = resultOf "runtime-storage" "retained-resource";
+    access = "read-write";
+    relative_path = "../containerd.sock";
+  };
   assert succeedsAs serviceTypes.filesystemReadiness {scope = "local-filesystems";};
   assert !validates (minimalService
     // {
