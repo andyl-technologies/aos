@@ -329,6 +329,7 @@ mod tests {
                 observation_schema: "aos.ability.service-lifecycle-observation/v1".to_string(),
             }],
             links: Vec::new(),
+            prerequisites: Vec::new(),
             aliases: vec![RealizedServiceAlias {
                 alias: ServiceUnitIdentity::Unit {
                     unit_name: "example-compat.service".to_string(),
