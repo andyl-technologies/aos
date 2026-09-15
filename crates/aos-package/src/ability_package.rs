@@ -612,19 +612,19 @@ fn bind_ability_manifest(
     })
 }
 
-/// Resolves the sole current package-module locator from signed ability metadata.
+/// Resolves the canonical package document from signed ability metadata.
 ///
 /// The exact manifest bytes, semantic digest, package coordinate, payload
-/// binding, and artifact catalog are checked before the locator is returned.
+/// binding, and artifact catalog are checked before the document is returned.
 /// Legacy `config_module` metadata does not participate in this authority.
 ///
 /// # Errors
 ///
 /// Returns an error when the package has malformed or inconsistent ability
 /// metadata, its manifest is absent, or its module artifact is not retained.
-pub(crate) fn resolve_package_module(
+pub(crate) fn resolve_package_document(
     package_meta: &PackageMeta,
-) -> Result<Option<aos_ability_model::ModuleLocator>> {
+) -> Result<Option<PackageDocument>> {
     let Some(ability) = package_meta.ability.as_ref() else {
         return Ok(None);
     };
@@ -645,7 +645,7 @@ pub(crate) fn resolve_package_module(
         "ability package module artifact is absent from the authenticated retention catalog"
     );
 
-    Ok(Some(bound.package.package_module))
+    Ok(Some(bound.package))
 }
 
 /// Seals a package document for sibling-module tests without registry I/O.

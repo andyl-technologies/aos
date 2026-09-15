@@ -111,6 +111,8 @@ pub struct WorkingSetMember {
     pub package: String,
     /// Package version, when known.
     pub version: Option<String>,
+    /// Canonical signed ability document, when the package publishes one.
+    pub ability: Option<aos_ability_model::PackageDocument>,
     /// Store path of the package's `config` output (its config-only module),
     /// when it ships one. This is the only thing the eval reads.
     pub config_output: Option<String>,
@@ -144,6 +146,7 @@ impl WorkingSetMember {
             config_realization: None,
             package: package.into(),
             version: None,
+            ability: None,
             config_output: None,
             config_output_nar_hash: None,
             module_abi_compat: None,
@@ -735,6 +738,7 @@ where
                     config_realization: authenticated_module.config_realization.clone(),
                     package: selection.package.clone(),
                     version: Some(selection.version.clone()),
+                    ability: None,
                     config_output: Some(selection.config_output.clone()),
                     config_output_nar_hash: Some(selection.config_nar_hash.clone()),
                     module_abi_compat: Some(selection.module_abi_compat),
@@ -765,15 +769,14 @@ where
     }
 }
 
-/// Resolves and fetches every selected seed's config-only module before the
-/// first full evaluation.
+/// Resolves every selected seed's authenticated module before the first full evaluation.
 ///
 /// Seed package modules may define defaults and assertions without first
 /// triggering a missing-option error. Leaving those modules unloaded would
 /// therefore produce a false fixpoint. This preflight pins their registry
 /// identity, ABI-gates them, fetches the config output, and makes iteration
 /// zero evaluate the complete selected module set.
-fn hydrate_seed_config_modules<R, F>(
+fn hydrate_seed_modules<R, F>(
     seeds: &mut [WorkingSetMember],
     resolver: &R,
     fetcher: &F,
@@ -784,6 +787,34 @@ where
     F: ConfigOutputFetcher,
 {
     for seed in seeds {
+        let ability = resolver
+            .ability_module_exact(
+                &seed.package,
+                seed.version.as_deref(),
+                seed.outputs.self_output.as_deref(),
+            )
+            .map_err(|source| FixpointError::Fetch {
+                provider: seed.package.clone(),
+                source,
+            })?;
+        if let Some(resolved) = ability {
+            if seed.config_output.is_some() {
+                return Err(FixpointError::Fetch {
+                    provider: seed.package.clone(),
+                    source: anyhow::anyhow!(
+                        "package carries both current ability and legacy config-module authority"
+                    ),
+                });
+            }
+            seed.registry = (!resolved.registry.is_empty()).then_some(resolved.registry);
+            seed.release_trust = resolved.release_trust;
+            seed.config_realization = resolved.realization;
+            seed.version = Some(resolved.version);
+            seed.outputs.self_output = Some(resolved.runtime_output);
+            seed.ability = Some(resolved.document);
+            continue;
+        }
+
         let Some(resolved) = resolver.config_module(&seed.package) else {
             continue;
         };
@@ -1289,7 +1320,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
     }
     preclose_config_requires(&mut seed_set, &resolver);
-    hydrate_seed_config_modules(&mut seed_set, &resolver, &fetcher, cmd.module_abi)
+    hydrate_seed_modules(&mut seed_set, &resolver, &fetcher, cmd.module_abi)
         .map_err(eval_command_failure)?;
     assign_runtime_outputs(&mut seed_set, &runtime);
 
@@ -1340,7 +1371,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
             break candidate;
         }
         preclose_config_requires(&mut next, &resolver);
-        hydrate_seed_config_modules(&mut next, &resolver, &fetcher, cmd.module_abi)
+        hydrate_seed_modules(&mut next, &resolver, &fetcher, cmd.module_abi)
             .map_err(eval_command_failure)?;
         seed_set = next;
         outer_iterations += 1;
@@ -2694,6 +2725,7 @@ fn retained_cross_abi_working_set(
                 .package_outputs
                 .get(package)
                 .map(|pin| pin.version.clone()),
+            ability: None,
             config_output: Some(path.clone()),
             config_output_nar_hash: Some(nar_hash.clone()),
             module_abi_compat: Some(*compat),
