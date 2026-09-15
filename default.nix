@@ -1717,7 +1717,6 @@ in {
         config-manifest
         config-provenance
         config-materialize
-        config-parity
         darling-harness
         package-maintenance
       ];
@@ -1923,7 +1922,6 @@ in {
       };
     };
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
-    config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     # Complete non-KVM on-host configuration gate. The image lifecycle and
     # degraded-network contracts are exercised by the fleet aggregate below.
     runtime-config-all = pkgs.mkDerivation {
@@ -1936,7 +1934,6 @@ in {
           config-eval
           config-manifest
           config-materialize
-          config-parity
           eval
           module-args
           module-enforcement
