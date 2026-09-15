@@ -812,4 +812,35 @@ mod tests {
 
         assert!(error.to_string().contains("malformed or incomplete"));
     }
+
+    #[test]
+    fn module_locator_requires_a_regular_file_below_its_artifact_root() {
+        let root = std::env::temp_dir().join(format!(
+            "aos-module-locator-validation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("providers")).expect("create module fixture root");
+        fs::write(root.join("providers/module.nix"), "{ ... }: {}").expect("write module fixture");
+        let locator = aos_ability_model::ModuleLocator {
+            artifact: ArtifactReference {
+                content: Sha256Digest::of_bytes(b"module"),
+                store_path: root.display().to_string(),
+                nar_hash: Sha256Digest::of_bytes(b"module nar"),
+                closure: Sha256Digest::of_bytes(b"module closure"),
+            },
+            path: aos_ability_model::RelativePath::new("providers/module.nix")
+                .expect("valid relative module path"),
+        };
+
+        validate_module_locator_target(&locator).expect("regular module target must validate");
+
+        let missing = aos_ability_model::ModuleLocator {
+            path: aos_ability_model::RelativePath::new("providers/missing.nix")
+                .expect("valid missing path"),
+            ..locator
+        };
+        assert!(validate_module_locator_target(&missing).is_err());
+        fs::remove_dir_all(root).expect("remove module fixture root");
+    }
 }

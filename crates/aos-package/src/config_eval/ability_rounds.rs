@@ -13,8 +13,10 @@ use std::fmt;
 
 use anyhow::Result;
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, LocalKey, ModuleLocator, RequirementDeclaration,
+    ABILITY_LIMITS_V1, AbilityValue, ArtifactReference, LocalKey, ModuleLocator,
+    RequirementDeclaration,
 };
+use aos_ability_validate::PackageOutputSelector;
 use aos_contract::{Sha256Digest, canonical};
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +182,8 @@ pub struct SelectedProviderModule {
     pub locator: ModuleLocator,
     /// Supplies only the package outputs authorized by release dependency metadata.
     pub outputs: PackageOutputs,
+    /// Maps reachable symbolic outputs to authenticated artifacts for pure projection.
+    pub artifact_locators: BTreeMap<PackageOutputSelector, ArtifactReference>,
 }
 
 /// Retains the monotone selections supplied to each complete module evaluation.
@@ -518,6 +522,15 @@ fn validate_and_extend(
             if module.package.is_empty() || module.outputs.self_output.is_none() {
                 return Err(AbilityRoundError::InvalidSelection {
                     reason: "a selected provider module lacks package provenance or its authenticated self output"
+                        .to_string(),
+                });
+            }
+            if module.artifact_locators.values().any(|artifact| {
+                artifact.store_path.is_empty()
+                    || artifact.store_path.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes
+            }) {
+                return Err(AbilityRoundError::InvalidSelection {
+                    reason: "a selected provider module has an invalid artifact locator"
                         .to_string(),
                 });
             }
@@ -872,6 +885,7 @@ mod tests {
                     self_output: Some("/nix/store/lower".to_string()),
                     dependencies: BTreeMap::new(),
                 },
+                artifact_locators: BTreeMap::new(),
             }),
         }
     }

@@ -9,20 +9,21 @@ use std::path::PathBuf;
 use anyhow::Result;
 use aos_ability_model::document::{PackageSubject, PlatformIdentity};
 use aos_ability_model::{
-    AbilityActivationMode, ArtifactReference, ExportDeclaration, InterfaceDocument, InterfaceKey,
-    InterfaceName, LocalKey, ModuleLocator, PROVIDER_STATE_FORMAT_V1, PackageDocument,
-    PackageImplementation, ProviderImplementation, ProviderStateFormat, RelativePath,
-    RequiredFeature, VersionedDocument, encode_canonical,
+    AbilityActivationMode, ArtifactClosureMemberInput, ArtifactReference, ExportDeclaration,
+    InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, ModuleLocator,
+    PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation, ProviderImplementation,
+    ProviderStateFormat, RelativePath, RequiredFeature, VersionedDocument,
+    artifact_closure_identity, encode_canonical,
 };
 use aos_contract::Sha256Digest;
 use base64::Engine as _;
 use tempfile::TempDir;
 
 use super::{
-    AbilityPackageCoordinate, AbilityRetentionVerifier, CLOSURE_DIGEST_DOMAIN,
-    VerifiedAbilityPackage, VerifiedAbilityPackageSet, VerifiedAbilityRetentionManifest,
-    ability_provenance_statement, collect_distinct_artifacts, validate_ability_package_meta,
-    validate_store_root, verify_ability_package,
+    AbilityPackageCoordinate, AbilityRetentionVerifier, VerifiedAbilityPackage,
+    VerifiedAbilityPackageSet, VerifiedAbilityRetentionManifest, ability_provenance_statement,
+    collect_distinct_artifacts, validate_ability_package_meta, validate_store_root,
+    verify_ability_package,
 };
 use crate::provenance::{TrustedProvenanceKey, sign_statement_dsse_jsonl};
 use crate::types::{
@@ -152,6 +153,31 @@ fn package_decoder_rejects_an_unknown_future_state_format_feature() {
 }
 
 #[test]
+fn artifact_collection_includes_module_and_state_format_semantic_identities() {
+    let mut package = stateful_package();
+    let mut package_module = package.package.payload.clone();
+    package_module.store_path = "/nix/store/package-module".to_string();
+    package_module.nar_hash = digest('6');
+    package_module.closure = digest('7');
+    package.package_module.artifact = package_module.clone();
+
+    let mut state_format = package.package.payload.clone();
+    state_format.store_path = "/nix/store/state-format".to_string();
+    state_format.closure = digest('8');
+    package.implementation.providers[0]
+        .state_format
+        .as_mut()
+        .expect("stateful fixture has a state format")
+        .artifact = state_format.clone();
+
+    let artifacts = collect_distinct_artifacts(&package).expect("artifact catalog must collect");
+
+    assert!(artifacts.contains(&package_module));
+    assert!(artifacts.contains(&state_format));
+    assert_eq!(artifacts.len(), 3);
+}
+
+#[test]
 fn legacy_package_omits_state_format_and_round_trips_exactly() {
     let mut package = stateful_package();
     package
@@ -257,7 +283,15 @@ impl TestFixture {
             references: Vec::new(),
         };
         let closure = vec![member];
-        let closure_digest = Sha256Digest::of_canonical(CLOSURE_DIGEST_DOMAIN, &closure).unwrap();
+        let closure_digest = artifact_closure_identity(
+            "0123456789abcdfghijklmnpqrsvwxyz",
+            &[ArtifactClosureMemberInput {
+                key: "0123456789abcdfghijklmnpqrsvwxyz".to_string(),
+                nar_hash: digest('2'),
+                references: Vec::new(),
+            }],
+        )
+        .unwrap();
         let artifact = ArtifactReference {
             content: digest('1'),
             store_path: STORE_ROOT.to_string(),
@@ -704,18 +738,14 @@ fn signed_package_propagates_live_store_failures() {
 }
 
 #[test]
-fn closure_rejects_edges_outside_authenticated_catalog() {
+fn closure_mutation_invalidates_the_semantic_closure_digest() {
     let mut fixture = TestFixture::new();
     let ability = fixture.package_meta.ability.as_mut().unwrap();
     ability.artifacts[0].closure[0].references =
         vec!["3456789abcdfghijklmnpqrsvwxyz012".to_string()];
-    ability.artifacts[0].closure_digest =
-        Sha256Digest::of_canonical(CLOSURE_DIGEST_DOMAIN, &ability.artifacts[0].closure)
-            .unwrap()
-            .to_string();
 
     let error = validate_ability_package_meta(ability).unwrap_err();
-    assert!(format!("{error:#}").contains("outside its signed closure"));
+    assert!(format!("{error:#}").contains("closure digest does not match"));
 }
 
 #[test]

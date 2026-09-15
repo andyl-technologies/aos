@@ -596,9 +596,26 @@ fn render_selected_provider_module_list(
             })
             .collect::<Result<Vec<_>>>()?
             .join(" ");
+        let artifact_locators = selected
+            .artifact_locators
+            .iter()
+            .map(|(selector, artifact)| {
+                let selector_json = serde_json::to_string(selector)
+                    .context("encoding selected package-output selector")?;
+                let artifact_json = serde_json::to_string(artifact)
+                    .context("encoding authenticated artifact reference")?;
+                let path = render_output_path(&artifact.store_path, locked)?;
+                Ok(format!(
+                    "{} = {{ artifactReference = builtins.fromJSON {}; path = {path}; }};",
+                    nix_string(&selector_json),
+                    nix_string(&artifact_json),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" ");
 
         items.push(format!(
-            "    (let configRoot = {authenticated_root}; in {{ name = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; }})",
+            "    (let configRoot = {authenticated_root}; in {{ name = {}; inherit configRoot; module = configRoot + {}; outputs = {{ self = {self_output}; dependencies = {{ {dependencies} }}; }}; artifactLocators = {{ {artifact_locators} }}; }})",
             nix_string(&selected.package),
             nix_string(&format!("/{}", selected.locator.path.as_str())),
         ));
@@ -1385,7 +1402,8 @@ impl ConfigModuleResolver for RegistryConfigModules {
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_model::{ArtifactReference, ModuleLocator, RelativePath};
+    use aos_ability_model::{ArtifactReference, LocalKey, ModuleLocator, RelativePath};
+    use aos_ability_validate::PackageOutputSelector;
     use aos_contract::Sha256Digest;
 
     use super::*;
@@ -1673,8 +1691,7 @@ max = 1
         web.package_module = Some(ModuleLocator {
             artifact: ArtifactReference {
                 content: Sha256Digest::of_bytes(b"web module"),
-                store_path: "/nix/store/00000000000000000000000000000000-web-module"
-                    .to_string(),
+                store_path: "/nix/store/00000000000000000000000000000000-web-module".to_string(),
                 nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
                 closure: Sha256Digest::of_bytes(b"web module closure"),
             },
@@ -1691,9 +1708,7 @@ max = 1
         assert_eq!(
             admitted,
             [(
-                PathBuf::from(
-                    "/nix/store/00000000000000000000000000000000-web-module"
-                ),
+                PathBuf::from("/nix/store/00000000000000000000000000000000-web-module"),
                 Some(Sha256Digest::of_bytes(b"web module NAR").to_string()),
             )]
         );
@@ -1710,8 +1725,7 @@ max = 1
         web.package_module = Some(ModuleLocator {
             artifact: ArtifactReference {
                 content: Sha256Digest::of_bytes(b"web module"),
-                store_path: "/nix/store/00000000000000000000000000000000-web-module"
-                    .to_string(),
+                store_path: "/nix/store/00000000000000000000000000000000-web-module".to_string(),
                 nar_hash: Sha256Digest::of_bytes(b"web module NAR"),
                 closure: Sha256Digest::of_bytes(b"web module closure"),
             },
@@ -1719,7 +1733,11 @@ max = 1
         });
 
         let error = render_package_module_list(&[web], true).unwrap_err();
-        assert!(error.to_string().contains("both current ability-module and legacy"));
+        assert!(
+            error
+                .to_string()
+                .contains("both current ability-module and legacy")
+        );
     }
 
     #[test]
@@ -1801,6 +1819,18 @@ max = 1
                     "/nix/store/11111111111111111111111111111111-helper".to_string(),
                 )]),
             },
+            artifact_locators: BTreeMap::from([(
+                PackageOutputSelector {
+                    package: LocalKey::new("helper").unwrap(),
+                    output: LocalKey::new("out").unwrap(),
+                },
+                ArtifactReference {
+                    content: Sha256Digest::from_bytes([4; 32]),
+                    store_path: "/nix/store/11111111111111111111111111111111-helper".to_string(),
+                    nar_hash: Sha256Digest::from_bytes([5; 32]),
+                    closure: Sha256Digest::from_bytes([6; 32]),
+                },
+            )]),
         };
         let binding = SelectedAbilityBinding {
             key: "binding-child".to_string(),
@@ -1833,6 +1863,8 @@ max = 1
         assert!(rendered.contains("name = \"consumer\""));
         assert!(rendered.contains("name = \"provider\""));
         assert!(rendered.contains("module = configRoot + \"/lib/aos/provider.nix\""));
+        assert!(rendered.contains("artifactLocators"));
+        assert!(rendered.contains("artifactReference = builtins.fromJSON"));
         assert!(rendered.contains("\"binding-child\" = { request = \"request-child\""));
         assert!(!rendered.contains("-A abilityRound"));
     }

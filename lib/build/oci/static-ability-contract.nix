@@ -97,10 +97,14 @@
       else if builtins.isAttrs packageRegistry && builtins.hasAttr selector.package packageRegistry
       then builtins.getAttr selector.package packageRegistry
       else common.fail "ability selector names unknown package '${selector.package}'";
-    outputs = package.outputs or ["out"];
+    projectedOutputs = package.abilities.projection.artifactOutputs or {};
+    selectedProjection = projectedOutputs.${selector.output} or null;
+    outputs = lib.unique ((package.outputs or ["out"]) ++ builtins.attrNames projectedOutputs);
   in
     if !(builtins.elem selector.output outputs)
     then common.fail "ability selector names missing output '${selector.output}' on package '${selector.package}'"
+    else if selectedProjection != null
+    then selectedProjection.output
     else if selector.output == "out"
     then package.out or package
     else builtins.getAttr selector.output package;

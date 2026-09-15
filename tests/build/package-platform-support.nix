@@ -144,14 +144,14 @@
     };
   } ["aos"];
   companionProbe = support.releaseDerivations "x86_64-linux" {
-    example = {
+    aos = {
       type = "derivation";
       drvPath = "/nix/store/22222222222222222222222222222222-example.drv";
       outPath = "/nix/store/33333333333333333333333333333333-example";
       out = "/nix/store/33333333333333333333333333333333-example";
       outputs = ["out"];
       src = nestedSource;
-      pname = "example";
+      pname = "aos";
       version = "1";
       meta = {
         description = "companion fixture";
@@ -164,7 +164,7 @@
         storePath = "/nix/store/55555555555555555555555555555555-example-module";
       };
     };
-  } ["example"];
+  } ["aos"];
   abilityModulePayload = abilities:
     pkgs.mkDerivation {
       pname = "ability-module-layout-probe";
@@ -244,6 +244,11 @@ in
   assert fileModulePayload.drvPath == directoryModulePayload.drvPath;
   assert fileModulePayload.abilities.projection.value.package_module.path == "module.nix";
   assert directoryModulePayload.abilities.projection.value.package_module.path == "module.nix";
+  assert builtins.elem {
+    package = "self";
+    output = "module";
+  }
+  fileModulePayload.abilities.projection.value.artifacts;
   assert releaseSourcesComplete;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
@@ -300,9 +305,11 @@ in
         {
           name = "check";
           script = ''
-            test "$(find ${fileModuleArtifact} -mindepth 1 -maxdepth 1 -printf '%f\n')" = module.nix
+            test "$(find ${fileModuleArtifact} -mindepth 1 -maxdepth 1 ! -name nix-support -printf '%f\n')" = module.nix
+            test ! -e ${fileModuleArtifact}/ability-module-file-sibling.txt
             test -f ${directoryModuleArtifact}/module.nix
             test -f ${directoryModuleArtifact}/private.nix
+            test ! -e ${directoryModuleArtifact}/ability-module-directory-sibling.txt
             test "$(find ${directoryModuleArtifact} -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" = "$(printf 'module.nix\nprivate.nix')"
             mkdir -p "$out"
             cat > "$out/result" <<'EOF'
