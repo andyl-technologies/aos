@@ -118,15 +118,6 @@
     inherit (handler) arguments result;
   };
   interfaceIdentity = interface: lib.abilities.interfaceIdentity interface;
-  closedObserverResult = field: observer:
-    if
-      observer.result.kind
-      == "record"
-      && builtins.hasAttr field observer.result.fields
-      && observer.result.fields.${field}.kind == "string-enum"
-      && builtins.length observer.result.fields.${field}.values == 1
-    then builtins.head observer.result.fields.${field}.values
-    else throw "native qualification observer must return one closed ${field}";
   stateContractFor = entry: let
     persistentOutput = builtins.any (output: output.lifetime == "persistent") (
       builtins.concatMap (method: builtins.attrValues method.outputs) (
@@ -151,15 +142,13 @@
     interface = entry.interface;
     methodNames = implementation.methods;
     observer = projectedHandler entry.package qualification.observer;
-    adapter = closedObserverResult "provider" qualification.observer;
-    oracleKind = closedObserverResult "kind" qualification.observer;
-    scope = closedObserverResult "scope" qualification.observer;
+    inherit (qualification) adapter scope;
     identity = interfaceIdentity interface;
   in
     assert qualification.conformance_families != [];
     assert unique qualification.conformance_families;
     assert builtins.all (family: builtins.elem family scenarioFamilies) qualification.conformance_families;
-    assert token oracleKind; {
+    {
       inherit adapter;
       inherit scope;
       conformance_families = qualification.conformance_families;

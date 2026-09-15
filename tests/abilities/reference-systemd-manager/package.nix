@@ -192,7 +192,9 @@
         };
         };
       }) (lib.optionalAttrs (qualificationSupport != null) {
-        qualification.implementations.systemd-manager = {
+        implementations.systemd-manager.qualification = {
+          adapter = "systemd-manager";
+          scope = "host-manager";
           conformanceFamilies = [
             "authority-revocation"
             "dependent-effect"
@@ -201,11 +203,7 @@
             "incarnation-replacement"
             "provider-state-transfer"
           ];
-          observer = qualificationSupport.observerFor {
-            provider = "systemd-manager";
-            kind = "systemd";
-            scope = "host-manager";
-          };
+          observer = qualificationSupport.observer;
         };
       });
   };

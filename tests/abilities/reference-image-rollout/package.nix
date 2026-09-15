@@ -275,7 +275,9 @@
         };
         };
       }) (lib.optionalAttrs (packageName == "ability-reference-image-rollout" && qualificationSupport != null) {
-        qualification.implementations.rollout-effects = {
+        implementations.rollout-effects.qualification = {
+          adapter = "image-rollout";
+          scope = "host-machine";
           conformanceFamilies = [
             "authority-revocation"
             "dependent-effect"
@@ -284,11 +286,7 @@
             "incarnation-replacement"
             "provider-state-transfer"
           ];
-          observer = qualificationSupport.observerFor {
-            provider = "image-rollout";
-            kind = "rollout";
-            scope = "host-machine";
-          };
+          observer = qualificationSupport.observer;
         };
       });
   };

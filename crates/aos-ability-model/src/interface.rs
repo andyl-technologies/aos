@@ -811,6 +811,10 @@ pub enum PackageProbeArtifact {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderQualification {
+    /// Names the stable package-owned adapter represented by the implementation.
+    pub adapter: LocalKey,
+    /// Names the native execution scope containing the implementation's effects.
+    pub scope: LocalKey,
     /// Lists the semantic conformance families claimed by the implementation.
     pub conformance_families: Vec<LocalKey>,
     /// Defines the package-owned observer used to collect independent evidence.
