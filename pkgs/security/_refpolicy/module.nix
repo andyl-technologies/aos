@@ -203,7 +203,7 @@
             source = {
               kind = "execution-path";
               resource = resultOf "selinux-config-source" "retained-resource";
-              path = resultOf "selinux-config-source" "execution-path";
+              path = resultOf "selinux-config-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
           };
@@ -226,7 +226,7 @@
             source = {
               kind = "execution-path";
               resource = resultOf "semanage-config-source" "retained-resource";
-              path = resultOf "semanage-config-source" "execution-path";
+              path = resultOf "semanage-config-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
           };

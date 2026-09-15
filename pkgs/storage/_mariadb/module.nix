@@ -123,8 +123,8 @@
     statePath = resultOf "state-storage" "planned-path";
     runtimePath = resultOf "runtime-storage" "planned-path";
     logPath = resultOf "log-storage" "planned-path";
-    configPath = resultOf "server-configuration" "execution-path";
-    bootstrapPath = resultOf "bootstrap-configuration" "execution-path";
+    configPath = resultOf "server-configuration" "planned-path";
+    bootstrapPath = resultOf "bootstrap-configuration" "planned-path";
     credentialRequests = serviceManagement.forProducers {
       consumerInstance = "mariadb";
       interface = serviceManagement.interfaces.credentialDelivery;

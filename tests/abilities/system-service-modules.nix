@@ -77,7 +77,7 @@
   executionPath = {
     _type = "aos-request-output-reference";
     request = "system:firewall-ruleset";
-    output = "execution-path";
+    output = "planned-path";
   };
   command = arguments: {
     executable = {

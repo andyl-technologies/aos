@@ -132,7 +132,7 @@
           environment_files = [];
           condition = [];
           pre_start = [];
-          start = [(command ["-f" (resultOf "firewall-ruleset" "execution-path")])];
+          start = [(command ["-f" (resultOf "firewall-ruleset" "planned-path")])];
           post_start = [];
           stop = [(command ["flush" "ruleset"])];
           post_stop = [];
@@ -151,12 +151,12 @@
         };
         reload = {
           strategy = "command";
-          commands = [(command ["-f" (resultOf "firewall-ruleset" "execution-path")])];
+          commands = [(command ["-f" (resultOf "firewall-ruleset" "planned-path")])];
           completion = "command-exit";
         };
         configuration.views = [{
           name = "ruleset";
-          source = resultOf "firewall-ruleset" "execution-path";
+          source = resultOf "firewall-ruleset" "planned-path";
           optional = false;
         }];
       };

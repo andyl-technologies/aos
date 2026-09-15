@@ -501,7 +501,7 @@
     };
   };
   serviceFor = withCredentials: let
-    configurationPath = resultOf "server-configuration" "execution-path";
+    configurationPath = resultOf "server-configuration" "planned-path";
     credentials =
       if withCredentials
       then {

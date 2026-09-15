@@ -373,8 +373,8 @@
         execution_model = "foreground";
         environment_files = [];
         condition = [];
-        pre_start = [(command ["--mode" "validate" "--config-path" (resultOf "bootstrap-configuration" "execution-path")])];
-        start = [(command ["--disable-hot-restart" "--config-path" (resultOf "bootstrap-configuration" "execution-path")])];
+        pre_start = [(command ["--mode" "validate" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
+        start = [(command ["--disable-hot-restart" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
         post_start = [];
         stop = [];
         post_stop = [];
@@ -412,7 +412,7 @@
       configuration.views = [
         {
           name = "bootstrap";
-          source = resultOf "bootstrap-configuration" "execution-path";
+          source = resultOf "bootstrap-configuration" "planned-path";
           optional = false;
         }
       ];

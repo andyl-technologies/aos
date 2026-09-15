@@ -73,9 +73,9 @@
   statePath = resultOf "state-storage" "planned-path";
   runtimePath = resultOf "runtime-storage" "planned-path";
   logPath = resultOf "log-storage" "planned-path";
-  clientConfigurationPath = resultOf "client-configuration" "execution-path";
-  kdcConfigurationPath = resultOf "kdc-profile" "execution-path";
-  aclConfigurationPath = resultOf "administration-acl" "execution-path";
+  clientConfigurationPath = resultOf "client-configuration" "planned-path";
+  kdcConfigurationPath = resultOf "kdc-profile" "planned-path";
+  aclConfigurationPath = resultOf "administration-acl" "planned-path";
   passwordPath = resultOf "master-password" "credential-path";
 
   persistentStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {

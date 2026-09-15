@@ -177,7 +177,7 @@
               source = {
                 kind = "execution-path";
                 resource = resultOf generatorConfigurationRequest "retained-resource";
-                path = resultOf generatorConfigurationRequest "execution-path";
+                path = resultOf generatorConfigurationRequest "planned-path";
               };
               maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
             };

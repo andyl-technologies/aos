@@ -61,7 +61,7 @@
             source = {
               kind = "execution-path";
               resource = resultOf "local-rules-source" "retained-resource";
-              path = resultOf "local-rules-source" "execution-path";
+              path = resultOf "local-rules-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
           };

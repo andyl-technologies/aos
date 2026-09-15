@@ -210,7 +210,7 @@
           environment_files = [];
           condition = [];
           pre_start = [];
-          start = [(command ["--daemon" "--no-detach" "--config" (resultOf "daemon-configuration" "execution-path") "--address" cfg.address "--port" (toString cfg.port)])];
+          start = [(command ["--daemon" "--no-detach" "--config" (resultOf "daemon-configuration" "planned-path") "--address" cfg.address "--port" (toString cfg.port)])];
           post_start = [];
           stop = [];
           post_stop = [];
@@ -243,7 +243,7 @@
         configuration.views = [
           {
             name = "daemon";
-            source = resultOf "daemon-configuration" "execution-path";
+            source = resultOf "daemon-configuration" "planned-path";
             optional = false;
           }
         ];

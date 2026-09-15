@@ -206,7 +206,7 @@
             source = {
               kind = "execution-path";
               resource = resultOf "sshd-config-source" "retained-resource";
-              path = resultOf "sshd-config-source" "execution-path";
+              path = resultOf "sshd-config-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
           };

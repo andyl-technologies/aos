@@ -131,7 +131,7 @@
   commandArgs =
     [
       "--config"
-      (resultOf "configuration" "execution-path")
+      (resultOf "configuration" "planned-path")
       "--root-dir"
       "/var/lib/kubelet"
       "--hostname-override"
@@ -225,7 +225,7 @@
       configuration.views = [
         {
           name = "configuration";
-          source = resultOf "configuration" "execution-path";
+          source = resultOf "configuration" "planned-path";
           optional = false;
         }
       ];

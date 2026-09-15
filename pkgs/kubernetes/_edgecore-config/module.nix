@@ -210,7 +210,7 @@
               entry_point = "bin/edgecore";
               arguments = [
                 "--config"
-                (resultOf "configuration" "execution-path")
+                (resultOf "configuration" "planned-path")
               ];
             };
             ignore_failure = false;
@@ -275,7 +275,7 @@
       configuration.views = [
         {
           name = "configuration";
-          source = resultOf "configuration" "execution-path";
+          source = resultOf "configuration" "planned-path";
           optional = false;
         }
       ];

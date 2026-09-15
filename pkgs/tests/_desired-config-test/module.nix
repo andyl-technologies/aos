@@ -66,7 +66,7 @@
               artifact = lib.abilities.packageOutput {};
               entry_point = "bin/desired-config-test-start";
               arguments = [
-                (resultOf "environment" "execution-path")
+                (resultOf "environment" "planned-path")
                 (resultOf "state" "storage-path")
               ];
             };
@@ -87,7 +87,7 @@
       configuration.views = [
         {
           name = "environment";
-          source = resultOf "environment" "execution-path";
+          source = resultOf "environment" "planned-path";
           optional = false;
         }
       ];

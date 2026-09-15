@@ -181,7 +181,7 @@ in
           {
             _type = "aos-request-output-reference";
             request = "cloudcore:configuration";
-            output = "execution-path";
+            output = "planned-path";
           }
         ];
       };
@@ -311,7 +311,7 @@ in
       {
         _type = "aos-request-output-reference";
         request = "k3s-worker:configuration-base";
-        output = "execution-path";
+        output = "planned-path";
       }
       {
         _type = "aos-request-output-reference";

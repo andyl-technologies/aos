@@ -127,7 +127,7 @@
         environment_files = [];
         condition = [];
         pre_start = [];
-        start = [(command ["-n" "-u" principalName "-f" (resultOf "chrony-configuration" "execution-path")])];
+        start = [(command ["-n" "-u" principalName "-f" (resultOf "chrony-configuration" "planned-path")])];
         post_start = [];
         stop = [];
         post_stop = [];
@@ -193,7 +193,7 @@
       configuration.views = [
         {
           name = "chrony";
-          source = resultOf "chrony-configuration" "execution-path";
+          source = resultOf "chrony-configuration" "planned-path";
           optional = false;
         }
       ];

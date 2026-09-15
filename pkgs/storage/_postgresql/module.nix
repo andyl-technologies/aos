@@ -274,8 +274,8 @@
     relativePath = "data";
   };
   socketRuntimePath = runtimeRuntimePath;
-  serverConfigurationPath = resultOf "server-configuration" "execution-path";
-  hbaConfigurationPath = resultOf "hba-configuration" "execution-path";
+  serverConfigurationPath = resultOf "server-configuration" "planned-path";
+  hbaConfigurationPath = resultOf "hba-configuration" "planned-path";
   credentialPath = name: resultOf "credential-${name}" "credential-path";
 
   hbaConfiguration = serviceManagement.forConfiguration {

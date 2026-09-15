@@ -98,7 +98,7 @@
             source = {
               kind = "execution-path";
               resource = retainedBy "audit-rules-source";
-              path = resultOf "audit-rules-source" "execution-path";
+              path = resultOf "audit-rules-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
           };
@@ -121,7 +121,7 @@
             source = {
               kind = "execution-path";
               resource = retainedBy "auditd-configuration-source";
-              path = resultOf "auditd-configuration-source" "execution-path";
+              path = resultOf "auditd-configuration-source" "planned-path";
             };
             maximum_size_bytes = abilityTypes.limits.maxSafeInteger;
           };
