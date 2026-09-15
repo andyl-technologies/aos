@@ -55,6 +55,24 @@ in
   assert requests ? "aos-zfs-provider:zfs-metrics-schedule";
   assert requests ? "aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}";
   assert requests."aos-zfs-provider:dataset-${builtins.substring 0 32 (builtins.hashString "sha256" "srv/data")}".parameters.properties.quota == "16G";
+  assert requests."aos-zfs-provider:zfs-zed-lifecycle".parameters.execution_model == "foreground";
+  assert (builtins.head requests."aos-zfs-provider:zfs-zed-lifecycle".parameters.start).executable.arguments
+  == ["-F" "-p" "/run/zed/zed.pid" "-s" "/var/lib/zed/zed.state"];
+  assert requests."aos-zfs-provider:zfs-zed-directories".parameters.managed
+  == [
+    {
+      path = "zed";
+      purpose = "runtime";
+      mode = "0755";
+      retention = "service-lifetime";
+    }
+    {
+      path = "zed";
+      purpose = "state";
+      mode = "0755";
+      retention = "persistent";
+    }
+  ];
   assert lib.hasInfix "/dev/disk/by-partlabel/var  /var  ext4" config.environment.etc.fstab.text;
   assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" config.aos.boot.kernelParams;
   assert requests."aos-zfs-provider:zfs-kernel-tunables".parameters.values."vm.defrag_mode" == "1";
