@@ -93,7 +93,9 @@
     && outputSchema "principalResolution" "resolve" "principal-name"
     == requestSchemas.storageAllocation.fields.owner.value
     && outputSchema "groupResolution" "resolve" "group-name"
-    == requestSchemas.storageAllocation.fields.group.value;
+    == requestSchemas.storageAllocation.fields.group.value
+    && interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.schema
+    == requestSchemas.principalResolution.fields.home_directory;
   activationOutputsAreReferences =
     outputSchema "scheduledActivation" "realize" "activation-resource"
     == resourceReferenceSchema
@@ -700,7 +702,12 @@ in
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
+  assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.phase == "runtime";
+  assert interfaces.storageAllocation.document.interface.outputs.planned-path.phase == "planning";
+  assert interfaces.storageAllocation.document.interface.outputs.planned-path.lifetime == "instance";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "persistent";
+  assert interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.phase == "planning";
+  assert interfaces.persistentStorageAllocation.document.interface.outputs.planned-path.lifetime == "persistent";
   assert interfaces.persistentStorageAllocation.document.interface.methods.allocate.outputs.retained-resource.lifetime == "persistent";
   assert succeedsAs serviceTypes.storageAllocation placedStorageAllocation;
   assert !succeedsAs serviceTypes.storageAllocation invalidPlacedStorageAllocation;

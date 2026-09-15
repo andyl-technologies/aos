@@ -247,6 +247,7 @@
     outputName,
     outputType,
     outputLifetime ? "instance",
+    interfaceOutputs ? {},
     actionDescription,
     observationDescription,
     outputDescription,
@@ -272,7 +273,7 @@
     declaration = declareInterface {
       inherit name description requestType methods;
       abi = 1;
-      outputs = {};
+      outputs = interfaceOutputs;
       lifecycle = lifecyclePolicy;
       guarantees = [];
       aggregation = {
@@ -693,6 +694,10 @@
       outputName = "storage-path";
       outputDescription = "Returns the authorized execution path for the storage allocation.";
       outputType = serviceTypes.storagePath;
+      interfaceOutputs.planned-path =
+        output "planning" "instance"
+        "Returns the deterministic path selected for this storage resource before materialization."
+        serviceTypes.storagePath;
     };
     persistentStorageAllocation = producer {
       alias = "persistent-storage-allocation";
@@ -707,6 +712,10 @@
       outputDescription = "Returns the authorized execution path for the persistent storage allocation.";
       outputType = serviceTypes.storagePath;
       outputLifetime = "persistent";
+      interfaceOutputs.planned-path =
+        output "planning" "persistent"
+        "Returns the deterministic path selected for this persistent storage resource before materialization."
+        serviceTypes.storagePath;
     };
     hostPathView = producer {
       alias = "host-path-view";
