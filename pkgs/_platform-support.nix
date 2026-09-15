@@ -733,6 +733,7 @@ let
     "kubernetes/_k3s-role-package.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "security/_polkit-dbus-registration.nix" = "linux-only-config-source";
     "system/_kmod-abilities.nix" = "target-independent-source";
     "system/_kmod-provider.nix" = "target-independent-source";
     "system/_systemd-abilities.nix" = "target-independent-source";
@@ -740,6 +741,7 @@ let
     "system/_systemd-service-document.nix" = "target-independent-source";
     "system/_systemd-service-provider-lib.nix" = "target-independent-source";
     "system/_systemd-unit-document.nix" = "target-independent-source";
+    "virtualization/_libvirt-dbus-registration.nix" = "linux-only-config-source";
     "tests/_ability-package-smoke-module.nix" = "target-independent-source";
     "tests/_ability-package-smoke-provider.nix" = "target-independent-source";
     "toolchain/_bazel.nix" = "native-build-helper";
@@ -773,7 +775,6 @@ let
   factoryInventory = {
     "boot/aos-uki.nix" = "linux-only-package-factory";
     "build-support/trivial-builders.nix" = "native-build-helper-factory";
-    "system/dbus-conf.nix" = "target-independent-package-factory";
   };
 
   # Source fragments kept below underscore-prefixed directories are also
@@ -814,8 +815,10 @@ let
     "storage/_mariadb-tests/lifecycle.nix" = "linux-only-test-source";
     "storage/_postgresql/module.nix" = "linux-only-config-source";
     "storage/_postgresql-tests/lifecycle.nix" = "linux-only-test-source";
-    "system/_dbus-conf-xsl/make-session-conf.xsl" = "target-independent-source";
-    "system/_dbus-conf-xsl/make-system-conf.xsl" = "target-independent-source";
+    "system/_dbus/module.nix" = "linux-only-config-source";
+    "system/_dbus/registration-interface.nix" = "target-independent-source";
+    "system/_dbus/registration-provider.nix" = "target-independent-source";
+    "system/_dbus/registration-transition.nix" = "target-independent-source";
     "tests/_aos-registry-server/module.nix" = "linux-only-config-source";
     "tests/_aos-secret-reference-test/module.nix" = "linux-only-config-source";
     "tests/_aos-test-agent/module.nix" = "linux-only-config-source";

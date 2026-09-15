@@ -134,16 +134,7 @@ in
       );
     propagatedDeps = [];
 
-    # Pure stage-2 inventory for consumers that opt into
-    # `systemd.packages = [ pkgs.dbus ]`.
-    passthru.systemdUnitInventory = {
-      system = [];
-      user = [
-        "lib/systemd/user/dbus.service"
-        "lib/systemd/user/dbus.socket"
-        "lib/systemd/user/sockets.target.wants/dbus.socket"
-      ];
-    };
+    abilities = ./_dbus;
 
     # dbus-daemon crash-loops on activation under -fstrict-flex-arrays=3
     # (its trailing-array message structs trip _FORTIFY_SOURCE at runtime).
@@ -230,9 +221,80 @@ in
             cp -a $out$out/. $out/
             rm -rf $out/nix
           fi
+
+          # The registration controller owns the deployment-specific search
+          # order. Keep the stock policy and omit the mutable directory hooks
+          # that the controller appends after authenticated package entries.
+          sed -i \
+            -e '/<includedir>system\.d<\/includedir>/d' \
+            -e '/<include.*system-local\.conf<\/include>/d' \
+            "$out/share/dbus-1/system.conf"
+
+          mkdir -p "$out/share/aos/providers"
+          cp ${./_dbus/registration-provider.nix} \
+            "$out/share/aos/providers/dbus-registration.nix"
+          cp ${./_dbus/registration-interface.nix} \
+            "$out/share/aos/providers/registration-interface.nix"
+          cp ${./_dbus/registration-transition.nix} \
+            "$out/share/aos/providers/registration-transition.nix"
         '';
       }
     ];
+
+    checks = {
+      self,
+      pkgs,
+      ...
+    }: let
+      evaluated = lib.evalModules {
+        inherit lib;
+        modules = [
+          lib.abilities.module
+          {
+            aos.abilities.environment = {
+              authority = "deployment";
+              key = "dbus-test";
+              stage = "host";
+            };
+          }
+        ];
+        packageModules = [
+          {
+            name = "dbus";
+            module.imports = [./_dbus/module.nix];
+          }
+        ];
+      };
+      requests = evaluated.config.aos.abilities.requests;
+      lifecycle = requests."dbus:dbus-lifecycle".parameters;
+      managerIdentity = requests."dbus:dbus-manager_identity".parameters;
+      sockets = requests."dbus:dbus-socket_activation".parameters.sockets;
+      principal = requests."dbus:service-principal".parameters;
+      contractHolds =
+        self.abilities ? requirementTemplates
+        && builtins.hasAttr "service-manager-identity" self.abilities.requirementTemplates
+        && lifecycle.configuration_change_action == "reload"
+        && managerIdentity
+        == {
+          service = "dbus";
+          enabled = true;
+          name = "dbus";
+          aliases = ["messagebus"];
+        }
+        && builtins.length sockets == 1
+        && (builtins.head sockets).manager_name == "dbus"
+        && (builtins.head sockets).mode == "0666"
+        && !(principal ? requested_id);
+    in {
+      ability-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "dbus-ability-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the D-Bus native ability contract check failed";
+    };
 
     meta = {
       description = "D-Bus — freedesktop.org message bus system";

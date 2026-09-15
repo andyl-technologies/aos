@@ -41,8 +41,6 @@ in {
     '';
 
     aos.security.polkit.enable = true;
-    aos.services.dbus.packages = [pkgs.libvirt];
-
     aos.users.users.libvirt-qemu = {
       uid = 64054;
       group = "libvirt-qemu";

@@ -10,8 +10,6 @@
 in {
   environment.systemPackages = [pkgs.polkit];
 
-  aos.services.dbus.packages = lib.mkIf cfg.enable [pkgs.polkit];
-
   aos.security.wrappers = lib.mkIf cfg.enable {
     pkexec = {
       source = {

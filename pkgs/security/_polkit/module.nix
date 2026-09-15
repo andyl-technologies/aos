@@ -317,6 +317,8 @@
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
+  imports = [./dbus-registration.nix];
+
   options.aos.security.polkit = {
     enable = lib.mkOption {
       type = abilityTypes.boolean;
