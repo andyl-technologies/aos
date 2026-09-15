@@ -788,6 +788,32 @@ mod tests {
     }
 
     #[test]
+    fn selector_order_matches_the_nix_projection_boundary() {
+        let expected = json!([
+            {"package": "ability-package-smoke", "output": "out"},
+            {"package": "ability-package-smoke-provider", "output": "out"},
+            {"package": "self", "output": "module"},
+            {"package": "self", "output": "out"}
+        ]);
+        let mut canonical = projection();
+        canonical["artifacts"] = expected;
+        let canonical_bytes = aos_contract::canonical::to_vec(&canonical).unwrap();
+
+        decode_package_projection(&canonical_bytes).unwrap();
+
+        let mut output_first = canonical;
+        output_first["artifacts"] = json!([
+            {"package": "self", "output": "module"},
+            {"package": "ability-package-smoke", "output": "out"},
+            {"package": "ability-package-smoke-provider", "output": "out"},
+            {"package": "self", "output": "out"}
+        ]);
+        let output_first_bytes = aos_contract::canonical::to_vec(&output_first).unwrap();
+
+        assert!(decode_package_projection(&output_first_bytes).is_err());
+    }
+
+    #[test]
     fn resolves_symbolic_selectors_into_exact_artifact_references() {
         let bytes = aos_contract::canonical::to_vec(&projection()).unwrap();
         let projection = decode_package_projection(&bytes).unwrap();
