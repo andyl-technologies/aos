@@ -8,6 +8,7 @@
     lifecycle = serviceInterfaces.lifecycle;
     dependencies = serviceInterfaces.dependencies;
     conditions = serviceInterfaces.conditions;
+    linux_conditions = serviceInterfaces.linuxConditions;
     instantiation = serviceInterfaces.instantiation;
     supervision = serviceInterfaces.supervision;
     readiness = serviceInterfaces.readiness;
@@ -29,6 +30,7 @@
     identity = serviceInterfaces.identity;
     isolation = serviceInterfaces.isolation;
     linux_isolation = serviceInterfaces.linuxIsolation;
+    linux_device_policy = serviceInterfaces.linuxDevicePolicy;
   };
 
   uniqueBy = field: values:

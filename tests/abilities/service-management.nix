@@ -80,7 +80,9 @@
   outputSchema = interface: method: output:
     interfaces.${interface}.document.interface.methods.${method}.outputs.${output}.schema;
   producerOutputsMatchConsumers =
-    outputSchema "credentialDelivery" "deliver" "credential-path"
+    interfaces.namedCredential.document.interface.outputs.credential-resource.schema
+    == requestSchemas.credentialDelivery.fields.source
+    && outputSchema "credentialDelivery" "deliver" "credential-path"
     == requestSchemas.credentials.fields.views.element.fields.reference
     && outputSchema "storageView" "materialize" "storage-path"
     == requestSchemas.storage.fields.mounts.element.fields.source
@@ -249,6 +251,12 @@
           negated = true;
         }
       ];
+      linux_conditions.capabilities = [
+        {
+          capability = "CAP_SYS_TIME";
+          available = true;
+        }
+      ];
       instantiation = {
         kind = "instance";
         template = "worker";
@@ -340,6 +348,21 @@
           relationship = "trigger";
         }
       ];
+      linux_device_policy = {
+        baseline_access = "standard-runtime-devices";
+        rules = [
+          {
+            selector = {
+              kind = "class";
+              device_type = "character";
+              class = "ptp";
+            };
+            read = true;
+            write = true;
+            create_node = false;
+          }
+        ];
+      };
     };
   expandedExtended = serviceManagement.forService {
     inherit serviceTypes;
@@ -488,6 +511,46 @@
     // {
       ambient_capabilities = ["CAP_SYS_ADMIN"];
     };
+  invalidLinuxConditions.capabilities = [
+    {
+      capability = "sys-time";
+      available = true;
+    }
+  ];
+  invalidLinuxDevicePolicy = {
+    baseline_access = "standard-runtime-devices";
+    rules = [
+      {
+        selector = {
+          kind = "number";
+          device_type = "character";
+          major = -1;
+        };
+        read = true;
+        write = false;
+        create_node = false;
+      }
+    ];
+  };
+  namedCredentialResolution = serviceManagement.forProducer {
+    consumerInstance = "system:registry-hub";
+    key = "credential-source";
+    interface = interfaces.namedCredential;
+    parameters = {
+      name = "hub-jwt";
+      scope = "system";
+    };
+  };
+  namedCredentialDelivery = serviceManagement.forProducer {
+    consumerInstance = "system:registry-hub";
+    key = "credential-delivery";
+    interface = interfaces.credentialDelivery;
+    parameters = {
+      name = "jwt-secret";
+      source = resultOf "credential-source" "credential-resource";
+      encrypted = false;
+    };
+  };
   credentialProducers =
     builtins.genList (index: {
       key = "credential-${builtins.toString index}";
@@ -884,6 +947,10 @@ in
   assert producerInterfacesReleaseEphemeralResources;
   assert activationOutputsAreReferences;
   assert readinessOutputsAreReferences;
+  assert interfaces.namedCredential.document.interface.outputs.credential-resource.phase == "planning";
+  assert interfaces.namedCredential.document.interface.outputs.credential-resource.lifetime == "instance";
+  assert !interfaces.namedCredential.document.interface.lifecycle.releases_ephemeral_on_disable;
+  assert interfaces.namedCredential.methods == ["observe"];
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.lifetime == "instance";
   assert interfaces.storageAllocation.document.interface.methods.allocate.outputs.storage-path.phase == "runtime";
   assert interfaces.storageAllocation.document.interface.outputs.planned-path.phase == "planning";
@@ -909,6 +976,32 @@ in
   assert succeedsAs serviceTypes.resourceLimit unboundedResourceLimit;
   assert validates (minimalService // {linux_isolation = linuxIsolation;});
   assert !validates (minimalService // {linux_isolation = invalidLinuxIsolation;});
+  assert succeedsAs serviceTypes.linuxConditions {
+    service = "clock";
+    enabled = true;
+    capabilities = [
+      {
+        capability = "CAP_SYS_TIME";
+        available = true;
+      }
+    ];
+  };
+  assert !succeedsAs serviceTypes.linuxConditions ({
+      service = "clock";
+      enabled = true;
+    }
+    // invalidLinuxConditions);
+  assert succeedsAs serviceTypes.linuxDevicePolicy {
+    service = "clock";
+    enabled = true;
+    baseline_access = "standard-runtime-devices";
+    rules = extendedService.linux_device_policy.rules;
+  };
+  assert !succeedsAs serviceTypes.linuxDevicePolicy ({
+      service = "clock";
+      enabled = true;
+    }
+    // invalidLinuxDevicePolicy);
   assert builtins.attrNames expanded.requests == ["main-lifecycle"];
   assert builtins.attrNames splitExpanded.declarations == ["requirementTemplates"];
   assert splitExpanded.declarations.requirementTemplates == expanded.requirementTemplates;
@@ -942,6 +1035,8 @@ in
     "main-failure_policy"
     "main-instantiation"
     "main-lifecycle"
+    "main-linux_conditions"
+    "main-linux_device_policy"
     "main-reload"
     "main-resources"
     "main-scheduling"
@@ -1013,6 +1108,10 @@ in
     relative_path = "../containerd.sock";
   };
   assert succeedsAs serviceTypes.filesystemReadiness {scope = "local-filesystems";};
+  assert succeedsAs serviceTypes.namedCredential {
+    name = "hub-jwt";
+    scope = "system";
+  };
   assert !validates (minimalService
     // {
       instantiation = {
@@ -1048,6 +1147,17 @@ in
   assert builtins.attrNames systemCredentialBatch.requirementTemplates == ["system:credential-delivery"];
   assert builtins.length (builtins.attrNames systemCredentialBatch.requests) == 6;
   assert systemCredentialBatch.requests."system:credential-0".consumer == "system:secrets";
+  assert namedCredentialResolution.requests."system:credential-source".parameters
+  == {
+    name = "hub-jwt";
+    scope = "system";
+  };
+  assert namedCredentialDelivery.requests."system:credential-delivery".parameters.source
+  == {
+    _type = "aos-request-output-reference";
+    request = "system:credential-source";
+    output = "credential-resource";
+  };
   assert succeedsAs serviceTypes.principalResolution principalResolution;
   assert !succeedsAs serviceTypes.principalResolution invalidPrincipalResolution;
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
