@@ -36,6 +36,10 @@ pub struct ServiceCommand {
     pub out: PathBuf,
     /// Private evaluator scratch directory.
     pub eval_root: PathBuf,
+    /// Durable provisioning evidence and last-known-good input directory.
+    pub provisioning_state: PathBuf,
+    /// Immutable image version recorded with provisioning evidence.
+    pub image_version: String,
     /// Verbosity forwarded to the evaluator.
     pub verbose: u8,
 }
@@ -51,14 +55,17 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
     create_runtime_directories(command)?;
     remove_stale_output(&command.out)?;
     remove_stale_output(Path::new(RUNTIME_GRAPH))?;
+    prepare_provisioning_input(command)?;
 
     if retained_reevaluation_is_required() {
-        return crate::sysroot::reeval_active_config_for_boot(
+        let result = crate::sysroot::reeval_active_config_for_boot(
             Path::new(SYSTEM_PROFILE),
             command.eval_root.clone(),
             command.out.clone(),
             command.verbose,
         );
+        cache_accepted_input(command, result)?;
+        return Ok(());
     }
 
     let (host_nix, image_default_host) = stage_host_module(command)?;
@@ -68,7 +75,7 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         active_runtime_modules(Path::new(ACTIVE_MANIFEST), Path::new(SYSTEM_STATE))?;
     let desired = command.desired.is_file().then(|| command.desired.clone());
 
-    run_eval_command(&EvalCommand {
+    let result = run_eval_command(&EvalCommand {
         host_nix,
         runtime_modules,
         runtime_module_root,
@@ -84,7 +91,69 @@ pub fn run(command: &ServiceCommand) -> Result<()> {
         retained_host_inputs: None,
         require_signed_host_nix: false,
         image_default_host,
-    })
+    });
+    cache_accepted_input(command, result)
+}
+
+fn prepare_provisioning_input(command: &ServiceCommand) -> Result<()> {
+    let stash = Path::new(crate::metadata::stash::DEFAULT_STASH_DIR);
+    crate::metadata::state::persist_provisioning_state(
+        &crate::metadata::PersistProvisioningOptions {
+            stash_dir: stash.to_path_buf(),
+            state_dir: command.provisioning_state.clone(),
+            module_abi: command.module_abi,
+            image_version: command.image_version.clone(),
+        },
+    )?;
+
+    if !command.host_nix.is_file() {
+        crate::metadata::state::restore_runtime_input(stash, &command.provisioning_state)
+            .context("restoring the last authenticated host input")?;
+    }
+    verify_missing_host_is_image_authored(command)
+}
+
+fn verify_missing_host_is_image_authored(command: &ServiceCommand) -> Result<()> {
+    if command.host_nix.is_file() || !Path::new(SYSTEM_STATE).is_file() {
+        return Ok(());
+    }
+    let state: crate::types::ConfigGenerationState = serde_json::from_slice(
+        &fs::read(SYSTEM_STATE).with_context(|| format!("reading {SYSTEM_STATE}"))?,
+    )
+    .with_context(|| format!("parsing {SYSTEM_STATE}"))?;
+    if state.current == 0 && state.generations.is_empty() {
+        return Ok(());
+    }
+
+    let manifest_path = Path::new(SYSTEM_PROFILE)
+        .join(format!("gen-{}", state.current))
+        .join("manifest.json");
+    let manifest: ConfigManifest = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    manifest.validate()?;
+    if matches!(manifest.inputs.host_nix.trust_mode.as_str(), "image" | "image-default") {
+        Ok(())
+    } else {
+        bail!(
+            "operator-backed host input is unavailable for configuration generation {}",
+            state.current
+        )
+    }
+}
+
+fn cache_accepted_input(command: &ServiceCommand, result: Result<()>) -> Result<()> {
+    result?;
+    if command.out.is_file() && command.host_nix.is_file() {
+        crate::metadata::state::cache_runtime_input(
+            Path::new(crate::metadata::stash::DEFAULT_STASH_DIR),
+            &command.provisioning_state,
+        )
+        .context("caching the accepted host input")?;
+    }
+    Ok(())
 }
 
 fn remove_stale_output(path: &Path) -> Result<()> {

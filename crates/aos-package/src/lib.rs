@@ -688,6 +688,12 @@ pub enum PackageCommand {
         /// Private evaluator scratch directory.
         #[arg(long = "eval-root", default_value = config_eval::stock::DEFAULT_EVAL_ROOT)]
         eval_root: PathBuf,
+        /// Durable provisioning state and last-known-good input directory.
+        #[arg(long = "provisioning-state", default_value = metadata::state::DEFAULT_STATE_DIR)]
+        provisioning_state: PathBuf,
+        /// Immutable image version recorded with provisioning evidence.
+        #[arg(long = "image-version")]
+        image_version: String,
     },
     /// Apply a converged config manifest into a per-generation `/etc` lower.
     ///
@@ -3662,6 +3668,8 @@ pub async fn run(
         desired,
         out,
         eval_root,
+        provisioning_state,
+        image_version,
     } = command
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
@@ -3672,6 +3680,8 @@ pub async fn run(
             desired: desired.clone(),
             out: out.clone(),
             eval_root: eval_root.clone(),
+            provisioning_state: provisioning_state.clone(),
+            image_version: image_version.clone(),
             verbose,
         });
         if let Err(error) = &result {

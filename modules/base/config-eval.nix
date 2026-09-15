@@ -241,6 +241,8 @@ in {
       desired = cfg.desired;
       manifest = cfg.manifest;
       evalRoot = "/run/aos-eval";
+      provisioningState = provisioningStateDir;
+      imageVersion = config.aos.system.version;
     };
 
     assertions = [
@@ -299,7 +301,6 @@ in {
       requires = ["local-fs.target"];
       after = ["local-fs.target"];
       before = [
-        "aos-host-config-restore.service"
         "aos-eval.service"
         "multi-user.target"
       ];
@@ -402,89 +403,6 @@ in {
           printf '%s\n' "$running" > /run/aos/image-reeval-required
         else
           rm -f /run/aos/image-reeval-required
-        fi
-      '';
-    };
-
-    systemd.services.aos-provisioning-persist = {
-      description = "Persist provisioning evidence and manual repart definitions";
-      wantedBy = ["multi-user.target"];
-      requires = ["local-fs.target"];
-      after = [
-        "local-fs.target"
-        "aos-config-seed.service"
-      ];
-      before = [
-        "aos-host-config-restore.service"
-        "aos-eval.service"
-        "multi-user.target"
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        StateDirectory = "aos-provisioning";
-        StateDirectoryMode = "0700";
-      };
-      script = ''
-        ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime persist-provisioning \
-          --state-dir ${provisioningStateDir} \
-          --module-abi ${toString cfg.moduleAbi} \
-          --image-version ${config.aos.system.version}
-      '';
-    };
-
-    systemd.services.aos-host-config-restore = {
-      description = "Restore the last fully evaluated host input";
-      wantedBy = ["multi-user.target"];
-      after = ["aos-provisioning-persist.service" "aos-firstboot-reeval.service"];
-      before = [
-        "aos-eval.service"
-        "multi-user.target"
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        StateDirectory = "aos-provisioning";
-        StateDirectoryMode = "0700";
-      };
-      script = ''
-        set -eu
-        if [ ! -e "${cfg.hostNix}" ]; then
-          if ! ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime restore-runtime \
-            --state-dir ${provisioningStateDir}; then
-            echo "aos-eval: cached host input is invalid; retaining the active generation" >&2
-            exit 1
-          fi
-        fi
-
-        # A missing operator input is legitimate only when no operator-backed
-        # generation has ever been committed. If fresh metadata and the
-        # authenticated cache are both absent after a platform/signed
-        # generation, fail closed instead of evaluating `{}` and silently
-        # erasing the host's policy.
-        if [ ! -e "${cfg.hostNix}" ] && [ -s /var/lib/profiles/system/state.json ]; then
-          current=$(${pkgs.jq}/bin/jq -er '.current' /var/lib/profiles/system/state.json)
-          # The seeded image state deliberately has no config generation yet.
-          # Its first stage-2 transaction must be allowed to evaluate the
-          # authenticated image-default empty module and create gen-1.
-          if [ "$current" -eq 0 ] && ${pkgs.jq}/bin/jq -e '.generations == []' \
-            /var/lib/profiles/system/state.json >/dev/null; then
-            :
-          else
-            manifest="/var/lib/profiles/system/gen-$current/manifest.json"
-            [ -s "$manifest" ] || {
-              echo "aos-eval: current generation has no retained host provenance; retaining it" >&2
-              exit 1
-            }
-            trust=$(${pkgs.jq}/bin/jq -er '.inputs.host_nix.trust_mode' "$manifest")
-            case "$trust" in
-              image|image-default) ;;
-              *)
-                echo "aos-eval: operator-backed host input is unavailable; retaining generation $current" >&2
-                exit 1
-                ;;
-            esac
-          fi
         fi
       '';
     };
@@ -978,23 +896,6 @@ in {
       '';
     };
 
-    systemd.services.aos-host-config-cache = {
-      description = "Cache the last fully evaluated host input";
-      wantedBy = ["multi-user.target"];
-      after = ["aos-eval.service"];
-      before = ["multi-user.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        StateDirectory = "aos-provisioning";
-        StateDirectoryMode = "0700";
-      };
-      script = ''
-        if [ -s "${cfg.manifest}" ] && [ -s "${cfg.hostNix}" ]; then
-          ${pkgs.aos.metadataRuntime}/bin/aos-metadata-runtime cache-runtime \
-            --state-dir ${provisioningStateDir}
-        fi
-      '';
-    };
+
   };
 }

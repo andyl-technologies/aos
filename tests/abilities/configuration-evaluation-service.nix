@@ -22,6 +22,8 @@
             desired = "/etc/aos/packages.d/desired.toml";
             manifest = "/run/aos/manifest.json";
             evalRoot = "/run/aos-eval";
+            provisioningState = "/var/lib/aos-provisioning";
+            imageVersion = "2026.09";
           };
         }
       ];
@@ -73,6 +75,10 @@ in
           "/run/aos/manifest.json"
           "--eval-root"
           "/run/aos-eval"
+          "--provisioning-state"
+          "/var/lib/aos-provisioning"
+          "--image-version"
+          "2026.09"
         ];
       };
       ignore_failure = false;
