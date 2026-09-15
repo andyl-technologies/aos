@@ -20,16 +20,27 @@
   pathFor = resource: let
     digest = builtins.hashString "sha256" (builtins.toJSON resource.resource);
   in "/run/aos/configurations/${resource.resource.key}-${digest}";
-  compose = {resources, ...}: {
-    requests = {};
-    outputs = {};
-    conditionalRequirements = [];
+  compose = {resources, ...}: let
     realizations = builtins.mapAttrs (_: resource: {
         schema = "aos.configuration.materializer-realization/v1";
         path = pathFor resource;
       })
       resources;
-  };
+    paths = builtins.map (realization: realization.path) (builtins.attrValues realizations);
+    uniquePaths = builtins.attrNames (builtins.listToAttrs (builtins.map (path: {
+        name = path;
+        value = true;
+      })
+      paths));
+  in
+    if builtins.length paths != builtins.length uniquePaths
+    then throw "configuration resources select the same materialization path"
+    else {
+      requests = {};
+      outputs = {};
+      conditionalRequirements = [];
+      inherit realizations;
+    };
 in {
   config.aos.abilities.implementations.configuration-materialization = {
     inherit provide compose;

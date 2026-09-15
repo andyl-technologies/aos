@@ -36,7 +36,14 @@
     inherit value;
   };
   artifactPath = path: {
-    kind = "artifact-path";
+    kind = "artifact-file-path";
+    reference = {
+      artifact = lib.abilities.packageOutput {};
+      inherit path;
+    };
+  };
+  artifactDirectoryPath = path: {
+    kind = "artifact-directory-path";
     reference = {
       artifact = lib.abilities.packageOutput {};
       inherit path;
@@ -91,6 +98,8 @@
       (artifactPath "etc/openldap/schema/cosine.schema")
       (literal "\ninclude ")
       (artifactPath "etc/openldap/schema/inetorgperson.schema")
+      (literal "\nmodulepath ")
+      (artifactDirectoryPath "libexec/openldap")
       (literal "\npidfile ")
       (executionPath (resultOf "runtime-storage" "storage-path"))
       (literal "/slapd.pid\nargsfile ")
