@@ -438,6 +438,9 @@
   attestationVerifierService = import ./attestation-verifier-service.nix {
     inherit lib pkgs;
   };
+  aosPackageRuntimeServices = import ./aos-package-runtime-services.nix {
+    inherit lib pkgs;
+  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -967,6 +970,7 @@ in
   assert upgradeTransitionFixture;
   assert k3sControllerTerminal;
   assert attestationVerifierService;
+  assert aosPackageRuntimeServices;
   assert serviceManagement;
   assert managedIdentityAllocation;
   assert systemServiceModules;

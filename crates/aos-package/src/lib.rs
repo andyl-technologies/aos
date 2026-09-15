@@ -617,6 +617,9 @@ pub enum PackageCommand {
         #[arg(long)]
         output_dir: PathBuf,
     },
+    /// Hidden: produce the host package-attestation quote for the service controller.
+    #[command(name = "__attest-service", hide = true)]
+    AttestService,
     /// Hidden: load fleet BPF-LSM policies selected by host policy.
     #[command(name = "_load-ebpf-lsm-policies", hide = true)]
     LoadEbpfLsmPolicies {
@@ -1299,6 +1302,7 @@ impl PackageCommand {
                 | PackageCommand::TestReconcileExposedUnits { .. }
                 | PackageCommand::TestVerifyPackageAttestation { .. }
                 | PackageCommand::TestProducePackageAttestationQuote { .. }
+                | PackageCommand::AttestService
                 | PackageCommand::Attest {
                     command: AttestCommand::VerifyBootCommit { .. }
                         | AttestCommand::VerifyRolloutBootCommit { .. }
@@ -1380,6 +1384,7 @@ impl PackageCommand {
             | PackageCommand::TestReconcileExposedUnits { .. }
             | PackageCommand::TestVerifyPackageAttestation { .. }
             | PackageCommand::TestProducePackageAttestationQuote { .. }
+            | PackageCommand::AttestService
             | PackageCommand::Eval { .. }
             | PackageCommand::Materialize { .. }
             | PackageCommand::Config { .. } => Portable,
@@ -3904,6 +3909,10 @@ pub async fn run(
         return run_produce_package_attestation_quote(nonce, output_dir, printer);
     }
 
+    if let PackageCommand::AttestService = command {
+        return run_package_attestation_service();
+    }
+
     if let PackageCommand::Attest {
         command:
             AttestCommand::Quote {
@@ -4429,6 +4438,9 @@ pub async fn run(
         }
         PackageCommand::AbilityStageReceive { .. } => {
             unreachable!("AbilityStageReceive is handled before ApmConfig::load")
+        }
+        PackageCommand::AttestService => {
+            unreachable!("AttestService is handled before ApmConfig::load")
         }
         PackageCommand::Fetch { .. } => {
             unreachable!("Fetch is handled before ApmConfig::load")
@@ -5398,6 +5410,74 @@ fn run_produce_package_attestation_quote(
         ));
     }
     Ok(())
+}
+
+fn run_package_attestation_service() -> Result<()> {
+    let nonce_path = Path::new("/run/aos-attest/nonce");
+    let event_log_path = Path::new("/run/log/aos-packages.cel");
+    let output_dir = Path::new("/var/lib/aos-attest/quote");
+    let result_path = Path::new("/var/lib/aos-attest/quote.json");
+    let temporary_result = Path::new("/var/lib/aos-attest/quote.json.tmp");
+
+    let result = (|| -> Result<()> {
+        if !package_attestation::tpm_available()? {
+            return Ok(());
+        }
+
+        let nonce = fs::read_to_string(nonce_path)
+            .with_context(|| format!("reading verifier nonce {}", nonce_path.display()))?;
+        let event_log = fs::metadata(event_log_path).with_context(|| {
+            format!("inspecting package event log {}", event_log_path.display())
+        })?;
+        if event_log.len() == 0 {
+            bail!("package attestation event log is empty");
+        }
+
+        remove_directory_if_present(output_dir)?;
+        remove_file_if_present(result_path)?;
+        remove_file_if_present(temporary_result)?;
+
+        let quote = package_attestation::produce_package_quote(nonce.trim(), output_dir)?;
+        let mut encoded = serde_json::to_vec(&quote)
+            .context("serializing the package-attestation service result")?;
+        encoded.push(b'\n');
+        fs::write(temporary_result, encoded)
+            .with_context(|| format!("writing {}", temporary_result.display()))?;
+        fs::rename(temporary_result, result_path).with_context(|| {
+            format!(
+                "publishing package-attestation result {}",
+                result_path.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    let cleanup =
+        remove_file_if_present(nonce_path).and_then(|()| remove_file_if_present(temporary_result));
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup_error)) => Err(error.context(format!(
+            "also failed to clean package-attestation service state: {cleanup_error:#}"
+        ))),
+    }
+}
+
+fn remove_file_if_present(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
+fn remove_directory_if_present(path: &Path) -> Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    }
 }
 
 fn run_enroll_package_attestation_quote(

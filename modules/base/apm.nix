@@ -78,9 +78,6 @@
         builtins.map (name: "${package}.${name}") overlaps
     )
     credentialPackages;
-  packageAttestationReadinessUnits =
-    lib.optionals cfg.enable ["aos-install-baked-packages.service"];
-
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
     }
@@ -302,6 +299,11 @@ in {
       ];
 
     aos.apm.installAtBoot.etc = installAtBootEtc;
+    aos.packageRuntime.packageProfile = {
+      enable = cfg.enable;
+      desiredText = desiredToml;
+    };
+    aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = cfg.enable;
 
     # These image-fixed helpers must be built in stage 1. The on-host stage-2
     # evaluator receives only their frozen paths and has no script builder.
@@ -387,89 +389,6 @@ in {
       };
       script = ''
         ${pkgs.aos.packageRuntime}/bin/.aos-package-runtime-unwrapped recover-credential-transactions
-      '';
-    };
-
-    systemd.services.aos-attest = {
-      description = "Produce AOS package attestation quote";
-      requires = packageAttestationReadinessUnits;
-      after = packageAttestationReadinessUnits;
-      serviceConfig = {
-        Type = "oneshot";
-        RuntimeDirectory = "aos-attest";
-        RuntimeDirectoryMode = "0700";
-        RuntimeDirectoryPreserve = "yes";
-        StateDirectory = "aos-attest";
-        StateDirectoryMode = "0700";
-      };
-      script = ''
-        nonce_file=/run/aos-attest/nonce
-        event_log=/run/log/aos-packages.cel
-        output_dir=/var/lib/aos-attest/quote
-        quote_json=/var/lib/aos-attest/quote.json
-        quote_json_tmp=/var/lib/aos-attest/quote.json.tmp
-        cleanup() {
-          status=$?
-          if ! ${pkgs.coreutils}/bin/rm -f -- "$nonce_file" "$quote_json_tmp"; then
-            if [ "$status" -eq 0 ]; then
-              status=1
-            fi
-          fi
-          exit "$status"
-        }
-        trap cleanup EXIT
-        # Package attestation produces a TPM quote over PCR 15. On TPM-less
-        # machines the PCR measurement is skipped entirely (see
-        # `measure_activated_packages` in crates/aos-package), so there is
-        # nothing to quote — skip cleanly instead of failing. This keeps the
-        # `apm upgrade --system` reconcile from failing on TPM-less hosts that
-        # bundle an exposed package (the same "degrade gracefully" intent as the
-        # measurement gate). `tpm2_tcti` probes these same device nodes.
-        if [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
-          echo "no TPM device; skipping package attestation quote" >&2
-          exit 0
-        fi
-        if [ ! -s "$nonce_file" ]; then
-          echo "write verifier nonce hex to $nonce_file before starting aos-attest.service" >&2
-          exit 2
-        fi
-        if [ ! -s "$event_log" ]; then
-          echo "package attestation event log $event_log is not ready" >&2
-          exit 3
-        fi
-        ${pkgs.coreutils}/bin/rm -rf -- "$output_dir"
-        ${pkgs.coreutils}/bin/rm -f -- "$quote_json" "$quote_json_tmp"
-        ${pkgs.aos.apm}/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
-        ${pkgs.coreutils}/bin/mv -f -- "$quote_json_tmp" "$quote_json"
-      '';
-    };
-
-    systemd.services.aos-install-baked-packages = {
-      description = "Reconcile image-baked AOS desired packages";
-      wantedBy = ["multi-user.target"];
-      before = [
-        "aos-preset.service"
-        "multi-user.target"
-      ];
-      after = [
-        "aos-eval.service"
-        "aos-config-seed.service"
-        "aos-seed-profiles.service"
-        "nix-overlay-setup.service"
-      ];
-      unitConfig.ConditionPathExists = "/etc/aos/packages.d/desired.toml";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "2min";
-      };
-      script = ''
-        # A host-eval manifest belongs to the unit graph. Never run a
-        # second, monolithic reconciler over the same desired state.
-        if [ -e /run/aos/manifest.json ]; then
-          exit 0
-        fi
-        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.apm}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
       '';
     };
 

@@ -660,7 +660,6 @@ in {
         ]
         ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable "aos-image-measurement-index.service";
       before = [
-        "aos-install-baked-packages.service"
         "aos-graph-compile.service"
         "multi-user.target"
       ];
