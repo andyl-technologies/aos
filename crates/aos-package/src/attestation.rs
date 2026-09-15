@@ -1516,7 +1516,7 @@ mod tests {
             crate::registry::store::NarBytes::from_hash(&format!("sha256:{}", "dd".repeat(32)), 0)
                 .unwrap()
                 .nar_hash();
-        let closure_hash = hash_cjson(&serde_json::json!([[&module_path, &module_nar_hash]]));
+        let document_digest = format!("sha256:{}", "cc".repeat(32));
         AttestationInputs {
             base_lib: BaseLibAttInput {
                 store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-base-lib".to_string(),
@@ -1535,12 +1535,14 @@ mod tests {
                 release_tag: Some("1.4.0".to_string()),
                 tag_signer_key: Some("deadbeef".to_string()),
                 realization: Some(format!("sha256:{}", "aa".repeat(32))),
-                closure_hash,
-                count: 1,
-                store_paths: vec![module_path],
-                nar_hashes: vec![module_nar_hash],
-                package_names: vec!["web".to_string()],
-                provenance: serde_json::json!({"module_abi_compat":[{"min":1,"max":1}]}),
+                modules: vec![PackageModuleAttInput {
+                    package: "web".to_string(),
+                    document_digest,
+                    store_path: module_path,
+                    nar_hash: module_nar_hash,
+                    entrypoint: "module.nix".to_string(),
+                    origin: crate::config_eval::materialize::PackageModuleOrigin::Registry,
+                }],
             },
             host_nix: HostNixAttInput {
                 content_hash: "sha256:dd".to_string(),
@@ -1579,6 +1581,7 @@ mod tests {
                 realization: format!("sha256:{}", "aa".repeat(32)),
                 package_modules: vec![VerifiedPackageModule {
                     package_name: "web".to_string(),
+                    document_digest: format!("sha256:{}", "cc".repeat(32)),
                     store_path: "/nix/store/cccccccccccccccccccccccccccccccc-web-config"
                         .to_string(),
                     nar_hash: crate::registry::store::NarBytes::from_hash(
@@ -1587,7 +1590,7 @@ mod tests {
                     )
                     .unwrap()
                     .nar_hash(),
-                    module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
+                    entrypoint: "module.nix".to_string(),
                 }],
             }],
             image_package_modules: Vec::new(),
@@ -1809,15 +1812,13 @@ mod tests {
         modules.release_tag = None;
         modules.tag_signer_key = None;
         modules.realization = None;
-        modules.provenance["origins"] = serde_json::json!(["image"]);
+        modules.modules[0].origin = crate::config_eval::materialize::PackageModuleOrigin::Image;
         let image_member = VerifiedPackageModule {
-            package_name: modules.package_names[0].clone(),
-            store_path: modules.store_paths[0].clone(),
-            nar_hash: modules.nar_hashes[0].clone(),
-            module_abi_compat: serde_json::from_value(
-                modules.provenance["module_abi_compat"][0].clone(),
-            )
-            .unwrap(),
+            package_name: modules.modules[0].package.clone(),
+            document_digest: modules.modules[0].document_digest.clone(),
+            store_path: modules.modules[0].store_path.clone(),
+            nar_hash: modules.modules[0].nar_hash.clone(),
+            entrypoint: modules.modules[0].entrypoint.clone(),
         };
         let record = computed_with_inputs(inputs);
         let mut policy = sample_policy();
@@ -1834,7 +1835,7 @@ mod tests {
         modules.release_tag = None;
         modules.tag_signer_key = None;
         modules.realization = None;
-        modules.provenance["origins"] = serde_json::json!(["image"]);
+        modules.modules[0].origin = crate::config_eval::materialize::PackageModuleOrigin::Image;
         let record = computed_with_inputs(inputs);
         let error =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
@@ -1845,7 +1846,12 @@ mod tests {
     #[test]
     fn verifier_rejects_unknown_package_module_origin() {
         let mut inputs = sample_inputs();
-        inputs.package_modules.provenance["origins"] = serde_json::json!(["unsigned-local"]);
+        inputs.package_modules.registry = None;
+        inputs.package_modules.release_tag = None;
+        inputs.package_modules.tag_signer_key = None;
+        inputs.package_modules.realization = None;
+        inputs.package_modules.modules[0].origin =
+            crate::config_eval::materialize::PackageModuleOrigin::Image;
         let record = computed_with_inputs(inputs);
         let error =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
@@ -1872,14 +1878,7 @@ mod tests {
             release_tag: None,
             tag_signer_key: None,
             realization: None,
-            closure_hash: hash_cjson(&Value::Array(Vec::new())),
-            count: 0,
-            store_paths: Vec::new(),
-            nar_hashes: Vec::new(),
-            package_names: Vec::new(),
-            provenance: serde_json::json!({
-                "module_abi_compat": []
-            }),
+            modules: Vec::new(),
         };
         let record = computed_with_inputs(inputs.clone());
         let result =
@@ -1979,17 +1978,7 @@ mod tests {
         );
 
         let mut inputs = sample_inputs();
-        inputs.package_modules.provenance["module_abi_compat"][0]["max"] = serde_json::json!(2);
-        let record = computed_with_inputs(inputs);
-        assert_eq!(
-            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
-                .unwrap_err(),
-            GenAttestationFailure::Tag
-        );
-
-        let mut inputs = sample_inputs();
-        inputs.package_modules.provenance["authorizations"] =
-            serde_json::json!([{"owns": ["firewall"], "contributes": {}}]);
+        inputs.package_modules.modules[0].document_digest = format!("sha256:{}", "ab".repeat(32));
         let record = computed_with_inputs(inputs);
         assert_eq!(
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
@@ -1999,33 +1988,12 @@ mod tests {
     }
 
     #[test]
-    fn verifier_recomputes_module_closure_and_rejects_duplicates() {
+    fn verifier_rejects_duplicate_package_modules() {
         let mut inputs = sample_inputs();
-        inputs.package_modules.closure_hash = format!("sha256:{}", "ff".repeat(32));
-        let record = computed_with_inputs(inputs);
-        assert_eq!(
-            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
-                .unwrap_err(),
-            GenAttestationFailure::Tag
-        );
-
-        let mut inputs = sample_inputs();
-        inputs.package_modules.count = 2;
         inputs
             .package_modules
-            .store_paths
-            .push(inputs.package_modules.store_paths[0].clone());
-        inputs
-            .package_modules
-            .nar_hashes
-            .push(inputs.package_modules.nar_hashes[0].clone());
-        inputs
-            .package_modules
-            .package_names
-            .push(inputs.package_modules.package_names[0].clone());
-        inputs.package_modules.provenance = serde_json::json!({
-            "module_abi_compat": [{"min":1,"max":1}, {"min":1,"max":1}]
-        });
+            .modules
+            .push(inputs.package_modules.modules[0].clone());
         let record = computed_with_inputs(inputs);
         assert_eq!(
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
@@ -2157,7 +2125,7 @@ mod tests {
     #[test]
     fn rejects_incomplete_package_module_provenance() {
         let mut inputs = sample_inputs();
-        inputs.package_modules.nar_hashes.clear();
+        inputs.package_modules.modules[0].nar_hash.clear();
         let tpm = MockTpm {
             pcr7: PCR7_HEX.to_string(),
             pcr11: PCR11_HEX.to_string(),
