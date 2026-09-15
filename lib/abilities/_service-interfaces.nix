@@ -426,6 +426,17 @@
           "Observes the service's exact runtime resource limits."
           read;
       });
+    environment =
+      canonical "service-environment" "aos.service.environment"
+      "Contributes literal, deferred, and artifact-composed environment bindings to a service resource."
+      serviceTypes.environment
+      serviceTypes.observations.environment
+      (targetResource: {
+        observe =
+          method serviceTypes.environment serviceTypes.observations.environment targetResource "observe"
+          "Observes the service's exact environment bindings and executable search path."
+          read;
+      });
     directories =
       canonical "service-directories" "aos.service.directories"
       "Contributes managed runtime, state, cache, and log directories to a service resource."

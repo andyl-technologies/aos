@@ -77,6 +77,13 @@
     element = environmentFile;
     maxItems = 64;
   };
+  environmentVariable = types.deferredResult types.runtimeString;
+  environmentVariables = types.map {
+    keyMaxLength = 128;
+    keySyntax = "local-key-v1";
+    maxEntries = 256;
+    value = environmentVariable;
+  };
 
   serviceBaseFields = {
     service = localKey;
@@ -377,12 +384,29 @@
   } [];
   resources = request resourcesFeature;
 
+  environmentFeature = feature {
+    variables = environmentVariables;
+    search_path = types.list {
+      element = types.artifactSelector;
+      maxItems = 256;
+    };
+  } [];
+  environment = request environmentFeature;
+
   managedDirectory = types.record {
     fields = {
       name = localKey;
       purpose = types.enum ["cache" "logs" "runtime" "state"];
       mode = types.fileMode;
       retention = types.enum ["service-lifetime" "restart" "persistent"];
+      owner = {
+        type = types.optional (types.deferredResult principalName);
+        optional = true;
+      };
+      group = {
+        type = types.optional (types.deferredResult groupName);
+        optional = true;
+      };
     };
   };
   directoriesFeature = feature {
@@ -616,7 +640,10 @@
     permit_realtime = types.boolean;
     permit_suid_sgid = types.boolean;
     process_visibility = types.enum ["all" "same-user" "self"];
-    security_label = boundedString 4096;
+    security_label = {
+      type = types.optional (boundedString 4096);
+      optional = true;
+    };
     syscall_architectures = localKeys;
     syscall_allow = types.list {
       element = boundedString 128;
@@ -820,7 +847,7 @@
 
   networkReadiness = types.record {
     fields = {
-      scope = types.enum ["configured-connectivity" "default-route" "local-connectivity"];
+      scope = types.enum ["configured-connectivity" "default-route" "local-connectivity" "stack-prepared"];
       address_families = types.list {
         element = types.enum ["ipv4" "ipv6"];
         maxItems = 2;
@@ -1141,6 +1168,10 @@
           type = types.optional resourcesFeature;
           optional = true;
         };
+        environment = {
+          type = types.optional environmentFeature;
+          optional = true;
+        };
         directories = {
           type = types.optional directoriesFeature;
           optional = true;
@@ -1224,6 +1255,7 @@
     failurePolicy = observationFor "failure-policy" failurePolicy featureState {};
     scheduling = observationFor "scheduling" scheduling featureState {};
     resources = observationFor "resources" resources featureState {};
+    environment = observationFor "environment" environment featureState {};
     directories = observationFor "directories" directories featureState {};
     activation = observationFor "activation" activation featureState {};
     credentials = observationFor "credentials" credentials featureState {};
@@ -1286,6 +1318,7 @@ in {
     failurePolicy
     scheduling
     resources
+    environment
     directories
     activation
     credentials

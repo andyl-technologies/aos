@@ -226,15 +226,27 @@
           value = 2147483648;
         };
       };
+      environment = {
+        variables = {
+          INSTANCE = "blue";
+          CONFIG_PATH = resultOf "configuration" "execution-path";
+        };
+        search_path = [
+          (lib.abilities.packageOutput {package = "coreutils";})
+          (lib.abilities.packageOutput {package = "iproute2";})
+        ];
+      };
       directories.managed = [
         {
           name = "worker-runtime";
           purpose = "runtime";
           mode = "0750";
           retention = "restart";
+          owner = resultOf "principal" "principal-name";
+          group = resultOf "group" "group-name";
         }
         {
-          name = "worker-state";
+          name = "worker-runtime";
           purpose = "state";
           mode = "0700";
           retention = "persistent";
@@ -262,6 +274,20 @@
         service = "administration";
         enabled = false;
       };
+  };
+  systemOwnedService = serviceManagement.forService {
+    inherit serviceTypes;
+    consumerInstance = "system:bind";
+    declaration = minimalService // {
+      lifecycle = minimalService.lifecycle // {
+        start = [{
+          executable = command.executable // {
+            arguments = [(resultOf "configuration" "execution-path")];
+          };
+          ignore_failure = false;
+        }];
+      };
+    };
   };
   scheduledActivation = {
     name = "periodic";
@@ -293,34 +319,40 @@
     options = ["nodev" "nosuid"];
     timeout_millis = 30000;
   };
+  credentialProducers =
+    builtins.genList (index: {
+      key = "credential-${builtins.toString index}";
+      parameters = {
+        name = "credential-${builtins.toString index}";
+        source = lib.abilities.resourceReference {
+          interface = interfaces.credentialDelivery.identity;
+          resource = {
+            provider = lib.abilities.instanceId {
+              environment = lib.abilities.environmentId {
+                authority = "deployment";
+                key = "service-test";
+                stage = "host";
+              };
+              key = "credential-provider";
+            };
+            key = "credential-${builtins.toString index}";
+          };
+          operations = ["observe"];
+          lifetime = "persistent";
+        };
+        encrypted = false;
+      };
+    })
+    6;
   credentialBatch = serviceManagement.forProducers {
     consumerInstance = "consumer";
     interface = interfaces.credentialDelivery;
-    producers =
-      builtins.genList (index: {
-        key = "credential-${builtins.toString index}";
-        parameters = {
-          name = "credential-${builtins.toString index}";
-          source = lib.abilities.resourceReference {
-            interface = interfaces.credentialDelivery.identity;
-            resource = {
-              provider = lib.abilities.instanceId {
-                environment = lib.abilities.environmentId {
-                  authority = "deployment";
-                  key = "service-test";
-                  stage = "host";
-                };
-                key = "credential-provider";
-              };
-              key = "credential-${builtins.toString index}";
-            };
-            operations = ["observe"];
-            lifetime = "persistent";
-          };
-          encrypted = false;
-        };
-      })
-      6;
+    producers = credentialProducers;
+  };
+  systemCredentialBatch = serviceManagement.forProducers {
+    consumerInstance = "system:secrets";
+    interface = interfaces.credentialDelivery;
+    producers = credentialProducers;
   };
   structuredConfiguration = {
     name = "structured";
@@ -492,6 +524,7 @@ in
     "main-conditions"
     "main-dependencies"
     "main-directories"
+    "main-environment"
     "main-failure_policy"
     "main-instantiation"
     "main-lifecycle"
@@ -504,7 +537,23 @@ in
     "main-watchdog"
   ];
   assert expandedDisabledSubservice.requests.administration-lifecycle.parameters.enabled == false;
+  assert systemOwnedService.requests."system:main-lifecycle".consumer == "system:bind";
+  assert systemOwnedService.requests."system:main-lifecycle".requirement == "system:service-lifecycle";
+  assert (builtins.head systemOwnedService.requests."system:main-lifecycle".parameters.start).executable.arguments
+  == [{
+    _type = "aos-request-output-reference";
+    request = "system:configuration";
+    output = "execution-path";
+  }];
   assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
+  assert expandedExtended.requests.main-environment.parameters.variables.INSTANCE == "blue";
+  assert !validates (extendedService
+    // {
+      environment = {
+        variables.PATH = "/bin";
+        search_path = [(lib.abilities.packageOutput {package = "coreutils";})];
+      };
+    });
   assert succeedsAs serviceTypes.scheduledActivation scheduledActivation;
   assert succeedsAs serviceTypes.pathActivation pathActivation;
   assert succeedsAs serviceTypes.mountResource mountResource;
@@ -561,6 +610,9 @@ in
   assert expanded.requests.main-lifecycle.consumer == "consumer";
   assert builtins.attrNames credentialBatch.requirementTemplates == ["credential-delivery"];
   assert builtins.length (builtins.attrNames credentialBatch.requests) == 6;
+  assert builtins.attrNames systemCredentialBatch.requirementTemplates == ["system:credential-delivery"];
+  assert builtins.length (builtins.attrNames systemCredentialBatch.requests) == 6;
+  assert systemCredentialBatch.requests."system:credential-0".consumer == "system:secrets";
   assert succeedsAs serviceTypes.configurationMaterialization structuredConfiguration;
   assert succeedsAs serviceTypes.configurationMaterialization projectedStructuredConfiguration;
   assert builtins.elem "boolean" (builtins.map (node: node.kind) projectedStructuredConfiguration.source.document);
