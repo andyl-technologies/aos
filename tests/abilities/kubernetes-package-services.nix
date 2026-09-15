@@ -62,6 +62,19 @@
     };
   };
   disabledKubelet = evaluate "kubelet" "1.34.0" ../../pkgs/kubernetes/_kubelet-config/module.nix {};
+  k3sWorker = evaluate "k3s-worker" "1.34.1" ../../pkgs/kubernetes/_k3s-config/module.nix {
+    k3s = {
+      enable = true;
+      serverUrl = "https://control.example.test:6443";
+      token.ref = "system-credential:k3s-token";
+    };
+  };
+  disabledK3sWorker = evaluate "k3s-worker" "1.34.1" ../../pkgs/kubernetes/_k3s-config/module.nix {
+    k3s = {
+      serverUrl = "https://control.example.test:6443";
+      token.ref = "system-credential:k3s-token";
+    };
+  };
   commandFor = evaluated: key: (requests evaluated).${key}.parameters.start;
   sourceFor = evaluated: package: (requests evaluated)."${package}:configuration".parameters.source;
   literalConfiguration = evaluated: package:
@@ -151,6 +164,32 @@ in
   assert portableOptionTree cloudcore.options.cloudcore;
   assert portableOptionTree edgecore.options.edgecore;
   assert portableOptionTree kubelet.options.kubelet;
+  assert requests disabledK3sWorker == {};
+  assert disabledK3sWorker.config.aos.abilities.requirementTemplates == k3sWorker.config.aos.abilities.requirementTemplates;
+  assert k3sWorker.config.k3s.role == "worker";
+  assert (requests k3sWorker)."k3s-worker:kernel-modules".parameters.modules
+  == [
+    "br_netfilter"
+    "vxlan"
+    "ip_set"
+  ];
+  assert (builtins.head (commandFor k3sWorker "k3s-worker:k3s-lifecycle")).executable
+  == {
+    artifact = lib.abilities.packageOutput {};
+    entry_point = "bin/k3s-role-start";
+    arguments = [
+      {
+        _type = "aos-request-output-reference";
+        request = "k3s-worker:addons";
+        output = "execution-path";
+      }
+      {
+        _type = "aos-request-output-reference";
+        request = "k3s-worker:token";
+        output = "credential-path";
+      }
+    ];
+  };
   assert (requests kubelet)."kubelet:kubelet-supervision".parameters.startup_protocol == "notification";
   assert let
     configuration = builtins.fromJSON (
@@ -185,7 +224,7 @@ in
   ];
   assert (builtins.head (commandFor kubelet "kubelet:kubelet-lifecycle")).executable.artifact
   == lib.abilities.packageOutput {};
-  assert !(cloudcore.config ? systemd) && !(edgecore.config ? systemd) && !(kubelet.config ? systemd);
+  assert !(cloudcore.config ? systemd) && !(edgecore.config ? systemd) && !(kubelet.config ? systemd) && !(k3sWorker.config ? systemd);
   assert !(cloudcore.config.cloudcore ? config) && !(cloudcore.config.cloudcore ? credentials);
   assert !(edgecore.config.edgecore ? config) && !(edgecore.config.edgecore ? credentials);
   assert !(kubelet.config.kubelet ? config) && !(kubelet.config.kubelet ? credentials); true
