@@ -199,7 +199,7 @@
             (command "sbin/slaptest" [
               "-u"
               "-f"
-              (resultOf "server-configuration" "execution-path")
+              (resultOf "server-configuration" "planned-path")
             ])
           ];
           start = [
@@ -207,7 +207,7 @@
               "-d"
               "0"
               "-f"
-              (resultOf "server-configuration" "execution-path")
+              (resultOf "server-configuration" "planned-path")
               "-h"
               (lib.concatStringsSep " " cfg.listenUrls)
             ])
@@ -241,7 +241,7 @@
         configuration.views = [
           {
             name = "server";
-            source = resultOf "server-configuration" "execution-path";
+            source = resultOf "server-configuration" "planned-path";
             optional = false;
           }
         ];

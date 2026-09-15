@@ -62,7 +62,7 @@
 
   statePath = resultOf "state-storage" "planned-path";
   runtimePath = resultOf "runtime-storage" "planned-path";
-  configurationPath = resultOf "server-configuration" "execution-path";
+  configurationPath = resultOf "server-configuration" "planned-path";
 
   stateStorage = producer "state-storage" serviceManagement.interfaces.persistentStorageAllocation {
     name = "state";

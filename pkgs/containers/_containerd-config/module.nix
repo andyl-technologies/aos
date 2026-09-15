@@ -106,7 +106,7 @@
   rootPath = resultOf "root-storage" "planned-path";
   statePath = resultOf "state-storage" "planned-path";
   socketPath = resultOf "grpc-socket-view" "planned-path";
-  configPath = resultOf "server-configuration" "execution-path";
+  configPath = resultOf "server-configuration" "planned-path";
   serverConfig =
     {
       version = 3;

@@ -64,7 +64,7 @@
         environment_files = [];
         condition = [];
         pre_start = [];
-        start = [(command ["-c" (resultOf "configuration-file" "execution-path")])];
+        start = [(command ["-c" (resultOf "configuration-file" "planned-path")])];
         post_start = [];
         stop = [];
         post_stop = [];
@@ -99,7 +99,7 @@
       configuration.views = [
         {
           name = "smartd";
-          source = resultOf "configuration-file" "execution-path";
+          source = resultOf "configuration-file" "planned-path";
           optional = false;
         }
       ];

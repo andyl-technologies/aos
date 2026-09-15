@@ -231,7 +231,7 @@
       execution_model = "foreground";
       start = [
         (selfCommand "bin/aos-registry-server-git" [
-          (resultOf "git-configuration" "execution-path")
+          (resultOf "git-configuration" "planned-path")
         ])
       ];
     } {
@@ -241,7 +241,7 @@
       configuration.views = [
         {
           name = "git";
-          source = resultOf "git-configuration" "execution-path";
+          source = resultOf "git-configuration" "planned-path";
           optional = false;
         }
       ];
@@ -262,7 +262,7 @@
         (command "aos" "bin/aos" [
           "serve"
           "--config"
-          (resultOf "serve-configuration" "execution-path")
+          (resultOf "serve-configuration" "planned-path")
         ])
       ];
     } {
@@ -283,12 +283,12 @@
       configuration.views = [
         {
           name = "cache";
-          source = resultOf "cache-configuration" "execution-path";
+          source = resultOf "cache-configuration" "planned-path";
           optional = false;
         }
         {
           name = "serve";
-          source = resultOf "serve-configuration" "execution-path";
+          source = resultOf "serve-configuration" "planned-path";
           optional = false;
         }
       ];

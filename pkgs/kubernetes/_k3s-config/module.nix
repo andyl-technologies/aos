@@ -313,7 +313,7 @@
               artifact = lib.abilities.packageOutput {};
               entry_point = "bin/k3s-role-start";
               arguments = [
-                (resultOf "configuration-base" "execution-path")
+                (resultOf "configuration-base" "planned-path")
                 (resultOf "token" "credential-path")
               ];
             };

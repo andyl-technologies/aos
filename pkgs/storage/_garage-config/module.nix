@@ -252,7 +252,7 @@
           environment_files = [];
           condition = [];
           pre_start = [];
-          start = [(command ["-c" (resultOf "server-configuration" "execution-path") "server"])];
+          start = [(command ["-c" (resultOf "server-configuration" "planned-path") "server"])];
           post_start = [];
           stop = [];
           post_stop = [];
@@ -284,7 +284,7 @@
         configuration.views = [
           {
             name = "server";
-            source = resultOf "server-configuration" "execution-path";
+            source = resultOf "server-configuration" "planned-path";
             optional = false;
           }
         ];

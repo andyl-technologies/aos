@@ -189,7 +189,7 @@ in
       path = {
         _type = "aos-request-output-reference";
         request = "zram-generator:zram-generator-config";
-        output = "execution-path";
+        output = "planned-path";
       };
     };
     maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;

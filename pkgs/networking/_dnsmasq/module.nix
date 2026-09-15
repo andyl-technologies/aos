@@ -87,7 +87,7 @@
   };
 
   runtimePath = resultOf "runtime-storage" "planned-path";
-  configurationPath = resultOf "server-configuration" "execution-path";
+  configurationPath = resultOf "server-configuration" "planned-path";
   dnsEndpoints = [
     {
       transport = "tcp";

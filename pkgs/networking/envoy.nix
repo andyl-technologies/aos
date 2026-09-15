@@ -1461,7 +1461,7 @@ in
           && builtins.elemAt arguments 1 == "validate"
           && builtins.elemAt arguments 2 == "--config-path"
           && configurationArgument.request == "envoy:bootstrap-configuration"
-          && configurationArgument.output == "execution-path")
+          && configurationArgument.output == "planned-path")
         && mainResources.open_files.value == 1048576
         && !(lib.hasInfix "/etc/aos/packages/envoy" (builtins.toJSON abilities.requests))
         && !(lib.hasInfix "/var/log/aos-pkg-envoy" (builtins.toJSON abilities.requests));

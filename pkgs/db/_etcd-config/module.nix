@@ -289,7 +289,7 @@
           environment_files = [];
           condition = [];
           pre_start = [];
-          start = [(command ["--config-file" (resultOf "server-configuration" "execution-path")])];
+          start = [(command ["--config-file" (resultOf "server-configuration" "planned-path")])];
           post_start = [];
           stop = [];
           post_stop = [];
@@ -326,7 +326,7 @@
         configuration.views = [
           {
             name = "server";
-            source = resultOf "server-configuration" "execution-path";
+            source = resultOf "server-configuration" "planned-path";
             optional = false;
           }
         ];

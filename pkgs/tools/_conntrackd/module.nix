@@ -59,7 +59,7 @@
     kind = "execution-path";
     inherit value;
   };
-  configPath = resultOf "daemon-configuration" "execution-path";
+  configPath = resultOf "daemon-configuration" "planned-path";
   runtimePath = resultOf "runtime-storage" "planned-path";
   logPath = resultOf "log-storage" "planned-path";
   configurationFragments = [

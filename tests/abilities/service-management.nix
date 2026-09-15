@@ -369,7 +369,7 @@
         {
           kind = "path";
           predicate = "exists";
-          path = resultOf "configuration" "execution-path";
+          path = resultOf "configuration" "planned-path";
           negated = false;
         }
         {
@@ -452,7 +452,7 @@
       environment = {
         variables = {
           INSTANCE = "blue";
-          CONFIG_PATH = resultOf "configuration" "execution-path";
+          CONFIG_PATH = resultOf "configuration" "planned-path";
         };
         search_path = [
           (lib.abilities.packageOutput {package = "coreutils";})
@@ -542,7 +542,7 @@
                 executable =
                   command.executable
                   // {
-                    arguments = [(resultOf "configuration" "execution-path")];
+                    arguments = [(resultOf "configuration" "planned-path")];
                   };
                 ignore_failure = false;
               }
@@ -567,7 +567,7 @@
     enabled = true;
     paths = [
       {
-        path = resultOf "configuration" "execution-path";
+        path = resultOf "configuration" "planned-path";
         event = "changed";
       }
     ];
@@ -939,7 +939,7 @@
         kind = "execution-path";
         path = [];
         value =
-          lib.abilities.resultOf "configuration" "execution-path"
+          lib.abilities.resultOf "configuration" "planned-path"
           // {request = "package:configuration";};
       }
     ];
@@ -1313,7 +1313,7 @@ in
     {
       _type = "aos-request-output-reference";
       request = "system:configuration";
-      output = "execution-path";
+      output = "planned-path";
     }
   ];
   assert expandedExtended.requests.main-lifecycle.parameters.start_timeout_unbounded;
