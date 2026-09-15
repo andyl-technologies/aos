@@ -10,9 +10,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 
-use anyhow::{Context, Result, bail};
-use aos_doc_model::{OptionDocument, PackageDocumentation, PathSegment, document_json_schema};
-use serde_json::{Value, json};
+use anyhow::{bail, Context, Result};
+use aos_doc_model::{document_json_schema, OptionDocument, PackageDocumentation, PathSegment};
+use serde_json::{json, Value};
 
 use crate::documentation::LoadedDocumentation;
 
@@ -249,8 +249,7 @@ impl Server {
     fn options(&self) -> impl Iterator<Item = (&PackageDocumentation, &OptionDocument)> {
         self.documents.iter().flat_map(|document| {
             document
-                .document
-                .options
+                .ability_options
                 .iter()
                 .map(move |option| (&document.document, option))
         })
@@ -258,10 +257,6 @@ impl Server {
 
     fn completions(&self, text: &str, line: usize, character: usize) -> Value {
         let catalog = AbilityCatalog::new(&self.documents);
-        if let Some(items) = catalog.contextual_completions(text, line, character) {
-            return json!({ "isIncomplete": false, "items": items });
-        }
-
         let prefix = word_at_position(text, line, character, true).unwrap_or_default();
         let mut seen = BTreeSet::new();
         let mut items = self
@@ -705,11 +700,14 @@ fn write_message(output: &mut impl Write, value: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_ability_model::{AbilityActivationMode, LocalKey, RequiredFeature};
+    use aos_ability_model::{
+        AbilityActivationMode, ArtifactReference, LocalKey, OptionSource, OptionVisibility,
+        PackageOptionDeclaration, ProviderImplementation, RelativePath, RequiredFeature,
+    };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
-        AbilityExportReference, DocumentationIdentity, DocumentedPackage, InlineSpan, OptionOwner,
-        OptionType, PackageAbilityReference, ProseBlock, SourceLocator, Visibility,
+        AbilityExportReference, DocumentationIdentity, DocumentedPackage, OptionType,
+        PackageAbilityReference,
     };
 
     fn document() -> PackageDocumentation {
@@ -730,46 +728,6 @@ mod tests {
                 expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
-            options: vec![OptionDocument {
-                path: vec![
-                    PathSegment::Literal {
-                        value: "nginx".to_string(),
-                    },
-                    PathSegment::Literal {
-                        value: "virtualHosts".to_string(),
-                    },
-                    PathSegment::Wildcard {
-                        name: "name".to_string(),
-                    },
-                    PathSegment::Literal {
-                        value: "root".to_string(),
-                    },
-                ],
-                display_path: "nginx.virtualHosts.<name>.root".to_string(),
-                option_type: OptionType::Path,
-                type_signature: "absolute path".to_string(),
-                description: vec![ProseBlock::Paragraph {
-                    spans: vec![InlineSpan::Text {
-                        text: "Sets the virtual host document root.".to_string(),
-                    }],
-                }],
-                default: None,
-                example: None,
-                visibility: Visibility::Public,
-                read_only: false,
-                deprecated: None,
-                replacement: None,
-                owner: OptionOwner {
-                    package: "nginx".to_string(),
-                    root: "nginx".to_string(),
-                    interface_abi: Some(1),
-                },
-                contributable: true,
-                source: Some(SourceLocator {
-                    path: aos_ability_model::RelativePath::new("module.nix")
-                        .expect("valid source path"),
-                }),
-            }],
         };
         document.identity.semantic_schema_sha256 =
             document.computed_semantic_schema_sha256().unwrap();
@@ -780,32 +738,76 @@ mod tests {
         let interface = aos_ability_model::builtin::systemd_manager_interface()
             .expect("build systemd interface");
         let interface_key = interface.interface_key().expect("interface key");
+        let implementation = ProviderImplementation {
+            name: LocalKey::new("service-manager").expect("implementation name"),
+            description: "Implements the service manager interface.".to_string(),
+            interface: interface_key.clone(),
+            guarantees: Vec::new(),
+            artifact: ArtifactReference {
+                content: Sha256Digest::of_bytes("provider-content"),
+                store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                nar_hash: Sha256Digest::of_bytes("provider-nar"),
+                closure: Sha256Digest::of_bytes("provider-closure"),
+            },
+            requirements: Vec::new(),
+            desired_schema: None,
+            provider_module: None,
+            handler: None,
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let implementation_key = implementation
+            .descriptor_digest()
+            .expect("implementation identity");
+        let reference = PackageAbilityReference {
+            schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
+            required_features: vec![
+                RequiredFeature::new("abilities-v1").expect("valid feature name")
+            ],
+            package: LocalKey::new("nginx").expect("valid package name"),
+            version: "1".to_string(),
+            manifest_sha256: Sha256Digest::of_bytes("manifest"),
+            package_digest: Sha256Digest::of_bytes("package"),
+            activation_mode: AbilityActivationMode::ContractsOnly,
+            interfaces: BTreeMap::from([(
+                LocalKey::new("systemd-manager-interface").expect("interface alias"),
+                interface,
+            )]),
+            guarantees: BTreeMap::new(),
+            option_declarations: vec![PackageOptionDeclaration {
+                path: ["nginx", "virtualHosts", "<name>", "root"]
+                    .map(str::to_string)
+                    .to_vec(),
+                type_signature: "absolute path".to_string(),
+                structured_type: OptionType::Path,
+                description: "Sets the virtual host document root.".to_string(),
+                default: None,
+                example: None,
+                visibility: OptionVisibility::Public,
+                read_only: false,
+                contributable: true,
+                deprecated: None,
+                replacement: None,
+                source: OptionSource {
+                    path: RelativePath::new("module.nix").expect("relative source path"),
+                },
+            }],
+            implementations: vec![implementation],
+            exports: vec![AbilityExportReference {
+                name: LocalKey::new("service-manager").expect("valid export name"),
+                interface: interface_key,
+                implementation: implementation_key,
+                requirements: Vec::new(),
+            }],
+            requirements: Vec::new(),
+            handlers: Vec::new(),
+        };
+        let ability_options = reference.documented_options();
+
         LoadedDocumentation {
             document: document(),
-            ability_reference: Some(PackageAbilityReference {
-                schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
-                required_features: vec![
-                    RequiredFeature::new("abilities-v1").expect("valid feature name"),
-                ],
-                package: LocalKey::new("nginx").expect("valid package name"),
-                version: "1".to_string(),
-                manifest_sha256: Sha256Digest::of_bytes("manifest"),
-                package_digest: Sha256Digest::of_bytes("package"),
-                activation_mode: AbilityActivationMode::ContractsOnly,
-                interfaces: BTreeMap::from([(
-                    LocalKey::new("systemd-manager-interface").expect("valid interface alias"),
-                    interface,
-                )]),
-                guarantees: BTreeMap::new(),
-                exports: vec![AbilityExportReference {
-                    name: LocalKey::new("service-manager").expect("valid export name"),
-                    interface: interface_key,
-                    implementation: Sha256Digest::of_bytes("implementation"),
-                    requirements: Vec::new(),
-                }],
-                requirements: Vec::new(),
-                handlers: Vec::new(),
-            }),
+            ability_reference: Some(reference),
+            ability_options,
         }
     }
 
@@ -823,27 +825,21 @@ mod tests {
                 .len()
                 == 1
         );
-        assert!(
-            server
-                .hover("nginx.virtualHosts.site.root", 0, 15)
-                .is_some()
-        );
-        assert!(
-            server
-                .diagnostics("nginx.virtualHosts.site.root = \"/srv\";")
-                .is_empty()
-        );
+        assert!(server
+            .hover("nginx.virtualHosts.site.root", 0, 15)
+            .is_some());
+        assert!(server
+            .diagnostics("nginx.virtualHosts.site.root = \"/srv\";")
+            .is_empty());
         let invalid = server.diagnostics("nginx.virtualHosts.site.missing = true;");
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0]["code"], "aos-unknown-option");
-        assert!(
-            server
-                .definition("nginx.virtualHosts.site.root", 0, 15)
-                .unwrap()["uri"]
-                .as_str()
-                .unwrap()
-                .starts_with("aos-source:///")
-        );
+        assert!(server
+            .definition("nginx.virtualHosts.site.root", 0, 15)
+            .unwrap()["uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("aos-source:///"));
         assert_eq!(
             server
                 .document_links("nginx.virtualHosts.<name>.root = \"/srv\";")
@@ -880,13 +876,11 @@ mod tests {
                 .iter()
                 .any(|limit| limit == "authorization-not-evaluated")
         }));
-        assert!(
-            hints[0]["inspectionDiagnostics"]
-                .as_array()
-                .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
-                    diagnostic["code"] == "deployment-authorization-not-evaluated"
-                }))
-        );
+        assert!(hints[0]["inspectionDiagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| diagnostics.iter().any(|diagnostic| {
+                diagnostic["code"] == "deployment-authorization-not-evaluated"
+            })));
     }
 
     #[test]
@@ -955,11 +949,9 @@ mod tests {
         assert_eq!(virtual_document["uri"], uri);
         assert_eq!(virtual_document["reference"], resolved["reference"]);
         assert_eq!(virtual_document["selector"], resolved["selector"]);
-        assert!(
-            virtual_document["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("Authenticated manifest"))
-        );
+        assert!(virtual_document["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Authenticated manifest")));
     }
 
     #[test]
@@ -979,11 +971,9 @@ mod tests {
         );
         assert_eq!(unknown.len(), 1);
         assert_eq!(unknown[0]["code"], "aos-ability-missing-reference");
-        assert!(
-            unknown[0]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("loaded authenticated ability catalog"))
-        );
+        assert!(unknown[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("loaded authenticated ability catalog")));
 
         let partial = server.diagnostics(
             r#"lib.abilities.request { interface = "aos.systemd-manager"; abi = 1; request = config.value; }"#,
@@ -1085,15 +1075,12 @@ mod tests {
     }
 
     #[test]
-    fn prose_changes_preserve_semantic_ability_graph_without_reload_signal()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn prose_changes_preserve_semantic_ability_graph_without_reload_signal(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let before = loaded_document();
         let mut after = before.clone();
-        after.document.options[0].description = vec![ProseBlock::Paragraph {
-            spans: vec![InlineSpan::Text {
-                text: "Clarifies usage without changing configuration meaning.".to_string(),
-            }],
-        }];
+        after.document.package.summary =
+            "Clarifies usage without changing configuration meaning.".to_string();
 
         assert_ne!(
             before.document.document_sha256().unwrap(),
@@ -1146,12 +1133,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(parsed["method"], "initialize");
-        assert!(
-            read_message(&mut io::Cursor::new(
-                b"Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}".to_vec()
-            ))
-            .is_err()
-        );
+        assert!(read_message(&mut io::Cursor::new(
+            b"Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}".to_vec()
+        ))
+        .is_err());
         let oversized = format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE_BYTES + 1);
         assert!(read_message(&mut io::Cursor::new(oversized.into_bytes())).is_err());
     }

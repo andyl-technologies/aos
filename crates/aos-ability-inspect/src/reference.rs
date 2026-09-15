@@ -16,11 +16,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
-use aos_ability_model::{ABILITY_LIMITS_V1, RequiredFeature};
-use aos_contract::Sha256Digest;
+use aos_ability_model::{RequiredFeature, ABILITY_LIMITS_V1};
 use aos_contract::limits::JsonLimits;
+use aos_contract::Sha256Digest;
 use aos_doc_model::{
-    MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference, ability_reference_supported_features,
+    ability_reference_supported_features, PackageAbilityReference, MAX_ABILITY_REFERENCE_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -609,17 +609,17 @@ mod tests {
     use std::num::NonZeroU32;
 
     use aos_ability_model::{
-        AbilityActivationMode, AggregationContract, AggregationScope, InterfaceDescriptor,
-        InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey, RequiredFeature,
-        ValueSchema,
+        AbilityActivationMode, AggregationContract, AggregationScope, ArtifactReference,
+        InterfaceDescriptor, InterfaceDocument, InterfaceName, LifecycleSemantics, LocalKey,
+        ProviderImplementation, RequiredFeature, ValueSchema,
     };
     use aos_doc_model::AbilityExportReference;
 
     use super::*;
 
     #[test]
-    fn public_reference_query_retains_shared_identity_relations_and_limits()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn public_reference_query_retains_shared_identity_relations_and_limits(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let reference = reference();
         let input = ReferenceInspectionInput::new(reference.clone())?;
         let input_bytes = input.canonical_bytes()?;
@@ -660,8 +660,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_reference_query_matches_the_cross_frontend_golden_slice()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn canonical_reference_query_matches_the_cross_frontend_golden_slice(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let input_bytes =
             include_bytes!("../../../tests/abilities/fixtures/reference-inspection-input.json");
         let query_bytes =
@@ -707,6 +707,28 @@ mod tests {
                 guarantees: Vec::new(),
             },
         };
+        let interface_key = interface.interface_key().expect("interface key");
+        let implementation = ProviderImplementation {
+            name: LocalKey::new("service").expect("implementation name"),
+            description: "Implements the test service interface.".to_string(),
+            interface: interface_key.clone(),
+            guarantees: Vec::new(),
+            artifact: ArtifactReference {
+                content: Sha256Digest::of_bytes(b"provider-content"),
+                store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                nar_hash: Sha256Digest::of_bytes(b"provider-nar"),
+                closure: Sha256Digest::of_bytes(b"provider-closure"),
+            },
+            requirements: Vec::new(),
+            desired_schema: None,
+            provider_module: None,
+            handler: None,
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let implementation_key = implementation
+            .descriptor_digest()
+            .expect("implementation identity");
         PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
             required_features: vec![RequiredFeature::new("abilities-v1").expect("feature")],
@@ -720,10 +742,12 @@ mod tests {
                 interface.clone(),
             )]),
             guarantees: BTreeMap::new(),
+            option_declarations: Vec::new(),
+            implementations: vec![implementation],
             exports: vec![AbilityExportReference {
                 name: LocalKey::new("service").expect("export"),
-                interface: interface.interface_key().expect("interface key"),
-                implementation: Sha256Digest::of_bytes(b"implementation"),
+                interface: interface_key,
+                implementation: implementation_key,
                 requirements: Vec::new(),
             }],
             requirements: Vec::new(),

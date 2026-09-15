@@ -22,7 +22,25 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     let package_name =
         serde_json::to_string(package).context("serializing package name for Nix expression")?;
     let ability_projection_expr = format!(
-        "let root = import {}/default.nix {{}}; pkg = builtins.getAttr {} root.pkgs; in if pkg ? abilities then pkg.abilities else null",
+        r#"let
+          root = import {}/default.nix {{}};
+          pkg = builtins.getAttr {} root.pkgs;
+          sanitize = value:
+            if builtins.isFunction value then null
+            else if builtins.isList value then
+              builtins.map sanitize (builtins.filter (item: !(builtins.isFunction item)) value)
+            else if builtins.isAttrs value then
+              builtins.listToAttrs (builtins.concatMap (name:
+                let field = value.${{name}}; in
+                if root.lib.hasPrefix "_" name || builtins.isFunction field
+                then []
+                else [{{ inherit name; value = sanitize field; }}]
+              ) (builtins.attrNames value))
+            else value;
+        in
+          if pkg ? abilities then sanitize {{
+            inherit (pkg.abilities) interfaces implementations requirementTemplates guarantees;
+          }} else null"#,
         nix.root().display(),
         package_name
     );
@@ -100,23 +118,15 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
         }
     }
     if let Some(projection) = ability_projection.as_ref() {
-        if let Some(activation_mode) = projection
-            .get("activation_mode")
-            .and_then(serde_json::Value::as_str)
-        {
-            printer.kv("Ability activation", activation_mode);
-        }
-        if let Some(exports) = projection
-            .get("exports")
-            .and_then(serde_json::Value::as_array)
-        {
-            printer.kv("Ability exports", &exports.len().to_string());
-        }
-        if let Some(requirements) = projection
-            .get("requirements")
-            .and_then(serde_json::Value::as_array)
-        {
-            printer.kv("Ability requirements", &requirements.len().to_string());
+        for (field, label) in [
+            ("interfaces", "Ability interfaces"),
+            ("implementations", "Ability implementations"),
+            ("requirementTemplates", "Ability requirement templates"),
+            ("guarantees", "Ability guarantees"),
+        ] {
+            if let Some(entries) = projection.get(field).and_then(serde_json::Value::as_object) {
+                printer.kv(label, &entries.len().to_string());
+            }
         }
     }
 

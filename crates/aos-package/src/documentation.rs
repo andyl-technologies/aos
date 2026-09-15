@@ -14,28 +14,29 @@ use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_ability_model::VersionedDocument as _;
 use aos_ability_validate::{
-    AbilityContractData, CheckedAbilityContract, validate_ability_contract,
+    validate_ability_contract, AbilityContractData, CheckedAbilityContract,
 };
 use aos_contract::Sha256Digest;
 use aos_core::output::{OutputMode, Printer};
 use aos_doc_model::{
-    DOCUMENT_SCHEMA, DocumentationComparison, MAX_DOCUMENT_BYTES, OptionDocument,
-    PackageAbilityReference, PackageDocumentation, SearchDocument, document_json_schema, tokenize,
+    document_json_schema, tokenize, DocumentationComparison, OptionDocument,
+    PackageAbilityReference, PackageDocumentation, PackageDocumentationProjection, SearchDocument,
+    DOCUMENT_SCHEMA, MAX_DOCUMENT_BYTES,
 };
 use aos_proto_types::{
     ComparePackageDocumentationRequest, GetPackageAbilityReferenceRequest,
     GetPackageDocumentationRequest, GetPackageDocumentationSchemaRequest,
     SearchPackageDocumentationRequest,
 };
-use aos_remote::{HubClient, hub_rpc};
+use aos_remote::{hub_rpc, HubClient};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::documentation_lsp;
-use crate::profile::{Profile, meta};
+use crate::profile::{meta, Profile};
 use crate::types::{DocumentationArtifactMeta, ProfileScope};
 use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput, OptionsCommand};
 
@@ -44,8 +45,10 @@ use crate::{DocumentationCacheCommand, DocumentationCommand, DocumentationOutput
 pub(crate) struct LoadedDocumentation {
     /// Decoded canonical document.
     pub document: PackageDocumentation,
-    /// Public contracts derived from this installed package's authenticated companion.
+    /// Public declarations derived from this package's checked signed projection.
     pub ability_reference: Option<PackageAbilityReference>,
+    /// Transient option rows derived from `ability_reference` at load time.
+    pub ability_options: Vec<OptionDocument>,
 }
 
 /// One Hub document tied to the exact indexed registry commit that served it.
@@ -55,8 +58,28 @@ struct VerifiedRemoteDocumentation {
 }
 
 impl LoadedDocumentation {
+    fn from_parts(
+        document: PackageDocumentation,
+        ability_reference: Option<PackageAbilityReference>,
+    ) -> Result<Self> {
+        let projection = PackageDocumentationProjection::new(document, ability_reference)?;
+        Ok(Self {
+            document: projection.document,
+            ability_reference: projection.ability_reference,
+            ability_options: projection.options,
+        })
+    }
+
+    fn projection(&self) -> Result<PackageDocumentationProjection> {
+        PackageDocumentationProjection::new(
+            self.document.clone(),
+            self.ability_reference.clone(),
+        )
+        .map_err(Into::into)
+    }
+
     fn render_plain(&self) -> Result<String> {
-        let mut output = self.document.render_plain();
+        let mut output = self.projection()?.render_plain();
         if let Some(reference) = &self.ability_reference {
             output.push_str(&ability_render::plain(reference)?);
         } else {
@@ -71,7 +94,7 @@ impl LoadedDocumentation {
         );
         output.push_str(&html_escape(&self.document.package.name));
         output.push_str(" documentation</title></head><body>");
-        output.push_str(&self.document.render_html_fragment());
+        output.push_str(&self.projection()?.render_html_fragment());
         if let Some(reference) = &self.ability_reference {
             output.push_str(&ability_render::html(reference)?);
         } else {
@@ -82,7 +105,7 @@ impl LoadedDocumentation {
     }
 
     fn render_roff(&self) -> Result<String> {
-        let mut output = self.document.render_roff();
+        let mut output = self.projection()?.render_roff();
         if let Some(reference) = &self.ability_reference {
             output.push_str(&ability_render::roff(reference)?);
         } else {
@@ -274,7 +297,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                 for row in rows.into_iter().filter(|row| {
                     row.key == *path && package.as_ref().is_none_or(|name| row.package == *name)
                 }) {
-                    let document = remote_document(
+                    let loaded = remote_loaded_document(
                         hub,
                         registry,
                         token.as_deref(),
@@ -284,8 +307,8 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                     )
                     .await?;
                     matches.extend(
-                        document
-                            .options
+                        loaded
+                            .ability_options
                             .into_iter()
                             .filter(|option| option.display_path == *path),
                     );
@@ -299,7 +322,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
                             .as_ref()
                             .is_none_or(|name| loaded.document.package.name == *name)
                     })
-                    .flat_map(|loaded| loaded.document.options)
+                    .flat_map(|loaded| loaded.ability_options)
                     .filter(|option| option.display_path == *path)
                     .collect()
             };
@@ -348,7 +371,7 @@ pub async fn run_options(command: &OptionsCommand, printer: &Printer) -> Result<
         OptionsCommand::Complete { prefix, system } => {
             let mut paths = load_installed_documents(scope(*system))?
                 .into_iter()
-                .flat_map(|loaded| loaded.document.options)
+                .flat_map(|loaded| loaded.ability_options)
                 .map(|option| option.display_path)
                 .filter(|path| path.starts_with(prefix))
                 .collect::<Vec<_>>();
@@ -450,7 +473,10 @@ pub(crate) fn load_installed_documents(scope: ProfileScope) -> Result<Vec<Loaded
                 load_ability_reference(ability, &apm.name, &apm.version, &installed.store_path)
             })
             .transpose()?;
-        documents.push(loaded);
+        documents.push(LoadedDocumentation::from_parts(
+            loaded.document,
+            loaded.ability_reference,
+        )?);
     }
     documents.sort_by(|left, right| {
         (&left.document.package.name, &left.document.package.version).cmp(&(
@@ -501,10 +527,7 @@ fn load_document_file(
             bail!("documentation object identity mismatch for {source}");
         }
     }
-    Ok(LoadedDocumentation {
-        document,
-        ability_reference: None,
-    })
+    LoadedDocumentation::from_parts(document, None)
 }
 
 fn load_ability_reference(
@@ -576,7 +599,7 @@ fn load_ability_reference(
         manifest: &manifest,
         retained_interfaces: &interfaces,
     })
-    .context("checking installed package ability companion")?;
+    .context("checking installed signed package ability projection")?;
     let CheckedAbilityContract::PackageSource(checked) = checked else {
         bail!("package source validation returned another contract family");
     };
@@ -636,7 +659,7 @@ fn search_loaded_documents(
     let query_terms = tokenize(query);
     let mut results = Vec::new();
     for loaded in documents {
-        for row in loaded.document.search_documents() {
+        for row in loaded.projection()?.search_documents() {
             if kind.is_some_and(|kind| row.kind != kind) {
                 continue;
             }
@@ -771,10 +794,7 @@ async fn remote_loaded_document(
         })
         .transpose()?;
 
-    Ok(LoadedDocumentation {
-        document: remote.document,
-        ability_reference,
-    })
+    LoadedDocumentation::from_parts(remote.document, ability_reference)
 }
 
 fn verify_remote_ability_reference(
@@ -1261,14 +1281,15 @@ fn install_manpage(
 mod tests {
     use super::*;
     use aos_ability_model::{
-        ABILITY_LIMITS_V1, AbilityActivationMode, InterfaceDocument, LocalKey, RequiredFeature,
-        RequirementDeclaration, RequirementStrength, ValueSchema, decode_canonical,
+        decode_canonical, AbilityActivationMode, ArtifactReference, InterfaceDocument, LocalKey,
+        OptionSource, OptionVisibility, PackageOptionDeclaration, ProviderImplementation,
+        RequiredFeature, RequirementDeclaration, RequirementStrength, ValueSchema,
+        ABILITY_LIMITS_V1,
     };
     use aos_contract::Sha256Digest;
     use aos_doc_model::{
         AbilityExportReference, AbilityHandlerReference, DocumentationIdentity, DocumentedPackage,
-        InlineSpan, OptionDocument, OptionOwner, OptionType, PackageAbilityReference, ProseBlock,
-        SourceLocator, Visibility,
+        OptionType, PackageAbilityReference,
     };
     use tempfile::TempDir;
 
@@ -1290,40 +1311,6 @@ mod tests {
                 expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "b".repeat(64)),
             },
-            options: vec![OptionDocument {
-                path: vec![
-                    aos_doc_model::PathSegment::Literal {
-                        value: "nginx".to_string(),
-                    },
-                    aos_doc_model::PathSegment::Literal {
-                        value: "enable".to_string(),
-                    },
-                ],
-                display_path: "nginx.enable".to_string(),
-                type_signature: "boolean".to_string(),
-                option_type: OptionType::Bool,
-                description: vec![ProseBlock::Paragraph {
-                    spans: vec![InlineSpan::Text {
-                        text: "Enables the HTTP server.".to_string(),
-                    }],
-                }],
-                default: None,
-                example: None,
-                visibility: Visibility::Public,
-                read_only: false,
-                deprecated: None,
-                replacement: None,
-                owner: OptionOwner {
-                    package: "nginx".to_string(),
-                    root: "nginx".to_string(),
-                    interface_abi: Some(1),
-                },
-                contributable: false,
-                source: Some(SourceLocator {
-                    path: aos_ability_model::RelativePath::new("pkgs/networking/nginx.nix")
-                        .expect("valid source path"),
-                }),
-            }],
         };
         document.identity.semantic_schema_sha256 =
             document.computed_semantic_schema_sha256().unwrap();
@@ -1343,6 +1330,34 @@ mod tests {
             syntax: None,
         });
         let interface_key = interface.interface_key().unwrap();
+        let requirement = RequirementDeclaration {
+            description: "Describes this consumed ability.".to_string(),
+            alias: LocalKey::new("service-runtime").unwrap(),
+            accepted_interfaces: vec![interface_key.clone().into()],
+            methods: Vec::new(),
+            guarantees: Vec::new(),
+            strength: RequirementStrength::Required,
+            fallback: None,
+        };
+        let implementation = ProviderImplementation {
+            name: LocalKey::new("server").unwrap(),
+            description: "Implements the test server interface.".to_string(),
+            interface: interface_key.clone(),
+            guarantees: Vec::new(),
+            artifact: ArtifactReference {
+                content: Sha256Digest::of_bytes("provider-content"),
+                store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                nar_hash: Sha256Digest::of_bytes("provider-nar"),
+                closure: Sha256Digest::of_bytes("provider-closure"),
+            },
+            requirements: vec![requirement.clone()],
+            desired_schema: None,
+            provider_module: None,
+            handler: None,
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let implementation_key = implementation.descriptor_digest().unwrap();
 
         PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.to_string(),
@@ -1361,19 +1376,29 @@ mod tests {
                 interface,
             )]),
             guarantees: std::collections::BTreeMap::new(),
+            option_declarations: vec![PackageOptionDeclaration {
+                path: vec!["nginx".to_string(), "enable".to_string()],
+                type_signature: "boolean".to_string(),
+                structured_type: OptionType::Bool,
+                description: "Enables the HTTP server.".to_string(),
+                default: None,
+                example: None,
+                visibility: OptionVisibility::Public,
+                read_only: false,
+                contributable: false,
+                deprecated: None,
+                replacement: None,
+                source: OptionSource {
+                    path: aos_ability_model::RelativePath::new("module.nix")
+                        .expect("valid option source"),
+                },
+            }],
+            implementations: vec![implementation],
             exports: vec![AbilityExportReference {
                 name: LocalKey::new("server").unwrap(),
-                implementation: Sha256Digest::of_bytes("implementation"),
+                implementation: implementation_key,
                 interface: interface_key.clone(),
-                requirements: vec![RequirementDeclaration {
-                    description: "Describes this consumed ability.".to_string(),
-                    alias: LocalKey::new("service-runtime").unwrap(),
-                    accepted_interfaces: vec![interface_key.into()],
-                    methods: Vec::new(),
-                    guarantees: Vec::new(),
-                    strength: RequirementStrength::Required,
-                    fallback: None,
-                }],
+                requirements: vec![requirement],
             }],
             requirements: Vec::new(),
             handlers: vec![AbilityHandlerReference {
@@ -1410,7 +1435,11 @@ mod tests {
     #[test]
     fn local_search_is_weighted_and_man_cache_is_profile_scoped() {
         let document = fixture();
-        let row = document
+        let reference = ability_reference();
+        let loaded = LoadedDocumentation::from_parts(document, Some(reference)).unwrap();
+        let row = loaded
+            .projection()
+            .unwrap()
             .search_documents()
             .into_iter()
             .find(|row| row.kind == "option")
@@ -1418,10 +1447,6 @@ mod tests {
         assert!(score_search_row(&row, &["enable".to_string()]) > 0);
         assert_eq!(score_search_row(&row, &["database".to_string()]), 0);
 
-        let loaded = LoadedDocumentation {
-            document,
-            ability_reference: None,
-        };
         let browsed = search_loaded_documents(std::slice::from_ref(&loaded), "", None, 25)
             .expect("empty documentation search browses packages");
         assert_eq!(browsed.len(), 1);
@@ -1436,9 +1461,11 @@ mod tests {
 
     #[test]
     fn documentation_loopback_browser_is_content_bearing_and_bounded() {
+        let reference = ability_reference();
         let loaded = LoadedDocumentation {
             document: fixture(),
-            ability_reference: Some(ability_reference()),
+            ability_options: reference.documented_options(),
+            ability_reference: Some(reference),
         };
         let index = local_http_response(
             std::slice::from_ref(&loaded),
@@ -1462,18 +1489,18 @@ mod tests {
         assert!(!detail.contains("<script"));
 
         let rejected = local_http_response(&[], b"POST / HTTP/1.1\r\n\r\n");
-        assert!(
-            String::from_utf8(rejected)
-                .unwrap()
-                .starts_with("HTTP/1.1 405 Method Not Allowed")
-        );
+        assert!(String::from_utf8(rejected)
+            .unwrap()
+            .starts_with("HTTP/1.1 405 Method Not Allowed"));
     }
 
     #[test]
     fn ordinary_renderers_show_only_the_static_public_declaration() {
+        let reference = ability_reference();
         let loaded = LoadedDocumentation {
             document: fixture(),
-            ability_reference: Some(ability_reference()),
+            ability_options: reference.documented_options(),
+            ability_reference: Some(reference),
         };
 
         let plain = loaded.render_plain().unwrap();
@@ -1507,40 +1534,41 @@ mod tests {
         assert!(!roff.contains("\n.handler"));
 
         let mut without_configuration = loaded.clone();
-        without_configuration
-            .ability_reference
-            .as_mut()
+        let reference = without_configuration.ability_reference.as_mut().unwrap();
+        let interface = reference.interfaces.values_mut().next().unwrap();
+        interface.interface.configuration = None;
+        let interface_key = interface.interface_key().unwrap();
+        reference.implementations[0].interface = interface_key.clone();
+        for requirement in &mut reference.implementations[0].requirements {
+            requirement.accepted_interfaces = vec![interface_key.clone().into()];
+        }
+        let implementation_key = reference.implementations[0].descriptor_digest().unwrap();
+        reference.exports[0].interface = interface_key.clone();
+        reference.exports[0].implementation = implementation_key;
+        for requirement in &mut reference.exports[0].requirements {
+            requirement.accepted_interfaces = vec![interface_key.clone().into()];
+        }
+        assert!(without_configuration
+            .render_plain()
             .unwrap()
-            .interfaces
-            .values_mut()
-            .next()
-            .unwrap()
-            .interface
-            .configuration = None;
-        assert!(
-            without_configuration
-                .render_plain()
-                .unwrap()
-                .contains("no operator-owned provider instance configuration is declared")
-        );
+            .contains("no operator-owned provider instance configuration is declared"));
 
         let canonical_document = rendered_bytes(&loaded, DocumentationOutput::Json).unwrap();
         assert_eq!(
             PackageDocumentation::from_canonical_json(&canonical_document).unwrap(),
             loaded.document
         );
-        assert!(
-            !String::from_utf8(canonical_document)
-                .unwrap()
-                .contains("package-ability-reference")
-        );
+        assert!(!String::from_utf8(canonical_document)
+            .unwrap()
+            .contains("package-ability-reference"));
     }
 
     #[test]
-    fn packages_without_companions_document_empty_ability_directions() {
+    fn packages_without_ability_projections_document_empty_ability_directions() {
         let loaded = LoadedDocumentation {
             document: fixture(),
             ability_reference: None,
+            ability_options: Vec::new(),
         };
 
         let plain = loaded.render_plain().unwrap();

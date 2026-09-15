@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, EnvironmentId, InstanceId, InterfaceKey, LocalKey, PlanId, RequiredFeature,
-    ResourceId, RevisionId, TransactionId, VersionedDocument, decode_canonical, encode_canonical,
+    decode_canonical, encode_canonical, EnvironmentId, InstanceId, InterfaceKey, LocalKey, PlanId,
+    RequiredFeature, ResourceId, RevisionId, TransactionId, VersionedDocument, ABILITY_LIMITS_V1,
 };
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};

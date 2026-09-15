@@ -3,7 +3,8 @@
 use std::fmt::Write as _;
 
 use aos_ability_model::{
-    AbilityActivationMode, RequirementDeclaration, RequirementStrength, ValueSchema,
+    AbilityActivationMode, OptionVisibility, RequirementDeclaration, RequirementStrength,
+    ValueSchema,
 };
 
 use super::console_render::urlencode;
@@ -16,9 +17,9 @@ pub struct PackageAbilityReferencePanel {
     pub release: String,
     /// Registry commit that authenticated the generated reference.
     pub indexed_commit: String,
-    /// Exact target platform carrying the ability companion.
+    /// Exact target platform carrying the signed package projection.
     pub platform: String,
-    /// Bounded public projection of the signed companion documents.
+    /// Bounded public projection of the checked signed package document.
     pub reference: aos_doc_model::PackageAbilityReference,
     /// Exact retained locator used when matching private deployment overlays.
     pub locator: crate::db::PackageAbilityReferenceLocator,
@@ -119,6 +120,109 @@ pub fn section(
 
     html.push_str(&checked_graph);
 
+    html.push_str("<h3>Package options</h3>");
+    if !reference
+        .option_declarations
+        .iter()
+        .any(|option| option.visibility == OptionVisibility::Public)
+    {
+        html.push_str("<p class=\"dim\">No package-owned configuration options are declared.</p>");
+    }
+    for option in reference
+        .option_declarations
+        .iter()
+        .filter(|option| option.visibility == OptionVisibility::Public)
+    {
+        let _ = write!(
+            html,
+            "<article class=\"ability-option\"><h4><code>{}</code></h4><p>{}</p><dl><dt>Portable type</dt><dd><code>{}</code></dd><dt>Source</dt><dd><code>{}</code></dd></dl></article>",
+            escape(&option.path.join(".")),
+            escape(&option.description),
+            escape(&scalar(&option.structured_type)),
+            escape(option.source.path.as_str()),
+        );
+    }
+
+    html.push_str("<h3>Package interfaces</h3>");
+    if reference.interfaces.is_empty() {
+        html.push_str("<p class=\"dim\">No package-owned interfaces are declared.</p>");
+    }
+    for (alias, document) in &reference.interfaces {
+        let interface = &document.interface;
+        let _ = write!(
+            html,
+            "<article class=\"ability-interface\"><h4><code>{}</code>: <code>{}</code> ABI {}</h4><p>{}</p>",
+            escape(alias.as_str()),
+            escape(interface.name.as_str()),
+            interface.abi,
+            escape(&interface.description),
+        );
+        if !interface.outputs.is_empty() {
+            html.push_str("<h5>Aggregate outputs</h5><ul>");
+            for (name, output) in &interface.outputs {
+                let _ = write!(
+                    html,
+                    "<li><code>{}</code> — {}</li>",
+                    escape(name.as_str()),
+                    escape(&output.description),
+                );
+            }
+            html.push_str("</ul>");
+        }
+        if !interface.methods.is_empty() {
+            html.push_str("<h5>Methods</h5><ul>");
+            for (name, method) in &interface.methods {
+                let _ = write!(
+                    html,
+                    "<li><code>{}</code> — {}",
+                    escape(name.as_str()),
+                    escape(&method.description),
+                );
+                for (output_name, output) in &method.outputs {
+                    let _ = write!(
+                        html,
+                        "; output <code>{}</code>: {}",
+                        escape(output_name.as_str()),
+                        escape(&output.description),
+                    );
+                }
+                html.push_str("</li>");
+            }
+            html.push_str("</ul>");
+        }
+        html.push_str("</article>");
+    }
+
+    html.push_str("<h3>Provider implementations</h3>");
+    if reference.implementations.is_empty() {
+        html.push_str("<p class=\"dim\">No provider implementations are declared.</p>");
+    }
+    for implementation in &reference.implementations {
+        let _ = write!(
+            html,
+            "<article class=\"ability-implementation\"><h4><code>{}</code></h4><p>{}</p><p>Implements <code>{}</code>.</p></article>",
+            escape(implementation.name.as_str()),
+            escape(&implementation.description),
+            escape(implementation.interface.name.as_str()),
+        );
+    }
+
+    html.push_str("<h3>Execution guarantees</h3>");
+    if reference.guarantees.is_empty() {
+        html.push_str("<p class=\"dim\">No package-owned execution guarantees are declared.</p>");
+    }
+    for (alias, guarantee) in &reference.guarantees {
+        let _ = write!(
+            html,
+            "<article class=\"ability-guarantee\"><h4><code>{}</code></h4><p>{}</p><p><code>{}</code> v{}: {}</p></article>",
+            escape(alias.as_str()),
+            escape(&guarantee.description),
+            escape(guarantee.name.as_str()),
+            guarantee.version,
+            escape(&guarantee.semantics),
+        );
+    }
+
     html.push_str("<h3>Exposed abilities</h3>");
     if reference.exports.is_empty() {
         html.push_str("<p class=\"dim\">This package publishes no provider interfaces.</p>");
@@ -134,12 +238,13 @@ pub fn section(
         let anchor = format!("ability-export-{}", export.name.as_str());
         let _ = write!(
             html,
-            "<article class=\"ability-contract\"><h4 id=\"{}\">{}: {} <a href=\"#{}\">ABI {}</a></h4><p class=\"dim\">Descriptor {} · implementation {}</p>",
+            "<article class=\"ability-contract\"><h4 id=\"{}\">{}: {} <a href=\"#{}\">ABI {}</a></h4><p>{}</p><p class=\"dim\">Descriptor {} · implementation {}</p>",
             escape(&anchor),
             escape(export.name.as_str()),
             escape(interface.name.as_str()),
             escape(&anchor),
             interface.abi,
+            escape(&interface.description),
             hash_value(&export.interface.descriptor.to_string()),
             hash_value(&export.implementation.to_string()),
         );
@@ -161,8 +266,9 @@ pub fn section(
             for (name, output) in &interface.outputs {
                 let _ = write!(
                     html,
-                    "<li><code>{}</code> — {}, {}, {}</li>",
+                    "<li><code>{}</code> — {} — {}, {}, {}</li>",
                     escape(name.as_str()),
+                    escape(&output.description),
                     scalar(&output.phase),
                     scalar(&output.visibility),
                     scalar(&output.lifetime),
@@ -176,8 +282,9 @@ pub fn section(
             for (name, method) in &interface.methods {
                 let _ = write!(
                     html,
-                    "<li><code>{}</code> — {} targeting <code>{}</code>",
+                    "<li><code>{}</code> — {} — {} targeting <code>{}</code>",
                     escape(name.as_str()),
+                    escape(&method.description),
                     scalar(&method.semantics),
                     escape(method.target_resource.as_str()),
                 );
@@ -189,6 +296,14 @@ pub fn section(
                         .collect::<Vec<_>>()
                         .join(", ");
                     let _ = write!(html, " (operations: {operations})");
+                }
+                for (output_name, output) in &method.outputs {
+                    let _ = write!(
+                        html,
+                        " (output <code>{}</code>: {})",
+                        escape(output_name.as_str()),
+                        escape(&output.description),
+                    );
                 }
                 html.push_str("</li>");
             }
@@ -298,8 +413,9 @@ fn requirement_item(html: &mut String, consumer: &str, requirement: &Requirement
     };
     let _ = write!(
         html,
-        "<li><strong>{}</strong> <span class=\"dim\">({strength}, consumed by <code>{}</code>)</span><ul>",
+        "<li><strong>{}</strong> — {} <span class=\"dim\">({strength}, consumed by <code>{}</code>)</span><ul>",
         escape(requirement.alias.as_str()),
+        escape(&requirement.description),
         escape(consumer),
     );
     for accepted in &requirement.accepted_interfaces {
@@ -432,9 +548,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use aos_ability_model::{
-        AbilityActivationMode, AggregationContract, AggregationScope, EnvironmentId,
-        ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument, InterfaceName,
-        LifecycleSemantics, LocalKey, PlanId, RequiredFeature, RequirementDeclaration, RevisionId,
+        AbilityActivationMode, AggregationContract, AggregationScope, ArtifactReference,
+        EnvironmentId, ExecutionStage, InstanceId, InterfaceDescriptor, InterfaceDocument,
+        InterfaceName, LifecycleSemantics, LocalKey, PlanId, ProviderImplementation,
+        RequiredFeature, RequirementDeclaration, RevisionId,
     };
     use aos_contract::Sha256Digest;
 
@@ -511,6 +628,41 @@ mod tests {
             },
         };
         let interface_key = interface.interface_key().expect("interface key");
+        let mut unexported_interface = interface.clone();
+        unexported_interface.interface.name =
+            InterfaceName::new("aos.test.internal").expect("interface name");
+        unexported_interface.interface.description =
+            "Describes an unexported package-owned interface.".to_string();
+        let export_requirement = RequirementDeclaration {
+            description: "Describes this consumed ability.".to_string(),
+            alias: key("service-runtime"),
+            accepted_interfaces: vec![interface_key.clone().into()],
+            methods: Vec::new(),
+            guarantees: Vec::new(),
+            strength: RequirementStrength::Required,
+            fallback: None,
+        };
+        let implementation = ProviderImplementation {
+            name: key("server"),
+            description: "Implements the test service interface.".to_string(),
+            interface: interface_key.clone(),
+            guarantees: Vec::new(),
+            artifact: ArtifactReference {
+                content: Sha256Digest::of_bytes(b"provider-content"),
+                store_path: "/nix/store/00000000000000000000000000000000-provider".to_string(),
+                nar_hash: Sha256Digest::of_bytes(b"provider-nar"),
+                closure: Sha256Digest::of_bytes(b"provider-closure"),
+            },
+            requirements: vec![export_requirement.clone()],
+            desired_schema: None,
+            provider_module: None,
+            handler: None,
+            owns_resource_kinds: Vec::new(),
+            state_format: None,
+        };
+        let implementation_key = implementation
+            .descriptor_digest()
+            .expect("implementation identity");
         let reference = aos_doc_model::PackageAbilityReference {
             schema: aos_doc_model::ABILITY_REFERENCE_SCHEMA.into(),
             required_features: vec![
@@ -523,21 +675,18 @@ mod tests {
             manifest_sha256: Sha256Digest::of_bytes(b"manifest"),
             package_digest: Sha256Digest::of_bytes(b"package"),
             activation_mode: AbilityActivationMode::StructuredEffects,
-            interfaces: BTreeMap::from([(key("service-interface"), interface)]),
+            interfaces: BTreeMap::from([
+                (key("internal-interface"), unexported_interface),
+                (key("service-interface"), interface),
+            ]),
             guarantees: BTreeMap::new(),
+            option_declarations: Vec::new(),
+            implementations: vec![implementation],
             exports: vec![aos_doc_model::AbilityExportReference {
                 name: key("server"),
                 interface: interface_key.clone(),
-                implementation: Sha256Digest::of_bytes(b"implementation"),
-                requirements: vec![RequirementDeclaration {
-                    description: "Describes this consumed ability.".to_string(),
-                    alias: key("service-runtime"),
-                    accepted_interfaces: vec![interface_key.clone().into()],
-                    methods: Vec::new(),
-                    guarantees: Vec::new(),
-                    strength: RequirementStrength::Required,
-                    fallback: None,
-                }],
+                implementation: implementation_key,
+                requirements: vec![export_requirement],
             }],
             requirements: vec![RequirementDeclaration {
                 description: "Describes this consumed ability.".to_string(),
@@ -637,6 +786,8 @@ mod tests {
 
         assert!(html.contains("href=\"/demo/-/releases/1.2.3\""));
         assert!(html.contains("server: aos.test.service"));
+        assert!(html.contains("internal-interface"));
+        assert!(html.contains("Describes an unexported package-owned interface."));
         assert!(html.contains("href=\"#ability-export-server\">ABI 1</a>"));
         assert!(html.contains("Request or contribution schema"));
         assert!(html.contains("Operator-owned provider instance configuration schema"));
@@ -685,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn packages_without_companions_still_document_both_ability_directions() {
+    fn packages_without_ability_projections_still_document_both_ability_directions() {
         let html = section("demo", None, false, None, false);
 
         assert!(html.contains("Exposed abilities"));
@@ -704,7 +855,18 @@ mod tests {
             .next()
             .expect("retained interface");
         interface.interface.configuration = None;
-        panel.reference.exports[0].interface = interface.interface_key().expect("interface key");
+        let interface_key = interface.interface_key().expect("interface key");
+        let implementation = &mut panel.reference.implementations[0];
+        implementation.interface = interface_key.clone();
+        implementation.requirements[0].accepted_interfaces = vec![interface_key.clone().into()];
+        let implementation_key = implementation
+            .descriptor_digest()
+            .expect("implementation identity");
+        panel.reference.exports[0].interface = interface_key.clone();
+        panel.reference.exports[0].implementation = implementation_key;
+        panel.reference.exports[0].requirements[0].accepted_interfaces =
+            vec![interface_key.clone().into()];
+        panel.reference.requirements[0].accepted_interfaces = vec![interface_key.into()];
         panel.locator.canonical_json = panel
             .reference
             .canonical_json()

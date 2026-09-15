@@ -17,7 +17,7 @@ use crate::db::{
     documentation_node_key, path_segment_label, DocumentationTreeEntry, DocumentationTreeNode,
     DocumentationTreePage, IndexStatus, RegistryRecord,
 };
-use aos_doc_model::PackageDocumentation;
+use aos_doc_model::PackageDocumentationProjection;
 use std::fmt::Write as _;
 
 fn entry_href(
@@ -186,8 +186,8 @@ pub(super) fn page(
     variants: &DocumentationTreePage<DocumentationTreeEntry>,
     results: Option<&DocumentationTreePage<DocumentationTreeEntry>>,
     selected: Option<&DocumentationTreeEntry>,
-    document: Option<&PackageDocumentation>,
-    package_guide: Option<(&DocumentationTreeEntry, &PackageDocumentation)>,
+    document: Option<&PackageDocumentationProjection>,
+    package_guide: Option<(&DocumentationTreeEntry, &PackageDocumentationProjection)>,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -377,7 +377,7 @@ pub(super) fn page(
 }
 
 /// Renders the package overview without expanding its option reference.
-fn guide_html(entry: &DocumentationTreeEntry, document: &PackageDocumentation) -> String {
+fn guide_html(entry: &DocumentationTreeEntry, document: &PackageDocumentationProjection) -> String {
     let mut html = String::new();
     let _ = write!(
         html,
@@ -385,11 +385,9 @@ fn guide_html(entry: &DocumentationTreeEntry, document: &PackageDocumentation) -
         escape(&entry.title),
         escape(&entry.summary)
     );
-    // Remove options before using the model's runtime renderer: the focused
-    // browser must never emit the entire release option reference.
-    let mut guide = document.clone();
-    guide.options.clear();
-    html.push_str(&guide.render_html_fragment());
+    // The package card uses only the ordinary package metadata. The checked
+    // package projection owns option and ability details elsewhere in the view.
+    html.push_str(&document.document.render_html_fragment());
     html.push_str("</article>");
     html
 }

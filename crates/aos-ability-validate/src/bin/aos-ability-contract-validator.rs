@@ -7,6 +7,7 @@ use aos_ability_validate::build_frontend::{
     assemble_static_contract, resolve_package_projection_file, validate_package_source,
     validate_static_contract, write_exported_artifact_reference,
 };
+use aos_ability_validate::decode_package_projection;
 
 fn main() {
     if let Err(error) = run(std::env::args_os().skip(1).collect()) {
@@ -22,6 +23,10 @@ fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
     match command {
         "package-source" if arguments.len() == 3 => {
             validate_package_source(Path::new(&arguments[1]), Path::new(&arguments[2]))
+        }
+        "package-projection" if arguments.len() == 2 => {
+            let bytes = std::fs::read(&arguments[1])?;
+            decode_package_projection(&bytes).map(|_| ())
         }
         "resolve-package-projection" if arguments.len() == 5 => resolve_package_projection_file(
             Path::new(&arguments[1]),
@@ -54,6 +59,6 @@ fn run(arguments: Vec<std::ffi::OsString>) -> Result<()> {
 
 fn usage<T>() -> Result<T> {
     bail!(
-        "usage: aos-ability-contract-validator package-source MANIFEST INTERFACES_DIR\n       aos-ability-contract-validator resolve-package-projection PROJECTION RESOLUTION EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator resolve-exported-artifact ROOT GRAPH EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator assemble-static-contract SPEC EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator static-contract CONTRACT ARTIFACT_CLASS STAGE [OS ARCH VARIANT]"
+        "usage: aos-ability-contract-validator package-source MANIFEST INTERFACES_DIR\n       aos-ability-contract-validator package-projection PROJECTION\n       aos-ability-contract-validator resolve-package-projection PROJECTION RESOLUTION EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator resolve-exported-artifact ROOT GRAPH EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator assemble-static-contract SPEC EXPORTED_GRAPH OUTPUT\n       aos-ability-contract-validator static-contract CONTRACT ARTIFACT_CLASS STAGE [OS ARCH VARIANT]"
     )
 }

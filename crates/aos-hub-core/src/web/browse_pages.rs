@@ -3021,7 +3021,6 @@ mod tests {
                     expose_artifact_nar_hash: None,
                 source_nar_hash: format!("sha256:{}", "2".repeat(64)),
             },
-            options: Vec::new(),
         };
         document.identity.semantic_schema_sha256 = document
             .computed_semantic_schema_sha256()

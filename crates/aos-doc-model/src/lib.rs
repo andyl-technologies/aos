@@ -31,19 +31,18 @@ mod ability_reference;
 mod nar;
 
 pub use ability_deployment::{
-    ABILITY_DEPLOYMENT_OVERLAY_SCHEMA, AbilityDeploymentExport, AbilityDeploymentObservation,
+    ability_deployment_supported_features, AbilityDeploymentExport, AbilityDeploymentObservation,
     AbilityDeploymentObservationState, AbilityDeploymentPackage, AbilityDeploymentPlan,
-    AbilityDeploymentPlanState, MAX_ABILITY_DEPLOYMENT_OVERLAY_BYTES,
-    MAX_ABILITY_DEPLOYMENT_VALID_FOR_SECONDS, PackageAbilityDeploymentOverlay,
-    ability_deployment_supported_features,
+    AbilityDeploymentPlanState, PackageAbilityDeploymentOverlay, ABILITY_DEPLOYMENT_OVERLAY_SCHEMA,
+    MAX_ABILITY_DEPLOYMENT_OVERLAY_BYTES, MAX_ABILITY_DEPLOYMENT_VALID_FOR_SECONDS,
 };
 pub use ability_nar::{
-    AbilityCompanionDocuments, MAX_ABILITY_COMPANION_NAR_BYTES, decode_ability_companion_nar,
+    decode_package_ability_nar, PackageAbilityDocuments, MAX_PACKAGE_ABILITY_NAR_BYTES,
 };
 pub use ability_reference::{
-    ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1, ABILITY_REFERENCE_SCHEMA, AbilityExportReference,
-    AbilityHandlerReference, MAX_ABILITY_REFERENCE_BYTES, PackageAbilityReference,
-    ability_reference_supported_features,
+    ability_reference_supported_features, AbilityExportReference, AbilityHandlerReference,
+    PackageAbilityReference, ABILITY_REFERENCE_PROVIDER_REQUIREMENTS_V1, ABILITY_REFERENCE_SCHEMA,
+    MAX_ABILITY_REFERENCE_BYTES,
 };
 pub use nar::decode_single_file_nar;
 
@@ -129,8 +128,17 @@ pub struct PackageDocumentation {
     pub package: DocumentedPackage,
     /// Content and cross-artifact identities without store paths.
     pub identity: DocumentationIdentity,
-    /// Mechanically extracted option reference.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+}
+
+/// Transient package documentation view derived from one metadata document and
+/// its checked signed package ability projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageDocumentationProjection {
+    /// Retains the separately signed package metadata document.
+    pub document: PackageDocumentation,
+    /// Retains the checked package ability reference when the package publishes one.
+    pub ability_reference: Option<PackageAbilityReference>,
+    /// Carries public option rows derived from the checked package projection.
     pub options: Vec<OptionDocument>,
 }
 
@@ -473,19 +481,6 @@ impl PackageDocumentation {
         )?;
         validate_digest("source NAR hash", &self.identity.source_nar_hash)?;
 
-        if self.options.len() > MAX_OPTIONS {
-            return Err(invalid("too many options"));
-        }
-        let mut option_paths = BTreeSet::new();
-        for option in &self.options {
-            validate_option(option)?;
-            if !option_paths.insert(option.display_path.as_str()) {
-                return Err(invalid(format!(
-                    "duplicate option '{}'",
-                    option.display_path
-                )));
-            }
-        }
         let canonical = serde_json::to_vec(self)?;
         if canonical.len() > MAX_DOCUMENT_BYTES {
             return Err(invalid("canonical document exceeds the 4 MiB limit"));
@@ -523,7 +518,10 @@ impl PackageDocumentation {
     /// projection cannot be encoded.
     pub fn computed_semantic_schema_sha256(&self) -> Result<String> {
         self.validate_without_semantic_identity()?;
-        let projection = SemanticProjection::from(self);
+        let projection = SemanticProjection {
+            package: &self.package.name,
+            platform: &self.package.platform,
+        };
         Ok(sha256(&serde_json::to_vec(&projection)?))
     }
 
@@ -545,7 +543,7 @@ impl PackageDocumentation {
 
     /// Derives deterministic bounded search rows.
     pub fn search_documents(&self) -> Vec<SearchDocument> {
-        let mut rows = Vec::with_capacity(1 + self.options.len());
+        let mut rows = Vec::with_capacity(1);
         rows.push(search_row(
             "package",
             &self.package.name,
@@ -553,20 +551,6 @@ impl PackageDocumentation {
             &self.package.summary,
             [(&self.package.name, 100), (&self.package.summary, 30)],
         ));
-        for option in &self.options {
-            let summary = prose_plain_text(&option.description);
-            rows.push(search_row(
-                "option",
-                &option.display_path,
-                &option.display_path,
-                &summary,
-                [
-                    (option.display_path.as_str(), 100),
-                    (option.type_signature.as_str(), 40),
-                    (summary.as_str(), 20),
-                ],
-            ));
-        }
         rows
     }
 
@@ -593,6 +577,176 @@ impl PackageDocumentation {
             return Err(DocumentationError::Invalid(format!(
                 "cannot compare platform '{}' with '{}'",
                 self.package.platform, other.package.platform
+            )));
+        }
+
+        Ok(DocumentationComparison {
+            package: self.package.name.clone(),
+            from_version: self.package.version.clone(),
+            to_version: other.package.version.clone(),
+            semantic_changed: self.identity.semantic_schema_sha256
+                != other.identity.semantic_schema_sha256,
+            option_changes: Vec::new(),
+        })
+    }
+
+    /// Renders complete, escape-free plain text suitable for terminals.
+    pub fn render_plain(&self) -> String {
+        let output = format!(
+            "{} {} ({})\n{}\n",
+            self.package.name, self.package.version, self.package.platform, self.package.summary
+        );
+        output
+    }
+
+    /// Renders safe content-bearing HTML without package-controlled markup.
+    pub fn render_html(&self) -> String {
+        let mut output = String::from(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>",
+        );
+        escape_html_into(&self.package.name, &mut output);
+        output.push_str(" documentation</title></head><body>");
+        self.render_html_fragment_into(&mut output);
+        output.push_str("</body></html>");
+        output
+    }
+
+    /// Renders safe embeddable HTML for Web UIs.
+    ///
+    /// Package-authored content is represented by the closed structured-prose
+    /// model, and every literal is escaped before it reaches the returned
+    /// fragment. The result therefore contains no document wrapper, script,
+    /// style, or untrusted markup.
+    #[must_use]
+    pub fn render_html_fragment(&self) -> String {
+        let mut output = String::new();
+        self.render_html_fragment_into(&mut output);
+        output
+    }
+
+    fn render_html_fragment_into(&self, output: &mut String) {
+        output.push_str("<main class=\"package-documentation\"><header id=\"");
+        output.push_str(&documentation_anchor("package", &self.package.name));
+        output.push_str("\"><h1>");
+        escape_html_into(&self.package.name, output);
+        output.push_str("</h1><p>");
+        escape_html_into(&self.package.summary, output);
+        output.push_str("</p><p><code>");
+        escape_html_into(&self.package.version, output);
+        output.push_str(" · ");
+        escape_html_into(&self.package.platform, output);
+        output.push_str("</code></p></header>");
+        output.push_str("</main>");
+    }
+
+    /// Renders safe roff source for an `apm-<package>(5)` manual page.
+    pub fn render_roff(&self) -> String {
+        let mut output = String::from(".TH \"");
+        escape_roff_into(&self.package.name.to_uppercase(), &mut output);
+        output.push_str("\" \"5\"\n.SH NAME\n");
+        escape_roff_into(&self.package.name, &mut output);
+        output.push_str(" \\- ");
+        escape_roff_into(&self.package.summary, &mut output);
+        output.push_str("\n.SH SYNOPSIS\nVersion ");
+        escape_roff_into(&self.package.version, &mut output);
+        output.push_str(" for ");
+        escape_roff_into(&self.package.platform, &mut output);
+        output.push('\n');
+        output
+    }
+
+    fn validate_without_semantic_identity(&self) -> Result<()> {
+        let mut copy = self.clone();
+        copy.identity.semantic_schema_sha256 = format!("sha256:{}", "0".repeat(64));
+        copy.validate()
+    }
+}
+
+impl PackageDocumentationProjection {
+    /// Constructs the one shared renderer/editor view for a package selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either input is invalid or the checked ability
+    /// reference belongs to a different package selection.
+    pub fn new(
+        document: PackageDocumentation,
+        ability_reference: Option<PackageAbilityReference>,
+    ) -> Result<Self> {
+        document.validate()?;
+        if let Some(reference) = &ability_reference {
+            reference.validate()?;
+            if reference.package.as_str() != document.package.name
+                || reference.version != document.package.version
+            {
+                return Err(invalid(
+                    "package metadata and ability reference coordinates differ",
+                ));
+            }
+        }
+
+        let options = ability_reference
+            .as_ref()
+            .map_or_else(Vec::new, PackageAbilityReference::documented_options);
+        if options.len() > MAX_OPTIONS {
+            return Err(invalid("too many projected options"));
+        }
+        let mut option_paths = BTreeSet::new();
+        for option in &options {
+            validate_option(option)?;
+            if !option_paths.insert(option.display_path.as_str()) {
+                return Err(invalid(format!(
+                    "duplicate projected option '{}'",
+                    option.display_path
+                )));
+            }
+        }
+
+        Ok(Self {
+            document,
+            ability_reference,
+            options,
+        })
+    }
+
+    /// Derives deterministic bounded package and option search rows.
+    #[must_use]
+    pub fn search_documents(&self) -> Vec<SearchDocument> {
+        let mut rows = self.document.search_documents();
+        rows.reserve(self.options.len());
+        for option in &self.options {
+            let summary = prose_plain_text(&option.description);
+            rows.push(search_row(
+                "option",
+                &option.display_path,
+                &option.display_path,
+                &summary,
+                [
+                    (option.display_path.as_str(), 100),
+                    (option.type_signature.as_str(), 40),
+                    (summary.as_str(), 20),
+                ],
+            ));
+        }
+        rows
+    }
+
+    /// Compares package option meaning with another checked derived view.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the views describe different packages or platforms.
+    pub fn compare(&self, other: &Self) -> Result<DocumentationComparison> {
+        if self.document.package.name != other.document.package.name {
+            return Err(invalid(format!(
+                "cannot compare package '{}' with '{}'",
+                self.document.package.name, other.document.package.name
+            )));
+        }
+        if self.document.package.platform != other.document.package.platform {
+            return Err(invalid(format!(
+                "cannot compare platform '{}' with '{}'",
+                self.document.package.platform, other.document.package.platform
             )));
         }
 
@@ -640,22 +794,20 @@ impl PackageDocumentation {
                 option_changes.push(change);
             }
         }
+
         Ok(DocumentationComparison {
-            package: self.package.name.clone(),
-            from_version: self.package.version.clone(),
-            to_version: other.package.version.clone(),
-            semantic_changed: self.identity.semantic_schema_sha256
-                != other.identity.semantic_schema_sha256,
+            package: self.document.package.name.clone(),
+            from_version: self.document.package.version.clone(),
+            to_version: other.document.package.version.clone(),
+            semantic_changed: !option_changes.is_empty(),
             option_changes,
         })
     }
 
-    /// Renders complete, escape-free plain text suitable for terminals.
+    /// Renders package metadata and projected public options as plain text.
+    #[must_use]
     pub fn render_plain(&self) -> String {
-        let mut output = format!(
-            "{} {} ({})\n{}\n",
-            self.package.name, self.package.version, self.package.platform, self.package.summary
-        );
+        let mut output = self.document.render_plain();
         if !self.options.is_empty() {
             output.push_str("\nOPTIONS\n-------\n");
             for option in &self.options {
@@ -670,74 +822,47 @@ impl PackageDocumentation {
         output
     }
 
-    /// Renders safe content-bearing HTML without package-controlled markup.
+    /// Renders package metadata and projected public options as safe HTML.
+    #[must_use]
     pub fn render_html(&self) -> String {
         let mut output = String::from(
             "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>",
         );
-        escape_html_into(&self.package.name, &mut output);
+        escape_html_into(&self.document.package.name, &mut output);
         output.push_str(" documentation</title></head><body>");
-        self.render_html_fragment_into(&mut output);
+        output.push_str(&self.render_html_fragment());
         output.push_str("</body></html>");
         output
     }
 
-    /// Renders safe embeddable HTML for Web UIs.
-    ///
-    /// Package-authored content is represented by the closed structured-prose
-    /// model, and every literal is escaped before it reaches the returned
-    /// fragment. The result therefore contains no document wrapper, script,
-    /// style, or untrusted markup.
+    /// Renders package metadata and projected public options as an embeddable fragment.
     #[must_use]
     pub fn render_html_fragment(&self) -> String {
-        let mut output = String::new();
-        self.render_html_fragment_into(&mut output);
-        output
-    }
-
-    fn render_html_fragment_into(&self, output: &mut String) {
-        output.push_str("<main class=\"package-documentation\"><header id=\"");
-        output.push_str(&documentation_anchor("package", &self.package.name));
-        output.push_str("\"><h1>");
-        escape_html_into(&self.package.name, output);
-        output.push_str("</h1><p>");
-        escape_html_into(&self.package.summary, output);
-        output.push_str("</p><p><code>");
-        escape_html_into(&self.package.version, output);
-        output.push_str(" · ");
-        escape_html_into(&self.package.platform, output);
-        output.push_str("</code></p></header>");
-        if !self.options.is_empty() {
+        let mut output = self.document.render_html_fragment();
+        let closing = "</main>";
+        if !self.options.is_empty() && output.ends_with(closing) {
+            output.truncate(output.len() - closing.len());
             output.push_str("<section id=\"options\"><h2>Options</h2><dl>");
             for option in &self.options {
                 output.push_str("<dt id=\"");
                 output.push_str(&documentation_anchor("option", &option.display_path));
                 output.push_str("\"><code>");
-                escape_html_into(&option.display_path, output);
+                escape_html_into(&option.display_path, &mut output);
                 output.push_str("</code></dt><dd><p><strong>");
-                escape_html_into(&option.type_signature, output);
+                escape_html_into(&option.type_signature, &mut output);
                 output.push_str("</strong></p>");
-                render_blocks_html(&option.description, output);
+                render_blocks_html(&option.description, &mut output);
                 output.push_str("</dd>");
             }
-            output.push_str("</dl></section>");
+            output.push_str("</dl></section></main>");
         }
-        output.push_str("</main>");
+        output
     }
 
-    /// Renders safe roff source for an `apm-<package>(5)` manual page.
+    /// Renders package metadata and projected public options as safe roff.
+    #[must_use]
     pub fn render_roff(&self) -> String {
-        let mut output = String::from(".TH \"");
-        escape_roff_into(&self.package.name.to_uppercase(), &mut output);
-        output.push_str("\" \"5\"\n.SH NAME\n");
-        escape_roff_into(&self.package.name, &mut output);
-        output.push_str(" \\- ");
-        escape_roff_into(&self.package.summary, &mut output);
-        output.push_str("\n.SH SYNOPSIS\nVersion ");
-        escape_roff_into(&self.package.version, &mut output);
-        output.push_str(" for ");
-        escape_roff_into(&self.package.platform, &mut output);
-        output.push('\n');
+        let mut output = self.document.render_roff();
         if !self.options.is_empty() {
             output.push_str(".SH OPTIONS\n");
             for option in &self.options {
@@ -752,19 +877,12 @@ impl PackageDocumentation {
         }
         output
     }
-
-    fn validate_without_semantic_identity(&self) -> Result<()> {
-        let mut copy = self.clone();
-        copy.identity.semantic_schema_sha256 = format!("sha256:{}", "0".repeat(64));
-        copy.validate()
-    }
 }
 
 #[derive(Serialize)]
 struct SemanticProjection<'a> {
     package: &'a str,
     platform: &'a str,
-    options: Vec<SemanticOption<'a>>,
 }
 
 #[derive(PartialEq, Eq, Serialize)]
@@ -778,30 +896,6 @@ struct SemanticOption<'a> {
     replacement: &'a Option<Vec<PathSegment>>,
     owner: &'a OptionOwner,
     contributable: bool,
-}
-
-impl<'a> From<&'a PackageDocumentation> for SemanticProjection<'a> {
-    fn from(document: &'a PackageDocumentation) -> Self {
-        Self {
-            package: &document.package.name,
-            platform: &document.package.platform,
-            options: document
-                .options
-                .iter()
-                .map(|option| SemanticOption {
-                    path: &option.path,
-                    option_type: &option.option_type,
-                    type_signature: &option.type_signature,
-                    visibility: option.visibility,
-                    read_only: option.read_only,
-                    deprecated: &option.deprecated,
-                    replacement: &option.replacement,
-                    owner: &option.owner,
-                    contributable: option.contributable,
-                })
-                .collect(),
-        }
-    }
 }
 
 fn semantic_option(option: &OptionDocument) -> SemanticOption<'_> {
@@ -1294,6 +1388,7 @@ fn escape_roff_into(input: &str, output: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_ability_model::LocalKey;
 
     fn paragraph(text: &str) -> ProseBlock {
         ProseBlock::Paragraph {
@@ -1321,7 +1416,15 @@ mod tests {
                 expose_artifact_nar_hash: Some(format!("sha256:{}", "3".repeat(64))),
                 source_nar_hash: format!("sha256:{}", "4".repeat(64)),
             },
-            options: vec![OptionDocument {
+        };
+        document.identity.semantic_schema_sha256 = document
+            .computed_semantic_schema_sha256()
+            .expect("semantic digest");
+        document
+    }
+
+    fn option_fixture() -> OptionDocument {
+        OptionDocument {
                 path: vec![
                     PathSegment::Literal {
                         value: "nginx".to_string(),
@@ -1364,12 +1467,15 @@ mod tests {
                     )
                     .expect("valid source path"),
                 }),
-            }],
-        };
-        document.identity.semantic_schema_sha256 = document
-            .computed_semantic_schema_sha256()
-            .expect("semantic digest");
-        document
+            }
+    }
+
+    fn projection_fixture() -> PackageDocumentationProjection {
+        PackageDocumentationProjection {
+            document: fixture(),
+            ability_reference: None,
+            options: vec![option_fixture()],
+        }
     }
 
     #[test]
@@ -1384,20 +1490,16 @@ mod tests {
 
     #[test]
     fn literal_values_preserve_empty_strings_and_attribute_names() {
-        let mut document = fixture();
-        document.options[0].default = Some(DocumentedValue::Literal {
+        let mut option = option_fixture();
+        option.default = Some(DocumentedValue::Literal {
             value: aos_ability_model::AbilityValue::new(
                 serde_json::json!({"": "", "nested": [""]}),
             )
             .expect("valid literal"),
         });
-        document.identity.semantic_schema_sha256 = document
-            .computed_semantic_schema_sha256()
-            .expect("semantic digest");
-
-        let bytes = document.canonical_json().expect("encode");
-        let parsed = PackageDocumentation::from_canonical_json(&bytes).expect("decode");
-        assert_eq!(parsed.options[0].default, document.options[0].default);
+        let bytes = serde_json::to_vec(&option).expect("encode option");
+        let parsed: OptionDocument = serde_json::from_slice(&bytes).expect("decode option");
+        assert_eq!(parsed.default, option.default);
     }
 
     #[test]
@@ -1406,7 +1508,7 @@ mod tests {
         let before = document
             .computed_semantic_schema_sha256()
             .expect("digest before");
-        document.options[0].description = vec![paragraph("Corrected option prose.")];
+        document.package.summary = "Corrected package prose.".to_string();
         let after = document
             .computed_semantic_schema_sha256()
             .expect("digest after");
@@ -1418,34 +1520,18 @@ mod tests {
     }
 
     #[test]
-    fn semantic_change_updates_digest() {
-        let document = fixture();
-        let before = document
-            .computed_semantic_schema_sha256()
-            .expect("digest before");
-        let mut changed = document;
-        changed.options[0].option_type = OptionType::Unsigned {
-            min: Some(1),
-            max: Some(65535),
-        };
-        let after = changed
-            .computed_semantic_schema_sha256()
-            .expect("digest after");
-        assert_ne!(before, after);
-    }
-
-    #[test]
     fn comparison_ignores_version_and_prose_but_reports_option_semantics() {
-        let before = fixture();
+        let before = projection_fixture();
         let mut prose_only = before.clone();
-        prose_only.package.version = "2.0.0".to_string();
-        prose_only.package.summary = "New prose".to_string();
-        prose_only.identity.semantic_schema_sha256 = prose_only
+        prose_only.document.package.version = "2.0.0".to_string();
+        prose_only.document.package.summary = "New prose".to_string();
+        prose_only.document.identity.semantic_schema_sha256 = prose_only
+            .document
             .computed_semantic_schema_sha256()
             .expect("semantic digest");
         assert_eq!(
-            before.identity.semantic_schema_sha256,
-            prose_only.identity.semantic_schema_sha256
+            before.document.identity.semantic_schema_sha256,
+            prose_only.document.identity.semantic_schema_sha256
         );
         let comparison = before.compare(&prose_only).expect("comparison");
         assert!(!comparison.semantic_changed);
@@ -1457,9 +1543,6 @@ mod tests {
             max: Some(65_535),
         };
         changed.options[0].type_signature = "unsigned integer".to_string();
-        changed.identity.semantic_schema_sha256 = changed
-            .computed_semantic_schema_sha256()
-            .expect("semantic digest");
         let comparison = before.compare(&changed).expect("comparison");
         assert!(comparison.semantic_changed);
         assert_eq!(comparison.option_changes.len(), 1);
@@ -1484,13 +1567,13 @@ mod tests {
 
     #[test]
     fn renderers_escape_untrusted_content() {
-        let mut document = fixture();
-        document.package.summary = "<script>alert('x')</script>".into();
-        document.options[0].description = vec![paragraph(".danger \\ macro")];
-        let html = document.render_html();
+        let mut projection = projection_fixture();
+        projection.document.package.summary = "<script>alert('x')</script>".into();
+        projection.options[0].description = vec![paragraph(".danger \\ macro")];
+        let html = projection.render_html();
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
-        let roff = document.render_roff();
+        let roff = projection.render_roff();
         assert!(roff.contains("\\&.danger \\e macro"));
     }
 
@@ -1512,18 +1595,16 @@ mod tests {
         let anchors = identities.map(|(kind, key)| documentation_anchor(kind, key));
         assert_eq!(anchors.iter().collect::<BTreeSet<_>>().len(), anchors.len());
         for anchor in anchors {
-            assert!(
-                anchor
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b':')
-            );
+            assert!(anchor
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b':'));
             assert!(validate_token("section id", &anchor).is_err());
         }
     }
 
     #[test]
     fn search_projection_is_deterministic() {
-        let document = fixture();
+        let document = projection_fixture();
         let first = document.search_documents();
         let second = document.search_documents();
         assert_eq!(first, second);
@@ -1535,7 +1616,22 @@ mod tests {
     }
 
     #[test]
-    fn option_types_preserve_canonical_lists_and_document_keys() {
+    fn option_types_preserve_every_portable_structured_constructor_and_bound() {
+        let portable_map = OptionType::Map {
+            key: aos_ability_model::StringConstraint {
+                max_length: 48,
+                syntax: Some(aos_ability_model::StringSyntax::LocalKeyV1),
+            },
+            value: Box::new(OptionType::Bool),
+            max_entries: 12,
+        };
+        let portable_map_json = serde_json::to_value(&portable_map).expect("serialize map");
+
+        assert_eq!(portable_map_json["key"]["max_length"], 48);
+        assert_eq!(portable_map_json["key"]["syntax"], "local-key-v1");
+        assert_eq!(portable_map_json["max_entries"], 12);
+        validate_option_type(&portable_map).expect("valid portable map");
+
         let canonical_list = OptionType::List {
             element: Box::new(OptionType::String {
                 max_length: Some(16),
@@ -1562,6 +1658,63 @@ mod tests {
         assert_eq!(document_record_json["key_max_length"], 64);
         assert!(document_record_json["fields"].get("@type").is_some());
         validate_option_type(&document_record).expect("valid document record");
+
+        let record = OptionType::Record {
+            fields: BTreeMap::from([
+                (LocalKey::new("enabled").expect("field"), OptionType::Bool),
+                (
+                    LocalKey::new("label").expect("field"),
+                    OptionType::String {
+                        max_length: Some(32),
+                        pattern: None,
+                    },
+                ),
+            ]),
+            optional_fields: vec![LocalKey::new("label").expect("optional field")],
+        };
+        let record_json = serde_json::to_value(&record).expect("serialize record");
+
+        assert_eq!(record_json["optional_fields"][0], "label");
+        validate_option_type(&record).expect("valid record");
+
+        let tagged = OptionType::TaggedUnion {
+            tag: LocalKey::new("kind").expect("tag"),
+            variants: BTreeMap::from([
+                (
+                    LocalKey::new("disabled").expect("variant"),
+                    OptionType::Record {
+                        fields: BTreeMap::new(),
+                        optional_fields: Vec::new(),
+                    },
+                ),
+                (LocalKey::new("enabled").expect("variant"), record.clone()),
+            ]),
+        };
+        let tagged_json = serde_json::to_value(&tagged).expect("serialize tagged union");
+
+        assert_eq!(tagged_json["tag"], "kind");
+        assert!(tagged_json["variants"].get("enabled").is_some());
+        validate_option_type(&tagged).expect("valid tagged union");
+
+        let disjoint = OptionType::DisjointUnion {
+            variants: vec![
+                OptionType::Bool,
+                OptionType::Integer {
+                    min: Some(-4),
+                    max: Some(4),
+                },
+                OptionType::String {
+                    max_length: Some(24),
+                    pattern: None,
+                },
+            ],
+        };
+        let disjoint_json = serde_json::to_value(&disjoint).expect("serialize disjoint union");
+
+        assert_eq!(disjoint_json["variants"][0]["kind"], "bool");
+        assert_eq!(disjoint_json["variants"][1]["kind"], "integer");
+        assert_eq!(disjoint_json["variants"][2]["kind"], "string");
+        validate_option_type(&disjoint).expect("valid disjoint union");
     }
 
     #[test]
@@ -1583,7 +1736,8 @@ mod tests {
                 .and_then(Value::as_str),
             Some(DOCUMENT_SCHEMA)
         );
-        assert!(schema.pointer("/$defs/OptionType").is_some());
+        assert!(schema.pointer("/properties/options").is_none());
+        assert!(schema.pointer("/$defs/OptionType").is_none());
         assert_eq!(
             schema
                 .pointer("/additionalProperties")

@@ -14,9 +14,9 @@ use crate::fetch::SurfaceFetch;
 
 use super::{MAX_IMAGE_NARINFO_BYTES, parse_documentation_narinfo};
 
-/// Fetches and verifies one ability companion and derives its public reference.
+/// Fetches and verifies one signed package ability publication and derives its public reference.
 ///
-/// The signed registry entry supplies the companion NAR, exact package-manifest
+/// The signed registry entry supplies the package ability NAR, exact package-manifest
 /// identity, semantic package identity, and primary payload identity. Only
 /// bounded public package and interface documents cross into the generated
 /// reference.
@@ -24,7 +24,7 @@ use super::{MAX_IMAGE_NARINFO_BYTES, parse_documentation_narinfo};
 /// # Errors
 ///
 /// Returns an error when cache metadata or bytes disagree with signed metadata,
-/// the companion archive is malformed or oversized, a document is noncanonical,
+/// the package publication archive is malformed or oversized, a document is noncanonical,
 /// or package/interface identities are inconsistent.
 pub async fn fetch_package_ability_reference(
     fetch: &dyn SurfaceFetch,
@@ -37,8 +37,8 @@ pub async fn fetch_package_ability_reference(
 ) -> Result<aos_doc_model::PackageAbilityReference> {
     anyhow::ensure!(
         ability.nar_size > 0
-            && ability.nar_size as usize <= aos_doc_model::MAX_ABILITY_COMPANION_NAR_BYTES,
-        "package ability companion exceeds the Hub reference bound"
+            && ability.nar_size as usize <= aos_doc_model::MAX_PACKAGE_ABILITY_NAR_BYTES,
+        "package signed package ability publication exceeds the Hub reference bound"
     );
     let store_hash = aos_registry_surface::store::store_path_hash(&ability.store_path)?;
     let narinfo_key = format!("{store_hash}.narinfo");
@@ -84,7 +84,7 @@ pub async fn fetch_package_ability_reference(
         "package ability narinfo has an unsafe URL"
     );
     let nar_bytes = fetch
-        .fetch_bounded(&narinfo.url, aos_doc_model::MAX_ABILITY_COMPANION_NAR_BYTES)
+        .fetch_bounded(&narinfo.url, aos_doc_model::MAX_PACKAGE_ABILITY_NAR_BYTES)
         .await?
         .with_context(|| format!("package ability NAR '{}' is unavailable", narinfo.url))?;
     anyhow::ensure!(
@@ -100,7 +100,7 @@ pub async fn fetch_package_ability_reference(
         "package ability NAR identity mismatch"
     );
 
-    let documents = aos_doc_model::decode_ability_companion_nar(&nar_bytes)?;
+    let documents = aos_doc_model::decode_package_ability_nar(&nar_bytes)?;
     anyhow::ensure!(
         documents.package.len() as u64 == ability.manifest_size
             && hex::encode(Sha256::digest(&documents.package))
@@ -112,7 +112,7 @@ pub async fn fetch_package_ability_reference(
         manifest: &documents.package,
         retained_interfaces: &retained_interfaces,
     })
-    .context("checking authenticated package ability companion")?;
+    .context("checking authenticated package signed package ability publication")?;
     let CheckedAbilityContract::PackageSource(checked) = checked else {
         anyhow::bail!("package source validation returned another contract family");
     };
@@ -145,7 +145,7 @@ pub async fn fetch_package_ability_reference(
         .collect::<BTreeSet<_>>();
     anyhow::ensure!(
         expected_interface_files == documents.interfaces.keys().cloned().collect(),
-        "package ability companion interface inventory does not exactly match its package-owned declarations"
+        "package signed package ability publication interface inventory does not exactly match its package-owned declarations"
     );
     for file_name in expected_interface_files {
         let bytes = documents
@@ -242,7 +242,7 @@ mod tests {
         output.resize(output.len().div_ceil(8) * 8, 0);
     }
 
-    fn companion_nar(package: &[u8], interface_name: &str, interface: &[u8]) -> Vec<u8> {
+    fn package_ability_nar(package: &[u8], interface_name: &str, interface: &[u8]) -> Vec<u8> {
         let mut nar = Vec::new();
         for value in [b"nix-archive-1".as_slice(), b"(", b"type", b"directory"] {
             nar_field(&mut nar, value);
@@ -377,7 +377,7 @@ mod tests {
         };
         let package_bytes = encode_canonical(&package).expect("encode package");
         let interface_name = format!("{}.json", interface_key.descriptor.hex());
-        let nar = companion_nar(&package_bytes, &interface_name, interface_bytes);
+        let nar = package_ability_nar(&package_bytes, &interface_name, interface_bytes);
         let nar_digest = hex::encode(Sha256::digest(&nar));
         let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo-abilities";
         let nar_url = format!("nar/{nar_digest}.nar");
@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn derives_reference_only_from_exact_signed_companion_bytes() {
+    async fn derives_reference_only_from_exact_signed_package_bytes() {
         let (fetch, ability, interface_digest) = signed_fixture();
 
         let reference = fetch_package_ability_reference(
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_a_signed_companion_for_a_different_primary_payload() {
+    async fn rejects_a_signed_package_projection_for_a_different_primary_payload() {
         let (fetch, ability, _) = signed_fixture();
 
         let error = fetch_package_ability_reference(
@@ -472,7 +472,7 @@ mod tests {
             &ability,
         )
         .await
-        .expect_err("companion payload must equal the signed primary package");
+        .expect_err("package projection must equal the signed primary package");
 
         assert!(error.to_string().contains("selection identity mismatch"));
     }

@@ -12,14 +12,14 @@ use crate::registry_ops::store_paths::{
     nix_command, validate_store_path_release_policy,
 };
 use crate::types::{AbilityArtifactRetentionMeta, AbilityClosureMemberMeta};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use aos_ability_model::{
-    ArtifactClosureMemberInput, ArtifactReference, PackageDocument, artifact_closure_identity,
-    artifact_content_identity, encode_canonical,
+    artifact_closure_identity, artifact_content_identity, encode_canonical,
+    ArtifactClosureMemberInput, ArtifactReference, PackageDocument,
 };
 use aos_ability_validate::{
-    PackageAbilityProjection, PackageOutputSelector, decode_package_projection,
-    resolve_package_projection,
+    decode_package_projection, resolve_package_projection, PackageAbilityProjection,
+    PackageOutputSelector,
 };
 use aos_contract::Sha256Digest;
 use std::collections::BTreeMap;
@@ -159,7 +159,7 @@ pub(in crate::registry_ops) fn resolve_store_artifact(
     })
 }
 
-/// Reads and resolves a symbolic companion through one exact release inventory.
+/// Reads and resolves a symbolic package ability publication through one exact release inventory.
 ///
 /// # Errors
 ///
@@ -233,7 +233,7 @@ fn read_projection_interfaces(
 ///
 /// Returns an error when canonical encoding, filesystem materialization,
 /// fixed-output insertion, or resulting Nix-store introspection fails.
-pub(in crate::registry_ops) fn materialize_resolved_companion(
+pub(in crate::registry_ops) fn materialize_resolved_ability_publication(
     projection_store_path: &str,
     package: &str,
     version: &str,
@@ -241,14 +241,15 @@ pub(in crate::registry_ops) fn materialize_resolved_companion(
     interfaces: &[Vec<u8>],
 ) -> Result<ResolvedAbilityArtifact> {
     let manifest = encode_canonical(document).context("encoding resolved ability package")?;
-    let temporary = tempfile::tempdir().context("creating resolved ability companion input")?;
-    let companion = temporary
+    let temporary = tempfile::tempdir()
+        .context("creating resolved signed package ability publication input")?;
+    let publication = temporary
         .path()
         .join(format!("{package}-{version}-abilities"));
-    let interface_directory = companion.join("interfaces");
+    let interface_directory = publication.join("interfaces");
     fs::create_dir_all(&interface_directory)
         .context("creating resolved ability interface directory")?;
-    fs::write(companion.join("package.json"), &manifest)
+    fs::write(publication.join("package.json"), &manifest)
         .context("writing resolved ability package")?;
 
     let declared_interfaces = document
@@ -268,25 +269,25 @@ pub(in crate::registry_ops) fn materialize_resolved_companion(
         )
         .context("writing resolved ability interface")?;
     }
-    set_materialized_permissions(&companion)?;
+    set_materialized_permissions(&publication)?;
 
     let output = nix_command("nix-store")
         .args(["--add-fixed", "--recursive", "sha256"])
-        .arg(&companion)
+        .arg(&publication)
         .output()
-        .context("adding resolved ability companion to the Nix store")?;
+        .context("adding resolved signed package ability publication to the Nix store")?;
     if !output.status.success() {
         bail!(
-            "nix-store --add-fixed failed for resolved ability companion: {}",
+            "nix-store --add-fixed failed for resolved signed package ability publication: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     let store_path = String::from_utf8(output.stdout)
-        .context("resolved ability companion store path is not UTF-8")?
+        .context("resolved signed package ability publication store path is not UTF-8")?
         .trim()
         .to_string();
     if store_path == projection_store_path {
-        bail!("resolved ability companion aliases its symbolic projection");
+        bail!("resolved signed package ability publication aliases its symbolic projection");
     }
     resolve_store_artifact(&store_path)
 }
@@ -359,19 +360,15 @@ mod tests {
         let owner = ("owner", "1", "x86_64-linux");
 
         assert!(registry.select(owner, &selector("missing", "out")).is_err());
-        assert!(
-            registry
-                .select(owner, &selector("provider", "out"))
-                .is_err()
-        );
-        assert!(
-            registry
-                .select(
-                    owner,
-                    &selector("owner", crate::types::ABILITY_MANIFEST_OUTPUT)
-                )
-                .is_err()
-        );
+        assert!(registry
+            .select(owner, &selector("provider", "out"))
+            .is_err());
+        assert!(registry
+            .select(
+                owner,
+                &selector("owner", crate::types::ABILITY_MANIFEST_OUTPUT)
+            )
+            .is_err());
     }
 
     #[test]

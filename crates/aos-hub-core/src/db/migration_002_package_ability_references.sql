@@ -1,11 +1,11 @@
--- Marks complete per-commit projections, including commits with no ability companions.
+-- Marks complete per-commit projections, including commits with no signed package ability publications.
 CREATE TABLE package_ability_reference_catalogs(
   registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
   indexed_commit KEYTEXT64 NOT NULL,
   PRIMARY KEY(registry_id, indexed_commit)
 );
 
--- Retains bounded public references derived from signed package ability companions.
+-- Retains bounded public references derived from signed package ability publications.
 CREATE TABLE package_ability_references(
   registry_id INTEGER NOT NULL,
   indexed_commit KEYTEXT64 NOT NULL,

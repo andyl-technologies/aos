@@ -1,27 +1,26 @@
 //! Shared fixtures for registry operation tests.
 
 use crate::config::ApmConfig;
-use crate::provenance::TrustedProvenanceKey;
 #[cfg(test)]
 use crate::provenance::sign_statement_dsse_jsonl;
+use crate::provenance::TrustedProvenanceKey;
 use crate::registry::keys::{KeysToml, RevokedKey, RosterKey};
 use crate::registry::store::{DepEdge, NarBytes, Realisation};
 use crate::registry::{keys, store};
-use crate::registry_ops::config_modules::DerivedOptionDeclaration;
 use crate::registry_ops::git::git;
 use crate::registry_ops::images::files::{
     open_stable_regular_file_with_links, sha256_open_file, verify_stable_regular_file,
 };
-use crate::registry_ops::images::{PublishedImage, inspect_published_image_with};
+use crate::registry_ops::images::{inspect_published_image_with, PublishedImage};
 use crate::registry_ops::mac::{
-    PublishExposeManifest, compile_publish_selinux_profile, expected_publish_selinux_profile,
-    publish_selinux_identifier_for_label,
+    compile_publish_selinux_profile, expected_publish_selinux_profile,
+    publish_selinux_identifier_for_label, PublishExposeManifest,
 };
 use crate::registry_ops::provenance::{
-    LocalPackageProvenanceSigner, PublishProvenanceArtifact, publish_provenance_artifact,
+    publish_provenance_artifact, LocalPackageProvenanceSigner, PublishProvenanceArtifact,
 };
 use crate::registry_ops::release::ReleaseTreeOptions;
-use crate::registry_ops::store_paths::{RELEASE_POLICY_RELATIVE_PATH, StorePathInfo, extract_hash};
+use crate::registry_ops::store_paths::{extract_hash, StorePathInfo, RELEASE_POLICY_RELATIVE_PATH};
 use crate::registry_ops::uki::SbFacts;
 use crate::testutil;
 use crate::types::{
@@ -30,14 +29,13 @@ use crate::types::{
 };
 use anyhow::{Context, Result};
 use aos_cache::AuthOptions;
-use aos_doc_model::{OptionType, Visibility};
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
-    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
-    ContainerEvidenceQualification, ContainerEvidenceQualificationCheck, ContainerNixProvenance,
-    ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
-    ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor, MediaType,
-    NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
+    Annotations, ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
+    ContainerSignatureInputEvidence, Descriptor, MediaType, NixDefinitionIdentity,
+    NixOutputIdentity, Platform, Sha256Digest, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA,
+    CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_SIGNATURE_INPUT_SCHEMA,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -46,25 +44,6 @@ use std::fs::OpenOptions;
 use std::io::{Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-pub(in crate::registry_ops) fn documentation_declaration(
-    path: &str,
-    visibility: Visibility,
-) -> DerivedOptionDeclaration {
-    DerivedOptionDeclaration {
-        path: path.split('.').map(str::to_string).collect(),
-        path_str: path.to_string(),
-        type_sig: "boolean".to_string(),
-        option_type: OptionType::Bool,
-        description: "Fixture option.".to_string(),
-        default: None,
-        example: None,
-        visibility,
-        read_only: false,
-        contributable: false,
-        owner: "nginx".to_string(),
-    }
-}
 
 pub(in crate::registry_ops) fn write_direct_image_output(
     container: &Path,
@@ -692,8 +671,8 @@ fn restrict_private_key_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(in crate::registry_ops) fn sample_transparency_provenance()
--> (StorePathInfo, StorePathInfo, PublishProvenanceArtifact) {
+pub(in crate::registry_ops) fn sample_transparency_provenance(
+) -> (StorePathInfo, StorePathInfo, PublishProvenanceArtifact) {
     let info = StorePathInfo {
         path: "/nix/store/abc123-webapp-1.0.0".into(),
         nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
