@@ -19,8 +19,24 @@
       };
       path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example";
     };
-  declaration =
-    (import interfaceModule {inherit lib;}).config.aos.abilities.interfaces.systemd-packaged-unit;
+  interfaceEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [lib.abilities.module];
+    packageModules = [
+      {
+        name = "systemd";
+        module = interfaceModule;
+      }
+    ];
+    specialArgs = {
+      inherit pkgs artifactLocatorFor;
+      provenance = {
+        dependencyOwnersOfAttr = _: _: [];
+        ownerOfListAttr = _: _: _: "@test";
+      };
+    };
+  };
+  declaration = interfaceEvaluation.config.aos.abilities.interfaces."systemd:systemd-packaged-unit";
   identity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration declaration
   );
