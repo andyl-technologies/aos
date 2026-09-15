@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{RegistrySet, store_path_hash};
-use crate::types::{AbilityPackageMeta, ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
+use crate::types::{AbilityPackageMeta, ExposeArtifactMeta, ExposeMeta};
 
 /// An exact image-bundled package available from the active system profile.
 #[derive(Debug, Clone)]
@@ -29,8 +29,6 @@ pub struct LocalRuntimePackage {
     pub expose: Option<ExposeMeta>,
     /// Rendered expose artifact retained in the image seed.
     pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Config-only companion retained in the image seed.
-    pub config_module: Option<crate::types::ConfigModuleMeta>,
     /// Authenticated ability companion retained in the image seed.
     pub ability: Option<AbilityPackageMeta>,
     /// Lazily verified closure reused across outer fixpoint iterations.
@@ -68,9 +66,6 @@ pub struct RuntimePackagePin {
     /// Exact selected runtime output uncompressed NAR size.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub nar_size: u64,
-    /// Config-module dependency outputs authenticated by package metadata.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub config_dependency_outputs: BTreeMap<String, String>,
     /// Complete authenticated closure, keyed by input-addressed store hash.
     pub closure: Vec<RuntimeClosurePin>,
     /// Signed service exposure contract for this package.
@@ -79,18 +74,9 @@ pub struct RuntimePackagePin {
     /// Exact rendered unit artifact authenticated by the selected registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Authenticated expose schema projected by this package's generated
-    /// config companion. Absent for legacy flat-render packages.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_projection: Option<RuntimeExposeConfigPin>,
     /// Exact authenticated ability companion selected with this package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ability: Option<AbilityPackageMeta>,
-    /// Registry-authenticated flat expose config for a package that has not
-    /// migrated to a config-module projection. This keeps `render-one` from
-    /// consulting mutable profile or registry metadata after evaluation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_config: Option<ExposeConfigMeta>,
 }
 
 impl RuntimePackagePin {
@@ -121,18 +107,6 @@ impl RuntimePackageOrigin {
     fn is_registry(&self) -> bool {
         *self == Self::Registry
     }
-}
-
-/// Registry-authenticated binding for one generated expose config companion.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeExposeConfigPin {
-    /// Exact config-output store path evaluated for this package.
-    pub config_output: String,
-    /// Authenticated NAR hash of that config output.
-    pub config_nar_hash: String,
-    /// Signed RFC-0001 artifact and credential schema.
-    pub config: ExposeConfigMeta,
 }
 
 /// One member of a registry-authenticated runtime closure.
@@ -308,18 +282,6 @@ pub fn resolve_runtime_with_local(
                 realisations,
             });
         }
-        if let Some(module) = &closure.root.config_module {
-            for (name, path) in &module.dependency_outputs {
-                let hash = store_path_hash(path);
-                if !members.iter().any(|member| member.store_path_hash == hash) {
-                    bail!(
-                        "package '{}@{}' config dependency '{name}' ({path}) is outside its authenticated runtime closure",
-                        closure.root.name,
-                        closure.root.version
-                    );
-                }
-            }
-        }
 
         let root_pin = members
             .iter()
@@ -380,40 +342,6 @@ pub fn resolve_runtime_with_local(
             closure.root.name.clone(),
             dependencies.into_iter().collect(),
         );
-        let config_projection = match closure.root.config_module.as_ref() {
-            Some(module)
-                if module.declares.iter().any(|path| {
-                    path == &format!("{}._aosExposeConfigProjection", closure.root.name)
-                }) =>
-            {
-                let expose = closure.root.expose.as_ref().with_context(|| {
-                    format!(
-                        "package '{}' declares an expose config projection without signed expose metadata",
-                        closure.root.name
-                    )
-                })?;
-                let config_nar_hash = crate::registry::store::NarBytes::from_hash(
-                    &module.config_output.nar_hash,
-                    module.config_output.nar_size,
-                )?
-                .nar_hash();
-                Some(RuntimeExposeConfigPin {
-                    config_output: module.config_output.store_path.clone(),
-                    config_nar_hash,
-                    config: expose.config.clone(),
-                })
-            }
-            _ => None,
-        };
-        let legacy_config = if config_projection.is_none() {
-            closure
-                .root
-                .expose
-                .as_ref()
-                .map(|expose| expose.config.clone())
-        } else {
-            None
-        };
         packages.insert(
             closure.root.name.clone(),
             RuntimePackagePin {
@@ -428,18 +356,10 @@ pub fn resolve_runtime_with_local(
                 )?
                 .nar_hash(),
                 nar_size: closure.root.nar_size,
-                config_dependency_outputs: closure
-                    .root
-                    .config_module
-                    .as_ref()
-                    .map(|module| module.dependency_outputs.clone())
-                    .unwrap_or_default(),
                 closure: members,
                 expose: closure.root.expose.clone(),
                 expose_artifact: closure.root.expose_artifact.clone(),
-                config_projection,
                 ability: closure.root.ability.clone(),
-                legacy_config,
             },
         );
     }
@@ -457,16 +377,7 @@ pub fn resolve_runtime_with_local(
         }
         let closure = local_closure(package)
             .with_context(|| format!("validating image-local closure for '{name}'"))?;
-        if let Some(module) = &package.config_module {
-            for (dependency, path) in &module.dependency_outputs {
-                let hash = store_path_hash(path);
-                if !closure.iter().any(|member| member.store_path_hash == hash) {
-                    bail!(
-                        "image-local package '{name}' config dependency '{dependency}' ({path}) is outside its runtime closure"
-                    );
-                }
-            }
-        }
+
         let expose_artifact = package
             .expose_artifact
             .as_ref()
@@ -492,33 +403,6 @@ pub fn resolve_runtime_with_local(
             dependencies.remove(&name);
         }
         edges.insert(name.clone(), dependencies.into_iter().collect());
-        let config_projection = match package.config_module.as_ref() {
-            Some(module)
-                if module
-                    .declares
-                    .iter()
-                    .any(|path| path == &format!("{name}._aosExposeConfigProjection")) =>
-            {
-                let expose = package.expose.as_ref().with_context(|| {
-                    format!("image-local package '{name}' projects expose config without expose metadata")
-                })?;
-                Some(RuntimeExposeConfigPin {
-                    config_output: module.config_output.store_path.clone(),
-                    config_nar_hash: crate::registry::store::NarBytes::from_hash(
-                        &module.config_output.nar_hash,
-                        module.config_output.nar_size,
-                    )?
-                    .nar_hash(),
-                    config: expose.config.clone(),
-                })
-            }
-            _ => None,
-        };
-        let legacy_config = if config_projection.is_none() {
-            package.expose.as_ref().map(|expose| expose.config.clone())
-        } else {
-            None
-        };
         let root_hash = store_path_hash(&package.store_path);
         let root_realization = closure
             .iter()
@@ -535,17 +419,10 @@ pub fn resolve_runtime_with_local(
                 store_path: package.store_path.clone(),
                 nar_hash: root_realization.nar_hash.clone(),
                 nar_size: root_realization.nar_size,
-                config_dependency_outputs: package
-                    .config_module
-                    .as_ref()
-                    .map(|module| module.dependency_outputs.clone())
-                    .unwrap_or_default(),
                 closure,
                 expose: package.expose.clone(),
                 expose_artifact,
-                config_projection,
                 ability: package.ability.clone(),
-                legacy_config,
             },
         );
     }
@@ -724,7 +601,6 @@ mod tests {
                 store_path: store_path.to_string(),
                 expose: None,
                 expose_artifact: None,
-                config_module: None,
                 ability: None,
                 closure: RefCell::new(Some(vec![RuntimeClosurePin {
                     store_path_hash: store_path_hash(store_path).to_string(),

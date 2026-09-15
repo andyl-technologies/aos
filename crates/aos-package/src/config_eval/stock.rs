@@ -32,7 +32,7 @@
 //! operator module seam) and each provider's config-only module
 //! imported by store path.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -51,8 +51,10 @@ use super::ability_rounds::{
     SelectedAbilityBinding, SelectedProviderModule,
 };
 use super::classify::{EvalClass, KillReason, classify};
-use super::system_roots::{ConfigModuleResolver, ResolvedAbilityModule, ResolvedConfigModule};
-use super::{ConfigOutputFetcher, EvalAttempt, NixEvaluator, SelectedProvider, WorkingSetMember};
+use super::system_roots::{PackageModuleResolver, ResolvedPackageModule};
+use super::{
+    EvalAttempt, NixEvaluator, PackageModuleFetcher, SelectedPackageModule, WorkingSetMember,
+};
 use crate::platform::native_platform;
 use crate::registry::RegistrySet;
 use crate::types::ProfileScope;
@@ -684,12 +686,6 @@ where
 {
     let mut items = Vec::new();
     for member in members {
-        if member.ability.is_some() && member.config_output.is_some() {
-            bail!(
-                "working-set package {} carries both current ability-module and legacy config-module authority",
-                member.package
-            );
-        }
         let module = member.ability.as_ref().and_then(|document| {
             document.package_module.as_ref().map(|locator| {
                 (
@@ -699,14 +695,7 @@ where
                 )
             })
         });
-        let legacy_module = member.config_output.as_deref().map(|path| {
-            (
-                path,
-                member.config_output_nar_hash.clone().unwrap_or_default(),
-                "module.nix",
-            )
-        });
-        if let Some((path, nar_hash, entry_point)) = module.or(legacy_module) {
+        if let Some((path, nar_hash, entry_point)) = module {
             let config_root = if locked {
                 if nar_hash.is_empty() {
                     bail!(
@@ -1063,15 +1052,15 @@ fn configure_realise_command(
     }
 }
 
-impl ConfigOutputFetcher for SubstituterFetcher {
-    fn fetch_config_output(&self, provider: &SelectedProvider<'_>) -> Result<()> {
+impl PackageModuleFetcher for SubstituterFetcher {
+    fn fetch_package_module(&self, provider: &SelectedPackageModule<'_>) -> Result<()> {
         std::fs::create_dir_all(&self.nix_cache_dir).with_context(|| {
             format!("creating Nix client cache {}", self.nix_cache_dir.display())
         })?;
         let mut cmd = command_from_path("nix-store")?;
         configure_realise_command(
             &mut cmd,
-            provider.config_output,
+            provider.module_artifact,
             &self.substituters,
             &self.nix_cache_dir,
             self.verbose,
@@ -1082,45 +1071,45 @@ impl ConfigOutputFetcher for SubstituterFetcher {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!(
-                "realising config output {} for '{}' failed: {}",
-                provider.config_output,
+                "realising package module artifact {} for '{}' failed: {}",
+                provider.module_artifact,
                 provider.package,
                 stderr.trim()
             );
         }
         let dump = command_from_path("nix-store")?
-            .args(["--dump", provider.config_output])
+            .args(["--dump", provider.module_artifact])
             .output()
             .with_context(|| {
                 format!(
-                    "dumping realised config output {} for verification",
-                    provider.config_output
+                    "dumping realised package module artifact {} for verification",
+                    provider.module_artifact
                 )
             })?;
         if !dump.status.success() {
             anyhow::bail!(
-                "verifying config output {} for '{}' failed: {}",
-                provider.config_output,
+                "verifying package module artifact {} for '{}' failed: {}",
+                provider.module_artifact,
                 provider.package,
                 String::from_utf8_lossy(&dump.stderr).trim()
             );
         }
         let actual_hash = format!("sha256:{:x}", Sha256::digest(&dump.stdout));
         let actual_size =
-            u64::try_from(dump.stdout.len()).context("config output NAR too large")?;
+            u64::try_from(dump.stdout.len()).context("package module artifact NAR too large")?;
         let expected =
             crate::registry::store::NarBytes::from_hash(provider.nar_hash, provider.nar_size)
                 .with_context(|| {
                     format!(
-                        "invalid authenticated config-output pin for '{}'",
+                        "invalid authenticated package-module-artifact pin for '{}'",
                         provider.package
                     )
                 })?;
         if !expected.matches(&actual_hash, actual_size) {
             anyhow::bail!(
-                "realised config output {} for '{}' does not match authenticated NAR {}:{} \
+                "realised package module artifact {} for '{}' does not match authenticated NAR {}:{} \
                  (actual {}:{})",
-                provider.config_output,
+                provider.module_artifact,
                 provider.package,
                 expected.nar_hash(),
                 expected.size,
@@ -1132,42 +1121,22 @@ impl ConfigOutputFetcher for SubstituterFetcher {
     }
 }
 
-/// The on-host registry set exposed as a by-name [`ConfigModuleResolver`].
-///
-/// This is the production replacement for the removed registry-wide provides
-/// index: it answers "does a package named `<root>` ship a config module?" by
-/// reading each package's `config_module` block from `registry.toml`. It backs
-/// both the [`SystemRoots`](super::SystemRoots) build (the installed set's
-/// config modules) and the resolver's structural fallback for private
-/// `{pkg}.*` roots.
-pub struct RegistryConfigModules {
+/// The on-host package-contract resolver used by configuration evaluation.
+pub struct RegistryPackageModules {
     registries: RegistrySet,
-    installed: Vec<InstalledModulePin>,
     image_packages: BTreeMap<String, super::runtime::LocalRuntimePackage>,
 }
 
-#[derive(Debug, Clone)]
-struct InstalledModulePin {
-    package: String,
-    version: String,
-    runtime_output: String,
-    module: crate::types::ConfigModuleMeta,
-}
-
-impl RegistryConfigModules {
+impl RegistryPackageModules {
     /// Wraps an already-loaded registry set.
     pub fn new(registries: RegistrySet) -> Self {
         Self {
             registries,
-            installed: Vec::new(),
             image_packages: BTreeMap::new(),
         }
     }
 
-    /// Returns the registry snapshot used for config-module lookup.
-    ///
-    /// Runtime output resolution must use this same snapshot so a registry
-    /// update cannot split module evaluation from package activation.
+    /// Returns the registry snapshot used for package-contract lookup.
     pub fn registries(&self) -> &RegistrySet {
         &self.registries
     }
@@ -1177,13 +1146,12 @@ impl RegistryConfigModules {
         &self.image_packages
     }
 
-    /// Loads the on-host system-scope registry snapshot.
+    /// Loads the on-host system-scope registry snapshot and immutable image catalog.
     ///
     /// # Errors
     ///
-    /// Returns an error when system APM configuration or any configured
-    /// registry cannot be loaded. Production evaluation must distinguish
-    /// corrupt/untrusted registry state from a legitimate empty registry set.
+    /// Returns an error when APM configuration, a registry, or image package
+    /// metadata cannot be loaded and authenticated.
     pub fn load_system() -> Result<Self> {
         let scope = crate::types::ProfileScope::System;
         let config = crate::config::ApmConfig::load(scope)?;
@@ -1195,123 +1163,68 @@ impl RegistryConfigModules {
         )?;
         let profile = crate::profile::Profile::open_readonly(scope);
         let mut image_catalog = None;
-        let mut installed = Vec::new();
         let mut image_packages = BTreeMap::new();
         for record in crate::profile::meta::list_meta(&profile)? {
             let Some(mut apm) = record.apm else {
                 continue;
             };
             let is_image = record.pushed_by == "aos-image" && apm.registry == "seed";
-            if is_image {
-                if image_catalog.is_none() {
-                    image_catalog = Some(immutable_image_seed_catalog()?);
-                }
-                let image_catalog = image_catalog
-                    .as_ref()
-                    .context("loading the immutable image package catalog")?;
-                let catalog_record = image_catalog.get(&record.store_path).with_context(|| {
-                    format!(
-                        "image-seeded package '{}' is absent from the immutable image catalog",
-                        apm.name
-                    )
-                })?;
-                let catalog_apm = catalog_record.apm.as_ref().with_context(|| {
-                    format!(
-                        "immutable image catalog entry {} has no APM metadata",
-                        record.store_path
-                    )
-                })?;
-                validate_image_seed_metadata(&apm, catalog_apm)?;
-                apm = catalog_apm.clone();
-                require_immutable_image_path(&record.store_path, "runtime output")?;
-                if let Some(artifact) = &apm.expose_artifact {
-                    require_immutable_image_path(&artifact.store_path, "expose artifact")?;
-                }
+            if !is_image {
+                continue;
             }
-            let mut config_module = apm.config_module.clone();
-            if is_image && let Some(module) = config_module.as_mut() {
-                let lower = require_immutable_image_path(
-                    &module.config_output.store_path,
-                    "config-module output",
-                )?;
-                let (nar_hash, nar_size) = super::runtime::local_store_identity_at(
-                    &module.config_output.store_path,
-                    &lower,
-                )?;
-                module.config_output.nar_hash = nar_hash;
-                module.config_output.nar_size = nar_size;
+            if image_catalog.is_none() {
+                image_catalog = Some(immutable_image_seed_catalog()?);
             }
-            if let Some(module) = config_module.clone() {
-                installed.push(InstalledModulePin {
-                    package: apm.name.clone(),
-                    version: apm.version.clone(),
-                    runtime_output: record.store_path.clone(),
-                    module,
-                });
-            }
-            if is_image {
-                image_packages.insert(
-                    apm.name,
-                    super::runtime::LocalRuntimePackage {
-                        version: apm.version,
-                        store_path: record.store_path,
-                        expose: apm.expose,
-                        expose_artifact: apm.expose_artifact,
-                        config_module,
-                        ability: apm.ability,
-                        closure: std::cell::RefCell::new(None),
-                    },
-                );
-            }
+            let image_catalog = image_catalog
+                .as_ref()
+                .context("loading the immutable image package catalog")?;
+            let catalog_record = image_catalog.get(&record.store_path).with_context(|| {
+                format!(
+                    "image-seeded package '{}' is absent from the immutable image catalog",
+                    apm.name
+                )
+            })?;
+            let catalog_apm = catalog_record.apm.as_ref().with_context(|| {
+                format!(
+                    "immutable image catalog entry {} has no APM metadata",
+                    record.store_path
+                )
+            })?;
+            validate_image_seed_metadata(&apm, catalog_apm)?;
+            apm = catalog_apm.clone();
+            require_immutable_image_path(&record.store_path, "runtime output")?;
+            image_packages.insert(
+                apm.name,
+                super::runtime::LocalRuntimePackage {
+                    version: apm.version,
+                    store_path: record.store_path,
+                    expose: apm.expose,
+                    expose_artifact: apm.expose_artifact,
+                    ability: apm.ability,
+                    closure: std::cell::RefCell::new(None),
+                },
+            );
         }
         Ok(Self {
             registries,
-            installed,
             image_packages,
         })
     }
 }
 
-fn resolved_registry_config_module<'a>(
-    registry: &'a crate::registry::Registry,
-    package: &'a crate::types::PackageMeta,
-) -> Option<ResolvedConfigModule<'a>> {
-    let module = package.config_module.as_ref()?;
-    let root = crate::registry::store_path_hash(&module.config_output.store_path);
-    Some(ResolvedConfigModule {
-        registry: &registry.config.name,
-        release_trust: registry.release_trust(),
-        config_realization: registry
-            .store_map()
-            .realization_subset_hash(&[root.to_string()])
-            .ok(),
-        package: &package.name,
-        version: &package.version,
-        platform: &package.platform,
-        runtime_output: &package.store_path,
-        module,
-    })
-}
-
-fn resolved_registry_ability_module(
+fn resolved_registry_package_module(
     registry: &crate::registry::Registry,
     package: &crate::types::PackageMeta,
-) -> Result<Option<ResolvedAbilityModule>> {
-    ensure!(
-        package.ability.is_none() || package.config_module.is_none(),
-        "package {} carries both current ability and legacy config module metadata",
-        package.name
-    );
+) -> Result<Option<ResolvedPackageModule>> {
     let Some(document) = crate::ability_package::resolve_package_document(package)? else {
         return Ok(None);
     };
-    let module = document
-        .package_module
-        .as_ref()
-        .context("resolved ability package is missing its module locator")?;
+    let Some(module) = document.package_module.as_ref() else {
+        return Ok(None);
+    };
     let root = crate::registry::store_path_hash(&module.artifact.store_path);
 
-    Ok(Some(ResolvedAbilityModule {
+    Ok(Some(ResolvedPackageModule {
         registry: registry.config.name.clone(),
         release_trust: registry.release_trust().cloned(),
         realization: registry
@@ -1326,35 +1239,18 @@ fn resolved_registry_ability_module(
     }))
 }
 
-fn resolved_image_config_module<'a>(
-    name: &'a str,
-    package: &'a super::runtime::LocalRuntimePackage,
-) -> Option<ResolvedConfigModule<'a>> {
-    Some(ResolvedConfigModule {
-        registry: "",
-        release_trust: None,
-        config_realization: None,
-        package: name,
-        version: &package.version,
-        platform: "image",
-        runtime_output: &package.store_path,
-        module: package.config_module.as_ref()?,
-    })
-}
-
-fn resolved_image_ability_module(
+fn resolved_image_package_module(
     name: &str,
     package: &super::runtime::LocalRuntimePackage,
-) -> Result<Option<ResolvedAbilityModule>> {
-    ensure!(
-        package.ability.is_none() || package.config_module.is_none(),
-        "image package {name} carries both current ability and legacy config module metadata"
-    );
+) -> Result<Option<ResolvedPackageModule>> {
     let Some(ability) = package.ability.clone() else {
         return Ok(None);
     };
     let manifest = crate::ability_package::read_package_manifest(&ability.store_path)?;
     let decoded = crate::ability_package::decode_package_manifest(&manifest)?;
+    if decoded.package_module.is_none() {
+        return Ok(None);
+    }
     let package_meta = crate::types::PackageMeta {
         name: name.to_string(),
         version: package.version.clone(),
@@ -1377,7 +1273,7 @@ fn resolved_image_ability_module(
         requires_features: Vec::new(),
         expose: package.expose.clone(),
         expose_artifact: package.expose_artifact.clone(),
-        config_module: package.config_module.clone(),
+        config_module: None,
         documentation: None,
         ability: Some(ability),
         permissions: Default::default(),
@@ -1386,7 +1282,7 @@ fn resolved_image_ability_module(
     };
     let document = crate::ability_package::resolve_package_document(&package_meta)?;
 
-    Ok(document.map(|document| ResolvedAbilityModule {
+    Ok(document.map(|document| ResolvedPackageModule {
         registry: String::new(),
         release_trust: None,
         realization: None,
@@ -1487,33 +1383,32 @@ fn validate_image_seed_metadata(
     Ok(())
 }
 
-impl ConfigModuleResolver for RegistryConfigModules {
-    fn ability_module(&self, package: &str) -> Result<Option<ResolvedAbilityModule>> {
+impl PackageModuleResolver for RegistryPackageModules {
+    fn package_module(&self, package: &str) -> Result<Option<ResolvedPackageModule>> {
         if let Ok(Some((registry, resolved))) =
             self.registries.resolve_for_config_evaluation(package)
         {
-            return resolved_registry_ability_module(registry, resolved);
+            return resolved_registry_package_module(registry, resolved);
         }
 
-        let (local_name, local) = match self.image_packages.get_key_value(package) {
-            Some(value) => value,
-            None => return Ok(None),
+        let Some((local_name, local)) = self.image_packages.get_key_value(package) else {
+            return Ok(None);
         };
-        resolved_image_ability_module(local_name, local)
+        resolved_image_package_module(local_name, local)
     }
 
-    fn ability_module_exact(
+    fn package_module_exact(
         &self,
         package: &str,
         version: Option<&str>,
         runtime_output: Option<&str>,
-    ) -> Result<Option<ResolvedAbilityModule>> {
+    ) -> Result<Option<ResolvedPackageModule>> {
         let exact =
             self.registries
                 .resolve_exact_for_config_evaluation(package, version, runtime_output);
         match exact {
             Ok(Some((registry, resolved))) => {
-                return resolved_registry_ability_module(registry, resolved);
+                return resolved_registry_package_module(registry, resolved);
             }
             Ok(None) | Err(_) => {}
         }
@@ -1533,86 +1428,7 @@ impl ConfigModuleResolver for RegistryConfigModules {
         {
             return Ok(None);
         }
-        resolved_image_ability_module(local_name, local)
-    }
-
-    fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
-        if let Ok(Some((registry, resolved))) =
-            self.registries.resolve_for_config_evaluation(package)
-        {
-            return resolved_registry_config_module(registry, resolved);
-        }
-
-        let (local_name, local) = self.image_packages.get_key_value(package)?;
-        resolved_image_config_module(local_name, local)
-    }
-
-    fn config_module_exact(
-        &self,
-        package: &str,
-        version: Option<&str>,
-        runtime_output: Option<&str>,
-    ) -> Option<ResolvedConfigModule<'_>> {
-        let exact =
-            self.registries
-                .resolve_exact_for_config_evaluation(package, version, runtime_output);
-        match exact {
-            Ok(Some((registry, resolved))) => {
-                return resolved_registry_config_module(registry, resolved);
-            }
-            Ok(None) | Err(_) => {}
-        }
-        if self
-            .registries
-            .resolve_for_config_evaluation(package)
-            .is_ok_and(|resolved| resolved.is_some())
-        {
-            return None;
-        }
-
-        {
-            let (local_name, local) = self.image_packages.get_key_value(package)?;
-            if version.is_some_and(|want| want != local.version)
-                || runtime_output.is_some_and(|want| want != local.store_path)
-            {
-                return None;
-            }
-            resolved_image_config_module(local_name, local)
-        }
-    }
-
-    fn installed_config_modules(&self) -> Vec<ResolvedConfigModule<'_>> {
-        self.installed
-            .iter()
-            .map(|pin| ResolvedConfigModule {
-                registry: "",
-                release_trust: None,
-                config_realization: None,
-                package: &pin.package,
-                version: &pin.version,
-                platform: "image",
-                runtime_output: &pin.runtime_output,
-                module: &pin.module,
-            })
-            .collect()
-    }
-
-    fn known_shared_roots(&self) -> BTreeSet<String> {
-        let mut roots = self
-            .registries
-            .registries_before_config_evaluation_gap()
-            .into_iter()
-            .flat_map(|registry| registry.package_versions())
-            .filter_map(|meta| meta.config_module.as_ref())
-            .flat_map(|module| module.owns_roots.iter().map(|owned| owned.root.clone()))
-            .collect::<BTreeSet<_>>();
-        roots.extend(
-            self.image_packages
-                .values()
-                .filter_map(|package| package.config_module.as_ref())
-                .flat_map(|module| module.owns_roots.iter().map(|owned| owned.root.clone())),
-        );
-        roots
+        resolved_image_package_module(local_name, local)
     }
 }
 
@@ -1631,7 +1447,7 @@ mod tests {
     use crate::config_eval::ability_rounds::{SelectedAbilityBinding, SelectedProviderModule};
     use crate::types::{ApmMeta, ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat};
 
-    fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
+    fn member(pkg: &str, module_artifact: Option<&str>) -> WorkingSetMember {
         WorkingSetMember {
             registry: None,
             release_trust: None,
@@ -1639,8 +1455,8 @@ mod tests {
             package: pkg.to_string(),
             version: Some("1.0.0".to_string()),
             ability: None,
-            config_output: config_output.map(str::to_string),
-            config_output_nar_hash: config_output.map(|_| "sha256:test".to_string()),
+            module_artifact: module_artifact.map(str::to_string),
+            module_artifact_nar_hash: module_artifact.map(|_| "sha256:test".to_string()),
             module_abi_compat: Some(ModuleAbiCompat { min: 1, max: 2 }),
             outputs: super::super::PackageOutputs::default(),
         }
@@ -1697,7 +1513,7 @@ mod tests {
 
     fn image_config_module() -> ConfigModuleMeta {
         ConfigModuleMeta {
-            config_output: ConfigOutputMeta {
+            module_artifact: ConfigOutputMeta {
                 store_path: "/nix/store/11111111111111111111111111111111-image-web-config"
                     .to_string(),
                 nar_hash: "sha256:test".to_string(),
@@ -1815,7 +1631,7 @@ hashes = []
 min-format = 1
 requires-features = ["config-module-v1", "attestation-v1"]
 
-[versions.platforms.x86_64-linux.config_module.config_output]
+[versions.platforms.x86_64-linux.config_module.module_artifact]
 store_path = "/nix/store/44444444444444444444444444444444-image-web-config"
 nar_hash = "sha256:{nar_digest}"
 nar_size = 1
@@ -1920,7 +1736,7 @@ max = 1
             "web",
             Some("/nix/store/00000000000000000000000000000000-web-config"),
         );
-        web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
+        web.module_artifact_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         let working = vec![web];
         let text = render_package_module_list(&working, true).unwrap();
 
@@ -2002,7 +1818,7 @@ max = 1
             "web",
             Some("/nix/store/00000000000000000000000000000000-web-config"),
         );
-        web.config_output_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
+        web.module_artifact_nar_hash = Some(format!("sha256:{}", "00".repeat(32)));
         web.outputs.self_output = Some("/nix/store/hash-web-runtime".to_string());
         web.outputs.dependencies.insert(
             "openssl".to_string(),
@@ -2206,7 +2022,7 @@ max = 1
     }
 
     #[test]
-    fn members_without_config_output_are_skipped() {
+    fn members_without_module_artifact_are_skipped() {
         // A seed with no config module contributes nothing to the import list.
         let working = vec![member("web", None)];
         let rendered = render_package_module_list(&working, false).unwrap();

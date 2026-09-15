@@ -55,7 +55,7 @@ use crate::download::{
 use crate::registry::store::NarBytes;
 use crate::registry::store_path_hash;
 use crate::store::filter_missing;
-use crate::types::{CredentialMeta, ProfileScope, validate_credential_name, validate_package_name};
+use crate::types::{CredentialMeta, validate_credential_name, validate_package_name};
 use crate::verify::verify_download_hash;
 
 /// Default root under which the per-package completion markers live.
@@ -602,7 +602,7 @@ enum RenderError {
 
 /// The fallible body of `render-one`.
 fn render_inner(
-    config: &ApmConfig,
+    _config: &ApmConfig,
     package: &str,
     manifest_path: &Path,
     marker_root: &Path,
@@ -632,56 +632,13 @@ fn render_inner(
         )));
     }
 
-    // Migrated packages consume exact bytes projected by the authenticated
-    // config module. Legacy packages retain the signed flat renderer.
-    let migrated = manifest.config_projections.get(package);
-    let signed = if migrated.is_none() {
-        Some(signed_config(config, &manifest, package).map_err(RenderError::Other)?)
-    } else {
-        None
-    };
-    let signed_credentials = migrated
-        .and_then(|_| {
-            manifest
-                .package_outputs
-                .get(package)?
-                .config_projection
-                .as_ref()
-                .map(|pin| pin.config.credentials.as_slice())
-        })
-        .or_else(|| signed.as_ref().map(|signed| signed.credentials.as_slice()))
-        .ok_or_else(|| anyhow::anyhow!("missing authenticated config schema for {package:?}"))
-        .map_err(RenderError::Other)?;
-    let credential_handles = canonicalize_credential_handles(
-        package,
-        manifest.credentials.get(package),
-        signed_credentials,
-    )
-    .map_err(RenderError::Config)?;
-    let (rendered, units) = if let Some(projection) = migrated {
-        (
-            projection
-                .artifacts
-                .iter()
-                .map(|artifact| (artifact.path.clone(), artifact.text.as_bytes().to_vec()))
-                .collect::<Vec<_>>(),
-            projection.units.clone(),
-        )
-    } else {
-        let signed = signed.as_ref().ok_or_else(|| {
-            RenderError::Other(anyhow::anyhow!("legacy signed config metadata disappeared"))
-        })?;
-        let desired = desired_config_for(&manifest, package).map_err(RenderError::Config)?;
-        let rendered = crate::render_package_config(package, &signed.artifacts, desired.as_ref())
-            .map_err(RenderError::Config)?
-            .into_iter()
-            .map(|(artifact, bytes)| (artifact.path.clone(), bytes))
-            .collect::<Vec<_>>();
-        (
-            rendered,
-            crate::config_eval::materialize::projected_unit_actions(&signed.artifacts),
-        )
-    };
+    let credential_handles = manifest
+        .credentials
+        .get(package)
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let rendered: Vec<(String, Vec<u8>)> = Vec::new();
+    let units = BTreeMap::new();
 
     // Stage rendered bytes under opaque, content-derived payload names. The
     // separately validated index is what binds those bytes to final paths;
@@ -768,37 +725,6 @@ pub(crate) fn stage_retained_package(
         .map_err(|error| match error {
             RenderError::Config(error) | RenderError::Other(error) => error,
         })
-}
-
-/// Read the signed `expose.config` artifacts for `package` from the system
-/// eval-pinned manifest, or an empty list when the package exposes no config.
-struct SignedConfig {
-    artifacts: Vec<crate::types::ConfigArtifactMeta>,
-    credentials: Vec<CredentialMeta>,
-}
-
-fn signed_config(
-    config: &ApmConfig,
-    manifest: &ConfigManifest,
-    package: &str,
-) -> Result<SignedConfig> {
-    if config.scope != ProfileScope::System {
-        bail!("render-one operates on the system profile (run with --system)");
-    }
-    let pin = manifest
-        .package_outputs
-        .get(package)
-        .with_context(|| format!("manifest has no runtime output pin for package '{package}'"))?;
-    Ok(pin.legacy_config.as_ref().map_or(
-        SignedConfig {
-            artifacts: Vec::new(),
-            credentials: Vec::new(),
-        },
-        |legacy| SignedConfig {
-            artifacts: legacy.artifacts.clone(),
-            credentials: legacy.credentials.clone(),
-        },
-    ))
 }
 
 pub(crate) fn canonicalize_credential_handles(

@@ -13,10 +13,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    ProjectedPackageConfig, package_activation_revision, validate_canonical_store_path,
-    validate_content_sha256,
-};
+use super::{package_activation_revision, validate_canonical_store_path, validate_content_sha256};
 use crate::config_eval::runtime::RuntimePackagePin;
 
 /// Pins all immutable inputs from which native ability activation is specialized.
@@ -48,7 +45,6 @@ impl AbilityActivationInput {
     pub(crate) fn validate(
         &self,
         package_outputs: &BTreeMap<String, RuntimePackagePin>,
-        config_projections: &BTreeMap<String, ProjectedPackageConfig>,
     ) -> Result<()> {
         use crate::types::{FEATURE_ABILITIES_V1, FEATURE_ABILITY_EFFECTS_V1};
 
@@ -122,8 +118,7 @@ impl AbilityActivationInput {
                     coordinate.name
                 );
             }
-            let expected_revision =
-                package_activation_revision(name, package, config_projections.get(name.as_str()))?;
+            let expected_revision = package_activation_revision(name, package)?;
             if coordinate.activation_revision.is_empty() {
                 bail!(
                     "ability activation revision for {:?} is missing",

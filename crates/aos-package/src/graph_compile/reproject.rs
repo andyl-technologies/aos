@@ -149,60 +149,13 @@ pub fn merge_staged_projection(
             bail!("render stage identity disagrees for package {package:?}");
         }
 
-        let package_pin = source
-            .package_outputs
+        let expected_credentials = source
+            .credentials
             .get(package)
-            .with_context(|| format!("manifest omitted runtime pin for {package:?}"))?;
-        let signed_credentials = package_pin
-            .config_projection
-            .as_ref()
-            .map(|pin| pin.config.credentials.as_slice())
-            .or_else(|| {
-                package_pin
-                    .legacy_config
-                    .as_ref()
-                    .map(|config| config.credentials.as_slice())
-            });
-        let expected_credentials = super::subverbs::canonicalize_credential_handles(
-            package,
-            source.credentials.get(package),
-            signed_credentials.unwrap_or(&[]),
-        )?;
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
         if stage.credentials != expected_credentials {
             bail!("render stage credential handles disagree for package {package:?}");
-        }
-        if let Some(expected) = source.config_projections.get(package) {
-            let expected_artifacts = expected
-                .artifacts
-                .iter()
-                .map(|artifact| {
-                    let path = artifact
-                        .path
-                        .strip_prefix("/etc/")
-                        .with_context(|| {
-                            format!(
-                                "migrated projection for package {package:?} has path outside /etc"
-                            )
-                        })?
-                        .to_string();
-                    Ok((path, (&artifact.sha256, artifact.mode.as_str())))
-                })
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            let staged_artifacts = stage
-                .artifacts
-                .iter()
-                .map(|artifact| {
-                    (
-                        artifact.path.clone(),
-                        (&artifact.sha256, artifact.mode.as_str()),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            if staged_artifacts != expected_artifacts || stage.units != expected.units {
-                bail!(
-                    "render stage bytes/actions disagree with authenticated migrated projection for package {package:?}"
-                );
-            }
         }
 
         let mut seen_paths = BTreeSet::new();
@@ -618,12 +571,7 @@ fn project_manifest(full: &Value, kept: &BTreeSet<String>) -> Result<Value> {
         });
     }
 
-    for field in [
-        "packageOutputs",
-        "config",
-        "credentials",
-        "configProjections",
-    ] {
+    for field in ["packageOutputs", "config", "credentials"] {
         if let Some(map) = obj.get_mut(field).and_then(Value::as_object_mut) {
             map.retain(|key, _| kept.contains(key));
         }

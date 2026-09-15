@@ -64,7 +64,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::runtime::{RuntimePackageOrigin, RuntimePackagePin};
-use crate::types::ModuleAbiCompat;
 
 mod ability_activation;
 
@@ -145,15 +144,6 @@ pub struct ConfigManifest {
     pub config: BTreeMap<String, serde_json::Value>,
     /// Per-package credential handles, never secret values.
     pub credentials: BTreeMap<String, serde_json::Value>,
-    /// Eval-produced exact config bytes and unit actions for migrated expose
-    /// companions. Legacy packages are intentionally absent and render from
-    /// signed flat metadata at staging time.
-    #[serde(
-        rename = "configProjections",
-        default,
-        skip_serializing_if = "BTreeMap::is_empty"
-    )]
-    pub config_projections: BTreeMap<String, ProjectedPackageConfig>,
     /// Ownership index used for fail-closed degraded projection.
     pub ownership: ManifestOwnership,
 }
@@ -198,7 +188,7 @@ impl ConfigManifest {
                     bail!("config-manifest/v2 requires expected_current_generation");
                 }
                 if let Some(activation) = &self.inputs.ability_activation {
-                    activation.validate(&self.package_outputs, &self.config_projections)?;
+                    activation.validate(&self.package_outputs)?;
                 }
             }
             _ => unreachable!(),
@@ -219,117 +209,36 @@ impl ConfigManifest {
         }
         for hash in [
             &self.inputs.base_lib.abi_hash,
-            &self.inputs.config_modules.closure_hash,
             &self.inputs.host_nix.content_hash,
             &self.inputs.instance_facts.facts_hash,
         ] {
             validate_content_sha256(hash)?;
         }
         validate_store_identity_hash(&self.inputs.evaluator.store_hash)?;
-        if self.inputs.config_modules.count != self.inputs.config_modules.store_paths.len() {
-            bail!("config_modules count does not match store_paths");
-        }
-        if self.inputs.config_modules.count != self.inputs.config_modules.nar_hashes.len() {
-            bail!("config_modules count does not match nar_hashes");
-        }
-        if self.inputs.config_modules.count != self.inputs.config_modules.package_names.len() {
-            bail!("config_modules count does not match package_names");
-        }
-        if !self.inputs.config_modules.origins.is_empty()
-            && self.inputs.config_modules.count != self.inputs.config_modules.origins.len()
-        {
-            bail!("config_modules count does not match origins");
-        }
-        if self
-            .inputs
-            .config_modules
-            .origins
-            .iter()
-            .any(|origin| origin != "registry" && origin != "image")
-        {
-            bail!("config_modules contains an unsupported trust origin");
-        }
-        // Manifests written before origin tracking had neither an origin list
-        // nor signed-release identity. Preserve their read/migration path, but
-        // require complete identity for every newly explicit registry origin.
         let has_registry_modules = self
             .inputs
-            .config_modules
-            .origins
+            .package_modules
+            .modules
             .iter()
-            .any(|origin| origin == "registry");
+            .any(|module| module.origin == PackageModuleOrigin::Registry);
         let release_identity = [
-            self.inputs.config_modules.registry.as_ref(),
-            self.inputs.config_modules.release_tag.as_ref(),
-            self.inputs.config_modules.tag_signer_key.as_ref(),
-            self.inputs.config_modules.realization.as_ref(),
+            self.inputs.package_modules.registry.as_ref(),
+            self.inputs.package_modules.release_tag.as_ref(),
+            self.inputs.package_modules.tag_signer_key.as_ref(),
+            self.inputs.package_modules.realization.as_ref(),
         ];
         if has_registry_modules && release_identity.iter().any(|field| field.is_none()) {
-            bail!("registry config modules require complete signed-release identity");
+            bail!("registry package modules require complete signed-release identity");
         }
-        if !self.inputs.config_modules.origins.is_empty()
-            && !has_registry_modules
-            && release_identity.iter().any(|field| field.is_some())
-        {
-            bail!("image-only config modules must not claim signed-release identity");
+        if !has_registry_modules && release_identity.iter().any(|field| field.is_some()) {
+            bail!("image-only package modules must not claim signed-release identity");
         }
-        if self.inputs.config_modules.count != self.inputs.config_modules.module_abi_compat.len() {
-            bail!("config_modules count does not match module_abi_compat");
-        }
-        for compat in &self.inputs.config_modules.module_abi_compat {
-            if compat.min > compat.max {
-                bail!("config_modules contains an inverted module ABI range");
+        let mut seen_packages = BTreeSet::new();
+        for module in &self.inputs.package_modules.modules {
+            module.validate()?;
+            if !seen_packages.insert(module.package.as_str()) {
+                bail!("package_modules.modules contains a duplicate package");
             }
-        }
-        let mut seen_config_modules = BTreeSet::new();
-        if self
-            .inputs
-            .config_modules
-            .store_paths
-            .iter()
-            .any(|path| !seen_config_modules.insert(path))
-        {
-            bail!("config_modules.store_paths contains a duplicate path");
-        }
-        if self
-            .inputs
-            .config_modules
-            .store_paths
-            .iter()
-            .any(|path| validate_canonical_store_path(path).is_err())
-        {
-            bail!("config_modules.store_paths contains a noncanonical store path");
-        }
-        for package in &self.inputs.config_modules.package_names {
-            crate::types::validate_package_name(package)
-                .context("config_modules.package_names contains an invalid package")?;
-        }
-        let mut closure_members = self
-            .inputs
-            .config_modules
-            .store_paths
-            .iter()
-            .zip(&self.inputs.config_modules.nar_hashes)
-            .map(|(path, nar_hash)| {
-                let canonical = crate::registry::store::NarBytes::from_hash(nar_hash, 0)
-                    .context("config_modules.nar_hashes contains an invalid NAR hash")?
-                    .nar_hash();
-                if canonical != *nar_hash {
-                    bail!("config_modules.nar_hashes contains a noncanonical NAR hash");
-                }
-                Ok(serde_json::json!([path, nar_hash]))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        closure_members.sort_by(|left, right| {
-            left[0]
-                .as_str()
-                .unwrap_or_default()
-                .cmp(right[0].as_str().unwrap_or_default())
-        });
-        let expected_closure =
-            crate::graph_compile::reproject::hash_cjson(&serde_json::Value::Array(closure_members));
-        if self.inputs.config_modules.closure_hash != expected_closure {
-            bail!("config_modules closure_hash does not match store path/NAR hash set");
         }
         for (field, path) in [
             ("host_nix.store_path", &self.inputs.host_nix.store_path),
@@ -515,7 +424,7 @@ impl ConfigManifest {
             )?;
         }
         for (package, credentials) in &self.credentials {
-            validate_secret_refs(package, credentials, self.package_outputs.get(package))?;
+            validate_secret_refs(package, credentials)?;
             validate_json_store_paths(
                 credentials,
                 &pinned_store_paths,
@@ -525,7 +434,6 @@ impl ConfigManifest {
                 &format!("credentials.{package}"),
             )?;
         }
-        self.validate_config_projections()?;
         for path in self.etc.keys() {
             let mut ancestor = path.as_str();
             while let Some((parent, _)) = ancestor.rsplit_once('/') {
@@ -639,97 +547,10 @@ impl ConfigManifest {
         )?;
         Ok(())
     }
-
-    fn validate_config_projections(&self) -> Result<()> {
-        let expected = self
-            .package_outputs
-            .iter()
-            .filter_map(|(package, pin)| {
-                pin.config_projection.is_some().then_some(package.as_str())
-            })
-            .collect::<BTreeSet<_>>();
-        let actual = self
-            .config_projections
-            .keys()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        if expected != actual {
-            bail!("manifest configProjections must exactly cover migrated expose packages");
-        }
-        for (package, projection) in &self.config_projections {
-            let pin = self.package_outputs[package]
-                .config_projection
-                .as_ref()
-                .context("migrated expose package lost its authenticated projection pin")?;
-            let module_index = self
-                .inputs
-                .config_modules
-                .package_names
-                .iter()
-                .position(|name| name == package)
-                .with_context(|| {
-                    format!("config projection for {package:?} has no evaluated config module")
-                })?;
-            if self.inputs.config_modules.store_paths[module_index] != pin.config_output
-                || self.inputs.config_modules.nar_hashes[module_index] != pin.config_nar_hash
-            {
-                bail!(
-                    "config projection for {package:?} disagrees with authenticated config-module input"
-                );
-            }
-            let expected_schema_hash = expose_config_schema_hash(&pin.config)?;
-            if projection.schema != ProjectedPackageConfig::SCHEMA
-                || projection.schema_hash != expected_schema_hash
-            {
-                bail!("config projection for {package:?} has a missing or tampered schema binding");
-            }
-            if projection.artifacts.len() != pin.config.artifacts.len() {
-                bail!("config projection for {package:?} does not cover every signed artifact");
-            }
-            let desired =
-                desired_package_from_json(self.config.get(package).with_context(|| {
-                    format!("config projection for {package:?} has no desired config")
-                })?)?;
-            let expected_render =
-                crate::render_package_config(package, &pin.config.artifacts, Some(&desired))
-                    .with_context(|| format!("re-rendering config projection for {package:?}"))?;
-            for (rendered, (signed, expected_bytes)) in
-                projection.artifacts.iter().zip(expected_render)
-            {
-                if rendered.path != signed.path || rendered.mode != "0644" {
-                    bail!("config projection artifact metadata disagrees for {package:?}");
-                }
-                if rendered.text.as_bytes() != expected_bytes.as_slice() {
-                    bail!(
-                        "config projection artifact bytes disagree with desired config for {package:?}"
-                    );
-                }
-                let expected_hash = format!(
-                    "sha256:{}",
-                    hex::encode(Sha256::digest(rendered.text.as_bytes()))
-                );
-                if rendered.sha256 != expected_hash {
-                    bail!("config projection artifact bytes are tampered for {package:?}");
-                }
-            }
-            let expected_actions = projected_unit_actions_for_package(
-                &self.package_outputs[package],
-                &pin.config.artifacts,
-            );
-            if projection.units != expected_actions {
-                bail!("config projection unit actions disagree with signed policy for {package:?}");
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Validates that evaluated credentials contain references, never plaintext.
-fn validate_secret_refs(
-    package: &str,
-    value: &serde_json::Value,
-    package_pin: Option<&RuntimePackagePin>,
-) -> Result<()> {
+fn validate_secret_refs(package: &str, value: &serde_json::Value) -> Result<()> {
     let handles = value
         .as_object()
         .with_context(|| format!("credentials.{package} must be an object"))?;
@@ -748,89 +569,8 @@ fn validate_secret_refs(
         reference.validate_reference().with_context(|| {
             format!("invalid credential reference credentials.{package}.{name}")
         })?;
-        if let Some(ciphertext) = reference.ciphertext.as_deref() {
-            let signed = package_pin
-                .and_then(|pin| {
-                    pin.config_projection
-                        .as_ref()
-                        .map(|projection| &projection.config)
-                        .or(pin.legacy_config.as_ref())
-                })
-                .and_then(|config| {
-                    config
-                        .credentials
-                        .iter()
-                        .find(|credential| credential.name == *name)
-                })
-                .and_then(|credential| credential.ciphertext.as_deref());
-            if signed != Some(ciphertext) {
-                bail!(
-                    "credentials.{package}.{name} contains ciphertext that was not package-authored"
-                );
-            }
-        }
     }
     Ok(())
-}
-
-/// Converts one package's JSON desired-config block into the flat renderer's
-/// TOML value shape, rejecting structural mismatches and JSON nulls.
-fn desired_package_from_json(
-    value: &serde_json::Value,
-) -> Result<BTreeMap<String, BTreeMap<String, toml::Value>>> {
-    let artifacts = value
-        .as_object()
-        .context("desired package config must be an object")?;
-    artifacts
-        .iter()
-        .map(|(artifact, fields)| {
-            let fields = fields.as_object().with_context(|| {
-                format!("desired config artifact {artifact:?} must be an object")
-            })?;
-            let fields = fields
-                .iter()
-                .map(|(field, value)| {
-                    let value = serde_json::from_value::<toml::Value>(value.clone())
-                        .with_context(|| format!("converting desired config field {field:?}"))?;
-                    Ok((field.clone(), value))
-                })
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            Ok((artifact.clone(), fields))
-        })
-        .collect()
-}
-
-/// Exact eval-produced config projection consumed by `render-one`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectedPackageConfig {
-    /// Projection schema discriminator.
-    pub schema: String,
-    /// Canonical hash of the authenticated signed config schema.
-    pub schema_hash: String,
-    /// Exact rendered UTF-8 artifact bytes.
-    pub artifacts: Vec<ProjectedConfigArtifact>,
-    /// Signed reload/restart actions, with restart dominating reload.
-    pub units: BTreeMap<String, UnitReconcileAction>,
-}
-
-impl ProjectedPackageConfig {
-    /// Current projection schema.
-    pub const SCHEMA: &'static str = "aos.package-config-projection/v1";
-}
-
-/// One exact rendered artifact in a migrated package projection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectedConfigArtifact {
-    /// Final absolute path beneath `/etc`.
-    pub path: String,
-    /// Exact UTF-8 bytes represented as a JSON string.
-    pub text: String,
-    /// Final octal file mode.
-    pub mode: String,
-    /// SHA-256 binding of `text` bytes.
-    pub sha256: String,
 }
 
 /// Computes the content-derived activation revision for one structured package.
@@ -847,7 +587,6 @@ pub struct ProjectedConfigArtifact {
 pub(crate) fn package_activation_revision(
     package: &str,
     pin: &RuntimePackagePin,
-    projection: Option<&ProjectedPackageConfig>,
 ) -> Result<String> {
     const DOMAIN: &str = "aos.package-activation-revision/v1";
 
@@ -860,8 +599,6 @@ pub(crate) fn package_activation_revision(
         "package": package,
         "runtime_nar_hash": pin.nar_hash,
         "ability_package_digest": ability.package_digest,
-        "expose_artifact_nar_hash": pin.expose_artifact.as_ref().map(|artifact| &artifact.nar_hash),
-        "configuration": projection,
     });
 
     Ok(aos_contract::Sha256Digest::of_canonical(DOMAIN, &material)?.to_string())
@@ -985,29 +722,6 @@ fn validate_runtime_pin(
         }
         (None, None) => {}
         _ => bail!("packageOutputs.{package} must carry expose metadata and its artifact together"),
-    }
-    if pin.config_projection.is_some() && pin.legacy_config.is_some() {
-        bail!("packageOutputs.{package} must not carry both migrated and legacy config schemas");
-    }
-    if let Some(projection) = &pin.config_projection {
-        validate_canonical_store_path(&projection.config_output).with_context(|| {
-            format!("validating packageOutputs.{package}.config_projection.config_output")
-        })?;
-        let canonical = crate::registry::store::NarBytes::from_hash(&projection.config_nar_hash, 0)
-            .with_context(|| {
-                format!("validating packageOutputs.{package}.config_projection.config_nar_hash")
-            })?
-            .nar_hash();
-        if canonical != projection.config_nar_hash {
-            bail!("packageOutputs.{package}.config_projection.config_nar_hash is not canonical");
-        }
-        crate::types::validate_expose_config_meta(&projection.config).with_context(|| {
-            format!("validating packageOutputs.{package}.config_projection.config")
-        })?;
-    }
-    if let Some(legacy) = &pin.legacy_config {
-        crate::types::validate_expose_config_meta(legacy)
-            .with_context(|| format!("validating packageOutputs.{package}.legacy_config"))?;
     }
     if let Some(ability) = &pin.ability {
         crate::ability_package::validate_ability_package_meta(ability)
@@ -1251,8 +965,8 @@ pub struct ManifestInputs {
     pub base_lib: BaseLibInput,
     /// Evaluator executable.
     pub evaluator: EvaluatorInput,
-    /// Config-only module closure.
-    pub config_modules: ConfigModulesInput,
+    /// Authenticated package modules consumed by the module fixed point.
+    pub package_modules: PackageModulesInput,
     /// Exact authorized host module.
     pub host_nix: HostNixInput,
     /// Immutable runtime operator module set, present only in manifest v2.
@@ -1351,10 +1065,10 @@ pub struct EvaluatorInput {
     pub store_hash: String,
 }
 
-/// Config module closure identity.
+/// Exact package modules consumed by one module fixed point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigModulesInput {
+pub struct PackageModulesInput {
     /// Registry whose signed release authenticated the module set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<String>,
@@ -1367,21 +1081,59 @@ pub struct ConfigModulesInput {
     /// Hash of the consumed authenticated `store/` graph subset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realization: Option<String>,
-    /// Set-hash of the authenticated config-output store paths and NAR hashes.
-    pub closure_hash: String,
-    /// Number of config outputs.
-    pub count: usize,
-    /// Exact evaluator order of config-output store paths retained for rollback.
-    pub store_paths: Vec<String>,
-    /// Canonical authenticated NAR hash corresponding to each store path.
-    pub nar_hashes: Vec<String>,
-    /// Authenticated package identity corresponding to each ordered module.
-    pub package_names: Vec<String>,
-    /// Trust origin aligned with each config output (`registry` or `image`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub origins: Vec<String>,
-    /// ABI compatibility band corresponding to each ordered module path.
-    pub module_abi_compat: Vec<ModuleAbiCompat>,
+    /// Canonically package-ordered module identities.
+    pub modules: Vec<PackageModuleInput>,
+}
+
+/// One module locator derived from a package's authenticated contract document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageModuleInput {
+    /// Package identity declared by the contract document.
+    pub package: String,
+    /// Domain-separated semantic digest of the complete package document.
+    pub document_digest: String,
+    /// Exact artifact root containing the module.
+    pub store_path: String,
+    /// Authenticated NAR identity of the module artifact.
+    pub nar_hash: String,
+    /// Relative module entrypoint below the artifact root.
+    pub entrypoint: String,
+    /// Authority that supplied the authenticated package contract.
+    pub origin: PackageModuleOrigin,
+}
+
+impl PackageModuleInput {
+    fn validate(&self) -> Result<()> {
+        crate::types::validate_package_name(&self.package)
+            .context("package_modules.modules contains an invalid package")?;
+        validate_content_sha256(&self.document_digest)?;
+        validate_canonical_store_path(&self.store_path)?;
+        let canonical = crate::registry::store::NarBytes::from_hash(&self.nar_hash, 0)?.nar_hash();
+        if canonical != self.nar_hash {
+            bail!("package module NAR hash is not canonical");
+        }
+        let entrypoint = Path::new(&self.entrypoint);
+        if entrypoint.is_absolute()
+            || entrypoint
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            || entrypoint.extension().and_then(|value| value.to_str()) != Some("nix")
+        {
+            bail!("package module entrypoint is not a safe relative Nix path");
+        }
+        Ok(())
+    }
+}
+
+/// Trust origin of one authenticated package contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackageModuleOrigin {
+    /// Selected from one authenticated registry release.
+    Registry,
+    /// Recovered from the immutable image package catalog.
+    Image,
 }
 
 /// Authorized host module identity and trust evidence.
