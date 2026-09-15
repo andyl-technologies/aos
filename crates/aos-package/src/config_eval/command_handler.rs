@@ -300,9 +300,6 @@ impl CommandHandlerResourceCatalog {
         let mut admitted = BTreeMap::new();
         let mut visiting = BTreeSet::new();
         for reference in references.values() {
-            if reference.resource == target.resource {
-                continue;
-            }
             self.admit_dependency(
                 operation,
                 reference,
@@ -311,30 +308,55 @@ impl CommandHandlerResourceCatalog {
                 &mut admitted,
             )?;
         }
-        let dependency_contexts = references
-            .keys()
-            .filter(|resource| *resource != &target.resource)
-            .map(|resource| {
-                admitted.get(resource).cloned().ok_or_else(|| {
-                    invalid("closed referenced-resource set was not admitted exactly once")
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
 
-        let entry = self
-            .resources
-            .get(&target.resource)
-            .ok_or_else(|| invalid("command handler target is outside its catalog"))?;
-        let required = (target.resource == operation.target.resource)
-            .then(|| required_purposes(operation))
-            .unwrap_or_default();
-        entry.admit(
-            target,
-            admission_method(operation, target, entry)?,
-            dependency_contexts,
-            required,
-            remaining_millis,
-        )
+        // A plain reference cycle does not necessarily imply an effect cycle.
+        // The recursive pass above obtains effect-free provisional contexts;
+        // canonical passes then require every handler to admit against its full
+        // referenced set and converge on one stable result.
+        let maximum_passes = references
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| invalid("referenced-resource set is too large"))?;
+        for _ in 0..maximum_passes {
+            let mut changed = false;
+            for reference in references.values() {
+                let entry = self
+                    .resources
+                    .get(&reference.resource)
+                    .ok_or_else(|| invalid("command handler resource is outside its catalog"))?;
+                let closure = resource_reference_closure(reference, &self.resources)?;
+                let contexts = admitted_contexts(&closure, &reference.resource, &admitted)?;
+                let required = (reference.resource == operation.target.resource)
+                    .then(|| required_purposes(operation))
+                    .unwrap_or_default();
+                let admission = entry.admit(
+                    reference,
+                    admission_method(operation, reference, entry)?,
+                    contexts,
+                    required,
+                    remaining_millis,
+                )?;
+                let refreshed = AdmittedResourceContext::new(reference.clone(), entry, admission);
+
+                let authority_changed = admitted
+                    .get(&reference.resource)
+                    .is_none_or(|current| !current.same_authority(&refreshed));
+                admitted.insert(reference.resource.clone(), refreshed);
+                if authority_changed {
+                    changed = true;
+                }
+            }
+            if !changed {
+                return admitted
+                    .remove(&target.resource)
+                    .map(AdmittedResourceContext::into_admission)
+                    .ok_or_else(|| invalid("command handler target was not admitted"));
+            }
+        }
+
+        Err(invalid(
+            "cyclic referenced-resource admission did not converge on stable contexts",
+        ))
     }
 
     fn admit_dependency(
@@ -343,7 +365,7 @@ impl CommandHandlerResourceCatalog {
         target: &ResourceReference,
         remaining_millis: u64,
         visiting: &mut BTreeSet<ResourceId>,
-        admitted: &mut BTreeMap<ResourceId, ResourceContext>,
+        admitted: &mut BTreeMap<ResourceId, AdmittedResourceContext>,
     ) -> Result<(), io::Error> {
         if admitted.contains_key(&target.resource) {
             return Ok(());
@@ -362,7 +384,7 @@ impl CommandHandlerResourceCatalog {
             )?;
             admitted.insert(
                 target.resource.clone(),
-                resource_context(target.clone(), entry, admission),
+                AdmittedResourceContext::new(target.clone(), entry, admission),
             );
             return Ok(());
         }
@@ -373,16 +395,7 @@ impl CommandHandlerResourceCatalog {
                 self.admit_dependency(operation, dependency, remaining_millis, visiting, admitted)?;
             }
         }
-        let contexts = closure
-            .keys()
-            .filter(|resource| *resource != &target.resource)
-            .map(|resource| {
-                admitted
-                    .get(resource)
-                    .cloned()
-                    .ok_or_else(|| invalid("dependency closure was not admitted exactly once"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let contexts = admitted_contexts(&closure, &target.resource, admitted)?;
         let admission = entry.admit(
             target,
             admission_method(operation, target, entry)?,
@@ -392,7 +405,7 @@ impl CommandHandlerResourceCatalog {
         )?;
         admitted.insert(
             target.resource.clone(),
-            resource_context(target.clone(), entry, admission),
+            AdmittedResourceContext::new(target.clone(), entry, admission),
         );
         visiting.remove(&target.resource);
         Ok(())
@@ -906,6 +919,43 @@ struct AuthenticatedAdmission {
     native_context_digest: Sha256Digest,
 }
 
+#[derive(Clone, Eq, PartialEq)]
+struct AdmittedResourceContext {
+    revision: AdmissionRevision,
+    context: ResourceContext,
+}
+
+impl AdmittedResourceContext {
+    fn new(
+        reference: ResourceReference,
+        entry: &CommandHandlerResourceEntry,
+        admission: AuthenticatedAdmission,
+    ) -> Self {
+        let revision = admission.revision.clone();
+        Self {
+            revision,
+            context: resource_context(reference, entry, admission),
+        }
+    }
+
+    fn into_admission(self) -> AuthenticatedAdmission {
+        AuthenticatedAdmission {
+            revision: self.revision,
+            observation: self.context.observation,
+            native_context: self.context.native_context,
+            native_context_digest: self.context.native_context_digest,
+        }
+    }
+
+    fn same_authority(&self, other: &Self) -> bool {
+        self.revision == other.revision
+            && self.context.reference == other.context.reference
+            && self.context.assignment == other.context.assignment
+            && self.context.revision == other.context.revision
+            && self.context.native_context_digest == other.context.native_context_digest
+    }
+}
+
 #[derive(Clone)]
 struct AuthenticatedCommandHandler {
     executable: PathBuf,
@@ -1363,6 +1413,23 @@ fn resource_reference_closure(
     Ok(references)
 }
 
+fn admitted_contexts(
+    references: &BTreeMap<ResourceId, ResourceReference>,
+    target: &ResourceId,
+    admitted: &BTreeMap<ResourceId, AdmittedResourceContext>,
+) -> Result<Vec<ResourceContext>, io::Error> {
+    references
+        .keys()
+        .filter(|resource| *resource != target)
+        .map(|resource| {
+            admitted
+                .get(resource)
+                .map(|admission| admission.context.clone())
+                .ok_or_else(|| invalid("dependency closure was not admitted exactly once"))
+        })
+        .collect()
+}
+
 fn expand_reference_closure(
     references: &mut BTreeMap<ResourceId, ResourceReference>,
     resources: &BTreeMap<ResourceId, CommandHandlerResourceEntry>,
@@ -1615,6 +1682,42 @@ mod tests {
         }
     }
 
+    fn admitted_context(reference: ResourceReference) -> AdmittedResourceContext {
+        let native_context = AbilityValue::new(serde_json::json!({"loaded": false}))
+            .expect("native context is bounded");
+        let assignment = serde_json::from_value(serde_json::json!({
+            "provider": reference.resource.provider.clone(),
+            "interface": reference.interface.clone(),
+            "implementation": {
+                "descriptor": format!("sha256:{}", "2".repeat(64)),
+                "artifact": {
+                    "content": format!("sha256:{}", "3".repeat(64)),
+                    "store_path": "/nix/store/00000000000000000000000000000000-fixture",
+                    "nar_hash": format!("sha256:{}", "4".repeat(64)),
+                    "closure": format!("sha256:{}", "5".repeat(64)),
+                },
+                "handler": "fixture",
+            },
+            "incarnation": "fixture-incarnation",
+        }))
+        .expect("provider assignment fixture is valid");
+        let revision = RevisionId(Sha256Digest::of_bytes("resource revision"));
+
+        AdmittedResourceContext {
+            revision: AdmissionRevision::Present { revision },
+            context: ResourceContext {
+                reference,
+                assignment,
+                revision,
+                observation: AbilityValue::new(serde_json::json!({"ready": true}))
+                    .expect("observation is bounded"),
+                native_context_digest: native_context_digest(&native_context)
+                    .expect("context hashes"),
+                native_context,
+            },
+        }
+    }
+
     #[test]
     fn resolved_inputs_preserve_complete_resource_reference_authority() {
         let dependency = resource_reference("dependency", &["observe"]);
@@ -1646,6 +1749,27 @@ mod tests {
             .expect_err("conflicting operations cannot be merged");
 
         assert!(error.to_string().contains("conflicting checked"));
+    }
+
+    #[test]
+    fn cyclic_admission_requires_every_peer_context() {
+        let first = resource_reference("first", &["observe"]);
+        let second = resource_reference("second", &["observe"]);
+        let references = BTreeMap::from([
+            (first.resource.clone(), first.clone()),
+            (second.resource.clone(), second.clone()),
+        ]);
+        let mut admitted = BTreeMap::new();
+
+        let missing = admitted_contexts(&references, &first.resource, &admitted)
+            .expect_err("a cycle seed cannot masquerade as a complete admission");
+        assert!(missing.to_string().contains("not admitted exactly once"));
+
+        admitted.insert(second.resource.clone(), admitted_context(second.clone()));
+        let contexts = admitted_contexts(&references, &first.resource, &admitted)
+            .expect("the complete peer set is accepted");
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].reference, second);
     }
 
     #[test]
