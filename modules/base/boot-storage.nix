@@ -36,6 +36,12 @@
     )
     defaultDevices;
   zfsPackage = pkgs.zfsForKernel config.system.build.kernel;
+  containerDatasets = dataset: let
+    segments = lib.splitString "/" dataset;
+  in
+    lib.genList (
+      depth: lib.concatStringsSep "/" (lib.take (depth + 1) segments)
+    ) (builtins.length segments);
   espSync = config.aos.config.artifacts.esp-sync;
   espMount = config.aos.config.artifacts.esp-mount;
   deviceOption = name:
@@ -116,6 +122,15 @@ in {
         type = lib.types.strMatching "aos/[A-Za-z0-9_.+-]+";
         default = "aos/zfs-key.cred";
         description = "ESP-relative TPM-sealed native ZFS key path.";
+      };
+
+      compatibility = lib.mkOption {
+        type = lib.types.strMatching "[A-Za-z0-9_.,-]+";
+        default = "openzfs-2.3";
+        description = ''
+          Pool feature set retained across rollback slots. Raise this only
+          after every bootable image can import the resulting feature set.
+        '';
       };
     };
   };
@@ -224,6 +239,10 @@ in {
         enable = true;
         poolName = cfg.zfs.poolName;
         package = zfsPackage;
+        datasets = lib.genAttrs (containerDatasets cfg.zfs.dataset) (_: {
+          mountPoint = null;
+          snapshot = false;
+        });
       };
 
       boot.initrd.systemd.services."aos-zfs-unlock" = {

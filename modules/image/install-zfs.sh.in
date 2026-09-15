@@ -176,15 +176,20 @@ for disk in "${disks[@]}"; do
   vdevs+=("${disk}-part2")
 done
 
-zpool create -f -o ashift=12 -o autotrim=on \
+# Pin the feature set so the rollback slot can still import the pool. Dataset
+# defaults also bound allocation geometry until the package-owned dataset
+# provider converges each declared dataset.
+zpool create -f -o ashift=12 -o autotrim=on -o compatibility=@compatibility@ \
   -O encryption=aes-256-gcm -O keyformat=raw -O keylocation="file://$key" \
   -O compression=zstd-3 -O atime=off -O mountpoint=none \
+  -O recordsize=128K -O dedup=off -O xattr=sa -O acltype=posixacl \
   @pool@ "${vdevs[@]}"
 pool_created=true
 zfs create -p -o mountpoint=none @pool@/@dataset@
-zfs create -o mountpoint=legacy -o canmount=noauto @pool@/var
-zfs create -o mountpoint=legacy @pool@/var/log
-zfs create -o mountpoint=legacy @pool@/var/lib
+
+# System-state datasets are created and converged from the authenticated ZFS
+# package module on first boot; duplicating their properties here would create
+# a second policy authority.
 
 for slot in a b; do
   zfs create -V "$root_size" -o volblocksize=16K -o compression=off @pool@/@dataset@/root-$slot
