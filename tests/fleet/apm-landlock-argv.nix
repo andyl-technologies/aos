@@ -14,7 +14,6 @@
       aos.packages.landlock-argv-test = {
         package = pkgs.landlock-argv-test;
         bundle = true;
-        preset = false;
       };
     }
   ];

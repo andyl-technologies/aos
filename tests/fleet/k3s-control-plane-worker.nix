@@ -28,7 +28,6 @@
       aos.packages.k3s-control-plane = {
         package = pkgs.k3s-control-plane;
         bundle = true;
-        preset = false;
       };
       aos.packages.longhorn-manager = {
         package = pkgs.longhorn-manager;
@@ -44,7 +43,6 @@
       aos.packages.k3s-worker = {
         package = pkgs.k3s-worker;
         bundle = true;
-        preset = false;
       };
     }
   ];

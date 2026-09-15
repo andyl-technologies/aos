@@ -1,32 +1,23 @@
-##! modules/packages.nix - Image-baked package policy.
+##! modules/packages.nix - Image-baked package selection.
 ##!
-##! Declares the host policy layer for RFC-0001 exposed packages: which
-##! package artifacts are baked into the image and which package targets
-##! receive image preset enablement. Runtime configuration comes from each
-##! package's authenticated module contract rather than a parallel config
-##! output projection.
+##! Selects package payloads whose authenticated native modules and release
+##! artifacts participate in the host fixed point. Package contracts remain
+##! the single source for module, interface, implementation, and artifact
+##! metadata; this module does not reconstruct a parallel package catalog.
 {
   config,
   lib,
-  pkgs,
   ...
 }: let
   packageNamePattern = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
 
-  storePathHash = path:
-    builtins.elemAt (lib.splitString "-" (baseNameOf (builtins.toString path))) 0;
-
-  packageType = lib.types.submodule ({
-    name,
-    config,
-    ...
-  }: {
+  packageType = lib.types.submodule ({name, ...}: {
     options = {
       package = lib.mkOption {
         type = lib.types.package;
         description = ''
-          Exposed package derivation to bake into the image for
-          `aos.packages.${name}`.
+          Package derivation selected as `aos.packages.${name}`. The package
+          must carry its authenticated contract and native module outputs.
         '';
       };
 
@@ -34,313 +25,58 @@
         type = lib.types.bool;
         default = false;
         description = ''
-          Whether this package and its rendered expose artifact are baked into
-          the image. Bundled packages remain inert unless `preset` is enabled.
-        '';
-      };
-
-      preset = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Whether the image preset policy enables this package's activation
-          target when the baked package profile is reconciled.
+          Whether this package participates in the image's checked package and
+          ability selection. Package-owned options determine runtime behavior.
         '';
       };
     };
-
-    config.preset = lib.mkDefault config.bundle;
   });
 
   bundledPackages =
     lib.filterAttrs (_: package: package.bundle) config.aos.packages;
-  exposedBundledPackages =
-    lib.filterAttrs (_: package: package.package ? expose) bundledPackages;
-  presetExposedPackages =
-    lib.filterAttrs (_: package: package.preset) exposedBundledPackages;
-
-  packageTarget = package:
-    package.package.expose.passthru.manifest.expose.target;
-  packageMetaFile = name: package: let
-    packageHash = storePathHash package.package;
-    packageVersion = package.package.version or "0";
-  in
-    pkgs.runCommand "aos-package-${name}-meta.json" {
-      buildDeps = [pkgs.coreutils pkgs.jq pkgs.nix];
-      exportReferencesGraph = {
-        exposeArtifact = [package.package.expose];
-        packagePayload = [package.package];
-      };
-      preferLocalBuild = true;
-      allowSubstitutes = false;
-    } ''
-      set -eu
-      mkdir -p "$out"
-      manifest=${package.package.expose}/manifest.json
-      package_store_path=${lib.escapeShellArg (builtins.toString package.package)}
-      package_name=${lib.escapeShellArg name}
-      package_version=${lib.escapeShellArg packageVersion}
-
-      jq -ce \
-        --arg path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
-        '[.exposeArtifact[] | select(.path == $path)] | if length == 1 then .[0] else error("missing expose artifact realization") end' \
-        "$NIX_ATTRS_JSON_FILE" > expose-info.json
-      jq -ce \
-        --arg path "$package_store_path" \
-        '[.packagePayload[] | select(.path == $path)] | if length == 1 then .[0] else error("missing package payload realization") end' \
-        "$NIX_ATTRS_JSON_FILE" > package-info.json
-
-      canonical_nar_hash() {
-        nar_hash=$1
-        nar_hex=$(${pkgs.nix}/bin/nix --extra-experimental-features nix-command hash convert \
-          --hash-algo sha256 --to base16 "$nar_hash")
-        printf 'sha256:%s\n' "$nar_hex"
-      }
-      expose_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' expose-info.json)")
-      package_nar_hash=$(canonical_nar_hash "$(jq -r '.narHash' package-info.json)")
-
-      jq -n \
-        --slurpfile manifest "$manifest" \
-        --arg store_path "$package_store_path" \
-        --arg name "$package_name" \
-        --arg version "$package_version" \
-        --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
-        -e '(($manifest[0].expose | type) == "object") and (($manifest[0].permissions | type) == "object")' >/dev/null
-
-      root_hash=$(jq -r '[.expose.images[]? | select((.root_hash // "") != "" and (.root_hash_sig // "") != "")][0].root_hash // ""' "$manifest")
-      root_hash_sig=$(jq -r '[.expose.images[]? | select((.root_hash // "") != "" and (.root_hash_sig // "") != "")][0].root_hash_sig // ""' "$manifest")
-      if [ -n "$root_hash" ]; then
-        case "$root_hash" in
-          sha256:*) root_digest="$root_hash" ;;
-          sha256-*) root_digest="sha256:''${root_hash#sha256-}" ;;
-          *) root_digest="$root_hash" ;;
-        esac
-        root_digest=$(printf '%s' "$root_digest" | tr 'A-F' 'a-f')
-      else
-        root_digest=$package_nar_hash
-      fi
-      manifest_digest="sha256:$(sha256sum "$manifest" | cut -d ' ' -f 1)"
-      word="aos-package-v1|name=''${#package_name}:$package_name|version=''${#package_version}:$package_version|root-digest=''${#root_digest}:$root_digest|manifest-digest=''${#manifest_digest}:$manifest_digest"
-      measurement="sha256:$(printf '%s' "$word" | sha256sum | cut -d ' ' -f 1)"
-
-      jq -n \
-        --slurpfile manifest "$manifest" \
-        --arg store_path "$package_store_path" \
-        --arg name "$package_name" \
-        --arg version "$package_version" \
-        --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
-        --slurpfile expose_info expose-info.json \
-        --arg expose_nar_hash "$expose_nar_hash" \
-        --arg root_hash "$root_hash" \
-        --arg root_hash_sig "$root_hash_sig" \
-        --arg root_digest "$root_digest" \
-        --arg measurement "$measurement" \
-        '{
-          store_path: $store_path,
-          pushed_at: 1,
-          pushed_by: "aos-image",
-          expires_at: null,
-          is_root: true,
-          last_accessed: 1,
-          access_count: 0,
-          apm: {
-            name: $name,
-            version: $version,
-            explicit: true,
-            registry: "seed",
-            installed_at: "1970-01-01T00:00:00Z",
-            held: false,
-            expose: $manifest[0].expose,
-            expose_artifact: {
-              store_path: $expose_path,
-              nar_hash: $expose_nar_hash,
-              nar_size: $expose_info[0].narSize
-            },
-            permissions: $manifest[0].permissions,
-            attestation: ({
-              root_digest: $root_digest,
-              measurement: $measurement
-            } + (
-              if $root_hash == "" then {}
-              else {
-                root_hash: $root_hash,
-                root_hash_sig: $root_hash_sig
-              }
-              end
-            ))
-          }
-        }' > "$out/${packageHash}.json"
-
-      jq -n \
-        --arg name "$package_name" \
-        --arg version "$package_version" \
-        --arg root_digest "$root_digest" \
-        --arg measurement "$measurement" \
-        '{
-          name: $name,
-          version: $version,
-          root_digest: $root_digest,
-          measurement: $measurement
-        }' > "$out/${packageHash}.attestation.json"
-    '';
-
-  # The package-profile seed is an image-fixed artifact (a
-  # function of the bundled packages, not host.nix). Reference the resolved
-  # `artifacts.aos-package-profile-seed` (frozen store path on the on-host
-  # evaluator, the live derivation below otherwise — byte-identical).
-  packageSeedBundle = config.aos.config.artifacts.aos-package-profile-seed;
-  packageSeedBundleDrv =
-    pkgs.runCommand "aos-package-profile-seed" {
-      buildDeps = [pkgs.coreutils];
-      preferLocalBuild = true;
-      allowSubstitutes = false;
-    } ''
-      set -eu
-      mkdir -p "$out/gen-1/usr" "$out/gen-1/expose" "$out/gen-1/meta" "$out/meta"
-      cat > "$out/state.json" <<'JSON'
-      {"current_generation":1,"next_generation":2}
-      JSON
-      ln -sfn gen-1 "$out/current"
-      ${lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (
-          name: package: let
-            packageHash = storePathHash package.package;
-            exposeHash = storePathHash package.package.expose;
-            metaFile = packageMetaFile name package;
-          in ''
-            ln -sfn ${package.package} "$out/gen-1/usr/${packageHash}"
-            ln -sfn ${package.package.expose} "$out/gen-1/expose/${exposeHash}"
-            cp ${metaFile}/${packageHash}.json "$out/meta/${packageHash}.json"
-            cp ${metaFile}/${packageHash}.json "$out/gen-1/meta/${packageHash}.json"
-          ''
-        )
-        exposedBundledPackages
-      )}
-    '';
-
-  packageAttestationCatalog = let
-    metaFiles =
-      lib.mapAttrsToList (
-        name: package: let
-          packageHash = storePathHash package.package;
-          metaFile = packageMetaFile name package;
-        in "${metaFile}/${packageHash}.attestation.json"
-      )
-      exposedBundledPackages;
-  in
-    pkgs.runCommand "aos-package-attestation-catalog.json" {
-      buildDeps = [pkgs.jq];
-      preferLocalBuild = true;
-      allowSubstitutes = false;
-    } ''
-      set -eu
-      mkdir -p "$out"
-      ${
-        if metaFiles == []
-        then ''
-          printf '[]\n' > "$out/package-attestation-catalog.json"
-        ''
-        else ''
-          jq -s '.' ${lib.escapeShellArgs metaFiles} > "$out/package-attestation-catalog.json"
-        ''
-      }
-    '';
-
-  enabledPresetLines =
-    lib.mapAttrsToList
-    (_: package: "enable ${packageTarget package}")
-    presetExposedPackages;
 in {
-  options = {
-    aos.packages = lib.mkOption {
-      type = lib.types.attrsOf packageType;
-      default = {};
-      description = ''
-        Image-baked APM packages and package-target preset policy.
-      '';
-    };
-
-    systemd.systemPresetRules = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [];
-      description = ''
-        Image-level systemd preset rules emitted before the default-deny
-        preset file.
-      '';
-    };
-
-    system.build.aosPackageProfileSeed = lib.mkOption {
-      type = lib.types.package;
-      description = ''
-        Derivation containing the first-boot system package-profile seed.
-      '';
-    };
+  options.aos.packages = lib.mkOption {
+    type = lib.types.attrsOf packageType;
+    default = {};
+    description = ''
+      Packages selected into the image's authenticated package-module fixed
+      point. Each selected package is retained through its native contract.
+    '';
   };
 
   config = {
-    # Register the package-profile seed as an image-fixed config artifact
-    # Guarded on frozenArtifacts so the on-host frozen pkgs
-    # (no `runCommand`) never evaluates the source.
-    aos.config._artifactSources.aos-package-profile-seed =
-      if config.aos.config.frozenArtifacts ? "aos-package-profile-seed"
-      then null
-      else packageSeedBundleDrv;
-
-    assertions =
-      lib.concatLists
-      (lib.mapAttrsToList (
-          name: package:
-            [
-              {
-                assertion = builtins.match packageNamePattern name != null;
-                message = ''
-                  aos.packages."${name}": package names must match
-                  ${packageNamePattern}. The name is used for apm metadata and
-                  preset target selection.
-                '';
-              }
-              {
-                assertion = package.package ? expose;
-                message = ''
-                  aos.packages."${name}" must point at a derivation with an
-                  `expose` artifact.
-                '';
-              }
-              {
-                assertion = !package.preset || package.bundle;
-                message = ''
-                  aos.packages."${name}" sets `preset = true` without
-                  `bundle = true`. Preset enablement requires the package to
-                  be baked into the image.
-                '';
-              }
-            ]
-            ++ lib.optionals (package.package ? expose) [
-              {
-                assertion = packageTarget package == "aos-pkg-${name}.target";
-                message = ''
-                  aos.packages."${name}" points at package target
-                  ${packageTarget package}, but the policy name requires
-                  aos-pkg-${name}.target.
-                '';
-              }
-            ]
-        )
-        config.aos.packages);
-
-    system.build.aosPackageProfileSeed = packageSeedBundle;
-
-    systemd.systemPresetRules = enabledPresetLines;
+    assertions = lib.concatLists (lib.mapAttrsToList (
+        name: package: [
+          {
+            assertion = builtins.match packageNamePattern name != null;
+            message = ''
+              aos.packages."${name}": package names must match
+              ${packageNamePattern}.
+            '';
+          }
+          {
+            assertion = package.package ? contract && package.package ? module;
+            message = ''
+              aos.packages."${name}" must select a package with one native
+              contract and package-module output.
+            '';
+          }
+          {
+            assertion =
+              !(package.package ? contract)
+              || (
+                package.package.contract.value.package.name == package.package.pname
+                && package.package.contract.value.package.name == name
+              );
+            message = ''
+              aos.packages."${name}" selects a contract whose package identity
+              does not match the selection key and payload.
+            '';
+          }
+        ])
+      config.aos.packages);
 
     environment.systemPackages =
-      lib.concatLists
-      (lib.mapAttrsToList (
-          _: package: [package.package package.package.expose]
-        )
-        exposedBundledPackages);
-
-    environment.etc."aos/package-attestation-catalog.json" = lib.mkIf (exposedBundledPackages != {}) {
-      source = "${packageAttestationCatalog}/package-attestation-catalog.json";
-    };
+      lib.mapAttrsToList (_: package: package.package) bundledPackages;
   };
 }
