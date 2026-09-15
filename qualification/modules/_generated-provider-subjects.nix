@@ -108,7 +108,7 @@
     implementation = entry.implementation;
     qualification = entry.qualification;
     interface = entry.interface;
-    methodNames = implementation.methods;
+    methodNames = builtins.attrNames interface.interface.methods;
     observer = projectedHandler entry.package qualification.observer;
     inherit (qualification) adapter scope;
     identity = interfaceIdentity interface;
@@ -150,7 +150,9 @@
     scenarios = map scenarioFor scenarioPolicy.scenarios;
     limits = {
       max_adapters = builtins.length selectedImplementations;
-      max_methods = builtins.length (builtins.concatMap (entry: entry.implementation.methods) selectedImplementations);
+      max_methods = builtins.length (builtins.concatMap (entry:
+        builtins.attrNames entry.interface.interface.methods)
+      selectedImplementations);
       max_scenarios = builtins.length scenarioPolicy.scenarios;
     };
   };
