@@ -1,6 +1,6 @@
 ##! Package-owned systemd ability declarations and executable implementations.
 {
-  config,
+  config ? null,
   lib,
   ...
 }: let
@@ -17,8 +17,9 @@
     descriptor = null;
   };
   dbusRegistrationAvailable =
-    config.aos.abilities.environment
+    config
     == null
+    || config.aos.abilities.environment == null
     || builtins.any (declaration:
       declaration.name
       == dbusRegistrationInterface.name
@@ -1167,6 +1168,10 @@ in {
   };
 
   config.aos.abilities = {
+    instances = lib.mkIf dbusRegistrationAvailable {
+      manager = {};
+    };
+
     interfaces = {
       systemd-packaged-unit = packagedUnitDeclaration;
       systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
@@ -1272,34 +1277,38 @@ in {
         };
       };
 
-    requirementTemplates.dbus-system-registration = lib.mkIf dbusRegistrationAvailable {
-      description = "Contributes systemd's system-bus activation and policy artifacts.";
-      interface = dbusRegistrationInterface.name;
-      inherit (dbusRegistrationInterface) abi descriptor;
-      methods = ["observe"];
-      guarantees = [];
-      strength = "required";
-      fallback = null;
+    requirementTemplates = lib.mkIf dbusRegistrationAvailable {
+      dbus-system-registration = {
+        description = "Contributes systemd's system-bus activation and policy artifacts.";
+        interface = dbusRegistrationInterface.name;
+        inherit (dbusRegistrationInterface) abi descriptor;
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
     };
 
-    requests.dbus-system-registration = lib.mkIf dbusRegistrationAvailable {
-      requirement = "dbus-system-registration";
-      consumer = "manager";
-      scope = ["system-bus"];
-      parameters = {
-        name = "systemd";
-        activation_directories = [
-          {
-            inherit artifact;
-            path = "share/dbus-1/system-services";
-          }
-        ];
-        policy_directories = [
-          {
-            inherit artifact;
-            path = "share/dbus-1/system.d";
-          }
-        ];
+    requests = lib.mkIf dbusRegistrationAvailable {
+      dbus-system-registration = {
+        requirement = "dbus-system-registration";
+        consumer = "manager";
+        scope = ["system-bus"];
+        parameters = {
+          name = "systemd";
+          activation_directories = [
+            {
+              inherit artifact;
+              path = "share/dbus-1/system-services";
+            }
+          ];
+          policy_directories = [
+            {
+              inherit artifact;
+              path = "share/dbus-1/system.d";
+            }
+          ];
+        };
       };
     };
   };

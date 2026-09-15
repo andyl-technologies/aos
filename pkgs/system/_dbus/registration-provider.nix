@@ -147,8 +147,14 @@
         (literal "  <include ignore_missing=\"yes\">/etc/dbus-1/system-local.conf</include>\n")
         (literal "</busconfig>\n")
       ];
-  compose = {resources, ...}: let
+  compose = {
+    children,
+    requests,
+    resources,
+    ...
+  }: let
     resource = resources.system-bus or (throw "D-Bus system registration resource is absent");
+    configurationChild = children.configuration or null;
   in {
     requests.configuration = {
       requirement = "configuration-materialization";
@@ -170,7 +176,15 @@
       slot = resource.value.base.reload.service;
       parameters = resource.value.base.reload;
     };
-    outputs = {};
+    outputs =
+      if configurationChild == null
+      then {}
+      else
+        builtins.mapAttrs (_: _: {
+          configuration-path = configurationChild.outputs.planned-path.value;
+          configuration-resource = configurationChild.outputs.configuration-resource.value;
+        })
+        requests;
     realizations.system-bus.schema = "aos.dbus.system-registration-realization/v1";
   };
 in {
