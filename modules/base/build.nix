@@ -1025,6 +1025,10 @@ in {
       pkgs.util-linux
       pkgs.systemd
       pkgs.kmod
+      # The provider installs only libexec/module artifacts. Selecting it here
+      # makes the four shared filesystem implementations available to the
+      # final ability fixed point without adding commands to the login PATH.
+      pkgs.aos-filesystem-provider
       pkgs.e2fsprogs
       pkgs.less
     ];
