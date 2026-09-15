@@ -6,6 +6,10 @@
 }: let
   cfg = config.etcd;
   inherit (lib) mkOption types;
+  inherit (lib.abilities) resultOf;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
+  serviceTypes = serviceManagement.types;
+  abilityTypes = lib.abilities.types;
 
   positiveInt = types.addCheck types.int (value: value > 0);
   endpoint = types.strMatching "https?://[^[:space:],]+";
@@ -13,10 +17,17 @@
   memberName = types.strMatching "[A-Za-z0-9][A-Za-z0-9_.-]*";
   secretRef = types.submodule ({...}: {
     config._module.strict = true;
-    options.ref = mkOption {
-      type = types.nullOr (types.strMatching "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?");
-      default = null;
-      description = "Opaque AOS credential reference; secret bytes never enter Nix evaluation.";
+    options = {
+      resource = mkOption {
+        type = types.nullOr (abilityTypes.deferredResult abilityTypes.resourceReference);
+        default = null;
+        description = "Typed resource reference producing the credential without exposing secret bytes.";
+      };
+      encrypted = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Whether the referenced credential requires encrypted delivery.";
+      };
     };
   });
   member = types.submodule ({name, ...}: {
@@ -67,15 +78,16 @@
   allUnique = values: builtins.length values == builtins.length (lib.unique values);
   allScheme = scheme: values:
     builtins.all (value: lib.hasPrefix "${scheme}://" value) values;
+  localMemberName = builtins.unsafeDiscardStringContext cfg.name;
   clusterMembers = lib.mapAttrsToList (_: value: value) cfg.cluster.members;
   initialCluster = lib.concatStringsSep "," (
     lib.concatMap
     (memberValue: builtins.map (url: "${memberValue.name}=${url}") memberValue.peerUrls)
     clusterMembers
   );
-  credentialPath = name: "/run/credentials/etcd.service/${name}";
-  transportConfig = prefix: transportCfg:
-    lib.optionalAttrs transportCfg.enable {
+  credentialPath = name: resultOf "credential-${name}" "credential-path";
+  transportConfig = enabled: prefix: transportCfg:
+    lib.optionalAttrs enabled {
       "${prefix}-transport-security" = {
         "cert-file" = credentialPath "${prefix}-certificate";
         "key-file" = credentialPath "${prefix}-private-key";
@@ -83,10 +95,10 @@
         "client-cert-auth" = transportCfg.clientCertificateAuth;
       };
     };
-  serverConfig =
+  serverConfigFor = clientTls: peerTls:
     {
       name = cfg.name;
-      "data-dir" = "/var/lib/aos-pkg-etcd";
+      "data-dir" = resultOf "data-storage" "storage-path";
       "listen-client-urls" = lib.concatStringsSep "," cfg.client.listenUrls;
       "advertise-client-urls" = lib.concatStringsSep "," cfg.client.advertiseUrls;
       "listen-peer-urls" = lib.concatStringsSep "," cfg.peer.listenUrls;
@@ -99,22 +111,253 @@
       "auto-compaction-mode" = cfg.storage.autoCompaction.mode;
       "auto-compaction-retention" = cfg.storage.autoCompaction.retention;
       "enable-grpc-gateway" = cfg.client.enableGrpcGateway;
-      "metrics" = cfg.metrics;
+      metrics = cfg.metrics;
     }
-    // transportConfig "client" cfg.client.tls
-    // transportConfig "peer" cfg.peer.tls;
-  renderedConfig = builtins.toJSON serverConfig;
-  usedCredentials =
-    (lib.optionals cfg.client.tls.enable [
-      ["client-certificate" cfg.client.tls.certificate.ref]
-      ["client-private-key" cfg.client.tls.privateKey.ref]
-      ["client-trusted-ca" cfg.client.tls.trustedCa.ref]
+    // transportConfig clientTls "client" cfg.client.tls
+    // transportConfig peerTls "peer" cfg.peer.tls;
+  credentialsFor = clientTls: peerTls:
+    (lib.optionals clientTls [
+      {
+        name = "client-certificate";
+        inherit (cfg.client.tls.certificate) resource encrypted;
+      }
+      {
+        name = "client-private-key";
+        inherit (cfg.client.tls.privateKey) resource encrypted;
+      }
+      {
+        name = "client-trusted-ca";
+        inherit (cfg.client.tls.trustedCa) resource encrypted;
+      }
     ])
-    ++ (lib.optionals cfg.peer.tls.enable [
-      ["peer-certificate" cfg.peer.tls.certificate.ref]
-      ["peer-private-key" cfg.peer.tls.privateKey.ref]
-      ["peer-trusted-ca" cfg.peer.tls.trustedCa.ref]
+    ++ (lib.optionals peerTls [
+      {
+        name = "peer-certificate";
+        inherit (cfg.peer.tls.certificate) resource encrypted;
+      }
+      {
+        name = "peer-private-key";
+        inherit (cfg.peer.tls.privateKey) resource encrypted;
+      }
+      {
+        name = "peer-trusted-ca";
+        inherit (cfg.peer.tls.trustedCa) resource encrypted;
+      }
     ]);
+  runtimeString = abilityTypes.runtimeString;
+  transportConfigType = abilityTypes.record {
+    fields = {
+      "cert-file" = abilityTypes.deferredResult runtimeString;
+      "key-file" = abilityTypes.deferredResult runtimeString;
+      "trusted-ca-file" = abilityTypes.deferredResult runtimeString;
+      "client-cert-auth" = abilityTypes.boolean;
+    };
+  };
+  serverConfigType = abilityTypes.record {
+    fields = {
+      name = runtimeString;
+      "data-dir" = abilityTypes.deferredResult runtimeString;
+      "listen-client-urls" = runtimeString;
+      "advertise-client-urls" = runtimeString;
+      "listen-peer-urls" = runtimeString;
+      "initial-advertise-peer-urls" = runtimeString;
+      "initial-cluster" = runtimeString;
+      "initial-cluster-state" = runtimeString;
+      "initial-cluster-token" = runtimeString;
+      "quota-backend-bytes" = abilityTypes.integer {
+        minimum = 1;
+        maximum = 9007199254740991;
+      };
+      "snapshot-count" = abilityTypes.integer {
+        minimum = 1;
+        maximum = 9007199254740991;
+      };
+      "auto-compaction-mode" = runtimeString;
+      "auto-compaction-retention" = runtimeString;
+      "enable-grpc-gateway" = abilityTypes.boolean;
+      metrics = runtimeString;
+      "client-transport-security" = {
+        type = abilityTypes.optional transportConfigType;
+        optional = true;
+      };
+      "peer-transport-security" = {
+        type = abilityTypes.optional transportConfigType;
+        optional = true;
+      };
+    };
+  };
+  command = arguments: {
+    executable = {
+      artifact = lib.abilities.packageOutput {};
+      entry_point = "bin/etcd";
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  abilityFragmentsFor = clientTls: peerTls: let
+    usedCredentials = credentialsFor clientTls peerTls;
+    producer = key: interface: parameters:
+      serviceManagement.forProducer {
+        consumerInstance = "etcd";
+        inherit key interface parameters;
+      };
+    dataStorage = producer "data-storage" serviceManagement.interfaces.persistentStorageAllocation {
+      name = "data";
+      purpose = "state";
+      mode = "0700";
+    };
+    runtimeStorage = producer "runtime-storage" serviceManagement.interfaces.storageAllocation {
+      name = "runtime";
+      purpose = "runtime";
+      mode = "0750";
+    };
+    networkReadiness = producer "network-readiness" serviceManagement.interfaces.networkReadiness {
+      scope = "configured-connectivity";
+      address_families = ["ipv4" "ipv6"];
+    };
+    credentialRequests = builtins.map (credential:
+      producer "credential-${credential.name}" serviceManagement.interfaces.credentialDelivery {
+        inherit (credential) name resource encrypted;
+      })
+    usedCredentials;
+    configurationRequest = serviceManagement.forConfiguration {
+      inherit serviceTypes;
+      consumerInstance = "etcd";
+      declaration = {
+        name = "server-configuration";
+        source = serviceManagement.structuredSource {
+          format = "json";
+          valueType = serverConfigType;
+          value = serverConfigFor clientTls peerTls;
+        };
+        mode = "0440";
+      };
+    };
+    serviceRequest = serviceManagement.forService {
+      inherit serviceTypes;
+      consumerInstance = "etcd";
+      declaration = {
+        service = "main";
+        enabled = true;
+        lifecycle = {
+          description = "etcd distributed key-value store";
+          execution_model = "foreground";
+          environment_files = [];
+          condition = [];
+          pre_start = [];
+          start = [(command ["--config-file" (resultOf "server-configuration" "execution-path")])];
+          post_start = [];
+          stop = [];
+          post_stop = [];
+          restart = "on-failure";
+          restart_delay_millis = 5000;
+          remain_after_exit = false;
+          start_timeout_millis = 90000;
+          stop_timeout_millis = 90000;
+        };
+        dependencies = {
+          after = [(resultOf "network-readiness" "readiness-resource")];
+          before = [];
+          requires = [];
+          wants = [(resultOf "network-readiness" "readiness-resource")];
+        };
+        readiness = {
+          mechanism = "process-signal";
+          signal_scope = "all-processes";
+          timeout_millis = 90000;
+        };
+        credentials =
+          if usedCredentials == []
+          then null
+          else {
+            views =
+              builtins.map (credential: {
+                inherit (credential) name encrypted;
+                reference = resultOf "credential-${credential.name}" "credential-path";
+                optional = false;
+              })
+              usedCredentials;
+          };
+        configuration.views = [
+          {
+            name = "server";
+            source = resultOf "server-configuration" "execution-path";
+            optional = false;
+          }
+        ];
+        storage.mounts = [
+          {
+            name = "data";
+            source = resultOf "data-storage" "storage-path";
+            access = "read-write";
+          }
+          {
+            name = "runtime";
+            source = resultOf "runtime-storage" "storage-path";
+            access = "read-write";
+          }
+        ];
+        logging = {
+          standard_output = "structured";
+          standard_error = "structured";
+          directories = [];
+          directory_mode = "0750";
+        };
+        identity = {
+          supplementary_groups = [];
+          ephemeral = true;
+          file_creation_mask = "0077";
+        };
+        isolation = {
+          privilege = "unprivileged";
+          filesystem = "read-only-system";
+          network = "host";
+          process_visibility = "host";
+          termination_scope = "all-processes";
+          temporary_directory = "private";
+          devices = [];
+          host_paths = [];
+          maximum_open_files = 1048576;
+          permit_core_dumps = false;
+        };
+        linux_isolation = {
+          allow_privilege_escalation = false;
+          ambient_capabilities = [];
+          bounding_capabilities = [];
+          control_group_delegation = false;
+          control_group_access = "read-only";
+          device_namespace = "shared";
+          kernel_clock_mutation = false;
+          kernel_hostname_mutation = false;
+          kernel_log_access = false;
+          kernel_module_access = false;
+          kernel_tunable_access = false;
+          lock_personality = true;
+          memory_write_execute = false;
+          namespace_isolation = [];
+          network_address_families = ["ipv4" "ipv6" "unix"];
+          oom_score_adjust = 0;
+          permit_realtime = false;
+          permit_suid_sgid = false;
+          process_visibility = "all";
+          security_label = "aos-pkg-etcd";
+          syscall_architectures = [];
+          syscall_allow = [];
+          syscall_deny = [];
+          syscall_profile = "restricted";
+          user_namespace_ownership = "none";
+        };
+      };
+    };
+  in
+    [
+      dataStorage
+      runtimeStorage
+      networkReadiness
+      configurationRequest
+      serviceRequest
+    ]
+    ++ credentialRequests;
 in {
   options.etcd = {
     enable = mkOption {
@@ -214,85 +457,85 @@ in {
     };
   };
 
-  config = {
-    assertions = [
-      {
-        assertion = builtins.hasAttr cfg.name cfg.cluster.members;
-        message = "etcd.cluster.members must contain the local etcd.name";
-      }
-      {
-        assertion = !builtins.hasAttr cfg.name cfg.cluster.members || cfg.cluster.members.${cfg.name}.peerUrls == cfg.peer.advertiseUrls;
-        message = "the local etcd cluster member peerUrls must equal etcd.peer.advertiseUrls";
-      }
-      {
-        assertion = allUnique cfg.client.listenUrls && allUnique cfg.client.advertiseUrls;
-        message = "etcd client endpoint lists must not contain duplicates";
-      }
-      {
-        assertion = allUnique cfg.peer.listenUrls && allUnique cfg.peer.advertiseUrls;
-        message = "etcd peer endpoint lists must not contain duplicates";
-      }
-      {
-        assertion = !cfg.client.tls.enable || (allScheme "https" cfg.client.listenUrls && allScheme "https" cfg.client.advertiseUrls);
-        message = "etcd client endpoints must all use HTTPS when client TLS is enabled";
-      }
-      {
-        assertion = cfg.client.tls.enable || (allScheme "http" cfg.client.listenUrls && allScheme "http" cfg.client.advertiseUrls);
-        message = "etcd client endpoints must all use HTTP when client TLS is disabled";
-      }
-      {
-        assertion = !cfg.peer.tls.enable || (allScheme "https" cfg.peer.listenUrls && allScheme "https" cfg.peer.advertiseUrls);
-        message = "etcd peer endpoints must all use HTTPS when peer TLS is enabled";
-      }
-      {
-        assertion = cfg.peer.tls.enable || (allScheme "http" cfg.peer.listenUrls && allScheme "http" cfg.peer.advertiseUrls);
-        message = "etcd peer endpoints must all use HTTP when peer TLS is disabled";
-      }
-      {
-        assertion = !cfg.client.tls.enable || builtins.all (value: value != null) [cfg.client.tls.certificate.ref cfg.client.tls.privateKey.ref cfg.client.tls.trustedCa.ref];
-        message = "etcd client TLS requires certificate, private-key, and trusted-CA references";
-      }
-      {
-        assertion = !cfg.peer.tls.enable || builtins.all (value: value != null) [cfg.peer.tls.certificate.ref cfg.peer.tls.privateKey.ref cfg.peer.tls.trustedCa.ref];
-        message = "etcd peer TLS requires certificate, private-key, and trusted-CA references";
-      }
-      {
-        assertion = builtins.all (memberValue: allUnique memberValue.peerUrls) clusterMembers;
-        message = "each etcd cluster member must advertise unique peer endpoints";
-      }
-      {
-        assertion = builtins.all (memberValue:
-          allScheme (
-            if cfg.peer.tls.enable
-            then "https"
-            else "http"
-          )
-          memberValue.peerUrls)
-        clusterMembers;
-        message = "all etcd cluster member peer endpoints must follow the configured peer TLS scheme";
-      }
-      {
-        assertion =
-          if cfg.storage.autoCompaction.mode == "revision"
-          then builtins.match "[1-9][0-9]*" cfg.storage.autoCompaction.retention != null
-          else builtins.match "[1-9][0-9]*(ms|s|m|h)" cfg.storage.autoCompaction.retention != null;
-        message = "etcd auto-compaction retention must be a positive revision or duration matching its mode";
-      }
-    ];
-
-    etcd.config.service = {
-      ETCD_ENABLED = cfg.enable;
-      ETCD_CONFIG_GENERATION = builtins.hashString "sha256" renderedConfig;
-    };
-    etcd.credentials = builtins.listToAttrs (builtins.map (entry: {
-        name = builtins.elemAt entry 0;
-        value.ref = builtins.elemAt entry 1;
-      })
-      usedCredentials);
-
-    environment.etc."aos/packages/etcd/etcd.json" = {
-      text = renderedConfig + "\n";
-      mode = "0444";
-    };
-  };
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = builtins.hasAttr localMemberName cfg.cluster.members;
+          message = "etcd.cluster.members must contain the local etcd.name";
+        }
+        {
+          assertion = !builtins.hasAttr localMemberName cfg.cluster.members || cfg.cluster.members.${localMemberName}.peerUrls == cfg.peer.advertiseUrls;
+          message = "the local etcd cluster member peerUrls must equal etcd.peer.advertiseUrls";
+        }
+        {
+          assertion = allUnique cfg.client.listenUrls && allUnique cfg.client.advertiseUrls;
+          message = "etcd client endpoint lists must not contain duplicates";
+        }
+        {
+          assertion = allUnique cfg.peer.listenUrls && allUnique cfg.peer.advertiseUrls;
+          message = "etcd peer endpoint lists must not contain duplicates";
+        }
+        {
+          assertion = !cfg.client.tls.enable || (allScheme "https" cfg.client.listenUrls && allScheme "https" cfg.client.advertiseUrls);
+          message = "etcd client endpoints must all use HTTPS when client TLS is enabled";
+        }
+        {
+          assertion = cfg.client.tls.enable || (allScheme "http" cfg.client.listenUrls && allScheme "http" cfg.client.advertiseUrls);
+          message = "etcd client endpoints must all use HTTP when client TLS is disabled";
+        }
+        {
+          assertion = !cfg.peer.tls.enable || (allScheme "https" cfg.peer.listenUrls && allScheme "https" cfg.peer.advertiseUrls);
+          message = "etcd peer endpoints must all use HTTPS when peer TLS is enabled";
+        }
+        {
+          assertion = cfg.peer.tls.enable || (allScheme "http" cfg.peer.listenUrls && allScheme "http" cfg.peer.advertiseUrls);
+          message = "etcd peer endpoints must all use HTTP when peer TLS is disabled";
+        }
+        {
+          assertion = !cfg.client.tls.enable || builtins.all (value: value != null) [cfg.client.tls.certificate.resource cfg.client.tls.privateKey.resource cfg.client.tls.trustedCa.resource];
+          message = "etcd client TLS requires certificate, private-key, and trusted-CA references";
+        }
+        {
+          assertion = !cfg.peer.tls.enable || builtins.all (value: value != null) [cfg.peer.tls.certificate.resource cfg.peer.tls.privateKey.resource cfg.peer.tls.trustedCa.resource];
+          message = "etcd peer TLS requires certificate, private-key, and trusted-CA references";
+        }
+        {
+          assertion = builtins.all (memberValue: allUnique memberValue.peerUrls) clusterMembers;
+          message = "each etcd cluster member must advertise unique peer endpoints";
+        }
+        {
+          assertion = builtins.all (memberValue:
+            allScheme (
+              if cfg.peer.tls.enable
+              then "https"
+              else "http"
+            )
+            memberValue.peerUrls)
+          clusterMembers;
+          message = "all etcd cluster member peer endpoints must follow the configured peer TLS scheme";
+        }
+        {
+          assertion =
+            if cfg.storage.autoCompaction.mode == "revision"
+            then builtins.match "[1-9][0-9]*" cfg.storage.autoCompaction.retention != null
+            else builtins.match "[1-9][0-9]*(ms|s|m|h)" cfg.storage.autoCompaction.retention != null;
+          message = "etcd auto-compaction retention must be a positive revision or duration matching its mode";
+        }
+      ];
+    }
+    (lib.mkIf cfg.enable {aos.abilities.instances.etcd = {};})
+    (lib.mkIf (cfg.enable && !cfg.client.tls.enable && !cfg.peer.tls.enable) (lib.mkMerge (
+      builtins.map (fragment: {aos.abilities = fragment;}) (abilityFragmentsFor false false)
+    )))
+    (lib.mkIf (cfg.enable && cfg.client.tls.enable && !cfg.peer.tls.enable) (lib.mkMerge (
+      builtins.map (fragment: {aos.abilities = fragment;}) (abilityFragmentsFor true false)
+    )))
+    (lib.mkIf (cfg.enable && !cfg.client.tls.enable && cfg.peer.tls.enable) (lib.mkMerge (
+      builtins.map (fragment: {aos.abilities = fragment;}) (abilityFragmentsFor false true)
+    )))
+    (lib.mkIf (cfg.enable && cfg.client.tls.enable && cfg.peer.tls.enable) (lib.mkMerge (
+      builtins.map (fragment: {aos.abilities = fragment;}) (abilityFragmentsFor true true)
+    )))
+  ];
 }
