@@ -1,5 +1,6 @@
 ##! aos-nix-store-provider - package-owned local Nix database handler
 {
+  lib,
   stdenv,
   mkCargoPackage,
   mkCargoArtifacts,
@@ -55,6 +56,11 @@
 in
   mkCargoPackage {
     pname = "aos-nix-store-provider";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-nix-store-provider";
+      entryPoint = "bin/aos-nix-store-provider";
+    };
+
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;

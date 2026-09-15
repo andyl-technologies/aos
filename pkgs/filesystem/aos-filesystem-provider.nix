@@ -1,5 +1,6 @@
 ##! aos-filesystem-provider - package-owned mutable filesystem realization
 {
+  lib,
   mkCargoPackage,
   aosWorkspaceSource,
   aosWorkspaceVendor,
@@ -10,6 +11,11 @@
 in
   mkCargoPackage {
     pname = "aos-filesystem-provider";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-filesystem-provider";
+      entryPoint = "libexec/aos-filesystem-provider";
+    };
+
     inherit version src cargoDeps;
     cargoRoot = "crates";
     cargoFlags = "-p aos-filesystem-provider";

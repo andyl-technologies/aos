@@ -339,6 +339,52 @@ in rec {
       badInput = commandOperation badInput;
     };
 
+  providerExecutableProbe = {
+    name,
+    entryPoint,
+  }:
+    commandProbe {
+      primary = {
+        input = "The installed provider executable.";
+        operation = "Verify the package publishes its declared executable entry point.";
+        expected = "The entry point is a regular executable file.";
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              "import os\npath = '@out@/${entryPoint}'\nassert os.path.isfile(path) and os.access(path, os.X_OK)\nprint('${name} executable passed')\n"
+            ];
+            exit_code = 0;
+            stdout.exact = "${name} executable passed\n";
+            stderr.exact = "";
+          }
+        ];
+        artifacts = [];
+      };
+      badInput = {
+        input = "An unsupported qualification argument.";
+        operation = "Invoke the provider with an unsupported argument.";
+        expected = "The provider rejects the unsupported invocation.";
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run(['@out@/${entryPoint}', '--aos-qualification-invalid'], capture_output=True)\nassert result.returncode != 0\nsys.stderr.write('${name} rejected invalid input\\n')\nraise SystemExit(7)\n"
+            ];
+            exit_code = 7;
+            stdout.exact = "";
+            stderr.exact = "${name} rejected invalid input\n";
+            observes_rejection = true;
+          }
+        ];
+        artifacts = [];
+      };
+    };
+
   inherit normalizePackageProbe;
 
   projectPackageProbe = {

@@ -10,15 +10,18 @@
   };
   target = cross.pkgs;
   packageNames = ["workerd" "workerd-source"];
-  probes = import ../../qualification/package-probes/q-z-fifth-command-tools.nix {
-    testing.mkQualificationPackageProbe = args: args.spec;
+  packageProbeSpec = import ../../lib/testing/qualification-package-spec.nix {
+    lib = cross.lib;
   };
   probeSpecs = pkgs.writeTextFile {
     name = "linux-workerd-probes";
     destination = "/specs.json";
     text = builtins.toJSON (builtins.listToAttrs (map (name: {
-        inherit name;
-        value = probes.${name};
+      inherit name;
+        value = packageProbeSpec {
+          packageName = name;
+          packageProbe = target.${name}.contract.value.qualification.package_probe;
+        };
       })
       packageNames));
   };

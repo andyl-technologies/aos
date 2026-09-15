@@ -5,7 +5,6 @@
   build,
   fleet,
   container,
-  packageCoverage,
   releaseExecutor,
   nativeAdapterMatrix,
 }: let
@@ -50,9 +49,9 @@ in
   assert (resolve "checks.fleet.measured-boot").drvPath == fleet.measured-boot.drvPath;
     groups
     // {
-      policy = import ./policy.nix {inherit pkgs lib nativeAdapterMatrix packageCoverage releaseExecutor;};
+      policy = import ./policy.nix {inherit pkgs lib nativeAdapterMatrix releaseExecutor;};
       native-adapter-matrix = nativeAdapterMatrixArtifact;
-      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib nativeAdapterMatrix packageCoverage releaseExecutor;})] ++ builtins.attrValues groups);
+      all = aggregate "all-regressions" ([(import ./policy.nix {inherit pkgs lib nativeAdapterMatrix releaseExecutor;})] ++ builtins.attrValues groups);
       # Evaluating this inventory resolves every reference, including sparse
       # groups, before an expensive VM campaign starts.
       inventory = builtins.listToAttrs (map (requirement: {

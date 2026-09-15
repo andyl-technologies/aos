@@ -2,19 +2,20 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoVendor,
+  aosWorkspaceSource,
+  aosWorkspaceVendor,
 }: let
   version = "0.1.0";
-  src = import ../tools/aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-systemd-provider-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-kSUUcN2LDgkjDFmxI82pQcWy40YSJT/+Qhi9S1lGmiM=";
-  };
+  src = aosWorkspaceSource;
+  cargoDeps = aosWorkspaceVendor;
 in
   mkCargoPackage {
     pname = "aos-systemd-provider";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-systemd-provider";
+      entryPoint = "bin/aos-systemd-provider";
+    };
+
     inherit version src cargoDeps;
     cargoRoot = "crates";
     cargoFlags = "-p aos-systemd-provider";

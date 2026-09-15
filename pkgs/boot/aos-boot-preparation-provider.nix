@@ -1,5 +1,6 @@
 ##! aos-boot-preparation-provider - transaction-scoped preparation handler
 {
+  lib,
   stdenv,
   mkCargoPackage,
   mkCargoArtifacts,
@@ -53,6 +54,11 @@
 in
   mkCargoPackage {
     pname = "aos-boot-preparation-provider";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-boot-preparation-provider";
+      entryPoint = "bin/aos-boot-preparation-provider";
+    };
+
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;

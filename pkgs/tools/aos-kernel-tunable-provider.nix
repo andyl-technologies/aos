@@ -1,5 +1,6 @@
 ##! aos-kernel-tunable-provider - checked procfs convergence handler
 {
+  lib,
   stdenv,
   mkCargoPackage,
   mkCargoArtifacts,
@@ -55,6 +56,11 @@
 in
   mkCargoPackage {
     pname = "aos-kernel-tunable-provider";
+    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+      name = "aos-kernel-tunable-provider";
+      entryPoint = "bin/aos-kernel-tunable-provider";
+    };
+
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
